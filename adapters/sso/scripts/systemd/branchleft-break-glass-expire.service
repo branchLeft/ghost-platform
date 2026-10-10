@@ -1,5 +1,7 @@
-# Closes every break-glass support grant past its four-hour deadline.
-# adapters/sso/scripts/break-glass-grant.md, "The clock".
+# Closes every break-glass support grant past its four-hour deadline, in the
+# same pinned Node container the host wrapper runs. The options match
+# scripts/host/branchleft-break-glass.sh; a test holds the two together.
+# adapters/sso/scripts/break-glass-grant.md, "The clock" and "The container".
 [Unit]
 Description=Close break-glass support grants past their deadline
 After=docker.service
@@ -7,6 +9,14 @@ Wants=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/env node /usr/local/lib/branchleft/break-glass/break-glass-grant.mjs expire
-# Each docker call times out after 60s; this bounds a run of many tenants.
+ExecStart=/usr/bin/docker run --rm --pull never --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --pids-limit 64 --memory 256m --user 0:0 \
+  --label branchleft.component=break-glass-tool \
+  --mount type=bind,source=/usr/local/lib/branchleft/break-glass,target=/usr/local/lib/branchleft/break-glass,readonly \
+  --mount type=bind,source=/var/lib/branchleft/break-glass-grants,target=/var/lib/branchleft/break-glass-grants \
+  --mount type=bind,source=/var/log/branchleft,target=/var/log/branchleft \
+  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+  node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb \
+  node /usr/local/lib/branchleft/break-glass/break-glass-grant.mjs expire
+# Each Engine call times out after 60s; this bounds a run of many tenants.
 TimeoutStartSec=10min

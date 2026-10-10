@@ -9,8 +9,9 @@ repos:
       - id: end-of-file-fixer
         # widgets/dist/ is vendored third-party bundles, content-addressed by
         # sha384 in widgets/pins.json -- adding a trailing newline changes
-        # the bytes and breaks the pin.
-        exclude: ^widgets/dist/
+        # the bytes and breaks the pin. The Kalotyp bundle has the same
+        # problem: its sha256 pin in vendor/kalotyp/kalotyp.sha256 would break.
+        exclude: ^(widgets/dist/|vendor/kalotyp/kalotyp\.(js|css)$)
       - id: check-yaml
       # Stated rather than inherited: the hook's own default has moved before,
       # and this threshold is meant to be the same number in every repo.

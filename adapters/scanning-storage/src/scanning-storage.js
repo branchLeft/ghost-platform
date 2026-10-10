@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 
 const { readRefusal, sealRefusal } = require('./quarantine');
-const { buildRefusalError } = require('./refusal-error');
+const { buildRefusalError, buildScannerUnconfiguredError } = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
 
@@ -76,8 +76,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
   if (typeof loadWrappedAdapterClass !== 'function') {
     throw new Error('defineScanningStorageAdapter requires loadWrappedAdapterClass(name)');
   }
-  if (!GhostErrors || typeof GhostErrors.UnsupportedMediaTypeError !== 'function') {
-    throw new Error('defineScanningStorageAdapter requires GhostErrors.UnsupportedMediaTypeError');
+  if (
+    !GhostErrors ||
+    typeof GhostErrors.UnsupportedMediaTypeError !== 'function' ||
+    typeof GhostErrors.MaintenanceError !== 'function'
+  ) {
+    throw new Error(
+      'defineScanningStorageAdapter requires GhostErrors.UnsupportedMediaTypeError and GhostErrors.MaintenanceError'
+    );
   }
 
   return class ScanningStorageAdapter extends StorageBase {
@@ -101,6 +107,16 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       super();
       ScanningStorageAdapter.validate(config);
       const { wraps, wrappedConfig, checks, policy, computeDigest } = config;
+      // Set by the entry file when no verdict source exists. While it is
+      // set every save() and saveRaw() is refused before anything is read,
+      // hashed, sealed or written: nobody can vouch for the bytes, and a
+      // refusal here must not be remembered as a verdict on them.
+      this.refuseUploadsReason =
+        typeof config.refuseUploadsReason === 'string' && config.refuseUploadsReason.length > 0
+          ? config.refuseUploadsReason
+          : null;
+      this.logger = config.holdLogger || console;
+      this.wrapsName = wraps;
       if (!policy || typeof policy.decide !== 'function') {
         throw new Error(
           'ScanningStorageAdapter requires config.policy implementing decide(verdict)'
@@ -155,12 +171,31 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       // synchronously, before this constructor returns, so no request can
       // be served in the gap.
       this.hold.resumeFromQuarantine((targetPath) => this.#buildHoldCallbacks(targetPath));
+
+      if (this.refuseUploadsReason) {
+        this.logger.error(
+          `ScanningStorageAdapter: ${this.refuseUploadsReason} wraps=${wraps}: no verdict source is configured, so every upload on this feature is refused until one is`
+        );
+      }
+    }
+
+    // Closed by default: see the constructor. Reads, exists() and serve()
+    // are untouched, so what is already stored keeps being served.
+    #refuseIfNoVerdictSource() {
+      if (!this.refuseUploadsReason) {
+        return;
+      }
+      this.logger.error(
+        `ScanningStorageAdapter: UPLOAD_REFUSED_${this.refuseUploadsReason} wraps=${this.wrapsName}`
+      );
+      throw buildScannerUnconfiguredError(GhostErrors);
     }
 
     // The wrapped adapter must still implement saveRaw: Ghost's on-demand
     // resize middleware feature-detects it with a plain `typeof` check and
     // silently disables responsive images for every tenant if it is missing.
     async saveRaw(buffer, targetPath) {
+      this.#refuseIfNoVerdictSource();
       return this.#scanAndProceed(buffer, {
         proceed: () => this.wrapped.saveRaw(buffer, targetPath),
         onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
@@ -168,6 +203,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     }
 
     async save(file, targetDir) {
+      this.#refuseIfNoVerdictSource();
       const buffer = await fs.readFile(file.path);
       if (this.#takePendingOverwrite(file && file.name, targetDir)) {
         // The caller removed this name a moment ago and is replacing it.

@@ -1,0 +1,100 @@
+name: Release watcher run
+
+# The scheduled poll of Ghost's registry tags. It tracks the major line the
+# repo's Dockerfile pins and keeps one PR per major line at the newest stable
+# digest. A newer major is noticed on every run and never followed. Fixed
+# code only: nothing here runs a model. services/release-watcher/README.md
+# has the decision rules and the token this job needs.
+#
+# The poll-age gauge lives on the state branch, `state/release-watcher`,
+# never on `main`. That branch carries no ruleset, so the gauge commit needs
+# no PR and no signature.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ghost-platform-release-watcher-run
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Poll the Ghost registry and reconcile the digest PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # A manual run from a feature branch would build its PR from that
+      # branch's Dockerfile, so only main may run this job.
+      - name: Refuse any ref other than main
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::the release watcher runs from main only (ref was $GITHUB_REF)"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Configure git identity for the state branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch the state branch, or create it as an orphan
+        id: state
+        env:
+          STATE_WORKTREE: ${{ runner.temp }}/release-watcher-state
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin state/release-watcher > /dev/null; then
+            git fetch origin state/release-watcher
+            git worktree add "$STATE_WORKTREE" origin/state/release-watcher --detach
+          else
+            # An orphan branch: the state branch must not carry the repo's tree.
+            git worktree add --detach "$STATE_WORKTREE"
+            (
+              cd "$STATE_WORKTREE"
+              git checkout --orphan state/release-watcher
+              git rm -r -f --quiet --ignore-unmatch .
+            )
+          fi
+          echo "metrics=$STATE_WORKTREE/release-watcher.prom" >> "$GITHUB_OUTPUT"
+
+      - name: Run the watcher
+        env:
+          PYTHONPATH: services/release-watcher
+          RELEASE_WATCHER_TOKEN: ${{ secrets.RELEASE_WATCHER_TOKEN }}
+          METRICS_PATH: ${{ steps.state.outputs.metrics }}
+        run: python3 -m release_watcher.cli --dockerfile Dockerfile --metrics "$METRICS_PATH"
+
+      # The gauge is written only when the run above succeeds: a failed poll
+      # or a failed PR step leaves the old timestamp in place, so its age grows.
+      - name: Commit the poll-age gauge
+        working-directory: ${{ runner.temp }}/release-watcher-state
+        run: |
+          set -euo pipefail
+          git add release-watcher.prom
+          if [ "$(git ls-files)" != "release-watcher.prom" ]; then
+            echo "::error::the state branch must track only release-watcher.prom"
+            exit 1
+          fi
+          if git diff --cached --quiet; then
+            echo "no change to the gauge"
+            exit 0
+          fi
+          git commit -m "release-watcher: record poll"
+          git push origin HEAD:refs/heads/state/release-watcher

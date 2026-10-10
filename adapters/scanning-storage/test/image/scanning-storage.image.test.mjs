@@ -343,6 +343,7 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
 
       const ghost = await GhostContainer.start({
         storage__images__adapter: 'ScanningStorageAdapter',
+        storage__images__verdictSource: 'in-process-fake',
         storage__images__wraps: 'LocalImagesStorage',
         storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
         storage__images__refuse: JSON.stringify({
@@ -354,9 +355,11 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
         // files carry no `refuse` list, so they never affect the images
         // assertions below, only let Ghost boot at all.
         storage__media__adapter: 'ScanningStorageAdapter',
+        storage__media__verdictSource: 'in-process-fake',
         storage__media__wraps: 'LocalMediaStorage',
         storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
         storage__files__adapter: 'ScanningStorageAdapter',
+        storage__files__verdictSource: 'in-process-fake',
         storage__files__wraps: 'LocalFilesStorage',
         storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
       });
@@ -436,6 +439,7 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
 
       const ghost = await GhostContainer.start({
         storage__images__adapter: 'ScanningStorageAdapter',
+        storage__images__verdictSource: 'in-process-fake',
         storage__images__wraps: 'LocalImagesStorage',
         storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
         storage__images__refuse: JSON.stringify({
@@ -443,9 +447,11 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
         }),
         // See the previous test's identical addition for why.
         storage__media__adapter: 'ScanningStorageAdapter',
+        storage__media__verdictSource: 'in-process-fake',
         storage__media__wraps: 'LocalMediaStorage',
         storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
         storage__files__adapter: 'ScanningStorageAdapter',
+        storage__files__verdictSource: 'in-process-fake',
         storage__files__wraps: 'LocalFilesStorage',
         storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
       });
@@ -490,6 +496,7 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
         ghost = await GhostContainer.start(
           {
             storage__images__adapter: 'ScanningStorageAdapter',
+            storage__images__verdictSource: 'in-process-fake',
             storage__images__wraps: 'S3Storage',
             storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__images__refuse: JSON.stringify({
@@ -510,6 +517,7 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
             // since this test's job is only to prove the images tier, not
             // to give media/files their own bucket layout.
             storage__media__adapter: 'ScanningStorageAdapter',
+            storage__media__verdictSource: 'in-process-fake',
             storage__media__wraps: 'S3Storage',
             storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__media__wrappedConfig__bucket: double.bucket,
@@ -523,6 +531,7 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
             storage__media__wrappedConfig__multipartUploadThresholdBytes: '5242880',
             storage__media__wrappedConfig__multipartChunkSizeBytes: '5242880',
             storage__files__adapter: 'ScanningStorageAdapter',
+            storage__files__verdictSource: 'in-process-fake',
             storage__files__wraps: 'S3Storage',
             storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__files__wrappedConfig__bucket: double.bucket,
@@ -597,6 +606,7 @@ describe('the hold branch, against a real Ghost', () => {
       const ghost = await GhostContainer.start(
         {
           storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__verdictSource: 'in-process-fake',
           storage__images__wraps: 'LocalImagesStorage',
           storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__images__unavailable: JSON.stringify([heldDigest]),
@@ -606,9 +616,11 @@ describe('the hold branch, against a real Ghost', () => {
           // every feature, not just the one this test exercises -- media
           // and files never go on hold here, only let Ghost boot at all.
           storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__verdictSource: 'in-process-fake',
           storage__media__wraps: 'LocalMediaStorage',
           storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__verdictSource: 'in-process-fake',
           storage__files__wraps: 'LocalFilesStorage',
           storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
         },
@@ -691,6 +703,7 @@ describe('the hold branch, against a real Ghost', () => {
       const ghost = await GhostContainer.start(
         {
           storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__verdictSource: 'in-process-fake',
           storage__images__wraps: 'LocalImagesStorage',
           storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__images__unavailable: JSON.stringify([heldDigest]),
@@ -700,9 +713,11 @@ describe('the hold branch, against a real Ghost', () => {
           // every feature, not just the one this test exercises -- media
           // and files never go on hold here, only let Ghost boot at all.
           storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__verdictSource: 'in-process-fake',
           storage__media__wraps: 'LocalMediaStorage',
           storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__verdictSource: 'in-process-fake',
           storage__files__wraps: 'LocalFilesStorage',
           storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
         },
@@ -801,6 +816,7 @@ describe('the hold branch, against a real Ghost', () => {
         ghost = await GhostContainer.start(
           {
             storage__images__adapter: 'ScanningStorageAdapter',
+            storage__images__verdictSource: 'in-process-fake',
             storage__images__wraps: 'S3Storage',
             storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__images__unavailable: JSON.stringify([heldDigest]),
@@ -823,6 +839,7 @@ describe('the hold branch, against a real Ghost', () => {
             // bucket and double, since this test's job is only to prove
             // the images tier's hold behaviour.
             storage__media__adapter: 'ScanningStorageAdapter',
+            storage__media__verdictSource: 'in-process-fake',
             storage__media__wraps: 'S3Storage',
             storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__media__wrappedConfig__bucket: double.bucket,
@@ -836,6 +853,7 @@ describe('the hold branch, against a real Ghost', () => {
             storage__media__wrappedConfig__multipartUploadThresholdBytes: '5242880',
             storage__media__wrappedConfig__multipartChunkSizeBytes: '5242880',
             storage__files__adapter: 'ScanningStorageAdapter',
+            storage__files__verdictSource: 'in-process-fake',
             storage__files__wraps: 'S3Storage',
             storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__files__wrappedConfig__bucket: double.bucket,
@@ -919,15 +937,18 @@ describe('a refusal in one feature, against a real Ghost', () => {
       const ghost = await GhostContainer.start(
         {
           storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__verdictSource: 'in-process-fake',
           storage__images__wraps: 'LocalImagesStorage',
           storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__images__unavailable: JSON.stringify([digest]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
           storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__verdictSource: 'in-process-fake',
           storage__media__wraps: 'LocalMediaStorage',
           storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__verdictSource: 'in-process-fake',
           storage__files__wraps: 'LocalFilesStorage',
           storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__files__refuse: JSON.stringify({

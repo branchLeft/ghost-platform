@@ -1,0 +1,41 @@
+name: Release watcher CI
+
+# Unit-tests the Ghost release watcher (services/release-watcher/). Stdlib
+# only, so there is no install step and no package-registry token. The
+# scheduled run that opens PRs lives in release-watcher-run.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/release-watcher/**
+      - .github/workflows/release-watcher-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/release-watcher/**
+      - .github/workflows/release-watcher-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Release watcher unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Test
+        working-directory: services/release-watcher
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v

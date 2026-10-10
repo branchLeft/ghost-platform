@@ -3,8 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  defaultDeps,
   DOCKER_TIMEOUT_MS,
   EXPIRE_TIMER_UNIT,
+  exitOnTermination,
   expire,
   findTenantContainer,
   grant,
@@ -17,7 +19,10 @@ import {
   runInContainer,
   SECOND_PURGE_DELAY_MS,
   status,
+  TIMER_STATE_ENV,
+  timerReportedActive,
 } from '../../scripts/break-glass-grant.mjs';
+import { EngineTimeoutError } from '../../scripts/docker-engine.mjs';
 import { ActiveExistingRowError } from '../../scripts/provision-support-account.mjs';
 
 const T0 = Date.UTC(2026, 9, 8, 12, 0, 0);
@@ -480,81 +485,105 @@ describe('main', () => {
 });
 
 describe('recreateIfDeleted', () => {
-  it('provisions when the account is missing, with a timeout on its docker call', () => {
-    const provision = vi.fn((args, execFile) => {
-      expect(typeof execFile).toBe('function');
-      return { created: true };
-    });
-    expect(recreateIfDeleted({ container: 'c', identity: 's@x.example' }, provision)).toEqual({
-      created: true,
-    });
-    expect(provision.mock.calls[0][0]).toEqual({ container: 'c', email: 's@x.example' });
+  const engine = { exec: vi.fn() };
+
+  it('provisions through the Engine client when the account is missing', async () => {
+    const provision = vi.fn(async () => ({ created: true }));
+    await expect(
+      recreateIfDeleted({ container: 'c', identity: 's@x.example' }, engine, provision)
+    ).resolves.toEqual({ created: true });
+    expect(provision).toHaveBeenCalledWith({ container: 'c', email: 's@x.example' }, engine);
   });
 
-  it('treats an account already present and active as present', () => {
-    const provision = () => {
+  it('treats an account already present and active as present', async () => {
+    const provision = async () => {
       throw new ActiveExistingRowError('active');
     };
-    expect(recreateIfDeleted({ container: 'c', identity: 's@x.example' }, provision)).toEqual({
-      created: false,
-    });
+    await expect(
+      recreateIfDeleted({ container: 'c', identity: 's@x.example' }, engine, provision)
+    ).resolves.toEqual({ created: false });
   });
 
-  it('passes any other failure through', () => {
-    const provision = () => {
+  it('passes any other failure through', async () => {
+    const provision = async () => {
       throw new Error('boom');
     };
-    expect(() => recreateIfDeleted({ container: 'c', identity: 's@x.example' }, provision)).toThrow(
-      'boom'
-    );
+    await expect(
+      recreateIfDeleted({ container: 'c', identity: 's@x.example' }, engine, provision)
+    ).rejects.toThrow('boom');
   });
 });
 
+/** A fake Engine client: what the tool asks of Docker, with canned answers. */
+function fakeEngine({
+  listed = [],
+  exec = async () => ({ code: 0, stdout: '', stderr: '' }),
+} = {}) {
+  return { listContainers: vi.fn(async () => listed), exec: vi.fn(exec) };
+}
+const tzLabels = (service) => ({
+  'com.docker.compose.project': 'tz',
+  'com.docker.compose.service': service,
+});
+
 describe('findTenantContainer', () => {
-  it('picks a running Ghost colour by Compose labels, ignoring other services, with a timeout', () => {
-    const execFile = vi.fn(
-      () => 'tz-ghost-b-1\tghost-b\ntz-sidecar-1\tdrain\ntz-ghost-a-1\tghost-a\n'
-    );
-    expect(findTenantContainer('tz', execFile)).toBe('tz-ghost-a-1');
-    expect(execFile.mock.calls[0][1]).toContain('label=com.docker.compose.project=tz');
-    expect(execFile.mock.calls[0][2]).toMatchObject({ timeout: DOCKER_TIMEOUT_MS });
+  it('picks a running Ghost colour by Compose labels, ignoring other services', async () => {
+    const engine = fakeEngine({
+      listed: [
+        { name: 'tz-ghost-b-1', labels: tzLabels('ghost-b') },
+        { name: 'tz-sidecar-1', labels: tzLabels('drain') },
+        { name: 'tz-ghost-a-1', labels: tzLabels('ghost-a') },
+      ],
+    });
+    await expect(findTenantContainer('tz', engine)).resolves.toBe('tz-ghost-a-1');
+    expect(engine.listContainers).toHaveBeenCalledWith({
+      labels: { 'com.docker.compose.project': 'tz' },
+    });
   });
 
-  it('refuses when no Ghost container is running', () => {
-    expect(() => findTenantContainer('tz', () => 'tz-sidecar-1\tdrain\n')).toThrow(
-      /no running Ghost container/
-    );
+  it('refuses a container whose label is not this tenant, even if the Engine returned it', async () => {
+    const engine = fakeEngine({
+      listed: [
+        {
+          name: 'other-ghost-a-1',
+          labels: { ...tzLabels('ghost-a'), 'com.docker.compose.project': 'other' },
+        },
+      ],
+    });
+    await expect(findTenantContainer('tz', engine)).rejects.toThrow(/no running Ghost container/);
+  });
+
+  it('refuses when no Ghost container is running', async () => {
+    const engine = fakeEngine({ listed: [{ name: 'tz-sidecar-1', labels: tzLabels('drain') }] });
+    await expect(findTenantContainer('tz', engine)).rejects.toThrow(/no running Ghost container/);
   });
 });
 
 describe('runInContainer', () => {
-  it('passes only the action and an expected identity as env, with a timeout', () => {
-    const execFile = vi.fn(
-      () => `Ghost noise\nBL_BREAK_GLASS {"identity":"${SUPPORT}","id":"u1"}\n`
-    );
-    expect(
-      runInContainer({ container: 'c', action: 'activate', expect: SUPPORT }, execFile)
-    ).toEqual({
-      identity: SUPPORT,
-      id: 'u1',
+  it('passes only the action and an expected identity as env, and the script as the command', async () => {
+    const engine = fakeEngine({
+      exec: async () => ({
+        code: 0,
+        stdout: `Ghost noise\nBL_BREAK_GLASS {"identity":"${SUPPORT}","id":"u1"}\n`,
+        stderr: '',
+      }),
     });
-    const [, argv, options] = execFile.mock.calls[0];
-    expect(argv.slice(0, 6)).toEqual([
-      'exec',
-      '-e',
-      'BL_ACTION=activate',
-      '-e',
-      `BL_EXPECT_IDENTITY=${SUPPORT}`,
-      'c',
-    ]);
-    expect(argv[argv.length - 1]).not.toContain(SUPPORT);
-    expect(options).toMatchObject({ timeout: DOCKER_TIMEOUT_MS, killSignal: 'SIGKILL' });
+    await expect(
+      runInContainer({ container: 'c', action: 'activate', expect: SUPPORT }, engine)
+    ).resolves.toEqual({ identity: SUPPORT, id: 'u1' });
+    const request = engine.exec.mock.calls[0][0];
+    expect(request.container).toBe('c');
+    expect(request.env).toEqual(['BL_ACTION=activate', `BL_EXPECT_IDENTITY=${SUPPORT}`]);
+    expect(request.cmd.slice(0, 2)).toEqual(['node', '-e']);
+    expect(request.cmd[2]).not.toContain(SUPPORT);
   });
 
-  it('sends no expected identity when none is given', () => {
-    const execFile = vi.fn(() => 'BL_BREAK_GLASS {}\n');
-    runInContainer({ container: 'c', action: 'revoke' }, execFile);
-    expect(execFile.mock.calls[0][1].slice(0, 4)).toEqual(['exec', '-e', 'BL_ACTION=revoke', 'c']);
+  it('sends no expected identity when none is given', async () => {
+    const engine = fakeEngine({
+      exec: async () => ({ code: 0, stdout: 'BL_BREAK_GLASS {}\n', stderr: '' }),
+    });
+    await runInContainer({ container: 'c', action: 'revoke' }, engine);
+    expect(engine.exec.mock.calls[0][0].env).toEqual(['BL_ACTION=revoke']);
   });
 
   it('reads the identity from the tenant config inside the container, never from env', async () => {
@@ -563,31 +592,85 @@ describe('runInContainer', () => {
     expect(INNER_SCRIPT).not.toContain('BL_IDENTITY');
   });
 
-  it('turns an inner refusal into GrantRefusedError', () => {
-    const execFile = () => {
-      const e = new Error('exit 1');
-      e.stderr = 'BL_BREAK_GLASS_REFUSED the account holds the Owner role; it is never suspended\n';
-      throw e;
-    };
-    expect(() => runInContainer({ container: 'c', action: 'revoke' }, execFile)).toThrow(
+  it('turns an inner refusal into GrantRefusedError', async () => {
+    const engine = fakeEngine({
+      exec: async () => ({
+        code: 1,
+        stdout: '',
+        stderr: 'BL_BREAK_GLASS_REFUSED the account holds the Owner role; it is never suspended\n',
+      }),
+    });
+    await expect(runInContainer({ container: 'c', action: 'revoke' }, engine)).rejects.toThrow(
       GrantRefusedError
     );
   });
 
-  it('reports any other failure with its stderr', () => {
-    const execFile = () => {
-      const e = new Error('exit 1');
-      e.stderr = 'Error: No such container: c';
-      throw e;
-    };
-    expect(() => runInContainer({ container: 'c', action: 'revoke' }, execFile)).toThrow(
-      /No such container/
+  it('reports any other failure with its exit code and stderr', async () => {
+    const engine = fakeEngine({
+      exec: async () => ({ code: 126, stdout: '', stderr: 'Error: No such container: c' }),
+    });
+    await expect(runInContainer({ container: 'c', action: 'revoke' }, engine)).rejects.toThrow(
+      /exit 126.*No such container/
     );
   });
 
-  it('refuses output with no result line', () => {
-    expect(() => runInContainer({ container: 'c', action: 'check' }, () => 'nothing')).toThrow(
+  it('refuses output with no result line', async () => {
+    const engine = fakeEngine({ exec: async () => ({ code: 0, stdout: 'nothing', stderr: '' }) });
+    await expect(runInContainer({ container: 'c', action: 'check' }, engine)).rejects.toThrow(
       /printed no result/
     );
+  });
+
+  it('does not wait on a hung Engine: the client bound is what ends the call', async () => {
+    const engine = fakeEngine({
+      exec: async () => {
+        throw new EngineTimeoutError('POST /containers/c/exec', DOCKER_TIMEOUT_MS);
+      },
+    });
+    await expect(runInContainer({ container: 'c', action: 'check' }, engine)).rejects.toThrow(
+      /timed out after 60000 ms/
+    );
+  });
+});
+
+describe('the expire timer state the wrapper passes in', () => {
+  it('is active only when the wrapper said so', () => {
+    expect(TIMER_STATE_ENV).toBe('BL_EXPIRE_TIMER_STATE');
+    expect(timerReportedActive({ BL_EXPIRE_TIMER_STATE: 'active' })).toBe(true);
+    expect(timerReportedActive({ BL_EXPIRE_TIMER_STATE: 'inactive' })).toBe(false);
+    expect(timerReportedActive({ BL_EXPIRE_TIMER_STATE: 'failed' })).toBe(false);
+    expect(timerReportedActive({})).toBe(false);
+  });
+
+  it('refuses a grant, writing nothing, when the container was started with no timer state', async () => {
+    const deps = fakeDeps({ timerActive: defaultDeps({ env: {} }).timerActive });
+    await expect(grant(request(), deps)).rejects.toThrow(/is not active, so nothing would close/);
+    expect(deps.run).not.toHaveBeenCalled();
+    expect(fs.existsSync(deps.stateDir)).toBe(false);
+    expect(fs.existsSync(deps.recordLog)).toBe(false);
+  });
+
+  it('refuses a grant when the wrapper reported the timer inactive', async () => {
+    const env = { BL_EXPIRE_TIMER_STATE: 'inactive' };
+    const deps = fakeDeps({ timerActive: defaultDeps({ env }).timerActive });
+    await expect(grant(request(), deps)).rejects.toThrow(EXPIRE_TIMER_UNIT);
+    expect(fs.existsSync(deps.stateDir)).toBe(false);
+  });
+
+  it('opens a grant when the wrapper reported the timer active', async () => {
+    const env = { BL_EXPIRE_TIMER_STATE: 'active' };
+    const deps = fakeDeps({ timerActive: defaultDeps({ env }).timerActive });
+    await expect(grant(request(), deps)).resolves.toMatchObject({ lane: 'incident' });
+  });
+});
+
+describe('exitOnTermination', () => {
+  it('ends the run on SIGTERM and SIGINT, which PID 1 would otherwise ignore', () => {
+    const handlers = {};
+    const proc = { on: (signal, fn) => (handlers[signal] = fn), exit: vi.fn() };
+    exitOnTermination(proc);
+    handlers.SIGTERM();
+    handlers.SIGINT();
+    expect(proc.exit.mock.calls).toEqual([[143], [130]]);
   });
 });

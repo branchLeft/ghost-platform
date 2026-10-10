@@ -71,10 +71,13 @@ function secretFile(env: Env, name: string, read: Read): string {
 export function loadConfig(
   env: Env,
   argv: readonly string[],
-  read: Read = (path) => readFileSync(path, 'utf8')
+  read: Read = (path) => readFileSync(path, 'utf8'),
+  withPasswords = true
 ): ProvisionConfig {
   if (argv.length > 0) {
-    throw new Error('takes no arguments: every input is a file named by an environment variable');
+    throw new Error(
+      'takes no arguments but --migrate-only: every input is a file named by an environment variable'
+    );
   }
   for (const name of ['PORTAL_ADMIN_URL', 'PORTAL_TENANT_PASSWORD', 'PORTAL_OWNER_PASSWORD']) {
     if (env[name] !== undefined) {
@@ -102,9 +105,11 @@ export function loadConfig(
   if (names.PORTAL_TENANT_LOGIN === names.PORTAL_OWNER_LOGIN) {
     throw new Error('the tenant and owner logins must differ');
   }
-  const tenantPassword = secretFile(env, 'PORTAL_TENANT_PASSWORD_FILE', read);
-  const ownerPassword = secretFile(env, 'PORTAL_OWNER_PASSWORD_FILE', read);
-  for (const password of [tenantPassword, ownerPassword]) scramVerifier(password);
+  // `--migrate-only` sets no password, so it reads no password file.
+  const tenantPassword = withPasswords ? secretFile(env, 'PORTAL_TENANT_PASSWORD_FILE', read) : '';
+  const ownerPassword = withPasswords ? secretFile(env, 'PORTAL_OWNER_PASSWORD_FILE', read) : '';
+  if (withPasswords)
+    for (const password of [tenantPassword, ownerPassword]) scramVerifier(password);
   return {
     adminUrl,
     database: names.PORTAL_DATABASE_NAME,
@@ -489,6 +494,68 @@ async function inTransaction<T>(
 }
 
 /**
+ * Step 5, shared by the full command and `--migrate-only`: in the portal database, one
+ * transaction that checks again, creates what is absent and applies pending
+ * migrations with their manifest grants, and checks the whole manifest.
+ */
+async function applyInPortal(
+  config: ProvisionConfig,
+  names: Names,
+  major: number,
+  migrations: readonly Migration[],
+  created: ReadonlySet<Principal>,
+  log: (line: string) => void
+): Promise<void> {
+  await withPool(urlFor(config, config.database), async (pool) => {
+    const client = await pinned(pool);
+    try {
+      await inTransaction(client, '', async () => {
+        await client.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
+        const state = await readState(client, config, names, major, migrations, true);
+        const again = await check(client, state, true);
+        if (again.length > 0) throw new ProvisionRefused(again);
+        const objects = manifest(major, config.database);
+        if (state.checkpoint.databaseState === 'created-empty') {
+          for (const object of objects.filter((o) => o.since === 'init')) {
+            for (const statement of grantStatements(object, names, major)) {
+              await client.query(statement);
+            }
+          }
+        } else {
+          for (const login of LOGINS.filter((p) => created.has(p))) {
+            await client.query(
+              `GRANT CONNECT ON DATABASE ${ident(config.database)} TO ${ident(names[login])}`
+            );
+          }
+        }
+        const pending = migrations.slice(state.checkpoint.applied.length);
+        await replayMigrations(client, pending, async (migration) => {
+          for (const object of objects.filter((o) => o.since === migration.tag)) {
+            for (const statement of grantStatements(object, names, major)) {
+              await client.query(statement);
+            }
+          }
+          log(`applied migration ${migration.tag}`);
+        });
+        const final: State = {
+          history: [],
+          checkpoint: {
+            ...state.checkpoint,
+            present: new Set(PRINCIPALS),
+            databaseState: 'initialised',
+            applied: migrations.map((m) => m.tag),
+          },
+        };
+        const after = await check(client, final, true);
+        if (after.length > 0) throw new ProvisionRefused(after);
+      });
+    } finally {
+      client.release();
+    }
+  });
+}
+
+/**
  * Creates what is absent, checks everything, and alters nothing that already
  * existed (a login's password aside). Before any write it compares the whole
  * privilege state of the server with the manifest and refuses, listing every
@@ -594,53 +661,7 @@ export async function provisionPortal(
     }
 
     // 5. In the portal database, one transaction: check again, create, check all.
-    await withPool(urlFor(config, config.database), async (pool) => {
-      const client = await pinned(pool);
-      try {
-        await inTransaction(client, '', async () => {
-          await client.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
-          const state = await readState(client, config, names, major, migrations, true);
-          const again = await check(client, state, true);
-          if (again.length > 0) throw new ProvisionRefused(again);
-          const objects = manifest(major, config.database);
-          if (state.checkpoint.databaseState === 'created-empty') {
-            for (const object of objects.filter((o) => o.since === 'init')) {
-              for (const statement of grantStatements(object, names, major)) {
-                await client.query(statement);
-              }
-            }
-          } else {
-            for (const login of LOGINS.filter((p) => created.has(p))) {
-              await client.query(
-                `GRANT CONNECT ON DATABASE ${ident(config.database)} TO ${ident(names[login])}`
-              );
-            }
-          }
-          const pending = migrations.slice(state.checkpoint.applied.length);
-          await replayMigrations(client, pending, async (migration) => {
-            for (const object of objects.filter((o) => o.since === migration.tag)) {
-              for (const statement of grantStatements(object, names, major)) {
-                await client.query(statement);
-              }
-            }
-            log(`applied migration ${migration.tag}`);
-          });
-          const final: State = {
-            history: [],
-            checkpoint: {
-              ...state.checkpoint,
-              present: new Set(PRINCIPALS),
-              databaseState: 'initialised',
-              applied: migrations.map((m) => m.tag),
-            },
-          };
-          const after = await check(client, final, true);
-          if (after.length > 0) throw new ProvisionRefused(after);
-        });
-      } finally {
-        client.release();
-      }
-    });
+    await applyInPortal(config, names, major, migrations, created, log);
     log('post-check passed: the server matches the manifest');
   } finally {
     await lock.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
@@ -656,6 +677,85 @@ export async function provisionPortal(
   );
   log('boundary verified');
 }
+
+/** The refusal of `--migrate-only` when what it needs is not already there. */
+export class MigrateRefused extends Error {
+  constructor(reason: string) {
+    super(`migrate refused: ${reason}`);
+    this.name = 'MigrateRefused';
+  }
+}
+
+/**
+ * Applies the pending migrations, with their manifest grants and the whole
+ * manifest check, to a portal database that is already provisioned. It creates
+ * no role and no database and sets no password: it refuses, naming what is
+ * absent, when a role or the initialised database is missing. It needs the
+ * administrator connection alone, no login password, so it does not probe the
+ * other databases or smoke-test the logins (both need a login password).
+ */
+export async function migratePortal(
+  config: ProvisionConfig,
+  log: (line: string) => void = () => undefined,
+  options: ProvisionOptions = {}
+): Promise<void> {
+  const migrations = options.migrations ?? readMigrations();
+  const names = principalNames(config.tenantLogin, config.ownerLogin);
+  const maintenance = poolFor(urlFor(config, maintenanceDatabase(config)));
+  const lock = await pinned(maintenance);
+  try {
+    await lock.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
+    const server = await lock.query(
+      `SELECT current_setting('server_version_num')::int / 10000 AS major,
+              (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS superuser`
+    );
+    const { major, superuser } = server.rows[0] as { major: number; superuser: boolean };
+    if (!SUPPORTED_MAJORS.includes(major)) {
+      throw new Error(`PostgreSQL ${major} is not supported: no committed catalog snapshot`);
+    }
+    if (!superuser) throw new Error('the administrator URL must name a superuser');
+
+    const outside = await readState(lock, config, names, major, migrations, false);
+    const absent = PRINCIPALS.filter((p) => !outside.checkpoint.present.has(p));
+    if (absent.length > 0) {
+      throw new MigrateRefused(
+        `role ${absent.map((p) => names[p]).join(', ')} is absent; --migrate-only creates no role, run the full provision first`
+      );
+    }
+    if (outside.checkpoint.databaseState !== 'initialised') {
+      throw new MigrateRefused(
+        `database ${config.database} is ${outside.checkpoint.databaseState}, not provisioned; --migrate-only creates no database, run the full provision first`
+      );
+    }
+    const refusals = await hbaCheck(lock, config, names);
+    const pending = await withPool(urlFor(config, config.database), async (pool) => {
+      const client = await pinned(pool);
+      try {
+        const state = await readState(client, config, names, major, migrations, true);
+        refusals.push(
+          ...(await inTransaction(client, 'ISOLATION LEVEL REPEATABLE READ READ ONLY', () =>
+            check(client, state, true)
+          ))
+        );
+        return migrations.length - state.checkpoint.applied.length;
+      } finally {
+        client.release();
+      }
+    });
+    if (refusals.length > 0) throw new ProvisionRefused(refusals);
+    log('pre-check passed: no difference from the manifest');
+    if (pending === 0) log('no pending migrations');
+    await applyInPortal(config, names, major, migrations, new Set(), log);
+    log('post-check passed: the server matches the manifest');
+  } finally {
+    await lock.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
+    lock.release();
+    await maintenance.end();
+  }
+}
+
+/** The one argument the command accepts. */
+export const MIGRATE_ONLY = '--migrate-only';
 
 export interface Io {
   out: (line: string) => void;
@@ -676,9 +776,16 @@ export async function runProvision(
 ): Promise<number> {
   let config: ProvisionConfig | undefined;
   try {
-    config = loadConfig(env, argv, read);
+    const migrateOnly = argv.length === 1 && argv[0] === MIGRATE_ONLY;
+    config = loadConfig(env, migrateOnly ? [] : argv, read, !migrateOnly);
     const loaded = config;
-    await provisionPortal(loaded, (line) => io.out(redact(line, loaded)), options);
+    const say = (line: string): void => io.out(redact(line, loaded));
+    if (migrateOnly) {
+      await migratePortal(loaded, say, options);
+      io.out('portal database migrated');
+      return 0;
+    }
+    await provisionPortal(loaded, say, options);
     io.out('portal database provisioned');
     return 0;
   } catch (error) {

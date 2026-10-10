@@ -172,6 +172,22 @@ transaction takes the same lock in the portal database and re-checks before
 it writes, so runs through different maintenance databases still cannot
 interleave there.
 
+### Applying a new migration to a provisioned database
+
+```sh
+node dist/provision/provisionMain.js --migrate-only
+```
+
+Reads `PORTAL_ADMIN_URL_FILE` (and the optional name variables) and no
+password file. It runs steps 1 and 4 only: the check, then one transaction
+that applies the pending migrations with their manifest grants and checks the
+full manifest before commit. It creates no role and no database and sets no
+password, so the logins' stored verifiers are byte for byte unchanged. It
+refuses with `migrate refused: role ... is absent` or `migrate refused:
+database ... is absent, not provisioned` when the full provision has not run.
+It skips steps 3 and 5, which need the login passwords. Run again with
+nothing pending, it applies nothing and prints `no pending migrations`.
+
 A re-run changes nothing but the passwords. A refusal is a security event: the
 per-difference fix is a manual step for the administrator, never this command.
 The server must be a PostgreSQL major version with a committed catalog
