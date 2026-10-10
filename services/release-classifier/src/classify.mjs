@@ -250,11 +250,9 @@ function collect(out, cls, path, names) {
   for (const rule of names) out[cls].push({ path, rule });
 }
 
-/**
- * @param {{ from: string, to: string, migrations: Array<{ folder: string, path: string, source: string }>,
- *   folders?: string[] }} input `folders` lists every version folder of the tree. When given, a range
- *   with no folder in it is refused, since an empty answer would read as fast-path.
- */
+// Input: from, to, migrations ({ folder, path, source }[]) and optionally folders,
+// every version folder of the tree. With folders, a range with no folder in it
+// is refused, as an empty answer would read as fast-path.
 export function classifyRange({ from, to, migrations, folders }) {
   const f = parseRelease(from);
   const t = parseRelease(to);
