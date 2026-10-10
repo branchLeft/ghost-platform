@@ -348,6 +348,28 @@ describe('replacing a same-name thumbnail (Ghost deletes, then saves)', () => {
   });
 });
 
+// Ghost's real sequence for an image upload (the images endpoint): trim a
+// trailing `_o` from the user's name, save the processed image with no
+// directory, then save the original as `<stored basename>_o<ext>` into the
+// stored directory. Ghost later asks for `<stored name>_o<ext>`.
+async function ghostImageUpload(adapter, name, bytes = CLEAN_BYTES) {
+  const trimmed = name.replace(/_o(\.\w+?)$/, '$1');
+  const processedUrl = await adapter.save(await writeTempFile(bytes, trimmed));
+  const stored = path.posix.parse(adapter.urlToPath(processedUrl));
+  const originalUrl = await adapter.save(
+    await writeTempFile(bytes, `${stored.name}_o${stored.ext}`),
+    stored.dir
+  );
+  const wanted = `${stored.dir}/${stored.name}_o${stored.ext}`;
+  return {
+    processedUrl,
+    originalUrl,
+    stored: `${stored.dir}/${stored.base}`,
+    wanted,
+    originalFound: adapter.wrapped.files.has(wanted),
+  };
+}
+
 describe('a clean upload', () => {
   it('writes through to the wrapped adapter and returns its URL', async () => {
     const { instance: adapter } = buildAdapter();
@@ -364,32 +386,31 @@ describe('a clean upload', () => {
     expect(adapter.wrapped.savedRaw).toHaveLength(1);
   });
 
-  it('hashes the processed copy and the untouched original as two separate save() calls', async () => {
-    const { instance: adapter } = buildAdapter();
-    const processed = await writeTempFile(CLEAN_BYTES, 'good.png');
-    const original = await writeTempFile(CLEAN_BYTES, 'good_o.png');
-    await adapter.save(processed);
-    await adapter.save(original);
-    const [first, second] = adapter.wrapped.saved.map((entry) => entry.file.name);
-    const random = /^good-([a-z2-7]{22})\.png$/.exec(first)?.[1];
-    expect(random).toBeDefined();
-    // Ghost finds the original by the `_o` suffix on the processed name.
-    expect(second).toBe(`good-${random}_o.png`);
+  it("stores the original where Ghost's lookup asks for it, under the processed name's one component", async () => {
+    const { instance: adapter } = buildAdapter({
+      wrappedConfig: { storagePath: 'wrapped', defaultTargetDir: '2026/10' },
+    });
+    const result = await ghostImageUpload(adapter, 'good.png');
+    expect(result.stored).toMatch(/^2026\/10\/good-[a-z2-7]{22}\.png$/);
+    expect(result.originalFound).toBe(true);
+    expect(result.wanted).toMatch(/^2026\/10\/good-[a-z2-7]{22}_o\.png$/);
+    expect(adapter.wrapped.files.size).toBe(2);
   });
 });
 
 describe('random upload names', () => {
   const nameOf = (adapter, i) => adapter.wrapped.saved[i].file.name;
+  const randomOf = (adapter, i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
+  const saveAs = async (adapter, name, dir = '2026/10', bytes = CLEAN_BYTES) =>
+    adapter.save(await writeTempFile(bytes, name), dir);
+  const dated = () =>
+    buildAdapter({ wrappedConfig: { storagePath: 'wrapped', defaultTargetDir: '2026/10' } });
 
   it('gives every new upload a 22-character base32 component and keeps the extension', async () => {
     const { instance: adapter } = buildAdapter();
-    await adapter.save(await writeTempFile(CLEAN_BYTES, 'members-report.pdf'), '2026/10');
+    await saveAs(adapter, 'members-report.pdf');
     expect(nameOf(adapter, 0)).toMatch(/^members-report-[a-z2-7]{22}\.pdf$/);
   });
-
-  const randomOf = (adapter, i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
-  const saveAs = async (adapter, name, dir = '2026/10') =>
-    adapter.save(await writeTempFile(CLEAN_BYTES, name), dir);
 
   it('does not repeat a component across uploads of the same filename in different directories', async () => {
     const { instance: adapter } = buildAdapter();
@@ -411,37 +432,7 @@ describe('random upload names', () => {
     expect(second).not.toBe(first.replace(/\.pdf$/, '-1.pdf'));
   });
 
-  it('does not give a finished pair component to a later upload of the same name', async () => {
-    const { instance: adapter } = buildAdapter();
-    await saveAs(adapter, 'a.png');
-    await saveAs(adapter, 'a_o.png');
-    await saveAs(adapter, 'a.png');
-    await saveAs(adapter, 'a_o.png');
-    expect(randomOf(adapter, 1)).toBe(randomOf(adapter, 0));
-    expect(randomOf(adapter, 2)).not.toBe(randomOf(adapter, 0));
-    expect(randomOf(adapter, 3)).toBe(randomOf(adapter, 2));
-  });
-
-  it('pairs the original with the processed copy whichever of the two arrives first', async () => {
-    const { instance: adapter } = buildAdapter();
-    await saveAs(adapter, 'b_o.png');
-    await saveAs(adapter, 'b.png');
-    expect(randomOf(adapter, 1)).toBe(randomOf(adapter, 0));
-    expect(nameOf(adapter, 0)).toBe(`b-${randomOf(adapter, 0)}_o.png`);
-    expect(nameOf(adapter, 1)).toBe(`b-${randomOf(adapter, 0)}.png`);
-  });
-
-  it('never links two uploads that are the same half of a pair', async () => {
-    const { instance: adapter } = buildAdapter();
-    await saveAs(adapter, 'c_o.png');
-    await saveAs(adapter, 'c_o.png');
-    await saveAs(adapter, 'd.png');
-    await saveAs(adapter, 'd.png');
-    expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
-    expect(randomOf(adapter, 2)).not.toBe(randomOf(adapter, 3));
-  });
-
-  it('draws the component from crypto.randomBytes, one base32 symbol per byte', async () => {
+  it('draws every component from crypto.randomBytes, one base32 symbol per byte', async () => {
     const { instance: adapter } = buildAdapter();
     const file = await writeTempFile(CLEAN_BYTES, 'src.png');
     const nodeCrypto = require('node:crypto');
@@ -457,6 +448,17 @@ describe('random upload names', () => {
     expect(nameOf(adapter, 0)).toBe('src-abcdefghijklmnopqrstuv.png');
   });
 
+  it('draws components of 22 base32 characters that do not repeat', async () => {
+    const { instance: adapter } = buildAdapter();
+    const file = await writeTempFile(CLEAN_BYTES, 'many.png');
+    for (let i = 0; i < 100; i += 1) {
+      await adapter.save(file, '2026/10');
+    }
+    const components = adapter.wrapped.saved.map((s) => /^many-(.*)\.png$/.exec(s.file.name)[1]);
+    expect(components.every((c) => /^[a-z2-7]{22}$/.test(c))).toBe(true);
+    expect(new Set(components).size).toBe(100);
+  });
+
   it('names nothing before the safety gate has allowed the upload', async () => {
     const { instance: adapter } = buildAdapter({
       refuse: new Map([
@@ -467,13 +469,37 @@ describe('random upload names', () => {
     await expect(adapter.save(file, '2026/10')).rejects.toBeInstanceOf(
       GhostErrors.UnsupportedMediaTypeError
     );
-    expect(adapter.namePairs.size).toBe(0);
+    expect(adapter.storedNames.size).toBe(0);
   });
 
   it('names a file with no extension', async () => {
     const { instance: adapter } = buildAdapter();
-    await adapter.save(await writeTempFile(CLEAN_BYTES, 'noext'), '2026/10');
+    await saveAs(adapter, 'noext');
     expect(nameOf(adapter, 0)).toMatch(/^noext-[a-z2-7]{22}$/);
+  });
+
+  it('treats a name that is only an extension as an extension', async () => {
+    const { instance: adapter } = buildAdapter();
+    await saveAs(adapter, '.jpg');
+    expect(nameOf(adapter, 0)).toMatch(/^upload-[a-z2-7]{22}\.jpg$/);
+  });
+
+  it('cuts a long stem so the stored name, and the `_o` Ghost adds, fit 255 bytes', async () => {
+    const { instance: adapter } = buildAdapter();
+    await saveAs(adapter, `${'a'.repeat(300)}.jpg`);
+    const name = nameOf(adapter, 0);
+    expect(name).toMatch(/^a+-[a-z2-7]{22}\.jpg$/);
+    expect(Buffer.byteLength(name)).toBeLessThanOrEqual(240);
+    expect(Buffer.byteLength(`${name.slice(0, -4)}_o.jpg`)).toBeLessThanOrEqual(255);
+  });
+
+  it('never splits a multi-byte character when it cuts a stem', async () => {
+    const { instance: adapter } = buildAdapter();
+    await saveAs(adapter, `${'€'.repeat(100)}.png`);
+    const name = nameOf(adapter, 0);
+    expect(name).not.toContain('�');
+    expect(name).toMatch(/^€+-[a-z2-7]{22}\.png$/);
+    expect(Buffer.byteLength(name)).toBeLessThanOrEqual(240);
   });
 
   it('does not mutate the file object Ghost passed in', async () => {
@@ -481,14 +507,6 @@ describe('random upload names', () => {
     const file = await writeTempFile(CLEAN_BYTES, 'keep.png');
     await adapter.save(file, '2026/10');
     expect(file.name).toBe('keep.png');
-  });
-
-  it('does not pair an _o file with an unrelated image in another directory', async () => {
-    const { instance: adapter } = buildAdapter();
-    await adapter.save(await writeTempFile(CLEAN_BYTES, 'a.png'), '2026/10');
-    await adapter.save(await writeTempFile(CLEAN_BYTES, 'a_o.png'), '2026/11');
-    const random = (i) => /-([a-z2-7]{22})/.exec(nameOf(adapter, i))[1];
-    expect(random(0)).not.toBe(random(1));
   });
 
   it('leaves a file with no usable name to the wrapped adapter unchanged', async () => {
@@ -499,22 +517,124 @@ describe('random upload names', () => {
     expect(nameOf(adapter, 0)).toBe('');
   });
 
+  it('passes a file with no name at all through unchanged', async () => {
+    const { instance: adapter } = buildAdapter();
+    const file = await writeTempFile(CLEAN_BYTES, 'x.png');
+    delete file.name;
+    await adapter.save(file, '2026/10');
+    expect(adapter.wrapped.saved[0].file.name).toBeUndefined();
+  });
+
+  it('falls back to the name it gave when the wrapped adapter returns no URL', async () => {
+    const { instance: adapter } = buildAdapter();
+    adapter.wrapped.save = async () => undefined;
+    await saveAs(adapter, 'quiet.png');
+    const [remembered] = [...adapter.storedNames.keys()];
+    expect(remembered).toMatch(/^quiet-[a-z2-7]{22}\.png$/);
+  });
+
   it('keeps saveRaw paths exactly as given', async () => {
     const { instance: adapter } = buildAdapter();
     await adapter.saveRaw(CLEAN_BYTES, '2026/10/resized-w600.png');
     expect(adapter.wrapped.savedRaw[0].targetPath).toBe('2026/10/resized-w600.png');
   });
 
-  it('forgets a pairing after the window', async () => {
+  describe("an original saved the way Ghost's images endpoint saves it", () => {
+    it('is stored at exactly the stored name plus `_o`, with no second component', async () => {
+      const { instance: adapter } = dated();
+      const result = await ghostImageUpload(adapter, 'photo.jpg');
+      expect(result.originalFound).toBe(true);
+      expect(adapter.wrapped.saved[1].file.name).toMatch(/^photo-[a-z2-7]{22}_o\.jpg$/);
+    });
+
+    it('finds each original when several uploads of one name interleave', async () => {
+      const { instance: adapter } = dated();
+      const a = await saveAs(adapter, 'photo.jpg', null);
+      const b = await saveAs(adapter, 'photo.jpg', null);
+      const aName = path.posix.basename(a);
+      const bName = path.posix.basename(b);
+      const stem = (n) => n.replace(/\.jpg$/, '');
+      await saveAs(adapter, `${stem(bName)}_o.jpg`, '2026/10');
+      await saveAs(adapter, `${stem(aName)}_o.jpg`, '2026/10');
+      const keys = [...adapter.wrapped.files.keys()];
+      expect(keys).toContain(`2026/10/${stem(aName)}_o.jpg`);
+      expect(keys).toContain(`2026/10/${stem(bName)}_o.jpg`);
+      expect(keys).toHaveLength(4);
+    });
+
+    it('keeps its name only once: a replay of the same original gets its own component', async () => {
+      const { instance: adapter } = dated();
+      const { wanted } = await ghostImageUpload(adapter, 'photo.jpg');
+      const again = await saveAs(adapter, path.posix.basename(wanted), '2026/10');
+      expect(path.posix.basename(again)).toMatch(/^photo-[a-z2-7]{22}_o-[a-z2-7]{22}\.jpg$/);
+    });
+
+    it('is not kept once the window has passed', async () => {
+      vi.useFakeTimers();
+      try {
+        const { instance: adapter } = dated();
+        const processed = await saveAs(adapter, 'late.jpg', null);
+        vi.advanceTimersByTime(61000);
+        const name = path.posix.basename(processed).replace(/\.jpg$/, '_o.jpg');
+        const original = await saveAs(adapter, name, '2026/10');
+        expect(path.posix.basename(original)).not.toBe(name);
+        expect(adapter.storedNames.size).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('an upload whose own name ends `_o` (files and media do not trim it)', () => {
+    const derive = (url) => url.replace('_o', '');
+
+    it('gets its own component when it follows no stored name', async () => {
+      const { instance: adapter } = buildAdapter();
+      await saveAs(adapter, 'report_o.pdf');
+      expect(nameOf(adapter, 0)).toMatch(/^report_o-[a-z2-7]{22}\.pdf$/);
+    });
+
+    it("cannot be turned into a victim's URL, victim first", async () => {
+      const { instance: adapter } = buildAdapter();
+      const victim = await saveAs(adapter, 'x.pdf');
+      const attacker = await saveAs(adapter, 'x_o.pdf');
+      expect(derive(attacker)).not.toBe(victim);
+      expect(randomOf(adapter, 1)).not.toBe(randomOf(adapter, 0));
+    });
+
+    it("cannot be turned into a victim's URL, attacker first", async () => {
+      const { instance: adapter } = buildAdapter();
+      const attacker = await saveAs(adapter, 'x_o.pdf');
+      const victim = await saveAs(adapter, 'x.pdf');
+      expect(derive(attacker)).not.toBe(victim);
+      expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
+    });
+
+    it('does not link two uploads of the same `_o` name', async () => {
+      const { instance: adapter } = buildAdapter();
+      await saveAs(adapter, 'c_o.png');
+      await saveAs(adapter, 'c_o.png');
+      expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
+    });
+
+    it('cannot claim a stored name it has not been given', async () => {
+      const { instance: adapter } = buildAdapter();
+      await saveAs(adapter, 'x.pdf');
+      const guess = `x-${'a'.repeat(22)}_o.pdf`;
+      await saveAs(adapter, guess);
+      expect(nameOf(adapter, 1)).not.toBe(guess);
+      expect(nameOf(adapter, 1)).toMatch(/_o-[a-z2-7]{22}\.pdf$/);
+    });
+  });
+
+  it('forgets a stored name after the window and keeps only the live ones', async () => {
     vi.useFakeTimers();
     try {
       const { instance: adapter } = buildAdapter();
-      await adapter.save(await writeTempFile(CLEAN_BYTES, 'p.png'), 'd');
+      await saveAs(adapter, 'p.png');
       vi.advanceTimersByTime(61000);
-      await adapter.save(await writeTempFile(CLEAN_BYTES, 'p_o.png'), 'd');
-      expect(randomOf(adapter, 0)).not.toBe(randomOf(adapter, 1));
-      // Only the second upload is remembered: the first expired and was dropped.
-      expect(adapter.namePairs.size).toBe(1);
+      await saveAs(adapter, 'q.png');
+      expect(adapter.storedNames.size).toBe(1);
     } finally {
       vi.useRealTimers();
     }
@@ -523,16 +643,12 @@ describe('random upload names', () => {
   it('drops the oldest entry once the table is full', async () => {
     const { instance: adapter } = buildAdapter();
     for (let i = 0; i < 1000; i += 1) {
-      adapter.namePairs.set(`seed${i}`, {
-        pairKey: `d\nseed${i}.png`,
-        isOriginal: false,
-        expiresAt: Date.now() + 60000,
-      });
+      adapter.storedNames.set(`seed${i}.png`, { expiresAt: Date.now() + 60000 });
     }
     await saveAs(adapter, 'fresh.png', 'd');
-    expect(adapter.namePairs.size).toBe(1000);
-    expect(adapter.namePairs.has('seed0')).toBe(false);
-    expect(adapter.namePairs.has('seed1')).toBe(true);
+    expect(adapter.storedNames.size).toBe(1000);
+    expect(adapter.storedNames.has('seed0.png')).toBe(false);
+    expect(adapter.storedNames.has('seed1.png')).toBe(true);
   });
 });
 
@@ -793,6 +909,27 @@ describe('the hold branch', () => {
       expect(targetPath).not.toBe(`2026/10/${BAD_DIGEST}.png`);
       // The URL the author was given is the key the bytes land at.
       expect(url.endsWith(targetPath)).toBe(true);
+    });
+
+    it('stores a held original at its held processed name plus `_o`, so Ghost finds it', async () => {
+      const originalBytes = Buffer.from('a held original, different bytes');
+      const originalDigest = digestBytes(originalBytes);
+      const { instance: adapter, verdictClient } = buildBackendAdapter({
+        unavailable: [BAD_DIGEST, originalDigest],
+      });
+      adapter.wrapped.getTargetDir = () => '2026/10';
+      const url = await adapter.save(await writeTempFile(BAD_BYTES, 'held.png'));
+      const base = path.posix.basename(url).replace(/\.png$/, '');
+      await adapter.save(await writeTempFile(originalBytes, `${base}_o.png`), '2026/10');
+
+      for (const digest of [BAD_DIGEST, originalDigest]) {
+        verdictClient.deliverVerdict(digest, { classification: 'no-known-match' });
+        await vi.waitFor(() => expect(adapter.hold.isPending(digest)).toBe(false), WAIT);
+      }
+
+      const paths = adapter.wrapped.savedRaw.map((s) => s.targetPath);
+      expect(paths).toContain(`2026/10/${base}.png`);
+      expect(paths).toContain(`2026/10/${base}_o.png`);
     });
 
     it('gives the same held bytes uploaded twice two different keys', async () => {

@@ -23,49 +23,94 @@ function randomNameComponent() {
   return out;
 }
 
-// Ghost saves an image and its untouched original (`name_o.ext`) as two
-// separate calls and later finds the original by that suffix, so the two
-// halves must share one random component. A first half is remembered, keyed
-// by its own component, for a short, bounded while; the opposite half takes
-// it and consumes it. Only opposite halves ever link: a second upload of the
-// same name is the same half, and finds nothing to take.
-const PAIR_WINDOW_MS = 60000;
-const PAIR_MAX_ENTRIES = 1000;
+// Ghost saves a processed image first, then its untouched original under the
+// STORED basename of the processed one plus `_o` (`<stored>_o<ext>`), and
+// finds the original by that name. So the adapter remembers each stored
+// basename it hands out, for a short, bounded while, and an upload named
+// `<remembered>_o<ext>` keeps exactly that name, once. An `_o` name that
+// follows no remembered name is an ordinary upload and gets its own component.
+const STORED_NAME_WINDOW_MS = 60000;
+const STORED_NAME_MAX_ENTRIES = 1000;
 const ORIGINAL_SUFFIX = '_o';
+// The 255-byte filename limit, less room for the `_o` Ghost appends and a
+// wrapped adapter's own unique-name step.
+const MAX_STORED_NAME_BYTES = 240;
 
-// `<stem>-<random>.<ext>`; a file with no usable name is left alone for the
-// wrapped adapter to reject or default as it always did.
-function withRandomName(file, targetDir, pairs, now = Date.now()) {
+// A name that is only an extension (`.jpg`) has none by path.extname's reading.
+function splitName(name) {
+  const ext = path.extname(name);
+  if (ext === '' && /^\.[A-Za-z0-9]+$/.test(name)) {
+    return { stem: '', ext: name };
+  }
+  return { stem: ext ? name.slice(0, -ext.length) : name, ext };
+}
+
+function truncateToBytes(text, maxBytes) {
+  let out = '';
+  let used = 0;
+  for (const char of text) {
+    used += Buffer.byteLength(char);
+    if (used > maxBytes) {
+      break;
+    }
+    out += char;
+  }
+  return out;
+}
+
+// `<stem>-<random>.<ext>`, the stem cut so the whole name fits; a file with
+// no usable name is left alone for the wrapped adapter to reject or default
+// as it always did.
+function withRandomName(file) {
   if (!file || typeof file.name !== 'string' || file.name.length === 0) {
     return file;
   }
-  const ext = path.extname(file.name);
-  const stem = ext ? file.name.slice(0, -ext.length) : file.name;
-  const isOriginal = stem.endsWith(ORIGINAL_SUFFIX) && stem.length > ORIGINAL_SUFFIX.length;
-  const base = isOriginal ? stem.slice(0, -ORIGINAL_SUFFIX.length) : stem;
-  const pairKey = `${targetDir || ''}\n${base}${ext}`;
-  let random;
-  for (const [component, entry] of pairs) {
+  const { stem, ext } = splitName(file.name);
+  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
+  const kept = truncateToBytes(stem, Math.max(0, room)) || 'upload';
+  return { ...file, name: `${kept}-${randomNameComponent()}${ext}` };
+}
+
+function pruneStoredNames(names, now) {
+  for (const [name, entry] of names) {
     if (entry.expiresAt <= now) {
-      pairs.delete(component);
-    } else if (
-      random === undefined &&
-      entry.pairKey === pairKey &&
-      entry.isOriginal !== isOriginal
-    ) {
-      random = component;
-      pairs.delete(component);
+      names.delete(name);
     }
   }
-  if (random === undefined) {
-    random = randomNameComponent();
-    if (pairs.size >= PAIR_MAX_ENTRIES) {
-      pairs.delete(pairs.keys().next().value);
-    }
-    pairs.set(random, { pairKey, isOriginal, expiresAt: now + PAIR_WINDOW_MS });
+}
+
+function rememberStoredName(names, storedName, now = Date.now()) {
+  if (typeof storedName !== 'string' || storedName.length === 0) {
+    return;
   }
-  const suffix = isOriginal ? ORIGINAL_SUFFIX : '';
-  return { ...file, name: `${base}-${random}${suffix}${ext}` };
+  pruneStoredNames(names, now);
+  names.delete(storedName);
+  if (names.size >= STORED_NAME_MAX_ENTRIES) {
+    names.delete(names.keys().next().value);
+  }
+  names.set(storedName, { expiresAt: now + STORED_NAME_WINDOW_MS });
+}
+
+// True, and the entry is spent, when the file is `<remembered>_o<ext>`.
+function takeOriginalOf(file, names, now = Date.now()) {
+  pruneStoredNames(names, now);
+  if (!file || typeof file.name !== 'string') {
+    return false;
+  }
+  const { stem, ext } = splitName(file.name);
+  if (!stem.endsWith(ORIGINAL_SUFFIX) || stem.length <= ORIGINAL_SUFFIX.length) {
+    return false;
+  }
+  return names.delete(`${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`);
+}
+
+// What the wrapped adapter actually stored: the last segment of the URL it
+// returned, falling back to the name it was given.
+function storedBasename(url, fallback) {
+  if (typeof url !== 'string') {
+    return fallback;
+  }
+  return url.split(/[?#]/)[0].split('/').pop() || fallback;
 }
 
 // Builds the decorator over an injected StorageBase, composing with the
@@ -145,7 +190,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.overwriteWindowMs =
         Number(config.overwriteWindowMs) > 0 ? Number(config.overwriteWindowMs) : 60000;
       this.pendingOverwrites = new Map();
-      this.namePairs = new Map();
+      this.storedNames = new Map();
 
       this.hold = new HoldRegistry({
         checks: this.checks,
@@ -220,10 +265,23 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       // draft media would otherwise sit at a guessable URL. Named only once
       // the scan has allowed it, so a refusal leaves no name behind.
       return this.#scanAndProceed(buffer, {
-        proceed: () =>
-          this.wrapped.save(withRandomName(file, targetDir, this.namePairs), targetDir),
-        onHold: (digest) =>
-          this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, file, targetDir)),
+        proceed: async () => {
+          const isOriginal = takeOriginalOf(file, this.storedNames);
+          const named = isOriginal ? file : withRandomName(file);
+          const url = await this.wrapped.save(named, targetDir);
+          if (!isOriginal) {
+            rememberStoredName(this.storedNames, storedBasename(url, named.name));
+          }
+          return url;
+        },
+        onHold: (digest) => {
+          const isOriginal = takeOriginalOf(file, this.storedNames);
+          const targetPath = this.#computeHeldTargetPath(digest, file, targetDir, isOriginal);
+          if (!isOriginal) {
+            rememberStoredName(this.storedNames, path.posix.basename(targetPath));
+          }
+          return this.#registerHold(digest, buffer, targetPath);
+        },
       });
     }
 
@@ -368,10 +426,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // (nothing has been written to wrapped storage for either yet) and
     // collide on promotion. The digest is known to anyone holding the same
     // bytes, so the random component is what keeps the key unguessable.
-    #computeHeldTargetPath(digest, file, targetDir) {
+    #computeHeldTargetPath(digest, file, targetDir, keepName = false) {
       const dir = targetDir || this.#defaultTargetDir();
       const ext = path.extname((file && file.name) || '');
-      const name = `${digest}-${randomNameComponent()}${ext}`;
+      // An original already carries its processed image's component and
+      // keeps its name, so Ghost's `_o` lookup finds it.
+      const name = keepName ? file.name : `${digest}-${randomNameComponent()}${ext}`;
       return path.join(dir, name).split(path.sep).join('/');
     }
 

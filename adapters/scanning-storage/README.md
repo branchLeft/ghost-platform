@@ -160,7 +160,9 @@ filename would otherwise both compute as free (nothing has been written for
 either) and collide on promotion. The digest is known to anyone holding the
 same bytes, so the 22-character random component (the same one a proceeding
 upload gets) is what keeps the key unguessable; the hold sidecar records the
-whole path, so a restart promotes to the key the author was given. The URL
+whole path, so a restart promotes to the key the author was given. An
+original Ghost saves afterwards as `<that name>_o<ext>` keeps exactly that
+name, so Ghost's lookup finds it. The URL
 differs only in shape: a bucket config (`S3Storage`'s
 shape) builds an absolute, CDN-hosted URL from `wrappedConfig.cdnUrl` (or
 `.endpoint` + `.bucket`); anything else builds a local, site-relative one.
