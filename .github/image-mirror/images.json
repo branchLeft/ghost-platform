@@ -228,6 +228,15 @@
       "licence": "AGPL-3.0",
       "redistribution": "conditioned",
       "licenceSource": "https://github.com/zitadel/zitadel/blob/main/LICENSE"
+    },
+    {
+      "name": "dockerfile",
+      "source": "docker.io/docker/dockerfile",
+      "digest": "sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e",
+      "upstreamTags": ["1"],
+      "licence": "Apache-2.0",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/moby/buildkit/blob/master/LICENSE"
     }
   ],
   "allow": [
@@ -249,7 +258,7 @@
     },
     {
       "path": "control/provision/test_nextcloud_backup.py",
-      "reason": "Fixture string fed to a faked docker inspect; no pull."
+      "reason": "Fixture string fed to a faked docker inspect; also an opt-in docker run of postgres:16-alpine@sha256:3c5c8892... (set NEXTCLOUD_BACKUP_DOCKER_PROOF=1), which CI does not set and the list does not hold."
     },
     {
       "path": "db/recovery/test_check_toolchain_version.py",
@@ -294,6 +303,10 @@
     {
       "path": "infra/provisioning/scripts/test_assert_image_ref.py",
       "reason": "Negative fixtures for the tenant image-ref validator; the references are rejected inputs."
+    },
+    {
+      "path": "adapters/sso/test/unit/break-glass-container.test.mjs",
+      "reason": "Test fixture: an environment value handed to a faked docker in a unit test; never pulled."
     },
     {
       "path": "scripts/assert-image-refs-on-mirror.py",

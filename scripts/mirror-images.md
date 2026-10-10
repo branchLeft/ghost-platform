@@ -54,6 +54,17 @@ corresponding terms and conditions". A public package of unmodified Docker Hub
 images is standalone redistribution, so the copy is kept private and used only
 by this repository's own workflows.
 
+What this does not establish. Secrecy is not the reason: the images are public
+upstream, so "no confidentiality exposure" answers a question that was not asked.
+The reason is the Docker terms above, no standalone redistribution to third
+parties. A fork of this public repository belongs to a third party, and GitHub's
+package documentation says that granting a public repository access to a private
+package can let its forks, and Dependabot, read it. Whether that applies to these
+packages has not been observed. It is not recorded as an accepted risk in
+`.claude/ACCEPTED-RISKS.md`. Whether to accept it, or to require it to be
+observed on the first run first, is the owner's decision; this change does not
+make it.
+
 The consumers are this repository's workflows, pulling with `GITHUB_TOKEN`
 (`packages: read`) after a `docker login ghcr.io`. Hosts are not consumers:
 host stacks keep their Docker Hub references until the owner decides how a host

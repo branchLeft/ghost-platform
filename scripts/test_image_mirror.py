@@ -380,9 +380,10 @@ class LocalDevelopmentTests(unittest.TestCase):
     def test_the_pilot_dockerfile_uses_the_variable_form_and_is_clean(self):
         text = (REPO / "widgets" / "origin" / "Dockerfile").read_text()
         self.assertIn("FROM ${IMAGE_REGISTRY:-docker.io/library}/caddy:2-alpine@sha256:", text)
+        root = Path(tempfile.mkdtemp())
+        (root / "Dockerfile").write_text(text)
         mirror_pairs, allow = guard.load_policy(LIST)
-        paths = [f.path for f in guard.scan(REPO, mirror_pairs, allow)]
-        self.assertNotIn("widgets/origin/Dockerfile", paths)
+        self.assertEqual([f.render() for f in guard.scan(root, mirror_pairs, allow)], [])
 
     def test_the_pilot_default_is_the_public_source_of_a_listed_digest(self):
         text = (REPO / "widgets" / "origin" / "Dockerfile").read_text()
@@ -458,41 +459,47 @@ class ModeTests(unittest.TestCase):
 
 
 class CoverageTests(unittest.TestCase):
-    """Every reference the guard finds today is one the list can replace."""
+    """The list and the guard agree, using recorded references, not the live tree.
 
-    def test_every_current_reference_is_on_the_list(self):
-        mirror_pairs, allow = guard.load_policy(LIST)
+    A reference added anywhere in the tree must not turn this red: the whole-tree
+    scan is the warn-mode job, and it reports without failing.
+    """
+
+    @staticmethod
+    def written(entry):
+        """The reference as a call site writes it (name, tag and digest)."""
+        source = entry["source"]
+        short = source.removeprefix("docker.io/library/").removeprefix("docker.io/")
+        tag = entry["upstreamTags"][0]
+        tagged = "" if tag == "pinned-digest-only" else f":{tag}"
+        return f"{short}{tagged}@{entry['digest']}"
+
+    def test_every_list_row_is_reported_as_a_third_party_reference(self):
+        mirror_pairs, _ = guard.load_policy(LIST)
         _, images = mirror.load_list(LIST)
-        by_digest = {(e["source"], e["digest"]) for e in images}
-        by_tag = {(e["source"], t) for e in images for t in e["upstreamTags"]}
-        findings = guard.scan(REPO, mirror_pairs, allow)
-        gaps = []
+        files = {f"d{n}/Dockerfile": f"FROM {self.written(e)}\n" for n, e in enumerate(images)}
+        findings, _root = scan_tree(files)
+        self.assertEqual(len(findings), len(images))
         for f in findings:
-            if f.kind not in ("unqualified", "docker.io", "other-registry"):
-                continue  # only a third-party image needs a row on the list
-            m = guard.IMAGE_RE.match(f.ref)
-            repo = m["repo"]
-            if repo == "ghost-platform":
-                continue  # this repo's own image, built locally, not a third-party one
-            parts = repo.split("/")
-            if len(parts) > 1 and ("." in parts[0] or ":" in parts[0]):
-                source = repo
-            elif len(parts) == 1:
-                source = f"docker.io/library/{repo}"
-            else:
-                source = f"docker.io/{repo}"
-            if source.startswith("docker.io/docker.io/"):
-                source = source[len("docker.io/"):]
-            tag = m["tag"] or "latest"
-            if m["digest"]:
-                ok = (source, m["digest"]) in by_digest
-            else:
-                ok = (source, tag) in by_tag
-            if not ok:
-                gaps.append(f.render())
-        # quay.io/minio is gone upstream (401 for anonymous pulls), so it is deliberately not listed.
-        gaps = [g for g in gaps if "quay.io/minio/" not in g]
-        self.assertEqual(gaps, [])
+            self.assertIn(f.kind, ("unqualified", "docker.io", "other-registry"), f.render())
+
+    def test_every_list_row_can_be_written_in_the_form_the_guard_accepts(self):
+        mirror_pairs, _ = guard.load_policy(LIST)
+        _, images = mirror.load_list(LIST)
+        for e in images:
+            namespace, name = e["source"].rsplit("/", 1)
+            tag = e["upstreamTags"][0]
+            if tag == "pinned-digest-only":
+                tag = "pinned"  # a digest with no tag is flagged: the call site must pick one
+            ref = f"${{IMAGE_REGISTRY:-{namespace}}}/{name}:{tag}@{e['digest']}"
+            self.assertIsNone(guard.classify(ref, mirror_pairs), ref)
+
+    def test_the_whole_tree_scan_reports_and_exits_zero_in_warn_mode(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = guard.main(["--mode", "warn"])
+        self.assertEqual(code, 0)
+        self.assertIn("(mode warn)", out.getvalue())
 
 
 def found(files, allow=()):
@@ -909,23 +916,26 @@ class SourceTests(unittest.TestCase):
                 self.fail(f"line {tok.start[0]}: string inside an f-string uses the f-string's own quote")
 
 
-class RealTreeTests(unittest.TestCase):
-    """The pulls the first inventory missed, found in the real tree."""
+PORTAL_STEP = (
+    "jobs:\n  t:\n    steps:\n      - name: Start\n        env:\n"
+    "          IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f\n"
+    "        run: |\n          docker run -d --rm --name x -p 5432:5432 \\\n            -e POSTGRES_PASSWORD=x \\\n"
+    '            "$IMAGE" -c hba_file=/x\n'
+)
+DRIFT_SCRIPT = '#!/bin/sh\nset -e\nBLUE_TAG="ghost:6.55.0-alpine"\nGREEN_TAG="ghost:6-alpine"\n'
 
-    @classmethod
-    def setUpClass(cls):
-        mirror_pairs, allow = guard.load_policy(LIST)
-        cls.findings = guard.scan(REPO, mirror_pairs, allow)
 
-    def at(self, path, line):
-        return [f.kind for f in self.findings if (f.path, f.line) == (path, line)]
+class RecordedPullTests(unittest.TestCase):
+    """The pulls the first inventory missed, as recorded fixtures of their call sites."""
 
-    def test_the_postgres_run_by_variable_in_the_portal_workflow(self):
-        self.assertEqual(self.at(".github/workflows/portal-apps-ci.yml", 48), ["unqualified"])
+    def test_the_postgres_run_by_variable_in_a_workflow_step(self):
+        self.assertEqual(found({WORKFLOW: PORTAL_STEP}), [(WORKFLOW, 6, "unqualified")])
 
-    def test_the_two_ghost_tags_in_the_colour_drift_script(self):
-        self.assertEqual(self.at("scripts/measure-old-colour-schema-drift.sh", 10), ["unqualified"])
-        self.assertEqual(self.at("scripts/measure-old-colour-schema-drift.sh", 11), ["unqualified"])
+    def test_the_two_ghost_tags_in_a_script(self):
+        self.assertEqual(
+            found({"scripts/measure.sh": DRIFT_SCRIPT}),
+            [("scripts/measure.sh", 3, "unqualified"), ("scripts/measure.sh", 4, "unqualified")],
+        )
 
     def test_the_missed_pulls_have_a_row_on_the_list(self):
         _, images = mirror.load_list(LIST)
@@ -935,16 +945,103 @@ class RealTreeTests(unittest.TestCase):
         self.assertIn(("docker.io/library/ghost", "6.55.0-alpine"), tags)
         self.assertIn(("docker.io/library/ghost", "6-alpine"), tags)
 
+    def test_the_dockerfile_frontend_has_a_row_on_the_list(self):
+        _, images = mirror.load_list(LIST)
+        self.assertIn(("docker.io/docker/dockerfile", "1"), {(e["source"], t) for e in images for t in e["upstreamTags"]})
+
     def test_unresolved_references_are_reported_and_fail_enforce(self):
-        unresolved = [f for f in self.findings if f.kind == guard.UNRESOLVED]
-        self.assertTrue(unresolved)
-        self.assertTrue(all("UNRESOLVED reference" in f.render() for f in unresolved))
         _, root = scan_tree({"t.sh": 'docker run "$X"\n'})
         policy = Path(tempfile.mkdtemp()) / "p.json"
         policy.write_text(json.dumps({"images": []}))
-        with redirect_stdout(io.StringIO()):
+        out = io.StringIO()
+        with redirect_stdout(out):
             self.assertEqual(guard.main(["--root", str(root), "--list", str(policy), "--mode", "enforce"]), 1)
             self.assertEqual(guard.main(["--root", str(root), "--list", str(policy), "--mode", "warn"]), 0)
+        self.assertIn("UNRESOLVED reference", out.getvalue())
+
+
+class BuildKitConstructTests(unittest.TestCase):
+    """Constructs found in review of the second guard; each was silent."""
+
+    def test_a_syntax_directive_names_the_frontend_image_it_pulls(self):
+        text = "# syntax=docker/dockerfile:1\nFROM scratch\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 1, "docker.io")])
+
+    def test_a_syntax_directive_after_a_comment_is_only_a_comment(self):
+        text = "# build notes\n# syntax=docker/dockerfile:1\nFROM scratch\n"
+        self.assertEqual(found({"Dockerfile": text}), [])
+
+    def test_a_syntax_directive_with_a_spaced_equals_and_other_directives_before_it(self):
+        text = "# escape=`\n# syntax = docker/dockerfile:1.7\nFROM scratch\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 2, "docker.io")])
+
+    def test_a_dockerfile_with_a_byte_order_mark_is_read(self):
+        text = "\ufeffFROM node:20\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 1, "unqualified")])
+        text = "\ufeff# syntax=docker/dockerfile:1\nFROM scratch\n"
+        self.assertEqual(found({"Dockerfile": text}), [("Dockerfile", 1, "docker.io")])
+
+    def test_a_build_context_that_is_an_image(self):
+        text = "docker buildx build --build-context base=docker-image://alpine:3 .\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+        text = "with:\n  build-contexts: |\n    base=docker-image://alpine:3\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 3, "unqualified")])
+
+    def test_a_registry_cache_source(self):
+        text = "docker buildx build --cache-from type=registry,ref=quay.io/evil/cache:1 .\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "other-registry")])
+        text = "docker buildx build --cache-from quay.io/evil/cache:1 .\n"
+        self.assertEqual(found({"u.sh": text}), [("u.sh", 1, "other-registry")])
+        self.assertEqual(found({"v.sh": "docker buildx build --cache-from type=gha .\n"}), [])
+
+    def test_an_image_key_with_a_docker_uri(self):
+        text = "runs:\n  using: docker\n  image: docker://alpine:3\n"
+        self.assertEqual(found({"action.yml": text}), [("action.yml", 3, "unqualified")])
+
+
+class CommandPositionTests(unittest.TestCase):
+    """Forms in which docker is the command but not the first word."""
+
+    def test_these_prefixes_are_read(self):
+        prefixes = (
+            "FOO=1 docker run --rm alpine:3 true",
+            "env FOO=1 docker run --rm alpine:3 true",
+            "timeout 60 docker run --rm alpine:3 true",
+            "retry 3 docker run --rm alpine:3 true",
+            "until docker run --rm alpine:3 true; do sleep 1; done",
+            "if false; then :; elif docker run --rm alpine:3 true; then :; fi",
+            "/usr/bin/docker run --rm alpine:3 true",
+            "$(DOCKER) run --rm alpine:3 true",
+        )
+        for line in prefixes:
+            self.assertEqual(found({"t.sh": line + "\n"}), [("t.sh", 1, "unqualified")], line)
+
+    def test_a_systemd_exec_line(self):
+        text = "[Service]\nExecStart=/usr/bin/docker run --rm alpine:3 true\n"
+        self.assertEqual(found({"x.service": text}), [("x.service", 2, "unqualified")])
+
+    def test_prose_before_docker_is_still_not_a_command(self):
+        for line in ("echo see docker run alpine:3", "# docker run alpine:3", "the docker run alpine:3 example"):
+            self.assertEqual(found({"t.sh": line + "\n"}), [], line)
+
+
+class UnknownFlagTests(unittest.TestCase):
+    """A flag the list does not know may hide the image: the guard fails closed."""
+
+    def test_a_key_value_flag_value_is_unresolved_not_accepted(self):
+        text = "docker run --rm --ulimit nofile=1024:2048 alpine:3 true\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")])
+
+    def test_a_path_flag_value_is_unresolved_not_accepted(self):
+        text = "docker run --rm --device-read-bps /dev/sda:1mb alpine:3 true\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")])
+
+    def test_a_known_flag_with_the_same_value_shape_is_read(self):
+        text = "docker run --rm --sysctl net.core.somaxconn=1024 alpine:3 true\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")])
+
+    def test_prose_after_docker_run_is_not_an_operand(self):
+        self.assertEqual(found({"x.ts": "execSync('docker run failed: see the logs');\n"}), [])
 
 
 if __name__ == "__main__":

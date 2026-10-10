@@ -96,8 +96,15 @@ OVERRIDE_RE = re.compile(
     r"""(?<![\w$])IMAGE_REGISTRY\s*(?:=|:(?![-=+?]))\s*["']?(?P<value>\$\{\{.*?\}\}|[^\s"'#]+)"""
 )
 RUNTIME_RE = re.compile(
-    r"(?<![\w./-])(?:docker|podman|nerdctl|\$\{?(?:DOCKER|PODMAN|DOCKER_BIN|DOCKER_CMD|CONTAINER_RUNTIME|CONTAINER_CLI)\}?)(?=\s)"
+    r"(?<![\w.$-])(?:/[\w./-]*/)?(?:docker|podman|nerdctl)(?=\s)"
+    r"|(?<![\w./-])(?:\$\{?|\$\()(?:DOCKER|PODMAN|DOCKER_BIN|DOCKER_CMD|CONTAINER_RUNTIME|CONTAINER_CLI)[})]?(?=\s)"
 )
+DOCKER_IMAGE_URI_RE = re.compile(r"""docker-image://(?P<ref>[^\s"',]+)""")
+CACHE_FROM_RE = re.compile(
+    r"""type=registry,(?:[^\s"']*,)?ref=(?P<ref>[^\s"',]+)|--cache-from(?:\s+|=)["']?(?P<plain>[^\s"',=]+)(?=["'\s]|\Z)"""
+)
+SYNTAX_DIRECTIVE_RE = re.compile(r"\A\s*#\s*(?P<key>[A-Za-z]+)\s*=\s*(?P<value>\S+)\s*\Z")
+ARG_WORD_RE = re.compile(r"\A(?:-\S+|[0-9]+[smhd]?|[A-Za-z_][A-Za-z0-9_]*=\S*)\Z")
 GLOBAL_VALUE_FLAGS = {"-H", "--host", "--context", "-c", "--config", "-l", "--log-level"}
 VERBS = {"run", "create", "pull"}
 # Flags of docker run/create/pull that take a separate value, so the value is
@@ -116,7 +123,10 @@ VALUE_FLAGS = {
     "--sysctl", "--tmpfs", "-u", "--user", "--userns", "--uts", "-v", "--volume", "--volume-driver",
     "--volumes-from", "-w", "--workdir",
 }
-COMMAND_WORDS = {"then", "do", "else", "sudo", "exec", "time", "eval", "command", "nohup", "xargs", "env", "!", "-", "if"}
+COMMAND_WORDS = {
+    "then", "do", "else", "elif", "if", "until", "while", "sudo", "exec", "time", "eval", "command", "nohup", "xargs",
+    "env", "timeout", "retry", "nice", "ionice", "watch", "!", "-",
+}
 YAML_COMMAND_KEY = re.compile(r"\b(?:run|command|cmd|entrypoint|script):\s*(?:[|>][-+]?)?\Z")
 SHELL_STRING_PREFIX = re.compile(r"""(?:\s-c|\beval|\bssh\s+\S+|\bsh|\bbash)\s+["']\Z""")
 PROSE_CALL = re.compile(r"(?:console\.|\bprint|\blog|\becho|\bwarn|\berror|\bmessage)", re.I)
@@ -346,6 +356,7 @@ def key_definitions(text: str, kind: str):
 
 def definition_ok(key: str, value: str, known: frozenset[str], text: str) -> bool:
     """True when `key: value` is a reference the guard reports at its own line."""
+    value = value.removeprefix("docker://")
     if not value or value in ("true", "false", "null", "~"):
         return False
     if key.endswith("_TAG") and not has_name(value):
@@ -465,9 +476,9 @@ def command_position(before: str, code: bool) -> bool:
     if b[-1] in ";&|({`!" or YAML_COMMAND_KEY.search(b):
         return True
     words = b.split()
-    while len(words) > 1 and words[-1].startswith("-") and words[-1] != "-":
-        words.pop()
-    return bool(words) and (words[-1] in COMMAND_WORDS or "sudo" in words[-4:])
+    while words and words[-1] != "-" and ARG_WORD_RE.match(words[-1]):
+        words.pop()  # options, a duration, or a FOO=1 assignment before the command
+    return not words or words[-1] in COMMAND_WORDS or "sudo" in words[-4:]
 
 
 def tokens_of(rest: str) -> list[str]:
@@ -483,8 +494,13 @@ def tokens_of(rest: str) -> list[str]:
     return rest.split()
 
 
-def image_operand(words: list[str], i: int) -> str | None:
-    """The first positional argument from words[i:], skipping flags and their values."""
+def image_operand(words: list[str], i: int) -> tuple[str, bool] | None:
+    """(operand, certain) for the first positional argument from words[i:].
+
+    `certain` is False when that word is not shaped like an image: the value of
+    a flag this guard does not know, or a path. The image may be behind it, so
+    it is reported UNRESOLVED rather than accepted.
+    """
     while i < len(words):
         raw = words[i]
         i += 1
@@ -499,18 +515,20 @@ def image_operand(words: list[str], i: int) -> str | None:
         if "$" in word:
             if FLAG_VAR_RE.search(word):
                 continue  # a variable of options, not the image
-            return word
-        if looks_like_image(word):
-            return None if word.startswith(("/", ".", "~")) else word
+            return word, True
+        if looks_like_image(word) and not word.startswith(("/", ".", "~")):
+            return word, True
+        if re.search("[=/]", word):
+            return word, False  # key=value or a path: what a flag this list does not know would take
         if re.search("[A-Za-z]", word):
-            return None
+            return None  # a prose word, not an operand
         # a bare number: the value of a flag this list does not know; keep looking
     return None
 
 
-def docker_operands(text: str, code: bool) -> list[str]:
-    """The image operand of each docker/podman run, create or pull on the line."""
-    found: list[str] = []
+def docker_operands(text: str, code: bool) -> list[tuple[str, bool]]:
+    """The image operand of each docker/podman run, create or pull on the line, and whether it is certain."""
+    found: list[tuple[str, bool]] = []
     for m in RUNTIME_RE.finditer(text):
         if not command_position(text[: m.start()], code):
             continue
@@ -551,6 +569,12 @@ def code_string_candidate(content: str, in_window: bool, known: frozenset[str]) 
 
 def docker_candidates(info: FileInfo, emit) -> None:
     stages: set[str] = set()
+    for number, raw in enumerate(info.raw, 1):
+        directive = SYNTAX_DIRECTIVE_RE.match(raw)
+        if not directive:
+            break  # parser directives end at the first comment, blank line or instruction
+        if directive["key"].lower() == "syntax":
+            emit(number, directive["value"])  # BuildKit pulls this frontend image at build time
 
     def is_stage(value: str) -> bool:
         return value.lower() in stages or value.isdigit()
@@ -574,8 +598,8 @@ def docker_candidates(info: FileInfo, emit) -> None:
                 for part in mount.split(","):
                     if part.startswith("from="):
                         emit(number, part[5:], is_stage)
-            for operand in docker_operands(args, False):
-                emit(number, operand)
+            for operand, certain in docker_operands(args, False):
+                emit(number, operand, certain=certain)
 
 
 def line_candidates(info: FileInfo, known: frozenset[str], emit) -> None:
@@ -594,8 +618,12 @@ def line_candidates(info: FileInfo, known: frozenset[str], emit) -> None:
             value = m["value"]
             if m["name"] not in KEEP_VARS and ((has_name(value) and looks_like_image(value)) or REGISTRY_VAR_START.match(value)):
                 emit(number, value)
-        for operand in docker_operands(text, kind == "code"):
-            emit(number, operand)
+        for operand, certain in docker_operands(text, kind == "code"):
+            emit(number, operand, certain=certain)
+        for m in DOCKER_IMAGE_URI_RE.finditer(text):
+            emit(number, m["ref"])
+        for m in CACHE_FROM_RE.finditer(text):
+            emit(number, m["ref"] or m["plain"])
         if kind == "code":
             window = " ".join(info.raw[max(0, number - 13):number]).lower()
             in_window = "docker" in window or "image" in window
@@ -617,9 +645,12 @@ def candidates(
     glob = glob or {}
     found: list[Cand] = []
 
-    def emit(number: int, raw: str, skip=None, own: str | None = None) -> None:
-        raw = raw.strip().strip("\"'")
+    def emit(number: int, raw: str, skip=None, own: str | None = None, certain: bool = True) -> None:
+        raw = raw.strip().strip("\"'").removeprefix("docker://")
         if not raw or raw in ("true", "false", "null", "~"):
+            return
+        if not certain:
+            found.append(Cand(number, raw, True))  # an operand this guard cannot read as an image
             return
         if raw.startswith("*"):
             if raw[1:] not in info.anchors:
@@ -661,7 +692,7 @@ def read_text(root: Path, rel: str) -> list[str] | None:
     try:
         if not full.is_file() or full.stat().st_size > MAX_BYTES:
             return None
-        return full.read_text().splitlines()
+        return full.read_text().lstrip("\ufeff").splitlines()
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -863,6 +894,13 @@ def self_test() -> int:
         "variable with no value in the repo": ({"t.sh": 'docker run --rm "$IMG" true\n'}, [UNRESOLVED]),
         "unknown numeric value flag": ({"t.sh": "docker run --cpu-shares 512 mysql:8.0 true\n"}, ["unqualified"]),
         "podman run": ({"t.sh": "podman run --rm alpine:3.19 true\n"}, ["unqualified"]),
+        "syntax directive": ({"Dockerfile": "# syntax=docker/dockerfile:1\nFROM scratch\n"}, ["docker.io"]),
+        "env prefix before docker": ({"t.sh": "FOO=1 timeout 60 docker run --rm alpine:3.19\n"}, ["unqualified"]),
+        "unknown flag with a key=value": (
+            {"t.sh": "docker run --ulimit nofile=1024:2048 alpine:3.19\n"},
+            [UNRESOLVED],
+        ),
+        "build context image": ({"t.sh": "docker buildx build --build-context b=docker-image://alpine:3 .\n"}, ["unqualified"]),
         "build -t to a foreign registry": (
             {"t.sh": "docker build -t quay.io/evil/x:1 .\ndocker run quay.io/evil/x:1\n"},
             ["other-registry"],
