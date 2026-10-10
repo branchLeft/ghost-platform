@@ -15,10 +15,10 @@ import xml.etree.ElementTree as ET
 import shared_objectstorage as so
 
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
-# The estate's erasure window: a state object removed here is gone from every
-# copy within about 46 days (10 current + 1 for the daily pass + 35 noncurrent
-# on the dump prefixes; see state_copy.md, "Retention"). A parameter, so a
-# later ruling changes this value only.
+# The estate's ~46-day erasure window. A current version never expires here,
+# so this is the whole figure for this bucket: the 10 + 1 + 35 split applies
+# to copy 1's state/ prefix only (see state_copy.md, "Retention"). A
+# parameter, so a later ruling changes this value only.
 NONCURRENT_EXPIRY_DAYS = 46
 
 
@@ -100,7 +100,11 @@ def main(argv=None) -> int:
     p.add_argument("--bucket", required=True)
     p.add_argument("--endpoint", required=True)
     p.add_argument("--region", required=True)
-    p.add_argument("--noncurrent-days", type=int, default=NONCURRENT_EXPIRY_DAYS)
+    p.add_argument(
+        "--noncurrent-days", type=int, default=NONCURRENT_EXPIRY_DAYS,
+        help="days a noncurrent version is kept (the whole retention: current versions never "
+        "expire); default 46, the estate's erasure window",
+    )
     args = p.parse_args(argv)
     key, secret = os.environ.get("BUCKET_ADMIN_ACCESS_KEY_ID"), os.environ.get("BUCKET_ADMIN_SECRET_ACCESS_KEY")
     if not key or not secret:

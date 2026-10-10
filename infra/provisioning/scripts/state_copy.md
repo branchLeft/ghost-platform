@@ -49,7 +49,9 @@ keep-periods are set to that window:
   `db/provision/configure_backup_bucket.py`: `--state-expiration-days`
   (default 10) then `--state-noncurrent-days` (default 35).
 - The state buckets' own noncurrent expiry is set by
-  `configure_state_bucket.py --noncurrent-days` (default 46).
+  `configure_state_bucket.py --noncurrent-days` (default 46). A current
+  version never expires there, so 46 is the whole figure for those buckets;
+  the 10 + 1 + 35 split is copy 1's alone.
 
 ## Metrics
 
