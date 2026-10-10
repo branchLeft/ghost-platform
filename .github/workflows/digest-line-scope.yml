@@ -1,0 +1,35 @@
+name: Digest-only line scope
+
+# Required check for the digest-only merge route. On every pull request it runs
+# scripts/digest-line-scope.js. For a pull request by the machine identity named
+# in the repository variable DIGEST_MACHINE_LOGIN, it refuses any change except
+# the tag and digest on the Dockerfile FROM line. Every other author, and every
+# run while the variable is unset, passes untouched.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  digest-line-scope:
+    name: Digest-only line scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the line scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          MACHINE_LOGIN: ${{ vars.DIGEST_MACHINE_LOGIN }}
+        run: node scripts/digest-line-scope.js --base "$BASE_SHA" --head "$HEAD_SHA" --author "$PR_AUTHOR"
