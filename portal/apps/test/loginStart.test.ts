@@ -104,7 +104,12 @@ async function failedCallbacks(
   };
   for (let sent = 0; sent < count; sent += 1) {
     const start = await call('/login');
-    const state = new URL(String(start.headers['location'])).searchParams.get('state');
+    const location = start.headers['location'];
+    if (typeof location !== 'string') {
+      statuses.set(start.status, (statuses.get(start.status) ?? 0) + 1);
+      continue;
+    }
+    const state = new URL(location).searchParams.get('state');
     const sealed = String(start.headers['set-cookie']).split(';')[0] ?? '';
     const reply = await call(`${CALLBACK_PATH}?code=NEVER-ISSUED&state=${state}`, sealed);
     statuses.set(reply.status, (statuses.get(reply.status) ?? 0) + 1);
