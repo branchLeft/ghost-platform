@@ -14,10 +14,8 @@ const TAG_BYTES = 16;
 const SEPARATOR = '.';
 
 /**
- * Seals a pending sign-in into the value the browser carries, so beginning one
- * holds nothing on the server and no number of unauthenticated starts can use
- * up room a real sign-in needs. The key lives in this process alone: a restart
- * drops pending sign-ins, exactly as the in-memory store this replaces did.
+ * Seals a pending sign-in into the browser's cookie, so beginning one holds
+ * nothing on the server. The key lives in this process alone.
  */
 export class PendingLoginSealer {
   readonly #key = randomBytes(32);

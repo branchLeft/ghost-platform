@@ -60,9 +60,8 @@ export class ExpiringStore<V extends { readonly expiresAt: number }> {
 }
 
 /**
- * The pending sign-ins that have already opened a session, each kept until it
- * would have expired, so one pending sign-in opens at most one session. Only a
- * verified sign-in is ever added: an unauthenticated client cannot fill it.
+ * The pending sign-ins that have already opened a session, so one opens at most
+ * one. Only a verified sign-in is added: an unauthenticated client cannot fill it.
  */
 export class SpentLogins {
   readonly #until = new Map<string, number>();
