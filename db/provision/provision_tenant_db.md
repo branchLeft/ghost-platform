@@ -25,6 +25,13 @@ this is safe to run again to reapply a raised `MAX_USER_CONNECTIONS` or to
 confirm a tenant's grants without touching a credential something else
 already depends on.
 
+The database-level GRANT target is escaped before it is sent: a bare `_`
+is a one-character wildcard in MySQL, and the `ghost_` prefix itself
+contains one. Without the escape, the grant for `a-b` (database `ghost_a_b`)
+would also cover `ghost_a1b`, another tenant's database. The escape applies
+to new grants only; a grant that already exists on an older tenant keeps its
+unescaped form until it is revoked and re-granted by hand.
+
 Self-managed MySQL is what makes this one script rather than two: an
 earlier component could create the database and user but had no
 privileged credential able to set `MAX_USER_CONNECTIONS`, so a platform

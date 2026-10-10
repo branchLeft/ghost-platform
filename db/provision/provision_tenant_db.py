@@ -58,6 +58,18 @@ def _run_sql(
     return result.stdout
 
 
+def grant_database_pattern(db_name: str) -> str:
+    """Escape a database name for use as a database-level GRANT target.
+
+    MySQL reads an unescaped _ as any single character and an unescaped %
+    as any run of characters in that position, so a grant on ghost_a_b
+    would also cover ghost_a1b. A backslash makes the next character
+    literal. The backslash itself is escaped first so the other escapes
+    are not doubled.
+    """
+    return db_name.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+
+
 def user_exists(
     db_user: str,
     *,
@@ -119,7 +131,8 @@ def provision_tenant_database(
             f"CREATE USER '{db_user}'@'{TENANT_USER_HOST}' IDENTIFIED BY '{password}';"
         )
     statements.append(
-        f"GRANT ALL PRIVILEGES ON `{db_user}`.* TO '{db_user}'@'{TENANT_USER_HOST}';"
+        f"GRANT ALL PRIVILEGES ON `{grant_database_pattern(db_user)}`.* "
+        f"TO '{db_user}'@'{TENANT_USER_HOST}';"
     )
     statements.append(
         f"ALTER USER '{db_user}'@'{TENANT_USER_HOST}' "
