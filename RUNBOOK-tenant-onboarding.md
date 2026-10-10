@@ -696,26 +696,12 @@ pulumi stack output --show-secrets secretsEnvFile --stack <slug> \
   | ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
       "install -m 0600 -o root -g root /dev/stdin /etc/branchleft/<slug>.env"
 
-# c. The Compose file, also root-owned. Every line of it is a runtime-isolation
-#    control, which is why nothing automated writes it either: a stack that
-#    silently loses one still starts and still serves.
-#
-#    A checkpoint is NOT a source for this file. composeFile is a plaintext
-#    output, and the state credential every tenant repository holds can rewrite
-#    it at any time; the file is then installed as root on the shared app host.
-#    So it is re-rendered from the pinned component and this repository's
-#    committed config immediately before it is read, and checked again after it
-#    is placed. Run the three commands one after another with no pause, from
-#    the tenant repository's checkout with its dependencies installed (the
-#    directory holding its Pulumi.yaml). Read the apply's diff before
-#    confirming it. If the closing preview reports any change to composeFile,
-#    stop before step d: what was installed is not what the program renders,
-#    and the checkpoint was written by something other than this procedure.
-pulumi up --stack <slug> --diff
+# c. The Compose file, also from the stack's output, also root-owned. Every line
+#    of it is a runtime-isolation control, which is why nothing automated writes
+#    it either: a stack that silently loses one still starts and still serves.
 pulumi stack output composeFile --stack <slug> \
   | ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
       "mkdir -p /opt/branchleft/<slug> && install -m 0644 -o root -g root /dev/stdin /opt/branchleft/<slug>/compose.yml"
-pulumi preview --stack <slug> --diff
 
 # d. Enable the unit -- WITHOUT --now. It has no image pin yet, and the unit's
 #    EnvironmentFile for that file carries no leading dash, so starting it now
