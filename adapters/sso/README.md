@@ -60,7 +60,7 @@ Every decision is logged without the token itself: `break-glass: token accepted 
 The rest of LLD-5 section 05 is in `scripts/`. The owner runs it, and no agent does:
 
 - `scripts/break-glass-mint.mjs` runs on `ops1`. It holds the only private key, at `/etc/branchleft/break-glass/`, mints for at most 600 seconds, and builds `/ghost/` URLs only. See `scripts/break-glass-mint.md`.
-- `scripts/break-glass-grant.mjs` runs on the tenant's host. It opens the consented or incident lane, closes it, and runs every minute from `scripts/systemd/branchleft-break-glass-expire.timer` to close any grant past its four hours. See `scripts/break-glass-grant.md`.
+- `scripts/break-glass-grant.mjs` runs on the tenant's host, in a pinned Node container started by `scripts/host/branchleft-break-glass.sh`, so the host needs no Node. It opens the consented or incident lane, closes it, and runs every minute from `scripts/systemd/branchleft-break-glass-expire.service` and its timer to close any grant past its four hours. See `scripts/break-glass-grant.md`.
 
 The host steps are in `ghost-platform-docs`, `break-glass-runbook.md`. `test/image/break-glass-lanes.image.test.mjs` proves both scripts against the built image.
 
