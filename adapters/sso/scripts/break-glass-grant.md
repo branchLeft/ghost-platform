@@ -15,17 +15,24 @@ stop on the owner's behalf. The host steps are in `ghost-platform-docs`,
 `break-glass-runbook.md`.
 
 ```sh
-node break-glass-grant.mjs grant --lane consented|incident --tenant <slug> \
+branchleft-break-glass grant --lane consented|incident --tenant <slug> \
   --reason <one line> --reference <one line> [--identity <support email>]
-node break-glass-grant.mjs revoke --tenant <slug> --reason <one line>
-node break-glass-grant.mjs status
-node break-glass-grant.mjs expire        # what the timer runs
+branchleft-break-glass revoke --tenant <slug> --reason <one line>
+branchleft-break-glass status
 ```
+
+`branchleft-break-glass` is the host wrapper (`host/branchleft-break-glass.sh`,
+installed at `/usr/local/sbin/branchleft-break-glass`). The app host has no
+Node: the wrapper and the expire unit run this file inside a pinned Node
+container (see "The container"), and `expire` is what the unit runs.
 
 It reaches the tenant's database through the tenant's running Ghost container,
 either colour (Compose labels `com.docker.compose.project=<slug>`, service
-`ghost-a` or `ghost-b`), with Ghost's own knex. That is the same route
-`provision-support-account.mjs` takes, so it holds no driver and no credential.
+`ghost-a` or `ghost-b`), with Ghost's own knex. It finds that container and
+runs its one step in it through the Docker Engine API on the mounted socket
+(`docker-engine.mjs`), so the container needs no `docker` CLI. That is the
+same route `provision-support-account.mjs` takes, so it holds no driver and
+no credential.
 
 ## The account
 
@@ -70,7 +77,10 @@ grant per tenant can be open at a time.
 `expire` every minute, and runs a missed minute at boot (`Persistent=true`). A
 clock kept in a file and checked every minute survives a host reboot, which a
 transient timer would not. `grant` refuses to open anything unless that timer
-is active.
+is active. The container cannot ask systemd, so the wrapper runs
+`systemctl is-active --quiet branchleft-break-glass-expire.timer` on the host
+and passes the answer in as `BL_EXPIRE_TIMER_STATE`. Only the exact value
+`active` lets a grant open: a missing, empty or any other value refuses it.
 
 `expire` handles each state file on its own, so one failure never stops the
 rest. It logs a file it cannot read, or one with no valid deadline, and closes
@@ -78,9 +88,57 @@ that tenant at once instead of skipping it. If it cannot close a grant, for
 example because the container is down, the state file stays, the run exits 1
 so systemd marks it failed, and the next minute retries.
 
-Every docker call has a 60-second timeout, and the service has a 10-minute
-start timeout. A wedged `docker exec` or a database lock therefore ends the run
-rather than holding it open, which would stop the timer firing again.
+Every Engine API call has a 60-second bound, and the service has a 10-minute
+start timeout. One exec (create, start and inspect together) shares one
+60-second bound, and the bound is a timer on the socket, so a daemon that
+accepts the connection and never answers still ends the call. A wedged exec or
+a database lock therefore ends the run rather than holding it open, which
+would stop the timer firing again. The tool also exits on SIGTERM and SIGINT,
+because it is PID 1 in its container and PID 1 ignores a signal it has no
+handler for.
+
+## The container
+
+`grant`, `revoke`, `status` and `expire` run in the same pinned Node image the
+`ops1` minter uses (`node:26.5.0-bookworm-slim@sha256:2d49d876…`, as in
+`services/drain-sidecar`). The wrapper and the expire unit start it with the
+same options, and a unit test holds the two together:
+
+| Option | What it does |
+|---|---|
+| `--network none` | No network beyond the mounted socket. |
+| `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges` | Nothing writable but the two mounted directories, no capabilities. |
+| `--pids-limit 64`, `--memory 256m` | A runaway tool cannot take the host. |
+| `--pull never` | A missing image fails at once, in the journal, rather than reaching for a registry. B step 1 pulls it. |
+| read-only mount of the tool directory | The code that runs is the code that was delivered. |
+| mount of `/var/lib/branchleft/break-glass-grants` and `/var/log/branchleft` | The clock and the records, at the paths the tool already used. |
+| mount of `/var/run/docker.sock` | The Engine API, for the two calls above. |
+
+The key directory `/etc/branchleft/break-glass` is on `ops1` only and is never
+mounted here.
+
+**Security.** Mounting `/var/run/docker.sock` gives the container
+root-equivalent power on the app host: whoever controls the process in it
+can start a privileged container. That is no wider than before. The tool
+already ran as root on this host and called `docker`, and `grant` and
+`revoke` still act only on the support account named in the tenant's own
+config. The socket must not be mounted into anything else. The wrapper is
+root-owned, mode `0700`, and the unit root-owned, mode `0644`, so only root
+starts the container. The flags above limit a mistake in the tool and what a
+bug in it could reach by accident, not a hostile author of the tool: the image
+is pinned by digest and the tool directory is mounted read-only for that
+reason.
+
+Two things to know:
+
+- Every run is PID 1 in its own container, so a temporary file named from the
+  process id is not unique across two runs started at the same moment. Two
+  `grant`s for one tenant in the same second can race on it; `expire` writes
+  none. Use one operator session.
+- The image is referenced by digest and is not pulled at run time. A
+  `docker image prune -a` that removes it stops `expire`, and the unit then
+  fails visibly (`systemctl show -p Result`). Never prune images on an app
+  host without checking `docker image inspect` for it afterwards.
 
 ## Revoke: suspend, purge, wait, again
 

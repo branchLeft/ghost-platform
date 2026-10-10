@@ -5,6 +5,7 @@ import {
   parseArgs,
   PartialRowMismatchError,
   provisionSupportAccount,
+  provisionSupportAccountViaEngine,
   SUSPENDED_STATUS,
   unusablePasswordHash,
 } from '../../scripts/provision-support-account.mjs';
@@ -168,5 +169,60 @@ describe('provisionSupportAccount', () => {
     expect(() =>
       provisionSupportAccount({ container: 'c1', email: 'x@example.com' }, execFile)
     ).toThrow(execError);
+  });
+});
+
+describe('provisionSupportAccountViaEngine', () => {
+  const engineReturning = (result) => ({ exec: vi.fn(async () => result) });
+
+  it('runs the same inner script through the Engine client, with the account in env only', async () => {
+    const engine = engineReturning({
+      code: 0,
+      stdout: `${JSON.stringify({ created: true, repaired: false, id: 'abc', status: 'inactive' })}\n`,
+      stderr: '',
+    });
+    const result = await provisionSupportAccountViaEngine(
+      { container: 'c1', email: 'x@example.com' },
+      engine
+    );
+    expect(result).toEqual({ created: true, repaired: false, id: 'abc', status: 'inactive' });
+    const request = engine.exec.mock.calls[0][0];
+    expect(request.container).toBe('c1');
+    expect(request.env).toContain('PROVISION_SUPPORT_EMAIL=x@example.com');
+    expect(request.env.map((e) => e.split('=')[0])).toEqual([
+      'PROVISION_SUPPORT_EMAIL',
+      'PROVISION_SUPPORT_ID',
+      'PROVISION_SUPPORT_PASSWORD_HASH',
+      'PROVISION_SUPPORT_ROLE_LINK_ID',
+      'PROVISION_SUPPORT_NOW',
+    ]);
+    expect(request.cmd.slice(0, 2)).toEqual(['node', '-e']);
+    expect(request.cmd[2]).not.toContain('x@example.com');
+  });
+
+  it('re-throws the two named refusals as their own classes', async () => {
+    const partial = engineReturning({
+      code: 1,
+      stdout: '',
+      stderr: 'Error: PARTIAL_ROW_MISMATCH: {"id":"x"} does not match\n    at main\n',
+    });
+    await expect(
+      provisionSupportAccountViaEngine({ container: 'c', email: 'x@example.com' }, partial)
+    ).rejects.toBeInstanceOf(PartialRowMismatchError);
+    const active = engineReturning({
+      code: 1,
+      stdout: '',
+      stderr: 'Error: ACTIVE_EXISTING_ROW: {"id":"x"} not suspended\n',
+    });
+    await expect(
+      provisionSupportAccountViaEngine({ container: 'c', email: 'x@example.com' }, active)
+    ).rejects.toBeInstanceOf(ActiveExistingRowError);
+  });
+
+  it('reports any other non-zero exit with its code and stderr', async () => {
+    const engine = engineReturning({ code: 2, stdout: '', stderr: 'Error: boom\n' });
+    await expect(
+      provisionSupportAccountViaEngine({ container: 'c', email: 'x@example.com' }, engine)
+    ).rejects.toThrow(/exited 2: Error: boom/);
   });
 });
