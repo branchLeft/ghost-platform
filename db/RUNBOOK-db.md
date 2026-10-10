@@ -490,7 +490,8 @@ carries the account, TLS-CA and `ops1`-side handover commands.
 ## Backup retention
 
 What is kept and for how long, who deletes it, the arithmetic, the dump-age
-alarm and how to restore a noncurrent version are in
+alarm, how to restore a noncurrent version and how to bring the pruner onto a
+running db1 are in
 [`db-backup-retention-and-noncurrent-restore-runbook.md`](https://github.com/branchLeft/ghost-platform-docs/blob/main/db-backup-retention-and-noncurrent-restore-runbook.md)
 in `ghost-platform-docs`. An anchor dump that is never deleted, however old,
 holds only where `prune_backups.py` can delete. The bucket the backup worker
