@@ -167,8 +167,8 @@ and arbitrary files is the open product decision, not made here.
 What is hashed: the stored pixels. EXIF orientation is not applied and
 transparency is dropped, as the reference's own decoder does. Anything with a
 side over 512 pixels is first shrunk to 512 x 512, as the reference does.
-Correctness is measured against the reference, not asserted: the test data
-and its recorded hashes are in `test/fixtures/pdq-reference/README.txt`.
+Correctness is measured against the reference, not asserted. The byte-array
+cases and their recorded hashes are described in `test/fixtures/pdq-reference/README.txt`; the generated pictures, their generator and how to rebuild what the reference says about them are in `test/fixtures/pdq-generated/README.txt`. No third-party image is in this repository.
 
 ### No verdict source
 

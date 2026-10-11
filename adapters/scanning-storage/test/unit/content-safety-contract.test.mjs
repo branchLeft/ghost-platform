@@ -21,8 +21,8 @@ const CONTENT_SAFETY_PDQ_HASH_SHA256 =
   '98476226baf42afca604c529824ae67e4f37189f14a4d2b9f318a3f83aabd38b';
 
 function fixtureBytes(name) {
-  const reference = path.join(FIXTURES, 'pdq-reference/images', name);
-  return fs.readFileSync(fs.existsSync(reference) ? reference : path.join(FIXTURES, name));
+  const generated = path.join(FIXTURES, 'pdq-generated', name);
+  return fs.readFileSync(fs.existsSync(generated) ? generated : path.join(FIXTURES, name));
 }
 
 describe('what content-safety accepts as a PDQ hash', () => {

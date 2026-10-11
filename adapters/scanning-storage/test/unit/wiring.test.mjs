@@ -21,9 +21,9 @@ const GhostErrors = require('@tryghost/errors');
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, '../fixtures');
 const ORIGINAL = fsSync.readFileSync(
-  path.join(FIXTURES, 'pdq-reference/images/bridge-1-original.jpg')
+  path.join(FIXTURES, 'pdq-generated/scene-a-large-1280x960.jpg')
 );
-const UNRELATED = fsSync.readFileSync(path.join(FIXTURES, 'pdq-reference/images/q0291.jpg'));
+const UNRELATED = fsSync.readFileSync(path.join(FIXTURES, 'pdq-generated/scene-b-256x192.png'));
 // The hash source's own rule, as the reference states it.
 const MATCH_DISTANCE = 31;
 

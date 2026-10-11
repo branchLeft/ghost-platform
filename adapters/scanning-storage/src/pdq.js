@@ -23,8 +23,8 @@ const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 100_000_000;
 // The reference shrinks anything with a side over this to a square of this
 // size before hashing, ignoring the aspect ratio. It uses nearest neighbour;
-// Lanczos is used here because it stayed within the reference's tolerance on
-// every image of its own test data, where libvips' nearest did not.
+// Lanczos is used here because, measured against the reference, it stayed
+// within its tolerance where libvips' nearest did not (test/fixtures/pdq-generated).
 const REFERENCE_SIDE = 512;
 
 // Raster formats the hash is defined for. Vector and document formats are

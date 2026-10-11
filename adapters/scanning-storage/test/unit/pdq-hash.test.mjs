@@ -10,7 +10,7 @@ const { pdqFromPixels, HASH_BYTES, MIN_HASHABLE_DIM } = require('../../src/pdq-h
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(
-  fs.readFileSync(path.join(HERE, '../fixtures/pdq-reference/manifest.json'), 'utf8')
+  fs.readFileSync(path.join(HERE, '../fixtures/pdq-reference/pixel-cases.json'), 'utf8')
 );
 
 // The reference's own correctness test, first half: byte arrays piped into

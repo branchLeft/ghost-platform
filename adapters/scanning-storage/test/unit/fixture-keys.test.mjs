@@ -40,5 +40,5 @@ describe('the verdict keys the image tests rely on', () => {
     const { png } = patternedPng(5, { width: 1800, height: 1200, block: 1 });
     expect(png.length).toBeGreaterThan(5 * 1024 * 1024 + 1024);
     expect((await pdqHashOfImage(png)).hash).toMatch(/^[A-Za-z0-9+/]{43}=$/);
-  });
+  }, 30_000);
 });

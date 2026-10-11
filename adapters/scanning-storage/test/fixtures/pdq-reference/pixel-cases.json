@@ -4,6 +4,7 @@
     "directory": "pdq/",
     "commit": "bd0108ff1745135a421856586d19d820dd62c6de"
   },
+  "note": "Hashes printed by the reference hashing core over the byte arrays test/helpers/pdq-pixels.mjs generates.",
   "pixelCases": [
     {
       "name": "blocks-5x5x3",
@@ -244,127 +245,6 @@
       "kind": "flat",
       "expectedHex": "0000000000000000000000000000000000000000000000000000000000000000",
       "expectedQuality": 0
-    }
-  ],
-  "images": [
-    {
-      "file": "bridge-1-original.jpg",
-      "sha256": "b5b0799616df52d475a3968dc7e54f1d0724c912244ffa6175bc786375dd7298",
-      "referenceHex": "d8f8f0cee0f4a84f0637022a078f67f0b36e2ed596621e1d33e6339c4e9c9b22",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-2-rotate-90.jpg",
-      "sha256": "a4ec0b39cf38469e3c5e16869a5ea1f23995b42a4b5de15d223e905b87788317",
-      "referenceHex": "30a10efdf1c83f429013d48d0ffffc52e34e0e35ada952a9d29605215aa9e5af",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-3-rotate-180.jpg",
-      "sha256": "fc9073d9b08f7b4d90e0fbdb4693fa7c58a9746dfc4c339fce5b3320905a3b3b",
-      "referenceHex": "2dad5a64b1a142e7d362a09857da895ae63b8c7fc23794b766b319361fc93188",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-4-rotate-270.jpg",
-      "sha256": "ed7769b97c8eab168eefe5cc5a49a1372d25cfecb354e457153a8e45f208daa5",
-      "referenceHex": "a5f0a457248995e8c9065c275aaa5498b61ba4bdf8fcf80387c32f8b5bfc4f05",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-5-flipx.jpg",
-      "sha256": "3069d9eb8d9de760229cf99ddcc5a7834f08e3924b37c080c2df8bc5836737fb",
-      "referenceHex": "d8f80f33e0f417b20e37f5cd028f980fb36ed02a9662c1e233e64c634e9c64dd",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-6-flipy.jpg",
-      "sha256": "c2225164ee53418ec001fa33bf9a4cf95a73514f493c87f676a1af9f9624d19b",
-      "referenceHex": "2da9259bb1a1bd1a5362576552da32a5e63b7380c2774b4866b346c91b89ce77",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-7-flip-plus-1.jpg",
-      "sha256": "355dd5a4ccef6e205ed705c73bce8676981f9f943a06453a2f68d9d8bba3f7f1",
-      "referenceHex": "f0a1e10271ccc0bd90530b720fff038de34ef1e8ada9a956d6967ade5ea91a50",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "bridge-8-flip-minus-1.jpg",
-      "sha256": "092bfe6026946f3b9322662d010fb16dabf3da7ece9f0cbaad99772fdf16a30e",
-      "referenceHex": "2df05aa8a4896a17c14682da5aaaab07b61b5b42f8fc07fc87c3d0741bfcb0fa",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": true
-    },
-    {
-      "file": "q0003.jpg",
-      "sha256": "9f93a23582535bc62088240e38ee050c9c0e2eed5c4741339b8415bf04a0604e",
-      "referenceHex": "54a9f7c321d1443c43ba566e21d4a13989a3553f1472611cbbc5fda59e03b677",
-      "referenceQuality": 3,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "q0122.jpg",
-      "sha256": "3e7b6b95d72f6ea61c0e6c3f2a4afc7c78ee2ab08b9ac51c58388e50deb139e9",
-      "referenceHex": "cfb2009ddd21c6dab0046a7745b5984757a8a4535b3377aea2591d32b33ff940",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "q0291.jpg",
-      "sha256": "25db315820a1faee9bc4a8086914f4c6fcb818448a0e1a707fe160bb67818846",
-      "referenceHex": "a0fe94f1e5cc1cc8dd855948498dc9243f7ca27336f036d7f212b74bc103c9a7",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "q2821.jpg",
-      "sha256": "418b85299aa697927c29ff139280a988ec3c44df540a35c221dcb0fcf8051fcd",
-      "referenceHex": "b150231ffae4710ffcf4f18bb574b109a576f14bb8543189f8743289f174b109",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "shrink-a-little.jpg",
-      "sha256": "85c341bcd6293ace5413fd7febd7e689ef57d7af4324fd5d9315126d95233bfb",
-      "referenceHex": "d8f8f0cee0f4a84f0e370a22038f67f0b36e2ed596621e1d33e6339c4e9c9b22",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "shrink-a-lot.jpg",
-      "sha256": "b5711c814bea20d2f24703680393c1dfb3f41b4da5624c00da0d64bf71a12461",
-      "referenceHex": "d0f8f1ccc0f4a84d0a370a3a228f67f0b36e2ed5b6623e1d33e6339c4e9c9b22",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "small.jpg",
-      "sha256": "329479790610cd0a2668eea439374cf279ef58d7330400dbb4e3569429ef5e3d",
-      "referenceHex": "0007001f003f003f007f00ff00ff00ff01ff01ff01ff03ff03ff03ff03ff03ff",
-      "referenceQuality": 0,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "square-128x128.jpg",
-      "sha256": "9428e7578052968561f8e6f4a1114f1eaed57d659e7dd03be70d4ece371bbc15",
-      "referenceHex": "d8f8f1eec0f4a84f0e37022a078f63f0b36e2ed596621e1d33e6239c4e9c9b22",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
-    },
-    {
-      "file": "wee.jpg",
-      "sha256": "05636c50d0c2ffe3a820f964eaba35b404deadd10538fe452ad9fb16fdd823d7",
-      "referenceHex": "6227401f601ff4ccafcc9fad4b0d95d371a2eb7265a3285234d228ca94deeb2d",
-      "referenceQuality": 100,
-      "inReferenceRegressionExpected": false
     }
   ]
 }

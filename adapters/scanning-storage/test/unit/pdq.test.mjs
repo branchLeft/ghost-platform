@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
+import { pictures } from '../fixtures/pdq-generated/generate.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -13,12 +14,14 @@ const {
   decoderLoadError,
   REASON,
   MAX_IMAGE_BYTES,
+  REFERENCE_SIDE,
 } = require('../../src/pdq.js');
+const { pdqFromPixels } = require('../../src/pdq-hash.js');
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, '../fixtures');
-const REFERENCE = path.join(FIXTURES, 'pdq-reference');
-const manifest = JSON.parse(fs.readFileSync(path.join(REFERENCE, 'manifest.json'), 'utf8'));
+const GENERATED = path.join(FIXTURES, 'pdq-generated');
+const manifest = JSON.parse(fs.readFileSync(path.join(GENERATED, 'manifest.json'), 'utf8'));
 
 // The reference's tolerances, from its README: two hashes whose quality is
 // at least 80 are "within distance 10" of the reference's own; a distance of
@@ -39,8 +42,14 @@ function distance(a, b) {
   return bits;
 }
 
-function image(file) {
-  return fs.readFileSync(path.join(REFERENCE, 'images', file));
+function picture(file) {
+  return fs.readFileSync(path.join(GENERATED, file));
+}
+
+function entryFor(file) {
+  const entry = manifest.pictures.find((e) => e.file === file);
+  expect(entry, file).toBeDefined();
+  return entry;
 }
 
 async function hashOf(buffer) {
@@ -68,65 +77,133 @@ describe('digestBytes', () => {
   });
 });
 
-describe('pdqHashOfImage against the reference, the images in its own pdq/data', () => {
-  it('uses the images as they were recorded', () => {
-    for (const entry of manifest.images) {
-      const sha = crypto.createHash('sha256').update(image(entry.file)).digest('hex');
+describe('the generated pictures', () => {
+  it('are the files the manifest recorded', () => {
+    expect(manifest.pictures.length).toBeGreaterThanOrEqual(15);
+    for (const entry of manifest.pictures) {
+      const sha = crypto.createHash('sha256').update(picture(entry.file)).digest('hex');
       expect(sha, entry.file).toBe(entry.sha256);
     }
   });
 
-  it('covers the reference regression images and a spread of qualities', () => {
-    const recorded = manifest.images.filter((e) => e.inReferenceRegressionExpected);
-    expect(recorded.length).toBe(8);
-    expect(manifest.images.some((e) => e.referenceQuality >= REFERENCE_QUALITY_FLOOR)).toBe(true);
-    expect(manifest.images.some((e) => e.referenceQuality < REFERENCE_QUALITY_FLOOR)).toBe(true);
+  it('name the reference commit and the generator seed', () => {
+    expect(manifest.reference.commit).toBe('bd0108ff1745135a421856586d19d820dd62c6de');
+    expect(manifest.generator.seed).toBeGreaterThan(0);
   });
 
-  it.each(manifest.images.map((e) => [e.file, e]))(
-    '%s is within the reference tolerance of the reference hash',
-    async (_file, entry) => {
-      const result = await pdqHashOfImage(image(entry.file));
-      expect(result.reason).toBeNull();
-      const mine = Buffer.from(result.hash, 'base64');
-      const reference = Buffer.from(entry.referenceHex, 'hex');
-      expect(mine).toHaveLength(32);
-      // Below the quality floor the reference makes no promise.
-      if (entry.referenceQuality >= REFERENCE_QUALITY_FLOOR) {
-        expect(distance(mine, reference)).toBeLessThanOrEqual(REFERENCE_TOLERANCE);
-        expect(result.quality).toBeGreaterThanOrEqual(REFERENCE_QUALITY_FLOOR);
-      }
+  it('decode, when lossless, to exactly the pixels the generator computes', async () => {
+    for (const spec of pictures().filter((s) => s.lossless)) {
+      const { data, info } = await sharp(picture(spec.file))
+        .removeAlpha()
+        .toColourspace(spec.channels === 1 ? 'b-w' : 'srgb')
+        .raw({ depth: 'uchar' })
+        .toBuffer({ resolveWithObject: true });
+      expect([info.width, info.height, info.channels], spec.file).toEqual([
+        spec.width,
+        spec.height,
+        spec.channels,
+      ]);
+      expect(data.equals(spec.pixels), spec.file).toBe(true);
     }
-  );
+  });
+});
+
+// The reference's own correctness test, second half: images decoded by the
+// real decoder are within distance 10 of the reference's hash when its
+// quality is at least 80. Where the picture is lossless and needs no
+// shrinking the decoded pixels are the generator's, so the hash is identical.
+describe('pdqHashOfImage against the reference, on generated pictures', () => {
+  it.each(manifest.pictures.map((e) => [e.file, e]))('%s', async (_file, entry) => {
+    const result = await pdqHashOfImage(picture(entry.file));
+    expect(result.reason).toBeNull();
+    const mine = Buffer.from(result.hash, 'base64');
+    const reference = Buffer.from(entry.referenceHex, 'hex');
+    expect(mine).toHaveLength(32);
+    expect(result.quality).toBe(entry.referenceQuality);
+    const exact = entry.lossless && Math.max(entry.width, entry.height) <= REFERENCE_SIDE;
+    if (exact) {
+      expect(distance(mine, reference)).toBe(0);
+    } else if (entry.referenceQuality >= REFERENCE_QUALITY_FLOOR) {
+      expect(distance(mine, reference)).toBeLessThanOrEqual(REFERENCE_TOLERANCE);
+    }
+  });
+
+  it('covers every format, a shrunk picture, a flat one and both sides of both quality marks', () => {
+    const formats = new Set(manifest.pictures.map((e) => e.format));
+    expect(formats).toEqual(new Set(['png', 'jpg', 'gif', 'webp']));
+    expect(manifest.pictures.some((e) => Math.max(e.width, e.height) > REFERENCE_SIDE)).toBe(true);
+    const qualities = manifest.pictures.map((e) => e.referenceQuality);
+    expect(qualities).toContain(0);
+    expect(qualities.some((q) => q === 49)).toBe(true);
+    expect(qualities.some((q) => q === 54)).toBe(true);
+    expect(qualities.some((q) => q === 77)).toBe(true);
+    expect(qualities.some((q) => q === 82)).toBe(true);
+  });
+
+  it('a picture the reference gives quality 0 hashes to the reference value', async () => {
+    const entry = entryFor('flat-64x64.png');
+    expect(entry.referenceQuality).toBe(0);
+    expect((await pdqHashOfImage(picture(entry.file))).quality).toBe(0);
+  });
+
+  it('the photo hasher and the core agree on every lossless picture of 512 px or less', () => {
+    const both = manifest.pictures.filter((e) => e.coreOnGeneratorPixelsHex);
+    expect(both.length).toBeGreaterThanOrEqual(10);
+    for (const e of both) {
+      expect(e.coreOnGeneratorPixelsHex, e.file).toBe(e.referenceHex);
+    }
+  });
+
+  it('shrinks by a smooth filter because nearest neighbour is further from the reference', async () => {
+    const entry = entryFor('bilevel-1600x1000.png');
+    const reference = Buffer.from(entry.referenceHex, 'hex');
+    const smooth = await hashOf(picture(entry.file));
+    const { data, info } = await sharp(picture(entry.file))
+      .resize(REFERENCE_SIDE, REFERENCE_SIDE, {
+        fit: 'fill',
+        kernel: 'nearest',
+        fastShrinkOnLoad: false,
+      })
+      .toColourspace('b-w')
+      .raw({ depth: 'uchar' })
+      .toBuffer({ resolveWithObject: true });
+    const nearest = pdqFromPixels(data, info.width, info.height, info.channels).hash;
+    expect(distance(smooth, reference)).toBeLessThanOrEqual(REFERENCE_TOLERANCE);
+    expect(distance(nearest, reference)).toBeGreaterThan(REFERENCE_TOLERANCE);
+  });
 
   it('returns the canonical base64 of exactly 32 bytes', async () => {
-    const { hash } = await pdqHashOfImage(image('bridge-1-original.jpg'));
+    const { hash } = await pdqHashOfImage(picture('scene-a-480x360.jpg'));
     expect(hash).toMatch(/^[A-Za-z0-9+/]{43}=$/);
     expect(Buffer.from(hash, 'base64').toString('base64')).toBe(hash);
   });
 });
 
 describe('control cases: the same picture, and a different one', () => {
-  it('a resized and recompressed copy hashes within the match distance of the original', async () => {
-    const original = image('bridge-1-original.jpg');
-    const copy = await sharp(original).resize(400).jpeg({ quality: 55 }).toBuffer();
+  it('the resized and recompressed copy is a different file within the match distance', async () => {
+    const original = picture('scene-a-480x360.jpg');
+    const copy = picture('scene-a-small-240x180.jpg');
     expect(digestBytes(copy)).not.toBe(digestBytes(original));
     expect(distance(await hashOf(original), await hashOf(copy))).toBeLessThanOrEqual(
       MATCH_DISTANCE
     );
   });
 
-  it('the reference modified copies are within the match distance of their original', async () => {
-    const original = await hashOf(image('bridge-1-original.jpg'));
-    expect(distance(original, await hashOf(image('shrink-a-little.jpg')))).toBeLessThanOrEqual(
+  it('a copy resized and recompressed here is within the match distance of the large original', async () => {
+    const original = picture('scene-a-large-1280x960.jpg');
+    const copy = await sharp(original).resize(420).jpeg({ quality: 50 }).toBuffer();
+    expect(digestBytes(copy)).not.toBe(digestBytes(original));
+    expect(distance(await hashOf(original), await hashOf(copy))).toBeLessThanOrEqual(
       MATCH_DISTANCE
     );
   });
 
-  it('an unrelated image is further than the match distance', async () => {
-    const original = await hashOf(image('bridge-1-original.jpg'));
-    for (const other of ['q0122.jpg', 'q0291.jpg', 'q2821.jpg']) {
-      expect(distance(original, await hashOf(image(other))), other).toBeGreaterThan(MATCH_DISTANCE);
+  it('an unrelated picture is further than the match distance', async () => {
+    const original = await hashOf(picture('scene-a-480x360.jpg'));
+    for (const other of ['scene-b-256x192.png', 'scene-c-256x192.gif', 'bilevel-1600x1000.png']) {
+      expect(distance(original, await hashOf(picture(other))), other).toBeGreaterThan(
+        MATCH_DISTANCE
+      );
     }
   });
 
@@ -167,14 +244,16 @@ describe('what is hashed', () => {
     expect(distance(await hashOf(greyPng), await hashOf(rgbPng))).toBeLessThanOrEqual(2);
   });
 
-  it('hashes WebP, GIF and TIFF as well as JPEG and PNG', async () => {
-    const source = await sharp(image('wee.jpg')).raw().toBuffer({ resolveWithObject: true });
+  it('hashes TIFF as well as the formats the generated pictures cover', async () => {
+    const source = await sharp(picture('scene-a-256x192.png'))
+      .raw()
+      .toBuffer({ resolveWithObject: true });
     const options = { raw: { width: source.info.width, height: source.info.height, channels: 3 } };
-    const jpeg = await hashOf(await sharp(source.data, options).jpeg({ quality: 95 }).toBuffer());
-    for (const format of ['png', 'webp', 'gif', 'tiff']) {
-      const encoded = await sharp(source.data, options)[format]().toBuffer();
-      expect(distance(jpeg, await hashOf(encoded)), format).toBeLessThanOrEqual(MATCH_DISTANCE);
-    }
+    const png = await hashOf(await sharp(source.data, options).png().toBuffer());
+    const tiff = await hashOf(
+      await sharp(source.data, options).tiff({ compression: 'lzw' }).toBuffer()
+    );
+    expect(distance(png, tiff)).toBe(0);
   });
 });
 
@@ -198,7 +277,7 @@ describe('bytes that are not a hashable image yield no hash', () => {
     ],
     [
       'a JPEG cut off after its header',
-      fs.readFileSync(path.join(REFERENCE, 'images', 'bridge-1-original.jpg')).subarray(0, 40),
+      picture('scene-a-480x360.jpg').subarray(0, 40),
       REASON.NOT_AN_IMAGE,
     ],
   ])('%s', async (_name, bytes, reason) => {

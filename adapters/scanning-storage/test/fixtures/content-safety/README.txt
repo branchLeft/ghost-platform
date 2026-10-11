@@ -17,7 +17,7 @@ and the `contentSafety.commit` field of recorded-hashes.json. The test fails if
 the copy is edited by hand.
 
 recorded-hashes.json is the base64 hash this adapter computes for each fixture
-image (the reference images under ../pdq-reference/images and the two images the
+image (the generated pictures under ../pdq-generated and the two images the
 adapter tests use) with the decoder version it names. A change here after a
 decoder bump is the point of the file: review the distance to the old value
 before accepting it, because the hash source's list was built from other decoders.

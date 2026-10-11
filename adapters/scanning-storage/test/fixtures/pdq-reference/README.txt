@@ -1,23 +1,18 @@
-Reference data for the PDQ port (src/pdq-hash.js, src/pdq.js).
+Byte-array identity cases for the PDQ port (src/pdq-hash.js).
 
 Source: facebook/ThreatExchange, directory pdq/, commit
-bd0108ff1745135a421856586d19d820dd62c6de. LICENSE here is that repository's
-root LICENSE (BSD), which is the licence the reference states for its files.
-No licence file of its own sits in pdq/data; whether an individual image there
-carries other terms is not stated.
+bd0108ff1745135a421856586d19d820dd62c6de.
 
-images/ is a subset of pdq/data (reg-test-input/dih, reg-test-input/labelme-subset,
-misc-images, bridge-mods), byte for byte. manifest.json records, for each file,
-its sha256 and the hash and quality the reference's own photo hasher
-(pdq/cpp/bin/pdq-photo-hasher.cpp, with CImg and libjpeg/libpng) printed for it.
-For the eight reg-test-input/dih files these equal the hashes the reference
-records in pdq/cpp/reg_test/expected/out (inReferenceRegressionExpected).
+pixel-cases.json holds numeric pixel arrays, produced by
+test/helpers/pdq-pixels.mjs from fixed seeds, with the hash and quality the
+reference hashing core (pdq/cpp/hashing/pdqhashing.cpp,
+pdq/cpp/downscaling/downscaling.cpp, pdq/cpp/hashing/torben.cpp) printed for
+exactly those bytes. No image file is involved. The reference's own
+correctness test asks for this first: the same byte arrays into the reference
+and into the port give the same hash.
 
-manifest.json pixelCases are synthetic pixel arrays (test/helpers/pdq-pixels.mjs)
-with the hash and quality printed by the reference hashing core
-(pdq/cpp/hashing/pdqhashing.cpp, pdq/cpp/downscaling/downscaling.cpp,
-pdq/cpp/hashing/torben.cpp) run over exactly those bytes by
-reference-pixels-driver.cpp, built without floating-point contraction:
+Rebuild the expected values with reference-pixels-driver.cpp, built against a
+checkout of the commit above without floating-point contraction:
 
   R=<checkout of the commit above>
   clang++ -O2 -ffp-contract=off -std=c++17 -I $R \
@@ -26,10 +21,13 @@ reference-pixels-driver.cpp, built without floating-point contraction:
     reference-pixels-driver.cpp -o pdq-ref-driver
 
 The driver reads records of "WIDTH HEIGHT CHANNELS\n" then the raw bytes and
-prints "hex quality" per record. With contraction on (the compiler's default
-on some targets) one degenerate case, a flat image whose hash is rounding
-noise, differs; no other case does.
+prints "hex quality" per record. Feed it the arrays from
+test/helpers/pdq-pixels.mjs (PIXEL_CASES, plus the two flat cases named in
+pixel-cases.json). With contraction on (the compiler's default on some
+targets) one degenerate case, a flat image whose hash is rounding noise,
+differs; no other case does.
 
-Tolerances are the reference's own (pdq/README.md): quality >= 80 and within
-distance 10 of its hash. A distance of 31 or less is its suggested starting
-point for "the same picture"; the hash source does that matching here.
+The reference's licence (BSD) applies to the ported algorithm and its notice
+is src/THIRD-PARTY-LICENSE-ThreatExchange-PDQ.txt. The images used elsewhere
+in the tests are generated, not taken from the reference: see
+../pdq-generated/README.txt.
