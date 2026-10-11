@@ -96,7 +96,8 @@ construction the guard is shown to meet.
   `pull`. `docker compose pull` names no image and is not a finding. The operand
   is found past options, and past a flag's value that is a command substitution
   with spaces (`-u $(id -u):$(id -g)`, `--name x-$(date +%s)`, `$(shell id -u)`),
-  a backtick pair, or a redirect (`2>/dev/null`).
+  a backtick pair, a single-quoted value that holds a lone backtick or an unclosed
+  `$(` (`-e 'X=$('`), or a redirect (`2>/dev/null`).
   [claim: docker-verbs, docker-runtimes, operand-substitution, operand-redirect]
 - The docker word is read where it is a command: at the start of a line, and after
   `;`, `&&`, `||`, `|`, `(`, a backtick or `$(`; after `then`, `do`, `else`,
@@ -107,7 +108,8 @@ construction the guard is shown to meet.
   and with the scalar plain or quoted, and in a `run: |` block; inside a quoted
   `sh -c`, `bash -c`, `bash -lc`, `sh -ec`, `eval` string, a string assigned to a
   shell variable (`CMD="docker run ..."`), or after `ssh [options] host` quoted or
-  not; as a case arm (`a) docker run ...`, with or without an assignment); after
+  not, with the host or an option value quoted (`ssh "$HOST" '...'`,
+  `ssh -i "$KEY" user@host '...'`); as a case arm (`a) docker run ...`, with or without an assignment); after
   a Makefile recipe's `@`, `-` or `+`, and inside `$(shell ...)`. It may be a path
   (`/usr/bin/docker`) or a variable (`$DOCKER`, `${DOCKER}`, `$(DOCKER)`).
   [claim: command-line-start, command-separators, command-words,
@@ -123,7 +125,9 @@ construction the guard is shown to meet.
 - Code (`.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.py`,
   `.json`): a quoted image-shaped string with a version-shaped tag or a digest,
   when a docker or image word is within twelve lines before it, or when its name
-  is a well-known image or a listed one; and a command string passed to docker.
+  is a well-known image or a listed one; and a command string passed to docker,
+  including one in a template literal after `&&` or `;` whose image is the last
+  word (``execSync(`cd ${dir} && docker pull alpine:3`)``).
   [claim: code-strings, code-command-string]
 
 ## Syntax directive
@@ -167,11 +171,12 @@ image may be behind it. Enforce mode fails on any UNRESOLVED reference.
 
 ## Limits
 
-**The guard reads exactly the forms listed under What it reads. Any other spelling
-is not read, and a reference there is not reported: a green enforce run proves only
-that no listed form was found.** The list below names the silent classes known at
-this head. It is not exhaustive, and a spelling absent from both lists is not
-promised either way.
+**The guard reads exactly the forms listed under What it reads. A spelling not
+listed is not promised: it may be reported (the guard also reads `script:`, `cmd:`
+and `entrypoint:` scalars, a leading `!` or `{ ...; }`, and `docker container run`)
+or silently missed: a green enforce run proves only that no listed form was
+found.** The list below names the silent classes known at this head. It is not
+exhaustive, and a spelling absent from both lists is not promised either way.
 
 - The guard is static. An image chosen at run time (a computed name, a value from
   a file that is not tracked, an input) is seen only where its text is in the
@@ -182,7 +187,11 @@ promised either way.
   phrase makes that word the operand, and it is reported UNRESOLVED
   (`--device-cgroup-rule 'c 42:* rmw'`); so is a plain word, with or without `,`,
   `+`, `@` or `!`, when an image-shaped word follows it. A plain word with no
-  image after it is taken as prose and ignored.
+  image after it is taken as prose and ignored. A flag the list does not know that
+  takes a plain word (`--zzz mynet alpine:3`) makes that word the reported image.
+  Not read: a redirect between `docker` and its verb (`docker 2>&1 run ...`); an
+  empty assignment before docker (`FOO= docker run ...`), which reports `docker`;
+  a quoted YAML key (`- 'run': docker run ...`).
 - The docker word is not read after a wrapper that is not listed under What it
   reads (`flock`, `stdbuf`, `parallel`, a function of your own such as
   `on_host "docker run ..."`), when the command is held in a variable or a make

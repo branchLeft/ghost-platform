@@ -14,6 +14,7 @@ import json
 import re
 import sys
 import tempfile
+import time
 import tokenize
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -1189,6 +1190,88 @@ class ArgumentSpellingTests(unittest.TestCase):
         self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")])
 
 
+class QuotedHostTemplateAndSingleQuoteTests(unittest.TestCase):
+    """Spellings the cycle-3 tokeniser change stopped reading, found in the fifth review; each was reported before."""
+
+    SSH_LINES = (
+        "ssh \"$HOST\" 'docker pull alpine:3.19'",
+        "ssh user@\"$HOST\" 'docker pull alpine:3.19'",
+        'ssh "${HOST}" "docker run --rm alpine:3.19 id"',
+        "ssh -i \"$KEY\" user@host 'docker pull alpine:3.19'",
+        'ssh -o "StrictHostKeyChecking=no" host "docker pull alpine:3.19"',
+        "ssh -p 22 \"$HOST\" 'docker pull alpine:3.19'",
+    )
+    TEMPLATE_LINES = (
+        "execSync(`cd ${dir} && docker pull alpine:3.19`);",
+        "run(`echo hi && docker pull alpine:3.19`);",
+        "await sh(`set -e; docker pull alpine:3.19`);",
+        "exec(`cd ${d} && docker pull alpine:3.19`).then(x);",
+        "run(`docker pull alpine:3.19`, `a b`);",
+        "run(`cd d && docker pull alpine:3.19`, `a b`);",
+    )
+    SINGLE_QUOTED = (
+        "docker run --rm -e 'X=`' alpine:3.19 id",
+        "docker run --rm --label 'a`b' alpine:3.19 id",
+        "docker run --rm -e 'X=$(' alpine:3.19 id",
+        "docker run --rm -e 'X=$(echo a b' alpine:3.19 id",
+        "docker run --rm -e 'X=`' alpine:3.19 id && echo `date`",
+    )
+
+    def refs(self, path, line):
+        findings, _ = scan_tree({path: line + "\n"})
+        return [(f.kind, f.ref) for f in findings]
+
+    def test_a_quoted_host_or_option_value_before_an_ssh_command_string(self):
+        for line in self.SSH_LINES:
+            self.assertEqual(self.refs("t.sh", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_ssh_agent_is_not_ssh(self):
+        self.assertEqual(self.refs("t.sh", 'echo ssh-agent "docker run --rm alpine:3.19 id"'), [])
+
+    def test_a_command_in_a_template_literal_whose_image_is_the_last_word(self):
+        for line in self.TEMPLATE_LINES:
+            self.assertEqual(self.refs("x.ts", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_a_template_literal_command_after_sudo_or_an_assignment(self):
+        for line in ("exec(`sudo docker pull alpine:3.19`);", "exec(`FOO=1 docker pull alpine:3.19`);"):
+            self.assertEqual(self.refs("x.ts", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_an_unbalanced_backtick_or_dollar_paren_inside_single_quotes(self):
+        for line in self.SINGLE_QUOTED:
+            self.assertEqual(self.refs("t.sh", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_an_unclosed_dollar_paren_outside_quotes_does_not_swallow_the_image(self):
+        self.assertEqual(self.refs("t.sh", "docker run --rm -e X=$( alpine:3.19 id"), [("unqualified", "alpine:3.19")])
+
+    def test_the_spellings_the_limits_sentence_says_it_also_reads(self):
+        for path, text in (
+            ("w.yml", "- script: docker run --rm alpine:3.19 id\n"),
+            ("w.yml", "- cmd: docker run --rm alpine:3.19 id\n"),
+            ("w.yml", "- entrypoint: docker run --rm alpine:3.19 id\n"),
+            ("t.sh", "! docker run --rm alpine:3.19 id\n"),
+            ("t.sh", "{ docker run --rm alpine:3.19 id; }\n"),
+            ("t.sh", "docker container run --rm alpine:3.19 id\n"),
+        ):
+            kinds = [k for _, _, k in found({path: text})]
+            self.assertEqual(kinds, ["unqualified"], text)
+
+    def test_a_long_line_of_command_substitutions_is_scanned_in_linear_time(self):
+        line = "docker run --rm " + "$(x y) " * 40000 + "alpine:3.19 id"
+        start = time.monotonic()
+        words = guard.tokens_of(line[len("docker"):])
+        elapsed = time.monotonic() - start
+        self.assertGreater(len(words), 40000)
+        self.assertLess(elapsed, 3.0)
+
+    def test_a_long_line_of_unclosed_substitutions_is_scanned_in_linear_time(self):
+        line = "docker run --rm " + "$( x " * 8000 + "alpine:3.19 id"
+        start = time.monotonic()
+        words = guard.tokens_of(line[len("docker"):])
+        elapsed = time.monotonic() - start
+        self.assertGreater(len(words), 8000)
+        self.assertLess(elapsed, 3.0)
+
+
 def _lines(prefixes, tail="docker run --rm alpine:3 true"):
     return [("t.sh", f"{p} {tail}\n") for p in prefixes]
 
@@ -1252,6 +1335,11 @@ CLAIMS = {
         ("t.sh", "ssh user@host docker pull alpine:3\n"),
         ("t.sh", "ssh -t host docker pull alpine:3\n"),
         ("t.sh", 'ssh -i key user@host "docker pull alpine:3"\n'),
+        ("t.sh", "ssh \"$HOST\" 'docker pull alpine:3'\n"),
+        ("t.sh", "ssh user@\"$HOST\" 'docker pull alpine:3'\n"),
+        ("t.sh", 'ssh "${HOST}" "docker run --rm alpine:3 id"\n'),
+        ("t.sh", "ssh -i \"$KEY\" user@host 'docker pull alpine:3'\n"),
+        ("t.sh", 'ssh -o "StrictHostKeyChecking=no" host "docker pull alpine:3"\n'),
     ],
     "command-yaml-quoted": [
         ("w.yml", '- run: "docker run alpine:3"\n'),
@@ -1277,6 +1365,8 @@ CLAIMS = {
         ("t.sh", "docker run --rm -e FOO=$(cat f) alpine:3 true\n"),
         ("Makefile", "t:\n\tdocker run --rm -u $(shell id -u) alpine:3 id\n"),
         ("w.yml", "- run: docker run --rm -u $(id -u):$(id -g) alpine:3 id\n"),
+        ("t.sh", "docker run --rm -e 'X=`' alpine:3 id\n"),
+        ("t.sh", "docker run --rm -e 'X=$(echo a b' alpine:3 id\n"),
     ],
     "operand-redirect": [("t.sh", "docker run --rm 2>/dev/null alpine:3 true\n")],
     "makefile-recipe": [("Makefile", f"t:\n\t{r}docker run alpine:3\n") for r in ("", "@", "-", "+")]
@@ -1292,6 +1382,9 @@ CLAIMS = {
         ("x.ts", "execSync('docker run --rm postgres:17 psql');\n"),
         ("x.ts", "execSync('FOO=1 docker run --rm node:20 true');\n"),
         ("package.json", '{"scripts":{"t":"npm run b && docker run --rm node:20 true"}}\n'),
+        ("x.ts", "execSync(`cd ${dir} && docker pull alpine:3`);\n"),
+        ("x.ts", "await sh(`set -e; docker pull alpine:3`);\n"),
+        ("x.ts", "exec(`cd ${d} && docker pull alpine:3`).then(x);\n"),
     ],
 }
 
@@ -1324,8 +1417,10 @@ class ClaimsTableTests(unittest.TestCase):
         limits = text.split("## Limits", 1)[1]
         self.assertTrue(
             limits.lstrip().startswith(
-                "**The guard reads exactly the forms listed under What it reads. Any other spelling is not read, "
-                "and a reference there is not reported: a green enforce run proves only that no listed form was found.**"
+                "**The guard reads exactly the forms listed under What it reads. A spelling not listed is not "
+                "promised: it may be reported (the guard also reads `script:`, `cmd:` and `entrypoint:` scalars, a "
+                "leading `!` or `{ ...; }`, and `docker container run`) or silently missed: a green enforce run "
+                "proves only that no listed form was found.**"
             )
         )
 

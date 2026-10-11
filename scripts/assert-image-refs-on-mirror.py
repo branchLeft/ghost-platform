@@ -133,7 +133,9 @@ COMMAND_WORDS = {
 }
 YAML_COMMAND_KEY = re.compile(r"\b(?:run|command|cmd|entrypoint|script):\s*(?:[|>][-+]?)?\Z")
 KEY_QUOTE_RE = re.compile(r"""\b(run|command|cmd|entrypoint|script):\s*["']""")
-SHELL_STRING_PREFIX = re.compile(r"""(?:\s-[A-Za-z]*c|\beval|\bssh\b[^'"]*|\bsh|\bbash)\s+["']\Z""")
+SHELL_STRING_PREFIX = re.compile(r"""(?:\s-[A-Za-z]*c|\beval|\bsh|\bbash)\s+["']\Z""")
+IDENT_PAREN_RE = re.compile(r"\$\([A-Za-z_]\w*\)")
+CLOSED_QUOTES_RE = re.compile(r"\"[^\"]*\"|'[^']*'")
 ASSIGN_STRING_RE = re.compile(
     r"""(?:\A|[\s;&|(])(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?)?[A-Za-z_]\w*\+?=["']\Z"""
 )
@@ -492,15 +494,16 @@ def command_position(before: str, code: bool) -> bool:
     if b[-1] in "'\"" and b.count(b[-1]) % 2 == 1:  # an opening quote: docker is inside a string
         if code:
             return not PROSE_CALL.search(b)
-        return bool(SHELL_STRING_PREFIX.search(b) or ASSIGN_STRING_RE.search(b))
+        return bool(
+            SHELL_STRING_PREFIX.search(b) or ASSIGN_STRING_RE.search(b) or _ssh_before_string(b[:-1])
+        )
     if code:
-        opened = [b.rfind(q) for q in "'\"`" if b.count(q) % 2 == 1]  # inside a string begun earlier on the line
-        if opened:
-            start = max(opened)
+        start = _open_quote(b)[0]  # inside a string begun earlier on the line
+        if start >= 0:
             if PROSE_CALL.search(b[:start]):
                 return False
             return _after_prefix(b[start + 1:].split())
-    b = re.sub(r"\"[^\"]*\"|'[^']*'", "X", b)  # a closed quoted value, as in FOO="a b" docker run
+    b = CLOSED_QUOTES_RE.sub("X", b)  # a closed quoted value, as in FOO="a b" docker run
     if b[-1] in ";&|({`!" or YAML_COMMAND_KEY.search(b) or CASE_ARM_RE.search(b):
         return True
     return _after_prefix(b.split())
@@ -508,6 +511,8 @@ def command_position(before: str, code: bool) -> bool:
 
 def _after_prefix(words: list[str]) -> bool:
     """True when words end in a command word, ignoring options, durations and FOO=1 assignments."""
+    if words and words[-1][-1] in ";&|(":
+        return True  # a separator, possibly stuck to an option: set -e; docker pull
     while words and words[-1] != "-" and ARG_WORD_RE.match(words[-1]):
         words.pop()  # options, a duration, or a FOO=1 assignment before the command
     if not words or words[-1] in COMMAND_WORDS or CASE_LABEL_RE.match(words[-1]) or "sudo" in words[-4:]:
@@ -533,31 +538,65 @@ def _ssh_host_last(words: list[str]) -> bool:
     return False
 
 
+def _ssh_before_string(prefix: str) -> bool:
+    """True when `prefix` ends in `ssh [options] host`, quoted values and all: an ssh command string follows."""
+    return _ssh_host_last(CLOSED_QUOTES_RE.sub("X", prefix).split())
+
+
+def _open_quote(text: str) -> tuple[int, str]:
+    """(index, quote character) of the innermost quote still open at the end of `text`, or (-1, '')."""
+    opened = [(text.rfind(q), q) for q in "'\"`" if text.count(q) % 2 == 1]
+    return max(opened) if opened else (-1, "")
+
+
+def _matching_paren(text: str, start: int) -> int:
+    """Index of the `)` that closes a `(` already opened before `start`, or -1."""
+    depth = 1
+    for j in range(start, len(text)):
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return j
+    return -1
+
+
 def _protect_substitutions(text: str) -> str:
-    """Hide the spaces and parentheses inside `$(...)` and backticks so the span stays one shell word."""
-    out, depth, tick, i = [], 0, False, 0
-    while i < len(text):
-        two = text[i:i + 2]
+    """Hide the spaces and parentheses inside `$(...)` and backticks so the span stays one shell word.
+
+    A span that is not closed, and anything inside single quotes, is left alone: there it is text, not a
+    substitution, and gluing the rest of the line to it would hide the image.
+    """
+    out = list(text)
+    n, i = len(text), 0
+    single = double = False
+    no_close = False  # no `)` remains after the last unclosed `$(`, so none can close
+    while i < n:
         ch = text[i]
-        if depth == 0 and two == "$(" and not re.match(r"\$\([A-Za-z_]\w*\)", text[i:]):
-            depth = 1
-            out.append("$")
-            out.append(_SUBSTITUTION_ENCODE["("])
-            i += 2
-            continue
-        if depth:
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-            out.append(_SUBSTITUTION_ENCODE.get(ch, ch))
+        if single:
+            single = ch != "'"
+        elif ch == "\\":
             i += 1
-            continue
-        if ch == "`":
-            tick = not tick
-            out.append(ch)
-        else:
-            out.append(_SUBSTITUTION_ENCODE.get(ch, ch) if tick else ch)
+        elif ch == "'" and not double:
+            single = True
+        elif ch == '"':
+            double = not double
+        elif ch == "$" and text.startswith("$(", i) and not IDENT_PAREN_RE.match(text, i):
+            end = -1 if no_close else _matching_paren(text, i + 2)
+            if end == -1:
+                no_close = True
+                out[i + 1] = _SUBSTITUTION_ENCODE["("]  # an unclosed $( is plain text, not a subshell
+            else:
+                for j in range(i + 1, end + 1):
+                    out[j] = _SUBSTITUTION_ENCODE.get(text[j], text[j])
+                i = end
+        elif ch == "`":
+            end = text.find("`", i + 1)
+            if end != -1:
+                for j in range(i + 1, end):
+                    out[j] = _SUBSTITUTION_ENCODE.get(text[j], text[j])
+                i = end
         i += 1
     return "".join(out)
 
@@ -633,7 +672,10 @@ def docker_operands(text: str, code: bool) -> list[tuple[str, bool]]:
             continue
         before = text[: m.start()].rstrip()
         rest = text[m.end():]
-        if before[-1:] in ("'", '"', "`") and before[-1] in rest:
+        quote = _open_quote(before)[1] if code else ""
+        if quote and quote in rest:
+            rest = rest.split(quote, 1)[0]  # the command ends where the string it sits in does
+        elif before[-1:] in ("'", '"', "`") and before[-1] in rest:
             rest = rest.split(before[-1], 1)[0]  # the command is the whole of a quoted string
         words = tokens_of(rest)
         i = 0
