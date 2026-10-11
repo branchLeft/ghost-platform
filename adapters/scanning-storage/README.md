@@ -115,12 +115,15 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
 
 The same keys apply under `storage__media__*` and `storage__files__*`.
+
+What is measured about the scanner, and the owner's service level targets,
+are in `SLO.md`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for
 that content type; until then it is configuration with no effect.
 
 ## The seam
 
-```
+```text
 Check       { kind: 'media' | 'text', blocking: boolean, run(subject): Verdict }
 Verdict     { classification: string | 'unavailable', matchType?, confidence?, source, evidence }
 Policy      { decide(Verdict, Context): 'allow' | 'refuse' | 'hold' | 'flag' }
