@@ -150,7 +150,25 @@ says so:
 2. Waits five seconds.
 3. Does both again (adapter review, requirement 1). A session the adapter
    admitted just before the revoke can be written after the first purge.
-4. Appends the closing record and removes the state file.
+4. Appends the closing record and removes the state file
+   only if it is still the grant it read (a newer grant keeps its clock).
+
+The state is renamed to a private `.<slug>.<pid>.<id>.claim` name first, which
+is atomic, so what is compared is exactly what is removed; no lock is taken, so
+a stuck process can never stop a later close. A state that turns out to be a
+different grant is linked back. If that link fails, or a different grant is
+already in place, the claim file is kept, `revoke` exits 1 and `status` lists
+it as `held`. A held claim is never dropped for another grant's sake, because
+that grant's deadline need not be its own.
+
+- `expire` links a claim older than a minute back into place. If it cannot,
+  and the claim's deadline has passed (or it cannot be read), `expire` closes
+  the account like any due grant, writes the closing record, then drops the
+  claim. The account is never left open for want of a working link.
+- `grant` refuses while a claim is held for the tenant, so a held grant is
+  never overwritten by a new one.
+- An explicit `revoke` closes every claim held for the tenant when it starts,
+  after its closing record, so a closed grant's state does not come back.
 
 It runs whatever the account's status is (requirement 2). A tenant who
 re-suspended from the Staff screen during the window still leaves the session
@@ -165,5 +183,5 @@ grant opens and one when it closes. The closing record carries the lane, the
 reference, the reasons, the grant and close times, the cause (`timer` or
 `explicit`), whether the account was found, its status before the revoke, and
 the sessions purged on each pass. It also records whether the state file was
-found, whether it was unreadable, and whether the configured identity changed
-during the window.
+found, how many held claims it closed (`heldClaims`), whether the state was
+unreadable, and whether the configured identity changed during the window.

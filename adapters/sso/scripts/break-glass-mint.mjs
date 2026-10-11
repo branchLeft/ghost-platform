@@ -104,7 +104,11 @@ export function breakGlassUrl(origin, token) {
 export function loadSigningKey(keyFile, fsImpl = fs) {
   let fd;
   try {
-    fd = fsImpl.openSync(keyFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    // O_NONBLOCK: opening a FIFO here would otherwise wait for a writer, before the type check.
+    fd = fsImpl.openSync(
+      keyFile,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK
+    );
   } catch (error) {
     if (error.code === 'ELOOP') {
       throw new MintRefusedError(`${keyFile} is a symlink; the key must be the file itself`);
