@@ -21,7 +21,9 @@ export class FakeWrappedAdapter extends FakeStorageBase {
 
   async save(file, targetDir) {
     this.saved.push({ file, targetDir });
-    let targetPath = `${targetDir ?? ''}/${file.name}`;
+    // Like a real adapter, which dates the folder itself when none is given.
+    const dir = targetDir ?? this.config.defaultTargetDir;
+    let targetPath = `${dir ?? ''}/${file.name}`;
     // Like a real adapter's save(): a taken name gets a new one, so a
     // replace that fails to overwrite is visible as a second object.
     if (this.config.uniqueNames) {
@@ -29,7 +31,7 @@ export class FakeWrappedAdapter extends FakeStorageBase {
       const stem = dot < 0 ? file.name : file.name.slice(0, dot);
       const ext = dot < 0 ? '' : file.name.slice(dot);
       for (let n = 1; this.files.has(this.#key(targetPath)); n += 1) {
-        targetPath = `${targetDir ?? ''}/${stem}-${n}${ext}`;
+        targetPath = `${dir ?? ''}/${stem}-${n}${ext}`;
       }
     }
     this.files.set(this.#key(targetPath), Buffer.from(`saved:${file.name}`));

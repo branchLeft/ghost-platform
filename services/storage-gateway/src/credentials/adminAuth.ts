@@ -1,4 +1,11 @@
-import { createPublicKey, verify as cryptoVerify, type KeyObject } from 'node:crypto';
+import {
+  createHash,
+  createPublicKey,
+  timingSafeEqual,
+  verify as cryptoVerify,
+  type KeyObject,
+} from 'node:crypto';
+import { closeSync, fstatSync, openSync, readFileSync } from 'node:fs';
 
 /**
  * The only two callers the admin interface answers. Each holds its own
@@ -181,9 +188,12 @@ export const CALLER_KEY_ENV: Readonly<Record<AdminCaller, string>> = {
 };
 
 /**
- * Reads both callers' public keys. Fails closed when either is missing or
- * malformed, or when both are the same key, which would let one caller act
- * as the other.
+ * Reads both callers' public keys. This reads the process environment, which
+ * pins nothing: anything able to set the gateway's environment chooses who
+ * may mint. Nothing outside this module calls either loader yet; the start-up
+ * code must call only {@link loadPinnedCallerKeys}, with no fallback to this
+ * one. Fails closed when either is missing or malformed, or when both are
+ * the same key, which would let one caller act as the other.
  */
 export function loadCallerKeys(
   env: Readonly<Record<string, string | undefined>>
@@ -207,4 +217,62 @@ export function loadCallerKeys(
     'provisioning-controller': publicKeyFromRaw(raw['provisioning-controller']),
     'erasure-job': publicKeyFromRaw(raw['erasure-job']),
   };
+}
+
+export interface PinnedKeysOptions {
+  /** The only owner the pinned files may have; root by default. */
+  readonly trustedUid?: number;
+}
+
+/** Reads a file through one descriptor, refusing one a non-owner could have changed. */
+function readTrustedFile(path: string, trustedUid: number): Buffer {
+  const fd = openSync(path, 'r');
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new Error(`${path} is not a regular file`);
+    if (info.uid !== trustedUid) throw new Error(`${path} is not owned by the trusted user`);
+    if ((info.mode & 0o022) !== 0) throw new Error(`${path} is writable by its group or others`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Reads both callers' public keys from a root-owned file whose SHA-256 is
+ * pinned in a second root-owned file, `<path>.sha256`. Each file must be a
+ * regular file owned by the trusted user and not writable by group or
+ * others, and the keys file must hash to the pinned digest, so editing the
+ * keys takes both files. The keys file is JSON with one base64 key per
+ * caller name. Fails closed on any mismatch, then applies the same key checks
+ * as {@link loadCallerKeys}.
+ */
+export function loadPinnedCallerKeys(
+  path: string,
+  options: PinnedKeysOptions = {}
+): Record<AdminCaller, KeyObject> {
+  const trustedUid = options.trustedUid ?? 0;
+  const keysBytes = readTrustedFile(path, trustedUid);
+  const pinned = readTrustedFile(`${path}.sha256`, trustedUid).toString('utf8').trim();
+  if (!/^[0-9a-f]{64}$/.test(pinned)) throw new Error('the pinned digest is not a SHA-256 hex');
+  const actual = createHash('sha256').update(keysBytes).digest();
+  if (!timingSafeEqual(actual, Buffer.from(pinned, 'hex'))) {
+    throw new Error('the admin keys file does not match its pinned digest; refusing to start');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(keysBytes.toString('utf8'));
+  } catch {
+    throw new Error('the admin keys file is not valid JSON');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('the admin keys file must be a JSON object');
+  }
+  const record = parsed as Record<string, unknown>;
+  const env: Record<string, string | undefined> = {};
+  for (const caller of ADMIN_CALLERS) {
+    const value = record[caller];
+    env[CALLER_KEY_ENV[caller]] = typeof value === 'string' ? value : undefined;
+  }
+  return loadCallerKeys(env);
 }

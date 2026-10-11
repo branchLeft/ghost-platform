@@ -11,6 +11,7 @@ const CODES: RefusalCode[] = [
   'target-malformed',
   'bucket-not-allowed',
   'key-outside-folder',
+  'upload-not-bound',
 ];
 
 describe('refusal', () => {
