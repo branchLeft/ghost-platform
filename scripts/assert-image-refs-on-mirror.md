@@ -196,6 +196,25 @@ exhaustive, and a spelling absent from both lists is not promised either way.
   reads (`flock`, `stdbuf`, `parallel`, a function of your own such as
   `on_host "docker run ..."`), when the command is held in a variable or a make
   macro (`$(DOCKER_RUN) alpine:3`), or after a prose word.
+- An `ssh` word glued to the character before it is not read, so the docker
+  command string after it is not read either. This covers `$(ssh`, `(ssh`, a
+  backtick before `ssh`, `<(ssh`, `x;ssh` and `x&&ssh`. The usual capture form
+  `out=$(ssh host 'docker pull alpine:3.19')` is in this class and is silent.
+  A spaced `$( ssh host '...')`, `timeout 5 ssh`, `sudo ssh` and
+  `{ ssh host '...'; }` are still read.
+- Lost at an earlier head and silent now: `my-ssh host '...'` and
+  `kubectl-ssh node '...'` (a hyphenated wrapper); `az ssh vm --local-user u -- '...'`
+  (a host word is needed before the string); and a double-quoted ssh string that
+  closes and reopens around `"$PWD"`. `echo ssh-agent '...'` is no longer read,
+  on purpose: that was a false positive.
+- Never read at any head: `ssh host 'sudo docker pull ...'`,
+  `sh -c 'sudo docker pull ...'`, `ssh host 'A=1 docker pull ...'` and
+  `ssh host "$(echo x)" 'docker ...'`. A `sudo` or assignment prefix inside the
+  quoted string does not compose with the `ssh` or `sh -c` forms.
+- What a miss costs: in warn mode a miss is a missed warning, because the guard
+  exits 0. No reference is hidden in the tree today. The cost lands when a later
+  change adds such a line, and when warn mode is switched to enforce. The owner
+  has accepted this gap, and a follow-up fix is tracked outside this repo.
 - Quoted strings in code are read only near a docker or image word (twelve lines
   before), or when the name is well known or listed, and only when they look like
   an image. Image names built by concatenation are not followed.
