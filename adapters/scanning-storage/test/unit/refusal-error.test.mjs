@@ -45,3 +45,26 @@ describe('buildScannerUnconfiguredError', () => {
     expect(err.context).not.toMatch(/flagged|csam|harmful/);
   });
 });
+
+describe('buildVerdictPendingError', () => {
+  const { buildVerdictPendingError } = require('../../src/refusal-error.js');
+
+  it('is a typed 503 MaintenanceError that names no classification', () => {
+    const err = buildVerdictPendingError(GhostErrors);
+    expect(err).toBeInstanceOf(GhostErrors.MaintenanceError);
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toMatch(/not answered/);
+    expect(err.context).not.toMatch(/flagged|csam|harmful/);
+  });
+});
+
+describe('buildUncheckableError', () => {
+  const { buildUncheckableError } = require('../../src/refusal-error.js');
+
+  it('is a typed 415 UnsupportedMediaTypeError that names no classification', () => {
+    const err = buildUncheckableError(GhostErrors);
+    expect(err).toBeInstanceOf(GhostErrors.UnsupportedMediaTypeError);
+    expect(err.statusCode).toBe(415);
+    expect(err.context).not.toMatch(/flagged|csam|harmful/);
+  });
+});

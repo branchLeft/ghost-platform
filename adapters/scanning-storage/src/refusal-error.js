@@ -40,11 +40,45 @@ function buildScannerUnconfiguredError(GhostErrors) {
   });
 }
 
+// A tree of files (a theme) cannot be accepted-and-held the way one upload
+// can: its files are served from where they land. So a verdict that has not
+// arrived yet declines the whole tree, and nothing is kept for it.
+const VERDICT_PENDING_MESSAGE =
+  'Uploads are unavailable: the platform safety check has not answered yet.';
+const VERDICT_PENDING_CONTEXT =
+  'This upload could not be checked right now and was not accepted. Try again later.';
+
+function buildVerdictPendingError(GhostErrors) {
+  return new GhostErrors.MaintenanceError({
+    message: VERDICT_PENDING_MESSAGE,
+    context: VERDICT_PENDING_CONTEXT,
+  });
+}
+
+// An entry the checks cannot read as bytes (a link, a device, a socket), or
+// a write that carries no file tree to walk. Declined: unchecked is refused.
+const UNCHECKABLE_MESSAGE = 'Unsupported media error, cannot accept this upload.';
+const UNCHECKABLE_CONTEXT =
+  'This upload contains content that could not be checked by the platform safety check.';
+
+function buildUncheckableError(GhostErrors) {
+  return new GhostErrors.UnsupportedMediaTypeError({
+    message: UNCHECKABLE_MESSAGE,
+    context: UNCHECKABLE_CONTEXT,
+  });
+}
+
 module.exports = {
   buildRefusalError,
   buildScannerUnconfiguredError,
+  buildVerdictPendingError,
+  buildUncheckableError,
   GENERIC_CONTEXT,
   UNCONFIGURED_MESSAGE,
   UNCONFIGURED_CONTEXT,
+  VERDICT_PENDING_MESSAGE,
+  VERDICT_PENDING_CONTEXT,
+  UNCHECKABLE_MESSAGE,
+  UNCHECKABLE_CONTEXT,
   specificContext,
 };
