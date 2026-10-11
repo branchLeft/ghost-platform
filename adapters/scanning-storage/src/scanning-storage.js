@@ -104,6 +104,35 @@ function takeOriginalOf(file, names, now = Date.now()) {
   return names.delete(`${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`);
 }
 
+// Ghost's content importer asks getUniqueFileName() for each file's path,
+// rewrites every post and image reference to it, and only later calls
+// save(). So the name chosen there is reserved for that file (keyed by its
+// temp path, directory and name), held until save() takes it or an hour
+// passes, and refused outright when the table is full rather than letting a
+// reference dangle later.
+const RESERVATION_WINDOW_MS = 60 * 60 * 1000;
+const RESERVATION_MAX_ENTRIES = 100000;
+
+function reservationKey(file, targetDir) {
+  return `${file.path || ''}\n${targetDir || ''}\n${file.name}`;
+}
+
+function liveReservation(reservations, key, now = Date.now()) {
+  for (const [other, entry] of reservations) {
+    if (entry.expiresAt <= now) {
+      reservations.delete(other);
+    }
+  }
+  return reservations.get(key)?.name;
+}
+
+// The reserved basename, spent, or undefined.
+function takeReservation(reservations, key, now = Date.now()) {
+  const name = liveReservation(reservations, key, now);
+  reservations.delete(key);
+  return name;
+}
+
 // What the wrapped adapter actually stored: the last segment of the URL it
 // returned, falling back to the name it was given.
 function storedBasename(url, fallback) {
@@ -191,6 +220,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         Number(config.overwriteWindowMs) > 0 ? Number(config.overwriteWindowMs) : 60000;
       this.pendingOverwrites = new Map();
       this.storedNames = new Map();
+      this.reservedNames = new Map();
 
       this.hold = new HoldRegistry({
         checks: this.checks,
@@ -263,26 +293,76 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       }
       // Ghost names an upload after its own filename, so members-only and
       // draft media would otherwise sit at a guessable URL. Named only once
-      // the scan has allowed it, so a refusal leaves no name behind.
-      return this.#scanAndProceed(buffer, {
-        proceed: async () => {
-          const isOriginal = takeOriginalOf(file, this.storedNames);
-          const named = isOriginal ? file : withRandomName(file);
-          const url = await this.wrapped.save(named, targetDir);
-          if (!isOriginal) {
-            rememberStoredName(this.storedNames, storedBasename(url, named.name));
-          }
-          return url;
-        },
-        onHold: (digest) => {
-          const isOriginal = takeOriginalOf(file, this.storedNames);
-          const targetPath = this.#computeHeldTargetPath(digest, file, targetDir, isOriginal);
-          if (!isOriginal) {
-            rememberStoredName(this.storedNames, path.posix.basename(targetPath));
-          }
-          return this.#registerHold(digest, buffer, targetPath);
-        },
+      // the scan has allowed it, so a refusal leaves no name behind. A name
+      // reserved by getUniqueFileName() is used as it was promised.
+      const key = reservationKey(file, targetDir);
+      // `fixed` is a name already promised; without one the name is fresh.
+      const promised = () => {
+        const reserved = takeReservation(this.reservedNames, key);
+        if (reserved !== undefined) {
+          return { fixed: reserved, remember: true };
+        }
+        if (takeOriginalOf(file, this.storedNames)) {
+          return { fixed: file.name, remember: false };
+        }
+        return { fixed: undefined, remember: true };
+      };
+      try {
+        return await this.#scanAndProceed(buffer, {
+          proceed: async () => {
+            const { fixed, remember } = promised();
+            const name = fixed ?? withRandomName(file).name;
+            const url = await this.wrapped.save({ ...file, name }, targetDir);
+            if (remember) {
+              rememberStoredName(this.storedNames, storedBasename(url, name));
+            }
+            return url;
+          },
+          onHold: (digest) => {
+            const { fixed, remember } = promised();
+            const targetPath = this.#computeHeldTargetPath(digest, file, targetDir, fixed);
+            if (remember) {
+              rememberStoredName(this.storedNames, path.posix.basename(targetPath));
+            }
+            return this.#registerHold(digest, buffer, targetPath);
+          },
+        });
+      } catch (error) {
+        this.reservedNames.delete(key);
+        throw error;
+      }
+    }
+
+    // Ghost's importer calls this for every file, rewrites its references to
+    // the returned path, and later calls save() with the same file and
+    // directory. The returned path carries the random component, and save()
+    // stores at exactly it.
+    async getUniqueFileName(file, targetDir) {
+      const unique = (named) =>
+        typeof super.getUniqueFileName === 'function'
+          ? super.getUniqueFileName(named, targetDir)
+          : path.join(targetDir || '', named.name);
+      const usable = file && typeof file.name === 'string' && file.name.length > 0;
+      // A refused upload will never be saved, so there is nothing to reserve.
+      if (!usable || this.refuseUploadsReason) {
+        return unique(usable ? withRandomName(file) : file);
+      }
+      const key = reservationKey(file, targetDir);
+      const reserved = liveReservation(this.reservedNames, key);
+      if (reserved !== undefined) {
+        return unique({ ...file, name: reserved });
+      }
+      if (this.reservedNames.size >= RESERVATION_MAX_ENTRIES) {
+        throw new Error(
+          'ScanningStorageAdapter: too many upload names are reserved and not yet saved; retry later'
+        );
+      }
+      const result = await unique(withRandomName(file));
+      this.reservedNames.set(key, {
+        name: path.basename(result),
+        expiresAt: Date.now() + RESERVATION_WINDOW_MS,
       });
+      return result;
     }
 
     // Never reaches the wrapped adapter: the storage gateway refuses every
@@ -426,12 +506,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // (nothing has been written to wrapped storage for either yet) and
     // collide on promotion. The digest is known to anyone holding the same
     // bytes, so the random component is what keeps the key unguessable.
-    #computeHeldTargetPath(digest, file, targetDir, keepName = false) {
+    #computeHeldTargetPath(digest, file, targetDir, fixedName) {
       const dir = targetDir || this.#defaultTargetDir();
       const ext = path.extname((file && file.name) || '');
-      // An original already carries its processed image's component and
-      // keeps its name, so Ghost's `_o` lookup finds it.
-      const name = keepName ? file.name : `${digest}-${randomNameComponent()}${ext}`;
+      // A name already promised (an original's, or one an importer reserved)
+      // is kept, so the lookup or reference that was written finds it.
+      const name = fixedName ?? `${digest}-${randomNameComponent()}${ext}`;
       return path.join(dir, name).split(path.sep).join('/');
     }
 

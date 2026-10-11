@@ -431,6 +431,68 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
   );
 
   it(
+    'stores the untouched original of a resized upload where Ghost looks for it, under the same random component',
+    { timeout: 120_000 },
+    async () => {
+      // Resize on: Ghost saves the processed image, then the original as
+      // `<stored name>_o<ext>` into the same directory, and later asks for
+      // exactly that name.
+      const ghost = await GhostContainer.start({
+        imageOptimization__resize: 'true',
+        storage__images__adapter: 'ScanningStorageAdapter',
+        storage__images__verdictSource: 'in-process-fake',
+        storage__images__wraps: 'LocalImagesStorage',
+        storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+        storage__media__adapter: 'ScanningStorageAdapter',
+        storage__media__verdictSource: 'in-process-fake',
+        storage__media__wraps: 'LocalMediaStorage',
+        storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+        storage__files__adapter: 'ScanningStorageAdapter',
+        storage__files__verdictSource: 'in-process-fake',
+        storage__files__wraps: 'LocalFilesStorage',
+        storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+      });
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const uploaded = await ghost.uploadImage(
+          cookie,
+          path.join(FIXTURES, 'clean.png'),
+          'photo.png'
+        );
+        assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+
+        const storedPath = new URL(uploaded.body.images[0].url).pathname;
+        const match = /^(\/content\/images\/.+\/)(photo-[a-z2-7]{22})\.png$/.exec(storedPath);
+        assert.ok(match, `stored name must carry one random component: ${storedPath}`);
+        const [, urlDir, storedStem] = match;
+
+        const dir = `/var/lib/ghost${urlDir.replace(/\/$/, '')}`;
+        const listing = ghost.ls(dir);
+        assert.ok(
+          listing.includes(`${storedStem}_o.png`),
+          `the original must be stored as <stored name>_o.png: ${listing}`
+        );
+        assert.equal(
+          listing.filter((f) => f.startsWith('photo-')).length,
+          2,
+          `exactly the processed image and its original: ${listing}`
+        );
+        assert.equal(
+          await ghost.getStatus(`${urlDir}${storedStem}_o.png`),
+          200,
+          'the original must serve at the name Ghost derives'
+        );
+      } finally {
+        ghost.stop();
+      }
+    }
+  );
+
+  it(
     'names no classification for a csam match, and the wrapped adapter never sees the bytes',
     { timeout: 120_000 },
     async () => {

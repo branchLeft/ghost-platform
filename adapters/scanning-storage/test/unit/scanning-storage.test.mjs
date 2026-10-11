@@ -652,6 +652,182 @@ describe('random upload names', () => {
   });
 });
 
+// Ghost's content importer, ported: each file's handler computes `newPath`
+// from getUniqueFileName(file, targetDir) while loading, the importer rewrites
+// every post and image reference to it, and only then calls
+// save(file, file.targetDir) for each file. A reference resolves only if the
+// object is stored at exactly `newPath`.
+async function ghostContentImport(adapter, entries) {
+  const files = [];
+  for (const entry of entries) {
+    const file = {
+      ...(await writeTempFile(entry.bytes ?? CLEAN_BYTES, entry.name)),
+      targetDir: entry.targetDir,
+    };
+    file.newPath = await adapter.getUniqueFileName(file, file.targetDir);
+    files.push(file);
+  }
+  const results = [];
+  for (const file of files) {
+    const url = await adapter.save(file, file.targetDir);
+    results.push({
+      newPath: file.newPath,
+      url,
+      present: adapter.wrapped.files.has(file.newPath),
+    });
+  }
+  return results;
+}
+
+describe("Ghost's content importer", () => {
+  const IMPORTS = [
+    ['image', '2019/01/photo.png', 'content/images/2019/01', /photo-[a-z2-7]{22}\.png$/],
+    ['media', 'clip.mp4', 'content/media/2019/01', /clip-[a-z2-7]{22}\.mp4$/],
+    ['file', 'members-report.pdf', 'content/files/2019/01', /members-report-[a-z2-7]{22}\.pdf$/],
+  ];
+
+  it.each(IMPORTS)(
+    'stores an imported %s at exactly the path it was promised',
+    async (_kind, name, targetDir, shape) => {
+      const { instance: adapter } = buildAdapter();
+      const [result] = await ghostContentImport(adapter, [{ name, targetDir }]);
+      // A reference to the promised path resolves only if the object is there.
+      expect(result.present).toBe(true);
+      expect(adapter.wrapped.files.size).toBe(1);
+      expect(result.newPath).toMatch(shape);
+      expect(result.newPath.startsWith(`${targetDir}/`)).toBe(true);
+    }
+  );
+
+  it('gives two imports of one filename different paths, each stored where promised', async () => {
+    const { instance: adapter } = buildAdapter();
+    const entry = { name: 'same.png', targetDir: 'content/images/2019/01' };
+    const first = await ghostContentImport(adapter, [entry, entry]);
+    const second = await ghostContentImport(adapter, [entry]);
+    const paths = [...first, ...second].map((r) => r.newPath);
+    expect(new Set(paths).size).toBe(3);
+    expect([...first, ...second].every((r) => r.present)).toBe(true);
+  });
+
+  it('keeps a sanitised name equal to the path it promised', async () => {
+    const { instance: adapter } = buildAdapter();
+    const [result] = await ghostContentImport(adapter, [
+      { name: 'my photo (1).JPG', targetDir: 'content/images/2019/01' },
+    ]);
+    expect(result.newPath).not.toMatch(/[ ()]/);
+    expect(result.present).toBe(true);
+  });
+
+  it('returns the same path when asked twice for one file', async () => {
+    const { instance: adapter } = buildAdapter();
+    const file = await writeTempFile(CLEAN_BYTES, 'twice.png');
+    const first = await adapter.getUniqueFileName(file, 'content/images/2019/01');
+    const second = await adapter.getUniqueFileName(file, 'content/images/2019/01');
+    expect(second).toBe(first);
+    expect(adapter.reservedNames.size).toBe(1);
+  });
+
+  it('spends the promise on the save: a second save of the file gets a fresh name', async () => {
+    const { instance: adapter } = buildAdapter();
+    const dir = 'content/images/2019/01';
+    const file = await writeTempFile(CLEAN_BYTES, 'once.png');
+    const promised = await adapter.getUniqueFileName(file, dir);
+    await adapter.save(file, dir);
+    await adapter.save(file, dir);
+    const keys = [...adapter.wrapped.files.keys()];
+    expect(keys).toHaveLength(2);
+    expect(keys).toContain(promised);
+    expect(adapter.reservedNames.size).toBe(0);
+  });
+
+  it('does not let another upload of the same name and directory take the promise', async () => {
+    const { instance: adapter } = buildAdapter();
+    const dir = 'content/images/2019/01';
+    const importer = await writeTempFile(CLEAN_BYTES, 'shared.png');
+    const promised = await adapter.getUniqueFileName(importer, dir);
+    const other = await writeTempFile(CLEAN_BYTES, 'shared.png');
+    await adapter.save(other, dir);
+    expect(adapter.wrapped.files.has(promised)).toBe(false);
+    await adapter.save(importer, dir);
+    expect(adapter.wrapped.files.has(promised)).toBe(true);
+  });
+
+  it('forgets a promise after an hour and then names the file afresh', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter();
+      const dir = 'content/images/2019/01';
+      const file = await writeTempFile(CLEAN_BYTES, 'late.png');
+      const promised = await adapter.getUniqueFileName(file, dir);
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      await adapter.save(file, dir);
+      expect(adapter.wrapped.files.has(promised)).toBe(false);
+      expect(adapter.reservedNames.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to promise another name once the table is full', async () => {
+    const { instance: adapter } = buildAdapter();
+    for (let i = 0; i < 100000; i += 1) {
+      adapter.reservedNames.set(`seed${i}`, {
+        name: `seed${i}.png`,
+        expiresAt: Date.now() + 60000,
+      });
+    }
+    const file = await writeTempFile(CLEAN_BYTES, 'full.png');
+    await expect(adapter.getUniqueFileName(file, 'content/images/2019/01')).rejects.toThrow(
+      /too many upload names/
+    );
+    expect(adapter.reservedNames.size).toBe(100000);
+  });
+
+  it('leaves nothing behind when the upload is refused, and a later upload cannot use it', async () => {
+    const { instance: adapter } = buildAdapter({
+      refuse: new Map([
+        [BAD_DIGEST, { classification: 'harmful-abusive-material', matchType: 'exact' }],
+      ]),
+    });
+    const dir = 'content/images/2019/01';
+    const file = await writeTempFile(BAD_BYTES, 'bad.png');
+    const promised = await adapter.getUniqueFileName(file, dir);
+    await expect(adapter.save(file, dir)).rejects.toBeInstanceOf(
+      GhostErrors.UnsupportedMediaTypeError
+    );
+    expect(adapter.reservedNames.size).toBe(0);
+    expect(adapter.storedNames.size).toBe(0);
+    // The very same file object, now with clean bytes, is not given the name.
+    await fs.writeFile(file.path, CLEAN_BYTES);
+    await adapter.save(file, dir);
+    expect(adapter.wrapped.files.size).toBe(1);
+    expect(adapter.wrapped.files.has(promised)).toBe(false);
+  });
+
+  it('reserves nothing when uploads are being refused for want of a verdict source', async () => {
+    const { instance: adapter } = buildAdapter();
+    adapter.refuseUploadsReason = 'SCANNER_UNCONFIGURED';
+    const file = await writeTempFile(CLEAN_BYTES, 'no-source.png');
+    const promised = await adapter.getUniqueFileName(file, 'content/images/2019/01');
+    expect(promised).toMatch(/no-source-[a-z2-7]{22}\.png$/);
+    expect(adapter.reservedNames.size).toBe(0);
+  });
+
+  it('promotes a held import to exactly the path it was promised', async () => {
+    const { instance: adapter, verdictClient } = buildAdapter({ unavailable: [BAD_DIGEST] });
+    const dir = 'content/images/2019/01';
+    const file = await writeTempFile(BAD_BYTES, 'held.png');
+    const promised = await adapter.getUniqueFileName(file, dir);
+    await adapter.save(file, dir);
+    expect(adapter.wrapped.savedRaw).toHaveLength(0);
+
+    verdictClient.deliverVerdict(BAD_DIGEST, { classification: 'no-known-match' });
+    await vi.waitFor(() => expect(adapter.hold.isPending(BAD_DIGEST)).toBe(false), WAIT);
+
+    expect(adapter.wrapped.savedRaw.map((s) => s.targetPath)).toEqual([promised]);
+  });
+});
+
 describe('a refused upload', () => {
   it('never reaches the wrapped adapter, is quarantined by digest, and throws the typed error', async () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
