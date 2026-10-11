@@ -512,8 +512,11 @@ python3 /opt/branchleft/db/provision/provision_tenant_db.py --admin-user root <t
 Connects over the same socket by default (`--socket` overrides it, though
 there is normally no reason to). Prints the generated password exactly
 once, to stdout, on first creation. Re-running against an existing tenant
-reapplies grants and `MAX_USER_CONNECTIONS` without changing the password --
-see the script's own docstring.
+reapplies `MAX_USER_CONNECTIONS` without changing the password. For an existing
+account it ADDS the escaped grant beside any existing one and does not remove
+an old unescaped row. Removing that row is a separate REVOKE, which must use
+the exact stored form: the unescaped target removes only the old row, and an
+absent form fails with error 1141. See `provision_tenant_db.md`.
 
 ---
 

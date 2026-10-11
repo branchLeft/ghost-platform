@@ -11,6 +11,7 @@ const GhostErrors = require('@tryghost/errors');
 
 const { defineScanningStorageAdapter } = require('./scanning-storage');
 const { buildScanner, startupProblems } = require('./wiring');
+const { getProcessMetrics, configureProcessExport } = require('./metrics');
 
 // The wrapped adapter is resolved the same way Ghost's own adapter manager
 // resolves any adapter: by name, from this same directory. Ghost's built
@@ -32,9 +33,14 @@ const Adapter = defineScanningStorageAdapter(StorageBase, { loadWrappedAdapterCl
 // the default is closed and what an operator sees.
 module.exports = class ScanningStorageAdapter extends Adapter {
   constructor(config = {}) {
+    // One registry for the process, exported only when both keys are set
+    // (metrics.md#configuration); nothing is written otherwise.
+    const metrics = getProcessMetrics();
+    configureProcessExport(config, config.holdLogger || console, metrics);
     super({
       ...config,
-      ...buildScanner(config),
+      metrics,
+      ...buildScanner(config, { metrics }),
       holdRetryMs: config.holdRetryMs ? Number(config.holdRetryMs) : undefined,
       holdMaxRetryMs: config.holdMaxRetryMs ? Number(config.holdMaxRetryMs) : undefined,
       holdMaxFailures: config.holdMaxFailures ? Number(config.holdMaxFailures) : undefined,

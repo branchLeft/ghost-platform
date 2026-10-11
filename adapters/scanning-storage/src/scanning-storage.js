@@ -190,6 +190,10 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           ? config.refuseUploadsReason
           : null;
       this.logger = config.holdLogger || console;
+      this.metrics =
+        config.metrics && typeof config.metrics.recordRefusal === 'function'
+          ? config.metrics
+          : null;
       this.wrapsName = wraps;
       if (!policy || typeof policy.decide !== 'function') {
         throw new Error(
@@ -246,8 +250,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       // synchronously, before this constructor returns, so no request can
       // be served in the gap.
       this.hold.resumeFromQuarantine((targetPath) => this.#buildHoldCallbacks(targetPath));
+      if (this.metrics) {
+        this.metrics.addHeldSource(() => this.hold.heldSummary());
+      }
 
       if (this.refuseUploadsReason) {
+        if (this.metrics) {
+          this.metrics.recordUnconfiguredInstance();
+        }
         this.logger.error(
           `ScanningStorageAdapter: ${this.refuseUploadsReason} wraps=${wraps}: no verdict source is configured, so every upload on this feature is refused until one is`
         );
@@ -259,6 +269,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     #refuseIfNoVerdictSource() {
       if (!this.refuseUploadsReason) {
         return;
+      }
+      if (this.metrics) {
+        this.metrics.recordRefusal('unconfigured');
       }
       this.logger.error(
         `ScanningStorageAdapter: UPLOAD_REFUSED_${this.refuseUploadsReason} wraps=${this.wrapsName}`
@@ -430,6 +443,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       const sealed = readRefusal(this.quarantinePath, digest);
       if (sealed) {
         await sealRefusal(this.quarantinePath, digest, buffer, sealed, this.computeDigest);
+        if (this.metrics) {
+          this.metrics.recordRefusal('sealed');
+        }
         throw buildRefusalError(GhostErrors, sealed);
       }
 
@@ -441,6 +457,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         const sealedSince = readRefusal(this.quarantinePath, digest);
         if (sealedSince) {
           await sealRefusal(this.quarantinePath, digest, buffer, sealedSince, this.computeDigest);
+          if (this.metrics) {
+            this.metrics.recordRefusal('sealed');
+          }
           throw buildRefusalError(GhostErrors, sealedSince);
         }
         return proceed();
@@ -454,6 +473,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           verdict,
           this.computeDigest
         );
+        if (this.metrics) {
+          this.metrics.recordRefusal('verdict');
+        }
         throw buildRefusalError(GhostErrors, verdict);
       }
 

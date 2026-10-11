@@ -55,7 +55,7 @@ class ProvisionNewTenantTests(unittest.TestCase):
         sql = provisioning_call["argv"][provisioning_call["argv"].index("-e") + 1]
         self.assertIn("CREATE DATABASE IF NOT EXISTS `ghost_blog`", sql)
         self.assertIn("CREATE USER 'ghost_blog'@'10.20.1.%' IDENTIFIED BY 'generated-pw'", sql)
-        self.assertIn("GRANT ALL PRIVILEGES ON `ghost_blog`.*", sql)
+        self.assertIn(r"GRANT ALL PRIVILEGES ON `ghost\_blog`.*", sql)
         self.assertIn("WITH MAX_USER_CONNECTIONS 7", sql)
 
     def test_never_passes_the_admin_password_as_an_argument(self):
@@ -81,6 +81,91 @@ class ProvisionNewTenantTests(unittest.TestCase):
             run=self.run,
         )
         self.assertEqual(result.database, "ghost_blog_archive")
+
+
+def _grant_target_matches(grant_target: str, database: str) -> bool:
+    """Model MySQL's database-level GRANT matching: an unescaped _ matches
+    any one character, an unescaped % any run, and a backslash escapes the
+    next character so it is literal."""
+    import re
+
+    pattern = []
+    chars = iter(grant_target)
+    for ch in chars:
+        if ch == "\\":
+            pattern.append(re.escape(next(chars)))
+        elif ch == "_":
+            pattern.append(".")
+        elif ch == "%":
+            pattern.append(".*")
+        else:
+            pattern.append(re.escape(ch))
+    return re.fullmatch("".join(pattern), database) is not None
+
+
+class GrantTargetEscapingTests(unittest.TestCase):
+    def _grant_sql(self, tenant):
+        run = FakeRun(responses=["0\n"])
+        ptd.provision_tenant_database(
+            tenant,
+            socket_path="/tmp/mysqld.sock",
+            admin_user="root",
+            admin_password="secret",
+            password_factory=lambda: "x",
+            run=run,
+        )
+        call = run.calls[-1]
+        sql = call["argv"][call["argv"].index("-e") + 1]
+        grant_line = next(line for line in sql.split("\n") if line.startswith("GRANT ALL"))
+        return sql, grant_line
+
+    def test_hyphenated_tenant_grant_escapes_the_underscores(self):
+        sql, grant_line = self._grant_sql("a-b")
+        self.assertIn(r"GRANT ALL PRIVILEGES ON `ghost\_a\_b`.* TO 'ghost_a_b'@'10.20.1.%';", sql)
+        self.assertNotIn("`ghost_a_b`.*", sql)
+
+    def test_hyphenated_tenant_grant_does_not_reach_a_digit_tenant_database(self):
+        # Tenant a-b and tenant a1b are both valid names. An unescaped grant
+        # on ghost_a_b would also cover ghost_a1b, another tenant's database.
+        _, grant_line = self._grant_sql("a-b")
+        target = grant_line.split("ON `", 1)[1].split("`.*", 1)[0]
+        self.assertTrue(_grant_target_matches(target, "ghost_a_b"))
+        self.assertFalse(_grant_target_matches(target, "ghost_a1b"))
+
+    def test_the_prefix_underscore_is_escaped_for_a_name_without_a_hyphen(self):
+        # Every tenant database name carries the ghost_ prefix, whose
+        # underscore is a wildcard too. Only that one underscore is escaped
+        # for a plain name, and the grant still matches only ghost_blog.
+        sql, _ = self._grant_sql("blog")
+        self.assertIn(r"GRANT ALL PRIVILEGES ON `ghost\_blog`.* TO 'ghost_blog'@'10.20.1.%';", sql)
+        target = r"ghost\_blog"
+        self.assertTrue(_grant_target_matches(target, "ghost_blog"))
+        self.assertFalse(_grant_target_matches(target, "ghostXblog"))
+
+    def test_the_create_database_identifier_is_not_escaped(self):
+        sql, _ = self._grant_sql("a-b")
+        self.assertIn("CREATE DATABASE IF NOT EXISTS `ghost_a_b`", sql)
+
+
+class GrantPatternEscapeUnitTests(unittest.TestCase):
+    # Tenant names cannot carry % or a backslash, so these call the helper
+    # directly: each escape must be load-bearing on its own.
+
+    def test_percent_is_escaped(self):
+        self.assertEqual(ptd.grant_database_pattern("a%b"), "a\\%b")
+
+    def test_backslash_is_escaped(self):
+        self.assertEqual(ptd.grant_database_pattern("a\\b"), "a\\\\b")
+
+    def test_an_escaped_percent_matches_only_the_literal_name(self):
+        target = ptd.grant_database_pattern("a%b")
+        self.assertTrue(_grant_target_matches(target, "a%b"))
+        self.assertFalse(_grant_target_matches(target, "axxb"))
+
+    def test_an_escaped_backslash_matches_only_the_literal_name(self):
+        target = ptd.grant_database_pattern("a\\b")
+        self.assertTrue(_grant_target_matches(target, "a\\b"))
+        self.assertFalse(_grant_target_matches(target, "ab"))
 
 
 class ProvisionExistingTenantTests(unittest.TestCase):

@@ -12,6 +12,7 @@ const { digestBytes, pdqHashOfImage, decoderLoadError } = require('./pdq');
 //
 // `overrides.verdictClient` is a test seam only: production resolves it from
 // config, and an unconfigured deployment gets the client that never vouches.
+// `overrides.metrics` is the process registry the check reports into.
 function buildScanner(config = {}, overrides = {}) {
   const source = resolveVerdictSource(config);
   const verdictClient = overrides.verdictClient || source.verdictClient;
@@ -20,6 +21,7 @@ function buildScanner(config = {}, overrides = {}) {
       createPdqKnownMaterialCheck(verdictClient, {
         computeDigest: digestBytes,
         computeVerdictKey: pdqHashOfImage,
+        metrics: overrides.metrics,
       }),
     ],
     policy: new SafetyPolicy(),

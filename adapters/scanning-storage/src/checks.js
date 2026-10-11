@@ -11,10 +11,14 @@ const DEFAULT_HASH_TIMEOUT_MS = 10_000;
 
 const NO_HASH_SOURCE = 'pdq-hash-unavailable';
 
+// Resolved by the timer, so a timeout is told apart from a verdict by
+// identity and not by anything a verdict source could say.
+const TIMED_OUT = Symbol('verdict-timed-out');
+
 function withTimeout(promise, ms) {
   let timer;
   const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({ classification: 'unavailable', source: 'timeout' }), ms);
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -26,6 +30,7 @@ function withTimeout(promise, ms) {
 // client is asked about, or null when these bytes have none. A verdict key
 // is never used as a file name: a verdict's `evidence` is always the
 // content digest, whatever the client echoes back.
+// `metrics`, when given, is told each outcome and how long it took.
 function createPdqKnownMaterialCheck(
   verdictClient,
   {
@@ -33,6 +38,8 @@ function createPdqKnownMaterialCheck(
     computeVerdictKey,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     hashTimeoutMs = DEFAULT_HASH_TIMEOUT_MS,
+    metrics = null,
+    now = Date.now,
   } = {}
 ) {
   if (typeof computeDigest !== 'function') {
@@ -43,19 +50,16 @@ function createPdqKnownMaterialCheck(
   }
 
   async function keyFor(buffer) {
-    let timer;
-    const deadline = new Promise((resolve) => {
-      timer = setTimeout(() => resolve({ hash: null, reason: 'hash-timeout' }), hashTimeoutMs);
-    });
     try {
-      const keyed = await Promise.race([computeVerdictKey(buffer), deadline]);
+      const keyed = await withTimeout(computeVerdictKey(buffer), hashTimeoutMs);
+      if (keyed === TIMED_OUT) {
+        return { hash: null, reason: 'hash-timeout' };
+      }
       return keyed && typeof keyed.hash === 'string'
         ? keyed
         : { hash: null, reason: (keyed && keyed.reason) || 'no-hash' };
     } catch {
       return { hash: null, reason: 'hash-failed' };
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -71,6 +75,9 @@ function createPdqKnownMaterialCheck(
       const digest = computeDigest(subject.buffer);
       const keyed = await keyFor(subject.buffer);
       if (keyed.hash === null) {
+        // No verdict was asked for, so there is no latency or error to
+        // report, but the hold must still show in the unavailable count.
+        if (metrics) metrics.recordVerdict('unavailable');
         return {
           classification: 'unavailable',
           source: NO_HASH_SOURCE,
@@ -78,17 +85,28 @@ function createPdqKnownMaterialCheck(
           evidence: digest,
         };
       }
+      const started = now();
+      let errorKind = null;
+      let result;
       try {
-        const verdict = await withTimeout(verdictClient.getVerdict(keyed.hash), timeoutMs);
-        return { ...verdict, evidence: digest, verdictKey: keyed.hash };
+        const answer = await withTimeout(verdictClient.getVerdict(keyed.hash), timeoutMs);
+        if (answer === TIMED_OUT) {
+          errorKind = 'timeout';
+          result = { classification: 'unavailable', source: 'timeout' };
+        } else {
+          result = answer;
+        }
       } catch {
-        return {
-          classification: 'unavailable',
-          source: 'pdq-known-material-check',
-          evidence: digest,
-          verdictKey: keyed.hash,
-        };
+        errorKind = 'error';
+        result = { classification: 'unavailable', source: 'pdq-known-material-check' };
       }
+      result = { ...result, evidence: digest, verdictKey: keyed.hash };
+      if (metrics) {
+        metrics.observeVerdictSeconds((now() - started) / 1000);
+        metrics.recordVerdict(result.classification);
+        if (errorKind) metrics.recordVerdictError(errorKind);
+      }
+      return result;
     },
   };
 }
