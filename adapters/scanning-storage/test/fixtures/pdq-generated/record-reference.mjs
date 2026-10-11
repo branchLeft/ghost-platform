@@ -2,12 +2,12 @@
 // picture, into manifest.json. See README.txt for how to build the two tools.
 //
 //   node record-reference.mjs <pdq-ref-driver> <pdq-photo-hasher>
-//
+
 // - <pdq-ref-driver> is reference-pixels-driver.cpp built against the
 //   reference's hashing core (reads "WIDTH HEIGHT CHANNELS" then raw bytes).
 // - <pdq-photo-hasher> is the reference's own pdq-photo-hasher, built with
 //   CImg and libjpeg/libpng. It decodes JPEG and PNG only.
-//
+
 // A JPEG or PNG is hashed by the photo hasher, whole pipeline. A GIF or WebP
 // it cannot read is hashed by the core over the generator's own pixels, which
 // is the same thing for these two because both are lossless and no larger
