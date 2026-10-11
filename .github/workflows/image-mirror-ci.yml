@@ -1,0 +1,52 @@
+name: Image mirror CI
+
+# The tests for the mirror script and the reference guard, the guard's own
+# red-then-green self-test, the guard over this tree, and a dry run of the
+# mirror (prints the copy commands, runs none). Credential-free: it never
+# writes a package. The mirror itself is image-mirror.yml.
+#
+# GUARD_MODE below sets the guard: `warn` reports references that still point
+# at a public registry and passes; `enforce` fails the job on any.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Mirror script and image-reference guard
+    runs-on: ubuntu-latest
+    # Pure Python over the checked-out tree; seconds. Set well above that.
+    timeout-minutes: 10
+    env:
+      GUARD_MODE: warn
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Mirror script and guard tests
+        run: python3 -m unittest discover -s scripts -p 'test_image_mirror.py' -v
+
+      # Self-test first: a guard that has quietly stopped matching passes every
+      # tree, so prove each sabotage still goes red and a clean tree green.
+      - name: Guard self-test
+        run: python3 scripts/assert-image-refs-on-mirror.py --self-test
+
+      - name: Image references on the mirror
+        run: python3 scripts/assert-image-refs-on-mirror.py --mode "$GUARD_MODE"
+
+      - name: Mirror dry run
+        run: python3 scripts/mirror-images.py --dry-run
