@@ -5,7 +5,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
-const { VerdictClient, FakeVerdictClient } = require('../../src/verdict-client.js');
+const {
+  VerdictClient,
+  FakeVerdictClient,
+  UnconfiguredVerdictClient,
+} = require('../../src/verdict-client.js');
 
 describe('VerdictClient', () => {
   it('the base interface throws, so a caller cannot mistake it for an implementation', async () => {
@@ -95,5 +99,22 @@ describe('FakeVerdictClient', () => {
         await fs.rm(dir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('UnconfiguredVerdictClient', () => {
+  it('never vouches for a digest: every answer is unavailable, never no-known-match', async () => {
+    const client = new UnconfiguredVerdictClient();
+    for (const digest of ['a', 'b', 'c']) {
+      const verdict = await client.getVerdict(digest);
+      expect(verdict.classification).toBe('unavailable');
+      expect(verdict.evidence).toBe(digest);
+      expect(verdict.source).toBe('unconfigured-verdict-source');
+    }
+  });
+
+  it('carries a caller-supplied source name', async () => {
+    const verdict = await new UnconfiguredVerdictClient({ source: 'x' }).getVerdict('d');
+    expect(verdict.source).toBe('x');
   });
 });

@@ -350,5 +350,170 @@ class TestTheCommandLine(unittest.TestCase):
         self.assertIn("self-test: ok", err)
 
 
+ADMIN_PROJECT = "1000001"
+WORKLOAD_PROJECT = "1000002"
+READER_PROJECT = "1000003"
+WRITER_PROJECT = "1000004"
+STATE_BUCKET = "branchleft-estate-state"
+STATE_BUCKET_ARN = f"arn:aws:s3:::{STATE_BUCKET}"
+STATE_OBJECT_ARN = f"{STATE_BUCKET_ARN}/.pulumi/stacks/estate.json"
+
+
+def split_arn(project: str, access_key: str) -> str:
+    return bucketpolicy.key_principal(project, access_key)
+
+
+def render_split() -> dict:
+    """The estate-state bucket: the operator, the state key and the read-only
+    key, each in a project of its own, as one project per storage key lays
+    them out."""
+    return fence.render_policy(
+        STATE_BUCKET, ADMIN_PROJECT, [WORKLOAD], ADMIN,
+        reader_access_keys=[READER],
+        workload_project_id=WORKLOAD_PROJECT, reader_project_id=READER_PROJECT,
+    )
+
+
+class TestEachKeyIsNamedUnderItsOwnProject(unittest.TestCase):
+    """A principal built from the wrong project names nobody. Under a
+    `NotPrincipal` deny that is not an inert statement: it denies the real
+    key, and the bucket reads as fenced while the pipeline is locked out."""
+
+    def setUp(self):
+        self.policy = render_split()
+        self.admin = split_arn(ADMIN_PROJECT, ADMIN)
+        self.workload = split_arn(WORKLOAD_PROJECT, WORKLOAD)
+        self.reader = split_arn(READER_PROJECT, READER)
+
+    def test_every_exempted_principal_carries_its_own_project(self):
+        named = statement(self.policy, "DenyObjectAccessExceptNamedKeys")["NotPrincipal"]["AWS"]
+        self.assertEqual(sorted(named), sorted([self.admin, self.workload, self.reader]))
+        bucket_named = statement(
+            self.policy, "DenyBucketAccessExceptNamedKeys")["NotPrincipal"]["AWS"]
+        self.assertEqual(sorted(bucket_named), sorted([self.admin, self.workload, self.reader]))
+        self.assertEqual(
+            statement(self.policy, "AllowOperatorFullControl")["Principal"]["AWS"], [self.admin])
+
+    def test_the_real_keys_get_their_jobs_and_nothing_more(self):
+        for principal, action, resource, expected in [
+            (self.admin, "s3:PutBucketPolicy", STATE_BUCKET_ARN, "allow"),
+            (self.workload, "s3:PutObject", STATE_OBJECT_ARN, "allow"),
+            (self.workload, "s3:GetObject", STATE_OBJECT_ARN, "allow"),
+            (self.workload, "s3:ListBucket", STATE_BUCKET_ARN, "allow"),
+            (self.workload, "s3:PutBucketPolicy", STATE_BUCKET_ARN, "deny"),
+            (self.reader, "s3:GetObject", STATE_OBJECT_ARN, "allow"),
+            (self.reader, "s3:ListBucket", STATE_BUCKET_ARN, "allow"),
+            (self.reader, "s3:PutObject", STATE_OBJECT_ARN, "deny"),
+            (self.reader, "s3:DeleteObject", STATE_OBJECT_ARN, "deny"),
+        ]:
+            with self.subTest(principal=principal, action=action):
+                self.assertEqual(
+                    bucketpolicy.decide(self.policy, principal, action, resource), expected)
+
+    def test_the_same_access_keys_under_the_operators_project_are_strangers(self):
+        for access_key in (WORKLOAD, READER):
+            for action, resource in (
+                ("s3:GetObject", STATE_OBJECT_ARN), ("s3:ListBucket", STATE_BUCKET_ARN)
+            ):
+                with self.subTest(access_key=access_key, action=action):
+                    self.assertEqual(
+                        bucketpolicy.decide(
+                            self.policy, split_arn(ADMIN_PROJECT, access_key), action, resource),
+                        "deny",
+                    )
+
+    def test_the_apply_time_guard_accepts_the_split_policy(self):
+        configure_backup_bucket.assert_policy_fences_this_bucket(
+            self.policy, STATE_BUCKET, self.admin)
+
+    def test_a_put_only_key_in_its_own_project_is_named_under_it(self):
+        policy = fence.render_policy(
+            "branchleft-backups", ADMIN_PROJECT, [], ADMIN,
+            writer_access_keys=[WRITER], reader_access_keys=[READER],
+            writer_project_id=WRITER_PROJECT, reader_project_id=READER_PROJECT,
+        )
+        writer = split_arn(WRITER_PROJECT, WRITER)
+        self.assertEqual(statement(policy, "AllowPutOnlyKeysPut")["Principal"]["AWS"], [writer])
+        self.assertEqual(
+            statement(policy, "DenyPutOnlyKeysReadsAndRemovals")["Principal"]["AWS"], [writer])
+        self.assertEqual(
+            bucketpolicy.decide(policy, writer, "s3:PutObject", f"{BUCKET_ARN}/dumps/x"), "allow")
+        self.assertEqual(
+            bucketpolicy.decide(policy, writer, "s3:GetObject", f"{BUCKET_ARN}/dumps/x"), "deny")
+
+    def test_omitting_the_role_projects_is_the_single_project_document(self):
+        self.assertEqual(
+            fence.render_policy(BUCKET, PROJECT, [WORKLOAD], ADMIN, reader_access_keys=[READER]),
+            fence.render_policy(
+                BUCKET, PROJECT, [WORKLOAD], ADMIN, reader_access_keys=[READER],
+                workload_project_id=PROJECT, reader_project_id=PROJECT),
+        )
+
+    def test_a_malformed_role_project_id_is_refused(self):
+        with self.assertRaises(bucketpolicy.PolicyInputError):
+            fence.render_policy(
+                STATE_BUCKET, ADMIN_PROJECT, [WORKLOAD], ADMIN, workload_project_id="p1000002")
+
+
+class TestThePerKeyProjectFlags(unittest.TestCase):
+    def run_main(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = fence.main(argv)
+            except SystemExit as exit_:
+                code = exit_.code
+        return code, out.getvalue(), err.getvalue()
+
+    def split(self):
+        return [
+            "--bucket", STATE_BUCKET, "--admin-access-key", ADMIN,
+            "--admin-project-id", ADMIN_PROJECT,
+            "--workload-access-key", WORKLOAD, "--workload-project-id", WORKLOAD_PROJECT,
+            "--reader-access-key", READER, "--reader-project-id", READER_PROJECT,
+        ]
+
+    def test_the_flags_reach_the_policy(self):
+        code, out, _ = self.run_main(self.split())
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), render_split())
+
+    def test_the_command_sequence_carries_each_projects_principal(self):
+        code, out, _ = self.run_main(self.split() + ["--commands", "existing-bucket"])
+        self.assertEqual(code, 0)
+        for project, key in (
+            (ADMIN_PROJECT, ADMIN), (WORKLOAD_PROJECT, WORKLOAD), (READER_PROJECT, READER)
+        ):
+            self.assertIn(split_arn(project, key), out)
+
+    def test_project_id_is_the_single_project_form_and_cannot_be_mixed(self):
+        code, out, err = self.run_main(
+            ["--bucket", STATE_BUCKET, "--admin-access-key", ADMIN, "--project-id", ADMIN_PROJECT,
+             "--workload-access-key", WORKLOAD, "--workload-project-id", WORKLOAD_PROJECT])
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("--workload-project-id", err)
+
+    def test_a_role_with_keys_and_no_project_id_is_refused_not_defaulted(self):
+        argv = [a for a in self.split() if a not in ("--reader-project-id", READER_PROJECT)]
+        code, out, err = self.run_main(argv)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("--reader-project-id", err)
+
+    def test_the_operators_project_is_required(self):
+        argv = [a for a in self.split() if a not in ("--admin-project-id", ADMIN_PROJECT)]
+        code, out, err = self.run_main(argv)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("--admin-project-id", err)
+
+    def test_a_project_id_naming_no_key_is_refused(self):
+        code, out, err = self.run_main(self.split() + ["--writer-project-id", WRITER_PROJECT])
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("--writer-project-id", err)
+
+
 if __name__ == "__main__":
     unittest.main()

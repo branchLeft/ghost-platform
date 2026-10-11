@@ -115,58 +115,101 @@ function hashingLimiter(limitBytes: number, hash: ReturnType<typeof createHash>)
   });
 }
 
+/** What `readImageHeaders` found: the declared digest and size, or the refusal to send. */
+export type ImageHeaders =
+  | {
+      readonly ok: true;
+      readonly digest: string;
+      readonly size: string;
+      readonly declaredBytes: number;
+    }
+  | { readonly ok: false; readonly status: 400 | 413; readonly body: { readonly error: string } };
+
+export type ImageAuthResult =
+  { readonly ok: true } | { readonly ok: false; readonly reason: string };
+
+/** What `receiveImage` ends in: the status and JSON body to send, nothing written yet. */
+export type ImageReceipt =
+  | {
+      readonly status: 200;
+      readonly body: {
+        readonly digest: string;
+        readonly imageId: string;
+        readonly bytes: number;
+        readonly durationMs: number;
+      };
+    }
+  | { readonly status: 400 | 413 | 502; readonly body: { readonly error: string } }
+  | {
+      readonly status: 409;
+      readonly body:
+        | { readonly error: string }
+        | { readonly error: string; readonly declared: string; readonly received: string };
+    };
+
 /**
- * Refuses before the loader is ever reached: a malformed header, a failed
- * signature, an oversized stream, a short/long delivery, or a digest that
- * does not match what arrived. **Load-bearing (this story's Done means):
- * "a stream whose digest does not match is refused"** -- `deps.loader.load`
- * is called on exactly one path below, and only after the freshly computed
- * digest of every byte received equals the digest the caller declared and
- * signed for.
+ * The first refusals, in order: a malformed digest or size (400), then a
+ * declared size over the host's limit (413) -- all before the signature is
+ * looked at, and before a byte of the image is read.
  */
-export async function handleImagePush(
-  auth: AuthDeps,
-  deps: ImagePushDeps,
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const startedMs = deps.nowMs();
+export function readImageHeaders(req: IncomingMessage, maxBytes: number): ImageHeaders {
   const digest = headerValue(req, 'x-image-digest');
   const size = headerValue(req, 'x-image-size');
 
   if (!digest || !DIGEST_PATTERN.test(digest)) {
-    req.resume();
-    sendJson(res, 400, {
-      error: 'x-image-digest must be "sha256:" followed by 64 lowercase hex characters',
-    });
-    return;
+    return {
+      ok: false,
+      status: 400,
+      body: { error: 'x-image-digest must be "sha256:" followed by 64 lowercase hex characters' },
+    };
   }
   if (!size || !SIZE_PATTERN.test(size)) {
-    req.resume();
-    sendJson(res, 400, { error: 'x-image-size must be a decimal byte count' });
-    return;
+    return { ok: false, status: 400, body: { error: 'x-image-size must be a decimal byte count' } };
   }
   const declaredBytes = Number(size);
-  if (declaredBytes > deps.maxBytes) {
-    req.resume();
-    sendJson(res, 413, { error: `x-image-size exceeds the ${deps.maxBytes}-byte limit` });
-    return;
+  if (declaredBytes > maxBytes) {
+    return {
+      ok: false,
+      status: 413,
+      body: { error: `x-image-size exceeds the ${maxBytes}-byte limit` },
+    };
   }
+  return { ok: true, digest, size, declaredBytes };
+}
 
-  const manifest = imagePushManifest(digest, size);
-  const authResult = verifyRequest(
+/**
+ * The signature check, over the manifest of the two header values just read.
+ * Claims the request's nonce, so it must run once per request.
+ */
+export function authenticateImagePush(
+  auth: AuthDeps,
+  req: IncomingMessage,
+  headers: { readonly digest: string; readonly size: string }
+): ImageAuthResult {
+  const result = verifyRequest(
     auth,
     req.method ?? '',
     IMAGE_PUSH_PATH,
     authHeaders(req),
-    manifest
+    imagePushManifest(headers.digest, headers.size)
   );
-  if (!authResult.ok) {
-    req.resume();
-    deps.log(`refused POST ${IMAGE_PUSH_PATH}: ${authResult.reason}`);
-    sendJson(res, 401, { error: authResult.reason });
-    return;
-  }
+  return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+}
+
+/**
+ * Everything after authentication: single-flight, the streamed write, and
+ * the digest check. **Load-bearing (this story's Done means): "a stream
+ * whose digest does not match is refused"** -- `deps.loader.load` is called
+ * on exactly one path below, and only after the freshly computed digest of
+ * every byte received equals the digest the caller declared and signed for.
+ */
+export async function receiveImage(
+  deps: ImagePushDeps,
+  req: IncomingMessage,
+  headers: { readonly digest: string; readonly declaredBytes: number }
+): Promise<ImageReceipt> {
+  const startedMs = deps.nowMs();
+  const { digest, declaredBytes } = headers;
 
   // The fixed staging path is a shared resource across the whole host, not
   // per-request the way a `mkdtemp` name would be -- refuse a second push
@@ -174,8 +217,10 @@ export async function handleImagePush(
   // file.
   if (pushInFlight.has(deps.tmpDir)) {
     req.resume();
-    sendJson(res, 409, { error: 'another image push is already in progress on this host' });
-    return;
+    return {
+      status: 409,
+      body: { error: 'another image push is already in progress on this host' },
+    };
   }
   pushInFlight.add(deps.tmpDir);
 
@@ -193,45 +238,81 @@ export async function handleImagePush(
     } catch (err) {
       await rm(tarPath, { force: true });
       deps.log(`image push stream failed: ${(err as Error).message}`);
-      sendJson(res, 413, { error: (err as Error).message });
-      return;
+      return { status: 413, body: { error: (err as Error).message } };
     }
 
     if (received !== declaredBytes) {
       await rm(tarPath, { force: true });
-      sendJson(res, 400, {
-        error: `received ${received} bytes but x-image-size declared ${declaredBytes}`,
-      });
-      return;
+      return {
+        status: 400,
+        body: { error: `received ${received} bytes but x-image-size declared ${declaredBytes}` },
+      };
     }
 
     const computedDigest = `sha256:${hash.digest('hex')}`;
     if (computedDigest !== digest) {
       await rm(tarPath, { force: true });
       deps.log(`image push refused: declared ${digest}, received ${computedDigest}`);
-      sendJson(res, 409, {
-        error: 'received bytes do not match the declared digest',
-        declared: digest,
-        received: computedDigest,
-      });
-      return;
+      return {
+        status: 409,
+        body: {
+          error: 'received bytes do not match the declared digest',
+          declared: digest,
+          received: computedDigest,
+        },
+      };
     }
 
     try {
       const { imageId } = await deps.loader.load(tarPath);
-      // Cleaned up before responding, not in a `finally` after -- the client
-      // can see this response the instant `sendJson` calls `res.end()`, and
+      // Cleaned up before the answer goes out, not in a `finally` after --
+      // the client can see the response the instant it is written, and
       // that race is not one this test (or a caller polling the temp dir
       // right after) should ever have to account for.
       await rm(tarPath, { force: true });
-      const durationMs = deps.nowMs() - startedMs;
-      sendJson(res, 200, { digest, imageId, bytes: received, durationMs });
+      // Never negative: the adapter checks this body against the spec's
+      // integer-at-least-zero, and a clock stepped back during the load must
+      // not turn a loaded image into a 500.
+      const durationMs = Math.max(0, deps.nowMs() - startedMs);
+      return { status: 200, body: { digest, imageId, bytes: received, durationMs } };
     } catch (err) {
       await rm(tarPath, { force: true }).catch(() => undefined);
       deps.log(`image load failed: ${(err as Error).message}`);
-      sendJson(res, 502, { error: 'image failed to load' });
+      return { status: 502, body: { error: 'image failed to load' } };
     }
   } finally {
     pushInFlight.delete(deps.tmpDir);
   }
+}
+
+/**
+ * Refuses before the loader is ever reached: a malformed header, a failed
+ * signature, an oversized stream, a short/long delivery, or a digest that
+ * does not match what arrived. This is the whole of a push as one call that
+ * writes its own response; the broker itself reaches the same three steps
+ * (`readImageHeaders`, `authenticateImagePush`, `receiveImage`) through the
+ * generated adapter instead, and the live-proof receiver
+ * (`test/live/fixtures/hostReceiver.mjs`) calls this one directly.
+ */
+export async function handleImagePush(
+  auth: AuthDeps,
+  deps: ImagePushDeps,
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  const headers = readImageHeaders(req, deps.maxBytes);
+  if (!headers.ok) {
+    req.resume();
+    sendJson(res, headers.status, headers.body);
+    return;
+  }
+  const authResult = authenticateImagePush(auth, req, headers);
+  if (!authResult.ok) {
+    req.resume();
+    deps.log(`refused POST ${IMAGE_PUSH_PATH}: ${authResult.reason}`);
+    sendJson(res, 401, { error: authResult.reason });
+    return;
+  }
+  const receipt = await receiveImage(deps, req, headers);
+  sendJson(res, receipt.status, receipt.body);
 }

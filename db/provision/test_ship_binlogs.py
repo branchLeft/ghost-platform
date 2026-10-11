@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import ship_binlogs as sb
 
@@ -278,6 +279,155 @@ class RunShipTests(unittest.TestCase):
         # "mysql-bin.000002" would be silently skipped instead of shipped.
         self.assertEqual(shipped, ["mysql-bin.000001", "mysql-bin.000002"])
         self.assertEqual(self.uploads[-1]["key"], f"binlogs/{UUID_B}/db1-mysql-bin.000002.age")
+
+
+class RunStatusTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.dir = os.path.join(tmp.name, "m")
+        self.path = os.path.join(self.dir, sb.STATUS_FILENAME)
+
+    def _text(self):
+        with open(self.path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def _assert_no_raise(self, **kwargs):
+        try:
+            sb.record_run_status(succeeded=True, now=1.0, **kwargs)
+        except Exception as exc:  # the property under test is that nothing escapes
+            self.fail(f"record_run_status raised {exc!r}")
+
+    def test_a_success_publishes_the_status_and_the_time(self):
+        sb.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000.4)
+        text = self._text()
+        self.assertIn("db_binlog_ship_last_run_success 1\n", text)
+        self.assertIn("db_binlog_ship_last_success_timestamp_seconds 1790000000\n", text)
+
+    def test_a_failure_keeps_the_previous_success_time(self):
+        sb.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000)
+        sb.record_run_status(metrics_dir=self.dir, succeeded=False, now=1_790_000_900)
+        text = self._text()
+        self.assertIn("db_binlog_ship_last_run_success 0\n", text)
+        self.assertIn("db_binlog_ship_last_success_timestamp_seconds 1790000000\n", text)
+
+    def test_a_failure_with_no_success_on_record_publishes_no_time(self):
+        sb.record_run_status(metrics_dir=self.dir, succeeded=False, now=1_790_000_900)
+        text = self._text()
+        self.assertIn("db_binlog_ship_last_run_success 0\n", text)
+        self.assertNotIn("last_success_timestamp_seconds", text)
+
+    def test_a_corrupt_previous_file_is_treated_as_no_success(self):
+        os.makedirs(self.dir)
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write("db_binlog_ship_last_success_timestamp_seconds not-a-number\n")
+        sb.record_run_status(metrics_dir=self.dir, succeeded=False, now=1_790_000_900)
+        self.assertNotIn("last_success_timestamp_seconds", self._text())
+
+    def test_no_metrics_dir_writes_nothing(self):
+        for value in (None, ""):
+            sb.record_run_status(metrics_dir=value, succeeded=True, now=1.0)
+        self.assertFalse(os.path.exists(self.dir))
+
+    def test_the_file_is_world_readable_and_leaves_no_temp_file(self):
+        sb.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o644)
+        self.assertEqual(os.listdir(self.dir), [sb.STATUS_FILENAME])
+
+    def test_a_failed_replace_leaves_the_old_file_whole_and_no_temp_file(self):
+        sb.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000)
+        before = self._text()
+        with mock.patch("ship_binlogs.os.replace", side_effect=OSError("disk full")):
+            sb.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_900)
+        self.assertEqual(self._text(), before)
+        self.assertEqual(os.listdir(self.dir), [sb.STATUS_FILENAME])
+
+    def test_no_failure_to_write_ever_raises(self):
+        blocker = os.path.join(self.tmp, "file")
+        with open(blocker, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        self._assert_no_raise(metrics_dir=blocker)
+        with mock.patch("ship_binlogs.tempfile.mkstemp", side_effect=RuntimeError("unexpected")):
+            self._assert_no_raise(metrics_dir=self.dir)
+
+
+class MainStatusTests(unittest.TestCase):
+    ENV = {
+        "DB_BINLOG_MYSQL_PWD": "pw",
+        "AGE_RECIPIENT_PUBLIC_KEY": "age1recipient",
+        "DB_BACKUP_BUCKET": "b",
+        "DB_BACKUP_ENDPOINT": "e",
+        "DB_BACKUP_REGION": "r",
+        "AWS_ACCESS_KEY_ID": "AK",
+        "AWS_SECRET_ACCESS_KEY": "SECRET",
+    }
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = os.path.join(tmp.name, "m")
+        self.blocker = os.path.join(tmp.name, "file")
+        with open(self.blocker, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        patcher = mock.patch.dict(os.environ, {**self.ENV, "DB_BINLOG_METRICS_DIR": self.dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _status(self):
+        path = os.path.join(self.dir, sb.STATUS_FILENAME)
+        self.assertTrue(os.path.exists(path), "no status file was written")
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_a_run_that_shipped_everything_publishes_success(self):
+        with mock.patch.object(sb, "run_ship", return_value=["mysql-bin.000001"]):
+            self.assertEqual(sb.main([]), 0)
+        text = self._status()
+        self.assertIn("db_binlog_ship_last_run_success 1\n", text)
+        self.assertIn("db_binlog_ship_last_success_timestamp_seconds ", text)
+
+    def test_a_run_with_nothing_pending_still_counts_as_a_success(self):
+        with mock.patch.object(sb, "run_ship", return_value=[]):
+            self.assertEqual(sb.main([]), 0)
+        self.assertIn("db_binlog_ship_last_run_success 1\n", self._status())
+
+    def test_a_failed_ship_publishes_failure_and_still_exits_1(self):
+        with mock.patch.object(sb, "run_ship", side_effect=sb.ShipError("boom")):
+            self.assertEqual(sb.main([]), 1)
+        self.assertIn("db_binlog_ship_last_run_success 0\n", self._status())
+
+    def test_a_missing_setting_publishes_failure(self):
+        del os.environ["DB_BACKUP_BUCKET"]
+        self.assertEqual(sb.main([]), 1)
+        self.assertIn("db_binlog_ship_last_run_success 0\n", self._status())
+
+    def test_an_unexpected_error_publishes_failure_and_still_propagates(self):
+        with mock.patch.object(sb, "run_ship", side_effect=RuntimeError("unexpected")):
+            with self.assertRaises(RuntimeError):
+                sb.main([])
+        self.assertIn("db_binlog_ship_last_run_success 0\n", self._status())
+
+    def test_the_status_is_written_only_after_the_shipping_has_returned(self):
+        order = []
+        with mock.patch.object(sb, "run_ship", side_effect=lambda **kw: order.append("ship") or []), \
+                mock.patch.object(sb, "record_run_status", side_effect=lambda **kw: order.append("status")):
+            sb.main([])
+        self.assertEqual(order, ["ship", "status"])
+
+    def test_an_unwritable_metrics_dir_never_fails_the_shipping(self):
+        os.environ["DB_BINLOG_METRICS_DIR"] = self.blocker
+        with mock.patch.object(sb, "run_ship", return_value=[]):
+            self.assertEqual(sb.main([]), 0)
+
+    def test_a_broken_writer_never_fails_the_shipping(self):
+        with mock.patch.object(sb, "run_ship", return_value=[]), \
+                mock.patch("ship_binlogs.tempfile.mkstemp", side_effect=RuntimeError("unexpected")):
+            try:
+                code = sb.main([])
+            except Exception as exc:  # the property under test is that nothing escapes
+                self.fail(f"main raised {exc!r}")
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

@@ -376,8 +376,8 @@ jobs:
           # ghost-tenant-<slug> -- and on this estate the existence of that
           # repository is itself the disclosure that a tenant is a customer.
           case "$TENANT" in
-            website | edge | db | monitoring)
-              fail "tenant_name '$TENANT' is reserved: an app host already runs a Compose stack of that name, and a tenant taking it would overwrite that stack's directory, secrets file and systemd unit."
+            website | edge | db | monitoring | nextcloud1 | mail-spool)
+              fail "tenant_name '$TENANT' is reserved: a host already runs a Compose stack of that name, and a tenant taking it would overwrite that stack's directory, secrets file and systemd unit."
               ;;
           esac
 
