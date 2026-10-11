@@ -112,11 +112,13 @@ form a name may be called, and a test pins that each is a `KNOWN_CALLS` key.
 `KNOWN_MODULES` lists the modules a file may require. `update` and `raw` are
 deliberately not on the allowlist.
 
-## Rollback residuals (owner decision)
+## Rollback residuals (owner ruled: option A)
 
-The allowlist is a judgement. Four entries, and one more, give a rollback that runs
-even when the `up` step was skipped, so it can delete an object that existed before
-the migration. The entries say so. The residual is:
+The owner ruled option A on the decision card: files that use the helpers below stay
+fast-path, with the residual recorded here. The allowlist is a judgement. Four
+entries, and one more, give a rollback that runs even when the `up` step was skipped,
+so it can delete an object that existed before the migration. The entries say so.
+The residual is:
 
 > A fast-path migration's rollback is safe only if its up step created the object
 > (it ran once). A re-run after a skipped up deletes what existed.
@@ -133,9 +135,9 @@ the migration. The entries say so. The residual is:
   written to it since the upgrade are lost, and so is any pre-existing column data when
   `up` was skipped.
 
-The migration runner executes each migration once per database. That is the basis for
-keeping these entries fast-path. The owner rules on it. See the decision card in the
-pull request.
+Consequence: the classifier routes a range to fast-path on these files. Basis: the
+migration runner executes each migration once per database, so the skipped-up case
+should not occur in a normal upgrade. That is an assumption, not verified in this run.
 
 Pinned routes are the owner's open rulings. Changing a constant is a ruling, not a
 refactor. The test suite pins the current values.
@@ -154,8 +156,11 @@ or later do not include it.
 
     node src/cli.mjs --from v6.55.0 --to v6.69.0 --versions <path>/migrations/versions
 
-Exit 0 is fast-path, 2 is consent, 1 is a usage or read error. The JSON output lists
-every matched file with its rule, per class.
+Exit 0 is fast-path. Exit 2 is the consent verdict. Exit 1 is an error (bad arguments,
+an unreadable or unexpected tree, a range with no version folder in it): nothing is
+classified, and the message goes to stderr, not a verdict. A caller must treat any
+non-zero exit as not fast-path. The JSON output lists every matched file with its
+rule, per class.
 
 The reader takes the tree as Ghost's runner loads it: every entry whose name does not
 start with a dot is a migration, whatever its extension, and a directory is loaded
@@ -164,6 +169,11 @@ file (`.cjs`, `.ts`, `.JS`, no extension, a directory, a symbolic link) is an er
 exit 1, as is a stray entry beside the version folders. A versions directory with no
 version folder, and a range with no version folder in it, are errors too. An empty
 answer would otherwise read as fast-path.
+
+A version folder in range that holds no migration is still a folder in range. It
+reads as zero migrations, so a range whose only folders in range are empty is the
+fast path, with `filesInRange` 0. Git cannot carry an empty folder, so a checkout
+never has one.
 
 ## Tests
 
@@ -201,11 +211,12 @@ at v6.69.0.
   input and is not built here.
 - **Contracting, constraint and unclassified.** The owner's rulings are open for the
   first two. The unclassified allowlist needs a ruling on each addition.
-- **Rollback residuals.** See the section above. The owner rules on whether
-  these entries stay fast-path.
+- **Rollback residuals.** Ruled: option A. The files stay fast-path with the residual
+  recorded above. The assumption it rests on is not verified.
 - **A range with no version folder in it.** Ghost has no folder for a minor line with
   no migrations (the v6.69.0 tree has no `6.62`), so `v6.62.0` to `v6.62.1` reads no
-  folder and exits 1, which sends it to the consent path. Telling that apart from a
+  folder and exits 1. Exit 1 is an error, not the consent verdict (exit 2), and it is
+  not fast-path. Telling that apart from a
   partial or wrong tree needs the list of minor lines Ghost shipped, a second input
   that is not built here.
 - **Local helpers called by name.** A file that declares `const add = (n) => ...` and

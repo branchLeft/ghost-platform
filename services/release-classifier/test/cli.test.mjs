@@ -126,11 +126,27 @@ test('a range with no version folder in it is refused, not read as fast-path', (
   assert.equal(cli(dir, 'v6.61.0', 'v6.62.0').code, 0, 'a folder in range classifies');
 });
 
-test('an empty folder inside the range is a folder in range', () => {
+test('an empty folder inside the range is a folder in range, and the fast path', () => {
   const dir = tree({ '6.70': {} });
   const r = cli(dir);
   assert.equal(r.code, 0, r.err);
-  assert.equal(JSON.parse(r.out).filesInRange, 0);
+  const verdict = JSON.parse(r.out);
+  assert.equal(verdict.route, 'fast-path');
+  assert.equal(verdict.filesInRange, 0);
+  assert.equal(readTree(dir).folders.length, 1);
+  assert.deepEqual(readTree(dir).migrations, []);
+  const dotOnly = tree({ '6.70': { '.gitkeep': '' } });
+  assert.equal(cli(dotOnly).code, 0, 'a folder with only dot entries is empty too');
+});
+
+test('exit 1 is an error and exit 2 the consent verdict, never the other way', () => {
+  const consent = tree({ '6.70': { 'drop.js': DROPS } });
+  assert.equal(cli(consent).code, 2);
+  const unreadable = tree({ '6.70': { 'drop.cjs': DROPS } });
+  const err = cli(unreadable);
+  assert.equal(err.code, 1);
+  assert.equal(err.out, '', 'an error prints no verdict');
+  assert.match(err.err, /^release-classifier: /);
 });
 
 test('readMigrations still returns the migration list', () => {

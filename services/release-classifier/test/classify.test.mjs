@@ -305,7 +305,7 @@ test('an unrecognised migration folder fails loudly rather than being skipped', 
   );
 });
 
-test('cli exits 2 for consent, 0 for fast-path, 1 for missing arguments', () => {
+test('cli exits 0 for fast-path, 2 for the consent verdict, 1 for an error', () => {
   const dir = join(here, 'fixtures', 'versions');
   const reversibleDir = mkdtempSync(join(tmpdir(), 'rc-'));
   mkdirSync(join(reversibleDir, '6.56'));
@@ -782,4 +782,29 @@ test('irreversible flag: every spelling but the literal false is refused', () =>
   assert.deepEqual(hitRules(literalTrue), ['flag']);
   assertFast(configOf('false'), 'control: the literal false');
   assertFast(`module.exports = { config: { 'irreversible': false }, ${entry} };`, 'quoted false');
+});
+
+test('an empty folder in range is the fast path; no folder in range is refused', () => {
+  const empty = classifyRange({
+    from: 'v6.70.0',
+    to: 'v6.70.0',
+    migrations: [],
+    folders: ['6.70'],
+  });
+  assert.equal(empty.route, 'fast-path');
+  assert.equal(empty.filesInRange, 0);
+  const wider = classifyRange({
+    from: 'v6.69.0',
+    to: 'v6.70.0',
+    migrations: [],
+    folders: ['6.70'],
+  });
+  assert.equal(wider.route, 'fast-path');
+  for (const folders of [[], ['6.69'], ['6.71']]) {
+    assert.throws(
+      () => classifyRange({ from: 'v6.70.0', to: 'v6.70.0', migrations: [], folders }),
+      /no migration folder lies in the range/,
+      JSON.stringify(folders)
+    );
+  }
 });
