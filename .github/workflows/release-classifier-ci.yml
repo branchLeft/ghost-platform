@@ -1,0 +1,43 @@
+name: Release classifier CI
+
+# Tests the Ghost release reversibility classifier
+# (services/release-classifier/). Zero dependencies, so there is no install
+# step and no registry access.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/release-classifier/**
+      - .github/workflows/release-classifier-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - services/release-classifier/**
+      - .github/workflows/release-classifier-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Release classifier test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/release-classifier
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/release-classifier/.nvmrc
+
+      - name: Test
+        run: npm test
