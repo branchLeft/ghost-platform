@@ -185,8 +185,19 @@ class HoldRegistry {
       intervalMs: this.retryIntervalMs,
       failures: 0,
     };
+    entry.sinceMs = Date.now();
     this.entries.set(digest, entry);
     this.#scheduleRetry(digest);
+  }
+
+  // What the metrics read: how many holds wait for a verdict, since when the
+  // oldest has waited, and how many gave up retrying.
+  heldSummary() {
+    let oldestSinceMs = null;
+    for (const entry of this.entries.values()) {
+      if (oldestSinceMs === null || entry.sinceMs < oldestSinceMs) oldestSinceMs = entry.sinceMs;
+    }
+    return { count: this.entries.size, oldestSinceMs, stuck: this.stuck.size };
   }
 
   #joinExisting(digest, hold) {
@@ -261,8 +272,20 @@ class HoldRegistry {
         timer: null,
         intervalMs: this.retryIntervalMs,
         failures: 0,
+        sinceMs: this.#heldSinceMs(digest),
       });
       this.#scheduleRetry(digest);
+    }
+  }
+
+  // A resumed hold has no in-memory start time. The quarantined bytes are
+  // written once, when the upload is first held, so their mtime is when the
+  // wait began; the sidecar is rewritten whenever a target joins.
+  #heldSinceMs(digest) {
+    try {
+      return fsSync.statSync(path.join(this.quarantinePath, digest)).mtimeMs;
+    } catch {
+      return Date.now();
     }
   }
 

@@ -35,3 +35,8 @@ Two log lines, both on the error stream, both carrying `SCANNER_UNCONFIGURED`:
 - on every refused upload, `ScanningStorageAdapter: UPLOAD_REFUSED_SCANNER_UNCONFIGURED ...`
 
 Alert on the second; the first says the state exists before anyone uploads.
+
+A log line cannot raise an alert here, so both states are also metrics, when
+export is configured (`metrics.md`): `scanning_storage_unconfigured_instances`
+above zero is the first line, and `scanning_storage_uploads_refused_total`
+with `reason="unconfigured"` is the second.

@@ -13,6 +13,7 @@ const { defineScanningStorageAdapter } = require('./scanning-storage');
 const { createPdqKnownMaterialCheck } = require('./checks');
 const { resolveVerdictSource } = require('./verdict-source');
 const { SafetyPolicy } = require('./policy');
+const { getProcessMetrics, configureProcessExport } = require('./metrics');
 const { digestBytes } = require('./pdq');
 
 // The wrapped adapter is resolved the same way Ghost's own adapter manager
@@ -36,9 +37,14 @@ const Adapter = defineScanningStorageAdapter(StorageBase, { loadWrappedAdapterCl
 module.exports = class ScanningStorageAdapter extends Adapter {
   constructor(config = {}) {
     const { verdictClient, refuseUploadsReason } = resolveVerdictSource(config);
+    // One registry for the process, exported only when both keys are set
+    // (metrics.md#configuration); nothing is written otherwise.
+    const metrics = getProcessMetrics();
+    configureProcessExport(config, config.holdLogger || console, metrics);
     super({
       ...config,
-      checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })],
+      metrics,
+      checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes, metrics })],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,
       refuseUploadsReason,

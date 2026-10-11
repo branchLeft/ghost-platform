@@ -108,17 +108,22 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__refuse` | A JSON object of `digest -> {classification, matchType}`, seeding the in-process fake verdict client. Empty or unset refuses nothing. Has no effect without `verdictSource=in-process-fake`. |
 | `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves the hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. Has no effect without `verdictSource=in-process-fake`. |
 | `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness, and needs `verdictSource=in-process-fake`. |
+| `storage__images__metricsTextfilePath` | Absolute path, ending `.prom`, of the file the adapter writes its metrics to for the host's textfile collector. Off unless set together with `metricsTenant`. Details: `src/metrics.md`. |
+| `storage__images__metricsTenant` | The `tenant` label on every exported series. |
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
 | `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
 
 The same keys apply under `storage__media__*` and `storage__files__*`.
+
+What is measured about the scanner, and the owner's service level targets,
+are in `SLO.md`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for
 that content type; until then it is configuration with no effect.
 
 ## The seam
 
-```
+```text
 Check       { kind: 'media' | 'text', blocking: boolean, run(subject): Verdict }
 Verdict     { classification: string | 'unavailable', matchType?, confidence?, source, evidence }
 Policy      { decide(Verdict, Context): 'allow' | 'refuse' | 'hold' | 'flag' }
