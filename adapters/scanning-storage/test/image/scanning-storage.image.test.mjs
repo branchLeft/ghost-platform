@@ -11,6 +11,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildThemeZip } from '../helpers/theme-zip.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
@@ -225,6 +226,20 @@ class GhostContainer {
     return { status: res.status, body };
   }
 
+  // Ghost's theme upload: a zip, written by Ghost's own theme storage rather
+  // than through any storage adapter.
+  async uploadTheme(cookie, zipBytes, filename) {
+    const form = new FormData();
+    form.append('file', new Blob([zipBytes], { type: 'application/zip' }), filename);
+    const res = await fetch(`${this.base}/ghost/api/admin/themes/upload/`, {
+      method: 'POST',
+      headers: { origin: this.base, cookie },
+      body: form,
+    });
+    const body = await res.json().catch(() => null);
+    return { status: res.status, body };
+  }
+
   async createPost(cookie) {
     const res = await fetch(`${this.base}/ghost/api/admin/posts/`, {
       method: 'POST',
@@ -256,7 +271,7 @@ class GhostContainer {
   }
 
   stop() {
-    dockerOk('rm', '-f', this.name);
+    dockerOk('rm', '-f', '-v', this.name);
   }
 }
 
@@ -323,7 +338,7 @@ class S3MockDouble {
   }
 
   stop() {
-    dockerOk('rm', '-f', this.name);
+    dockerOk('rm', '-f', '-v', this.name);
   }
 }
 
@@ -1002,6 +1017,136 @@ describe('a refusal in one feature, against a real Ghost', () => {
         ghost.stop();
         reclaimHostOwnership(resolveHostDir);
         fs.rmSync(resolveHostDir, { recursive: true, force: true });
+      }
+    }
+  );
+});
+
+// A theme zip is written by Ghost's own theme storage, not through a storage
+// adapter, and the active theme's files are served from the site root. The
+// image replaces that storage with one that asks the images decorator to
+// screen the extracted tree first (ghost-core-overlay/README.md).
+describe('a theme upload, against a real Ghost', () => {
+  const THEME_NAME = 'gate-test';
+
+  function decoratorEnv(verdictEnv = {}) {
+    const env = {};
+    for (const [feature, wraps] of [
+      ['images', 'LocalImagesStorage'],
+      ['media', 'LocalMediaStorage'],
+      ['files', 'LocalFilesStorage'],
+    ]) {
+      env[`storage__${feature}__adapter`] = 'ScanningStorageAdapter';
+      env[`storage__${feature}__wraps`] = wraps;
+      env[`storage__${feature}__quarantinePath`] = '/var/lib/ghost/content/quarantine';
+    }
+    return { ...env, ...verdictEnv };
+  }
+
+  it(
+    'is declined with the same 503 as an editor upload when there is no verdict source',
+    { timeout: 120_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const ghost = await GhostContainer.start(decoratorEnv());
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const editor = await ghost.uploadImage(cookie, path.join(FIXTURES, 'clean.png'), 'a.png');
+        assert.equal(editor.status, 503, JSON.stringify(editor.body));
+
+        const theme = await ghost.uploadTheme(
+          cookie,
+          buildThemeZip({ 'assets/images/logo.png': cleanBytes }),
+          `${THEME_NAME}.zip`
+        );
+        assert.equal(theme.status, 503, JSON.stringify(theme.body));
+        assert.equal(theme.body.errors[0].type, 'MaintenanceError');
+        // Ghost's image route words its own message and prefixes the context
+        // with the error's message; the sentence that is ours is the same.
+        assert.match(theme.body.errors[0].context, /safety check is set up/);
+        assert.ok(
+          editor.body.errors[0].context.includes(theme.body.errors[0].context),
+          `same error on both routes: ${JSON.stringify([editor.body, theme.body])}`
+        );
+
+        const themes = ghost.ls('/var/lib/ghost/content/themes');
+        assert.ok(!themes.includes(THEME_NAME), `no theme may be written: ${themes}`);
+        assert.equal(await ghost.me(cookie), 200, 'admin API must still serve after a refusal');
+      } finally {
+        ghost.stop();
+      }
+    }
+  );
+
+  it(
+    'refuses a theme carrying a matching image, seals it, and installs and serves a clean one',
+    { timeout: 150_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
+      const badDigest = sha256Hex(badBytes);
+
+      const ghost = await GhostContainer.start(
+        decoratorEnv({
+          storage__images__verdictSource: 'in-process-fake',
+          storage__images__refuse: JSON.stringify({
+            [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
+          }),
+          storage__media__verdictSource: 'in-process-fake',
+          storage__files__verdictSource: 'in-process-fake',
+        })
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const refused = await ghost.uploadTheme(
+          cookie,
+          buildThemeZip({ 'assets/images/banner.png': badBytes }),
+          `${THEME_NAME}.zip`
+        );
+        assert.equal(refused.status, 415, JSON.stringify(refused.body));
+        assert.equal(refused.body.errors[0].type, 'UnsupportedMediaTypeError');
+
+        const themes = ghost.ls('/var/lib/ghost/content/themes');
+        assert.ok(!themes.includes(THEME_NAME), `a refused theme must not be written: ${themes}`);
+        const quarantined = ghost.ls('/var/lib/ghost/content/quarantine');
+        assert.ok(
+          quarantined.includes(badDigest),
+          `quarantine must hold the refused digest: ${quarantined}`
+        );
+        assert.equal(await ghost.getStatus('/'), 200, 'public site must still serve');
+        assert.equal(await ghost.me(cookie), 200, 'admin API must still serve');
+
+        // Control: the same route accepts a theme whose files all pass, and
+        // its image is then served, so the refusal above is the gate and not
+        // a theme upload that never worked in this container.
+        const clean = await ghost.uploadTheme(
+          cookie,
+          buildThemeZip({ 'assets/images/logo.png': cleanBytes }),
+          `${THEME_NAME}.zip`
+        );
+        assert.equal(clean.status, 200, JSON.stringify(clean.body));
+        assert.ok(ghost.ls('/var/lib/ghost/content/themes').includes(THEME_NAME));
+
+        const res = await fetch(`${ghost.base}/ghost/api/admin/themes/${THEME_NAME}/activate/`, {
+          method: 'PUT',
+          headers: { origin: ghost.base, cookie },
+        });
+        assert.equal(res.status, 200, await res.text());
+        assert.equal(
+          await ghost.getStatus('/assets/images/logo.png'),
+          200,
+          'the clean theme image must be served from the active theme'
+        );
+      } finally {
+        ghost.stop();
       }
     }
   );

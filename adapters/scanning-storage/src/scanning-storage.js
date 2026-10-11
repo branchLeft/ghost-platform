@@ -4,9 +4,38 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 
 const { readRefusal, sealRefusal } = require('./quarantine');
-const { buildRefusalError, buildScannerUnconfiguredError } = require('./refusal-error');
+const {
+  buildRefusalError,
+  buildScannerUnconfiguredError,
+  buildVerdictPendingError,
+  buildUncheckableError,
+} = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
+
+// Every regular file under `rootDir`, in a stable order. A link, device,
+// socket or any other entry is not bytes the checks can vouch for (a link
+// would be followed by the copy that comes after), so it throws.
+async function listTreeFiles(rootDir, buildError) {
+  const found = [];
+  const pending = [rootDir];
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(full);
+      } else if (entry.isFile()) {
+        found.push(full);
+      } else {
+        throw buildError();
+      }
+    }
+  }
+  return found;
+}
 
 // Builds the decorator over an injected StorageBase, composing with the
 // wrapped adapter rather than subclassing one: README traps 3 and 4 say why.
@@ -160,6 +189,28 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         onHold: (digest) =>
           this.#registerHold(digest, buffer, this.#computeHeldTargetPath(digest, file, targetDir)),
       });
+    }
+
+    // For bytes Ghost writes as a directory tree outside save()/saveRaw()
+    // (an extracted theme). Every regular file goes through the same
+    // refusal-record lookup, checks and policy as an upload, and nothing is
+    // written to the wrapped adapter. A tree cannot be held and served later,
+    // so anything but a clean verdict for every file declines the tree.
+    async screenTree(rootDir) {
+      this.#refuseIfNoVerdictSource();
+      if (typeof rootDir !== 'string' || rootDir.length === 0) {
+        throw buildUncheckableError(GhostErrors);
+      }
+      const files = await listTreeFiles(rootDir, () => buildUncheckableError(GhostErrors));
+      for (const filePath of files) {
+        const buffer = await fs.readFile(filePath);
+        await this.#scanAndProceed(buffer, {
+          proceed: async () => {},
+          onHold: async () => {
+            throw buildVerdictPendingError(GhostErrors);
+          },
+        });
+      }
     }
 
     // Never reaches the wrapped adapter: the storage gateway refuses every

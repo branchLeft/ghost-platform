@@ -56,12 +56,42 @@ serves nothing until one arrives. It does **not** build:
   computes a video-appropriate hash, no policy is tuned for that content
   type); the byte-hashing plumbing simply doesn't distinguish them.
 
-**Theme uploads bypass storage adapters entirely.** Ghost's theme
-upload/activation path writes to local disk directly and never resolves a
-`storage:*` adapter, so a theme zip -- which can carry arbitrary image bytes
--- has no path through this decorator, regardless of configuration. Outside
-this story's scope; named here so a reader doesn't take this decorator for
-a complete answer to "what bytes can reach a reader."
+## Theme uploads
+
+Ghost's theme upload (and its install from GitHub) never resolves a
+`storage:*` adapter: `services/themes/storage.js` builds its own
+`ThemeStorage`, which copies the extracted zip's whole tree into the themes
+directory, and the active theme's files are then served from the site root
+(everything but `.hbs`, `.md`, `.json`, `.lock` and `.log`). A theme zip can
+therefore carry image bytes no `save()` or `saveRaw()` ever sees, and no
+`storage__*` setting can change that.
+
+So the gate is placed where Ghost writes: `ghost-core-overlay/` replaces
+`theme-storage.js` in the image with a subclass (`src/theme-gate.js`) whose
+`save()` first asks the `storage:images` decorator Ghost already built to
+`screenTree()` the extracted directory, then lets Ghost copy it. The theme
+meets the same verdict source, refusal records and policy as an editor upload:
+
+| State | A theme upload |
+|---|---|
+| No verdict source | Typed 503, the same error and log line as an upload; nothing read. |
+| A file matches | Typed 415, that file sealed in quarantine exactly as an upload's is. |
+| A verdict is `unavailable` | Typed 503, nothing kept. A tree cannot be accepted and held: its files are served from where they land. |
+| A link, device or socket in the tree | Typed 415: a copy would follow it, so the checks cannot vouch for it. |
+| `storage:images` is not this decorator | Typed 503: unchecked is declined. |
+| Every file is clean | Saved by Ghost as before. |
+
+Every file in the tree is checked, not only those named like images: the
+served directory returns almost any extension, so the name proves nothing. A refused theme
+leaves any theme it would have replaced in place (Ghost restores its backup).
+`saveRaw()` on the theme storage is declined outright; no Ghost code calls it.
+
+What is still outside the gate: themes already on a tenant's disk before this
+landed, which keep being served as stored; and the bundled default themes
+shipped in the image. Text files Ghost parses and does not serve
+(`routes.yaml`, redirects) are not media and are not scanned. Reads, theme
+download and delete are untouched. With `BRANCHLEFT_ALLOW_LOCAL_STORAGE`
+leaving the images feature unwrapped, theme upload is declined too.
 
 ## Replacing a same-name thumbnail
 

@@ -58,6 +58,20 @@ COPY --chown=node:node adapters/sso/ghost-core-overlay/session-from-token.js /va
 # (storage__images__adapter=ScanningStorageAdapter and so on).
 COPY --chown=node:node adapters/scanning-storage/src/ /var/lib/ghost/current/core/server/adapters/storage/
 
+# The theme gate (adapters/scanning-storage/ghost-core-overlay/README.md).
+# Ghost writes an uploaded theme with a ThemeStorage it constructs itself, so
+# no storage__* setting can put the decorator in front of it. Guard first,
+# then move the upstream file aside and put a subclass that scans the whole
+# tree through the images decorator in its place: if the upstream file has
+# changed (a Ghost version bump) the build fails rather than wrapping a
+# different class, and re-deriving the pin is a deliberate step.
+COPY adapters/scanning-storage/ghost-core-overlay/theme-storage.upstream.sha256 /tmp/theme-storage.upstream.sha256
+RUN cd /var/lib/ghost/current/core/server/services/themes \
+    && sha256sum -c /tmp/theme-storage.upstream.sha256 \
+    && mv theme-storage.js theme-storage.upstream.js \
+    || (echo "ERROR: upstream Ghost core file theme-storage.js no longer matches the theme gate's pinned hash -- re-derive adapters/scanning-storage/ghost-core-overlay/ (see its README) before rebuilding" >&2 && exit 1)
+COPY --chown=node:node adapters/scanning-storage/ghost-core-overlay/theme-storage.js /var/lib/ghost/current/core/server/services/themes/theme-storage.js
+
 # The export colour's no-op scheduler (services/export-bundler/README.md). Ghost
 # has no setting that stops its scheduler; this adapter is the off switch, and
 # it is inert until a colour's config sets
