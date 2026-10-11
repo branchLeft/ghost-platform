@@ -5,9 +5,48 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 
 const { readRefusal, sealRefusal } = require('./quarantine');
-const { buildRefusalError, buildScannerUnconfiguredError } = require('./refusal-error');
+const {
+  buildRefusalError,
+  buildScannerUnconfiguredError,
+  buildVerdictPendingError,
+  buildUncheckableError,
+} = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const { HoldRegistry, evaluate } = require('./hold');
+
+const DEFAULT_TREE_MAX_ENTRIES = 5000;
+const DEFAULT_TREE_DEADLINE_MS = 30000;
+
+// Every regular file under `rootDir`, in a stable order. A link, device,
+// socket or any other entry is not bytes the checks can vouch for (a link
+// would be followed by the copy that comes after), so it throws.
+// More than `maxEntries` files and directories also throws: the extractor
+// bounds bytes, not how many entries a tree has.
+async function listTreeFiles(rootDir, maxEntries, buildError) {
+  const found = [];
+  const pending = [rootDir];
+  let seen = 0;
+  while (pending.length > 0) {
+    const dir = pending.pop();
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const entry of entries) {
+      seen += 1;
+      if (seen > maxEntries) {
+        throw buildError();
+      }
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(full);
+      } else if (entry.isFile()) {
+        found.push(full);
+      } else {
+        throw buildError();
+      }
+    }
+  }
+  return found;
+}
 
 // Lower-case base32 (a-z, 2-7): 22 symbols carry 110 bits, so a new upload's
 // URL cannot be guessed from a neighbouring public one.
@@ -219,6 +258,17 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.overwriteWindowMs =
         Number(config.overwriteWindowMs) > 0 ? Number(config.overwriteWindowMs) : 60000;
       this.pendingOverwrites = new Map();
+      // A directory tree (a theme) is screened one verdict call per file, each
+      // up to the check's own timeout, inside one request. Both bounds are
+      // incidental like that timeout: they only decline, never allow.
+      this.treeMaxEntries =
+        Number(config.treeMaxEntries) > 0
+          ? Number(config.treeMaxEntries)
+          : DEFAULT_TREE_MAX_ENTRIES;
+      this.treeDeadlineMs =
+        Number(config.treeDeadlineMs) > 0
+          ? Number(config.treeDeadlineMs)
+          : DEFAULT_TREE_DEADLINE_MS;
       this.storedNames = new Map();
       this.reservedNames = new Map();
 
@@ -363,6 +413,36 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         expiresAt: Date.now() + RESERVATION_WINDOW_MS,
       });
       return result;
+    }
+
+    // For bytes Ghost writes as a directory tree outside save()/saveRaw()
+    // (an extracted theme). Every regular file goes through the same
+    // refusal-record lookup, checks and policy as an upload, and nothing is
+    // written to the wrapped adapter. A tree cannot be held and served later,
+    // so anything but a clean verdict for every file declines the tree.
+    async screenTree(rootDir) {
+      this.#refuseIfNoVerdictSource();
+      if (typeof rootDir !== 'string' || rootDir.length === 0) {
+        throw buildUncheckableError(GhostErrors);
+      }
+      const files = await listTreeFiles(rootDir, this.treeMaxEntries, () =>
+        buildUncheckableError(GhostErrors)
+      );
+      const deadline = Date.now() + this.treeDeadlineMs;
+      for (const filePath of files) {
+        // Checked before each file, so a slow channel declines the tree
+        // after at most one more verdict timeout rather than running on.
+        if (Date.now() > deadline) {
+          throw buildVerdictPendingError(GhostErrors);
+        }
+        const buffer = await fs.readFile(filePath);
+        await this.#scanAndProceed(buffer, {
+          proceed: async () => {},
+          onHold: async () => {
+            throw buildVerdictPendingError(GhostErrors);
+          },
+        });
+      }
     }
 
     // Never reaches the wrapped adapter: the storage gateway refuses every
