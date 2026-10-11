@@ -63,8 +63,34 @@ metric names the control host's worker publishes, under
 `backup_worker_lock_aborts_total`, which a failed run still advances.
 Writing is best-effort: a metrics failure never fails the dump.
 
-**Nothing reads this file today.** db1 is not monitored for these
-metrics. The only node_exporter that reads that textfile directory runs on
-the control host, and Prometheus's db1 node target is not expected up.
-Until monitoring is extended to db1, no alert fires on db1's lock waits or
-aborts. The run's journal line is the only record.
+### Run status
+
+Each run also writes `dump_nightly_status.prom` to the same directory, through
+`record_run_status`, once the run has ended:
+
+| Metric | Meaning |
+| --- | --- |
+| `db_nightly_dump_last_run_success` | `1` if the latest run stored a dump, `0` if it failed for any reason, including a missing setting or an unexpected error. |
+| `db_nightly_dump_last_success_timestamp_seconds` | Unix time the last stored dump finished uploading. A failed run carries the previous value forward; it is absent until a first success. |
+
+The names deliberately differ from the control host's worker series, so that
+series can never mask this one's absence. The file is written beside the
+lock gauges, not into them, so that writer is untouched.
+
+The write comes after the upload and the `wrote ...` journal line, is
+atomic (a temporary file in the same directory, then rename, mode 0644) and
+is best-effort: any error is printed to stderr and swallowed, and never
+changes the run's exit status. An empty `DB_DUMP_METRICS_DIR` turns it off.
+
+### Who reads it
+
+db1's node_exporter (`hetzner/provision/40-install-node-exporter.sh` in
+shared-infra) reads this directory through its textfile collector. The install
+steps are the ghost-platform-docs page `db1-node-exporter-install-runbook.md`.
+The alert rules `DbNightlyDumpFailed`, `DbNightlyDumpStale` and
+`DbNightlyDumpMetricAbsent` live in shared-infra's
+`hetzner/monitoring/render.ts`. The thresholds there follow the timer: 03:10
+UTC plus up to 5 minutes of random delay, and the unit's 30 minute timeout, so
+a healthy run finishes by about 03:45 and a metric older than 30 hours means a
+night was missed. The rules read these files only once db1's node target
+answers; whether it does today is read from Prometheus, not from this file.
