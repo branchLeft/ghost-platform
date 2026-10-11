@@ -1,1 +1,2 @@
 adapters/sso/ghost-core-overlay/*.upstream.js	CMT-3	# CMT-3: byte-for-byte pinned upstream copy, guarded by a SHA-256; must not be edited
+adapters/scanning-storage/test/fixtures/content-safety/pdq-hash.ts	TS-5	# TS-5: byte-for-byte pinned copy of another repository's source, guarded by a SHA-256; read by one unit test, never compiled here
