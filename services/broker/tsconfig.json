@@ -14,5 +14,5 @@
   // vitest.config.ts is listed explicitly because it sits at the project
   // root, outside both source trees. tsconfig.build.json narrows `include`
   // back to src, so naming it here cannot leak it into the published build.
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "contract/**/*.ts", "vitest.config.ts"]
 }

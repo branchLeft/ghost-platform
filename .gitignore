@@ -22,3 +22,6 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 portal/*/dist
 portal/*/coverage
+
+# Speckify build output (speckify build writes here by default)
+.speckify/
