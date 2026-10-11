@@ -921,6 +921,18 @@ describe('a newer grant that cannot be linked back is never dropped', () => {
     expect(later.calls).not.toContain('revoke');
   });
 
+  it('a close whose claim was reclaimed meanwhile reports no held grant', async () => {
+    const deps = wallClockDeps();
+    await grant(request(), deps);
+    vi.spyOn(fs, 'linkSync').mockImplementation((from) => {
+      fs.rmSync(from);
+      throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+    });
+    expect(removeStateIfSame(deps, 'tenant-zero', 'x:an older grant')).toBe(false);
+    vi.restoreAllMocks();
+    expect(claims(deps)).toEqual([]);
+  });
+
   it('does not close a live grant when the claim vanished after a failed link back', async () => {
     const deps = wallClockDeps();
     await holdNewerGrant(deps);
