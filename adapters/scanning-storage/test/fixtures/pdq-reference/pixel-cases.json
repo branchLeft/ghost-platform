@@ -1,0 +1,250 @@
+{
+  "source": {
+    "repository": "facebook/ThreatExchange",
+    "directory": "pdq/",
+    "commit": "bd0108ff1745135a421856586d19d820dd62c6de"
+  },
+  "note": "Hashes printed by the reference hashing core over the byte arrays test/helpers/pdq-pixels.mjs generates.",
+  "pixelCases": [
+    {
+      "name": "blocks-5x5x3",
+      "width": 5,
+      "height": 5,
+      "channels": 3,
+      "seed": 1,
+      "kind": "blocks",
+      "expectedHex": "c67396a5398c695ac4f16499c6f1cb72390e96a5c67396a5398c695ac4f1649d",
+      "expectedQuality": 4
+    },
+    {
+      "name": "blocks-5x5x1",
+      "width": 5,
+      "height": 5,
+      "channels": 1,
+      "seed": 2,
+      "kind": "blocks",
+      "expectedHex": "398c6c9bc27393266a5a9e27380e61d8c6f16cd93d8c6c9bc2739326695a9e27",
+      "expectedQuality": 9
+    },
+    {
+      "name": "blocks-7x9x3",
+      "width": 7,
+      "height": 9,
+      "channels": 3,
+      "seed": 3,
+      "kind": "blocks",
+      "expectedHex": "4f816f8164d960dd4f21b47ac3276b953cd84b85b0de9f629b24907eb07e298d",
+      "expectedQuality": 31
+    },
+    {
+      "name": "blocks-7x9x1",
+      "width": 7,
+      "height": 9,
+      "channels": 1,
+      "seed": 4,
+      "kind": "blocks",
+      "expectedHex": "7588318e6d896f818a946d69c47b92963b8c9296756b907692d6ce71c877687d",
+      "expectedQuality": 35
+    },
+    {
+      "name": "blocks-64x64x3",
+      "width": 64,
+      "height": 64,
+      "channels": 3,
+      "seed": 5,
+      "kind": "blocks",
+      "expectedHex": "a83fb5d2a92da5cbee215b84a09f5544ef6ba07e13cc5e3156d06a2d5fc0189c",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-64x64x1",
+      "width": 64,
+      "height": 64,
+      "channels": 1,
+      "seed": 6,
+      "kind": "blocks",
+      "expectedHex": "7694a5cb7aa5a38b4c395a647d68a387ea91a58b93465c58d55a5ab47b64156c",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-63x65x3",
+      "width": 63,
+      "height": 65,
+      "channels": 3,
+      "seed": 7,
+      "kind": "blocks",
+      "expectedHex": "573394da612dc4cb6d613b8c68dd3f80c56b907e3b943e709ad4692d3f8038dc",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-63x65x1",
+      "width": 63,
+      "height": 65,
+      "channels": 1,
+      "seed": 8,
+      "kind": "blocks",
+      "expectedHex": "bcd8878bcb27c58b6c799b263d6893866ed9c78b92363cd8b4da3a7419241d28",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-100x37x3",
+      "width": 100,
+      "height": 37,
+      "channels": 3,
+      "seed": 9,
+      "kind": "blocks",
+      "expectedHex": "48fda30d48b9a75258b9b44269fda5c6536fb6425cb8a7470bbdcc98a71270b8",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-100x37x1",
+      "width": 100,
+      "height": 37,
+      "channels": 1,
+      "seed": 10,
+      "kind": "blocks",
+      "expectedHex": "e61d5cc7b68d05c2e21d27c2dc973962fa370972a3185de7dc8da6c80dc2e338",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-128x128x3",
+      "width": 128,
+      "height": 128,
+      "channels": 3,
+      "seed": 11,
+      "kind": "blocks",
+      "expectedHex": "588ecf75e48f5f5aa3f0aa75a7105d20aa55ead75e28a887591292e1a770acd2",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-128x128x1",
+      "width": 128,
+      "height": 128,
+      "channels": 1,
+      "seed": 12,
+      "kind": "blocks",
+      "expectedHex": "ad6fa7f8300fd55a3670bf20559255a2d51aebc5b7307cc7a1125ef83232a0d2",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-257x300x3",
+      "width": 257,
+      "height": 300,
+      "channels": 3,
+      "seed": 13,
+      "kind": "blocks",
+      "expectedHex": "4d552dc4557f80ce407f552a5fa00a3f4780aa375f02fe725f09ea385f0baa59",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-257x300x1",
+      "width": 257,
+      "height": 300,
+      "channels": 1,
+      "seed": 14,
+      "kind": "blocks",
+      "expectedHex": "5900fcaa5e55ff00007fd56a153aff15158aff27ffa201089da98304d7ae970b",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-512x512x3",
+      "width": 512,
+      "height": 512,
+      "channels": 3,
+      "seed": 15,
+      "kind": "blocks",
+      "expectedHex": "8ffd25559855065593fd0455df2e05bdd7150549d30d05e1d7fc0556514335d6",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-512x512x1",
+      "width": 512,
+      "height": 512,
+      "channels": 1,
+      "seed": 16,
+      "kind": "blocks",
+      "expectedHex": "8f55237b9854257f94ef2e3b550d0491950a25e2bba504c3bfb906fc113666fc",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-300x700x3",
+      "width": 300,
+      "height": 700,
+      "channels": 3,
+      "seed": 17,
+      "kind": "blocks",
+      "expectedHex": "5c0c9b2a7ca5ff32740fbf327c08be127c48bc387c58b7be500b1bb07c0bbb10",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-300x700x1",
+      "width": 300,
+      "height": 700,
+      "channels": 1,
+      "seed": 18,
+      "kind": "blocks",
+      "expectedHex": "feca7f21fea288125644bb325e48ab5c1680be384c84ffbede0e0a31fe02ab55",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-1000x333x3",
+      "width": 1000,
+      "height": 333,
+      "channels": 3,
+      "seed": 19,
+      "kind": "blocks",
+      "expectedHex": "5518aa2ed553ffffa8a80655fd5d4147eea22ba8afa983e290c1aa201ab5351b",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-1000x333x1",
+      "width": 1000,
+      "height": 333,
+      "channels": 1,
+      "seed": 20,
+      "kind": "blocks",
+      "expectedHex": "57dc0002519cfff3abaca86b7f7d0903fbf928ab82bec16c9cce8e0cbaa45210",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-640x480x3",
+      "width": 640,
+      "height": 480,
+      "channels": 3,
+      "seed": 21,
+      "kind": "blocks",
+      "expectedHex": "d55577712aaa600039590b75295ddcef365d552b7519554a3fa84cad30075dcd",
+      "expectedQuality": 100
+    },
+    {
+      "name": "blocks-640x480x1",
+      "width": 640,
+      "height": 480,
+      "channels": 1,
+      "seed": 22,
+      "kind": "blocks",
+      "expectedHex": "55447bae0ffe4822257f01f7fc5f56052222f6853bd054463bc257f822cd5578",
+      "expectedQuality": 100
+    },
+    {
+      "name": "flat-100x80x3",
+      "width": 100,
+      "height": 80,
+      "channels": 3,
+      "seed": 128,
+      "kind": "flat",
+      "expectedHex": "000000002c4b11342c4b2c4b0000554b00002c4b113411342c4b585e2c4b017e",
+      "expectedQuality": 0
+    },
+    {
+      "name": "flat-64x64x1",
+      "width": 64,
+      "height": 64,
+      "channels": 1,
+      "seed": 0,
+      "kind": "flat",
+      "expectedHex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expectedQuality": 0
+    }
+  ]
+}

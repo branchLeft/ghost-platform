@@ -16,7 +16,6 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 
 const BUCKET = process.env.DOUBLE_BUCKET || 'recording-double';
 const requests = [];
@@ -184,34 +183,8 @@ const s3 = http.createServer((req, res) => {
   });
 });
 
-// A distinct, valid PNG, so a test can hold or upload bytes no other scenario uses.
-function tinyPng(seed) {
-  const chunk = (type, data) => {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(data.length);
-    const body = Buffer.concat([Buffer.from(type), data]);
-    const crc = Buffer.alloc(4);
-    crc.writeUInt32BE(zlib.crc32(body));
-    return Buffer.concat([len, body, crc]);
-  };
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(2, 0);
-  ihdr.writeUInt32BE(2, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 2;
-  const raw = Buffer.concat(
-    [0, 1].map((row) => Buffer.from([0, seed, row * 40, 90, seed, 20, 60]))
-  );
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', zlib.deflateSync(raw)),
-    chunk('IEND', Buffer.alloc(0)),
-  ]);
-}
-
 if (require.main === module) {
   s3.listen(9090, '0.0.0.0');
 }
 
-module.exports = { tinyPng, classify };
+module.exports = { classify };
