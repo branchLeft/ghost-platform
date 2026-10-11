@@ -94,6 +94,7 @@ function featureEnv(feature, wrapped, double, extra = {}) {
   const base = `storage__${feature}`;
   return {
     [`${base}__adapter`]: 'ScanningStorageAdapter',
+    [`${base}__verdictSource`]: 'in-process-fake',
     [`${base}__wraps`]: 'S3Storage',
     [`${base}__quarantinePath`]: '/var/lib/ghost/content/quarantine',
     [`${base}__wrappedConfig__bucket`]: BUCKET,

@@ -128,13 +128,27 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
     """Every backup run's own deletion step depends on media/ carrying a
     SHORT noncurrent-version expiry of its own, split out from the 35-day
     rule dumps/ and binlogs/ keep; fence-probe/ shares that same short
-    window (see the module docstring). Four prefix-scoped rules, never
+    window (see the module docstring). Five prefix-scoped rules, never
     one bucket-wide rule and never two rules whose prefixes could both match
     the same key."""
 
-    def test_four_rules_are_present(self):
+    @staticmethod
+    def _rule(doc: str, prefix: str) -> str:
+        return doc.split(f"<Filter><Prefix>{prefix}</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+
+    def test_five_rules_are_present(self):
         doc = cbb.lifecycle_document(35, 1).decode()
-        self.assertEqual(doc.count("<Rule>"), 4)
+        self.assertEqual(doc.count("<Rule>"), 5)
+
+    def test_state_rule_is_scoped_and_both_figures_are_parameters(self):
+        doc = cbb.lifecycle_document(35, 1, 10, 28, 46, 3).decode()
+        rule = doc.split("<Filter><Prefix>state/</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+        self.assertIn("<NoncurrentDays>3</NoncurrentDays>", rule)
+        self.assertIn("<Expiration><Days>46</Days></Expiration>", rule)
+        zero = cbb.lifecycle_document(35, 1, 10, 28, 0).decode()
+        self.assertNotIn("<Days>", zero.split("<Filter><Prefix>state/</Prefix></Filter>", 1)[1])
+        with self.assertRaises(ValueError):
+            cbb.lifecycle_document(35, 1, 10, 28, -1)
 
     def test_each_rule_is_scoped_to_its_own_prefix(self):
         doc = cbb.lifecycle_document(35, 1).decode()
@@ -144,13 +158,56 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", doc)
 
     def test_db_prefixes_get_the_db_noncurrent_days_media_and_probe_get_their_own(self):
-        doc = cbb.lifecycle_document(35, 1).decode()
         # dumps/ and binlogs/ each carry their own <NoncurrentDays>35</...>
-        # element -- two occurrences, one per rule -- and media/ and
-        # fence-probe/ each carry an independent <NoncurrentDays>1</...>,
-        # sharing the same value -- two occurrences.
+        # element, and media/ and fence-probe/ each carry an independent
+        # <NoncurrentDays>1</...>, sharing the same value. state/ takes its
+        # own figure, so it is given a value no other rule has.
+        doc = cbb.lifecycle_document(35, 1, 10, 28, 46, 7).decode()
+        for prefix, days in (("dumps/", 35), ("binlogs/", 35), ("media/", 1), ("fence-probe/", 1), ("state/", 7)):
+            self.assertIn(f"<NoncurrentDays>{days}</NoncurrentDays>", self._rule(doc, prefix), prefix)
         self.assertEqual(doc.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
         self.assertEqual(doc.count("<NoncurrentDays>1</NoncurrentDays>"), 2)
+
+    def test_state_defaults_are_the_46_day_erasure_window(self):
+        # 10 current + 1 for the daily pass + 35 noncurrent, as dumps/.
+        self.assertEqual(cbb.STATE_CURRENT_EXPIRATION_DAYS, 10)
+        self.assertEqual(cbb.STATE_NONCURRENT_VERSION_EXPIRATION_DAYS, 35)
+        rule = self._rule(cbb.lifecycle_document().decode(), "state/")
+        self.assertIn("<Expiration><Days>10</Days></Expiration>", rule)
+        self.assertIn("<NoncurrentDays>35</NoncurrentDays>", rule)
+
+    def test_cli_state_flags_default_to_the_erasure_window_and_are_threaded_through(self):
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            captured = []
+            base = [
+                "--bucket", BUCKET, "--endpoint", "hel1.your-objectstorage.com",
+                "--region", "hel1", "--policy-file", str(policy_file), "--engine-diagnostic-passed",
+            ]
+
+            def fake_configure(**kwargs):
+                captured.append(kwargs)
+
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", fake_configure):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    codes = [
+                        cbb.main(base),
+                        cbb.main([*base, "--state-expiration-days", "12", "--state-noncurrent-days", "20"]),
+                    ]
+        self.assertEqual(codes, [0, 0])
+        self.assertEqual(
+            [(c["state_expiration_days"], c["state_noncurrent_days"]) for c in captured],
+            [(10, 35), (12, 20)],
+        )
 
     def test_no_rule_carries_expired_object_delete_marker(self):
         # A Days expiry cannot share a lifecycle element with
@@ -214,13 +271,14 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
 
     def test_defaults_match_the_configured_constants(self):
         doc = cbb.lifecycle_document().decode()
-        self.assertEqual(
-            doc.count(f"<NoncurrentDays>{cbb.NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"), 2
-        )
-        self.assertEqual(
-            doc.count(f"<NoncurrentDays>{cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS}</NoncurrentDays>"),
-            2,  # media/ and fence-probe/ share this value -- two rules
-        )
+        for prefix, days in (
+            ("dumps/", cbb.NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("binlogs/", cbb.NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("media/", cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("fence-probe/", cbb.MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS),
+            ("state/", cbb.STATE_NONCURRENT_VERSION_EXPIRATION_DAYS),
+        ):
+            self.assertIn(f"<NoncurrentDays>{days}</NoncurrentDays>", self._rule(doc, prefix), prefix)
 
     def test_configure_backup_bucket_threads_media_noncurrent_days_through(self):
         calls = []
@@ -243,8 +301,8 @@ class MediaLifecyclePrefixSplitTests(unittest.TestCase):
         body = lifecycle_call["body"].decode()
         self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", body)
-        self.assertEqual(body.count("<NoncurrentDays>2</NoncurrentDays>"), 2)  # media/ and fence-probe/
-        self.assertEqual(body.count("<NoncurrentDays>35</NoncurrentDays>"), 2)
+        for prefix, days in (("media/", 2), ("fence-probe/", 2), ("dumps/", 35), ("binlogs/", 35)):
+            self.assertIn(f"<NoncurrentDays>{days}</NoncurrentDays>", self._rule(body, prefix), prefix)
 
     def test_cli_media_noncurrent_days_flag_is_threaded_through(self):
         import contextlib
@@ -292,13 +350,13 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
 
     def test_media_and_fence_probe_carry_no_day_based_expiry_unless_media_is_given_one(self):
         doc = cbb.lifecycle_document(35, 1, 10, 0).decode()
-        self.assertEqual(doc.count("<Days>"), 2)
+        self.assertEqual(doc.count("<Days>"), 3)
         for prefix in ("media/", "fence-probe/"):
             self.assertNotIn("<Days>", self._rule(doc, prefix))
 
     def test_media_expiry_lands_on_the_media_rule_only(self):
         doc = cbb.lifecycle_document(35, 1, 10, 14).decode()
-        self.assertEqual(doc.count("<Days>"), 3)
+        self.assertEqual(doc.count("<Days>"), 4)
         self.assertIn("<Expiration><Days>14</Days></Expiration>", self._rule(doc, "media/"))
         self.assertNotIn("<Days>", self._rule(doc, "fence-probe/"))
         for prefix in ("dumps/", "binlogs/"):
@@ -338,16 +396,17 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
         body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
         self.assertIn("<Expiration><Days>21</Days></Expiration>", self._rule(body, "media/"))
 
-    def test_the_default_matches_the_prune_script_retention(self):
+    def test_the_decided_figure_matches_the_prune_script_retention(self):
         import prune_backups
 
         self.assertEqual(cbb.DB_CURRENT_EXPIRATION_DAYS, prune_backups.RETENTION_DAYS)
         self.assertIn(
-            f"<Days>{prune_backups.RETENTION_DAYS}</Days>".encode(), cbb.lifecycle_document()
+            f"<Days>{prune_backups.RETENTION_DAYS}</Days>".encode(),
+            cbb.lifecycle_document(db_expiration_days=cbb.DB_CURRENT_EXPIRATION_DAYS),
         )
 
     def test_zero_omits_the_expiry_and_negative_is_refused(self):
-        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0, 0))
+        self.assertNotIn(b"<Days>", cbb.lifecycle_document(35, 1, 0, 0, 0))
         with self.assertRaises(ValueError):
             cbb.lifecycle_document(35, 1, -1)
 
@@ -405,6 +464,222 @@ class DbCurrentVersionExpiryTests(unittest.TestCase):
                         )
                 self.assertEqual(code, 0)
                 self.assertEqual(captured["media_expiration_days"], expected)
+
+
+class DbCurrentVersionExpiryIsOptInTests(unittest.TestCase):
+    """A bucket whose writer key can delete is pruned by prune_backups.py, and a
+    lifecycle rule cannot keep the newest object, so the current-version expiry
+    on dumps/ and binlogs/ is written only when the operator asks for it."""
+
+    @staticmethod
+    def _rule(doc: str, prefix: str) -> str:
+        return doc.split(f"<Filter><Prefix>{prefix}</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
+
+    @staticmethod
+    def _cli(extra):
+        import contextlib
+        import io
+        import os
+
+        with tempfile.TemporaryDirectory() as directory:
+            policy_file = Path(directory) / "policy.json"
+            policy_file.write_text(json.dumps(fence_policy()))
+            captured = {}
+            environment = {"AWS_ACCESS_KEY_ID": OPERATOR_KEY, "AWS_SECRET_ACCESS_KEY": "secret"}
+            out = io.StringIO()
+            with mock.patch.dict(os.environ, environment, clear=False), mock.patch.object(
+                cbb, "owner_id", return_value="p1231234"
+            ), mock.patch.object(cbb, "configure_backup_bucket", lambda **kw: captured.update(kw)):
+                with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(out):
+                    code = cbb.main(
+                        ["--bucket", BUCKET, "--endpoint", "hel1.your-objectstorage.com",
+                         "--region", "hel1", "--policy-file", str(policy_file),
+                         "--engine-diagnostic-passed", *extra]
+                    )
+        return code, captured, out.getvalue()
+
+    def test_the_default_document_has_no_current_expiry_on_dumps_or_binlogs(self):
+        doc = cbb.lifecycle_document().decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertNotIn("<Expiration>", self._rule(doc, prefix))
+
+    def test_the_default_document_still_carries_the_noncurrent_rule_on_both(self):
+        doc = cbb.lifecycle_document().decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertIn("<NoncurrentDays>35</NoncurrentDays>", self._rule(doc, prefix))
+
+    def test_the_default_configure_call_sends_no_current_expiry_on_dumps_or_binlogs(self):
+        calls = []
+        cbb.configure_backup_bucket(
+            bucket="b", endpoint="hel1.your-objectstorage.com", region="hel1",
+            access_key="AK", secret_key="S", policy_body=b"{}",
+            put=lambda **kwargs: calls.append(kwargs),
+        )
+        body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertNotIn("<Expiration>", self._rule(body, prefix))
+
+    def test_an_explicit_figure_writes_it_on_both_prefixes_and_nowhere_else_in_the_db_rules(self):
+        calls = []
+        cbb.configure_backup_bucket(
+            bucket="b", endpoint="fsn1.your-objectstorage.com", region="fsn1",
+            access_key="AK", secret_key="S", policy_body=b"{}", db_expiration_days=10,
+            put=lambda **kwargs: calls.append(kwargs),
+        )
+        body = next(c for c in calls if c["subresource"] == "lifecycle")["body"].decode()
+        for prefix in ("dumps/", "binlogs/"):
+            self.assertIn("<Expiration><Days>10</Days></Expiration>", self._rule(body, prefix))
+        self.assertNotIn("<Days>", self._rule(body, "fence-probe/"))
+
+    def test_the_media_expiry_is_unchanged_by_the_db_default(self):
+        doc = cbb.lifecycle_document().decode()
+        self.assertIn("<Expiration><Days>28</Days></Expiration>", self._rule(doc, "media/"))
+
+    def test_the_cli_without_the_flag_asks_for_no_current_expiry(self):
+        code, captured, _ = self._cli([])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["db_expiration_days"], 0)
+
+    def test_the_cli_with_the_flag_passes_the_figure_through(self):
+        code, captured, _ = self._cli(["--db-expiration-days", "10"])
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["db_expiration_days"], 10)
+
+    def test_the_cli_says_so_when_no_current_expiry_was_written(self):
+        _, _, out = self._cli([])
+        self.assertIn("NO current-version expiry on dumps/ and binlogs/", out)
+        self.assertNotIn("current-version expiry set on dumps/ and binlogs/", out)
+
+    def test_the_cli_warns_that_a_rerun_replaces_the_whole_lifecycle(self):
+        for extra in ([], ["--db-expiration-days", "10"]):
+            with self.subTest(extra=extra):
+                _, _, out = self._cli(extra)
+                self.assertIn("A re-run replaces the whole lifecycle", out)
+                self.assertIn("omitting --db-expiration-days", out)
+
+    def test_the_cli_names_the_figure_when_it_was_written(self):
+        _, _, out = self._cli(["--db-expiration-days", "10"])
+        self.assertIn("10-day current-version expiry set on dumps/ and binlogs/", out)
+        self.assertNotIn("NO current-version expiry on dumps/ and binlogs/", out)
+
+
+class RunbookInvocationTests(unittest.TestCase):
+    """Every documented invocation of the script, in every markdown file of this
+    repo, agrees with the bucket it names: the bucket whose writer key can
+    delete takes no current-version expiry flag, and the bucket whose writer is
+    put-only passes the decided figure explicitly. A default that is correct
+    for one is wrong for the other, so the page has to say which it is."""
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    EXCLUDED_DIR_PARTS = {".git", "node_modules", "worktrees", ".worktrees"}
+    SCRIPT = "configure_backup_bucket.py"
+    DELETING_WRITER_BUCKET = "branchleft-db-backups"
+    PUT_ONLY_WRITER_BUCKET = "branchleft-tenant-backups"
+    FLAG = "--db-expiration-days"
+
+    @classmethod
+    def command_lines(cls, text: str) -> list[list[str]]:
+        """The argument tokens of every command naming the script with a --bucket.
+
+        Backslash continuations are joined first, in the single and the doubled
+        spelling a quoted example uses. Prose that only names the script has no
+        --bucket and is not a command.
+        """
+        joined = re.sub(r"\\{1,2}\n\s*", " ", text)
+        commands = []
+        for line in joined.splitlines():
+            if cls.SCRIPT not in line or "--bucket" not in line:
+                continue
+            rest = line.split(cls.SCRIPT, 1)[1]
+            rest = re.split(r"[|;`]|&&", rest, maxsplit=1)[0]
+            commands.append(rest.split())
+        return commands
+
+    @classmethod
+    def markdown_files(cls) -> list[Path]:
+        return sorted(
+            p
+            for p in cls.REPO_ROOT.rglob("*.md")
+            if not cls.EXCLUDED_DIR_PARTS & set(p.relative_to(cls.REPO_ROOT).parts)
+        )
+
+    @classmethod
+    def found(cls) -> list[tuple[str, list[str]]]:
+        return [
+            (str(path.relative_to(cls.REPO_ROOT)), tokens)
+            for path in cls.markdown_files()
+            for tokens in cls.command_lines(path.read_text(encoding="utf-8"))
+        ]
+
+    @classmethod
+    def flag_value(cls, tokens: list[str]):
+        for index, token in enumerate(tokens):
+            if token == cls.FLAG:
+                return tokens[index + 1] if index + 1 < len(tokens) else ""
+            if token.startswith(cls.FLAG + "="):
+                return token.split("=", 1)[1]
+        return None
+
+    @staticmethod
+    def bucket(tokens: list[str]):
+        return tokens[tokens.index("--bucket") + 1] if "--bucket" in tokens[:-1] else None
+
+    def test_the_invocations_were_actually_found(self):
+        """A parser that matched nothing would pass every assertion below."""
+        buckets = [self.bucket(tokens) for _, tokens in self.found()]
+        self.assertGreaterEqual(buckets.count(self.DELETING_WRITER_BUCKET), 2, buckets)
+        self.assertGreaterEqual(buckets.count(self.PUT_ONLY_WRITER_BUCKET), 1, buckets)
+
+    def test_the_database_runbook_names_the_deleting_writer_bucket_without_the_flag(self):
+        runbook = self.REPO_ROOT / "db" / "RUNBOOK-db.md"
+        commands = self.command_lines(runbook.read_text(encoding="utf-8"))
+        self.assertEqual(len(commands), 1, commands)
+        self.assertEqual(self.bucket(commands[0]), self.DELETING_WRITER_BUCKET)
+        self.assertIsNone(self.flag_value(commands[0]))
+
+    def test_every_invocation_is_classified_and_carries_the_right_flag(self):
+        for page, tokens in self.found():
+            with self.subTest(page=page, bucket=self.bucket(tokens)):
+                bucket = self.bucket(tokens)
+                value = self.flag_value(tokens)
+                if bucket == self.DELETING_WRITER_BUCKET:
+                    self.assertIsNone(
+                        value,
+                        f"{page}: the bucket whose writer can delete is pruned by "
+                        f"prune_backups.py; it must not be given {self.FLAG}",
+                    )
+                elif bucket == self.PUT_ONLY_WRITER_BUCKET:
+                    self.assertEqual(
+                        value,
+                        str(cbb.DB_CURRENT_EXPIRATION_DAYS),
+                        f"{page}: the put-only bucket ages dumps out through its "
+                        f"lifecycle only, so it must pass {self.FLAG} explicitly",
+                    )
+                else:
+                    self.fail(f"{page}: an invocation names a bucket this test cannot classify: {bucket!r}")
+
+    def test_the_matcher_catches_a_flag_on_the_deleting_bucket_and_a_missing_one(self):
+        """A parser that cannot see the defect would pass the page it checks."""
+        with_flag = self.command_lines(
+            "python3 db/provision/configure_backup_bucket.py --bucket branchleft-db-backups \\\n"
+            "  --region hel1 --db-expiration-days 10 --policy-file p.json\n"
+        )
+        self.assertEqual(self.flag_value(with_flag[0]), "10")
+        self.assertEqual(self.bucket(with_flag[0]), self.DELETING_WRITER_BUCKET)
+        without = self.command_lines(
+            "python3 db/provision/configure_backup_bucket.py --bucket branchleft-tenant-backups --region fsn1\n"
+        )
+        self.assertIsNone(self.flag_value(without[0]))
+        equals_form = self.command_lines(
+            "configure_backup_bucket.py --bucket branchleft-db-backups --db-expiration-days=10\n"
+        )
+        self.assertEqual(self.flag_value(equals_form[0]), "10")
+        self.assertEqual(
+            self.command_lines("`configure_backup_bucket.py` always re-applies the fence\n"), []
+        )
+        self.assertEqual(
+            self.command_lines("python3 db/provision/configure_backup_bucket.py --help | grep -c x\n"), []
+        )
 
 
 class ConfigureBackupBucketTests(unittest.TestCase):

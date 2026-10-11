@@ -114,6 +114,62 @@ def record_lock_metrics(
         print(f"dump_nightly: could not write lock metrics to {metrics_dir!r}: {exc}", file=sys.stderr)
 
 
+# The run's own outcome, in its own file so the lock gauges above keep their
+# writer untouched. Names are db-specific on purpose: a name shared with the
+# control host's worker would let that host's series hide this one's absence.
+STATUS_FILENAME = "dump_nightly_status.prom"
+_LAST_SUCCESS_LINE = re.compile(
+    r"\Adb_nightly_dump_last_success_timestamp_seconds\s+([0-9]+(?:\.[0-9]+)?)\s*\Z"
+)
+
+
+def _previous_success(path: pathlib.Path) -> float | None:
+    try:
+        for line in path.read_text().splitlines():
+            match = _LAST_SUCCESS_LINE.match(line.strip())
+            if match:
+                return float(match.group(1))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def record_run_status(*, metrics_dir: str | None, succeeded: bool, now: float | None = None) -> None:
+    """Publishes whether this run succeeded and when one last did. A failed
+    run carries the previous success time forward unchanged. Best-effort and
+    atomic: any failure here is printed and swallowed, never the dump's."""
+    if not metrics_dir:
+        return
+    try:
+        path = pathlib.Path(metrics_dir) / STATUS_FILENAME
+        stamp = time.time() if now is None else now
+        last_success = stamp if succeeded else _previous_success(path)
+        lines = [
+            "# HELP db_nightly_dump_last_run_success 1 if the latest nightly dump run succeeded, else 0.",
+            "# TYPE db_nightly_dump_last_run_success gauge",
+            f"db_nightly_dump_last_run_success {1 if succeeded else 0}",
+        ]
+        if last_success is not None:
+            lines += [
+                "# HELP db_nightly_dump_last_success_timestamp_seconds Unix time the last successful dump finished uploading.",
+                "# TYPE db_nightly_dump_last_success_timestamp_seconds gauge",
+                f"db_nightly_dump_last_success_timestamp_seconds {last_success:.0f}",
+            ]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write("\n".join(lines) + "\n")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+    except Exception as exc:  # a metrics fault must never become the dump's fault
+        print(f"dump_nightly: could not write run status to {metrics_dir!r}: {exc}", file=sys.stderr)
+
+
 def run_mysqldump(
     *,
     socket_path: str,
@@ -251,6 +307,7 @@ def _require_env(name: str) -> str:
 
 def main(argv: list[str]) -> int:
     socket_path = argv[0] if argv else DEFAULT_SOCKET
+    metrics_dir = os.environ.get("DB_DUMP_METRICS_DIR", DEFAULT_METRICS_DIR)
     try:
         key = run_dump(
             socket_path=socket_path,
@@ -261,12 +318,18 @@ def main(argv: list[str]) -> int:
             region=_require_env("DB_BACKUP_REGION"),
             access_key=_require_env("AWS_ACCESS_KEY_ID"),
             secret_key=_require_env("AWS_SECRET_ACCESS_KEY"),
-            metrics_dir=os.environ.get("DB_DUMP_METRICS_DIR", DEFAULT_METRICS_DIR),
+            metrics_dir=metrics_dir,
         )
     except (DumpError, ObjectStorageError) as exc:
         print(f"dump_nightly: {exc}", file=sys.stderr)
+        record_run_status(metrics_dir=metrics_dir, succeeded=False)
         return 1
+    except BaseException:
+        record_run_status(metrics_dir=metrics_dir, succeeded=False)
+        raise
     print(f"dump_nightly: wrote {key}")
+    # After the upload and the journal line: the dump is already stored.
+    record_run_status(metrics_dir=metrics_dir, succeeded=True)
     return 0
 
 

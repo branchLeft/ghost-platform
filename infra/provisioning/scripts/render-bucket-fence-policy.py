@@ -155,6 +155,9 @@ def render_policy(
     *,
     writer_access_keys: list[str] = (),
     reader_access_keys: list[str] = (),
+    workload_project_id: str | None = None,
+    writer_project_id: str | None = None,
+    reader_project_id: str | None = None,
 ) -> dict:
     """The whole fence for one operational bucket, as one policy.
 
@@ -162,6 +165,9 @@ def render_policy(
     `reader_access_keys` read-only -- see `bucketpolicy.ROLES`. With no writer
     or reader keys the document is exactly the read-write fence it always was,
     so re-rendering an existing bucket's policy changes nothing on it.
+
+    `project_id` is the operator key's project; a role project id left as None
+    puts that role's keys in it. See "One project per storage key" in the .md.
     """
     validate_bucket_name(bucket)
     given = {
@@ -190,8 +196,13 @@ def render_policy(
                 )
             seen[access_key] = role
 
+    role_projects = {
+        READ_WRITE: workload_project_id or project_id,
+        PUT_ONLY: writer_project_id or project_id,
+        READ_ONLY: reader_project_id or project_id,
+    }
     principals = {
-        role: [key_principal(project_id, access_key) for access_key in access_keys]
+        role: [key_principal(role_projects[role], access_key) for access_key in access_keys]
         for role, access_keys in given.items()
     }
     workloads = principals[READ_WRITE]
@@ -326,6 +337,62 @@ def assert_recoverable(policy: dict, admin: str, bucket_arn: str) -> None:
             )
 
 
+def command_notes(bucket_exists: bool) -> str:
+    """The prose that goes with the block: printed to stderr, never pasted."""
+    step = 2 if bucket_exists else 4
+    create = "" if bucket_exists else """\
+2. The bucket. Creating one is a spend decision and is the platform owner's
+   alone. `--acl private` is stated rather than left to the default:
+   `public-read` is a BUCKET acl and grants LIST, which would publish the
+   object names of an estate bucket to anyone who guesses its name.
+
+3. Versioning, so an overwrite or a mistaken delete is recoverable. Applied
+   BEFORE the policy, because the policy denies `PutBucketVersioning` to
+   every key but the operator's and there is no reason to depend on that
+   exemption holding.
+
+"""
+    return f"""\
+Run as the OPERATOR, with the operator key in the environment. Every command
+below is idempotent.
+
+`s3` is a shell function, not a variable: zsh does not word-split an
+unquoted parameter expansion, so `S3='aws ... s3api'` followed by `$S3 ...`
+fails there with "no such file or directory: aws --endpoint-url ...".
+
+1. CONFIRM THE POLICY NAMES THE ACCOUNT THIS CREDENTIAL IS IN. The operator's
+   principal in the document below was built from the --project-id (or
+   --admin-project-id) passed to the generator, and nothing offline can check
+   that value. An ARN carrying the right access key under the wrong account
+   names a principal that does not exist, so the operator's exemption exempts
+   nobody and the fence locks the bucket. This must print the same id the
+   operator's ARN carries. Each other key's ARN carries its own project id;
+   confirm each against the Console, because this credential cannot see them.
+
+{create}{step}. Keep whatever policy is there now. On a bucket that has never carried
+   one this prints NoSuchBucketPolicy, which is the expected result and is
+   itself the finding that this fence exists to close.
+
+{step + 1}. The fence.
+
+{step + 2}. PROVE THE BUCKET IS STILL ADMINISTRABLE, before anything else and
+   before leaving the terminal. Re-PUTting the identical document is a no-op
+   if it succeeds and the only warning you will get if it does not: a policy
+   that denies the operator `PutBucketPolicy` cannot be edited or removed by
+   any key in the project, and recovery is a Hetzner support request against
+   the storage cluster.
+
+{step + 3}. Prove both directions against the live bucket, now, in this
+   terminal. A successful put is not evidence that the fence works, and a
+   single AccessDenied is not evidence either: it is returned both by a
+   working fence and by a key that reaches nothing at all. The verifier pairs
+   every denial with a control probe on the same credential, compares the
+   STORED policy against this document, and reports INCONCLUSIVE rather than
+   PASS when a control does not succeed. Credentials come from its own
+   environment variables, not from the exported operator key above -- run it
+   exactly as RUNBOOK-bucket-fencing.md states.
+"""
+
 def render_commands(
     bucket: str,
     project_id: str,
@@ -337,6 +404,9 @@ def render_commands(
     *,
     writer_access_keys: list[str] = (),
     reader_access_keys: list[str] = (),
+    workload_project_id: str | None = None,
+    writer_project_id: str | None = None,
+    reader_project_id: str | None = None,
 ) -> str:
     """The operator sequence, with every value filled in."""
     policy = json.dumps(
@@ -347,6 +417,9 @@ def render_commands(
             admin_access_key,
             writer_access_keys=writer_access_keys,
             reader_access_keys=reader_access_keys,
+            workload_project_id=workload_project_id,
+            writer_project_id=writer_project_id,
+            reader_project_id=reader_project_id,
         ),
         indent=2,
     )
@@ -354,73 +427,37 @@ def render_commands(
         ""
         if bucket_exists
         else f"""\
-# 2. The bucket. Creating one is a spend decision and is the platform owner's
-#    alone. `--acl private` is stated rather than left to the default:
-#    `public-read` is a BUCKET acl and grants LIST, which would publish the
-#    object names of an estate bucket to anyone who guesses its name.
 s3 create-bucket --bucket {bucket} --acl private \\
   --create-bucket-configuration LocationConstraint={region}
 
-# 3. Versioning, so an overwrite or a mistaken delete is recoverable. Applied
-#    BEFORE the policy, because the policy denies `PutBucketVersioning` to
-#    every key but the operator's and there is no reason to depend on that
-#    exemption holding.
 s3 put-bucket-versioning --bucket {bucket} \\
   --versioning-configuration Status=Enabled\n\n"""
     )
     step = 2 if bucket_exists else 4
     return f"""\
-# Run as the OPERATOR, with the operator key in the environment. Every command
-# below is idempotent.
-#
-# `s3` is a shell function, not a variable: zsh does not word-split an
-# unquoted parameter expansion, so `S3='aws ... s3api'` followed by `$S3 ...`
-# fails there with "no such file or directory: aws --endpoint-url ...".
-export AWS_ACCESS_KEY_ID='<the operator access key id>'
-export AWS_SECRET_ACCESS_KEY='<the operator secret access key>'
+
+printf 'Access key id: '; read -r AWS_ACCESS_KEY_ID; export AWS_ACCESS_KEY_ID
+
+printf 'Secret access key (hidden): '; read -rs AWS_SECRET_ACCESS_KEY; echo; export AWS_SECRET_ACCESS_KEY
+
 export AWS_DEFAULT_REGION='{region}'
 s3() {{ aws --endpoint-url {endpoint} s3api "$@"; }}
 
-# 1. CONFIRM THE POLICY NAMES THE ACCOUNT THIS CREDENTIAL IS IN. Every
-#    principal in the document below was built from the --project-id passed to
-#    the generator, and nothing offline can check that value. An ARN carrying
-#    the right access key under the wrong account names a principal that does
-#    not exist, so the operator's exemption exempts nobody and the fence locks
-#    the bucket. This must print the same id the policy's ARNs carry.
 s3 list-buckets --query Owner.ID --output text
 
 {create}\
-# {step}. Keep whatever policy is there now. On a bucket that has never carried
-#    one this prints NoSuchBucketPolicy, which is the expected result and is
-#    itself the finding that this fence exists to close.
 s3 get-bucket-policy --bucket {bucket} --query Policy --output text \\
   > /tmp/{bucket}-policy.previous.json || true
 
-# {step + 1}. The fence.
 cat > /tmp/{bucket}-policy.json <<'POLICY'
 {policy}
 POLICY
 s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 
-# {step + 2}. PROVE THE BUCKET IS STILL ADMINISTRABLE, before anything else and
-#    before leaving the terminal. Re-PUTting the identical document is a no-op
-#    if it succeeds and the only warning you will get if it does not: a policy
-#    that denies the operator `PutBucketPolicy` cannot be edited or removed by
-#    any key in the project, and recovery is a Hetzner support request against
-#    the storage cluster.
 s3 put-bucket-policy --bucket {bucket} --policy file:///tmp/{bucket}-policy.json
 
-# {step + 3}. Prove both directions against the live bucket, now, in this
-#    terminal. A successful put is not evidence that the fence works, and a
-#    single AccessDenied is not evidence either: it is returned both by a
-#    working fence and by a key that reaches nothing at all. The verifier pairs
-#    every denial with a control probe on the same credential, compares the
-#    STORED policy against this document, and reports INCONCLUSIVE rather than
-#    PASS when a control does not succeed. Credentials come from its own
-#    environment variables, not from the exported operator key above -- run it
-#    exactly as RUNBOOK-bucket-fencing.md states.
-
-rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json\n"""
+rm /tmp/{bucket}-policy.json /tmp/{bucket}-policy.previous.json
+"""
 
 
 def _self_test() -> None:
@@ -527,13 +564,56 @@ def _self_test() -> None:
                 f"fence self-test: {principal} {action} on {resource} -> {got}, expected {expected}"
             )
 
+    # One project per storage key: the operator, the read-write key and the
+    # read-only key are in three projects. Each principal is built from its
+    # own, and the same keys under one project id are strangers.
+    estate = render_policy(
+        "branchleft-estate-state", "1000001", [workload], admin,
+        reader_access_keys=[reader],
+        workload_project_id="1000002", reader_project_id="1000003",
+    )
+    split_bucket = "arn:aws:s3:::branchleft-estate-state"
+    for principal, action, resource, expected in [
+        (key_principal("1000001", admin), "s3:PutBucketPolicy", split_bucket, "allow"),
+        (key_principal("1000002", workload), "s3:PutObject", f"{split_bucket}/x", "allow"),
+        (key_principal("1000003", reader), "s3:GetObject", f"{split_bucket}/x", "allow"),
+        (key_principal("1000003", reader), "s3:PutObject", f"{split_bucket}/x", "deny"),
+        (key_principal("1000001", workload), "s3:GetObject", f"{split_bucket}/x", "deny"),
+        (key_principal("1000001", reader), "s3:GetObject", f"{split_bucket}/x", "deny"),
+    ]:
+        got = decide(estate, principal, action, resource)
+        if got != expected:
+            raise AssertionError(
+                f"fence self-test: {principal} {action} on {resource} -> {got}, expected {expected}"
+            )
+
     print("render-bucket-fence-policy self-test: ok", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bucket", help="the operational bucket to fence")
-    parser.add_argument("--project-id", help="Hetzner project id holding the credentials")
+    parser.add_argument(
+        "--project-id",
+        help="the single-project form: every key named here is in this one Hetzner project. "
+        "Refused together with any per-key project id below",
+    )
+    parser.add_argument(
+        "--admin-project-id",
+        help="the Hetzner project id of the operator key (the project that holds the bucket)",
+    )
+    parser.add_argument(
+        "--workload-project-id",
+        help="the project id of the --workload-access-key keys; required when any are given",
+    )
+    parser.add_argument(
+        "--writer-project-id",
+        help="the project id of the --writer-access-key keys; required when any are given",
+    )
+    parser.add_argument(
+        "--reader-project-id",
+        help="the project id of the --reader-access-key keys; required when any are given",
+    )
     parser.add_argument(
         "--workload-access-key",
         action="append",
@@ -574,9 +654,49 @@ def main(argv: list[str] | None = None) -> int:
         _self_test()
         return 0
 
-    missing = [name for name in ("bucket", "project_id", "admin_access_key") if not getattr(args, name)]
+    missing = [name for name in ("bucket", "admin_access_key") if not getattr(args, name)]
     if not (args.workload_access_key or args.writer_access_key or args.reader_access_key):
         missing.append("workload_access_key")
+
+    # One project per storage key puts each role's keys in a project of its
+    # own, so a principal built from one project id names nobody and the
+    # NotPrincipal denies lock the real keys out. Nothing falls back to
+    # another key's project: --project-id is the explicit single-project
+    # form, and the per-key ids are the split one; mixing them is refused.
+    per_key = {
+        "admin": args.admin_project_id,
+        "workload": args.workload_project_id,
+        "writer": args.writer_project_id,
+        "reader": args.reader_project_id,
+    }
+    role_keys = {
+        "workload": args.workload_access_key,
+        "writer": args.writer_access_key,
+        "reader": args.reader_access_key,
+    }
+    if args.project_id:
+        given = [f"--{role}-project-id" for role, value in per_key.items() if value]
+        if given:
+            parser.error(
+                "--project-id puts every key in one project; it cannot be combined with "
+                + ", ".join(given)
+            )
+        admin_project = args.project_id
+        project_ids = {role: None for role in role_keys}
+    else:
+        if not args.admin_project_id:
+            missing.append("admin_project_id")
+        admin_project = args.admin_project_id
+        project_ids = {}
+        for role, keys in role_keys.items():
+            if keys and not per_key[role]:
+                missing.append(f"{role}_project_id")
+            if per_key[role] and not keys:
+                parser.error(
+                    f"--{role}-project-id was given with no --{role}-access-key; "
+                    "a project id naming no key is a typo"
+                )
+            project_ids[role] = per_key[role]
     if missing:
         parser.error(
             "missing required arguments: " + ", ".join("--" + m.replace("_", "-") for m in missing)
@@ -585,13 +705,17 @@ def main(argv: list[str] | None = None) -> int:
     roles = {
         "writer_access_keys": args.writer_access_key,
         "reader_access_keys": args.reader_access_key,
+        "workload_project_id": project_ids["workload"],
+        "writer_project_id": project_ids["writer"],
+        "reader_project_id": project_ids["reader"],
     }
     try:
         if args.commands:
+            print(command_notes(bucket_exists=args.commands == "existing-bucket"), file=sys.stderr)
             print(
                 render_commands(
                     args.bucket,
-                    args.project_id,
+                    admin_project,
                     args.workload_access_key,
                     args.admin_access_key,
                     args.endpoint,
@@ -606,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dumps(
                     render_policy(
                         args.bucket,
-                        args.project_id,
+                        admin_project,
                         args.workload_access_key,
                         args.admin_access_key,
                         **roles,

@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
+  createServer as createGeneratedListener,
+  routes,
+  type Handlers,
+  type ListenerOptions,
+  type RouteDefinition,
+} from './generated/server.js';
+import {
   hashIdOf,
   validate,
   type HashId,
@@ -11,20 +18,26 @@ import type { SeamReadiness } from './seamReadiness.js';
 import type { AdminApiClient } from './adminApi.js';
 import { type AuthDeps, verifyRequest } from './auth.js';
 import { descriptorHash } from './descriptorHash.js';
-import { EMPTY_DRAIN_PAYLOAD, type DrainSource } from './drainSource.js';
+import { EMPTY_DRAIN_PAYLOAD, type DrainPayload, type DrainSource } from './drainSource.js';
 import type { DrainFlagStore } from './drainFlag.js';
 import type { EmailBatchChecker } from './emailBatchChecker.js';
 import type { GhostReadinessChecker } from './ghostReadiness.js';
 import { waitUntilReady } from './ghostReadiness.js';
 import type { HealthChecker } from './healthCheck.js';
 import { hostOf } from './hostOf.js';
-import { handleImagePush, type ImagePushDeps } from './imagePush.js';
+import {
+  authenticateImagePush,
+  readImageHeaders,
+  receiveImage,
+  type ImagePushDeps,
+} from './imagePush.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import { otherColour, validateSlotLiteral, type Colour } from './literals.js';
 import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
 import { type SlotLock } from './slotLock.js';
 import { slotAllocation, slotPort } from './slotPorts.js';
+import { compareParsed } from './parsedDifference.js';
 import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
@@ -112,61 +125,42 @@ function authHeaders(req: IncomingMessage): {
   };
 }
 
-/** Authenticates the request; on failure it has already written the response. Returns the raw body on success. */
-async function authenticate(
-  deps: BrokerDeps,
-  req: IncomingMessage,
-  res: ServerResponse,
-  path: string
-): Promise<Buffer | null> {
-  const rawBody = await readBody(req);
-  if (rawBody === null) {
-    send(res, 413);
-    return null;
-  }
-  const result = verifyRequest(deps.auth, req.method ?? '', path, authHeaders(req), rawBody);
-  if (!result.ok) {
-    deps.log(`refused ${req.method} ${path}: ${result.reason}`);
-    send(res, 401);
-    return null;
-  }
-  return rawBody;
+/**
+ * What a handler returns: the generated adapter writes it. `Cache-Control:
+ * no-store` rides on every one, as `send` has always put it on every answer.
+ */
+const NO_STORE: Record<string, string> = { 'Cache-Control': 'no-store' };
+
+function reply<Status extends number, const Body>(
+  status: Status,
+  body: Body
+): { status: Status; body: Body; headers: Record<string, string> } {
+  return { status, body, headers: NO_STORE };
 }
 
-function parseJson(rawBody: Buffer): unknown {
-  return JSON.parse(rawBody.toString('utf8'));
-}
+type ReconcileResult = Awaited<ReturnType<Handlers['reconcileSlot']>>;
+type StopResult = Awaited<ReturnType<Handlers['stopSlot']>>;
+type ResetResult = Awaited<ReturnType<Handlers['resetSlot']>>;
+type StatusResult = Awaited<ReturnType<Handlers['getSlotStatus']>>;
+type DrainResult = Awaited<ReturnType<Handlers['pollDrainQueue']>>;
+type PushResult = Awaited<ReturnType<Handlers['pushImage']>>;
+type ReconcileBody = Parameters<Handlers['reconcileSlot']>[0]['body'];
+type SlotBody = Parameters<Handlers['resetSlot']>[0]['body'];
 
-async function handleReconcile(
-  deps: BrokerDeps,
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const rawBody = await authenticate(deps, req, res, '/reconcile');
-  if (rawBody === null) return;
-
-  let payload: { slot?: unknown; descriptor?: unknown };
-  try {
-    payload = parseJson(rawBody) as typeof payload;
-  } catch {
-    return send(res, 400, { error: 'body is not valid JSON' });
-  }
-
-  let slot: SlotName;
-  try {
-    slot = validateSlotLiteral(payload.slot, deps.slotLiterals);
-  } catch (err) {
-    return send(res, 422, { error: (err as Error).message });
-  }
+async function handleReconcile(deps: BrokerDeps, body: ReconcileBody): Promise<ReconcileResult> {
+  // `body` has already passed the request gate (`createGate`): signed, JSON,
+  // an enumerated slot literal, and the spec's own schema. The slot is
+  // re-derived here only to get its branded type back.
+  const slot: SlotName = validateSlotLiteral(body.slot, deps.slotLiterals);
 
   let descriptor: TenantDescriptor;
   try {
-    descriptor = validate(payload.descriptor as TenantDescriptor, deps.zones);
+    descriptor = validate(body.descriptor as unknown as TenantDescriptor, deps.zones);
   } catch (err) {
-    return send(res, 400, { error: (err as Error).message });
+    return reply(400, { error: (err as Error).message });
   }
   if (descriptor.kind !== 'demo') {
-    return send(res, 400, { error: 'the broker reconciles demo descriptors only' });
+    return reply(400, { error: 'the broker reconciles demo descriptors only' });
   }
   if (descriptor.gate.kind !== 'passphrase') {
     // render-core's own INV-2 already refuses any `kind: "demo"` descriptor
@@ -177,7 +171,7 @@ async function handleReconcile(
     // TypeScript narrows `descriptor.gate` to the `passphrase` variant for
     // the plain-string capture below, and it fails loudly rather than
     // reading `undefined` off a union member that should not exist here.
-    return send(res, 500, { error: 'a validated demo descriptor had no passphrase gate' });
+    return reply(500, { error: 'a validated demo descriptor had no passphrase gate' });
   }
   // Captured as a plain string rather than read from `descriptor.gate`
   // inside the closure below: TypeScript's narrowing of the `GateSpec`
@@ -203,7 +197,7 @@ async function handleReconcile(
     descriptor.ports.b !== allocation.ports.b ||
     descriptor.ports.health !== allocation.ports.health
   ) {
-    return send(res, 400, {
+    return reply(400, {
       error: `descriptor's uid/ports don't match slot "${slot}"'s own allocation`,
     });
   }
@@ -213,15 +207,15 @@ async function handleReconcile(
   // `/reconcile`) racing this one sees an occupied slot for the whole
   // attempt, not only after it finishes.
   if (!deps.slotLock.claim(slot)) {
-    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
+    return reply(409, { error: `slot "${slot}" is locked by a concurrent request` });
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
 
     // Idempotent replay: LLD-2 §04. No side effect runs a second time for
     // an identical (slot, descriptorHash) pair.
-    if (state.phase === 'running' && state.descriptorHash === hash) {
-      return send(res, 200, { slot, phase: state.phase, colour: state.colour });
+    if (state.phase === 'running' && state.descriptorHash === hash && state.colour !== undefined) {
+      return reply(200, { slot, phase: state.phase, colour: state.colour });
     }
     // A new descriptor for a slot that is already `running` a different
     // one moves the tenancy to the other colour rather than refusing it --
@@ -232,7 +226,6 @@ async function handleReconcile(
     if (state.phase === 'running' && state.colour !== undefined) {
       return await attemptColourSwap(
         deps,
-        res,
         slot,
         state,
         descriptor,
@@ -243,23 +236,23 @@ async function handleReconcile(
       );
     }
     if (state.phase !== 'free') {
-      return send(res, 409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
+      return reply(409, { error: `slot "${slot}" is occupied (phase "${state.phase}")` });
     }
     // A free slot still carrying unconfirmed evidence must not enter the
     // fresh-deploy path: its failure branch resets the slot.
     const evidenceRefusal = resetRefusal(state, slot);
     if (evidenceRefusal !== undefined) {
-      return send(res, 409, { error: evidenceRefusal });
+      return reply(409, { error: evidenceRefusal });
     }
     try {
       assertHashRotated(state, newHashId, slot);
     } catch (err) {
       if (!(err instanceof UnrotatedHashError)) throw err;
-      return send(res, 409, { error: err.message });
+      return reply(409, { error: err.message });
     }
     const heldBy = await hostHeldByAnotherSlot(deps.leaseStoreConfig.slotsPath, host, slot);
     if (heldBy !== null) {
-      return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
+      return reply(409, { error: `host "${host}" is already held by slot "${heldBy}"` });
     }
 
     await writeSlotState(deps.stateDir, slot, {
@@ -309,13 +302,13 @@ async function handleReconcile(
             phase: 'error' satisfies Phase,
             lastHashId: state.lastHashId,
           });
-          return send(res, 503, { slot, phase: 'error' });
+          return reply(503, { slot, phase: 'error' });
         }
         await writeSlotState(deps.stateDir, slot, {
           phase: 'free' satisfies Phase,
           lastHashId: state.lastHashId,
         });
-        return send(res, 409, { error: firstErr.message });
+        return reply(409, { error: firstErr.message });
       }
       deps.log(
         `reconcile failed for slot "${slot}", resetting and retrying once: ${(firstErr as Error).message}`
@@ -340,7 +333,7 @@ async function handleReconcile(
           phase: 'error' satisfies Phase,
           lastHashId: state.lastHashId,
         });
-        return send(res, 503, { slot, phase: 'error' });
+        return reply(503, { slot, phase: 'error' });
       }
     }
 
@@ -350,7 +343,7 @@ async function handleReconcile(
       descriptorHash: hash,
       lastHashId: newHashId,
     });
-    send(res, 200, { slot, phase: 'running', colour: FRESH_COLOUR });
+    return reply(200, { slot, phase: 'running', colour: FRESH_COLOUR });
   } finally {
     deps.slotLock.release(slot);
   }
@@ -382,7 +375,6 @@ export class OtherColourUnhealthyError extends Error {
  */
 async function attemptColourSwap(
   deps: BrokerDeps,
-  res: ServerResponse,
   slot: SlotName,
   state: SlotState,
   descriptor: TenantDescriptor,
@@ -390,13 +382,13 @@ async function attemptColourSwap(
   argon2idHash: string,
   hash: string,
   newHashId: HashId
-): Promise<void> {
+): Promise<ReconcileResult> {
   const liveColour = state.colour as Colour;
   const target = otherColour(liveColour);
 
   const heldBy = await hostHeldByAnotherSlot(deps.leaseStoreConfig.slotsPath, host, slot);
   if (heldBy !== null) {
-    return send(res, 409, { error: `host "${host}" is already held by slot "${heldBy}"` });
+    return reply(409, { error: `host "${host}" is already held by slot "${heldBy}"` });
   }
   // Both colours share one database, so a swap carries the running
   // tenancy's data into whatever it deploys. A descriptor for a different
@@ -404,7 +396,7 @@ async function attemptColourSwap(
   // (which wipes the data) may start.
   const runningHost = await hostOfSlotEntry(deps.leaseStoreConfig.slotsPath, slot);
   if (runningHost !== host) {
-    return send(res, 409, {
+    return reply(409, {
       error: `slot "${slot}" is running a different tenancy (host "${runningHost ?? 'none'}") -- /reset it first`,
     });
   }
@@ -481,7 +473,7 @@ async function attemptColourSwap(
     deps.log(
       `colour swap failed for slot "${slot}" (target "${target}"): ${(err as Error).message}`
     );
-    return send(res, 503, {
+    return reply(503, {
       slot,
       phase: 'running',
       colour: liveColour,
@@ -508,7 +500,7 @@ async function attemptColourSwap(
       await restorePreSwapState();
       const err = new OtherColourUnhealthyError(target);
       deps.log(`colour swap for slot "${slot}" refused to drain "${liveColour}": ${err.message}`);
-      return send(res, 503, { slot, phase: 'running', colour: liveColour, error: err.message });
+      return reply(503, { slot, phase: 'running', colour: liveColour, error: err.message });
     }
     await deps.drainFlags.set(slot, liveColour);
   }
@@ -529,7 +521,7 @@ async function attemptColourSwap(
     lastHashId: newHashId,
     trafficBaseline,
   });
-  send(res, 200, { slot, phase: 'running', colour: target });
+  return reply(200, { slot, phase: 'running', colour: target });
 }
 
 /**
@@ -541,12 +533,11 @@ async function attemptColourSwap(
  */
 async function attemptStopOldColour(
   deps: BrokerDeps,
-  res: ServerResponse,
   slot: SlotName,
   state: SlotState
-): Promise<void> {
+): Promise<StopResult> {
   if (state.colour === undefined || state.trafficBaseline === undefined) {
-    return send(res, 409, {
+    return reply(409, {
       error: `slot "${slot}" has no old colour to stop -- its current tenancy was not reached by a colour swap`,
     });
   }
@@ -554,7 +545,7 @@ async function attemptStopOldColour(
     // Idempotent replay (the same discipline `handleReconcile` gives a
     // repeated identical descriptor): neither check below needs to run
     // again for a step that already happened.
-    return send(res, 200, { slot, phase: 'running', colour: state.colour });
+    return reply(200, { slot, phase: 'running', colour: state.colour });
   }
 
   const liveColour = state.colour;
@@ -562,7 +553,7 @@ async function attemptStopOldColour(
 
   const currentTraffic = await deps.realTraffic.readCount(slot);
   if (currentTraffic <= state.trafficBaseline) {
-    return send(res, 503, {
+    return reply(503, {
       slot,
       phase: 'running',
       colour: liveColour,
@@ -571,7 +562,7 @@ async function attemptStopOldColour(
   }
 
   if (await deps.emailBatchChecker.hasSubmittingBatch(slot)) {
-    return send(res, 503, {
+    return reply(503, {
       slot,
       phase: 'running',
       colour: liveColour,
@@ -584,7 +575,7 @@ async function attemptStopOldColour(
     !(await deps.drainFlags.isSet(slot, liveColour)) &&
     (await deps.ghostReadiness.isReady(liveColourPort));
   if (!stillLive) {
-    return send(res, 503, {
+    return reply(503, {
       slot,
       phase: 'running',
       colour: liveColour,
@@ -611,73 +602,37 @@ async function attemptStopOldColour(
     trafficBaseline: state.trafficBaseline,
     oldColourStopped: true,
   });
-  send(res, 200, { slot, phase: 'running', colour: liveColour });
+  return reply(200, { slot, phase: 'running', colour: liveColour });
 }
 
-async function handleStop(
-  deps: BrokerDeps,
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const rawBody = await authenticate(deps, req, res, '/stop');
-  if (rawBody === null) return;
-
-  let payload: { slot?: unknown };
-  try {
-    payload = parseJson(rawBody) as typeof payload;
-  } catch {
-    return send(res, 400, { error: 'body is not valid JSON' });
-  }
-  let slot: SlotName;
-  try {
-    slot = validateSlotLiteral(payload.slot, deps.slotLiterals);
-  } catch (err) {
-    return send(res, 422, { error: (err as Error).message });
-  }
+async function handleStop(deps: BrokerDeps, body: SlotBody): Promise<StopResult> {
+  const slot: SlotName = validateSlotLiteral(body.slot, deps.slotLiterals);
 
   // Same lock as `/reconcile` and `/reset` (F1): a stop racing either must
   // not act on a slot either of them still believes it owns.
   if (!deps.slotLock.claim(slot)) {
-    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
+    return reply(409, { error: `slot "${slot}" is locked by a concurrent request` });
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
     if (state.phase !== 'running') {
-      return send(res, 409, {
+      return reply(409, {
         error: `slot "${slot}" is not in a running state (phase "${state.phase}")`,
       });
     }
-    await attemptStopOldColour(deps, res, slot, state);
+    return await attemptStopOldColour(deps, slot, state);
   } finally {
     deps.slotLock.release(slot);
   }
 }
 
-async function handleReset(
-  deps: BrokerDeps,
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const rawBody = await authenticate(deps, req, res, '/reset');
-  if (rawBody === null) return;
-
-  let payload: { slot?: unknown };
-  try {
-    payload = parseJson(rawBody) as typeof payload;
-  } catch {
-    return send(res, 400, { error: 'body is not valid JSON' });
-  }
-  let slot: SlotName;
-  try {
-    slot = validateSlotLiteral(payload.slot, deps.slotLiterals);
-  } catch (err) {
-    return send(res, 422, { error: (err as Error).message });
-  }
+async function handleReset(deps: BrokerDeps, body: SlotBody): Promise<ResetResult> {
+  const slot: SlotName = validateSlotLiteral(body.slot, deps.slotLiterals);
 
   // Same lock as `/reconcile` (F1): a reset racing an in-flight reconcile
   // must not tear down a slot that reconcile still believes it owns.
   if (!deps.slotLock.claim(slot)) {
-    return send(res, 409, { error: `slot "${slot}" is locked by a concurrent request` });
+    return reply(409, { error: `slot "${slot}" is locked by a concurrent request` });
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
@@ -686,7 +641,7 @@ async function handleReset(
     const refusal = resetRefusal(state, slot);
     if (refusal !== undefined) {
       deps.log(`reset refused: ${refusal}`);
-      return send(res, 409, { error: refusal });
+      return reply(409, { error: refusal });
     }
     await writeSlotState(deps.stateDir, slot, {
       phase: 'resetting' satisfies Phase,
@@ -707,7 +662,7 @@ async function handleReset(
         phase: 'error' satisfies Phase,
         lastHashId: state.lastHashId,
       });
-      return send(res, 503, { slot, phase: 'error' });
+      return reply(503, { slot, phase: 'error' });
     }
     // A new colour always boots drained (LLD-2 §01b); setting both here
     // means the invariant already holds the instant a next `/reconcile`
@@ -719,63 +674,189 @@ async function handleReset(
       phase: 'free' satisfies Phase,
       lastHashId: state.lastHashId,
     });
-    send(res, 200, { slot, phase: 'free' });
+    return reply(200, { slot, phase: 'free' });
   } finally {
     deps.slotLock.release(slot);
   }
 }
 
-async function handleStatus(
-  deps: BrokerDeps,
-  slotParam: string,
-  res: ServerResponse
-): Promise<void> {
+async function handleStatus(deps: BrokerDeps, slotParam: string): Promise<StatusResult> {
   let slot: SlotName;
   try {
     slot = validateSlotLiteral(slotParam, deps.slotLiterals);
   } catch {
-    return send(res, 404);
+    return reply(404, undefined);
   }
   const state = await readSlotState(deps.stateDir, slot);
   const healthy =
     state.phase === 'running' && state.colour !== undefined
       ? await deps.healthChecker.isHealthy(deps.healthPortBase + Number(slot))
       : false;
-  send(res, 200, {
+  return reply(200, {
     slot,
     phase: state.phase,
     healthy,
-    notReal: deps.seamReadiness.notReal,
-    interim: deps.seamReadiness.interim,
+    notReal: deps.seamReadiness.notReal.slice(),
+    interim: deps.seamReadiness.interim.slice(),
   });
 }
 
-async function handleDrain(
-  deps: BrokerDeps,
-  req: IncomingMessage,
-  res: ServerResponse
-): Promise<void> {
-  const rawBody = await authenticate(deps, req, res, '/drain');
-  if (rawBody === null) return;
+/** The generated body type holds mutable arrays; the seam's payload holds readonly ones. */
+function drainBody(payload: DrainPayload) {
+  return reply(200, { mail: payload.mail.slice(), mediaHashes: payload.mediaHashes.slice() });
+}
 
+async function handleDrain(deps: BrokerDeps): Promise<DrainResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.drainPollTimeoutMs);
   try {
-    const payload = await deps.drainSource.poll(controller.signal);
-    send(res, 200, payload);
+    return drainBody(await deps.drainSource.poll(controller.signal));
   } catch (err) {
     if (controller.signal.aborted) {
       // The long-poll's own deadline, not a source failure: LLD-2 §03 says
       // this endpoint only ever answers, so "nothing arrived in time" is a
       // normal empty response, not an error.
-      send(res, 200, EMPTY_DRAIN_PAYLOAD);
-      return;
+      return drainBody(EMPTY_DRAIN_PAYLOAD);
     }
     deps.log(`drain source failed: ${(err as Error).message}`);
-    send(res, 502, { error: 'drain source unavailable' });
+    return reply(502, { error: 'drain source unavailable' });
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function handlePush(deps: BrokerDeps, req: IncomingMessage): Promise<PushResult> {
+  // The gate has already refused a malformed or unsigned push; the headers
+  // are read again here only to get the declared digest and size back.
+  const headers = readImageHeaders(req, deps.imagePush.maxBytes);
+  if (!headers.ok) return reply(headers.status, headers.body);
+  const receipt = await receiveImage(deps.imagePush, req, headers);
+  return { ...receipt, headers: NO_STORE };
+}
+
+/**
+ * The broker's side of the generated `Handlers` interface: one method per
+ * operation in `openapi.yaml`, each returning only a status and body that
+ * operation's responses declare (the compiler checks that). Everything that
+ * answers before this point (route, size, signature, JSON, slot, schema)
+ * is `createGate`'s.
+ */
+function createHandlers(deps: BrokerDeps): Handlers {
+  return {
+    pollDrainQueue: () => handleDrain(deps),
+    pushImage: (_request, { rawRequest }) => handlePush(deps, rawRequest),
+    reconcileSlot: ({ body }) => handleReconcile(deps, body),
+    resetSlot: ({ body }) => handleReset(deps, body),
+    getSlotStatus: ({ path }) => handleStatus(deps, path.slot),
+    stopSlot: ({ body }) => handleStop(deps, body),
+  };
+}
+
+/**
+ * The response the gate already wrote. The generated adapter treats a throw
+ * from `beforeHandle` as a failure and would answer 500 over the top of it;
+ * this marks the throw as "answered", so `onError` can recognise it.
+ */
+class RefusalSent extends Error {}
+
+/**
+ * Which `ServerResponse` belongs to a request the generated listener is
+ * working on. `beforeHandle` receives only the request and can reject only
+ * by throwing, which the adapter turns into a 500 -- so the gate writes its
+ * own 401/413/422 straight onto the response and throws `RefusalSent`.
+ */
+const responses = new WeakMap<IncomingMessage, ServerResponse>();
+
+function describeIssues(issues: readonly { path: PropertyKey[]; message: string }[]): string {
+  const shown = issues
+    .slice(0, 3)
+    .map((issue) => `${issue.path.map(String).join('.') || 'body'}: ${issue.message}`);
+  return `request body does not match the API contract (${shown.join('; ')})`;
+}
+
+/**
+ * Runs inside the generated adapter, after it has buffered a JSON body and
+ * before it parses, validates or dispatches anything. It keeps the order
+ * `authenticate` always had: the signature is checked over the raw bytes
+ * first (401), and only then is the body parsed (400), its slot checked
+ * (422) and the spec's own schema applied (400). The adapter would answer
+ * those last three itself, but as `application/problem+json` with status
+ * 400 for all of them, which is not what the spec declares.
+ */
+function createGate(deps: BrokerDeps): NonNullable<ListenerOptions['beforeHandle']> {
+  return async (req, route, rawBody) => {
+    // Always present: the front door records it just before it hands the
+    // request to the listener, and nothing else reaches this gate.
+    const res = responses.get(req) as ServerResponse;
+    const refuse = (status: number, body?: unknown): never => {
+      send(res, status, body);
+      throw new RefusalSent();
+    };
+
+    if (route.id === 'getSlotStatus') return; // unauthenticated, and answered 404 by the front door.
+
+    if (route.id === 'pushImage') {
+      // Signed over a manifest of two header values, never the body, so it
+      // is checked before a byte of the image is read. A refusal drains the
+      // upload so the sender sees the answer rather than a reset.
+      const headers = readImageHeaders(req, deps.imagePush.maxBytes);
+      if (!headers.ok) {
+        req.resume();
+        return refuse(headers.status, headers.body);
+      }
+      const authResult = authenticateImagePush(deps.auth, req, headers);
+      if (!authResult.ok) {
+        req.resume();
+        deps.log(`refused ${req.method} ${route.path}: ${authResult.reason}`);
+        return refuse(401, { error: authResult.reason });
+      }
+      return;
+    }
+
+    // Every other signed route: `rawBody` is the buffered JSON body, and is
+    // undefined for the body-less drain poll, whose signed bytes are empty.
+    const raw = rawBody ?? (await readBody(req));
+    if (raw === null) return refuse(413);
+    const result = verifyRequest(deps.auth, req.method ?? '', route.path, authHeaders(req), raw);
+    if (!result.ok) {
+      deps.log(`refused ${req.method} ${route.path}: ${result.reason}`);
+      return refuse(401);
+    }
+    if (route.bodyMode !== 'json') return;
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw.toString('utf8'));
+    } catch {
+      return refuse(400, { error: 'body is not valid JSON' });
+    }
+    try {
+      validateSlotLiteral((payload as { slot?: unknown } | null)?.slot, deps.slotLiterals);
+    } catch (err) {
+      return refuse(422, { error: (err as Error).message });
+    }
+    const verdict = route.bodySchema?.safeParse(payload);
+    if (verdict !== undefined && !verdict.success) {
+      return refuse(400, { error: describeIssues(verdict.error.issues) });
+    }
+    if (verdict?.success === true && route.id === 'reconcileSlot') {
+      // The handler gets the parsed copy, so it must be the copy that was
+      // signed: the schema drops fields it does not declare and a string
+      // format can rewrite a value, where render-core refused both.
+      const { unknown, altered } = compareParsed(
+        (payload as { descriptor?: unknown }).descriptor,
+        (verdict.data as { descriptor?: unknown }).descriptor
+      );
+      if (unknown.length > 0) {
+        return refuse(400, { error: `descriptor has unknown key(s): ${unknown.join(', ')}.` });
+      }
+      if (altered.length > 0) {
+        return refuse(400, {
+          error: `descriptor value(s) would be rewritten by validation: ${altered.join(', ')}.`,
+        });
+      }
+    }
+  };
 }
 
 interface RouteEntry {
@@ -784,52 +865,104 @@ interface RouteEntry {
 }
 
 /** Every literal-path route this handler serves. See app.md#route-tables. */
-export const LITERAL_ROUTES: readonly RouteEntry[] = [
-  { method: 'POST', path: '/reconcile' },
-  { method: 'POST', path: '/reset' },
-  { method: 'POST', path: '/stop' },
-  { method: 'GET', path: '/drain' },
-  { method: 'POST', path: '/image' },
-];
+export const LITERAL_ROUTES: readonly RouteEntry[] = routes
+  .filter((route) => !route.path.includes('{'))
+  .map(({ method, path }) => ({ method, path }));
 
 /** The one parameterised route this handler serves. See app.md#route-tables. */
-export const STATUS_ROUTE: RouteEntry = { method: 'GET', path: '/status/{slot}' };
+export const STATUS_ROUTE: RouteEntry = (() => {
+  // A table without it fails here at import, loudly, on `route.method`.
+  const route = routes.find((candidate) => candidate.id === 'getSlotStatus') as RouteDefinition;
+  return { method: route.method, path: route.path };
+})();
+
+interface RouteMatch {
+  readonly route: RouteDefinition;
+  readonly params: Readonly<Record<string, string>>;
+}
+
+/**
+ * Matches exactly, by whole segments, against the generated route table.
+ * The adapter's own matcher also accepts an empty segment (`/reconcile/`,
+ * `//reconcile`) and throws on a bad percent-escape; both must stay a plain
+ * 404 here, as they always were.
+ */
+function matchRoute(method: string, rawPath: string): RouteMatch | undefined {
+  if (!rawPath.startsWith('/')) return undefined;
+  const actual = rawPath.slice(1).split('/');
+  for (const route of routes) {
+    if (route.method !== method) continue;
+    const template = route.path.slice(1).split('/');
+    if (template.length !== actual.length) continue;
+    const params: Record<string, string> = {};
+    let matched = true;
+    for (let i = 0; i < template.length; i += 1) {
+      const want = template[i] ?? '';
+      const got = actual[i] ?? '';
+      if (got === '') {
+        matched = false;
+      } else if (want.startsWith('{') && want.endsWith('}')) {
+        try {
+          params[want.slice(1, -1)] = decodeURIComponent(got);
+        } catch {
+          matched = false;
+        }
+      } else if (want !== got) {
+        matched = false;
+      }
+      if (!matched) break;
+    }
+    if (matched) return { route, params };
+  }
+  return undefined;
+}
 
 /**
  * Every failure path answers with a non-2xx status and an unexpected throw
  * becomes a 500, matching `services/demo-gate`'s own posture: a caller of
  * this endpoint has nothing useful to do with a response that never came.
+ *
+ * Requests are matched exactly here, then handed to the listener the
+ * generated server package builds from `openapi.yaml`; the `Handlers` it
+ * dispatches to are `createHandlers`. See app.md#generated-server.
  */
 export function createBrokerHandler(deps: BrokerDeps): Handler {
-  // Keyed by `${method} ${path}` -- see app.md#route-tables.
-  const literalHandlers: Partial<Record<string, Handler>> = {
-    'POST /reconcile': (req, res) => handleReconcile(deps, req, res),
-    'POST /reset': (req, res) => handleReset(deps, req, res),
-    'POST /stop': (req, res) => handleStop(deps, req, res),
-    'GET /drain': (req, res) => handleDrain(deps, req, res),
-    'POST /image': (req, res) => handleImagePush(deps.auth, deps.imagePush, req, res),
-  };
+  const listener = createGeneratedListener(createHandlers(deps), {
+    maxJsonBodyBytes: MAX_BODY_BYTES,
+    beforeHandle: createGate(deps),
+    // The adapter has already given the request its answer in these cases
+    // (the gate wrote it, or headers had gone out); every other error is
+    // a 500 with no body, as before.
+    onError: (error, req) => {
+      if (error instanceof RefusalSent) return;
+      deps.log(`broker error: ${(error as Error).name}: ${(error as Error).message}`);
+      const res = responses.get(req) as ServerResponse;
+      if (!res.headersSent) send(res, 500);
+      else res.destroy();
+    },
+  });
   return async (req, res) => {
     try {
-      const path = (req.url ?? '').split('?')[0] ?? '';
-      const literal = literalHandlers[`${req.method} ${path}`];
-      if (literal) return await literal(req, res);
-      const statusMatch = /^\/status\/([^/]+)$/.exec(path);
-      if (statusMatch && req.method === 'GET') {
-        let slotParam: string;
+      const rawPath = (req.url ?? '').split('?')[0] ?? '';
+      const match = matchRoute(req.method ?? '', rawPath);
+      if (match === undefined) return send(res, 404);
+      if (match.route.id === 'getSlotStatus') {
+        const literals = deps.slotLiterals;
         try {
-          slotParam = decodeURIComponent(statusMatch[1] ?? '');
+          validateSlotLiteral(match.params.slot, literals);
         } catch {
-          // A malformed percent-escape (e.g. `%zz`) throws URIError. It is
-          // not a shape any of the seven slot literals can ever take, so it
-          // answers exactly like one that decodes cleanly but still isn't
-          // one of them: 404, not a 500 that leaks that decoding was
-          // attempted at all.
+          // Not one of the enumerated literals: answers exactly as an
+          // unrouted path does, so a probe learns nothing about which
+          // slots exist beyond what /status itself reports.
           return send(res, 404);
         }
-        return await handleStatus(deps, slotParam, res);
       }
-      send(res, 404);
+      if (match.route.bodyMode === 'json') {
+        const declared = Number(req.headers['content-length']);
+        if (declared > MAX_BODY_BYTES) return send(res, 413);
+      }
+      responses.set(req, res);
+      listener(req, res);
     } catch (err) {
       deps.log(`broker error: ${(err as Error).name}: ${(err as Error).message}`);
       if (!res.headersSent) send(res, 500);

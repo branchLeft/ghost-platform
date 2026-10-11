@@ -3,9 +3,38 @@ import {
   ceilingKey,
   ceilingKeyBroad,
   createSourceResolver,
+  isLoopbackHost,
   parseTrustedProxies,
   TrustedProxyFormatError,
 } from '../../src/source.js';
+
+describe('isLoopbackHost', () => {
+  it.each(['127.0.0.1', '127.255.0.9', '::1', '[::1]', '0:0:0:0:0:0:0:1', '::ffff:127.0.0.1'])(
+    'is true for %s',
+    (host) => {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+  );
+
+  it.each(['localhost', 'LOCALHOST', ' localhost '])('is true for the name %j', (host) => {
+    expect(isLoopbackHost(host)).toBe(true);
+  });
+
+  it.each([
+    '0.0.0.0',
+    '::',
+    '10.0.0.5',
+    '128.0.0.1',
+    '1127.0.0.1',
+    '::2',
+    '1::1',
+    'fe80::1%eth0',
+    '',
+    'edge.example.test',
+  ])('is false for %j', (host) => {
+    expect(isLoopbackHost(host)).toBe(false);
+  });
+});
 
 describe('ceilingKey', () => {
   it.each([

@@ -4,7 +4,8 @@ import type { TokenVerifier } from 'ghost-platform-identity/dist/index.js';
 import { cookieName, parseCookies, setCookie } from './cookies.js';
 import { escapeHtml, renderPage, STYLESHEET, type NavItem } from './html.js';
 import { authorizeUrl, expiryOf, exchangeCode, newPkce, type OidcClient } from './oidc.js';
-import { ExpiringStore, type SessionRecord } from './sessions.js';
+import { PendingLoginSealer } from './pendingLogin.js';
+import { ExpiringStore, SpentLogins, type SessionRecord } from './sessions.js';
 
 const LOGIN_TTL_SECONDS = 600;
 const DEFAULT_SESSION_SECONDS = 3600;
@@ -67,11 +68,6 @@ export interface ShellOptions<S> extends OidcClient {
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
 
-interface PendingLogin {
-  readonly verifier: string;
-  readonly expiresAt: number;
-}
-
 function send(response: ServerResponse, status: number, type: string, body: string, extra = {}) {
   response.writeHead(status, { ...SECURITY_HEADERS, 'content-type': type, ...extra });
   response.end(body);
@@ -93,7 +89,10 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   const sessionName = cookieName(SESSION_COOKIE, secure);
   const loginName = cookieName(LOGIN_COOKIE, secure);
   const sessions = new ExpiringStore<SessionRecord<S>>(clock);
-  const logins = new ExpiringStore<PendingLogin & { readonly state: string }>(clock);
+  // A pending sign-in travels in the browser's cookie, sealed, and is never
+  // held here: an unauthenticated start must not use up capacity.
+  const logins = new PendingLoginSealer();
+  const spent = new SpentLogins(clock);
 
   async function signIn(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', options.publicOrigin);
@@ -101,8 +100,12 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     const code = url.searchParams.get('code') ?? '';
     const cookies = parseCookies(request.headers.cookie);
     const clearLogin = setCookie(loginName, '', { maxAge: 0, secure });
-    const pending = logins.take(cookies.get(loginName));
+    const pending = logins.open(cookies.get(loginName), clock());
     if (!pending || state === '' || pending.state !== state || code === '') {
+      return text(response, 400, 'SIGN_IN_REFUSED', { 'set-cookie': clearLogin });
+    }
+    // A pending sign-in that already opened a session is refused before the token endpoint.
+    if (spent.has(pending.state)) {
       return text(response, 400, 'SIGN_IN_REFUSED', { 'set-cookie': clearLogin });
     }
     const token = await exchangeCode(
@@ -116,6 +119,12 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     if (token === null || verdict === null || !verdict.ok) {
       return text(response, 403, 'SIGN_IN_REFUSED', { 'set-cookie': clearLogin });
     }
+    // Taken only once the token is verified, so only a real sign-in can spend one.
+    const claim = spent.claim(pending.state, pending.expiresAt);
+    if (claim === 'spent') {
+      return text(response, 400, 'SIGN_IN_REFUSED', { 'set-cookie': clearLogin });
+    }
+    if (claim === 'full') return text(response, 503, 'UNAVAILABLE', { 'set-cookie': clearLogin });
     const identity: Signed = { subject: verdict.subject, orgId: verdict.orgId };
     let bound: S | null;
     try {
@@ -140,16 +149,15 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   function beginLogin(response: ServerResponse): void {
     const pkce = newPkce();
     const state = randomBytes(32).toString('base64url');
-    const id = logins.put({
+    const sealed = logins.seal({
       verifier: pkce.verifier,
       state,
       expiresAt: clock() + LOGIN_TTL_SECONDS,
     });
-    if (id === null) return text(response, 503, 'UNAVAILABLE');
     response.writeHead(302, {
       ...SECURITY_HEADERS,
       location: authorizeUrl(options, state, pkce.challenge),
-      'set-cookie': setCookie(loginName, id, { maxAge: LOGIN_TTL_SECONDS, secure }),
+      'set-cookie': setCookie(loginName, sealed, { maxAge: LOGIN_TTL_SECONDS, secure }),
     });
     response.end();
   }

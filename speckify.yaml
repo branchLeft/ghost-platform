@@ -1,0 +1,14 @@
+# One contract: the broker's signed host API. The spec stays beside the code
+# that serves it (services/broker/openapi.yaml); this file only names the
+# packages generated from it and where they publish.
+contracts:
+  - name: broker-api
+    spec: ./services/broker/openapi.yaml
+    typescript:
+      package: '@branchleft/ghost-platform-broker-api'
+      client: true
+      server: true
+
+publish:
+  githubPackages:
+    owner: branchleft

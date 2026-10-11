@@ -42,6 +42,16 @@ assumption does not hold for a demo, and this is the guard's own
 documented, deliberate escape hatch: "local development / the SQLite smoke
 test only". A demo is exactly that case.
 
+## Verdict source
+
+No `storage__<feature>__verdictSource` is rendered, for a demo or for a
+tenant. The scanning decorator treats an absent value as no verdict source
+and refuses every upload with a 503 until a real one is wired
+(`adapters/scanning-storage/src/verdict-source.md`). The only value it
+recognises today is its in-process fake, which scans nothing; it is for a
+test harness's own environment and is never rendered into a compose file.
+A demo is not an exception: it is where the scan matters most.
+
 ## Media environment
 
 `mediaBucketName`/`mediaPublicBaseUrl` re-derive the bucket and its public

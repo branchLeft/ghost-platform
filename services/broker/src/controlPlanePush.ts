@@ -11,6 +11,8 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
+// The generated client can neither stream nor sign: see app.md#generated-server.
+import { pushImage as generatedPushImage } from './generated/index.js';
 
 import { imagePushManifest } from './imagePush.js';
 import { signRequest } from './signing.js';
@@ -51,17 +53,20 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
 
   // A streamed request body, not a buffered one: this is the same "over
   // our own link, not from a CDN" cost LLD-4 U9 names, and it is measured
-  // rather than hidden by reading the whole tar into memory first.
+  // rather than hidden by reading the whole tar into memory first. The
+  // generated client types the body as a string (and never serialises it:
+  // the operation declares an octet-stream), so the stream goes in through
+  // a cast, to the one place the type is wrong about what fetch accepts.
   const body = Readable.toWeb(
     createReadStream(args.tarPath)
   ) as unknown as globalThis.ReadableStream<Uint8Array>;
 
-  const res = await fetch(`${args.baseUrl}${IMAGE_PUSH_PATH}`, {
-    method: 'POST',
+  const result = await generatedPushImage({
+    baseUrl: args.baseUrl,
     // Node's fetch requires this for any request carrying a streamed body;
-    // its own types do not yet know the option, hence the cast rather than
-    // a `@ts-expect-error` this repo's CI TypeScript version may or may not
-    // agree needs one.
+    // neither the client's options nor its own types know the option, hence
+    // the cast rather than a `@ts-expect-error` this repo's CI TypeScript
+    // version may or may not agree needs one.
     ...({ duplex: 'half' } as Record<string, unknown>),
     headers: {
       'X-Broker-Timestamp': timestamp,
@@ -69,11 +74,21 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
       'X-Broker-Signature': signature,
       'X-Image-Digest': args.digest,
       'X-Image-Size': sizeStr,
-      'Content-Type': 'application/octet-stream',
       'Content-Length': sizeStr,
     },
-    body,
+    body: body as unknown as string,
   });
-  const responseBody: unknown = await res.json().catch(() => undefined);
-  return { ok: res.ok, status: res.status, body: responseBody };
+  // No response at all means the request itself failed (refused, reset):
+  // rethrown, as a rejected `fetch` always was, rather than reported as a
+  // status this module never received.
+  if (result.response === undefined) throw result.error;
+  const { ok, status } = result.response;
+  // A non-2xx answer arrives as the parsed JSON, or the raw text when it was
+  // not JSON; only the former was ever handed back.
+  const responseBody: unknown = ok
+    ? result.data
+    : typeof result.error === 'object'
+      ? result.error
+      : undefined;
+  return { ok, status, body: responseBody };
 }

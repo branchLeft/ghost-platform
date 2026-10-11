@@ -29,3 +29,19 @@ describe('buildRefusalError', () => {
     expect(err.context).toMatch(/\btest\b/);
   });
 });
+
+describe('buildScannerUnconfiguredError', () => {
+  const { buildScannerUnconfiguredError } = require('../../src/refusal-error.js');
+
+  it('is a typed 503 MaintenanceError, never a plain Error and never a 415', () => {
+    const err = buildScannerUnconfiguredError(GhostErrors);
+    expect(err).toBeInstanceOf(GhostErrors.MaintenanceError);
+    expect(err.statusCode).toBe(503);
+  });
+
+  it('says the safety check is not configured and names no classification', () => {
+    const err = buildScannerUnconfiguredError(GhostErrors);
+    expect(err.message).toMatch(/not configured/);
+    expect(err.context).not.toMatch(/flagged|csam|harmful/);
+  });
+});

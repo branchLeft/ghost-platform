@@ -1011,3 +1011,95 @@ describe('verified, bounded hold retries through the adapter', () => {
     expect(instance.hold.isPending(BAD_DIGEST)).toBe(false);
   });
 });
+
+// With no verdict source the decorator declines every upload before reading,
+// hashing, sealing or writing anything. This is a different state from an
+// outage, which is held: see the describe block after this one.
+describe('refuseUploadsReason (no verdict source)', () => {
+  function unscannableAdapter(logged = [], reason = 'SCANNER_UNCONFIGURED') {
+    const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
+      loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
+      GhostErrors,
+    });
+    return new Adapter({
+      wraps: 'FakeAdapter',
+      wrappedConfig: { storagePath: 'wrapped' },
+      quarantinePath: path.join(tmpDir, 'quarantine'),
+      checks: [],
+      policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
+      refuseUploadsReason: reason,
+      holdLogger: { error: (line) => logged.push(line) },
+    });
+  }
+
+  it('refuses saveRaw with a typed 503 and never reaches the wrapped adapter', async () => {
+    const adapter = unscannableAdapter();
+    const err = await adapter.saveRaw(CLEAN_BYTES, '2026/10/a.png').catch((e) => e);
+    expect(err).toBeInstanceOf(GhostErrors.MaintenanceError);
+    expect(err.statusCode).toBe(503);
+    expect(adapter.wrapped.savedRaw).toEqual([]);
+  });
+
+  it('refuses save() before it reads the file, and seals nothing', async () => {
+    const adapter = unscannableAdapter();
+    const missing = { name: 'a.png', path: path.join(tmpDir, 'no-such-file') };
+    await expect(adapter.save(missing)).rejects.toMatchObject({ statusCode: 503 });
+    expect(adapter.wrapped.saved).toEqual([]);
+    const sealed = await fs.readdir(path.join(tmpDir, 'quarantine')).catch(() => []);
+    expect(sealed).toEqual([]);
+  });
+
+  it('logs one alertable line per refusal', async () => {
+    const logged = [];
+    const adapter = unscannableAdapter(logged);
+    const boot = logged.length;
+    await adapter.saveRaw(CLEAN_BYTES, '2026/10/a.png').catch(() => {});
+    expect(logged).toHaveLength(boot + 1);
+    expect(logged.at(-1)).toBe(
+      'ScanningStorageAdapter: UPLOAD_REFUSED_SCANNER_UNCONFIGURED wraps=FakeAdapter'
+    );
+  });
+
+  it.each(['', null, true, 5])(
+    'treats the reason %j as the switch being off (an unset reason is the default)',
+    async (reason) => {
+      const adapter = unscannableAdapter([], reason);
+      expect(adapter.refuseUploadsReason).toBeNull();
+    }
+  );
+
+  it('keeps answering reads for what is already stored', async () => {
+    const adapter = unscannableAdapter();
+    adapter.wrapped.files.set('2026/10/old.png', Buffer.from('old'));
+    await expect(adapter.exists('old.png', '2026/10')).resolves.toBe(true);
+  });
+});
+
+// Control: the other closed state. A channel that is configured but slow is
+// accepted and held, never refused and never allowed.
+describe('a configured channel that does not answer in time', () => {
+  it('accepts the upload and holds it unserved', async () => {
+    const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
+      loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
+      GhostErrors,
+    });
+    const slowClient = { getVerdict: () => new Promise(() => {}) };
+    const instance = new Adapter({
+      wraps: 'FakeAdapter',
+      wrappedConfig: { storagePath: 'wrapped' },
+      quarantinePath: path.join(tmpDir, 'quarantine'),
+      checks: [
+        createPdqKnownMaterialCheck(slowClient, { computeDigest: digestBytes, timeoutMs: 10 }),
+      ],
+      policy: new SafetyPolicy(),
+      computeDigest: digestBytes,
+      holdRetryMs: RETRY_MS,
+      holdLogger: SILENT_LOGGER,
+    });
+    const url = await instance.saveRaw(CLEAN_BYTES, '2026/10/slow.png');
+    expect(url).toMatch(/slow\.png$/);
+    expect(instance.wrapped.savedRaw).toEqual([]);
+    expect(instance.hold.isPending(digestBytes(CLEAN_BYTES))).toBe(true);
+  });
+});
