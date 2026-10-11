@@ -1098,6 +1098,97 @@ class MakefileAndRunKeyTests(unittest.TestCase):
         self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")])
 
 
+class ArgumentSpellingTests(unittest.TestCase):
+    """Spellings of the arguments before the image, and of a quoted command, found in review of the fourth guard."""
+
+    def test_a_command_substitution_with_a_space_before_the_image(self):
+        for argv in (
+            "-u $(id -u):$(id -g)",
+            "--name x-$(date +%s)",
+            "-v $(realpath .):/w",
+            "-e FOO=$(cat f)",
+            "--user=$(id -u)",
+            "-e N=$((1 + 2))",
+            "-u `id -u`",
+        ):
+            text = f"docker run --rm {argv} alpine:3 id\n"
+            self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")], argv)
+
+    def test_a_backtick_value_is_one_word(self):
+        findings, _ = scan_tree({"t.sh": "docker run --rm -u `echo node` alpine:3 id\n"})
+        self.assertEqual([f.ref for f in findings], ["alpine:3"])
+
+    def test_a_command_substitution_before_the_image_in_a_makefile_and_a_workflow(self):
+        self.assertEqual(
+            found({"Makefile": "t:\n\tdocker run --rm -u $(shell id -u) alpine:3 id\n"}), [("Makefile", 2, "unqualified")]
+        )
+        text = "jobs:\n  t:\n    steps:\n      - run: docker run --rm -u $(id -u):$(id -g) alpine:3 id\n"
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")])
+
+    def test_a_command_substitution_that_is_the_image_is_unresolved(self):
+        self.assertEqual(found({"t.sh": "docker run --rm $(cat image.txt) id\n"}), [("t.sh", 1, "unresolved")])
+
+    def test_a_quoted_scalar_after_a_run_or_command_key(self):
+        for line in (
+            '- run: "docker run --rm alpine:3 id"',
+            "- run: 'docker run --rm alpine:3 id'",
+            '- run: "FOO=1 docker run --rm alpine:3 id"',
+            '    command: "docker run --rm alpine:3 id"',
+        ):
+            self.assertEqual(found({"w.yml": line + "\n"}), [("w.yml", 1, "unqualified")], line)
+
+    def test_a_quoted_name_that_mentions_docker_run_is_not_a_command(self):
+        self.assertEqual(found({"w.yml": '- name: "docker run alpine:3"\n'}), [])
+
+    def test_ssh_with_options_and_an_unquoted_remote_command(self):
+        for line in (
+            "ssh -o X=y host 'docker pull alpine:3'",
+            "ssh -t host 'docker pull alpine:3'",
+            "ssh -i key user@host \"docker pull alpine:3\"",
+            "ssh user@host docker pull alpine:3",
+            "ssh -t host docker pull alpine:3",
+        ):
+            self.assertEqual(found({"t.sh": line + "\n"}), [("t.sh", 1, "unqualified")], line)
+
+    def test_a_case_arm_followed_by_an_assignment(self):
+        text = "case $1 in\n  a) FOO=1 docker run --rm alpine:3 ;;\nesac\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 2, "unqualified")])
+
+    def test_a_makefile_shell_function(self):
+        text = "X := $(shell docker run --rm alpine:3 id)\n"
+        self.assertEqual(found({"Makefile": text}), [("Makefile", 1, "unqualified")])
+
+    def test_a_command_held_in_a_shell_string_variable(self):
+        self.assertEqual(found({"t.sh": 'CMD="docker run --rm alpine:3 true"\n'}), [("t.sh", 1, "unqualified")])
+
+    def test_an_assignment_inside_a_command_string_in_code(self):
+        for path, text in (
+            ("x.ts", "execSync('FOO=1 docker run --rm node:20 true');\n"),
+            ("package.json", '{"scripts":{"t":"FOO=1 docker run --rm node:20 true"}}\n'),
+            ("package.json", '{"scripts":{"t":"npm run b && docker run --rm node:20 true"}}\n'),
+        ):
+            self.assertEqual(found({path: text}), [(path, 1, "unqualified")], text)
+
+    def test_a_plain_word_flag_value_with_punctuation_does_not_hide_the_image(self):
+        for value in ("a,b", "a+b", "a@b", "a!b", "x,y:z"):
+            text = f"docker run --rm --some-flag {value} alpine:3 true\n"
+            self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")], value)
+
+    def test_a_redirect_before_the_image(self):
+        for redirect in ("2>/dev/null", ">/dev/null", "2>&1"):
+            text = f"docker run --rm {redirect} alpine:3 true\n"
+            self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unqualified")], redirect)
+
+    def test_a_build_arg_value_with_a_variable_registry(self):
+        text = "docker build --build-arg BASE=${REG}/node:20 .\n"
+        self.assertEqual(found({"t.sh": text}), [("t.sh", 1, "unresolved")])
+        self.assertEqual(found({"u.sh": "docker build --build-arg VERSION=$V .\n"}), [])
+
+    def test_a_quoted_assignment_of_an_image_in_an_echo_to_the_environment_file(self):
+        text = 'jobs:\n  t:\n    steps:\n      - run: echo "IMAGE=postgres:17" >> $GITHUB_ENV\n'
+        self.assertEqual(found({WORKFLOW: text}), [(WORKFLOW, 4, "unqualified")])
+
+
 def _lines(prefixes, tail="docker run --rm alpine:3 true"):
     return [("t.sh", f"{p} {tail}\n") for p in prefixes]
 
@@ -1120,7 +1211,12 @@ CLAIMS = {
         (WORKFLOW, "jobs:\n  t:\n    steps:\n      - uses: docker://alpine:3\n"),
         ("action.yml", "runs:\n  using: docker\n  image: docker://alpine:3\n"),
     ],
-    "assign-image": [("t.sh", "IMAGE=node:20\n"), (".env", "IMAGE=node:20\n"), ("ci.toml", 'image = "node:20"\n')],
+    "assign-image": [
+        ("t.sh", "IMAGE=node:20\n"),
+        (".env", "IMAGE=node:20\n"),
+        ("ci.toml", 'image = "node:20"\n'),
+        ("w.yml", '- run: echo "IMAGE=node:20" >> $GITHUB_ENV\n'),
+    ],
     "assign-suffix": [("t.sh", "DB_IMAGE=node:20\n"), (".env", "DB_IMAGE=node:20\n")],
     "assign-tag": [("t.sh", "BLUE_TAG=ghost:6\n")],
     "make-assign": [("Makefile", f"IMAGE {op} node:20\n") for op in ("=", "?=", ":=", "::=", "+=")],
@@ -1149,14 +1245,40 @@ CLAIMS = {
         ("t.sh", "sh -ec 'docker run alpine:3'\n"),
         ("t.sh", 'eval "docker run alpine:3"\n'),
         ("t.sh", "ssh host 'docker run alpine:3'\n"),
+        ("t.sh", "ssh -o X=y host 'docker run alpine:3'\n"),
+        ("t.sh", 'CMD="docker run alpine:3"\n'),
+    ],
+    "command-ssh": [
+        ("t.sh", "ssh user@host docker pull alpine:3\n"),
+        ("t.sh", "ssh -t host docker pull alpine:3\n"),
+        ("t.sh", 'ssh -i key user@host "docker pull alpine:3"\n'),
+    ],
+    "command-yaml-quoted": [
+        ("w.yml", '- run: "docker run alpine:3"\n'),
+        ("w.yml", "- run: 'docker run alpine:3'\n"),
+        ("w.yml", '- run: "FOO=1 docker run alpine:3"\n'),
+        ("w.yml", '    command: "docker run alpine:3"\n'),
     ],
     "command-forms": [
         ("t.sh", "/usr/bin/docker run alpine:3\n"),
         ("t.sh", "$DOCKER run alpine:3\n"),
         ("t.sh", "${DOCKER} run alpine:3\n"),
         ("Makefile", "t:\n\t$(DOCKER) run alpine:3\n"),
+        ("Makefile", "X := $(shell docker run alpine:3)\n"),
     ],
-    "command-case-arm": [("t.sh", "case $1 in\n  a) docker run alpine:3 ;;\nesac\n")],
+    "command-case-arm": [
+        ("t.sh", "case $1 in\n  a) docker run alpine:3 ;;\nesac\n"),
+        ("t.sh", "case $1 in\n  a) FOO=1 docker run alpine:3 ;;\nesac\n"),
+    ],
+    "operand-substitution": [
+        ("t.sh", "docker run --rm -u $(id -u):$(id -g) alpine:3 id\n"),
+        ("t.sh", "docker run --rm --name x-$(date +%s) alpine:3 true\n"),
+        ("t.sh", "docker run --rm -v $(realpath .):/w alpine:3 true\n"),
+        ("t.sh", "docker run --rm -e FOO=$(cat f) alpine:3 true\n"),
+        ("Makefile", "t:\n\tdocker run --rm -u $(shell id -u) alpine:3 id\n"),
+        ("w.yml", "- run: docker run --rm -u $(id -u):$(id -g) alpine:3 id\n"),
+    ],
+    "operand-redirect": [("t.sh", "docker run --rm 2>/dev/null alpine:3 true\n")],
     "makefile-recipe": [("Makefile", f"t:\n\t{r}docker run alpine:3\n") for r in ("", "@", "-", "+")]
     + [("Makefile", "t:\n\t@$(DOCKER) run alpine:3\n")],
     "build-context": [("t.sh", "docker buildx build --build-context b=docker-image://alpine:3 .\n")],
@@ -1166,7 +1288,11 @@ CLAIMS = {
     ],
     "build-arg": [("t.sh", "docker build --build-arg BASE=node:20 .\n")],
     "code-strings": [("x.ts", "run('mysql:8.0'); // docker\n"), ("x.ts", "\n" * 20 + "const X = 'mysql:8.0';\n")],
-    "code-command-string": [("x.ts", "execSync('docker run --rm postgres:17 psql');\n")],
+    "code-command-string": [
+        ("x.ts", "execSync('docker run --rm postgres:17 psql');\n"),
+        ("x.ts", "execSync('FOO=1 docker run --rm node:20 true');\n"),
+        ("package.json", '{"scripts":{"t":"npm run b && docker run --rm node:20 true"}}\n'),
+    ],
 }
 
 
@@ -1192,6 +1318,22 @@ class ClaimsTableTests(unittest.TestCase):
             for tag in re.findall(r"\[claim: ([a-z0-9, -]+)\]", bullet):
                 ids += [i.strip() for i in tag.split(",")]
         return ids
+
+    def test_limits_open_with_the_closing_sentence(self):
+        text = re.sub(r"\s+", " ", self.DOC.read_text())
+        limits = text.split("## Limits", 1)[1]
+        self.assertTrue(
+            limits.lstrip().startswith(
+                "**The guard reads exactly the forms listed under What it reads. Any other spelling is not read, "
+                "and a reference there is not reported: a green enforce run proves only that no listed form was found.**"
+            )
+        )
+
+    def test_modes_state_what_a_miss_costs(self):
+        text = re.sub(r"\s+", " ", self.DOC.read_text())
+        modes = text.split("## Modes", 1)[1].split("## Limits", 1)[0]
+        self.assertIn("In warn mode nothing breaks", modes)
+        self.assertIn("In enforce mode the same miss gives false confidence", modes)
 
     def test_every_bullet_carries_a_claim_tag(self):
         untagged = [b.split("\n")[0][:70] for b in self.bullets() if not re.search(r"\[claim: [a-z0-9, -]+\]", b)]

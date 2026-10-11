@@ -129,10 +129,21 @@ COMMAND_WORDS = {
     "then", "do", "else", "elif", "if", "until", "while", "sudo", "exec", "time", "eval", "command", "nohup", "xargs",
     "env", "timeout", "retry", "nice", "ionice", "watch", "!", "-",
     "run:", "command:", "cmd:", "entrypoint:", "script:",  # a YAML key, then FOO=1 and the command
+    "$(shell",
 }
 YAML_COMMAND_KEY = re.compile(r"\b(?:run|command|cmd|entrypoint|script):\s*(?:[|>][-+]?)?\Z")
-SHELL_STRING_PREFIX = re.compile(r"""(?:\s-[A-Za-z]*c|\beval|\bssh\s+\S+|\bsh|\bbash)\s+["']\Z""")
+KEY_QUOTE_RE = re.compile(r"""\b(run|command|cmd|entrypoint|script):\s*["']""")
+SHELL_STRING_PREFIX = re.compile(r"""(?:\s-[A-Za-z]*c|\beval|\bssh\b[^'"]*|\bsh|\bbash)\s+["']\Z""")
+ASSIGN_STRING_RE = re.compile(
+    r"""(?:\A|[\s;&|(])(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?)?[A-Za-z_]\w*\+?=["']\Z"""
+)
 CASE_ARM_RE = re.compile(r"""(?:\A|[;\s])[\w.*|"'-]+\)\Z""")
+CASE_LABEL_RE = re.compile(r"""\A[\w.*|"'-]+\)\Z""")
+SSH_VALUE_OPTIONS = {"-o", "-i", "-p", "-l", "-F", "-J", "-b", "-c", "-D", "-E", "-e", "-L", "-R", "-S", "-W"}
+REDIRECT_RE = re.compile(r"\A[0-9]*>+&?\Z")  # output only: a `<` is also how a placeholder <image> is written
+SUBSTITUTION_CHARS = " \t();&|<>"
+_SUBSTITUTION_ENCODE = {c: chr(0xE000 + n) for n, c in enumerate(SUBSTITUTION_CHARS)}
+_SUBSTITUTION_DECODE = {v: k for k, v in _SUBSTITUTION_ENCODE.items()}
 RECIPE_PREFIX_RE = re.compile(r"\A\s*[@+-]+\s*")
 PROSE_CALL = re.compile(r"(?:console\.|\bprint|\blog|\becho|\bwarn|\berror|\bmessage)", re.I)
 
@@ -317,7 +328,8 @@ def take_value(rest: str) -> tuple[str, bool]:
         end = s.find(s[0], 1)
         return (s[1:end] if end > 0 else s[1:]), True
     m = VALUE_RE.match(s)
-    return (m.group(0) if m else ""), False
+    value = m.group(0) if m else ""
+    return value.rstrip("\"'"), False  # a closing quote of a string this value sits in is not part of it
 
 
 def looks_like_image(value: str) -> bool:
@@ -473,32 +485,100 @@ def parse_file(rel: str, lines: list[str], known: frozenset[str] = frozenset()) 
 
 def command_position(before: str, code: bool) -> bool:
     """True when a docker word after `before` starts a command rather than sitting in prose."""
-    b = RECIPE_PREFIX_RE.sub("", before).rstrip()  # a Makefile recipe's @, - or + prefix
+    b = RECIPE_PREFIX_RE.sub("", before)  # a Makefile recipe's @, - or + prefix
+    b = KEY_QUOTE_RE.sub(r"\1: ", b).rstrip()  # a quoted YAML scalar after run: or command:
     if not b:
         return True
     if b[-1] in "'\"" and b.count(b[-1]) % 2 == 1:  # an opening quote: docker is inside a string
-        return not PROSE_CALL.search(b) if code else bool(SHELL_STRING_PREFIX.search(b))
+        if code:
+            return not PROSE_CALL.search(b)
+        return bool(SHELL_STRING_PREFIX.search(b) or ASSIGN_STRING_RE.search(b))
+    if code:
+        opened = [b.rfind(q) for q in "'\"`" if b.count(q) % 2 == 1]  # inside a string begun earlier on the line
+        if opened:
+            start = max(opened)
+            if PROSE_CALL.search(b[:start]):
+                return False
+            return _after_prefix(b[start + 1:].split())
     b = re.sub(r"\"[^\"]*\"|'[^']*'", "X", b)  # a closed quoted value, as in FOO="a b" docker run
     if b[-1] in ";&|({`!" or YAML_COMMAND_KEY.search(b) or CASE_ARM_RE.search(b):
         return True
-    words = b.split()
+    return _after_prefix(b.split())
+
+
+def _after_prefix(words: list[str]) -> bool:
+    """True when words end in a command word, ignoring options, durations and FOO=1 assignments."""
     while words and words[-1] != "-" and ARG_WORD_RE.match(words[-1]):
         words.pop()  # options, a duration, or a FOO=1 assignment before the command
-    return not words or words[-1] in COMMAND_WORDS or "sudo" in words[-4:]
+    if not words or words[-1] in COMMAND_WORDS or CASE_LABEL_RE.match(words[-1]) or "sudo" in words[-4:]:
+        return True
+    if words[-1][-1] in ";&|(":
+        return True  # a separator inside a command string: npm run b && docker run
+    return _ssh_host_last(words)
+
+
+def _ssh_host_last(words: list[str]) -> bool:
+    """True for `ssh [options] host` as the last words, with the remote command to follow."""
+    for i in range(len(words) - 1, -1, -1):
+        if words[i] == "ssh" or words[i].endswith("/ssh"):
+            rest, skip = [], False
+            for word in words[i + 1:]:
+                if skip:
+                    skip = False
+                elif word in SSH_VALUE_OPTIONS:
+                    skip = True
+                elif not word.startswith("-"):
+                    rest.append(word)
+            return len(rest) == 1
+    return False
+
+
+def _protect_substitutions(text: str) -> str:
+    """Hide the spaces and parentheses inside `$(...)` and backticks so the span stays one shell word."""
+    out, depth, tick, i = [], 0, False, 0
+    while i < len(text):
+        two = text[i:i + 2]
+        ch = text[i]
+        if depth == 0 and two == "$(" and not re.match(r"\$\([A-Za-z_]\w*\)", text[i:]):
+            depth = 1
+            out.append("$")
+            out.append(_SUBSTITUTION_ENCODE["("])
+            i += 2
+            continue
+        if depth:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            out.append(_SUBSTITUTION_ENCODE.get(ch, ch))
+            i += 1
+            continue
+        if ch == "`":
+            tick = not tick
+            out.append(ch)
+        else:
+            out.append(_SUBSTITUTION_ENCODE.get(ch, ch) if tick else ch)
+        i += 1
+    return "".join(out)
 
 
 def tokens_of(rest: str) -> list[str]:
     """Shell words of `rest`; an unclosed quote (a multi-line `bash -c '`) ends the line there."""
     rest = re.sub(r"\$\(([A-Za-z_]\w*)\)", r"${\1}", rest)  # a Makefile variable is one word
+    rest = _protect_substitutions(rest)  # $(id -u) and `cmd` are one word, not several
+    words = None
     for _ in range(4):
         try:
             lex = shlex.shlex(rest, posix=True, punctuation_chars=True)
             lex.whitespace_split = True
             lex.commenters = ""
-            return list(lex)
+            words = list(lex)
+            break
         except ValueError:
             rest = rest[: max(rest.rfind("'"), rest.rfind('"'))]
-    return rest.split()
+    if words is None:
+        words = rest.split()
+    return [w.translate(str.maketrans(_SUBSTITUTION_DECODE)) for w in words]
 
 
 def image_operand(words: list[str], i: int) -> tuple[str, bool] | None:
@@ -511,14 +591,19 @@ def image_operand(words: list[str], i: int) -> tuple[str, bool] | None:
     while i < len(words):
         raw = words[i]
         i += 1
+        if REDIRECT_RE.match(raw):
+            i += 1  # a redirect and its target: not an operand
+            continue
         if SEPARATOR_RE.match(raw):
             return None
         if raw in VALUE_FLAGS:
             i += 1
             continue
-        word = raw.strip("\"'`,;)]")
+        word = raw.strip("\"'`,;]")
         while word.endswith("}") and word.count("}") > word.count("{"):
             word = word[:-1]  # a closing brace that is not the end of ${VAR}
+        while word.endswith(")") and word.count(")") > word.count("("):
+            word = word[:-1]  # a closing parenthesis that is not the end of $(cmd)
         if not word or word.startswith("-"):
             continue
         if "$" in word:
@@ -530,6 +615,11 @@ def image_operand(words: list[str], i: int) -> tuple[str, bool] | None:
         if re.search(r"[=/\s]", word):
             return word, False  # key=value, a path or a quoted phrase: what a flag this list does not know would take
         if re.search("[A-Za-z]", word):
+            for later in words[i:]:
+                if SEPARATOR_RE.match(later):
+                    break
+                if looks_like_image(later) and has_name(later) and not later.startswith(("-", "/", ".")):
+                    return word, False  # an image-shaped word follows: this one may be a flag's value
             return None  # a prose word, not an operand
         # a bare number: the value of a flag this list does not know; keep looking
     return None
@@ -625,7 +715,11 @@ def line_candidates(info: FileInfo, known: frozenset[str], emit) -> None:
             emit(number, m["ref"])
         for m in BUILD_ARG_RE.finditer(text):
             value = m["value"]
-            if m["name"] not in KEEP_VARS and ((has_name(value) and looks_like_image(value)) or REGISTRY_VAR_START.match(value)):
+            named = bool(re.search(r"IMAGE|BASE|REPO|REGISTRY|FROM", m["name"], re.I))
+            image_like = has_name(value) and looks_like_image(value)
+            if m["name"] not in KEEP_VARS and (
+                image_like or REGISTRY_VAR_START.match(value) or ("$" in value and has_name(value) and named)
+            ):
                 emit(number, value)
         for operand, certain in docker_operands(text, kind == "code"):
             emit(number, operand, certain=certain)
@@ -912,6 +1006,14 @@ def self_test() -> int:
         "makefile assignment": ({"Makefile": "IMAGE ?= node:20\n"}, ["unqualified"]),
         "run key with an assignment": (
             {".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: FOO=1 docker run --rm alpine:3.19\n"},
+            ["unqualified"],
+        ),
+        "command substitution with a space before the image": (
+            {"t.sh": "docker run --rm -u $(id -u):$(id -g) alpine:3.19 id\n"},
+            ["unqualified"],
+        ),
+        "quoted scalar after a run key": (
+            {".github/workflows/ci.yml": 'jobs:\n  t:\n    steps:\n      - run: "docker run --rm alpine:3.19 id"\n'},
             ["unqualified"],
         ),
         "build context image": ({"t.sh": "docker buildx build --build-context b=docker-image://alpine:3 .\n"}, ["unqualified"]),
