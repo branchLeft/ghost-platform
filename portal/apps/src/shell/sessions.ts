@@ -58,3 +58,37 @@ export class ExpiringStore<V extends { readonly expiresAt: number }> {
     }
   }
 }
+
+/**
+ * The pending sign-ins that have already opened a session, so one opens at most
+ * one. Only a verified sign-in is added: an unauthenticated client cannot fill it.
+ */
+export class SpentLogins {
+  readonly #until = new Map<string, number>();
+  readonly #clock: () => number;
+
+  constructor(clock: () => number) {
+    this.#clock = clock;
+  }
+
+  has(key: string): boolean {
+    const until = this.#until.get(key);
+    return until !== undefined && until > this.#clock();
+  }
+
+  /** `claimed` once per key; `spent` for a repeat; `full` when live entries fill the set. */
+  claim(key: string, until: number): 'claimed' | 'spent' | 'full' {
+    if (this.has(key)) return 'spent';
+    if (this.#until.size >= MAX_ENTRIES) this.#sweep();
+    if (this.#until.size >= MAX_ENTRIES) return 'full';
+    this.#until.set(key, until);
+    return 'claimed';
+  }
+
+  #sweep(): void {
+    const now = this.#clock();
+    for (const [key, until] of this.#until) {
+      if (until <= now) this.#until.delete(key);
+    }
+  }
+}
