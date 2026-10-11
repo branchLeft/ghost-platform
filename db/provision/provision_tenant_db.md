@@ -21,9 +21,18 @@ exactly as it would over TCP.
 
 Re-running against an existing tenant changes nothing about its password:
 `CREATE USER IF NOT EXISTS` is a no-op when the account already exists, so
-this is safe to run again to reapply a raised `MAX_USER_CONNECTIONS` or to
-confirm a tenant's grants without touching a credential something else
-already depends on.
+this is safe to run again to reapply a raised `MAX_USER_CONNECTIONS`.
+
+The database-level GRANT target is escaped before it is sent: a bare `_`
+is a one-character wildcard in MySQL, and the `ghost_` prefix itself
+contains one. Without the escape, the grant for `a-b` (database `ghost_a_b`)
+would also cover `ghost_a1b`, another tenant's database.
+
+A re-run on an existing account ADDS the escaped row beside the old one and
+does not remove it. The old unescaped row (for example `ghost_blog`.*) stays
+until it is revoked by hand. REVOKE must use the exact stored form: the
+unescaped target removes only the old row, and the escaped target removes
+only the new one. A form that is not stored fails with error 1141.
 
 Self-managed MySQL is what makes this one script rather than two: an
 earlier component could create the database and user but had no
