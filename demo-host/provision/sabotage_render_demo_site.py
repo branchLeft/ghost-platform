@@ -60,6 +60,18 @@ SABOTAGES = [
     ("drop the per-colour upstream import",
      '        f"\\t\\t\\timport {rde.snippet_name(slot)}",\n',
      ""),
+    ("gate environment: trust every address",
+     '        f"GATE_TRUSTED_PROXIES={rde.DEMO_EDGE_ADDR}",\n',
+     '        "GATE_TRUSTED_PROXIES=0.0.0.0/0",\n'),
+    ("gate environment: trust the whole loopback range",
+     '        f"GATE_TRUSTED_PROXIES={rde.DEMO_EDGE_ADDR}",\n',
+     '        "GATE_TRUSTED_PROXIES=127.0.0.0/8",\n'),
+    ("gate environment: leave the trusted list unset",
+     '        f"GATE_TRUSTED_PROXIES={rde.DEMO_EDGE_ADDR}",\n',
+     ""),
+    ("gate environment: listen on every interface",
+     '        f"LISTEN_HOST={rde.DEMO_EDGE_ADDR}",\n',
+     '        "LISTEN_HOST=0.0.0.0",\n'),
 ]
 
 

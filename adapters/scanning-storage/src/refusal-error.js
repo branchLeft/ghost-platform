@@ -24,4 +24,27 @@ function buildRefusalError(GhostErrors, verdict) {
   });
 }
 
-module.exports = { buildRefusalError, GENERIC_CONTEXT, specificContext };
+// Not a refusal of the bytes: nothing was looked at. The decorator has no
+// verdict source, so it cannot vouch for any upload and declines all of
+// them. A 503 says "the service cannot do this right now", which is the
+// truth, and it names no classification because none was reached.
+const UNCONFIGURED_MESSAGE =
+  'Uploads are unavailable: the platform safety check is not configured.';
+const UNCONFIGURED_CONTEXT =
+  'This site cannot accept uploads until its safety check is set up. Contact support.';
+
+function buildScannerUnconfiguredError(GhostErrors) {
+  return new GhostErrors.MaintenanceError({
+    message: UNCONFIGURED_MESSAGE,
+    context: UNCONFIGURED_CONTEXT,
+  });
+}
+
+module.exports = {
+  buildRefusalError,
+  buildScannerUnconfiguredError,
+  GENERIC_CONTEXT,
+  UNCONFIGURED_MESSAGE,
+  UNCONFIGURED_CONTEXT,
+  specificContext,
+};

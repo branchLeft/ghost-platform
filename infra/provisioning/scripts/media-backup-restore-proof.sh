@@ -141,6 +141,7 @@ docker run -d --name "$GHOST_NAME" --network "$NET" -p "${GHOST_PORT}:2368" \
     -e privacy__useUpdateCheck=false \
     -e "logging__transports=[\"stdout\"]" \
     -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__verdictSource=in-process-fake \
     -e storage__images__wraps=S3Storage \
     -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
     -e storage__images__wrappedConfig__bucket="$LIVE_BUCKET" \

@@ -1,0 +1,36 @@
+# Nightly copy of the two Pulumi state buckets into backup copy 1. Triggered by
+# branchleft-state-copy.timer; installed by install_state_copy.py. The two
+# read-only source keys and the copy-1 put key arrive as one systemd
+# credential, never in the process environment, so the dump worker (same
+# account) cannot read them.
+[Unit]
+Description=branchLeft state-bucket copy into backup copy 1
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=backup-worker
+Group=backup-worker
+LoadCredential=state-copy.env:/etc/branchleft/state-copy.env
+Environment=STATE_COPY_RUN_LOCK_PATH=/run/branchleft-state-copy/run.lock
+Environment=BACKUP_WORKER_METRICS_DIR=/var/lib/branchleft/backup-worker-exporter
+ExecStart=/usr/bin/python3 /opt/branchleft/backup-worker/current/infra/provisioning/scripts/state_copy.py copy
+RuntimeDirectory=branchleft-state-copy
+StateDirectory=branchleft/backup-worker-exporter
+StateDirectoryMode=0755
+UMask=0077
+TimeoutStartSec=1h
+MemoryMax=512M
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=

@@ -37,12 +37,12 @@ its shape. A copy can drift — the wrong rule order, a missing element, a
 rule count that quietly stops matching what actually ships — and a probe
 testing its own drifted copy proves nothing about what
 `configure_backup_bucket.py` will apply to the real bucket. This now
-carries all FOUR of that generator's rules (`dumps/`, `binlogs/`, `media/`
-and `fence-probe/`), byte for byte and
+carries all FIVE of that generator's rules (`dumps/`, `binlogs/`, `media/`,
+`fence-probe/` and `state/`), byte for byte and
 in the same order, even though `setup_prefix_split` below only ever
 uploads canaries under two of them (`media/` and `dumps/`, the latter
 standing in for `dumps/`+`binlogs/` since they carry an identical rule —
-see the "Prefix-split mode" section above). The extra two rules being
+see the "Prefix-split mode" section above). The extra three rules being
 present and unexercised does not weaken the question this mode answers; it
 makes the document under test the one that will actually be applied, not a
 closest-effort stand-in for it.

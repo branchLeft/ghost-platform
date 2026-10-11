@@ -99,6 +99,29 @@ export function parseTrustedProxies(spec: string): BlockList {
   return list;
 }
 
+/**
+ * Whether a listen address is a loopback spelling this guard recognises: a
+ * dotted-quad address in 127/8, `localhost`, `::1` and its expanded forms
+ * (bracketed or not), and `::ffff:` plus a dotted-quad loopback. NOT
+ * recognised, though the OS binds each to loopback: integer, hex and short
+ * IPv4 (`2130706433`, `0x7f.1`, `127.1`), hex-mapped IPv6 (`::ffff:7f00:1`),
+ * `localhost.` and zone ids (`::1%lo0`). A miss fails to the pooled bucket,
+ * never to a spoof: this is a catch for a misconfiguration, not a control.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const bare = host
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, '$1');
+  if (bare === 'localhost') return true;
+  const address = unmapIpv4(bare);
+  const family = isIP(address);
+  if (family === 4) return address.startsWith('127.');
+  if (family !== 6 || address.includes('.') || address.includes('%')) return false;
+  const groups = expandIpv6(address);
+  return groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1;
+}
+
 function isTrusted(list: BlockList, address: string): boolean {
   const family = isIP(address);
   if (family === 0) return false;

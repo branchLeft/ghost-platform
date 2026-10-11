@@ -175,6 +175,10 @@ function mediaEnvironment(
         // same guard refuses a decorator wrapping a `Local*Storage` value
         // too — see that constant's own comment.
         env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
+        // No `verdictSource` is rendered, for a demo or a tenant, on
+        // purpose: the decorator then has no verdict source and refuses
+        // every upload until a real one is wired. A demo must not name the
+        // in-process fake here. See environment.md#verdict-source.
         env[`storage__${feature}__wraps`] = LOCAL_WRAPPED_ADAPTER[feature];
         env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
       } else {

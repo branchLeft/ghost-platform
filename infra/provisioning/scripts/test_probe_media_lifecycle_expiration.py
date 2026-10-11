@@ -439,7 +439,7 @@ class TestPrefixSplitLifecycleDocument(unittest.TestCase):
     db/provision/configure_backup_bucket.py's own `lifecycle_document()`
     directly (see `probe._configure_backup_bucket`), so this proof tests
     the actual production config byte for byte -- never a hand-copied proxy
-    that could quietly drift from it. It now carries all four of that
+    that could quietly drift from it. It now carries all five of that
     generator's rules, even though `setup_prefix_split` only ever uploads
     canaries under two of them -- see that function's own docstring."""
 
@@ -470,13 +470,14 @@ class TestPrefixSplitLifecycleDocument(unittest.TestCase):
             rule = body.split(f"<Filter><Prefix>{prefix}</Prefix></Filter>", 1)[1].split("</Rule>", 1)[0]
             self.assertIn(f"<Expiration><Days>{days}</Days></Expiration>", rule)
 
-    def test_four_rules_including_binlogs_and_fence_probe(self):
+    def test_five_rules_including_binlogs_fence_probe_and_state(self):
         body = probe.prefix_split_lifecycle_document(1, 35).decode()
-        self.assertEqual(body.count("<Rule>"), 4)
+        self.assertEqual(body.count("<Rule>"), 5)
         self.assertIn("<Filter><Prefix>media/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>dumps/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>binlogs/</Prefix></Filter>", body)
         self.assertIn("<Filter><Prefix>fence-probe/</Prefix></Filter>", body)
+        self.assertIn("<Filter><Prefix>state/</Prefix></Filter>", body)
 
     def test_no_rule_carries_expired_object_delete_marker(self):
         body = probe.prefix_split_lifecycle_document(1, 35).decode()
