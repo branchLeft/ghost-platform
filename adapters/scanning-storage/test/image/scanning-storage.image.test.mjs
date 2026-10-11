@@ -6,6 +6,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -85,6 +86,23 @@ async function freePort() {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// What the hash source is asked about, and so what the fake's refuse and
+// unavailable lists and a delivered verdict's file name are keyed by. The
+// quarantine files stay named by the content digest, which is sha256Hex.
+// This driver needs no install, so the keys are read from a record that a
+// unit test checks against the real decoder (fixture-keys.test.mjs).
+const require = createRequire(import.meta.url);
+const { resolveFileStem } = require('../../src/verdict-client.js');
+const FIXTURE_KEYS = JSON.parse(
+  fs.readFileSync(path.join(FIXTURES, 'verdict-keys.json'), 'utf8')
+).keys;
+
+async function verdictKey(buffer) {
+  const entry = FIXTURE_KEYS[sha256Hex(buffer)];
+  assert.ok(entry, 'no recorded verdict key for these bytes: add the fixture to verdict-keys.json');
+  return entry.key;
+}
 
 function sha256Hex(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
@@ -340,6 +358,7 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
       const badDigest = sha256Hex(badBytes);
+      const badKey = await verdictKey(badBytes);
 
       const ghost = await GhostContainer.start({
         storage__images__adapter: 'ScanningStorageAdapter',
@@ -347,7 +366,7 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
         storage__images__wraps: 'LocalImagesStorage',
         storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
         storage__images__refuse: JSON.stringify({
-          [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
+          [badKey]: { classification: 'harmful-abusive-material', matchType: 'exact' },
           [NEVER_MATCHES]: { classification: 'csam', matchType: 'exact' },
         }),
         // The entrypoint's fail-closed guard now requires the decorator on
@@ -436,6 +455,7 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
     async () => {
       const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
       const badDigest = sha256Hex(badBytes);
+      const badKey = await verdictKey(badBytes);
 
       const ghost = await GhostContainer.start({
         storage__images__adapter: 'ScanningStorageAdapter',
@@ -443,7 +463,7 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
         storage__images__wraps: 'LocalImagesStorage',
         storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
         storage__images__refuse: JSON.stringify({
-          [badDigest]: { classification: 'csam', matchType: 'exact' },
+          [badKey]: { classification: 'csam', matchType: 'exact' },
         }),
         // See the previous test's identical addition for why.
         storage__media__adapter: 'ScanningStorageAdapter',
@@ -479,6 +499,7 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
       const network = `scan-net-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
       const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
       const badDigest = sha256Hex(badBytes);
+      const badKey = await verdictKey(badBytes);
 
       // Network, then both containers, all inside one try/finally: a
       // failure partway through setup (e.g. the mock never becomes ready)
@@ -500,7 +521,7 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
             storage__images__wraps: 'S3Storage',
             storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
             storage__images__refuse: JSON.stringify({
-              [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
+              [badKey]: { classification: 'harmful-abusive-material', matchType: 'exact' },
             }),
             storage__images__wrappedConfig__bucket: double.bucket,
             storage__images__wrappedConfig__staticFileURLPrefix: 'content/images',
@@ -596,6 +617,7 @@ describe('the hold branch, against a real Ghost', () => {
     async () => {
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
+      const heldKey = await verdictKey(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
       // World-writable before the container that will chown it to "node"
       // ever starts -- see reclaimHostOwnership's own comment. Without this,
@@ -609,7 +631,7 @@ describe('the hold branch, against a real Ghost', () => {
           storage__images__verdictSource: 'in-process-fake',
           storage__images__wraps: 'LocalImagesStorage',
           storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-          storage__images__unavailable: JSON.stringify([heldDigest]),
+          storage__images__unavailable: JSON.stringify([heldKey]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
           // The entrypoint's fail-closed guard requires the decorator on
@@ -665,7 +687,7 @@ describe('the hold branch, against a real Ghost', () => {
         );
 
         fs.writeFileSync(
-          path.join(resolveHostDir, `${heldDigest}.json`),
+          path.join(resolveHostDir, `${resolveFileStem(heldKey)}.json`),
           JSON.stringify({ classification: 'no-known-match' })
         );
         await sleep(6000);
@@ -696,6 +718,7 @@ describe('the hold branch, against a real Ghost', () => {
     async () => {
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
+      const heldKey = await verdictKey(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-restart-'));
       // See the first hold-branch test's identical call for why.
       fs.chmodSync(resolveHostDir, 0o777);
@@ -706,7 +729,7 @@ describe('the hold branch, against a real Ghost', () => {
           storage__images__verdictSource: 'in-process-fake',
           storage__images__wraps: 'LocalImagesStorage',
           storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-          storage__images__unavailable: JSON.stringify([heldDigest]),
+          storage__images__unavailable: JSON.stringify([heldKey]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
           // The entrypoint's fail-closed guard requires the decorator on
@@ -757,7 +780,7 @@ describe('the hold branch, against a real Ghost', () => {
         // it -- the restarted process resumed polling, not just resumed
         // remembering to withhold.
         fs.writeFileSync(
-          path.join(resolveHostDir, `${heldDigest}.json`),
+          path.join(resolveHostDir, `${resolveFileStem(heldKey)}.json`),
           JSON.stringify({ classification: 'no-known-match' })
         );
         await sleep(6000);
@@ -801,6 +824,7 @@ describe('the hold branch, against a real Ghost', () => {
       const network = `scan-net-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const heldDigest = sha256Hex(cleanBytes);
+      const heldKey = await verdictKey(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-resolve-'));
       // See the first hold-branch test's identical call for why.
       fs.chmodSync(resolveHostDir, 0o777);
@@ -819,7 +843,7 @@ describe('the hold branch, against a real Ghost', () => {
             storage__images__verdictSource: 'in-process-fake',
             storage__images__wraps: 'S3Storage',
             storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-            storage__images__unavailable: JSON.stringify([heldDigest]),
+            storage__images__unavailable: JSON.stringify([heldKey]),
             storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
             storage__images__holdRetryMs: '1000',
             storage__images__wrappedConfig__bucket: double.bucket,
@@ -898,7 +922,7 @@ describe('the hold branch, against a real Ghost', () => {
         );
 
         fs.writeFileSync(
-          path.join(resolveHostDir, `${heldDigest}.json`),
+          path.join(resolveHostDir, `${resolveFileStem(heldKey)}.json`),
           JSON.stringify({ classification: 'no-known-match' })
         );
         await sleep(2500);
@@ -930,6 +954,7 @@ describe('a refusal in one feature, against a real Ghost', () => {
     async () => {
       const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
       const digest = sha256Hex(cleanBytes);
+      const key = await verdictKey(cleanBytes);
       const resolveHostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanning-storage-xfeature-'));
       // See the first hold-branch test's identical call for why.
       fs.chmodSync(resolveHostDir, 0o777);
@@ -940,7 +965,7 @@ describe('a refusal in one feature, against a real Ghost', () => {
           storage__images__verdictSource: 'in-process-fake',
           storage__images__wraps: 'LocalImagesStorage',
           storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
-          storage__images__unavailable: JSON.stringify([digest]),
+          storage__images__unavailable: JSON.stringify([key]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
           storage__media__adapter: 'ScanningStorageAdapter',
@@ -952,7 +977,7 @@ describe('a refusal in one feature, against a real Ghost', () => {
           storage__files__wraps: 'LocalFilesStorage',
           storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
           storage__files__refuse: JSON.stringify({
-            [digest]: { classification: 'csam', matchType: 'exact' },
+            [key]: { classification: 'csam', matchType: 'exact' },
           }),
         },
         { volumes: [{ host: resolveHostDir, container: '/var/lib/ghost/content/verdict-resolve' }] }
@@ -979,7 +1004,7 @@ describe('a refusal in one feature, against a real Ghost', () => {
         assert.equal(refused.status, 415, JSON.stringify(refused.body));
 
         fs.writeFileSync(
-          path.join(resolveHostDir, `${digest}.json`),
+          path.join(resolveHostDir, `${resolveFileStem(key)}.json`),
           JSON.stringify({ classification: 'no-known-match' })
         );
         await sleep(6000);

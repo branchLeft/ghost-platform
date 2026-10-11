@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +10,7 @@ import { FakeWrappedAdapter } from '../helpers/fake-wrapped-adapter.mjs';
 
 const require = createRequire(import.meta.url);
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src');
-const { digestBytes } = require('../../src/pdq.js');
+const { pdqHashOfImage } = require('../../src/pdq.js');
 
 // The entry file is the one Ghost loads by name. It requires
 // `ghost-storage-base`, which only Ghost's own image carries, and it resolves
@@ -35,9 +36,11 @@ afterAll(() => {
 
 const EntryAdapter = require('../../src/ScanningStorageAdapter.js');
 
-const CLEAN_BYTES = Buffer.from('clean-image-bytes');
-const BAD_BYTES = Buffer.from('known-bad-image-bytes');
-const BAD_DIGEST = digestBytes(BAD_BYTES);
+// Real pictures: what the verdict client is asked about is their perceptual
+// hash, so stand-in bytes would have no hash and be held.
+const CLEAN_BYTES = fsSync.readFileSync(path.join(SRC_DIR, '../test/fixtures/clean.png'));
+const BAD_BYTES = fsSync.readFileSync(path.join(SRC_DIR, '../test/fixtures/bad.png'));
+const BAD_KEY = (await pdqHashOfImage(BAD_BYTES)).hash;
 
 let tmpDir;
 let logged;
@@ -72,7 +75,7 @@ describe('the entry file picks its verdict source', () => {
   });
 
   it('still refuses when only the fake seed config is present, without the explicit flag', async () => {
-    const adapter = build({ refuse: { [BAD_DIGEST]: { classification: 'csam' } } });
+    const adapter = build({ refuse: { [BAD_KEY]: { classification: 'csam' } } });
     await expect(adapter.saveRaw(CLEAN_BYTES, '2026/10/clean.png')).rejects.toMatchObject({
       statusCode: 503,
     });
@@ -98,7 +101,7 @@ describe('the entry file picks its verdict source', () => {
   it('control: with the flag the seeded refusal is honoured (configured behaviour is unchanged)', async () => {
     const adapter = build({
       verdictSource: 'in-process-fake',
-      refuse: JSON.stringify({ [BAD_DIGEST]: { classification: 'csam', matchType: 'exact' } }),
+      refuse: JSON.stringify({ [BAD_KEY]: { classification: 'csam', matchType: 'exact' } }),
     });
     await expect(adapter.saveRaw(BAD_BYTES, '2026/10/bad.png')).rejects.toMatchObject({
       statusCode: 415,
@@ -136,7 +139,7 @@ describe('the entry file picks its verdict source', () => {
 
   it('never promotes a hold left by an earlier process: no source means no verdict, so it stays held', async () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
-    const digest = digestBytes(CLEAN_BYTES);
+    const digest = (await pdqHashOfImage(CLEAN_BYTES)).hash;
     const earlier = build({
       quarantinePath,
       verdictSource: 'in-process-fake',

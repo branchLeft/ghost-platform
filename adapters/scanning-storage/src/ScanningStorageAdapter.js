@@ -10,10 +10,7 @@ const { StorageBase } = require('ghost-storage-base');
 const GhostErrors = require('@tryghost/errors');
 
 const { defineScanningStorageAdapter } = require('./scanning-storage');
-const { createPdqKnownMaterialCheck } = require('./checks');
-const { resolveVerdictSource } = require('./verdict-source');
-const { SafetyPolicy } = require('./policy');
-const { digestBytes } = require('./pdq');
+const { buildScanner, startupProblems } = require('./wiring');
 
 // The wrapped adapter is resolved the same way Ghost's own adapter manager
 // resolves any adapter: by name, from this same directory. Ghost's built
@@ -35,16 +32,15 @@ const Adapter = defineScanningStorageAdapter(StorageBase, { loadWrappedAdapterCl
 // the default is closed and what an operator sees.
 module.exports = class ScanningStorageAdapter extends Adapter {
   constructor(config = {}) {
-    const { verdictClient, refuseUploadsReason } = resolveVerdictSource(config);
     super({
       ...config,
-      checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })],
-      policy: new SafetyPolicy(),
-      computeDigest: digestBytes,
-      refuseUploadsReason,
+      ...buildScanner(config),
       holdRetryMs: config.holdRetryMs ? Number(config.holdRetryMs) : undefined,
       holdMaxRetryMs: config.holdMaxRetryMs ? Number(config.holdMaxRetryMs) : undefined,
       holdMaxFailures: config.holdMaxFailures ? Number(config.holdMaxFailures) : undefined,
     });
+    for (const line of startupProblems()) {
+      this.logger.error(line);
+    }
   }
 };

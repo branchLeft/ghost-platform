@@ -1,0 +1,29 @@
+{
+  "contentSafety": {
+    "repository": "branchLeft/content-safety",
+    "commit": "48a1e79e810e361c1b04e7a0322f44372b833c9f",
+    "file": "src/pdq-hash.ts"
+  },
+  "sharp": "0.35.3",
+  "hashes": {
+    "bridge-1-original.jpg": "2PjwzsD0qE8GNwIqJ49n8LNuLtWWYh4dM+YznE6cmyI=",
+    "bridge-2-rotate-90.jpg": "MKEe/XHIP0KAE9SND//8UuNODjWtqVap0pYFIVqp5a8=",
+    "bridge-3-rotate-180.jpg": "La3aZLGhQuPTQiCYV9qJXuY7jH/CN7S3ZrMZNj+JMYg=",
+    "bridge-4-rotate-270.jpg": "pfCkVySJlejJBlwnWqpU0LYbpL34/PgDh8Mvi1v8TwU=",
+    "bridge-5-flipx.jpg": "2PgPM+D0F7ION/XNAo+YD7Nu0SqWYsHiMuZMY06cZN0=",
+    "bridge-6-flipy.jpg": "Daklm7Gh9RpTYld1UtoypeY7c4DCd0tIZrNGyRuJznc=",
+    "bridge-7-flip-plus-1.jpg": "8KHhAlPMwL2QUwtyD/8DjeNO8eitqalW1pZ63l6pGlA=",
+    "bridge-8-flip-minus-1.jpg": "afBaqKSbahfBRoLaWqqrB7YbW0Dw/Af8h8PBdBv8sPo=",
+    "q0003.jpg": "VKn3wyHRRDxDulZuIdShOYmjVT8UcmEcu8X9pZ4Dtnc=",
+    "q0122.jpg": "z7IAnd0hxtqwBGp3RbWYR1eopFNbM3euolkdMrM/+UA=",
+    "q0291.jpg": "oP6U8eXMHMjdhVlISY3JJD98onM28DbX8hK3S8EDyac=",
+    "q2821.jpg": "sVAjH/rkcQ/89PGLtXSxCaV28Uu4VDGJ+HQyifF0sQk=",
+    "shrink-a-little.jpg": "2PjwzsD0qE8GNwIqJ49n8LNuLtWWYh4dM+YznE6cmyI=",
+    "shrink-a-lot.jpg": "0PjxzMD0qE0KNwo6Io9n8LNuLtW2Yj4dM+YznE6cmyI=",
+    "small.jpg": "AAcAHwA/AD8AfwD/AP8A/wH/Af8B/wP/A/8D/wP/A/8=",
+    "square-128x128.jpg": "2Pjx7sD0qE8ONwIqB49j8LNuLtWWYh4dM+YjnE6cmyI=",
+    "wee.jpg": "YidAH2Af9MyvzJ+tSw2V03Gi63JloyhSNNIoypTe6y0=",
+    "clean.png": "Vk7cwtgEjZoJbju2qg7p+rIZqZcKs1w3N4bD+b/ABYU=",
+    "bad.png": "vbsofY2rKl/G/ABdXaIgXXcC14D/gNcoKnNXAi5YVao="
+  }
+}

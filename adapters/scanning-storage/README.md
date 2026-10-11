@@ -86,9 +86,9 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__wrappedConfig__*` | Passed straight through to the wrapped adapter's own constructor (e.g. `storage__images__wrappedConfig__bucket` for `S3Storage`). `LocalImagesStorage`/`LocalMediaStorage`/`LocalFilesStorage` ignore it; they always self-configure from Ghost's own `getContentPath`. |
 | `storage__images__quarantinePath` | Where a refused upload's bytes are written, named by digest. Always local disk, regardless of which adapter is wrapped -- quarantine is never the served location. |
 | `storage__images__verdictSource` | `in-process-fake` selects the in-process fake verdict client, which answers no-known-match for everything it was not seeded to refuse, so it scans nothing. For demo, dev and test paths only. Unset, empty or any other value means no verdict source: every upload is refused. Matched exactly. |
-| `storage__images__refuse` | A JSON object of `digest -> {classification, matchType}`, seeding the in-process fake verdict client. Empty or unset refuses nothing. Has no effect without `verdictSource=in-process-fake`. |
-| `storage__images__unavailable` | A JSON array of digests the fake verdict client answers `'unavailable'` for, until told otherwise -- proves the hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. Has no effect without `verdictSource=in-process-fake`. |
-| `storage__images__resolvePath` | A directory the fake verdict client polls for `<digest>.json` files, letting an image-test driver in a separate process "deliver" a verdict for a held digest by writing one. Never used outside the image-test harness, and needs `verdictSource=in-process-fake`. |
+| `storage__images__refuse` | A JSON object of `verdict key -> {classification, matchType}` (the key is a PDQ hash, see "The verdict key is a PDQ hash"), seeding the in-process fake verdict client. Empty or unset refuses nothing. Has no effect without `verdictSource=in-process-fake`. |
+| `storage__images__unavailable` | A JSON array of verdict keys the fake verdict client answers `'unavailable'` for, until told otherwise -- proves the hold branch, with no real channel to simulate an outage or a timeout through. Empty or unset holds nothing. Has no effect without `verdictSource=in-process-fake`. |
+| `storage__images__resolvePath` | A directory the fake verdict client polls for `<key>.json` files (the key in URL-safe base64 without padding), letting an image-test driver in a separate process "deliver" a verdict for a held upload by writing one. Never used outside the image-test harness, and needs `verdictSource=in-process-fake`. |
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
 | `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
@@ -109,10 +109,47 @@ The adapter runs only the checks whose `blocking` is `true`, on `save()` and
 `saveRaw()`. An advisory check (`blocking: false`) is filtered out before it
 is ever invoked by this adapter -- it can never acquire the power to refuse
 a customer's upload by construction. `PdqKnownMaterialCheck` (`src/checks.js`)
-ships `blocking: true`; its hash primitive is injected (`src/pdq.js`'s
-`digestBytes`, a SHA-256 stand-in -- PDQ itself is incidental to this design
-and proving near-duplicate matching is the verdict channel's job, not this
-decorator's).
+ships `blocking: true`; its two hash primitives are injected, and
+`src/wiring.js` is the one place they are chosen: `digestBytes` (SHA-256,
+the content digest that names files) and `pdqHashOfImage` (the PDQ
+perceptual hash the verdict client is asked about). See the next section.
+
+### The verdict key is a PDQ hash
+
+Two different things name an upload, and they are never confused.
+
+- **The content digest** (SHA-256, hex) names the exact bytes: the
+  quarantine file, its `.refused.json` record and `.holds.json` sidecar, and
+  the check that bytes read back are the bytes written. A verdict's
+  `evidence` is always this digest, whatever the verdict client echoes.
+- **The verdict key** (a PDQ hash, the canonical base64 of 32 bytes) is what
+  the verdict client is asked about, and so what `storage__images__refuse`
+  and `storage__images__unavailable` are keyed by. A resized or recompressed
+  copy of a picture has a different digest and a nearby key; that is the
+  point. A key is never used as a file name.
+
+`src/pdq-hash.js` is a JavaScript port of the reference implementation's
+pixel-to-hash stage (facebook/ThreatExchange, `pdq/`, BSD; its licence is
+`src/THIRD-PARTY-LICENSE-ThreatExchange-PDQ.txt`, shipped beside it, and a
+test fails if it is altered or missing). `src/pdq.js` decodes the image with
+`sharp`, which is a dependency of Ghost itself and so is resolved from
+Ghost's own tree inside the image; it is a dev dependency here, never
+bundled. The decoder is loaded on first use: if it were missing, every upload
+would have no hash and be held, with `PDQ_DECODER_UNAVAILABLE` logged once at
+start-up, rather than stopping Ghost from starting.
+
+What yields **no hash** is never allowed on that basis (the check answers
+`unavailable`, which the policy holds, and the verdict client is not asked):
+empty or non-image bytes, anything that is not JPEG, PNG, WebP, GIF, TIFF or
+AVIF/HEIF (so SVG and ICO), a side under 5 pixels, bytes over 64 MiB, a
+picture over 100 megapixels. What the decorator then does for video, audio
+and arbitrary files is the open product decision, not made here.
+
+What is hashed: the stored pixels. EXIF orientation is not applied and
+transparency is dropped, as the reference's own decoder does. Anything with a
+side over 512 pixels is first shrunk to 512 x 512, as the reference does.
+Correctness is measured against the reference, not asserted: the test data
+and its recorded hashes are in `test/fixtures/pdq-reference/README.txt`.
 
 ### No verdict source
 

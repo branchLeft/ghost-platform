@@ -9,7 +9,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,7 +25,8 @@ import {
 } from '../helpers/docker-ghost.mjs';
 
 const require = createRequire(import.meta.url);
-const { tinyPng } = require('../helpers/recording-s3-double.cjs');
+const { patternedPng } = require('../helpers/patterned-png.cjs');
+const { resolveFileStem } = require('../../src/verdict-client.js');
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, '..', 'fixtures');
@@ -74,17 +74,16 @@ const SCENARIOS = {
     'PutObject',
   ],
   'hold release (saveRaw from the scanning decorator)': ['PutObject'],
-  'admin media inliner (saveRaw)': ['HeadObject', 'PutObject'],
-  'oEmbed thumbnail and icon (saveRaw)': ['PutObject'],
+  // The site's own favicon is an .ico, which is not a picture the perceptual
+  // hash is defined for: it is held, so the inliner and the bookmark card get
+  // as far as asking for a free name and no further.
+  'admin media inliner (saveRaw)': ['HeadObject'],
+  'oEmbed thumbnail and icon (saveRaw)': [],
   'same-name media thumbnail (delete becomes an overwrite)': ['HeadObject', 'PutObject'],
 };
 
 const MULTIPART_THRESHOLD = 5 * 1024 * 1024;
 const BUCKET = 'recording-double';
-
-function sha256Hex(buffer) {
-  return crypto.createHash('sha256').update(buffer).digest('hex');
-}
 
 function shapesOf(list) {
   return [...new Set(list.map((r) => r.shape))].sort();
@@ -114,7 +113,12 @@ function featureEnv(feature, wrapped, double, extra = {}) {
 describe('the storage request contract, against the real Ghost image', () => {
   const network = uniqueName('contract-net');
   const resolveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'storage-contract-resolve-'));
-  const heldPng = tinyPng(77);
+  const held = patternedPng(77);
+  const heldPng = held.png;
+  // Large enough to be a multipart upload. Pictures are hashed, so the
+  // multipart scenarios upload pictures: bytes that are not one are held.
+  const bigPng = patternedPng(5, { width: 1800, height: 1200, block: 1 }).png;
+  const bigPngAborted = patternedPng(6, { width: 1800, height: 1200, block: 1 }).png;
   const clean = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
   let double;
   let ghost;
@@ -139,7 +143,7 @@ describe('the storage request contract, against the real Ghost image', () => {
       IMAGE,
       {
         ...featureEnv('images', 'content/images', double, {
-          storage__images__unavailable: JSON.stringify([sha256Hex(heldPng)]),
+          storage__images__unavailable: JSON.stringify([held.key]),
           storage__images__resolvePath: '/var/lib/ghost/content/verdict-resolve',
           storage__images__holdRetryMs: '1000',
         }),
@@ -192,12 +196,12 @@ describe('the storage request contract, against the real Ghost image', () => {
     const list = await scenario(
       name,
       async () => {
-        res = await ghost.upload('files/upload/', [
+        res = await ghost.upload('images/upload/', [
           {
             field: 'file',
-            bytes: Buffer.alloc(MULTIPART_THRESHOLD + 1024, 7),
-            type: 'application/pdf',
-            filename: 'multipart.pdf',
+            bytes: bigPng,
+            type: 'image/png',
+            filename: 'multipart.png',
           },
         ]);
       },
@@ -219,12 +223,12 @@ describe('the storage request contract, against the real Ghost image', () => {
       const list = await scenario(
         name,
         async () => {
-          await ghost.upload('files/upload/', [
+          await ghost.upload('images/upload/', [
             {
               field: 'file',
-              bytes: Buffer.alloc(MULTIPART_THRESHOLD + 1024, 9),
-              type: 'application/pdf',
-              filename: 'aborted.pdf',
+              bytes: bigPngAborted,
+              type: 'image/png',
+              filename: 'aborted.png',
             },
           ]);
         },
@@ -269,7 +273,7 @@ describe('the storage request contract, against the real Ghost image', () => {
 
     const mark = await double.mark();
     fs.writeFileSync(
-      path.join(resolveDir, `${sha256Hex(heldPng)}.json`),
+      path.join(resolveDir, `${resolveFileStem(held.key)}.json`),
       JSON.stringify({ classification: 'no-known-match' })
     );
     const list = await double.since(mark, { done: (l) => l.some((r) => r.shape === 'PutObject') });
@@ -277,7 +281,7 @@ describe('the storage request contract, against the real Ghost image', () => {
     assert.deepEqual(shapesOf(list), SCENARIOS[name]);
   });
 
-  it('admin media inliner: HEAD for a free name, then PutObject', async () => {
+  it('admin media inliner: HEAD for a free name, then nothing for an icon that is held', async () => {
     const name = 'admin media inliner (saveRaw)';
     const post = await ghost.json('POST', 'posts/', {
       posts: [{ title: 'INLINE_POST', status: 'draft', feature_image: `${SITE_URL}/favicon.ico` }],
@@ -289,7 +293,7 @@ describe('the storage request contract, against the real Ghost image', () => {
       async () => {
         res = await ghost.json('POST', 'db/media/inline/', { domains: [SITE_URL] });
       },
-      { done: (l) => l.some((r) => r.shape === 'PutObject') }
+      { done: (l) => l.some((r) => r.shape === 'HeadObject') }
     );
     assert.ok(
       res.status < 300,
@@ -298,7 +302,7 @@ describe('the storage request contract, against the real Ghost image', () => {
     assert.deepEqual(shapesOf(list), SCENARIOS[name]);
   });
 
-  it('oEmbed bookmark: PutObject for the thumbnail and for the icon', async () => {
+  it('oEmbed bookmark: the card is served and the held thumbnail and icon are not written', async () => {
     const name = 'oEmbed thumbnail and icon (saveRaw)';
     // A published post on Ghost's own site: its page carries the thumbnail
     // (og:image) and the icon (the site favicon), both fetched back from the
@@ -315,15 +319,11 @@ describe('the storage request contract, against the real Ghost image', () => {
     });
     assert.equal(post.status, 201, JSON.stringify(post.body));
     let res;
-    const list = await scenario(
-      name,
-      async () => {
-        res = await ghost.get(
-          `oembed/?url=${encodeURIComponent(`${SITE_URL}/oembed-post/`)}&type=bookmark`
-        );
-      },
-      { done: (l) => l.filter((r) => r.shape === 'PutObject').length >= 2 }
-    );
+    const list = await scenario(name, async () => {
+      res = await ghost.get(
+        `oembed/?url=${encodeURIComponent(`${SITE_URL}/oembed-post/`)}&type=bookmark`
+      );
+    });
     assert.equal(
       res.status,
       200,
@@ -332,8 +332,8 @@ describe('the storage request contract, against the real Ghost image', () => {
     assert.deepEqual(shapesOf(list), SCENARIOS[name]);
     assert.equal(
       list.filter((r) => r.shape === 'PutObject').length,
-      2,
-      'one thumbnail and one icon'
+      0,
+      'a favicon.ico is held, so neither the thumbnail nor the icon is written'
     );
   });
 
