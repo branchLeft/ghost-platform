@@ -226,6 +226,25 @@ class GhostContainer {
     return { status: res.status, body };
   }
 
+  // As the Ghost user, so a seeded directory is owned like Ghost's own.
+  execAsGhost(...args) {
+    const res = spawnSync('docker', ['exec', '-u', 'node', this.name, ...args], {
+      encoding: 'utf8',
+    });
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  }
+
+  // Every file of an installed theme as `<sha256>  <path>`, sorted: names and
+  // contents in one comparable value. Empty when the directory is missing.
+  themeFiles(themeName) {
+    const res = this.execAsGhost(
+      'sh',
+      '-c',
+      `cd /var/lib/ghost/content/themes/${themeName} && find . -type f -exec sha256sum {} + | sort -k2`
+    );
+    return res.status === 0 ? res.stdout.trim().split('\n').filter(Boolean) : [];
+  }
+
   // Ghost's theme upload: a zip, written by Ghost's own theme storage rather
   // than through any storage adapter.
   async uploadTheme(cookie, zipBytes, filename) {
@@ -1207,6 +1226,126 @@ describe('a theme upload, against a real Ghost', () => {
           200,
           'the clean theme image must be served from the active theme'
         );
+      } finally {
+        ghost.stop();
+      }
+    }
+  );
+
+  // Ghost moves an existing theme aside to a backup before it saves the new
+  // one, and its own restore is not awaited and races the backup's removal.
+  // A refused re-upload therefore must not reach that path at all: each of
+  // these repeats it, because the damage was intermittent (2 in 10), and
+  // compares every file's name and hash with what was installed.
+  const REUPLOADS = 12;
+
+  function assertIntact(ghost, before, attempt) {
+    const after = ghost.themeFiles(THEME_NAME);
+    assert.deepEqual(
+      after,
+      before,
+      `the installed theme changed after refused re-upload ${attempt}`
+    );
+    const leftovers = ghost
+      .ls('/var/lib/ghost/content/themes')
+      .filter((name) => name.startsWith(`${THEME_NAME}_`));
+    assert.deepEqual(
+      leftovers,
+      [],
+      `a backup directory was left behind after re-upload ${attempt}`
+    );
+  }
+
+  it(
+    'leaves an installed theme untouched, file for file, when a re-upload of its name is refused',
+    { timeout: 180_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
+      const badDigest = sha256Hex(badBytes);
+      const ghost = await GhostContainer.start(
+        decoratorEnv({
+          storage__images__verdictSource: 'in-process-fake',
+          storage__images__refuse: JSON.stringify({
+            [badDigest]: { classification: 'harmful-abusive-material', matchType: 'exact' },
+          }),
+          storage__media__verdictSource: 'in-process-fake',
+          storage__files__verdictSource: 'in-process-fake',
+        })
+      );
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        const installed = await ghost.uploadTheme(
+          cookie,
+          buildThemeZip({
+            'assets/images/logo.png': cleanBytes,
+            'assets/css/screen.css': 'body{margin:0}',
+            'partials/card.hbs': '{{title}}',
+            'partials/footer.hbs': 'PLACEHOLDER_FOOTER',
+          }),
+          `${THEME_NAME}.zip`
+        );
+        assert.equal(installed.status, 200, JSON.stringify(installed.body));
+        const before = ghost.themeFiles(THEME_NAME);
+        assert.ok(before.length >= 8, `the installed theme must have files to lose: ${before}`);
+
+        const refusedZip = buildThemeZip({ 'assets/images/banner.png': badBytes });
+        for (let attempt = 1; attempt <= REUPLOADS; attempt += 1) {
+          const refused = await ghost.uploadTheme(cookie, refusedZip, `${THEME_NAME}.zip`);
+          assert.equal(refused.status, 415, JSON.stringify(refused.body));
+          assertIntact(ghost, before, attempt);
+        }
+
+        // Control: the same name still takes a clean replacement.
+        const replaced = await ghost.uploadTheme(
+          cookie,
+          buildThemeZip({ 'assets/images/other.png': cleanBytes }),
+          `${THEME_NAME}.zip`
+        );
+        assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+        const after = ghost.themeFiles(THEME_NAME);
+        assert.ok(after.some((line) => line.endsWith('assets/images/other.png')));
+        assert.ok(!after.some((line) => line.endsWith('partials/card.hbs')));
+      } finally {
+        ghost.stop();
+      }
+    }
+  );
+
+  it(
+    'leaves an installed theme untouched when every re-upload is declined for want of a verdict source',
+    { timeout: 180_000 },
+    async () => {
+      const cleanBytes = fs.readFileSync(path.join(FIXTURES, 'clean.png'));
+      const ghost = await GhostContainer.start(decoratorEnv());
+
+      try {
+        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        await ghost.setupOwner();
+        const cookie = await ghost.login();
+
+        // No theme can be uploaded here, which is the point: one that was
+        // there before is what the declined re-uploads must leave alone.
+        const seeded = ghost.execAsGhost(
+          'cp',
+          '-a',
+          '/var/lib/ghost/content/themes/source',
+          `/var/lib/ghost/content/themes/${THEME_NAME}`
+        );
+        assert.equal(seeded.status, 0, seeded.stderr);
+        const before = ghost.themeFiles(THEME_NAME);
+        assert.ok(before.length >= 8, `the seeded theme must have files to lose: ${before}`);
+
+        const zip = buildThemeZip({ 'assets/images/logo.png': cleanBytes });
+        for (let attempt = 1; attempt <= REUPLOADS; attempt += 1) {
+          const declined = await ghost.uploadTheme(cookie, zip, `${THEME_NAME}.zip`);
+          assert.equal(declined.status, 503, JSON.stringify(declined.body));
+          assertIntact(ghost, before, attempt);
+        }
       } finally {
         ghost.stop();
       }

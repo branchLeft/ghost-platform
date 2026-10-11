@@ -2,6 +2,10 @@
 
 const { buildScannerUnconfiguredError, buildUncheckableError } = require('./refusal-error');
 
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Ghost writes an uploaded theme with its own ThemeStorage, constructed
 // directly and never resolved through the adapter manager, so the scanning
 // decorator cannot be configured onto it. The core overlay in
@@ -44,10 +48,46 @@ function defineGatedThemeStorage(UpstreamThemeStorage, deps) {
   }
 
   return class GatedThemeStorage extends UpstreamThemeStorage {
+    constructor(...args) {
+      super(...args);
+      // Theme name -> the backup name Ghost asked it be moved to.
+      this.deferredMoves = new Map();
+    }
+
+    // Ghost moves an existing theme aside to `<name>_<24 hex>` BEFORE it
+    // calls save(), and its own restore after a failed save is not awaited
+    // and races the removal of that backup: a refused upload could destroy
+    // the theme it was replacing. Nothing hands this class the extracted
+    // tree before that move, so the move itself waits here until save() has
+    // screened the tree, and a refusal never moves anything. Any other
+    // rename (Ghost's restore among them) is passed straight through.
+    async rename(srcName, destName) {
+      const isBackupMove =
+        typeof srcName === 'string' &&
+        typeof destName === 'string' &&
+        new RegExp(`^${escapeRegExp(srcName)}_[0-9a-f]{24}$`).test(destName);
+      if (!isBackupMove) {
+        return super.rename(srcName, destName);
+      }
+      this.deferredMoves.set(srcName, destName);
+      return undefined;
+    }
+
     // `file.path` is the directory gscan extracted the zip into, the whole
     // tree that is about to be copied into the served themes directory.
     async save(file, targetDir) {
-      await scanningAdapter().screenTree(file && file.path);
+      const name = file && file.name;
+      try {
+        await scanningAdapter().screenTree(file && file.path);
+      } catch (err) {
+        this.deferredMoves.delete(name);
+        throw err;
+      }
+      const backupName = this.deferredMoves.get(name);
+      this.deferredMoves.delete(name);
+      if (backupName !== undefined && (await this.exists(name))) {
+        await super.rename(name, backupName);
+      }
       return super.save(file, targetDir);
     }
 

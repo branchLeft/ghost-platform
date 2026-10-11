@@ -78,13 +78,28 @@ meets the same verdict source, refusal records and policy as an editor upload:
 | A file matches | Typed 415, that file sealed in quarantine exactly as an upload's is. |
 | A verdict is `unavailable` | Typed 503, nothing kept. A tree cannot be accepted and held: its files are served from where they land. |
 | A link, device or socket in the tree | Typed 415: a copy would follow it, so the checks cannot vouch for it. |
+| More than `treeMaxEntries` files and directories | Typed 415, before anything is read or asked. |
+| The verdicts take longer than `treeDeadlineMs` in all | Typed 503, nothing kept. |
 | `storage:images` is not this decorator | Typed 503: unchecked is declined. |
 | Every file is clean | Saved by Ghost as before. |
 
 Every file in the tree is checked, not only those named like images: the
-served directory returns almost any extension, so the name proves nothing. A refused theme
-leaves any theme it would have replaced in place (Ghost restores its backup).
+served directory returns almost any extension, so the name proves nothing.
 `saveRaw()` on the theme storage is declined outright; no Ghost code calls it.
+
+**A refused re-upload leaves the installed theme alone, and that is the
+shim's doing, not Ghost's.** Ghost's `setFromZip` moves an existing theme
+aside to a backup directory *before* it calls `save()`, and its own restore
+after a failed save is not awaited, so the `finally` that removes the backup
+races it, so any failed save can leave the theme it was replacing with files
+missing (a gate that refused inside `save()` did exactly that, intermittently,
+in a replay against a real Ghost). Nothing hands the
+shim the extracted tree before that move, so the shim holds the move itself:
+`rename(<name>, <name>_<24 hex>)` is recorded, not performed, and `save()`
+performs it only after the tree has been screened clean. A refusal moves
+nothing, so there is nothing to restore. Any other rename, Ghost's restore
+among them, passes straight through. A failure after a clean screen (the copy
+itself failing) is stock Ghost's behaviour, unchanged.
 
 What is still outside the gate: themes already on a tenant's disk before this
 landed, which keep being served as stored; and the bundled default themes
@@ -141,6 +156,8 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
 | `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
+| `storage__images__treeMaxEntries` | The most files and directories a theme tree may hold before it is declined unread (see "Theme uploads"). Read from the images feature only. Defaults to 5000. |
+| `storage__images__treeDeadlineMs` | How long a theme tree's verdicts may take in all before the tree is declined. Checked between files, so it overruns by at most one verdict timeout. Read from the images feature only. Defaults to 30000. |
 
 The same keys apply under `storage__media__*` and `storage__files__*`.
 Wrapping `media`/`files` today only makes sense once a `Check` exists for

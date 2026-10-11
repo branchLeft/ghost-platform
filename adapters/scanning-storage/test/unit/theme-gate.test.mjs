@@ -38,11 +38,26 @@ class FakeUpstreamThemeStorage {
 
   constructor() {
     this.saved = [];
+    this.renames = [];
+    this.events = [];
+    this.present = new Set(['mine']);
     FakeUpstreamThemeStorage.instances.push(this);
+  }
+
+  async exists(name) {
+    return this.present.has(name);
+  }
+
+  async rename(src, dest) {
+    this.renames.push([src, dest]);
+    this.events.push(`rename:${src}>${dest}`);
+    this.present.delete(src);
+    this.present.add(dest);
   }
 
   async save(file, targetDir) {
     this.saved.push({ file, targetDir });
+    this.events.push(`save:${file.name}`);
     return `/content/themes/${file.name}`;
   }
 
@@ -96,13 +111,21 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
-function decorator({ refuse = new Map(), unavailable = [], refuseUploadsReason } = {}) {
+function decorator({
+  refuse = new Map(),
+  unavailable = [],
+  refuseUploadsReason,
+  verdictClient = new FakeVerdictClient({ refuse, unavailable }),
+  treeMaxEntries,
+  treeDeadlineMs,
+} = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
     loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
     GhostErrors,
   });
-  const verdictClient = new FakeVerdictClient({ refuse, unavailable });
   return new Adapter({
+    treeMaxEntries,
+    treeDeadlineMs,
     wraps: 'FakeAdapter',
     wrappedConfig: { storagePath: 'wrapped' },
     quarantinePath: path.join(tmpDir, 'quarantine'),
@@ -194,6 +217,56 @@ describe('the decorator screens a directory tree on the same terms as an upload'
     expect(err.statusCode).toBe(415);
   });
 
+  it('declines a tree with more entries than the cap, before reading or asking anything', async () => {
+    const asked = [];
+    const verdictClient = {
+      getVerdict: async (digest) => {
+        asked.push(digest);
+        return { classification: 'no-known-match', source: 'test' };
+      },
+    };
+    // The beforeEach tree has 2 directories and 2 files: 4 entries.
+    const capped = decorator({ verdictClient, treeMaxEntries: 3 });
+    const err = await capped.screenTree(themeDir).catch((e) => e);
+    expect(err).toBeInstanceOf(GhostErrors.UnsupportedMediaTypeError);
+    expect(err.statusCode).toBe(415);
+    expect(asked).toEqual([]);
+
+    const roomy = decorator({ verdictClient, treeMaxEntries: 4 });
+    await expect(roomy.screenTree(themeDir)).resolves.toBeUndefined();
+    expect(asked).toHaveLength(2);
+  });
+
+  it('declines a tree whose verdicts run past the whole-tree deadline, and keeps nothing', async () => {
+    for (let i = 0; i < 12; i += 1) {
+      await fs.writeFile(path.join(themeDir, `extra-${i}.txt`), `extra-${i}`);
+    }
+    const slow = {
+      getVerdict: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return { classification: 'no-known-match', source: 'slow' };
+      },
+    };
+    const adapter = decorator({ verdictClient: slow, treeDeadlineMs: 60 });
+    const err = await adapter.screenTree(themeDir).catch((e) => e);
+    expect(err).toBeInstanceOf(GhostErrors.MaintenanceError);
+    expect(err.statusCode).toBe(503);
+    expect(err.message).toMatch(/not answered/);
+    expect(await quarantineListing()).toEqual([]);
+
+    const patient = decorator({ verdictClient: slow, treeDeadlineMs: 60_000 });
+    await expect(patient.screenTree(themeDir)).resolves.toBeUndefined();
+  });
+
+  it('reads both bounds from config, falling back to its defaults for anything unusable', () => {
+    expect(decorator().treeMaxEntries).toBe(5000);
+    expect(decorator().treeDeadlineMs).toBe(30000);
+    expect(decorator({ treeMaxEntries: '7', treeDeadlineMs: '900' }).treeMaxEntries).toBe(7);
+    expect(decorator({ treeMaxEntries: '7', treeDeadlineMs: '900' }).treeDeadlineMs).toBe(900);
+    expect(decorator({ treeMaxEntries: 'many', treeDeadlineMs: -1 }).treeMaxEntries).toBe(5000);
+    expect(decorator({ treeMaxEntries: 'many', treeDeadlineMs: -1 }).treeDeadlineMs).toBe(30000);
+  });
+
   it.each([undefined, null, '', 42])('declines a root that is not a path (%j)', async (root) => {
     const adapter = decorator();
     await expect(adapter.screenTree(root)).rejects.toMatchObject({ statusCode: 415 });
@@ -278,6 +351,118 @@ describe('the gated theme storage', () => {
     });
     await storage.save({ name: 'mine', path: themeDir });
     expect(asked).toEqual(['storage:images']);
+  });
+});
+
+// Ghost moves an existing theme to `<name>_<24 hex>` before it calls save(),
+// and its own restore of a refused one is not awaited, so a refusal must find
+// nothing moved. These replay Ghost's call order against a recording upstream.
+describe('a refused re-upload of an installed theme name', () => {
+  const BACKUP = 'mine_6acae7f2a177e600014e46bf';
+
+  function gated(getAdapter) {
+    const Gated = defineGatedThemeStorage(FakeUpstreamThemeStorage, {
+      adapterManager: { getAdapter },
+      GhostErrors,
+    });
+    return new Gated();
+  }
+
+  const refusing = () => ({
+    screenTree: async () => {
+      throw new GhostErrors.UnsupportedMediaTypeError({ message: 'no' });
+    },
+  });
+  const clean = () => ({ screenTree: async () => {} });
+
+  it('never moves the installed theme: the backup move is held and then dropped', async () => {
+    const storage = gated(refusing);
+    await storage.rename('mine', BACKUP);
+    await expect(storage.save({ name: 'mine', path: themeDir })).rejects.toMatchObject({
+      statusCode: 415,
+    });
+    const upstream = FakeUpstreamThemeStorage.instances[0];
+    expect(upstream.renames).toEqual([]);
+    expect(upstream.saved).toEqual([]);
+    expect(upstream.present.has('mine')).toBe(true);
+    expect(storage.deferredMoves.size).toBe(0);
+  });
+
+  it('declines the same way for every attempt, never touching the theme', async () => {
+    const storage = gated(() => {
+      throw new Error('not configured');
+    });
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      await storage.rename('mine', BACKUP);
+      await expect(storage.save({ name: 'mine', path: themeDir })).rejects.toMatchObject({
+        statusCode: 503,
+      });
+    }
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toEqual([]);
+  });
+
+  it('on a clean verdict moves the old theme aside first and then saves, in that order', async () => {
+    const storage = gated(clean);
+    await storage.rename('mine', BACKUP);
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toEqual([]);
+    await storage.save({ name: 'mine', path: themeDir });
+    expect(FakeUpstreamThemeStorage.instances[0].events).toEqual([
+      `rename:mine>${BACKUP}`,
+      'save:mine',
+    ]);
+  });
+
+  it("passes Ghost's restore (backup back to the name) straight through", async () => {
+    const storage = gated(clean);
+    await storage.rename(BACKUP, 'mine');
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toEqual([[BACKUP, 'mine']]);
+  });
+
+  it.each([
+    ['a destination that is not a backup name', 'mine', 'elsewhere'],
+    ['a destination with a short suffix', 'mine', 'mine_abc'],
+    ['a destination with a non-hex suffix', 'mine', `mine_${'g'.repeat(24)}`],
+    ["another theme's backup name", 'mine', 'other_6acae7f2a177e600014e46bf'],
+  ])('passes %s straight through', async (_label, src, dest) => {
+    const storage = gated(clean);
+    await storage.rename(src, dest);
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toEqual([[src, dest]]);
+  });
+
+  it('treats a name with regular-expression characters as a plain name', async () => {
+    const storage = gated(clean);
+    await storage.rename('a.b', 'aXb_6acae7f2a177e600014e46bf');
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toHaveLength(1);
+    await storage.rename('a.b', 'a.b_6acae7f2a177e600014e46bf');
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toHaveLength(1);
+  });
+
+  it('does not move a theme that is no longer there when a held move is finally taken', async () => {
+    const storage = gated(clean);
+    FakeUpstreamThemeStorage.instances[0].present.clear();
+    await storage.rename('mine', BACKUP);
+    await storage.save({ name: 'mine', path: themeDir });
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toEqual([]);
+    expect(FakeUpstreamThemeStorage.instances[0].saved).toHaveLength(1);
+  });
+
+  it('forgets a held move once it is taken, so a later save moves nothing', async () => {
+    const storage = gated(clean);
+    await storage.rename('mine', BACKUP);
+    await storage.save({ name: 'mine', path: themeDir });
+    FakeUpstreamThemeStorage.instances[0].present.add('mine');
+    await storage.save({ name: 'mine', path: themeDir });
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toHaveLength(1);
+  });
+
+  it('declines through a real decorator with no verdict source and moves nothing', async () => {
+    const closed = decorator({ refuseUploadsReason: 'SCANNER_UNCONFIGURED' });
+    const storage = gated(() => closed);
+    await storage.rename('mine', BACKUP);
+    await expect(storage.save({ name: 'mine', path: themeDir })).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(FakeUpstreamThemeStorage.instances[0].renames).toEqual([]);
   });
 });
 
