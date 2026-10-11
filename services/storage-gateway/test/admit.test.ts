@@ -7,6 +7,7 @@ import type {
 } from '../src/contracts.js';
 import { admit, type RefusalLogEntry } from '../src/admit.js';
 import { refusal } from '../src/refusal.js';
+import { createInMemoryUploadBindings, type UploadBindings } from '../src/uploads.js';
 
 const BUCKET = 'shard-one-bucket';
 const FOLDER = 'k7f3q9x2m1';
@@ -199,5 +200,79 @@ describe('admit', () => {
     });
     expect(result).toEqual({ ok: false, refusal: refusal('internal-error') });
     expect(logged).toHaveLength(1);
+  });
+});
+
+describe('admit: upload id binding', () => {
+  const KEY = `${FOLDER}/a.png`;
+  const binding = { keyId: KEY_ID, bucket: BUCKET, key: KEY };
+  const part = request('PUT', `/${BUCKET}/${KEY}?partNumber=1&uploadId=U1`);
+  const complete = request('POST', `/${BUCKET}/${KEY}?uploadId=U1`);
+  const abort = request('DELETE', `/${BUCKET}/${KEY}?uploadId=U1`);
+  const create = request('POST', `/${BUCKET}/${KEY}?uploads`);
+
+  function withUploads(uploads: UploadBindings) {
+    const { deps, logged } = setup({});
+    return { deps: { ...deps, uploads }, logged };
+  }
+
+  it.each([
+    ['UploadPart', part],
+    ['CompleteMultipartUpload', complete],
+    ['AbortMultipartUpload', abort],
+  ])('admits %s for the upload id bound to this tenant and object', async (_op, req) => {
+    const uploads = createInMemoryUploadBindings();
+    uploads.bind('U1', binding);
+    const { deps } = withUploads(uploads);
+    await expect(admit(req, deps)).resolves.toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ['UploadPart', part],
+    ['CompleteMultipartUpload', complete],
+    ['AbortMultipartUpload', abort],
+  ])('refuses %s for an upload id nobody bound', async (op, req) => {
+    const { deps, logged } = withUploads(createInMemoryUploadBindings());
+    const result = await admit(req, deps);
+    expect(result).toEqual({ ok: false, refusal: refusal('upload-not-bound') });
+    expect(logged[0]).toMatchObject({ code: 'upload-not-bound', keyId: KEY_ID, operation: op });
+  });
+
+  it('refuses an upload id bound to another tenant or to another object', async () => {
+    const uploads = createInMemoryUploadBindings();
+    uploads.bind('U1', { ...binding, keyId: 'someone-else' });
+    uploads.bind('U2', { ...binding, key: `${FOLDER}/other.png` });
+    const { deps } = withUploads(uploads);
+    await expect(admit(part, deps)).resolves.toMatchObject({ ok: false });
+    const onU2 = request('PUT', `/${BUCKET}/${KEY}?partNumber=1&uploadId=U2`);
+    await expect(admit(onU2, deps)).resolves.toMatchObject({
+      ok: false,
+      refusal: { code: 'upload-not-bound' },
+    });
+  });
+
+  it('does not ask for a binding on a create, a plain put or a read', async () => {
+    const { deps } = withUploads(createInMemoryUploadBindings());
+    await expect(admit(create, deps)).resolves.toMatchObject({ ok: true });
+    await expect(admit(goodRequest, deps)).resolves.toMatchObject({ ok: true });
+  });
+
+  it('fails closed when the binding table throws', async () => {
+    const { deps } = withUploads({
+      bind: () => true,
+      release: () => {},
+      isBound: () => {
+        throw new Error('boom');
+      },
+    });
+    await expect(admit(part, deps)).resolves.toMatchObject({
+      ok: false,
+      refusal: { code: 'internal-error' },
+    });
+  });
+
+  it('enforces nothing when no binding table is given', async () => {
+    const { deps } = setup({});
+    await expect(admit(part, deps)).resolves.toMatchObject({ ok: true });
   });
 });

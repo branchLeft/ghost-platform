@@ -74,6 +74,25 @@ previous version of the object stays recoverable through bucket versioning. A re
 replacement leaves the old thumbnail in place. The write goes through
 `saveRaw`, which sets no content type on object storage.
 
+## Upload names
+
+`save()` stores every new upload as `<stem>-<22 random base32 characters>.<ext>`
+(110 bits from `crypto.randomBytes`), so a URL cannot be derived from a
+neighbouring one. The stem is cut to keep the stored name within 240 bytes.
+Two small tables, per adapter instance, make Ghost's own flows still find what
+they wrote. Neither survives a restart, and each is bounded and expires.
+
+| Table | Remembers | Why | Window | Bound |
+| --- | --- | --- | --- | --- |
+| stored names (`storedNames`) | the basename each upload was stored under | Ghost saves an image's original as `<stored basename>_o<ext>` and looks for exactly that; an upload named so keeps that name, once | 60 s | 1000, oldest dropped |
+| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000, then `getUniqueFileName()` throws |
+
+An upload whose own name ends `_o` and follows no remembered name is an
+ordinary upload and gets its own component. A refused upload leaves no entry
+in either table. When a verdict source is missing, nothing is promised. An
+original that arrives after its window, after a restart, or after eviction is
+stored under a fresh component: Ghost then falls back to the processed image.
+
 ## Configuration
 
 Ghost config, normally set as environment variables on the tenant's
@@ -154,10 +173,16 @@ no masking left to lose: `exists()`/`read()`/`serve()` are pure delegation
 again, and withholding is simply that nothing has been written yet.
 
 The target path is computed by this decorator itself on both backends, named
-by digest rather than through the wrapped adapter's own `getUniqueFileName`
--- two different held uploads sharing an original filename would otherwise
-both compute as free (nothing has been written for either) and collide on
-promotion. The URL differs only in shape: a bucket config (`S3Storage`'s
+`<digest>-<random>.<ext>` rather than through the wrapped adapter's own
+`getUniqueFileName` -- two different held uploads sharing an original
+filename would otherwise both compute as free (nothing has been written for
+either) and collide on promotion. The digest is known to anyone holding the
+same bytes, so the 22-character random component (the same one a proceeding
+upload gets) is what keeps the key unguessable; the hold sidecar records the
+whole path, so a restart promotes to the key the author was given. An
+original Ghost saves afterwards as `<that name>_o<ext>` keeps exactly that
+name, so Ghost's lookup finds it. The URL
+differs only in shape: a bucket config (`S3Storage`'s
 shape) builds an absolute, CDN-hosted URL from `wrappedConfig.cdnUrl` (or
 `.endpoint` + `.bucket`); anything else builds a local, site-relative one.
 
@@ -322,7 +347,9 @@ resize is disabled in the test containers (`imageOptimization__resize=false`)
 so each upload hashes exactly one set of bytes, rather than the processed
 and untouched-original copies Ghost otherwise saves separately with
 different bytes -- a real property of Ghost's own upload path, not of this
-decorator, and orthogonal to what these tests prove.
+decorator, and orthogonal to what these tests prove. One test turns it on to
+prove exactly that path: the original lands at `<stored name>_o<ext>`, where
+Ghost's lookup asks for it.
 
 The same file also proves the hold branch on both tiers, with the
 verdict client configured to never answer (`storage__images__unavailable`):
