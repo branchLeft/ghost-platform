@@ -885,6 +885,57 @@ describe('a newer grant that cannot be linked back is never dropped', () => {
     ]);
   });
 
+  it('a closing record that cannot be written leaves the claim, so the next run closes it', async () => {
+    const deps = wallClockDeps();
+    await holdNewerGrant(deps);
+    const due = afterDeadline();
+    linkFails('EIO');
+    const realAppend = fs.appendFileSync;
+    vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+    });
+    const first = await expire(due);
+    expect(first.closed).toEqual([]);
+    expect(first.failed).toHaveLength(1);
+    expect(claims(deps)).toHaveLength(1);
+    vi.spyOn(fs, 'appendFileSync').mockImplementation(realAppend);
+    const second = await expire(due);
+    vi.restoreAllMocks();
+    expect(second.closed).toHaveLength(1);
+    expect(claims(deps)).toEqual([]);
+    expect(closedRecords()).toHaveLength(1);
+  });
+
+  it('does not close a live grant when the claim was reclaimed by another run (EEXIST)', async () => {
+    const deps = wallClockDeps();
+    await holdNewerGrant(deps);
+    const later = afterGrace();
+    vi.spyOn(fs, 'linkSync').mockImplementation((from) => {
+      fs.rmSync(from);
+      throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+    });
+    const { closed, failed } = await expire(later);
+    vi.restoreAllMocks();
+    expect(closed).toEqual([]);
+    expect(failed).toEqual([]);
+    expect(later.calls).not.toContain('revoke');
+  });
+
+  it('does not close a live grant when the claim vanished after a failed link back', async () => {
+    const deps = wallClockDeps();
+    await holdNewerGrant(deps);
+    const later = afterGrace();
+    vi.spyOn(fs, 'linkSync').mockImplementation((from) => {
+      fs.rmSync(from);
+      throw Object.assign(new Error('io'), { code: 'EIO' });
+    });
+    const { closed, failed } = await expire(later);
+    vi.restoreAllMocks();
+    expect(closed).toEqual([]);
+    expect(failed).toEqual([]);
+    expect(later.calls).not.toContain('revoke');
+  });
+
   it('expire does not close a held grant before its deadline', async () => {
     const deps = wallClockDeps();
     await holdNewerGrant(deps);

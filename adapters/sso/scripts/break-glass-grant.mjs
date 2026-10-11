@@ -369,6 +369,7 @@ function restoreClaim(claim, file, tenant, claimName, log) {
     return 'restored';
   } catch (error) {
     if (error.code === 'EEXIST' && sameFile(claim, file)) return 'present';
+    if (error.code === 'EEXIST' && !entryExists(claim)) return 'gone';
     if (error.code === 'ENOENT' && !entryExists(claim)) return 'gone';
     const held = new StateHeldError(tenant, claimName, error.code ?? error.message);
     log(held.message);
@@ -425,7 +426,8 @@ async function reclaimClaims(deps) {
     } catch (error) {
       failure = error;
     }
-    if (failure?.code === 'ENOENT') continue; // reclaimed since the listing
+    // Another run reclaimed it since the listing: a vanished claim is never read as due.
+    if (failure && (failure.code === 'ENOENT' || !entryExists(claim))) continue;
     if (failure instanceof StateHeldError && claimIsDue(deps, name)) {
       try {
         // The closing record comes first; revoke then drops this claim.
