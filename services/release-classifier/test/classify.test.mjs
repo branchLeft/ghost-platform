@@ -563,22 +563,23 @@ test('class 6: a comment marker inside a string cannot hide code', () => {
 
 test('an empty file, a comment-only file and a syntax-error file route consent', () => {
   const forms = {
-    empty: ['', 'unclassified:unlexable'],
-    'whitespace only': ['  \n\n', 'unclassified:unlexable'],
-    'comment only': ['// nothing\n/* here */\n', 'unclassified:unlexable'],
+    empty: ['', 'unclassified:empty'],
+    'whitespace only': ['  \n\n', 'unclassified:empty'],
+    'comment only': ['// nothing\n/* here */\n', 'unclassified:empty'],
     'syntax error': [`${HEAD}module.exports = addSetting({ key: ;`, 'unclassified:syntax'],
     'unterminated string': [
       `${HEAD}module.exports = addSetting({ key: 'a });`,
-      'unclassified:unlexable',
+      'unclassified:syntax',
     ],
-    'unterminated block comment': [`${HEAD}/* open`, 'unclassified:unlexable'],
-    'unterminated template': [`${HEAD}const t = \`abc`, 'unclassified:unlexable'],
-    hashbang: [`#!/usr/bin/env node\n${REVERSIBLE}`, 'unclassified:unlexable'],
+    'unterminated block comment': [`${HEAD}/* open`, 'unclassified:syntax'],
+    'unterminated template': [`${HEAD}const t = \`abc`, 'unclassified:syntax'],
   };
   for (const [label, [src, reason]] of Object.entries(forms)) {
     const r = assertConsent(src, label);
     assert.deepEqual(reasons(r), [reason], label);
   }
+  // The lexer refused a hashbang; Node accepts one, so it is read as the code it is.
+  assertFast(`#!/usr/bin/env node\n${REVERSIBLE}`, 'hashbang');
 });
 
 test('a module that re-exports a sibling is unclassified, not passed through', () => {
@@ -653,7 +654,8 @@ test('adversarial: template literal and regex shapes are lexed, not guessed', ()
   const ambiguous = assertConsent(
     `${HEAD}const x = {}\n/re/g.test('a');\nmodule.exports = addSetting({ key: 'a' });`
   );
-  assert.deepEqual(reasons(ambiguous), ['unclassified:unlexable']);
+  // No line break ends the statement here, so JavaScript reads a division.
+  assert.deepEqual(reasons(ambiguous), ['unclassified:re']);
 });
 
 test('adversarial: file-shape noise does not change the route', () => {
@@ -673,7 +675,7 @@ test('adversarial: file-shape noise does not change the route', () => {
 
 test('adversarial: a unicode-escaped identifier is unlexable', () => {
   const r = assertConsent(`${HEAD}module.exports = utils.\\u0072emoveSetting('k');`);
-  assert.deepEqual(reasons(r), ['unclassified:unlexable']);
+  assert.deepEqual(reasons(r), ['unclassified:non-ascii-identifier']);
 });
 
 test('adversarial: getters, classes, generators, async and await', () => {

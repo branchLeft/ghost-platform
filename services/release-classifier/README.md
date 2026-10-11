@@ -1,5 +1,16 @@
 # release-classifier
 
+> **PROTOTYPE, not for merge.** This branch replaces the hand-written lexer
+> (`src/lex.mjs`) and the token-stream grammar with [acorn](https://github.com/acornjs/acorn),
+> a maintained JavaScript parser the repo's lockfile already carries (through
+> ESLint). The class lists, the allowlist, the rules and the verdict logic are
+> the previous design's. Every file is parsed once into a syntax tree; the class
+> hits, the no-op rollback check and the fast-path grammar are walks over that
+> tree, in `src/classify.mjs` and `src/grammar.mjs`. A file acorn cannot parse
+> routes consent as `unclassified:syntax` (or `unparsable`, when Node accepts
+> it). The section "How a file is read" below describes the replaced lexer: read
+> it as history. There is no pull request for this branch.
+
 Static reversibility check for a Ghost upgrade range. It reads the migration
 source shipped at the target release tag and decides whether the range may
 take the automatic fast path or must go to the tenant-consent path. Nothing

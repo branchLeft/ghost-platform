@@ -1,11 +1,11 @@
 // Static reversibility classifier for a Ghost upgrade range. Reads migration
 // source text only; nothing is executed. Rules and their rationale: ../README.md.
 //
-// Each file is lexed once; every rule reads its tokens, never the raw text.
+// Each file is parsed once by acorn; every rule reads its syntax tree, never the
+// raw text.
 
 import { compileFunction } from 'node:vm';
-import { checkGrammar, FLAG_KEY } from './grammar.mjs';
-import { lex, Unlexable } from './lex.mjs';
+import { checkGrammar, FLAG_KEY, parseModule } from './grammar.mjs';
 
 export { KNOWN_CALLS } from './allowlist.mjs';
 
@@ -14,7 +14,7 @@ export { KNOWN_CALLS } from './allowlist.mjs';
 export const CONTRACTING_ROUTE = 'consent';
 export const CONSTRAINT_ROUTE = 'consent';
 
-// A name decides its class wherever it occurs as an identifier token: called,
+// A name decides its class wherever it occurs as an identifier node: called,
 // passed by reference, aliased, destructured, optionally chained or used as a
 // property name. A string that spells one is data, not a hit.
 
@@ -25,7 +25,7 @@ export const IRREVERSIBLE_RULES = Object.freeze([
 ]);
 
 // Hard consent: data or structure removed with no way back from the migration.
-// Also by token elsewhere: `del` not called with no argument, and `truncate`.
+// Also by node elsewhere: `del` not called with no argument, and `truncate`.
 export const DESTRUCTIVE_RULES = Object.freeze([
   { name: 'delete-table', names: ['deleteTable'] },
   { name: 'recreate-table', names: ['recreateTable'] },
@@ -36,7 +36,7 @@ export const DESTRUCTIVE_RULES = Object.freeze([
 
 // Lossy, routed by CONTRACTING_ROUTE: drops a column, deletes rows, or removes
 // permission rows. A rollback re-adds a column empty, and a delete loses rows.
-// `data-delete`, a `.del()` with no argument, is read from the tokens directly.
+// `data-delete`, a `.del()` with no argument, is read from the call directly.
 export const CONTRACTING_RULES = Object.freeze([
   { name: 'drop-column', names: ['dropColumn', 'dropColumns', 'createDropColumnMigration'] },
   {
@@ -100,12 +100,67 @@ for (const [cls, rules] of [
   }
 }
 
-const isPunct = (tok, v) => tok !== undefined && tok.t === 'punct' && tok.v === v;
-const TEMPLATE_PARTS = new Set(['tmpl', 'tmplHead', 'tmplMid', 'tmplTail']);
+// A migration is a few KB. Anything far past that is not read.
+const MAX_SOURCE = 1_000_000;
 
-// Class hits, read from tokens. Comments are never tokens, and a string is read
-// only as raw SQL or as the path of a `require`.
-function scanHits(tokens) {
+// A no-op rollback in a file that also calls something destructive-looking. The
+// rollback then restores nothing, so the removal cannot be undone.
+const DESTRUCTIVE_WORD = /^(?:drop|delete|del|remove|truncate|discard|wipe|purge|recreate)\w*$/i;
+
+// Visits every node of the tree, parent before child.
+function walk(node, visit) {
+  visit(node);
+  for (const value of Object.values(node)) {
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (child !== null && typeof child === 'object' && typeof child.type === 'string') {
+        walk(child, visit);
+      }
+    }
+  }
+}
+
+const isFunction = (n) =>
+  n?.type === 'FunctionDeclaration' ||
+  n?.type === 'FunctionExpression' ||
+  n?.type === 'ArrowFunctionExpression';
+const destructiveName = (id) => id?.type === 'Identifier' && DESTRUCTIVE_WORD.test(id.name);
+const isNamed = (n, name) => n?.type === 'Identifier' && n.name === name;
+const isString = (n) => n?.type === 'Literal' && typeof n.value === 'string';
+const isLogCall = (s) =>
+  s.type === 'ExpressionStatement' &&
+  s.expression.type === 'CallExpression' &&
+  !s.expression.optional &&
+  s.expression.callee.type === 'MemberExpression' &&
+  !s.expression.callee.computed &&
+  isNamed(s.expression.callee.object, 'logging') &&
+  s.expression.callee.property.type === 'Identifier';
+
+// The function a `down` is bound to, as a declaration, a key, a variable or an
+// assignment, else null.
+function downFunction(n) {
+  switch (n.type) {
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+      return isNamed(n.id, 'down') ? n : null;
+    case 'Property':
+      return !n.computed && isNamed(n.key, 'down') ? n.value : null;
+    case 'VariableDeclarator':
+      return isNamed(n.id, 'down') ? n.init : null;
+    case 'AssignmentExpression': {
+      const l = n.left;
+      const named =
+        isNamed(l, 'down') ||
+        (l.type === 'MemberExpression' && !l.computed && isNamed(l.property, 'down'));
+      return n.operator === '=' && named ? n.right : null;
+    }
+    default:
+      return null;
+  }
+}
+
+// Class hits and the no-op rollback, read from the tree. Comments are never
+// nodes, and a string is read only as raw SQL or as the path of a `require`.
+function scan(program, source) {
   const found = {
     irreversible: new Set(),
     destructive: new Set(),
@@ -115,95 +170,102 @@ function scanHits(tokens) {
   const record = (name) => {
     for (const { cls, rule } of NAME_TABLE.get(name) ?? []) found[cls].add(rule);
   };
-  tokens.forEach((tok, i) => {
-    const prev = tokens[i - 1];
-    if (tok.t === 'id') {
-      record(tok.v);
-      if (tok.v.toLowerCase() === 'truncate') found.destructive.add('raw-truncate');
-      if (tok.v === 'del') {
-        const bare =
-          isPunct(prev, '.') && isPunct(tokens[i + 1], '(') && isPunct(tokens[i + 2], ')');
-        if (bare) found.contracting.add('data-delete');
-        else found.destructive.add('del-with-argument');
+  const bareDel = new Set();
+  let foreign = false;
+  let destructiveCall = false;
+  let emptyDown = false;
+
+  walk(program, (n) => {
+    switch (n.type) {
+      case 'Identifier':
+        record(n.name);
+        if (n.name.toLowerCase() === 'truncate') found.destructive.add('raw-truncate');
+        if (n.name === 'del') {
+          if (bareDel.has(n)) found.contracting.add('data-delete');
+          else found.destructive.add('del-with-argument');
+        }
+        // A non-ASCII or escaped identifier is not read: the file routes consent.
+        if (/[^\x00-\x7f]|\\/.test(source.slice(n.start, n.end))) foreign = true;
+        break;
+      case 'UnaryExpression':
+        if (n.operator === 'delete') {
+          record('delete');
+          if (n.argument.type === 'ParenthesizedExpression') destructiveCall = true;
+        }
+        break;
+      case 'FunctionDeclaration':
+      case 'FunctionExpression':
+        if (destructiveName(n.id)) destructiveCall = true;
+        break;
+      case 'Literal':
+        if (typeof n.value === 'string') {
+          for (const r of SQL_RULES) if (r.pattern.test(n.value)) found.destructive.add(r.name);
+        }
+        break;
+      case 'TemplateElement': {
+        const text = n.value.cooked ?? n.value.raw;
+        for (const r of SQL_RULES) if (r.pattern.test(text)) found.destructive.add(r.name);
+        break;
       }
-    }
-    if ((tok.t === 'id' || tok.t === 'str') && tok.v === FLAG_KEY) {
-      const colon = isPunct(tokens[i + 1], ']') ? tokens[i + 2] : tokens[i + 1];
-      const after = isPunct(tokens[i + 1], ']') ? tokens[i + 3] : tokens[i + 2];
-      if (isPunct(colon, ':') && after?.t === 'id' && after.v === 'true') {
-        found.irreversible.add('flag');
+      case 'Property': {
+        const k = n.key;
+        if (n.method && !n.computed && destructiveName(k)) destructiveCall = true;
+        const named = isNamed(k, FLAG_KEY) || (isString(k) && k.value === FLAG_KEY);
+        if (named && n.value.type === 'Literal' && n.value.value === true) {
+          found.irreversible.add('flag');
+        }
+        break;
       }
+      case 'CallExpression':
+      case 'NewExpression': {
+        const c = n.callee;
+        const prop = c.type === 'MemberExpression' && !c.computed ? c.property : c;
+        if (destructiveName(prop)) destructiveCall = true;
+        if (
+          c.type === 'MemberExpression' &&
+          !c.computed &&
+          !c.optional &&
+          !n.optional &&
+          isNamed(c.property, 'del') &&
+          n.arguments.length === 0
+        ) {
+          bareDel.add(c.property);
+        }
+        // A helper name spelled as the argument of `require` is a module, not data.
+        if (
+          n.type === 'CallExpression' &&
+          !n.optional &&
+          isNamed(prop, 'require') &&
+          n.arguments.length === 1 &&
+          isString(n.arguments[0])
+        ) {
+          record(n.arguments[0].value);
+        }
+        break;
+      }
+      default:
+        break;
     }
-    if (tok.t === 'str' || TEMPLATE_PARTS.has(tok.t)) {
-      for (const r of SQL_RULES) if (r.pattern.test(tok.v)) found.destructive.add(r.name);
-    }
-    // A helper name spelled as the argument of `require` is a module, not data.
-    if (
-      tok.t === 'str' &&
-      isPunct(prev, '(') &&
-      tokens[i - 2]?.t === 'id' &&
-      tokens[i - 2].v === 'require' &&
-      isPunct(tokens[i + 1], ')')
-    ) {
-      record(tok.v);
+    const fn = downFunction(n);
+    if (isFunction(fn) && !fn.generator && fn.body.type === 'BlockStatement') {
+      if (fn.body.body.every((s) => s.type === 'EmptyStatement' || isLogCall(s))) emptyDown = true;
     }
   });
-  return found;
-}
-
-// A no-op rollback in a file that also calls something destructive-looking. The
-// rollback then restores nothing, so the removal cannot be undone.
-const DESTRUCTIVE_WORD = /^(?:drop|delete|del|remove|truncate|discard|wipe|purge|recreate)\w*$/i;
-
-function skipBalanced(tokens, i) {
-  let depth = 0;
-  for (let k = i; k < tokens.length; k += 1) {
-    if (isPunct(tokens[k], '(')) depth += 1;
-    else if (isPunct(tokens[k], ')')) {
-      depth -= 1;
-      if (depth === 0) return k + 1;
-    }
-  }
-  return tokens.length;
-}
-
-// After a `down` token: is what follows a function whose body is empty, or only
-// logging calls?
-function emptyRollbackAt(tokens, from) {
-  let j = from + 1;
-  if (isPunct(tokens[j], ':') || isPunct(tokens[j], '=')) j += 1;
-  if (tokens[j]?.t === 'id' && tokens[j].v === 'async') j += 1;
-  if (tokens[j]?.t === 'id' && tokens[j].v === 'function') j += 1;
-  if (!isPunct(tokens[j], '(')) return false;
-  j = skipBalanced(tokens, j);
-  if (isPunct(tokens[j], '=>')) j += 1;
-  if (!isPunct(tokens[j], '{')) return false;
-  j += 1;
-  for (;;) {
-    if (isPunct(tokens[j], '}')) return true;
-    const isLogCall =
-      tokens[j]?.t === 'id' &&
-      tokens[j].v === 'logging' &&
-      isPunct(tokens[j + 1], '.') &&
-      tokens[j + 2]?.t === 'id' &&
-      isPunct(tokens[j + 3], '(');
-    if (!isLogCall) return false;
-    j = skipBalanced(tokens, j + 3);
-    if (isPunct(tokens[j], ';')) j += 1;
-  }
-}
-
-function noopRollback(tokens) {
-  const looksDestructive = tokens.some(
-    (t, i) => t.t === 'id' && DESTRUCTIVE_WORD.test(t.v) && isPunct(tokens[i + 1], '(')
-  );
-  if (!looksDestructive) return false;
-  return tokens.some((t, i) => t.t === 'id' && t.v === 'down' && emptyRollbackAt(tokens, i));
+  return { found, foreign, noopRollback: destructiveCall && emptyDown };
 }
 
 // Wrapper parameters of a CommonJS module, so the source compiles as Node would
 // load it. Compiling runs nothing.
 const MODULE_PARAMS = ['exports', 'require', 'module', '__filename', '__dirname'];
+
+function compiles(source) {
+  try {
+    compileFunction(source, MODULE_PARAMS);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Classifies one migration source and never executes it. Returns the rule names
 // hit per class, and the reasons the fast-path grammar refused it.
@@ -215,33 +277,49 @@ export function classifySource(source) {
     constraint: [],
     unclassified: [],
   };
-  let tokens;
+  const text = String(source);
+  if (text.length > MAX_SOURCE) {
+    out.unclassified.push('too-large');
+    return out;
+  }
+  let program;
   try {
-    tokens = lex(source);
+    program = parseModule(text);
   } catch (err) {
-    if (!(err instanceof Unlexable)) throw err;
-    out.unclassified.push(err.reason);
+    if (err instanceof RangeError) out.unclassified.push('nesting');
+    else if (err instanceof SyntaxError)
+      out.unclassified.push(compiles(text) ? 'unparsable' : 'syntax');
+    else throw err;
     return out;
   }
   // An empty or comment-only file proves nothing, so it is not fast-path.
-  if (tokens.length === 0) {
-    out.unclassified.push('unlexable');
+  if (program.body.length === 0) {
+    out.unclassified.push('empty');
     return out;
   }
 
-  const hits = scanHits(tokens);
-  for (const cls of ['irreversible', 'destructive', 'contracting', 'constraint']) {
-    out[cls].push(...hits[cls]);
-  }
-  if (noopRollback(tokens)) out.destructive.push('noop-rollback');
-
+  let result;
   try {
-    compileFunction(String(source), MODULE_PARAMS);
-  } catch {
+    result = scan(program, text);
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    out.unclassified.push('nesting');
+    return out;
+  }
+  if (result.foreign) {
+    out.unclassified.push('non-ascii-identifier');
+    return out;
+  }
+  for (const cls of ['irreversible', 'destructive', 'contracting', 'constraint']) {
+    out[cls].push(...result.found[cls]);
+  }
+  if (result.noopRollback) out.destructive.push('noop-rollback');
+
+  if (!compiles(text)) {
     out.unclassified.push('syntax');
     return out;
   }
-  const refused = checkGrammar(tokens);
+  const refused = checkGrammar(program);
   if (refused !== null) out.unclassified.push(refused);
   return out;
 }

@@ -3,9 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
-  "description": "Static reversibility classifier for a Ghost upgrade range, read from migration source without running Ghost. Zero dependencies.",
+  "description": "PROTOTYPE, not for merge. Static reversibility classifier for a Ghost upgrade range, read from migration source without running Ghost. Parses with acorn.",
   "type": "module",
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "acorn": "8.18.0"
   }
 }
