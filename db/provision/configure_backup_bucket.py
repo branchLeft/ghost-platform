@@ -21,15 +21,19 @@ S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 # -- see MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS below for `media/`.
 NONCURRENT_VERSION_EXPIRATION_DAYS = 35
 
-# The put-only worker key cannot delete, so `prune_backups.py` no longer runs
-# against this bucket and the bucket's own lifecycle has to age out the current
-# versions of `dumps/` and `binlogs/`. Same figure as that script's
-# RETENTION_DAYS (a 7-day point-in-time window plus 3 days of margin). Unlike
-# the script, a lifecycle rule cannot keep the newest object whatever its age.
-# The bucket is versioned, so an expired current dump stays as a noncurrent
-# version for NONCURRENT_VERSION_EXPIRATION_DAYS and is restorable; the
-# per-tenant dump freshness alert is the real protection. 0 omits the rule.
+# The figure to pass as --db-expiration-days for a bucket whose writer key is
+# put-only, so `prune_backups.py` cannot run against it and the bucket's own
+# lifecycle has to age out the current versions of `dumps/` and `binlogs/`.
+# Same figure as that script's RETENTION_DAYS (a 7-day point-in-time window
+# plus 3 days of margin). NEVER a default: where the writer can delete, the
+# pruner owns retention, and a lifecycle rule cannot keep the newest object.
+# A versioned bucket keeps an expired current dump restorable as a noncurrent
+# version for NONCURRENT_VERSION_EXPIRATION_DAYS.
 DB_CURRENT_EXPIRATION_DAYS = 10
+
+# What the db prefixes get unless the operator asks for the figure above: no
+# current-version expiry at all, only the noncurrent rule.
+NO_DB_CURRENT_EXPIRY = 0
 
 # The media backup writes each run as a new dated copy and its key cannot
 # delete, so nothing but this bucket's lifecycle ever removes one. A copy
@@ -107,7 +111,7 @@ def versioning_document() -> bytes:
 def lifecycle_document(
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
-    db_expiration_days: int = DB_CURRENT_EXPIRATION_DAYS,
+    db_expiration_days: int = NO_DB_CURRENT_EXPIRY,
     media_expiration_days: int = MEDIA_CURRENT_EXPIRATION_DAYS,
     state_expiration_days: int = STATE_CURRENT_EXPIRATION_DAYS,
     state_noncurrent_days: int = STATE_NONCURRENT_VERSION_EXPIRATION_DAYS,
@@ -470,7 +474,7 @@ def configure_backup_bucket(
     policy_body: bytes,
     noncurrent_days: int = NONCURRENT_VERSION_EXPIRATION_DAYS,
     media_noncurrent_days: int = MEDIA_NONCURRENT_VERSION_EXPIRATION_DAYS,
-    db_expiration_days: int = DB_CURRENT_EXPIRATION_DAYS,
+    db_expiration_days: int = NO_DB_CURRENT_EXPIRY,
     media_expiration_days: int = MEDIA_CURRENT_EXPIRATION_DAYS,
     state_expiration_days: int = STATE_CURRENT_EXPIRATION_DAYS,
     state_noncurrent_days: int = STATE_NONCURRENT_VERSION_EXPIRATION_DAYS,
@@ -539,9 +543,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--db-expiration-days",
         type=int,
-        default=DB_CURRENT_EXPIRATION_DAYS,
-        help="current-version expiry on dumps/ and binlogs/, so a put-only key never has to "
-        "delete; 0 omits it. See DB_CURRENT_EXPIRATION_DAYS",
+        default=NO_DB_CURRENT_EXPIRY,
+        help="current-version expiry on dumps/ and binlogs/, written ONLY when this flag is "
+        "given, for a bucket whose writer key is put-only and so cannot delete. Without it "
+        "only the noncurrent rule is written and the bucket's own pruner keeps retention. "
+        "See DB_CURRENT_EXPIRATION_DAYS for the decided figure",
     )
     parser.add_argument(
         "--media-expiration-days",
@@ -652,12 +658,20 @@ def main(argv: list[str]) -> int:
         if args.media_expiration_days
         else "NO current-version expiry (media/ grows without bound until one is applied)"
     )
+    db_expiry = (
+        f"and {args.db_expiration_days}-day current-version expiry set on dumps/ and binlogs/"
+        if args.db_expiration_days
+        else "set on dumps/ and binlogs/, NO current-version expiry on dumps/ and binlogs/ "
+        "(not asked for: pass --db-expiration-days to write one)"
+    )
     print(
         f"configure_backup_bucket: versioning enabled, {args.noncurrent_days}-day noncurrent "
-        f"expiry and {args.db_expiration_days}-day current-version expiry set on dumps/ and binlogs/, {media_expiry} and {args.media_noncurrent_days}-day noncurrent expiry "
+        f"expiry {db_expiry}, {media_expiry} and {args.media_noncurrent_days}-day noncurrent expiry "
         f"set on media/, {args.media_noncurrent_days}-day noncurrent expiry set on fence-probe/, and the fence applied "
         f"on {args.bucket}, then re-applied to prove the "
-        f"bucket is still administrable. The fence is not proven to FENCE anything until "
+        f"bucket is still administrable. A re-run replaces the whole lifecycle, so omitting "
+        f"--db-expiration-days on a bucket that already carries the 10-day rule drops it. "
+        f"The fence is not proven to FENCE anything until "
         f"verify-bucket-fence.py passes -- run it now, from this terminal. The media/ expiry is "
         f"not proven to actually expire anything until "
         f"probe-media-lifecycle-expiration.py's prefix-split check comes back PASS -- run its "

@@ -112,11 +112,20 @@ can ever apply to the same key. No rule carries
 and `binlogs/` rules, `media_expiration_days` adds one to `media/`'s rule, and
 `state_expiration_days` adds one to `state/`'s, for the same reason: the
 backup worker's key is put-only, so nothing
-else can prune them. A rule cannot
+else can prune them. The db figure is OPT-IN: it defaults to 0 (omitted) and
+is written only by `--db-expiration-days N`, because a bucket whose writer key
+can delete is pruned by `prune_backups.py` instead, and a lifecycle rule cannot
+keep the newest dump. The put-only bucket passes `DB_CURRENT_EXPIRATION_DAYS`
+explicitly. The script's last line says which one was written. A rule cannot
 keep the newest object, but the bucket is versioned, so an expired current
 object stays as a noncurrent version for the noncurrent window and is
 restorable. The dump freshness alert is the real protection. Delete markers
 left by the expiry are not cleaned up on these four prefixes.
+
+A re-run replaces the WHOLE lifecycle configuration, not just the fields it is
+given: omitting `--db-expiration-days` on a bucket that already carries the
+10-day rule drops it. Pass the figure again on every run against a put-only
+bucket.
 
 ## Accounting for an exemption by a Deny
 
