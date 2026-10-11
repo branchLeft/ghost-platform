@@ -116,6 +116,24 @@ describe('the entry file picks its verdict source', () => {
     expect(logged.at(-1)).toContain('UPLOAD_REFUSED_SCANNER_UNCONFIGURED');
   });
 
+  it('counts each refusal in the process registry the metrics export reads', async () => {
+    const { getProcessMetrics } = require('../../src/metrics.js');
+    const registry = getProcessMetrics();
+    const before = registry.refused.get('unconfigured');
+    const adapter = build();
+    await expect(adapter.saveRaw(CLEAN_BYTES, '2026/10/clean.png')).rejects.toBeDefined();
+    expect(registry.refused.get('unconfigured')).toBe(before + 1);
+  });
+
+  it('exports the metrics textfile only when its path and tenant are both set', async () => {
+    const file = path.join(tmpDir, 'metrics', 'scanner.prom');
+    build();
+    await expect(fs.stat(file)).rejects.toBeDefined();
+    build({ metricsTextfilePath: file, metricsTenant: 'TENANT_PLACEHOLDER' });
+    const text = await fs.readFile(file, 'utf8');
+    expect(text).toContain('scanning_storage_unconfigured_instances{tenant="TENANT_PLACEHOLDER"}');
+  });
+
   it('a refusal for an unconfigured scanner seals nothing: the same bytes upload once a source exists', async () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
     const unconfigured = build({ quarantinePath });
