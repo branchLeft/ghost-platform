@@ -1,8 +1,8 @@
 name: Release classifier CI
 
 # Tests the Ghost release reversibility classifier
-# (services/release-classifier/). Zero dependencies, so there is no install
-# step and no registry access.
+# (services/release-classifier/). It installs one exact dependency, acorn, from
+# the public npm registry with its lockfile, and runs no install scripts.
 
 on:
   push:
@@ -38,6 +38,9 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: services/release-classifier/.nvmrc
+
+      - name: Install
+        run: npm ci --ignore-scripts
 
       - name: Test
         run: npm test

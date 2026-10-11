@@ -16,25 +16,31 @@ inclusive.
 
 ## How a file is read
 
-Each file is lexed once, by `src/lex.mjs`: a single pass that understands line and
-block comments, single- and double-quoted strings, template literals with nested
-`${}`, regex literals, numbers, identifiers and punctuators (`?.`, `&&=`, `||=`,
-`??=`, `...` among them). Every rule below reads the tokens, never the raw text.
-So a comment marker inside a string, a quote inside a regex, or a call inside a
-template substitution cannot hide code.
+Each file is parsed once by [acorn](https://github.com/acornjs/acorn), a maintained
+JavaScript parser pinned to an exact version in `package.json` and `package-lock.json`.
+Acorn builds a syntax tree: comments, strings, template literals, regex literals,
+numbers and punctuators are read as the language reads them. Every rule below walks
+that tree, never the raw text. So a comment marker inside a string, a quote inside a
+regex, or a call inside a template substitution cannot hide code.
 
-The lexer fails closed. A file routes consent as `unclassified:unlexable` when it has:
+The reader fails closed. A file routes consent, with the reason below, when:
 
-- an unterminated string, comment, template or regex;
-- a character outside the token set, a hashbang, or a backslash outside a string;
-- a `/` it cannot read as division or as a regex (after `}`, `++` or `--`);
-- no tokens at all (an empty file, or one that is only comments or whitespace);
-- a size over one million characters.
+- acorn refuses it (`unclassified:syntax`; `unparsable` when Node's own loader
+  accepts a form acorn does not yet know);
+- it has no statements at all, an empty file or one that is only comments
+  (`unclassified:empty`);
+- its nesting is deeper than the walk allows (`unclassified:nesting`);
+- it is over one million characters (`unclassified:too-large`).
 
-An identifier with any character outside ASCII routes consent as
-`unclassified:non-ascii-identifier`, as does a unicode-escaped identifier. A file
-that does not compile as a CommonJS module routes consent as `unclassified:syntax`
-(`vm.compileFunction` parses it; nothing runs).
+An identifier with any character outside ASCII, or one written with a unicode escape,
+routes consent as `unclassified:non-ascii-identifier`. A file that does not compile
+as a CommonJS module routes consent as `unclassified:syntax` (`vm.compileFunction`
+parses it; nothing runs).
+
+The check on the tree is the same whatever the reader: the class hits are read from
+identifier nodes, the no-op rollback check from the `down` function's body, and the
+fast-path grammar from every node it visits, refusing the first node it does not
+accept. A string that spells a name is a string node, so it is data.
 
 ## Routes
 
@@ -71,8 +77,8 @@ data, not a hit, except as the argument of `require`.
 5. **Constraint** (routed by `CONSTRAINT_ROUTE`, pinned to `consent`). Schema-only
    constraint drops: `dropIndex`, `dropUnique`, `dropForeign`. Kept apart from data loss.
 6. **Unclassified** (always consent). The fast-path grammar below refused the file.
-   The reason is `unclassified:<token>`, the first token the grammar did not accept.
-   Only the first is reported; the classes above are all reported.
+   The reason is `unclassified:<name>`, the first node or token the grammar did not
+   accept. Only the first is reported; the classes above are all reported.
 
 ## Fast-path grammar
 
@@ -105,8 +111,8 @@ A file is fast-path only if it is made entirely of these forms, checked by
   parameter. A local helper is therefore fast-path when handed to `map` or a wrapper
   by reference, and consent when called by name.
 
-Member calls and bare calls are told apart by the token before the identifier
-(`.`), never by name. `KNOWN_CALLS` holds each allowed name with its reason; the
+Member calls and bare calls are told apart by the tree (a `MemberExpression` callee
+or an `Identifier` callee), never by name. `KNOWN_CALLS` holds each allowed name with its reason; the
 lists `MODULE_EXPORTS`, `METHODS` and `HANDLES` in `src/allowlist.mjs` say in which
 form a name may be called, and a test pins that each is a `KNOWN_CALLS` key.
 `KNOWN_MODULES` lists the modules a file may require. `update` and `raw` are
