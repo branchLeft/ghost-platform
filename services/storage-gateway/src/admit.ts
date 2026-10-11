@@ -8,6 +8,7 @@ import type {
 } from './contracts.js';
 import { refusal } from './refusal.js';
 import { guardTenant, routeRequest, type RoutedRequest } from './router.js';
+import type { UploadBindings } from './uploads.js';
 
 /** One logged refusal. Carries no object key, bucket or request target. */
 export interface RefusalLogEntry {
@@ -31,6 +32,13 @@ export interface AdmitDependencies {
   readonly verifier: SignatureVerifier;
   readonly credentials: CredentialStore;
   readonly logger: GatewayLogger;
+  /**
+   * When given, a part, complete or abort call must name an upload id that
+   * was bound to this tenant and object when the upload was created; the
+   * gateway then does not depend on the upstream store to refuse another
+   * tenant's upload id. Absent, no binding is enforced.
+   */
+  readonly uploads?: UploadBindings;
 }
 
 export type AdmitResult =
@@ -101,5 +109,31 @@ export async function admit(
     return refuse(denied.code, { keyId, folder, operation: routed.route.operation });
   }
 
+  if (deps.uploads !== undefined && isUploadFollowUp(routed.route)) {
+    let bound: boolean;
+    try {
+      bound = deps.uploads.isBound(routed.route.uploadId, {
+        keyId,
+        bucket: routed.route.bucket,
+        key: routed.route.key,
+      });
+    } catch {
+      return refuse('internal-error', { keyId, folder, operation: routed.route.operation });
+    }
+    if (!bound) {
+      return refuse('upload-not-bound', { keyId, folder, operation: routed.route.operation });
+    }
+  }
+
   return { ok: true, route: routed.route, tenant: { keyId, folder, bucket: credential.bucket } };
+}
+
+const UPLOAD_FOLLOW_UPS: ReadonlySet<AllowedOperation> = new Set([
+  'UploadPart',
+  'CompleteMultipartUpload',
+  'AbortMultipartUpload',
+]);
+
+function isUploadFollowUp(route: RoutedRequest): route is RoutedRequest & { uploadId: string } {
+  return UPLOAD_FOLLOW_UPS.has(route.operation) && route.uploadId !== undefined;
 }
