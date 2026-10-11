@@ -31,3 +31,8 @@ vendor/kalotyp/kalotyp.css
 # upstream.
 adapters/sso/ghost-core-overlay/session-from-token.js
 adapters/sso/ghost-core-overlay/session-from-token.upstream.js
+
+# Speckify's output for the broker contract, committed as generated and checked
+# byte for byte by scripts/assert-broker-contract-generated.py -- reformatting
+# it would be reported there as drift.
+services/broker/src/generated/

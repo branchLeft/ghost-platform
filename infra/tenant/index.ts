@@ -57,6 +57,8 @@ export interface GhostTenantArgs {
  * The fields whose change destroys or orphans live tenant data rather than
  * updating it, read by `scripts/assert-no-tenant-deletes.py` out of the
  * component's own preview state. See index.md#ghosttenantidentity.
+ * `maxUserConnections` is not one of them: a raised cap is a safe reapply
+ * (db/provision/provision_tenant_db.md, Overview section).
  */
 export interface GhostTenantIdentity {
   slug: string;
