@@ -42,12 +42,14 @@ The lifecycle rule bounds how long a *noncurrent* version survives --
 this stack otherwise relies on for recovery, without keeping every
 overwritten version forever.
 
-FOUR NON-OVERLAPPING PREFIX RULES, NOT ONE BUCKET-WIDE RULE. This bucket
+FIVE NON-OVERLAPPING PREFIX RULES, NOT ONE BUCKET-WIDE RULE. This bucket
 also holds `infra/provisioning/scripts/media_backup_restore.py`'s
 generation-based media backups, under `media/<tenant>/generations/<run id>/`,
 sharing the bucket with `dump_nightly.py`'s `dumps/<server_uuid>/`,
-`ship_binlogs.py`'s `binlogs/<server_uuid>/` objects, and
-`verify-bucket-fence.py`'s own `fence-probe/` control objects. Every backup
+`ship_binlogs.py`'s `binlogs/<server_uuid>/` objects,
+`verify-bucket-fence.py`'s own `fence-probe/` control objects, and
+`infra/provisioning/scripts/state_copy.py`'s `state/<label>/generations/`
+copies of the two Pulumi state buckets. Every backup
 run adds a new dated generation and deletes nothing (the key is put-only), so
 `media/` is bounded by the bucket itself: a current-version expiry
 (`--media-expiration-days`, default 28, 0 omits it) ages
@@ -56,11 +58,15 @@ default 1) then removes the version the expiry leaves behind. Not a 35-day
 window, which would keep every expired generation of every tenant's media
 billable for five more weeks; `fence-probe/` gets the same short window,
 since its objects are throwaway verification writes with no retention
-argument of their own. The four rules are scoped by `Filter/Prefix`
-so they never overlap: `dumps/` and `binlogs/` keep the original
-`NoncurrentDays=35`. Hetzner's behaviour with OVERLAPPING lifecycle rules is
-unproven -- see `infra/provisioning/scripts/probe-media-lifecycle-expiration.py`'s
-prefix-split mode -- so this is deliberately four prefix-scoped rules, never
+argument of their own. `state/` follows the estate's ~46-day erasure window,
+as `dumps/` does: a current-version expiry of 10 days
+(`--state-expiration-days`) then 35 noncurrent days
+(`--state-noncurrent-days`), 10 + 1 + 35 days in all. The five rules are
+scoped by `Filter/Prefix` so they never overlap: `dumps/` and `binlogs/` keep
+the original `NoncurrentDays=35`. Hetzner's behaviour with OVERLAPPING
+lifecycle rules is unproven -- see
+`infra/provisioning/scripts/probe-media-lifecycle-expiration.py`'s
+prefix-split mode -- so this is deliberately five prefix-scoped rules, never
 one broad rule plus a narrower one layered on top of the same keys, and
 `media/` has ONE rule carrying both its Days expiry and its noncurrent
 expiry. No rule carries `ExpiredObjectDeleteMarker`: it cannot share an
@@ -89,26 +95,28 @@ verifier's own DWELL_SECONDS rather than undercutting it.
 
 ## Lifecycle rules
 
-Four prefix-scoped rules, never one bucket-wide rule -- see the
-module docstring's "FOUR NON-OVERLAPPING PREFIX RULES" section.
+Five prefix-scoped rules, never one bucket-wide rule -- see the
+"FIVE NON-OVERLAPPING PREFIX RULES" section above.
 `noncurrent_days` governs `dumps/` and `binlogs/` (one rule each, so
 each carries its own `<ID>` and can be reasoned about independently even
 though they share a value today); `media_noncurrent_days` governs
 `media/` and `fence-probe/` (also independent rules, sharing one value
-since neither has its own retention argument). `Filter/Prefix` values
+since neither has its own retention argument); `state_noncurrent_days`
+governs `state/`. `Filter/Prefix` values
 that share no common leading substring by construction (`dumps/`,
-`binlogs/`, `media/`, `fence-probe/`), so no two of these four rules can
-ever apply to the same key. No rule carries
+`binlogs/`, `media/`, `fence-probe/`, `state/`), so no two of these five rules
+can ever apply to the same key. No rule carries
 `ExpiredObjectDeleteMarker` -- see the module docstring for why.
 
 `db_expiration_days` adds a current-version `Expiration/Days` to the `dumps/`
-and `binlogs/` rules, and `media_expiration_days` adds one to `media/`'s
-rule, for the same reason: the backup worker's key is put-only, so nothing
+and `binlogs/` rules, `media_expiration_days` adds one to `media/`'s rule, and
+`state_expiration_days` adds one to `state/`'s, for the same reason: the
+backup worker's key is put-only, so nothing
 else can prune them. A rule cannot
 keep the newest object, but the bucket is versioned, so an expired current
 object stays as a noncurrent version for the noncurrent window and is
 restorable. The dump freshness alert is the real protection. Delete markers
-left by the expiry are not cleaned up on these three prefixes.
+left by the expiry are not cleaned up on these four prefixes.
 
 ## Accounting for an exemption by a Deny
 

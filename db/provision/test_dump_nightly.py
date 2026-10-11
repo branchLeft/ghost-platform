@@ -204,6 +204,150 @@ class LockMetricTests(_FakeClientsOnPath):
         dn.record_lock_metrics(metrics_dir=blocker, report=None, aborts=1)
 
 
+class RunStatusTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.dir = os.path.join(tmp.name, "m")
+        self.path = os.path.join(self.dir, dn.STATUS_FILENAME)
+
+    def _text(self):
+        with open(self.path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def _assert_no_raise(self, **kwargs):
+        try:
+            dn.record_run_status(succeeded=True, now=1.0, **kwargs)
+        except Exception as exc:  # the property under test is that nothing escapes
+            self.fail(f"record_run_status raised {exc!r}")
+
+    def test_a_success_publishes_the_status_and_the_time(self):
+        dn.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000.4)
+        text = self._text()
+        self.assertIn("db_nightly_dump_last_run_success 1\n", text)
+        self.assertIn("db_nightly_dump_last_success_timestamp_seconds 1790000000\n", text)
+
+    def test_a_failure_keeps_the_previous_success_time(self):
+        dn.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000)
+        dn.record_run_status(metrics_dir=self.dir, succeeded=False, now=1_790_086_400)
+        text = self._text()
+        self.assertIn("db_nightly_dump_last_run_success 0\n", text)
+        self.assertIn("db_nightly_dump_last_success_timestamp_seconds 1790000000\n", text)
+
+    def test_a_failure_with_no_success_on_record_publishes_no_time(self):
+        dn.record_run_status(metrics_dir=self.dir, succeeded=False, now=1_790_086_400)
+        text = self._text()
+        self.assertIn("db_nightly_dump_last_run_success 0\n", text)
+        self.assertNotIn("last_success_timestamp_seconds", text)
+
+    def test_a_corrupt_previous_file_is_treated_as_no_success(self):
+        os.makedirs(self.dir)
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write("db_nightly_dump_last_success_timestamp_seconds not-a-number\n\x00\x01")
+        dn.record_run_status(metrics_dir=self.dir, succeeded=False, now=1_790_086_400)
+        self.assertNotIn("last_success_timestamp_seconds", self._text())
+
+    def test_no_metrics_dir_writes_nothing(self):
+        for value in (None, ""):
+            dn.record_run_status(metrics_dir=value, succeeded=True, now=1.0)
+        self.assertFalse(os.path.exists(self.dir))
+
+    def test_the_file_is_world_readable_and_leaves_no_temp_file(self):
+        dn.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000)
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o644)
+        self.assertEqual(os.listdir(self.dir), [dn.STATUS_FILENAME])
+
+    def test_a_failed_replace_leaves_the_old_file_whole_and_no_temp_file(self):
+        dn.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_000_000)
+        before = self._text()
+        with mock.patch("dump_nightly.os.replace", side_effect=OSError("disk full")):
+            dn.record_run_status(metrics_dir=self.dir, succeeded=True, now=1_790_086_400)
+        self.assertEqual(self._text(), before)
+        self.assertEqual(os.listdir(self.dir), [dn.STATUS_FILENAME])
+
+    def test_no_failure_to_write_ever_raises(self):
+        blocker = os.path.join(self.tmp, "file")
+        with open(blocker, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        self._assert_no_raise(metrics_dir=blocker)
+        with mock.patch("dump_nightly.tempfile.mkstemp", side_effect=RuntimeError("unexpected")):
+            self._assert_no_raise(metrics_dir=self.dir)
+
+
+class MainStatusTests(unittest.TestCase):
+    ENV = {
+        "DB_DUMP_MYSQL_PWD": "pw",
+        "AGE_RECIPIENT_PUBLIC_KEY": "age1recipient",
+        "DB_BACKUP_BUCKET": "b",
+        "DB_BACKUP_ENDPOINT": "e",
+        "DB_BACKUP_REGION": "r",
+        "AWS_ACCESS_KEY_ID": "AK",
+        "AWS_SECRET_ACCESS_KEY": "SECRET",
+    }
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = os.path.join(tmp.name, "m")
+        self.blocker = os.path.join(tmp.name, "file")
+        with open(self.blocker, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        patcher = mock.patch.dict(os.environ, {**self.ENV, "DB_DUMP_METRICS_DIR": self.dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _status(self):
+        path = os.path.join(self.dir, dn.STATUS_FILENAME)
+        self.assertTrue(os.path.exists(path), "no status file was written")
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_a_stored_dump_publishes_success(self):
+        with mock.patch.object(dn, "run_dump", return_value="dumps/u/db1-x.sql.age"):
+            self.assertEqual(dn.main([]), 0)
+        text = self._status()
+        self.assertIn("db_nightly_dump_last_run_success 1\n", text)
+        self.assertIn("db_nightly_dump_last_success_timestamp_seconds ", text)
+
+    def test_a_failed_dump_publishes_failure_and_still_exits_1(self):
+        with mock.patch.object(dn, "run_dump", side_effect=dn.DumpError("boom")):
+            self.assertEqual(dn.main([]), 1)
+        self.assertIn("db_nightly_dump_last_run_success 0\n", self._status())
+
+    def test_a_missing_setting_publishes_failure(self):
+        del os.environ["DB_BACKUP_BUCKET"]
+        self.assertEqual(dn.main([]), 1)
+        self.assertIn("db_nightly_dump_last_run_success 0\n", self._status())
+
+    def test_an_unexpected_error_publishes_failure_and_still_propagates(self):
+        with mock.patch.object(dn, "run_dump", side_effect=RuntimeError("unexpected")):
+            with self.assertRaises(RuntimeError):
+                dn.main([])
+        self.assertIn("db_nightly_dump_last_run_success 0\n", self._status())
+
+    def test_the_status_is_written_only_after_the_dump_has_returned(self):
+        order = []
+        with mock.patch.object(dn, "run_dump", side_effect=lambda **kw: order.append("dump") or "k"), \
+                mock.patch.object(dn, "record_run_status", side_effect=lambda **kw: order.append("status")):
+            dn.main([])
+        self.assertEqual(order, ["dump", "status"])
+
+    def test_an_unwritable_metrics_dir_never_fails_the_dump(self):
+        os.environ["DB_DUMP_METRICS_DIR"] = self.blocker
+        with mock.patch.object(dn, "run_dump", return_value="dumps/u/db1-x.sql.age"):
+            self.assertEqual(dn.main([]), 0)
+
+    def test_a_broken_writer_never_fails_the_dump(self):
+        with mock.patch.object(dn, "run_dump", return_value="k"), \
+                mock.patch("dump_nightly.tempfile.mkstemp", side_effect=RuntimeError("unexpected")):
+            try:
+                code = dn.main([])
+            except Exception as exc:  # the property under test is that nothing escapes
+                self.fail(f"main raised {exc!r}")
+        self.assertEqual(code, 0)
+
+
 class RunDumpTests(_FakeClientsOnPath):
     def setUp(self):
         super().setUp()

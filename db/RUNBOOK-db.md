@@ -103,9 +103,10 @@ destroying what it replaces. See the script's own docstring for the
 35-day noncurrent-version lifetime and why that number.
 
 Versioning and the noncurrent lifecycle only bound how long a *replaced*
-object survives. How long a *current* dump or binlog object survives before
-this pipeline prunes it is a separate policy -- see "Backup retention"
-below, after the timers that enforce it.
+object survives. How long a *current* dump or binlog object survives is a
+separate policy, set by the bucket's lifecycle or by `prune_backups.py`
+depending on the bucket -- see "Backup retention" below, which points to the
+page that states it.
 
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
@@ -478,8 +479,7 @@ restore drill below needs it to find the right objects.
 
 **Do not force `branchleft-db-prune.service` on a first setup** -- there
 is nothing to prune yet, and running it against a brand-new bucket is a no-op
-at best. See "Backup retention" below for how to bring it onto an
-already-running `db1`.
+at best. See "Backup retention" below for where retention is documented.
 
 ## Backup worker account (`route=b`)
 
@@ -489,141 +489,15 @@ carries the account, TLS-CA and `ops1`-side handover commands.
 
 ## Backup retention
 
-Nothing before this pruned a *current* object: dumps and shipped binlogs
-otherwise accumulate forever, growing storage linearly with the size and age
-of the dataset even though object versioning (above) already bounds how long
-a *replaced* object survives. `prune_backups.py` is the enforcement point,
-run daily by `branchleft-db-prune.timer` (03:45 UTC, after that
-night's dump and at least one more binlog-ship run have landed).
-
-**The numbers, and where they come from.** Doc 14 §7.2 states the platform's
-service level as "7-day point-in-time recovery for the tenant database" --
-`prune_backups.PITR_WINDOW_DAYS = 7` is that promise, verbatim, and is not a
-value to change without re-deciding the promise itself.
-`prune_backups.MARGIN_DAYS = 3` is slack for the pipeline's own operational
-hiccups (a missed nightly dump, a slow investigation) before an object
-becomes eligible for deletion at all -- it does not weaken the guarantee
-below, it only decides how proactively pruning happens.
-
-**The invariant `plan_prune` holds, regardless of MARGIN_DAYS:** the oldest
-*retained* dump for a given `server_uuid`, plus the retained binlogs from its
-timestamp forward, must always cover the full 7-day window. The **anchor** --
-the newest dump at or before `now - 7 days` -- is never deleted, however old
-it ends up being; a run of missed or failed nightly dumps just pushes the
-anchor further back, and `plan_prune` keeps it there rather than deleting on
-a blind age threshold that cannot see whether a replacement dump exists.
-Binlogs are kept back to the anchor's own timestamp (or `RETENTION_DAYS`,
-whichever is older), and only ever as a clean prefix by binlog sequence
-number -- never a hole partway through what's retained. A `server_uuid`
-group that cannot be pruned without the retained set falling short of the
-window is refused outright (logged to stderr, nothing in that group
-deleted) rather than pruned partway. See `plan_prune`'s own docstring and
-`test_prune_backups.py` for the full set of edge cases this covers -- a
-missed dump, a dump that failed mid-run (identical to a missed one: a failed
-run never uploads anything), a binlog rotation straddling the cutoff second,
-a forced refusal when coverage would otherwise be lost, and an unparseable
-binlog name refusing only its own incarnation rather than blocking every
-other `server_uuid` in the same run.
-
-**Why a bucket lifecycle rule instead of this pipeline step was rejected.**
-Doc 14 §16 item 3 already documents `Expiration.Days` (current-object,
-day-based expiry) as a real Hetzner Object Storage feature, so the mechanism
-exists. It was rejected anyway because a lifecycle rule deletes strictly by
-object age, per object, with no way to ask "does a newer dump already cover
-what this one would leave uncovered?" -- exactly the question a missed
-nightly dump makes load-bearing. A pipeline step that reads the bucket's own
-listing before deciding is the only shape that can hold the invariant above.
-
-**Bringing the timer onto an already-live `db1`.** Re-copy `db/provision/`
-(step 1) so `prune_backups.py`, the extended `objectstorage.py` and the two
-new unit files land, then dry-run before ever deleting anything real:
-
-```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
-scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
-  systemd-run --pipe --wait --collect --quiet \
-    --property=EnvironmentFile=/etc/branchleft/db.env \
-    --property=WorkingDirectory=/opt/branchleft/db/provision \
-    -- /usr/bin/python3 prune_backups.py --dry-run
-'
-```
-
-As step 2 warns: never `bash`-source `db.env` to run this. `systemd-run`'s
-`EnvironmentFile=` loads it the same way the compose units do -- parsed as
-`KEY=value` pairs, never evaluated as shell -- so a shell metacharacter in a
-value cannot make anything echo it back. **A malformed KEY is a different
-failure mode systemd does not stay silent about**: a key containing anything
-outside `[A-Za-z0-9_]` fails systemd's own name validation, and systemd logs
-the rejected assignment -- the full `KEY=value` line, secret value included
--- to the journal at `LOG_ERR` (`journalctl -u <the transient unit>`), a
-different stream than the one this runbook tells you to read. Get the key
-name right; `EnvironmentFile=` does not make a bad one safe to write.
-
-The transient unit resolves `python3` through systemd's own default `PATH`,
-not the SSH login shell's, so the binary is named by the same absolute path
-the backup timers' `ExecStart=` already uses rather than relied on to be
-found.
-
-Read the output before doing anything else: `would delete N dump(s), M
-binlog(s)` lists every key by name, and a `REFUSED <uuid>: <reason>` line on
-stderr means don't proceed for that incarnation until the reason is
-understood -- proceeding anyway is exactly the silent-gap failure mode this
-script exists to prevent. **This first real run is expected to take
-noticeably longer than every run after it**: the bucket has never been
-pruned before, so the backlog is plausibly an order of magnitude above a
-normal day's surplus, and `objectstorage.py` opens one connection per
-object with no pooling. `branchleft-db-prune.service`'s `TimeoutStartSec=3600`
-is sized for that first run, not steady state -- a run taking most of an
-hour on this first invocation is expected and harmless, not a stall to
-interrupt. Only once the dry run looks right:
-
-```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
-  cp /opt/branchleft/db/provision/branchleft-db-prune.{service,timer} /etc/systemd/system/ &&
-  systemctl daemon-reload &&
-  systemctl enable --now branchleft-db-prune.timer &&
-  systemctl start branchleft-db-prune.service &&
-  journalctl -u branchleft-db-prune.service -n 40
-'
-```
-
-**Proving the window is still covered after a prune.** The dry run's own
-absence of a `REFUSED` line is the pruner's own proof, but to check the
-retained bucket state directly rather than trust the tool that just acted on
-it, run its `--verify-coverage` mode -- it re-lists the bucket, groups by
-`server_uuid` (never a bucket-wide mix of a live incarnation's numbers with a
-dead one's), and reports each incarnation's oldest retained dump and oldest
-retained binlog independently:
-
-```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
-  systemd-run --pipe --wait --collect --quiet \
-    --property=EnvironmentFile=/etc/branchleft/db.env \
-    --property=WorkingDirectory=/opt/branchleft/db/provision \
-    -- /usr/bin/python3 prune_backups.py --verify-coverage
-'
-```
-
-Exits `0` with `coverage check passed for every server_uuid` when every
-incarnation's `status` is `covered` -- its oldest retained binlog is at or
-before its oldest retained dump's own timestamp, so replay from that dump has
-something to resume from all the way back to the window's edge. A `gap`
-status means the opposite: nothing to resume from partway through the window,
-which is the failure mode this whole design exists to make structurally
-impossible, and is worth stopping on immediately. `no dump` or `no binlog`
-report the two narrower cases separately, since they read differently to an
-operator: `no dump` means the incarnation has nothing to restore *from* at
-all, while `no binlog` on an incarnation less than ~15 minutes old is
-expected and harmless (its first binlog hasn't shipped yet).
+What is kept and for how long, who deletes it, the arithmetic, the dump-age
+alarm, how to restore a noncurrent version and how to bring the pruner onto a
+running db1 are in
+[`db-backup-retention-and-noncurrent-restore-runbook.md`](https://github.com/branchLeft/ghost-platform-docs/blob/main/db-backup-retention-and-noncurrent-restore-runbook.md)
+in `ghost-platform-docs`. An anchor dump that is never deleted, however old,
+holds only where `prune_backups.py` can delete. The bucket the backup worker
+writes to with a put-only key is aged out by its lifecycle alone, and there
+the newest dump expires on the same clock as the oldest. The pruner's own
+design is in `db/provision/prune_backups.md`.
 
 ## 6. Provision a tenant database
 

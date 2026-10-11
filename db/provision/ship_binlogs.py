@@ -7,15 +7,26 @@ See ship_binlogs.md#module-overview.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import time
 
 from objectstorage import ObjectStorageError, put_object
 
 BINLOG_MYSQL_USER = "replicator"
 
 DEFAULT_MARKER_PATH = "/var/lib/branchleft-db-binlog-ship/last-shipped"
+
+# The textfile-collector directory db1's node_exporter reads, the same one
+# dump_nightly.py publishes to. Names are db-specific and unlabelled: this
+# file is written on db1 only.
+STATUS_FILENAME = "ship_binlogs_status.prom"
+DEFAULT_METRICS_DIR = "/var/lib/branchleft/backup-worker-exporter"
+_LAST_SUCCESS_LINE = re.compile(
+    r"\Adb_binlog_ship_last_success_timestamp_seconds\s+([0-9]+(?:\.[0-9]+)?)\s*\Z"
+)
 
 # The socket bind-mounted out of the mysql container by db/stack/compose.yml,
 # reachable from the bare host at this path once the stack is copied to
@@ -240,6 +251,54 @@ def run_ship(
     return shipped
 
 
+def _previous_success(path: str) -> float | None:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                match = _LAST_SUCCESS_LINE.match(line.strip())
+                if match:
+                    return float(match.group(1))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def record_run_status(*, metrics_dir: str | None, succeeded: bool, now: float | None = None) -> None:
+    """Publishes whether this run succeeded and when one last did. A failed
+    run carries the previous success time forward unchanged. Best-effort and
+    atomic: any failure here is printed and swallowed, never the shipper's."""
+    if not metrics_dir:
+        return
+    try:
+        path = os.path.join(metrics_dir, STATUS_FILENAME)
+        stamp = time.time() if now is None else now
+        last_success = stamp if succeeded else _previous_success(path)
+        lines = [
+            "# HELP db_binlog_ship_last_run_success 1 if the latest binlog shipping run succeeded, else 0.",
+            "# TYPE db_binlog_ship_last_run_success gauge",
+            f"db_binlog_ship_last_run_success {1 if succeeded else 0}",
+        ]
+        if last_success is not None:
+            lines += [
+                "# HELP db_binlog_ship_last_success_timestamp_seconds Unix time the last run that shipped every closed binlog finished.",
+                "# TYPE db_binlog_ship_last_success_timestamp_seconds gauge",
+                f"db_binlog_ship_last_success_timestamp_seconds {last_success:.0f}",
+            ]
+        os.makedirs(metrics_dir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=metrics_dir, prefix=STATUS_FILENAME + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write("\n".join(lines) + "\n")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+    except Exception as exc:  # a metrics fault must never become the shipper's fault
+        print(f"ship_binlogs: could not write run status to {metrics_dir!r}: {exc}", file=sys.stderr)
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -249,6 +308,7 @@ def _require_env(name: str) -> str:
 
 def main(argv: list[str]) -> int:
     socket_path = argv[0] if argv else DEFAULT_SOCKET
+    metrics_dir = os.environ.get("DB_BINLOG_METRICS_DIR", DEFAULT_METRICS_DIR)
     try:
         shipped = run_ship(
             socket_path=socket_path,
@@ -262,8 +322,13 @@ def main(argv: list[str]) -> int:
         )
     except (ShipError, ObjectStorageError) as exc:
         print(f"ship_binlogs: {exc}", file=sys.stderr)
+        record_run_status(metrics_dir=metrics_dir, succeeded=False)
         return 1
+    except BaseException:
+        record_run_status(metrics_dir=metrics_dir, succeeded=False)
+        raise
     print(f"ship_binlogs: shipped {len(shipped)} log(s): {', '.join(shipped) or '(none pending)'}")
+    record_run_status(metrics_dir=metrics_dir, succeeded=True)
     return 0
 
 
