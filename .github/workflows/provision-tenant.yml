@@ -73,7 +73,7 @@ on:
       # `choice` input always preselects its first option, so the first option
       # here is a refusal rather than a value.
       tenant_visibility:
-        description: 'Repository visibility. Public is the default for a new tenant; private only where the tenant asked for it.'
+        description: 'Repository visibility. Public is the default for a new tenant. This workflow refuses private: a private tenant is provisioned through the controller or the hand runbook.'
         required: true
         type: choice
         options:
@@ -348,8 +348,16 @@ jobs:
           # value, the preselected placeholder, and anything a later edit adds
           # to the options list all refuse here. This cannot be satisfied by
           # leaving the dispatch form untouched.
+          # A private tenant is refused here, before any credential is written.
+          # On this plan a private repository's production environment carries
+          # no required reviewer, so the tenant's state credentials must not be
+          # handed to it by this workflow. The controller or the hand runbook
+          # provisions a private tenant instead.
           case "$TENANT_VISIBILITY" in
-            public | private) ;;
+            public) ;;
+            private)
+              fail "tenant_visibility 'private' is refused by this public provisioning workflow. A private repository's production environment carries no required reviewer on this plan, so the tenant's state credentials cannot be gated here. Provision a private tenant through the controller, or by the hand runbook (a hand runbook is tracked separately)."
+              ;;
             *)
               fail "tenant_visibility was not answered. Public is the default for a new tenant repository; private only where the tenant has asked for it. A public repository, and its name, disclose that this tenant is a customer, so this is the tenant's answer to give and not one to pick on their behalf. Ask, then dispatch again choosing public or private."
               ;;
