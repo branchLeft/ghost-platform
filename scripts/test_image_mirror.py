@@ -1348,6 +1348,14 @@ class GluedSshTests(unittest.TestCase):
         for line in self.NOT_SSH:
             self.assertEqual(self.refs("t.sh", line), [], line)
 
+    def test_one_long_word_of_separators_is_scanned_in_linear_time(self):
+        for char in (";", "&", "|", "(", "`"):
+            line = char * 40000 + " x docker pull alpine:3.19"
+            start = time.monotonic()
+            guard.candidates("t.sh", [line])
+            elapsed = time.monotonic() - start
+            self.assertLess(elapsed, 0.5, f"{char!r}: {elapsed:.2f}s")
+
     def test_the_forms_the_limits_section_says_are_not_read_stay_unread(self):
         # If one of these starts to be read, the Limits section must change in the same commit.
         for line in self.NOT_READ_AND_SAID_SO:

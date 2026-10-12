@@ -142,10 +142,7 @@ ASSIGN_STRING_RE = re.compile(
 CASE_ARM_RE = re.compile(r"""(?:\A|[;\s])[\w.*|"'-]+\)\Z""")
 CASE_LABEL_RE = re.compile(r"""\A[\w.*|"'-]+\)\Z""")
 SSH_VALUE_OPTIONS = {"-o", "-i", "-p", "-l", "-F", "-J", "-b", "-c", "-D", "-E", "-e", "-L", "-R", "-S", "-W"}
-# An ssh word: `ssh` or a path ending `/ssh`, alone or glued to what precedes it at a command position, which is
-# the start of the word or one of `;`, `&`, `|`, `(` or a backtick (`$(ssh`, `<(ssh`, `x;ssh`, `x&&ssh`).
-# `my-ssh` and `ssh-agent` are other commands and are not matched.
-SSH_WORD_RE = re.compile(r"(?:\A|[;&|(`])(?:\S*/)?ssh\Z")
+SSH_GLUE_CHARS = ";&|(`/"  # what may stand just before `ssh`: a command separator, or a path's `/`
 REDIRECT_RE = re.compile(r"\A[0-9]*>+&?\Z")  # output only: a `<` is also how a placeholder <image> is written
 SUBSTITUTION_CHARS = " \t();&|<>"
 _SUBSTITUTION_ENCODE = {c: chr(0xE000 + n) for n, c in enumerate(SUBSTITUTION_CHARS)}
@@ -526,10 +523,22 @@ def _after_prefix(words: list[str]) -> bool:
     return _ssh_host_last(words)
 
 
+def _is_ssh_word(word: str) -> bool:
+    """True for `ssh`, a path ending `/ssh`, or `ssh` glued to a preceding `;`, `&`, `|`, `(` or backtick.
+
+    `$(ssh`, `<(ssh`, `x;ssh` and `x&&ssh` are ssh; `my-ssh` and `ssh-agent` are other commands. A constant-time
+    test on the end of the word, so one long word of separators costs nothing to scan.
+    """
+    if not word.endswith("ssh"):
+        return False
+    head = word[:-3]
+    return not head or head[-1] in SSH_GLUE_CHARS
+
+
 def _ssh_host_last(words: list[str]) -> bool:
     """True for `ssh [options] host` as the last words, with the remote command to follow."""
     for i in range(len(words) - 1, -1, -1):
-        if SSH_WORD_RE.search(words[i]):
+        if _is_ssh_word(words[i]):
             rest, skip = [], False
             for word in words[i + 1:]:
                 if skip:
