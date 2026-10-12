@@ -52,6 +52,8 @@ function defineGatedThemeStorage(UpstreamThemeStorage, deps) {
       super(...args);
       // Theme name -> the backup name Ghost asked it be moved to.
       this.deferredMoves = new Map();
+      // Backup names whose theme could not be put back, kept on disk.
+      this.retainedBackups = new Set();
     }
 
     // Ghost moves an existing theme aside to `<name>_<24 hex>` BEFORE it
@@ -85,10 +87,41 @@ function defineGatedThemeStorage(UpstreamThemeStorage, deps) {
       }
       const backupName = this.deferredMoves.get(name);
       this.deferredMoves.delete(name);
+      let movedAside = false;
       if (backupName !== undefined && (await this.exists(name))) {
         await super.rename(name, backupName);
+        movedAside = true;
       }
-      return super.save(file, targetDir);
+      try {
+        return await super.save(file, targetDir);
+      } catch (err) {
+        if (movedAside) {
+          await this.putBack(name, backupName);
+        }
+        throw err;
+      }
+    }
+
+    // Ghost's restore after a failed save only renames when the name is
+    // absent, and a copy that failed part way leaves it present, so it would
+    // not run at all; when it does run it is not awaited before the backup is
+    // deleted. The theme is therefore put back here, awaited, before the
+    // failure leaves save(). If it cannot be, the backup stays on disk: the
+    // delete Ghost makes next is declined and shows in its log.
+    async putBack(name, backupName) {
+      try {
+        await super.delete(name);
+        await super.rename(backupName, name);
+      } catch {
+        this.retainedBackups.add(backupName);
+      }
+    }
+
+    async delete(fileName, ...rest) {
+      if (this.retainedBackups.delete(fileName)) {
+        throw new Error(`the theme could not be put back; its backup ${fileName} was kept`);
+      }
+      return super.delete(fileName, ...rest);
     }
 
     // No Ghost code writes a theme from a buffer. A caller that started to
