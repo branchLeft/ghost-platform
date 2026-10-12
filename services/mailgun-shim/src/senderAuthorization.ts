@@ -26,6 +26,30 @@ declare module 'nodemailer/lib/addressparser/index.js' {
 }
 
 /**
+ * `domainToASCII` parses its input as the host of a URL: it stops at a
+ * URL delimiter and silently drops some control characters, so a value
+ * that is not a hostname can come back as one. A character is therefore
+ * refused before that call unless it can appear in a hostname: a letter,
+ * digit, '.', '-' or '_', or any non-ASCII code unit (an internationalised
+ * label, which `domainToASCII` then maps or rejects). Whitespace is not
+ * trimmed away; it is refused with the rest.
+ */
+function isHostnameCharCode(code: number): boolean {
+  return (
+    code >= 0x80 ||
+    (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x41 && code <= 0x5a) ||
+    (code >= 0x61 && code <= 0x7a) ||
+    code === 0x2d /* '-' */ ||
+    code === 0x2e /* '.' */ ||
+    code === 0x5f /* '_' */
+  );
+}
+
+/** What `domainToASCII` may return for a value to count as a hostname. */
+const HOSTNAME_PATTERN = /^[a-z0-9._-]+$/;
+
+/**
  * ASCII/punycode + lowercase + no trailing root dot. `domainToASCII`
  * already lowercases and IDN-normalises (verified: 'Tenant-A.Example.COM'
  * -> 'tenant-a.example.com', 'straße.example' -> 'xn--strae-oqa.example')
@@ -43,17 +67,23 @@ function normalizeDomain(rawDomain: string): string | null {
   // slicing one character off a string of `k` trailing dots is its own
   // O(n*k) trap — this single scan-then-slice is O(n) regardless of how
   // many trailing dots the input carries.
-  const beforeTrim = rawDomain.trim();
-  let end = beforeTrim.length;
-  while (end > 0 && beforeTrim.charCodeAt(end - 1) === 46 /* '.' */) {
+  let end = rawDomain.length;
+  while (end > 0 && rawDomain.charCodeAt(end - 1) === 46 /* '.' */) {
     end--;
   }
-  const trimmed = beforeTrim.slice(0, end);
+  const trimmed = rawDomain.slice(0, end);
   if (!trimmed) {
     return null;
   }
+  // Compared as a hostname: a value that is not one is refused, not repaired.
+  for (let i = 0; i < trimmed.length; i++) {
+    if (!isHostnameCharCode(trimmed.charCodeAt(i))) {
+      return null;
+    }
+  }
   const ascii = domainToASCII(trimmed);
-  return ascii ? ascii : null;
+  // What was compared must itself be a plain hostname.
+  return ascii && HOSTNAME_PATTERN.test(ascii) ? ascii : null;
 }
 
 /**
