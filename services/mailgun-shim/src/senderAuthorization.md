@@ -34,6 +34,14 @@ is no address to have been provisioned for a tenant, so "couldn't
 parse" is refused exactly like "parsed to something foreign", not
 treated as harmless because nothing definite was found.
 
+## Domains are compared as hostnames
+
+A domain is compared as a hostname. After trailing dots are stripped,
+an ASCII character that is not a letter, digit, hyphen, dot or
+underscore refuses the whole value, as does a normalised result that is
+not a plain hostname. Non-ASCII labels are still accepted and compared
+in their punycode form.
+
 ## resolveSenderDomain
 
 The single fail-closed gate both front doors call, exactly once per

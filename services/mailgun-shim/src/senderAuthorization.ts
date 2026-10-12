@@ -43,7 +43,7 @@ function normalizeDomain(rawDomain: string): string | null {
   // slicing one character off a string of `k` trailing dots is its own
   // O(n*k) trap — this single scan-then-slice is O(n) regardless of how
   // many trailing dots the input carries.
-  const beforeTrim = rawDomain.trim();
+  const beforeTrim = rawDomain;
   let end = beforeTrim.length;
   while (end > 0 && beforeTrim.charCodeAt(end - 1) === 46 /* '.' */) {
     end--;
@@ -52,8 +52,26 @@ function normalizeDomain(rawDomain: string): string | null {
   if (!trimmed) {
     return null;
   }
+  // The domain is compared as a hostname: an ASCII character a hostname
+  // cannot hold refuses the whole value, before `domainToASCII` (a URL host
+  // parser) sees it.
+  for (let i = 0; i < trimmed.length; i++) {
+    const code = trimmed.charCodeAt(i);
+    const hostnameChar =
+      code >= 0x80 ||
+      (code >= 0x30 && code <= 0x39) ||
+      (code >= 0x41 && code <= 0x5a) ||
+      (code >= 0x61 && code <= 0x7a) ||
+      code === 0x2d /* '-' */ ||
+      code === 0x2e /* '.' */ ||
+      code === 0x5f; /* '_' */
+    if (!hostnameChar) {
+      return null;
+    }
+  }
   const ascii = domainToASCII(trimmed);
-  return ascii ? ascii : null;
+  // What was compared must itself be a plain hostname.
+  return ascii && /^[a-z0-9._-]+$/.test(ascii) ? ascii : null;
 }
 
 /**
