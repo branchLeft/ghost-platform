@@ -109,7 +109,12 @@ construction the guard is shown to meet.
   `sh -c`, `bash -c`, `bash -lc`, `sh -ec`, `eval` string, a string assigned to a
   shell variable (`CMD="docker run ..."`), or after `ssh [options] host` quoted or
   not, with the host or an option value quoted (`ssh "$HOST" '...'`,
-  `ssh -i "$KEY" user@host '...'`); as a case arm (`a) docker run ...`, with or without an assignment); after
+  `ssh -i "$KEY" user@host '...'`). The `ssh` word is read alone or glued to the
+  character before it when that is `;`, `&`, `|`, `(` or a backtick, so
+  `out=$(ssh host '...')`, `(ssh host '...')`, ``out=`ssh host '...'` ``,
+  `x;ssh host '...'`, `x&&ssh host '...'`, `x||ssh host '...'` and
+  `<(ssh host '...')` are read, with `ssh` as a bare word or a path ending
+  `/ssh`; as a case arm (`a) docker run ...`, with or without an assignment); after
   a Makefile recipe's `@`, `-` or `+`, and inside `$(shell ...)`. It may be a path
   (`/usr/bin/docker`) or a variable (`$DOCKER`, `${DOCKER}`, `$(DOCKER)`).
   [claim: command-line-start, command-separators, command-words,
@@ -196,25 +201,32 @@ exhaustive, and a spelling absent from both lists is not promised either way.
   reads (`flock`, `stdbuf`, `parallel`, a function of your own such as
   `on_host "docker run ..."`), when the command is held in a variable or a make
   macro (`$(DOCKER_RUN) alpine:3`), or after a prose word.
-- An `ssh` word glued to the character before it is not read, so the docker
-  command string after it is not read either. This covers `$(ssh`, `(ssh`, a
-  backtick before `ssh`, `<(ssh`, `x;ssh` and `x&&ssh`. The usual capture form
-  `out=$(ssh host 'docker pull alpine:3.19')` is in this class and is silent.
-  A spaced `$( ssh host '...')`, `timeout 5 ssh`, `sudo ssh` and
-  `{ ssh host '...'; }` are still read.
-- Lost at an earlier head and silent now: `my-ssh host '...'` and
-  `kubectl-ssh node '...'` (a hyphenated wrapper); `az ssh vm --local-user u -- '...'`
-  (a host word is needed before the string); and a double-quoted ssh string that
-  closes and reopens around `"$PWD"`. `echo ssh-agent '...'` is no longer read,
-  on purpose: that was a false positive.
-- Never read at any head: `ssh host 'sudo docker pull ...'`,
-  `sh -c 'sudo docker pull ...'`, `ssh host 'A=1 docker pull ...'` and
-  `ssh host "$(echo x)" 'docker ...'`. A `sudo` or assignment prefix inside the
-  quoted string does not compose with the `ssh` or `sh -c` forms.
+- The `ssh` word is read where it stands alone, ends a path (`/usr/bin/ssh`), or
+  is glued to a preceding `;`, `&`, `|`, `(` or backtick. Another command whose
+  name ends in `ssh` (`my-ssh`, `kubectl-ssh`) is not ssh, and its string is not
+  read. This is a decision, not an oversight: a wrapper has its own argument
+  shape, and matching on the word rather than a substring is what stopped
+  `echo ssh-agent '...'` from being reported, which an earlier head did and
+  which was a false positive. A wrapper that matters is added as a named form
+  with its own row in the claims table.
+- Decided not read, and each pinned by a test so a change to one is a change to
+  this list: `az ssh vm --local-user u -- '...'` (the command string follows `--`,
+  not a host word); a double-quoted ssh string that closes and reopens around a
+  variable (`ssh host "docker run --rm -v "$PWD":/w alpine:3 id"`, where the
+  command is cut at the second quote); `ssh host 'sudo docker pull ...'`,
+  `sh -c 'sudo docker pull ...'` and `ssh host 'A=1 docker pull ...'` (a `sudo`
+  or assignment prefix inside the quoted string does not compose with the `ssh`
+  or `sh -c` forms); and `ssh host "$(echo x)" 'docker ...'`.
 - What a miss costs: in warn mode a miss is a missed warning, because the guard
-  exits 0. No reference is hidden in the tree today. The cost lands when a later
-  change adds such a line, and when warn mode is switched to enforce. The owner
-  has accepted this gap, and a follow-up fix is tracked outside this repo.
+  exits 0. The cost lands when a later change adds one of the unread lines above,
+  and when warn mode is switched to enforce, which is why this list is kept to
+  the forms that are known.
+- No shell parser library is used. `bashlex`, the Python one, is licensed
+  GPLv3+, which is outside the permissive allow-list for shipped dependencies
+  (branchLeft/standards DEP-5). The guard also reads fragments (a YAML scalar, a
+  Makefile recipe, a template literal, a line cut at an unclosed quote) that a
+  parser written for whole scripts is not built to take. The guard stays
+  standard library only, so it runs on a bare runner with no install.
 - Quoted strings in code are read only near a docker or image word (twelve lines
   before), or when the name is well known or listed, and only when they look like
   an image. Image names built by concatenation are not followed.

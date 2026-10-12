@@ -421,6 +421,8 @@ class ModeTests(unittest.TestCase):
         "unqualified workflow service image": {
             ".github/workflows/ci.yml": "jobs:\n  t:\n    services:\n      db:\n        image: postgres:17-alpine\n"
         },
+        "docker pull over ssh in a command substitution": {"t.sh": "out=$(ssh host 'docker pull alpine:3.19')\n"},
+        "docker pull over ssh after a semicolon": {"t.sh": "x;ssh host 'docker pull alpine:3.19'\n"},
     }
 
     def test_enforce_is_red_for_each_sabotage(self):
@@ -1272,6 +1274,94 @@ class QuotedHostTemplateAndSingleQuoteTests(unittest.TestCase):
         self.assertLess(elapsed, 3.0)
 
 
+class GluedSshTests(unittest.TestCase):
+    """An ssh word stuck to the character before it is a command, as a spaced one is.
+
+    The recogniser takes `ssh` (or a path ending `/ssh`) at the start of a word or after `;`, `&`, `|`, `(` or a
+    backtick, so a docker command string after it is read. A different command that ends in `ssh` is not ssh.
+    """
+
+    GLUED_QUOTED = (
+        "out=$(ssh host 'docker pull alpine:3.19')",
+        "(ssh host 'docker pull alpine:3.19')",
+        "out=`ssh host 'docker pull alpine:3.19'`",
+        "x;ssh host 'docker pull alpine:3.19'",
+        "x&&ssh host 'docker pull alpine:3.19'",
+        "x||ssh host 'docker pull alpine:3.19'",
+        "x|ssh host 'docker pull alpine:3.19'",
+        "mapfile -t a < <(ssh host 'docker pull alpine:3.19')",
+        "out=\"$(ssh host 'docker pull alpine:3.19')\"",
+        "out=$(ssh -o BatchMode=yes -i \"$KEY\" user@host 'docker pull alpine:3.19')",
+        "out=$(/usr/bin/ssh host 'docker pull alpine:3.19')",
+        "out=$(ssh host \"docker pull alpine:3.19\")",
+    )
+    GLUED_UNQUOTED = (
+        "out=$(ssh host docker pull alpine:3.19)",
+        "(ssh host docker pull alpine:3.19)",
+        "x;ssh -t user@host docker pull alpine:3.19",
+        "x&&ssh host docker pull alpine:3.19",
+    )
+    STILL_READ = (
+        "$( ssh host 'docker pull alpine:3.19')",
+        "timeout 5 ssh host 'docker pull alpine:3.19'",
+        "sudo ssh host 'docker pull alpine:3.19'",
+        "{ ssh host 'docker pull alpine:3.19'; }",
+    )
+    NOT_SSH = (
+        "my-ssh host 'docker pull alpine:3.19'",
+        "x;my-ssh host 'docker pull alpine:3.19'",
+        "out=$(xssh host 'docker pull alpine:3.19')",
+        "echo ssh-agent 'docker pull alpine:3.19'",
+        "out=$(ssh-keygen 'docker pull alpine:3.19')",
+    )
+    NOT_READ_AND_SAID_SO = (
+        "kubectl-ssh node 'docker pull alpine:3.19'",
+        "az ssh vm --local-user u -- 'docker pull alpine:3.19'",
+        "ssh host 'sudo docker pull alpine:3.19'",
+        "sh -c 'sudo docker pull alpine:3.19'",
+        "ssh host 'A=1 docker pull alpine:3.19'",
+        'ssh host "docker run --rm -v "$PWD":/w alpine:3.19 id"',
+        "ssh host \"$(echo x)\" 'docker pull alpine:3.19'",
+    )
+
+    def refs(self, path, line):
+        findings, _ = scan_tree({path: line + "\n"})
+        return [(f.kind, f.ref) for f in findings]
+
+    def test_a_glued_ssh_before_a_quoted_command_string_is_read(self):
+        for line in self.GLUED_QUOTED:
+            self.assertEqual(self.refs("t.sh", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_a_glued_ssh_before_an_unquoted_command_is_read(self):
+        for line in self.GLUED_UNQUOTED:
+            self.assertEqual(self.refs("t.sh", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_a_glued_ssh_in_a_workflow_run_line_is_read(self):
+        line = "      - run: out=$(ssh host 'docker pull alpine:3.19')"
+        self.assertEqual(self.refs(WORKFLOW, line), [("unqualified", "alpine:3.19")])
+
+    def test_the_spaced_and_wrapped_forms_are_still_read(self):
+        for line in self.STILL_READ:
+            self.assertEqual(self.refs("t.sh", line), [("unqualified", "alpine:3.19")], line)
+
+    def test_a_command_that_only_ends_in_ssh_is_not_ssh(self):
+        for line in self.NOT_SSH:
+            self.assertEqual(self.refs("t.sh", line), [], line)
+
+    def test_one_long_word_of_separators_is_scanned_in_linear_time(self):
+        for char in (";", "&", "|", "(", "`"):
+            line = char * 40000 + " x docker pull alpine:3.19"
+            start = time.monotonic()
+            guard.candidates("t.sh", [line])
+            elapsed = time.monotonic() - start
+            self.assertLess(elapsed, 0.5, f"{char!r}: {elapsed:.2f}s")
+
+    def test_the_forms_the_limits_section_says_are_not_read_stay_unread(self):
+        # If one of these starts to be read, the Limits section must change in the same commit.
+        for line in self.NOT_READ_AND_SAID_SO:
+            self.assertEqual(self.refs("t.sh", line), [], line)
+
+
 def _lines(prefixes, tail="docker run --rm alpine:3 true"):
     return [("t.sh", f"{p} {tail}\n") for p in prefixes]
 
@@ -1340,6 +1430,14 @@ CLAIMS = {
         ("t.sh", 'ssh "${HOST}" "docker run --rm alpine:3 id"\n'),
         ("t.sh", "ssh -i \"$KEY\" user@host 'docker pull alpine:3'\n"),
         ("t.sh", 'ssh -o "StrictHostKeyChecking=no" host "docker pull alpine:3"\n'),
+        ("t.sh", "out=$(ssh host 'docker pull alpine:3')\n"),
+        ("t.sh", "(ssh host 'docker pull alpine:3')\n"),
+        ("t.sh", "out=`ssh host 'docker pull alpine:3'`\n"),
+        ("t.sh", "x;ssh host 'docker pull alpine:3'\n"),
+        ("t.sh", "x&&ssh host 'docker pull alpine:3'\n"),
+        ("t.sh", "x||ssh host 'docker pull alpine:3'\n"),
+        ("t.sh", "mapfile -t a < <(ssh host 'docker pull alpine:3')\n"),
+        ("t.sh", "out=$(ssh host docker pull alpine:3)\n"),
     ],
     "command-yaml-quoted": [
         ("w.yml", '- run: "docker run alpine:3"\n'),
