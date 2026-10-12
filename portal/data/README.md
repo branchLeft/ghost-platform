@@ -95,8 +95,8 @@ placeholder only; the real wording is supplied by the owner.
 
 `portal.moderation_setting` holds one row per tenant and comment check: on or
 off, and a sensitivity, with who changed it and when. A tenant has a row only
-for a check it has saved; the page shows placeholder defaults for the rest, and
-nothing in the platform reads these rows yet.
+for a check it has saved; the page shows placeholder defaults for the rest. The
+page reads the saved rows back for a `REAL` tenant; nothing enforces them.
 
 The table is closed to the configurable comment checks. A database constraint
 (`moderation_setting_check_configurable`) refuses any other check id, so a
@@ -104,7 +104,9 @@ mandatory-floor or absolute check cannot be stored even by a statement that
 skips the code, and the manifest's shape check (M21) refuses a server in which
 that constraint is missing. `TenantDb.saveModerationSettings` refuses the same
 ids first with `UnknownCheckError`, all or none, and the tenant is always the
-scope's. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
+scope's. It takes row locks in the order the changes are given, so two saves in
+opposite orders can deadlock (one rolls back, cleanly): a caller other than the
+save route must pass the changes sorted by check id. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
 deletes a setting, and the owner role has no grant on it.
 
 ## The owner path

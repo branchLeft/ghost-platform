@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ABSOLUTE_CHECKS,
   ARTICLE_CHECKS,
   assertConfigurable,
   COMMENT_CHECKS,
@@ -218,6 +219,15 @@ describe('moderationBody, the route body', () => {
 });
 
 describe('the guard against configuring the floor (control case)', () => {
+  it('keeps the storable comment checks disjoint from the floor and absolute checks', () => {
+    // COMMENT_CHECKS also generates the table's constraint: a floor or absolute
+    // id in it would become storable, so the lists must never overlap.
+    const storable: readonly string[] = COMMENT_CHECKS;
+    for (const id of [...FLOOR_CHECKS, ...ABSOLUTE_CHECKS]) {
+      expect(storable).not.toContain(id);
+    }
+  });
+
   it('refuses to build a toggle for any absolute or floor check', () => {
     for (const id of [...FLOOR_CHECKS, 'media_hash']) {
       expect(() => renderToggle('comment', id, true)).toThrow(NotConfigurableError);
