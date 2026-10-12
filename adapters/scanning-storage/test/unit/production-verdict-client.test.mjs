@@ -66,7 +66,9 @@ describe('ProductionVerdictClient: an answer inside the budget is acted on', () 
 
   it('a connection with no close() is fine', async () => {
     const transport = {
-      connect: async () => ({ ask: async () => ({ classification: 'no-known-match' }) }),
+      connect: async () => ({
+        ask: async (key) => ({ key, classification: 'no-known-match' }),
+      }),
     };
     await expect(clientFor(transport).getVerdict(KEY)).resolves.toMatchObject({
       classification: 'no-known-match',

@@ -36,8 +36,17 @@ function validTimeout(name, value) {
   return value;
 }
 
-function oneLine(value, max) {
-  return String(value).replace(/\s+/g, ' ').slice(0, max);
+// Text for a log line from any value at all. A rejection can be anything: a
+// null-prototype object, one whose toString or message getter throws. None of
+// that may escape, so the description is built behind its own guard.
+function describe(value, max) {
+  try {
+    return String(value?.message ?? value)
+      .replace(/\s+/g, ' ')
+      .slice(0, max);
+  } catch {
+    return '<unprintable>';
+  }
 }
 
 // Closing is best effort: the verdict is already decided, and a failing
@@ -126,19 +135,16 @@ class ProductionVerdictClient extends VerdictClient {
         },
         () => {}
       );
+      // The connect deadline is the smaller of the two budgets and is armed
+      // first, so it is the only timer that can end this wait.
       const connected = await Promise.race([
         connecting.then((value) => ({ value })),
         connect.promise,
-        total.promise,
       ]);
       connect.clear();
       if (connected === CONNECT_TIMED_OUT) {
         abandoned = true;
         return this.#hold(key, 'connect-timeout');
-      }
-      if (connected === TOTAL_TIMED_OUT) {
-        abandoned = true;
-        return this.#hold(key, 'total-timeout');
       }
       connection = connected.value;
       if (!connection || typeof connection.ask !== 'function') {
@@ -164,6 +170,12 @@ class ProductionVerdictClient extends VerdictClient {
       if (read.classification === 'unavailable') {
         return this.#hold(key, 'channel-unavailable');
       }
+      // An answer is only acted on when it names the key it answers. A
+      // transport that hands a late answer for an earlier ask to this one
+      // is caught here, whatever that answer says.
+      if (got.value.key !== key) {
+        return this.#hold(key, 'malformed-answer', 'answer does not carry the asked key');
+      }
       answered = true;
       return { ...read, source: this.source, evidence: key };
     } catch (err) {
@@ -188,11 +200,11 @@ class ProductionVerdictClient extends VerdictClient {
 
   #log(key, reason, detail) {
     if (!this.#logger || typeof this.#logger.error !== 'function') return;
-    const error = detail === undefined ? '' : ` error=${oneLine(detail?.message ?? detail, 200)}`;
+    const error = detail === undefined ? '' : ` error=${describe(detail, 200)}`;
     try {
       this.#logger.error(
         `ProductionVerdictClient: VERDICT_UNAVAILABLE reason=${reason} key=${JSON.stringify(
-          oneLine(key, 128)
+          describe(key, 128)
         )}${error}`
       );
     } catch {
