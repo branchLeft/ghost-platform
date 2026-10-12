@@ -164,7 +164,9 @@ point either can be checked. Only enforced when the header is actually
 present: a message with no header From at all displays the already-verified
 envelope address instead, so there is nothing left to spoof. The value
 queued as `from` is the one this check bound (`boundSender`, the same
-normal form the HTTP route queues), not the header text. Refused before
+normal form the HTTP route queues), not the header text; with no header
+From it is the envelope sender, bound by the same function at MAIL FROM
+and again here. Refused before
 `enqueueBatch`/`callback` — never a 250 for a message that is then dropped.
 `session.tenantSenderDomain` is guaranteed non-null at this point: this is
 the SAME message `onMailFrom` already ran its own `resolveSenderDomain` gate

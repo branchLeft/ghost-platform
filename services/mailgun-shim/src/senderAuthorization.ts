@@ -160,6 +160,17 @@ function cleanDisplayName(name: string): string {
 }
 
 /** Ghost's own shape: a present name is always double-quoted (backslash and quote escaped), an absent one leaves the bare address. */
+/** True when the text holds whitespace (any the regular-expression engine counts) or a C0 or C1 control character. */
+function holdsWhitespaceOrControl(text: string): boolean {
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || /\s/.test(char)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function serialiseMailboxes(mailboxes: Mailbox[]): string {
   return mailboxes
     .map((mailbox) =>
@@ -193,10 +204,22 @@ export function boundSender(
   if (!parsed.every((mailbox) => extractDomain(mailbox.address) === normalizedTenantDomain)) {
     return null;
   }
-  const mailboxes = parsed.map((mailbox) => ({
-    name: cleanDisplayName(mailbox.name),
-    address: mailbox.address,
-  }));
+  // The local part is compared and queued as the parser read it, but the domain
+  // is queued as the normal form that was compared (never the spelling that was
+  // submitted: trailing dots, case, IDN mappings), and a local part holding
+  // whitespace is refused (a long header line is folded at whitespace).
+  const mailboxes: Mailbox[] = [];
+  for (const mailbox of parsed) {
+    const at = mailbox.address.lastIndexOf('@');
+    const local = mailbox.address.slice(0, at);
+    if (at < 0 || holdsWhitespaceOrControl(local)) {
+      return null;
+    }
+    mailboxes.push({
+      name: cleanDisplayName(mailbox.name),
+      address: `${local}@${normalizedTenantDomain}`,
+    });
+  }
   const serialised = serialiseMailboxes(mailboxes);
   const reread = extractMailboxes(serialised);
   const sameMailboxes =

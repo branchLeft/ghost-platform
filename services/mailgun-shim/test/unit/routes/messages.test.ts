@@ -587,7 +587,7 @@ describe('POST /v3/:domain/messages', () => {
       `alice@${DOMAIN}/.evil.com`,
       `alice@${DOMAIN}?.evil.com`,
       `alice@${DOMAIN}\\.evil.com`,
-      `alice@${DOMAIN}＃.evil.com`,
+      `alice@${DOMAIN}\u{FF03}.evil.com`,
       `Name <alice@${DOMAIN}#.evil.com>`,
     ])('refuses a domain that is not a plain hostname (%s), and queues nothing', async (raw) => {
       const res = await postFrom(raw);

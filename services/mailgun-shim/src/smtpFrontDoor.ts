@@ -13,7 +13,7 @@ import { containsHeaderInjectionChars } from './mailgunFields.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
 import type { DrainWake } from './drainWake.js';
 import type { Logger } from './log.js';
-import { boundSender, resolveSenderDomain, senderBelongsToTenant } from './senderAuthorization.js';
+import { boundSender, resolveSenderDomain } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
 
 /**
@@ -647,7 +647,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // once mail leaves this process, never to which tenant credential
       // submitted it — this is the only hop that still knows that. A
       // credential may only submit as its own registered sender domain.
-      if (!senderBelongsToTenant(address.address, senderDomain)) {
+      if (boundSender(address.address, senderDomain) === null) {
         log.warn('smtp_mail_from_domain_mismatch', {
           submitter: submitterId,
           remoteAddress: session.remoteAddress,
@@ -866,7 +866,21 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
               (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
             // What is queued is the value the gate bound, never the header text:
             // the collector parses it again with its own copy of the parser.
-            const from = boundHeaderFrom || rawFrom;
+            // No header From: the envelope sender, in the same bound normal form the header
+            // would have been queued in (it was gated at MAIL FROM by the same function).
+            const envelopeBound = session.envelope.mailFrom
+              ? boundSender(session.envelope.mailFrom.address, senderDomain)
+              : null;
+            const from = boundHeaderFrom ?? envelopeBound ?? '';
+            if (from === '') {
+              log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
+              const err = new Error(
+                '5.7.1 Sender address rejected: domain not authorised for this account'
+              ) as Error & { responseCode: number };
+              err.responseCode = 550;
+              callback(err);
+              return;
+            }
 
             // Refuses on header injection chars rather than stripping,
             // matching the HTTP route's outcome. See

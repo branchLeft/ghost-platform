@@ -58,9 +58,16 @@ whose normal form is itself ambiguous is refused, not shipped. A
 control character in a display name is folded to a space, so the name
 always sits inside one quoted string.
 
-The SMTP front door uses it too: the header From it checks is the
-value it queues, in the same normal form as the HTTP route. A message
-with no header From queues the envelope sender it already checked.
+The domain of each mailbox is queued as it was compared: lower-cased,
+trailing dots stripped, IDN labels in their punycode form, never the
+spelling that was submitted. A local part holding whitespace or a
+control character is refused, because a long header line is folded at
+whitespace.
+
+The SMTP front door uses it too: the MAIL FROM gate, the header From it
+checks, and the envelope sender it queues for a message with no header
+From are all this function's result, in the same normal form as the
+HTTP route.
 
 ## Domains are compared as hostnames
 

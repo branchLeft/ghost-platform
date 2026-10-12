@@ -1114,7 +1114,7 @@ describe('SMTP front door — acceptance into the durable queue', () => {
         'alice@tenant-a.example.com/.evil.com',
         'alice@tenant-a.example.com?.evil.com',
         'alice@tenant-a.example.com\\.evil.com',
-        'alice@tenant-a.example.com＃.evil.com',
+        'alice@tenant-a.example.com\u{FF03}.evil.com',
       ];
 
       it.each(delimited)(

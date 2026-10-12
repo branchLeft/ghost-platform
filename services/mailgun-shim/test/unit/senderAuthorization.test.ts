@@ -103,7 +103,7 @@ describe('senderBelongsToTenant', () => {
 describe('a domain is compared as a hostname', () => {
   const T = 'tenant.example.com';
 
-  it.each(['#', '/', '?', '\\', '＃', '／', '@', ':', '%'])(
+  it.each(['#', '/', '?', '\\', '\u{FF03}', '\u{FF0F}', '@', ':', '%'])(
     'refuses an address whose domain holds %j, in either function',
     (char) => {
       const address = `a@${T}${char}.evil.example`;
