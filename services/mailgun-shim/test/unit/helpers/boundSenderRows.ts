@@ -80,6 +80,46 @@ export function acceptedRows(domain: string): AcceptedRow[] {
   return rows;
 }
 
+export interface BackslashRow extends AcceptedRow {
+  /** The name ends in a backslash (or only whitespace after it) before it is bound. */
+  readonly endsInBackslash: boolean;
+}
+
+/**
+ * Display names carrying a backslash. A name that ends in one is queued
+ * without it. The SMTP route reads the header through its own parser first and
+ * refuses the three that end in a backslash; the function and the HTTP route
+ * queue the normal form.
+ */
+export function backslashNameRows(domain: string): BackslashRow[] {
+  return [
+    {
+      id: 'display name ending in a backslash',
+      submitted: `"Name\\\\" <alice@${domain}>`,
+      queued: `"Name" <alice@${domain}>`,
+      endsInBackslash: true,
+    },
+    {
+      id: 'display name ending in a backslash and a space',
+      submitted: `"Name\\\\ " <alice@${domain}>`,
+      queued: `"Name" <alice@${domain}>`,
+      endsInBackslash: true,
+    },
+    {
+      id: 'display name that is only a backslash',
+      submitted: `"\\\\" <alice@${domain}>`,
+      queued: `alice@${domain}`,
+      endsInBackslash: true,
+    },
+    {
+      id: 'display name with a backslash inside, as Ghost writes it',
+      submitted: `"A\\\\B" <alice@${domain}>`,
+      queued: `"A\\\\B" <alice@${domain}>`,
+      endsInBackslash: false,
+    },
+  ];
+}
+
 /** Values that must be refused: whitespace or a kept control inside a quoted local part. */
 export function refusedRows(domain: string): RefusedRow[] {
   const rows: RefusedRow[] = [];

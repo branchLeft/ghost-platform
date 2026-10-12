@@ -149,17 +149,23 @@ export function senderBelongsToTenant(
   return addresses.every((address) => extractDomain(address) === normalizedTenantDomain);
 }
 
-/** A display name with any control character folded to a space, so it can sit inside one quoted string. */
+/** A display name with any control character folded to a space and a trailing backslash or whitespace dropped, so it sits inside one quoted string. */
 function cleanDisplayName(name: string): string {
   let cleaned = '';
   for (const char of name) {
     const code = char.charCodeAt(0);
     cleaned += code < 0x20 || code === 0x7f ? ' ' : char;
   }
-  return cleaned.trim();
+  // A backslash (or whitespace) at the very end is dropped: serialised it would sit
+  // immediately before the closing quote as an escaped backslash, which older address
+  // parsers read as an escaped quote. Scan-then-slice, not a trailing-anchored regex.
+  let end = cleaned.length;
+  while (end > 0 && (cleaned.charCodeAt(end - 1) === 0x5c || /\s/.test(cleaned.charAt(end - 1)))) {
+    end--;
+  }
+  return cleaned.slice(0, end).trim();
 }
 
-/** Ghost's own shape: a present name is always double-quoted (backslash and quote escaped), an absent one leaves the bare address. */
 /** True when the text holds whitespace (any the regular-expression engine counts) or a C0 or C1 control character. */
 function holdsWhitespaceOrControl(text: string): boolean {
   for (const char of text) {
@@ -171,6 +177,7 @@ function holdsWhitespaceOrControl(text: string): boolean {
   return false;
 }
 
+/** Ghost's own shape: a present name is always double-quoted (backslash and quote escaped), an absent one leaves the bare address. */
 function serialiseMailboxes(mailboxes: Mailbox[]): string {
   return mailboxes
     .map((mailbox) =>

@@ -64,6 +64,11 @@ spelling that was submitted. A local part holding whitespace or a
 control character is refused, because a long header line is folded at
 whitespace.
 
+A display name is queued without a trailing backslash or trailing
+whitespace: serialised, a trailing backslash would sit right before the
+closing quote as an escaped backslash, which older address parsers read
+as an escaped quote.
+
 The SMTP front door uses it too: the MAIL FROM gate, the header From it
 checks, and the envelope sender it queues for a message with no header
 From are all this function's result, in the same normal form as the

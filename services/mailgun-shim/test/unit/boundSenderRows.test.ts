@@ -3,6 +3,7 @@ import { boundSender } from '../../src/senderAuthorization.js';
 import {
   FALLBACK_REFUSED,
   acceptedRows,
+  backslashNameRows,
   fallbackAcceptedRows,
   refusedRows,
 } from './helpers/boundSenderRows.js';
@@ -11,6 +12,13 @@ const DOMAIN = 'tenant-a.example.com';
 
 describe('boundSender over the shared rows', () => {
   it.each(acceptedRows(DOMAIN).map((row) => [row.id, row] as const))(
+    'binds %s to its normal form',
+    (_id, row) => {
+      expect(boundSender(row.submitted, DOMAIN)).toBe(row.queued);
+    }
+  );
+
+  it.each(backslashNameRows(DOMAIN).map((row) => [row.id, row] as const))(
     'binds %s to its normal form',
     (_id, row) => {
       expect(boundSender(row.submitted, DOMAIN)).toBe(row.queued);

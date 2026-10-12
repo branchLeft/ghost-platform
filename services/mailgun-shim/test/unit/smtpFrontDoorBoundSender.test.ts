@@ -11,6 +11,7 @@ import { createTestLogger } from '../helpers/testLogger.js';
 import {
   FALLBACK_REFUSED,
   acceptedRows,
+  backslashNameRows,
   fallbackAcceptedRows,
   refusedRows,
 } from './helpers/boundSenderRows.js';
@@ -143,6 +144,16 @@ describe('the SMTP front door queues the bound sender', () => {
         expect(due[0]!.payload.from).toBe(row.queued);
       }
     );
+
+    it.each(
+      backslashNameRows(DOMAIN)
+        .filter((row) => row.endsInBackslash)
+        .map((row) => [row.id, row] as const)
+    )('refuses %s with 550, and queues nothing', async (_id, row) => {
+      const responses = await sendHeaderFrom(row.submitted);
+      expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+      expect(harness.store.countUndrainedRecipients()).toBe(0);
+    });
 
     it.each(refusedRows(DOMAIN).map((row) => [row.id, row] as const))(
       'refuses %s with 550, and queues nothing',
