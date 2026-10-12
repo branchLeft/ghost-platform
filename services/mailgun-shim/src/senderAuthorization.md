@@ -24,19 +24,6 @@ alone defeats every look-alike without one, whatever granularity a
 tenant's sender domain was registered at (a bare apex, or a subdomain
 carved out for one sending purpose).
 
-The domain is compared as a hostname, and a value that is not one is
-refused rather than repaired. Node's `domainToASCII` parses its input as
-the host of a URL, so on its own it stops at a URL delimiter and drops
-some control characters: what it returns is not always what was given.
-`normalizeDomain` therefore refuses a character before that call unless
-it can appear in a hostname (a letter, digit, `.`, `-`, `_`, or a
-non-ASCII code unit for an internationalised label), does not trim
-whitespace away, and requires what comes back to be a plain hostname.
-Mixed case, a trailing root dot and an internationalised domain written
-in Unicode or punycode still compare equal. A tenant's registered sender
-domain passes through the same function, so a stored value that is not a
-hostname matches nothing (the CLI already refuses to register one).
-
 A header naming more than one mailbox (a From with several addresses)
 must have ALL of them belong, not just one — Ghost never legitimately
 sends a multi-address From, and a mix of a real address with a spoofed
@@ -46,6 +33,14 @@ An empty, null, or unparseable value never belongs to anything — there
 is no address to have been provisioned for a tenant, so "couldn't
 parse" is refused exactly like "parsed to something foreign", not
 treated as harmless because nothing definite was found.
+
+## Domains are compared as hostnames
+
+A domain is compared as a hostname. After trailing dots are stripped,
+an ASCII character that is not a letter, digit, hyphen, dot or
+underscore refuses the whole value, as does a normalised result that is
+not a plain hostname. Non-ASCII labels are still accepted and compared
+in their punycode form.
 
 ## resolveSenderDomain
 
