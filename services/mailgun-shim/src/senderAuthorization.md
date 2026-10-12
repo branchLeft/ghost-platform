@@ -58,8 +58,17 @@ whose normal form is itself ambiguous is refused, not shipped. A
 control character in a display name is folded to a space, so the name
 always sits inside one quoted string.
 
-The SMTP front door does not need this: it queues the header value
-mailparser has already normalised.
+The SMTP front door uses it too: the header From it checks is the
+value it queues, in the same normal form as the HTTP route. A message
+with no header From queues the envelope sender it already checked.
+
+## Domains are compared as hostnames
+
+A domain is compared as a hostname. After trailing dots are stripped,
+an ASCII character that is not a letter, digit, hyphen, dot or
+underscore refuses the whole value, as does a normalised result that is
+not a plain hostname. Non-ASCII labels are still accepted and compared
+in their punycode form.
 
 ## resolveSenderDomain
 

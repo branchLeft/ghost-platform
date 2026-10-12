@@ -1036,6 +1036,121 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       expect(harness.store.countUndrainedRecipients()).toBe(1);
     });
 
+    describe("the queued 'from' is the value the gate bound, never the header text", () => {
+      // The header is sent raw over the wire (a client library would
+      // normalise it first). The expected value is the gate's own reading,
+      // re-serialised; what is queued must read the same under any parser
+      // version a consumer runs.
+      async function sendHeaderFrom(from: string): Promise<string[]> {
+        harness = await startHarness();
+        const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+        return rawSmtpCommands(harness.port, '127.0.0.1', [
+          'EHLO test',
+          `AUTH PLAIN ${authPlain}`,
+          'MAIL FROM:<noreply@tenant-a.example.com>',
+          'RCPT TO:<member@example.com>',
+          'DATA',
+          `From: ${from}\r\nSubject: hi\r\n\r\nBody\r\n.`,
+          'QUIT',
+        ]);
+      }
+
+      const bound: Array<[string, string, string]> = [
+        [
+          'a comment inside the domain of an angle address',
+          'Name <alice@tenant-a.example.com(x)evil.com>',
+          '"Name evil.com" <alice@tenant-a.example.com>',
+        ],
+        [
+          'an escaped parenthesis that ends a comment early',
+          'Name (a \\) <bob@evil.com> ) <alice@tenant-a.example.com>',
+          '"Name" <alice@tenant-a.example.com>',
+        ],
+        [
+          'a quoted local part, a comment, then a second domain',
+          '"alice"@tenant-a.example.com(x)evil.com',
+          '"evil.com" <alice@tenant-a.example.com>',
+        ],
+        [
+          'a comment right after the @',
+          '<a@(b)tenant-a.example.com>',
+          '"b" <a@tenant-a.example.com>',
+        ],
+        [
+          'a quote and a space inside the domain part',
+          '<"@tenant-a.example.com a.evil.com',
+          '"a.evil.com" <""@tenant-a.example.com>',
+        ],
+      ];
+
+      it.each(bound)('queues the gate-bound normal form for %s', async (_label, raw, expected) => {
+        const responses = await sendHeaderFrom(raw);
+        expect(responses.some((line) => /^250 /.test(line))).toBe(true);
+        const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
+        expect(due).toHaveLength(1);
+        expect(due[0]!.payload.from).toBe(expected);
+        expect(due[0]!.payload.from).not.toBe(raw);
+      });
+
+      it('CONTROL: an ordinary named sender is queued in the quoted shape Ghost sends', async () => {
+        const responses = await sendHeaderFrom('Name <alice@tenant-a.example.com>');
+        expect(responses.some((line) => /^250 /.test(line))).toBe(true);
+        const due = harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
+        expect(due[0]!.payload.from).toBe('"Name" <alice@tenant-a.example.com>');
+      });
+
+      it('refuses an unterminated bracket hiding a foreign mailbox with 550, and queues nothing', async () => {
+        const responses = await sendHeaderFrom(
+          '[ ( ] <alice@tenant-a.example.com> ) <bob@evil.com>'
+        );
+        expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+        expect(harness.store.countUndrainedRecipients()).toBe(0);
+      });
+    });
+
+    describe('a domain is compared as a hostname', () => {
+      const delimited = [
+        'alice@tenant-a.example.com#.evil.com',
+        'alice@tenant-a.example.com/.evil.com',
+        'alice@tenant-a.example.com?.evil.com',
+        'alice@tenant-a.example.com\\.evil.com',
+        'alice@tenant-a.example.com＃.evil.com',
+      ];
+
+      it.each(delimited)(
+        'refuses a header From of %s with 550, and queues nothing',
+        async (raw) => {
+          harness = await startHarness();
+          const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+          const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+            'EHLO test',
+            `AUTH PLAIN ${authPlain}`,
+            'MAIL FROM:<noreply@tenant-a.example.com>',
+            'RCPT TO:<member@example.com>',
+            'DATA',
+            `From: ${raw}\r\nSubject: hi\r\n\r\nBody\r\n.`,
+            'QUIT',
+          ]);
+          expect(responses.some((line) => /^550 /.test(line))).toBe(true);
+          expect(harness.store.countUndrainedRecipients()).toBe(0);
+        }
+      );
+
+      it.each(delimited)('refuses an envelope sender of %s, and queues nothing', async (raw) => {
+        harness = await startHarness();
+        const authPlain = Buffer.from('\u0000tenant-a.example.com\u0000key-a').toString('base64');
+        const responses = await rawSmtpCommands(harness.port, '127.0.0.1', [
+          'EHLO test',
+          `AUTH PLAIN ${authPlain}`,
+          `MAIL FROM:<${raw}>`,
+          'QUIT',
+        ]);
+        expect(responses.some((line) => /^250 .*[Ss]ender/.test(line))).toBe(false);
+        expect(responses.filter((line) => /^[45]\d\d /.test(line)).length).toBeGreaterThan(0);
+        expect(harness.store.countUndrainedRecipients()).toBe(0);
+      });
+    });
+
     it('an enqueue failure (e.g. a SQLite error) returns a generic temporary 4xx, never the raw internal error text, over the real SMTP wire', async () => {
       harness = await startHarness();
       const enqueueSpy = vi.spyOn(harness.store, 'enqueueBatch').mockImplementation(() => {

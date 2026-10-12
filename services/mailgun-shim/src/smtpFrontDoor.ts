@@ -13,7 +13,7 @@ import { containsHeaderInjectionChars } from './mailgunFields.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
 import type { DrainWake } from './drainWake.js';
 import type { Logger } from './log.js';
-import { resolveSenderDomain, senderBelongsToTenant } from './senderAuthorization.js';
+import { boundSender, resolveSenderDomain, senderBelongsToTenant } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
 
 /**
@@ -841,7 +841,9 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             }
             /* v8 ignore stop */
             const headerFrom = parsed.from?.text;
-            if (headerFrom !== undefined && !senderBelongsToTenant(headerFrom, senderDomain)) {
+            const boundHeaderFrom =
+              headerFrom !== undefined ? boundSender(headerFrom, senderDomain) : undefined;
+            if (headerFrom !== undefined && boundHeaderFrom === null) {
               log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
               const err = new Error(
                 '5.7.1 Sender address rejected: domain not authorised for this account'
@@ -854,7 +856,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             const replyTo =
               parsed.replyTo && !Array.isArray(parsed.replyTo) ? parsed.replyTo.text : undefined;
             const subject = parsed.subject ?? '';
-            const from =
+            const rawFrom =
               (parsed.from && parsed.from.text) ||
               /* v8 ignore next -- session.envelope.mailFrom is only ever
                * unset before MAIL FROM has been accepted, and MAIL FROM is
@@ -862,12 +864,15 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
                * before onData can run at all; the ternary's false arm
                * defends a state the protocol never lets this handler see. */
               (session.envelope.mailFrom ? session.envelope.mailFrom.address : '');
+            // What is queued is the value the gate bound, never the header text:
+            // the collector parses it again with its own copy of the parser.
+            const from = boundHeaderFrom || rawFrom;
 
             // Refuses on header injection chars rather than stripping,
             // matching the HTTP route's outcome. See
             // docs/smtp-front-door.md#header-injection-refusal.
             for (const [label, value] of [
-              ['From', from],
+              ['From', rawFrom],
               ['Subject', subject],
               ...(replyTo !== undefined ? ([['Reply-To', replyTo]] as const) : []),
             ] as const) {

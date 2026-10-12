@@ -100,6 +100,31 @@ describe('senderBelongsToTenant', () => {
   });
 });
 
+describe('a domain is compared as a hostname', () => {
+  const T = 'tenant.example.com';
+
+  it.each(['#', '/', '?', '\\', '＃', '／', '@', ':', '%'])(
+    'refuses an address whose domain holds %j, in either function',
+    (char) => {
+      const address = `a@${T}${char}.evil.example`;
+      expect(senderBelongsToTenant(address, T)).toBe(false);
+      expect(boundSender(address, T)).toBeNull();
+    }
+  );
+
+  it('refuses a stored tenant domain that holds a character a hostname cannot', () => {
+    expect(senderBelongsToTenant(`a@${T}`, `${T}#.evil.example`)).toBe(false);
+    expect(senderBelongsToTenant(`a@${T}`, ` ${T}`)).toBe(false);
+  });
+
+  it('still accepts a hostname with an underscore, a digit, a hyphen and an IDN label', () => {
+    expect(senderBelongsToTenant('a@mail_1.tenant-x.example', 'mail_1.tenant-x.example')).toBe(
+      true
+    );
+    expect(senderBelongsToTenant('a@xn--strae-oqa.example', 'straße.example')).toBe(true);
+  });
+});
+
 describe('boundSender', () => {
   const T = 'tenant.example.com';
 

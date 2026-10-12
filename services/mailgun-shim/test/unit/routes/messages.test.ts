@@ -582,6 +582,19 @@ describe('POST /v3/:domain/messages', () => {
       expect(claimOne(store)[0]!.payload.from).toBe(`alice@${DOMAIN}`);
     });
 
+    it.each([
+      `alice@${DOMAIN}#.evil.com`,
+      `alice@${DOMAIN}/.evil.com`,
+      `alice@${DOMAIN}?.evil.com`,
+      `alice@${DOMAIN}\\.evil.com`,
+      `alice@${DOMAIN}＃.evil.com`,
+      `Name <alice@${DOMAIN}#.evil.com>`,
+    ])('refuses a domain that is not a plain hostname (%s), and queues nothing', async (raw) => {
+      const res = await postFrom(raw);
+      expect(res.status).toBe(400);
+      expect(claimOne(store)).toHaveLength(0);
+    });
+
     it('still refuses a foreign mailbox hidden behind an unterminated bracket, and queues nothing', async () => {
       const res = await postFrom(`[ ( ] <alice@${DOMAIN}> ) <bob@evil.com>`);
       expect(res.status).toBe(400);
