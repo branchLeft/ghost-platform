@@ -6,6 +6,13 @@ import { createTestLogger, type TestLogger } from '../../helpers/testLogger.js';
 import { createFakeStore, type FakeShimStore } from '../helpers/fakeStore.js';
 import { ghostStringify } from '../../helpers/ghostAddress.js';
 import { basicAuthHeader, startRouter, type StartedRouter } from '../helpers/startRouter.js';
+import {
+  FOREIGN_SUFFIX,
+  URL_DELIMITERS,
+  hostnameControlRows,
+  mixedCase,
+  nonHostnameRows,
+} from '../helpers/senderDomainRows.js';
 
 const DOMAIN = 'tenant1.example.com';
 const API_KEY = 'tenant1-api-key';
@@ -599,6 +606,78 @@ describe('POST /v3/:domain/messages', () => {
       const res = await postFrom(`[ ( ] <alice@${DOMAIN}> ) <bob@evil.com>`);
       expect(res.status).toBe(400);
       expect(claimOne(store)).toHaveLength(0);
+    });
+  });
+
+  describe('the sender domain is compared as a hostname', () => {
+    function sendFrom(from: string, host = DOMAIN, key = API_KEY) {
+      return fetch(`${server.baseUrl}/v3/${host}/messages`, {
+        method: 'POST',
+        headers: { Authorization: basicAuthHeader('api', key) },
+        body: multipartBody([
+          ['to', 'member@example.com'],
+          ['from', from],
+          ['subject', 'Hi'],
+          ['html', '<p>hi</p>'],
+          ['text', 'hi'],
+          ['recipient-variables', '{}'],
+        ]),
+      });
+    }
+
+    it.each(nonHostnameRows(DOMAIN))(
+      'refuses $label with a 400 and queues nothing',
+      async ({ from }) => {
+        const res = await sendFrom(from);
+
+        expect(res.status).toBe(400);
+        expect(claimOne(store)).toHaveLength(0);
+      }
+    );
+
+    it.each(hostnameControlRows(DOMAIN))(
+      'CONTROL: accepts $label and queues it',
+      async ({ from }) => {
+        const res = await sendFrom(from);
+
+        expect(res.status).toBe(200);
+        expect(claimOne(store)).toHaveLength(1);
+      }
+    );
+
+    it('refuses a delimiter after the domain of a tenant registered at a subdomain', async () => {
+      const host = 'news.tenant2.example.com';
+      store.registerTenant(host, 'tenant2-api-key', host);
+
+      for (const delimiter of URL_DELIMITERS) {
+        const refused = await sendFrom(
+          `alice@${host}${delimiter}${FOREIGN_SUFFIX}`,
+          host,
+          'tenant2-api-key'
+        );
+        expect(refused.status).toBe(400);
+      }
+      expect(claimOne(store)).toHaveLength(0);
+    });
+
+    it('CONTROL: accepts a tenant registered at a subdomain, in mixed case', async () => {
+      const host = 'news.tenant2.example.com';
+      store.registerTenant(host, 'tenant2-api-key', host);
+
+      const accepted = await sendFrom(`alice@${mixedCase(host)}`, host, 'tenant2-api-key');
+
+      expect(accepted.status).toBe(200);
+      expect(claimOne(store)).toHaveLength(1);
+    });
+
+    it('CONTROL: accepts an internationalised sender domain written in its Unicode form', async () => {
+      const host = 'xn--strae-oqa.example';
+      store.registerTenant(host, 'idn-api-key', host);
+
+      const res = await sendFrom('alice@Straße.Example', host, 'idn-api-key');
+
+      expect(res.status).toBe(200);
+      expect(claimOne(store)).toHaveLength(1);
     });
   });
 });

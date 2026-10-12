@@ -5,6 +5,11 @@ import {
   senderBelongsToTenant,
 } from '../../src/senderAuthorization.js';
 import type { Logger } from '../../src/log.js';
+import {
+  DOMAIN_EDGE_WHITESPACE,
+  hostnameControlRows,
+  nonHostnameRows,
+} from './helpers/senderDomainRows.js';
 
 describe('senderBelongsToTenant', () => {
   it('accepts an exact-match bare address', () => {
@@ -163,6 +168,71 @@ describe('boundSender', () => {
 
   it('folds a control character in a display name to a space', () => {
     expect(boundSender(`"A\tB" <a@${T}>`, T)).toBe(`"A B" <a@${T}>`);
+  });
+});
+
+describe('senderBelongsToTenant — the sender domain is compared as a hostname', () => {
+  const TENANT = 'tenant-a.example.com';
+
+  it.each(nonHostnameRows(TENANT))('refuses $label', ({ from }) => {
+    expect(senderBelongsToTenant(from, TENANT)).toBe(false);
+  });
+
+  it.each(hostnameControlRows(TENANT))('CONTROL: accepts $label', ({ from }) => {
+    expect(senderBelongsToTenant(from, TENANT)).toBe(true);
+  });
+
+  it('refuses every ASCII character that is not valid in a hostname, wherever it sits in the stored domain', () => {
+    const hostnameChars = /[A-Za-z0-9._-]/;
+    const letThrough: string[] = [];
+    for (let code = 0; code < 0x80; code++) {
+      const ch = String.fromCharCode(code);
+      if (hostnameChars.test(ch)) {
+        continue;
+      }
+      for (const stored of [`${TENANT}${ch}`, `${ch}${TENANT}`, `tenant-a${ch}.example.com`]) {
+        if (senderBelongsToTenant(`alice@${TENANT}`, stored)) {
+          letThrough.push(`${JSON.stringify(ch)} in ${JSON.stringify(stored)}`);
+        }
+      }
+    }
+    // Any entry here is a character the comparison let through.
+    expect(letThrough).toEqual([]);
+  });
+
+  it('refuses a stored domain that only becomes a hostname once whitespace is trimmed', () => {
+    for (const space of DOMAIN_EDGE_WHITESPACE) {
+      expect(senderBelongsToTenant(`alice@${TENANT}`, `${space}${TENANT}`)).toBe(false);
+      expect(senderBelongsToTenant(`alice@${TENANT}`, `${TENANT}${space}`)).toBe(false);
+    }
+  });
+
+  it('refuses a non-ASCII character that the IDNA mapping turns into a character a hostname cannot hold, on both sides alike', () => {
+    // Each maps to ';', '!!', '+' and '(1)' respectively. The same value on
+    // both sides would otherwise compare equal as the same non-hostname.
+    for (const codePoint of [0x037e, 0x203c, 0x207a, 0x2474]) {
+      const domain = `tenant-a${String.fromCodePoint(codePoint)}.example.com`;
+      expect(senderBelongsToTenant(`alice@${domain}`, domain)).toBe(false);
+    }
+  });
+
+  it('CONTROL: still compares an internationalised domain with its punycode form, in mixed case', () => {
+    expect(senderBelongsToTenant('alice@Straße.Example', 'xn--strae-oqa.example')).toBe(true);
+    expect(senderBelongsToTenant('alice@XN--STRAE-OQA.example', 'straße.example')).toBe(true);
+    expect(senderBelongsToTenant('alice@bücher.example', 'xn--bcher-kva.example')).toBe(true);
+  });
+
+  it('CONTROL: a tenant registered at a subdomain matches exactly that subdomain and not its parent', () => {
+    expect(
+      senderBelongsToTenant('alice@news.tenant-a.example.com', 'news.tenant-a.example.com')
+    ).toBe(true);
+    expect(senderBelongsToTenant('alice@tenant-a.example.com', 'news.tenant-a.example.com')).toBe(
+      false
+    );
+  });
+
+  it('CONTROL: accepts the characters a hostname may hold, hyphen, underscore and digits', () => {
+    expect(senderBelongsToTenant('alice@a-b_c1.example.com', 'a-b_c1.example.com')).toBe(true);
   });
 });
 
