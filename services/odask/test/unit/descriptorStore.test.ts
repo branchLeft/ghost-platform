@@ -286,6 +286,70 @@ describe('DescriptorStore', () => {
     }
   });
 
+  it('a shape-invalid rewrite drops the hostname, and a later unreadable rewrite does not bring it back', async () => {
+    write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-one', gated: false }));
+    const store = makeStore();
+    await store.refresh();
+    expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(true);
+
+    write('t1.json', JSON.stringify({ kind: 'bogus' }));
+    await store.refresh();
+    expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(false);
+
+    write('t1.json', '{ not json');
+    await store.refresh();
+    expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it('a valid rewrite to a different hostname denies the old one and allows the new one', async () => {
+    write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-one', gated: false }));
+    const store = makeStore();
+    await store.refresh();
+
+    write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-three', gated: false }));
+    await store.refresh();
+    expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(false);
+    expect(store.has('tenant-three.sites.publicpress.co.uk')).toBe(true);
+    expect(store.size).toBe(1);
+  });
+
+  it('a file unreadable on one refresh and then removed is dropped on the next refresh', async () => {
+    write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-one', gated: false }));
+    const store = makeStore();
+    await store.refresh();
+
+    chmodSync(join(dir, 't1.json'), 0o000);
+    try {
+      await store.refresh();
+      expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(true);
+    } finally {
+      chmodSync(join(dir, 't1.json'), 0o644);
+    }
+
+    rmSync(join(dir, 't1.json'));
+    await store.refresh();
+    expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(false);
+    expect(store.size).toBe(0);
+  });
+
+  it('keeps the freshness clock advancing while a file stays unreadable, so the carried set is not stale', async () => {
+    write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-one', gated: false }));
+    const store = makeStore();
+    await store.refresh();
+
+    chmodSync(join(dir, 't1.json'), 0o000);
+    try {
+      nowMs += 10 * MAX_STALENESS_MS;
+      expect(store.isStale).toBe(true);
+      await store.refresh();
+      expect(store.isStale).toBe(false);
+      expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(true);
+    } finally {
+      chmodSync(join(dir, 't1.json'), 0o644);
+    }
+  });
+
   it('fails closed once the last good refresh is further in the past than maxStalenessMs', async () => {
     write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-one', gated: false }));
     const store = makeStore({ maxStalenessMs: 1000 });
