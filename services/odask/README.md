@@ -137,9 +137,11 @@ stays unreadable keeps its hostname for as long as the refresh runs, and
 the freshness clock still advances on every refresh that reads the
 directory. A file whose name is later removed from the directory is
 dropped on the next refresh. Carry-over only lasts while the file stays
-in the directory, and making a file unreadable takes write access to
-that directory. A dangling symlink or a directory named `*.json` is
-carried indefinitely too.
+in the directory. Making a descriptor file unreadable, or replacing its
+content with bad JSON, needs ownership of or write access to that file;
+write access to the directory matters only for rename or replace. A
+dangling symlink or a directory named `*.json` is carried indefinitely
+too.
 
 A second call while one is already running joins the first rather than
 starting a competing read. Not `async`, deliberately: an `async`
