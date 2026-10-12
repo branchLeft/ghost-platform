@@ -98,8 +98,18 @@ shim the extracted tree before that move, so the shim holds the move itself:
 `rename(<name>, <name>_<24 hex>)` is recorded, not performed, and `save()`
 performs it only after the tree has been screened clean. A refusal moves
 nothing, so there is nothing to restore. Any other rename, Ghost's restore
-among them, passes straight through. A failure after a clean screen (the copy
-itself failing) is stock Ghost's behaviour, unchanged.
+among them, passes straight through.
+
+**A copy that fails after a clean screen leaves the installed theme alone too.**
+Ghost's restore only renames when the theme name is absent, so a copy that
+stopped part way (the name is present, half written) is never restored at all,
+and the backup is then removed. The shim puts the theme back itself: when the
+copy it performed fails, it removes the partial directory and moves the backup
+back, awaited, before the error leaves `save()`, so what Ghost does next finds
+the installed theme in place. If that put-back fails too, the backup is kept
+on disk and the delete Ghost makes for it is declined and logged. A failure
+after the copy succeeded (loading or activating the theme) is Ghost's own
+behaviour, unchanged.
 
 What is still outside the gate: themes already on a tenant's disk before this
 landed, which keep being served as stored; and the bundled default themes

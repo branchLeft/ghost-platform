@@ -466,6 +466,251 @@ describe('a refused re-upload of an installed theme name', () => {
   });
 });
 
+// A theme store on a real directory, shaped like Ghost's ThemeStorage: a move
+// that refuses an existing destination, a copy into `<root>/<name>`, and a
+// remove. `faults` makes the copy stop after some files or a move fail.
+class DiskThemeStorage {
+  static root = null;
+  static faults = {};
+  static events = [];
+
+  async exists(name) {
+    return fs.stat(path.join(DiskThemeStorage.root, name)).then(
+      () => true,
+      () => false
+    );
+  }
+
+  async rename(src, dest) {
+    DiskThemeStorage.events.push(`rename:${src}>${dest}`);
+    if (DiskThemeStorage.faults.failRename?.(src, dest)) {
+      throw new Error('move refused');
+    }
+    const target = path.join(DiskThemeStorage.root, dest);
+    if (await this.exists(dest)) {
+      throw new Error('destination exists');
+    }
+    await fs.rename(path.join(DiskThemeStorage.root, src), target);
+  }
+
+  async save(file) {
+    DiskThemeStorage.events.push(`save:${file.name}`);
+    const target = path.join(DiskThemeStorage.root, file.name);
+    const { copyFilesBeforeFailing } = DiskThemeStorage.faults;
+    const files = (await fs.readdir(file.path, { recursive: true, withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.join(entry.parentPath, entry.name))
+      .sort();
+    if (copyFilesBeforeFailing === 0) {
+      throw new Error('no space left on device');
+    }
+    await fs.mkdir(target, { recursive: true });
+    let copied = 0;
+    for (const source of files) {
+      if (copied === copyFilesBeforeFailing) {
+        throw new Error('no space left on device');
+      }
+      const dest = path.join(target, path.relative(file.path, source));
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.copyFile(source, dest);
+      copied += 1;
+    }
+    return `/content/themes/${file.name}`;
+  }
+
+  async delete(fileName) {
+    DiskThemeStorage.events.push(`delete:${fileName}`);
+    await fs.rm(path.join(DiskThemeStorage.root, fileName), { recursive: true, force: true });
+  }
+}
+
+// Ghost's setFromZip once the zip has passed its own checks, in the order
+// services/themes/storage.js runs it: the existing theme is moved aside, the
+// copy is made, a failure restores without awaiting the restore before the
+// backup is deleted. Only the calls on the theme store are kept.
+async function ghostSetFromZip(storage, { name, backupName, extracted }, background) {
+  let renamedExisting = false;
+  try {
+    if (await storage.exists(name)) {
+      renamedExisting = true;
+      await storage.rename(name, backupName);
+    }
+    await storage.save({ name, path: extracted });
+    return undefined;
+  } catch (error) {
+    if (renamedExisting) {
+      return storage.exists(name).then((themeExists) => {
+        if (!themeExists) {
+          return storage.rename(backupName, name).then(() => {
+            throw error;
+          });
+        }
+        throw error;
+      });
+    }
+    throw error;
+  } finally {
+    background.push(storage.delete(backupName).catch((err) => err));
+  }
+}
+
+describe('a copy that fails after a clean screen', () => {
+  const BACKUP = 'mine_6acae7f2a177e600014e46bf';
+  const INSTALLED = {
+    'default.hbs': '{{{body}}} INSTALLED',
+    'package.json': '{"name":"mine","version":"1.0.0"}',
+    'partials/nav.hbs': 'NAV',
+    'assets/css/site.css': 'body{}',
+    'assets/images/logo.png': 'LOGO-BYTES',
+  };
+  const REPLACEMENT = {
+    'default.hbs': '{{{body}}} REPLACEMENT',
+    'package.json': '{"name":"mine","version":"2.0.0"}',
+    'partials/nav.hbs': 'NAV-2',
+    'assets/css/site.css': 'body{margin:0}',
+    'assets/images/other.png': 'OTHER-BYTES',
+  };
+  let themesRoot;
+  let extracted;
+
+  async function writeTree(dir, files) {
+    for (const [rel, body] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+      await fs.writeFile(path.join(dir, rel), body);
+    }
+  }
+
+  async function readTree(dir) {
+    const out = {};
+    const entries = await fs.readdir(dir, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        const full = path.join(entry.parentPath, entry.name);
+        out[path.relative(dir, full)] = await fs.readFile(full, 'utf8');
+      }
+    }
+    return out;
+  }
+
+  function gatedOnDisk() {
+    const Gated = defineGatedThemeStorage(DiskThemeStorage, {
+      adapterManager: { getAdapter: () => ({ screenTree: async () => {} }) },
+      GhostErrors,
+    });
+    return new Gated();
+  }
+
+  // Ghost's own call order reaches the gated class as rename() then save():
+  // the gate takes the held move itself, so the stock setFromZip is replayed
+  // on the gated class exactly as it would be on the plain one.
+  async function upload(storage, background = []) {
+    const outcome = await ghostSetFromZip(
+      storage,
+      { name: 'mine', backupName: BACKUP, extracted },
+      background
+    ).catch((err) => err);
+    await Promise.allSettled(background);
+    return outcome;
+  }
+
+  beforeEach(async () => {
+    themesRoot = path.join(tmpDir, 'themes');
+    extracted = path.join(tmpDir, 'extracted');
+    await writeTree(path.join(themesRoot, 'mine'), INSTALLED);
+    await writeTree(extracted, REPLACEMENT);
+    DiskThemeStorage.root = themesRoot;
+    DiskThemeStorage.faults = {};
+    DiskThemeStorage.events = [];
+  });
+
+  it('control: Ghost alone loses the installed theme when the copy stops part way', async () => {
+    DiskThemeStorage.faults = { copyFilesBeforeFailing: 2 };
+    const outcome = await upload(new DiskThemeStorage());
+    expect(outcome.message).toBe('no space left on device');
+    const left = await readTree(path.join(themesRoot, 'mine'));
+    expect(left).not.toEqual(INSTALLED);
+    expect(left['assets/images/logo.png']).toBeUndefined();
+    expect(await fs.readdir(themesRoot)).toEqual(['mine']);
+  });
+
+  it.each([
+    ['part way through the copy', 2],
+    ['before any file is copied', 0],
+    ['on the last file', Object.keys(REPLACEMENT).length - 1],
+  ])('leaves the installed theme byte for byte as it was, failing %s', async (_label, after) => {
+    for (let run = 0; run < 40; run += 1) {
+      DiskThemeStorage.faults = { copyFilesBeforeFailing: after };
+      DiskThemeStorage.events = [];
+      const outcome = await upload(gatedOnDisk());
+      expect(outcome.message).toBe('no space left on device');
+      expect(await readTree(path.join(themesRoot, 'mine'))).toEqual(INSTALLED);
+      expect(await fs.readdir(themesRoot)).toEqual(['mine']);
+    }
+  });
+
+  it.each([0, 1])(
+    'puts the theme back before the failure leaves save() (%i files copied)',
+    async (copied) => {
+      DiskThemeStorage.faults = { copyFilesBeforeFailing: copied };
+      const storage = gatedOnDisk();
+      await storage.rename('mine', BACKUP);
+      const failure = await storage.save({ name: 'mine', path: extracted }).catch((err) => err);
+      expect(failure.message).toBe('no space left on device');
+      expect(DiskThemeStorage.events).toEqual([
+        `rename:mine>${BACKUP}`,
+        'save:mine',
+        'delete:mine',
+        `rename:${BACKUP}>mine`,
+      ]);
+      expect(await readTree(path.join(themesRoot, 'mine'))).toEqual(INSTALLED);
+    }
+  );
+
+  it('keeps the backup, and declines Ghost deleting it, when the theme cannot be put back', async () => {
+    DiskThemeStorage.faults = {
+      copyFilesBeforeFailing: 1,
+      failRename: (src, dest) => src === BACKUP && dest === 'mine',
+    };
+    const storage = gatedOnDisk();
+    const background = [];
+    const outcome = await upload(storage, background);
+    const [deleted] = await Promise.all(background);
+    expect(outcome).toBeInstanceOf(Error);
+    expect(deleted.message).toMatch(/could not be put back/);
+    expect(await readTree(path.join(themesRoot, BACKUP))).toEqual(INSTALLED);
+  });
+
+  it('declines only the one delete, and passes every other delete through', async () => {
+    DiskThemeStorage.faults = {
+      copyFilesBeforeFailing: 1,
+      failRename: (src) => src === BACKUP,
+    };
+    const storage = gatedOnDisk();
+    await storage.rename('mine', BACKUP);
+    await storage.save({ name: 'mine', path: extracted }).catch(() => {});
+    await expect(storage.delete(BACKUP)).rejects.toThrow(/could not be put back/);
+    await storage.delete(BACKUP);
+    expect(await fs.readdir(themesRoot)).toEqual([]);
+  });
+
+  it('removes the backup as Ghost asks when the copy succeeds, and keeps the new theme', async () => {
+    const outcome = await upload(gatedOnDisk());
+    expect(outcome).toBeUndefined();
+    expect(await readTree(path.join(themesRoot, 'mine'))).toEqual(REPLACEMENT);
+    expect(await fs.readdir(themesRoot)).toEqual(['mine']);
+  });
+
+  it('moves nothing and removes nothing when there was no installed theme to replace', async () => {
+    await fs.rm(path.join(themesRoot, 'mine'), { recursive: true });
+    DiskThemeStorage.faults = { copyFilesBeforeFailing: 1 };
+    const storage = gatedOnDisk();
+    await storage.rename('mine', BACKUP);
+    const failure = await storage.save({ name: 'mine', path: extracted }).catch((err) => err);
+    expect(failure.message).toBe('no space left on device');
+    expect(DiskThemeStorage.events).toEqual(['save:mine']);
+  });
+});
+
 describe('defineGatedThemeStorage dependency guards', () => {
   const adapterManager = { getAdapter: () => null };
 
