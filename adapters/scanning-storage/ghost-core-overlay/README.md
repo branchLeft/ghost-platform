@@ -51,7 +51,11 @@ different class. To re-pin:
    `save()` and that nothing else moves a theme. If that order or the backup
    name changes, the held move no longer matches and a refusal is unsafe
    again; the image test that re-uploads an installed theme name repeatedly
-   is what catches it.
+   is what catches it. The put-back also assumes the catch and finally of
+   `setFromZip` behave as read at the pinned version (the restore only renames
+   when the name is absent, and is not awaited before the backup is deleted);
+   `test/unit/theme-gate.test.mjs` replays that order from a hand reading, so
+   re-read the replay against the new file too.
 3. Write `<sha256 of /tmp/theme-storage.js>  theme-storage.js` into
    `theme-storage.upstream.sha256`.
 4. Run `npm run coverage` here and the image test (`npm run test:image`).
