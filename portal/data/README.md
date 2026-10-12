@@ -106,7 +106,8 @@ that constraint is missing. `TenantDb.saveModerationSettings` refuses the same
 ids first with `UnknownCheckError`, all or none, and the tenant is always the
 scope's. It takes row locks in the order the changes are given, so two saves in
 opposite orders can deadlock (one rolls back, cleanly): a caller other than the
-save route must pass the changes sorted by check id. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
+save route must pass the changes in `COMMENT_CHECKS` order, the order the route
+uses. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
 deletes a setting, and the owner role has no grant on it.
 
 ## The owner path
