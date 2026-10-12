@@ -716,7 +716,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
       const message = drained.messages.find((m) => m.subject === `From override via ${key}`);
       expect(message).toBeDefined();
       expect(Object.keys(message!.headers).some((h) => h.toLowerCase() === 'from')).toBe(false);
-      expect(message!.from).toBe(`Tenant <noreply@${TENANT_DOMAIN}>`);
+      expect(message!.from).toBe(`"Tenant" <noreply@${TENANT_DOMAIN}>`);
     }
   });
 
@@ -739,7 +739,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     );
     expect(message).toBeDefined();
     expect(Object.keys(message!.headers).some((h) => h.toLowerCase() === 'from')).toBe(false);
-    expect(message!.from).toBe(`Tenant <noreply@${TENANT_DOMAIN}>`);
+    expect(message!.from).toBe(`"Tenant" <noreply@${TENANT_DOMAIN}>`);
   });
 
   // Review cycle 6: CR, LF and NUL are refused at intake in every

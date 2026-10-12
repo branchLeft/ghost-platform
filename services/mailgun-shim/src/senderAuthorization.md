@@ -34,6 +34,33 @@ is no address to have been provisioned for a tenant, so "couldn't
 parse" is refused exactly like "parsed to something foreign", not
 treated as harmless because nothing definite was found.
 
+## boundSender
+
+The HTTP route's form of the same check: it makes the decision
+`senderBelongsToTenant` makes and returns the value to queue, or null
+when the sender does not belong. The value is what the gate itself
+read, re-serialised in the shape Ghost sends (a present display name
+always double-quoted with backslash and quote escaped, a bare address
+when there is none), not the raw string the tenant submitted.
+
+The raw string is not safe to queue even after it passed. The queue
+hands it on unchanged and the collector composes the outgoing message
+with its own copy of nodemailer's parser. Two parser versions disagree
+about a comment inside a domain, a quoted local part followed by a
+comment, and an escaped parenthesis that closes a comment early; the
+version the gate runs may then name the tenant while the version that
+composes the message names another domain. Shipping the gate's reading
+removes the second parse, so the two cannot differ.
+
+The serialised value is read back through the same parser and must
+name the same mailboxes (same addresses, same cleaned names); a value
+whose normal form is itself ambiguous is refused, not shipped. A
+control character in a display name is folded to a space, so the name
+always sits inside one quoted string.
+
+The SMTP front door does not need this: it queues the header value
+mailparser has already normalised.
+
 ## resolveSenderDomain
 
 The single fail-closed gate both front doors call, exactly once per

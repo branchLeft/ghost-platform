@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import addressparser from 'nodemailer/lib/addressparser/index.js';
 import { createMessagesRouter } from '../../../src/routes/messages.js';
 import { createDrainWake, type DrainWake } from '../../../src/drainWake.js';
 import { createTestLogger, type TestLogger } from '../../helpers/testLogger.js';
@@ -504,5 +505,87 @@ describe('POST /v3/:domain/messages', () => {
     const claimed = claimOne(store);
     expect(claimed).toHaveLength(1);
     expect(Object.keys(claimed[0]!.payload.headers)).toEqual(['Reply-To']);
+    // Ghost's own shape is already the normal form, so it ships unchanged.
+    expect(claimed[0]!.payload.from).toBe(ghostFrom);
+  });
+
+  describe("the queued 'from' is the value the gate bound, never the raw string", () => {
+    // Each raw value is read one way by this shim's parser and another by
+    // an older parser a consumer may still run (nodemailer 9.1.1 in the
+    // collector): the gate used to queue the raw string, so the consumer
+    // could compose a sender the gate never saw. The expected value is the
+    // gate's own reading, re-serialised.
+    const ambiguous: Array<[string, string, string]> = [
+      [
+        'a comment inside the domain of an angle address',
+        `Name <alice@${DOMAIN}(x)evil.com>`,
+        `"Name evil.com" <alice@${DOMAIN}>`,
+      ],
+      [
+        'an escaped parenthesis that ends a comment early (a foreign mailbox hides in it)',
+        `Name (a \\) <bob@evil.com> ) <alice@${DOMAIN}>`,
+        `"Name" <alice@${DOMAIN}>`,
+      ],
+      [
+        'a quoted local part, then a comment, then a second domain',
+        `"user"@${DOMAIN}(x)evil.com`,
+        `"evil.com" <user@${DOMAIN}>`,
+      ],
+      [
+        'a quoted local part, then a comment, then a second domain (second spelling)',
+        `"alice"@${DOMAIN}(x)evil.com`,
+        `"evil.com" <alice@${DOMAIN}>`,
+      ],
+      ['a comment right after the @', `<a@(b)${DOMAIN}>`, `"b" <a@${DOMAIN}>`],
+      ['a comment at the end of the angle address', `<a@${DOMAIN}(b)>`, `"b" <a@${DOMAIN}>`],
+    ];
+
+    async function postFrom(from: string) {
+      return post(
+        multipartBody([
+          ['to', 'member@example.com'],
+          ['from', from],
+          ['subject', 'Hi'],
+          ['html', '<p>hi</p>'],
+          ['text', 'hi'],
+          ['recipient-variables', '{}'],
+        ])
+      );
+    }
+
+    it.each(ambiguous)(
+      'queues the gate-bound normal form for %s',
+      async (_label, raw, expectedFrom) => {
+        const res = await postFrom(raw);
+        expect(res.status).toBe(200);
+        const claimed = claimOne(store);
+        expect(claimed).toHaveLength(1);
+        const queued = claimed[0]!.payload.from;
+        expect(queued).toBe(expectedFrom);
+        expect(queued).not.toBe(raw);
+        // Read back by the parser the shim itself uses: one mailbox, the tenant's domain.
+        const reread = addressparser(queued, { flatten: true });
+        expect(reread.map((entry) => entry.address)).toHaveLength(1);
+        expect(reread[0]!.address!.endsWith(`@${DOMAIN}`)).toBe(true);
+      }
+    );
+
+    it('CONTROL: an ordinary named sender is queued in the same quoted shape Ghost sends', async () => {
+      const res = await postFrom(`Name <alice@${DOMAIN}>`);
+      expect(res.status).toBe(200);
+      expect(claimOne(store)[0]!.payload.from).toBe(`"Name" <alice@${DOMAIN}>`);
+    });
+
+    it('CONTROL: a bare address is queued bare', async () => {
+      const res = await postFrom(`alice@${DOMAIN}`);
+      expect(res.status).toBe(200);
+      expect(claimOne(store)[0]!.payload.from).toBe(`alice@${DOMAIN}`);
+    });
+
+    it('still refuses a foreign mailbox hidden behind an unterminated bracket, and queues nothing', async () => {
+      const res = await postFrom(`[ ( ] <alice@${DOMAIN}> ) <bob@evil.com>`);
+      expect(res.status).toBe(400);
+      expect(claimOne(store)).toHaveLength(0);
+    });
   });
 });
