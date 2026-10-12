@@ -37,7 +37,7 @@ test('the ungated-environment check reads the environment the job declares', () 
 test('the hosts stack keeps `production` and shares nothing with the demo host', () => {
   const text = fs.readFileSync(path.join(WORKFLOWS, 'infra-hosts-ci.yml'), 'utf8');
   assert.deepEqual(environmentsDeclared(text), ['production']);
-  assert.deepEqual(environmentsQueried(text), ['production']);
+  assert.deepEqual(environmentsQueried(text), ['production', 'production']);
 });
 
 test('the matchers see a drifted workflow', () => {

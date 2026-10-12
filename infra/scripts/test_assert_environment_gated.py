@@ -33,6 +33,16 @@ class Cli(unittest.TestCase):
     def test_app_only_exits_zero(self):
         self.assertEqual(self.run_cli(NO_ENV, APP), 0)
 
+    def test_disabled_app_rule_exits_nonzero(self):
+        disabled = {"custom_deployment_protection_rules": [
+            {"id": 1, "enabled": False, "app": {"id": 5090756, "slug": "branchleft-reviewer"}}]}
+        self.assertNotEqual(self.run_cli(NO_ENV, disabled), 0)
+
+    def test_other_app_exits_nonzero(self):
+        other = {"custom_deployment_protection_rules": [
+            {"id": 1, "enabled": True, "app": {"id": 5, "slug": "example-app"}}]}
+        self.assertNotEqual(self.run_cli(NO_ENV, other), 0)
+
     def test_nothing_exits_nonzero(self):
         self.assertNotEqual(self.run_cli(NO_ENV, NO_RULES), 0)
 
