@@ -29,6 +29,16 @@ the only thing the landing page is given: the request is not an argument, so a
 URL, a form field or a header cannot name a tenant. Without a scope a tenant
 query does not compile, and the database refuses an unbound one.
 
+## Moderation settings
+
+`/moderation` shows the mandatory floor read-only and the comment checks as one
+form that posts to `/moderation/save`. The save is refused whole for a tenant
+whose kind is not exactly `REAL` and for any request that names an absolute or
+mandatory-floor check anywhere in a field name (`NotConfigurableError`, from
+`assertConfigurable`), then for any field the page does not send. The article
+checks are not saved yet and stay disabled. The `tenantKind` seam is not wired
+in `main.ts`, so every tenant is a demo until it is.
+
 ## Why two applications
 
 A token issued to one application is refused by the other, by client id, by

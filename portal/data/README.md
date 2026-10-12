@@ -91,6 +91,22 @@ gate; its caller will be the step that turns a demo user into a paying tenant,
 not built here). Only the version in force can be accepted. Text in this layer is
 placeholder only; the real wording is supplied by the owner.
 
+## Moderation settings
+
+`portal.moderation_setting` holds one row per tenant and comment check: on or
+off, and a sensitivity, with who changed it and when. A tenant has a row only
+for a check it has saved; the page shows placeholder defaults for the rest, and
+nothing in the platform reads these rows yet.
+
+The table is closed to the configurable comment checks. A database constraint
+(`moderation_setting_check_configurable`) refuses any other check id, so a
+mandatory-floor or absolute check cannot be stored even by a statement that
+skips the code, and the manifest's shape check (M21) refuses a server in which
+that constraint is missing. `TenantDb.saveModerationSettings` refuses the same
+ids first with `UnknownCheckError`, all or none, and the tenant is always the
+scope's. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
+deletes a setting, and the owner role has no grant on it.
+
 ## The owner path
 
 `portal/data` exports `./tenant` and `./owner` separately. Tenant-facing code

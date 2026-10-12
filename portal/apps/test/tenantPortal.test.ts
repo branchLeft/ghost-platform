@@ -405,23 +405,24 @@ describe('the tenant moderation page, through the route', () => {
     }
   );
 
-  it('gives a REAL tenant the page: disabled controls, the floor, no form and no dead link', async () => {
+  it('gives a REAL tenant the page: the floor, one save form of comment controls, no dead link', async () => {
     const server = await withKind(async () => 'REAL');
     try {
       const browser = new Browser(server.origin);
       await signIn(browser, tenantToken(ORG_A));
       const page = await browser.request('/moderation');
       // The shell's own sign-out form sits in the header, outside <main>; the
-      // settings body is what must carry no form, action or dead link.
+      // settings body carries one form, to the save route, and no link.
       const main = page.body.slice(page.body.indexOf('<main>'));
       expect(main).toContain('FLOOR_HEADING');
       expect(main).toContain('SETTINGS_NOT_YET_SAVED');
-      expect(main).not.toContain('<form');
-      expect(main).not.toContain('action=');
+      expect(main.match(/<form\b/g)).toHaveLength(1);
+      expect(main).toContain('action="/moderation/save"');
       expect(main).not.toContain('href=');
-      expect(main).not.toContain('/moderation/save');
       expect(main).not.toContain('/moderation/appeal');
-      expect(main).not.toMatch(/<input(?![^>]*\bdisabled\b)/);
+      for (const field of main.match(/<(input|select)\b[^>]*>/g) ?? []) {
+        expect(field).toMatch(/name="comment\.[a-z_]+\.(enabled|sensitivity)"/);
+      }
     } finally {
       await server.close();
     }

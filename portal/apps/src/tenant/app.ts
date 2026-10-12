@@ -9,7 +9,7 @@ import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
-import { moderationBody, type TenantKind } from './moderationSettings.js';
+import { moderationBody, saveModeration, type TenantKind } from './moderationSettings.js';
 
 export interface TenantPortalOptions {
   readonly issuer: string;
@@ -77,7 +77,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
       return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}`;
     },
     pages: {
-      '/moderation': (scope) => moderationBody(scope, options.tenantKind),
+      '/moderation': (scope) =>
+        moderationBody(scope, options.tenantKind, (bound) => options.db.moderationSettings(bound)),
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([
@@ -95,6 +96,17 @@ export function createTenantPortal(options: TenantPortalOptions) {
       },
     },
     actions: {
+      '/moderation/save': async (scope, identity, form) => {
+        await saveModeration({
+          scope,
+          kindOf: options.tenantKind,
+          store: options.db,
+          updatedBy: identity.subject,
+          form,
+          now: now(),
+        });
+        return '/moderation';
+      },
       '/documents/accept': async (scope, identity, form) => {
         const kind = form.get('kind') ?? '';
         const version = Number(form.get('version'));

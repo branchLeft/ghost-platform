@@ -188,3 +188,63 @@ export const documentAcceptance = portal
     ]
   )
   .enableRLS();
+
+/**
+ * The comment checks a tenant may configure, and the sensitivities each takes.
+ * Nothing outside this list can be stored: the table below refuses any other
+ * check, so a mandatory or absolute check is not a row this table can hold.
+ */
+export const COMMENT_CHECKS = [
+  'harassment',
+  'spam',
+  'sexual_content',
+  'self_harm',
+  'off_topic',
+] as const;
+export type CommentCheck = (typeof COMMENT_CHECKS)[number];
+
+export const SENSITIVITIES = ['low', 'medium', 'high'] as const;
+export type Sensitivity = (typeof SENSITIVITIES)[number];
+
+const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(', ');
+
+/**
+ * A tenant's choice for one comment check: on or off, and how sensitive. One
+ * row per tenant and check, replaced in place, with who changed it and when.
+ * A tenant has a row only for a check it has saved; the page shows a
+ * placeholder default for the rest. Isolated like every tenant table, and the
+ * closed list of checks is a database constraint as well as a code rule.
+ */
+export const moderationSetting = portal
+  .table(
+    'moderation_setting',
+    {
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      checkId: text('check_id').notNull(),
+      enabled: boolean('enabled').notNull(),
+      sensitivity: text('sensitivity').notNull(),
+      updatedBy: text('updated_by').notNull(),
+      updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      primaryKey({ columns: [table.tenantId, table.checkId] }),
+      check(
+        'moderation_setting_check_configurable',
+        sql`${table.checkId} IN (${sql.raw(sqlList(COMMENT_CHECKS))})`
+      ),
+      check(
+        'moderation_setting_sensitivity_known',
+        sql`${table.sensitivity} IN (${sql.raw(sqlList(SENSITIVITIES))})`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
