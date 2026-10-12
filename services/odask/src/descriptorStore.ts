@@ -58,6 +58,8 @@ function hasValidShapeForServing(
  */
 export class DescriptorStore {
   private served: ReadonlySet<string> = new Set();
+  // Descriptor file name to the hostname it served on the last good refresh.
+  private servedByFile: ReadonlyMap<string, string> = new Map();
   private readonly descriptorDir: string;
   private readonly zones: { platformZone: string; ownedDomains: readonly string[] };
   private readonly maxStalenessMs: number;
@@ -110,8 +112,10 @@ export class DescriptorStore {
   }
 
   /**
-   * Rebuilds the served set atomically from a caller's point of view; a
-   * per-file parse/shape failure excludes only that file. Not `async`
+   * Rebuilds the served set atomically from a caller's point of view. A
+   * per-file shape or hostname failure excludes only that file; a per-file
+   * read or parse failure keeps the hostname that file served last good
+   * refresh (see the README's refresh section). Not `async`
    * so two overlapping callers join the same Promise rather than racing.
    * See ../README.md#descriptorstore-refresh.
    */
@@ -140,13 +144,27 @@ export class DescriptorStore {
     }
 
     const next = new Set<string>();
+    const nextByFile = new Map<string, string>();
     for (const file of files) {
       const full = path.join(this.descriptorDir, file);
       let raw: unknown;
       try {
         raw = JSON.parse(await readFile(full, 'utf8'));
       } catch (error) {
-        this.onSkippedFile(file, `unreadable or not valid JSON: ${(error as Error).message}`);
+        // A failed read says nothing about the hostname, so keep the one this
+        // file served on the last good refresh instead of dropping it.
+        const previous = this.servedByFile.get(file);
+        const reason = `unreadable or not valid JSON: ${(error as Error).message}`;
+        if (previous === undefined) {
+          this.onSkippedFile(file, reason);
+        } else {
+          this.onSkippedFile(
+            file,
+            `${reason}; carried hostname "${previous}" from the last good refresh`
+          );
+          next.add(previous);
+          nextByFile.set(file, previous);
+        }
         continue;
       }
       if (!hasValidShapeForServing(raw)) {
@@ -163,8 +181,10 @@ export class DescriptorStore {
         continue;
       }
       next.add(hostname);
+      nextByFile.set(file, hostname);
     }
     this.served = next;
+    this.servedByFile = nextByFile;
     this.lastGoodRefreshAtMs = this.now();
   }
 }
