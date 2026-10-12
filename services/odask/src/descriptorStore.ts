@@ -58,6 +58,8 @@ function hasValidShapeForServing(
  */
 export class DescriptorStore {
   private served: ReadonlySet<string> = new Set();
+  // Descriptor file name to the hostname it served on the last good refresh.
+  private servedByFile: ReadonlyMap<string, string> = new Map();
   private readonly descriptorDir: string;
   private readonly zones: { platformZone: string; ownedDomains: readonly string[] };
   private readonly maxStalenessMs: number;
@@ -140,6 +142,7 @@ export class DescriptorStore {
     }
 
     const next = new Set<string>();
+    const nextByFile = new Map<string, string>();
     for (const file of files) {
       const full = path.join(this.descriptorDir, file);
       let raw: unknown;
@@ -147,6 +150,13 @@ export class DescriptorStore {
         raw = JSON.parse(await readFile(full, 'utf8'));
       } catch (error) {
         this.onSkippedFile(file, `unreadable or not valid JSON: ${(error as Error).message}`);
+        // A failed read says nothing about the hostname, so keep the one this
+        // file served on the last good refresh instead of dropping it.
+        const previous = this.servedByFile.get(file);
+        if (previous !== undefined) {
+          next.add(previous);
+          nextByFile.set(file, previous);
+        }
         continue;
       }
       if (!hasValidShapeForServing(raw)) {
@@ -163,8 +173,10 @@ export class DescriptorStore {
         continue;
       }
       next.add(hostname);
+      nextByFile.set(file, hostname);
     }
     this.served = next;
+    this.servedByFile = nextByFile;
     this.lastGoodRefreshAtMs = this.now();
   }
 }

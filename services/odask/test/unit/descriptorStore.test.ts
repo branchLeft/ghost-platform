@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -260,6 +260,30 @@ describe('DescriptorStore', () => {
     expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(true);
     expect(store.size).toBe(1);
     expect(skipped.at(-1)?.reason).toContain('directory unreadable');
+  });
+
+  it('keeps serving a hostname whose descriptor file is unreadable on a refresh, across consecutive refreshes', async () => {
+    write('t1.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-one', gated: false }));
+    write('t2.json', tenantDescriptorJson({ kind: 'ours', sub: 'tenant-two', gated: false }));
+    const store = makeStore();
+    await store.refresh();
+    expect(store.size).toBe(2);
+
+    // Mode 000 makes the file unreadable to this process, as a transient
+    // EACCES would. Its hostname must stay allowed while the read fails.
+    chmodSync(join(dir, 't1.json'), 0o000);
+    try {
+      await store.refresh();
+      expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(true);
+      expect(store.has('tenant-two.sites.publicpress.co.uk')).toBe(true);
+      expect(skipped.at(-1)).toEqual(expect.objectContaining({ file: 't1.json' }));
+
+      await store.refresh();
+      expect(store.has('tenant-one.sites.publicpress.co.uk')).toBe(true);
+      expect(store.size).toBe(2);
+    } finally {
+      chmodSync(join(dir, 't1.json'), 0o644);
+    }
   });
 
   it('fails closed once the last good refresh is further in the past than maxStalenessMs', async () => {
