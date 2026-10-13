@@ -6,7 +6,7 @@ import { requireTenantForDomain } from '../auth.js';
 import type { Logger } from '../log.js';
 import { parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
-import { resolveSenderDomain, senderBelongsToTenant } from '../senderAuthorization.js';
+import { boundSender, resolveSenderDomain } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
 import type { DrainWake } from '../drainWake.js';
 
@@ -89,7 +89,12 @@ export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Log
       // can still tell tenants apart. A real Mailgun 400 for "not a valid
       // address" is the shape this mirrors — permanent, not one of the
       // codes worth an automatic retry.
-      if (!senderBelongsToTenant(fields.from, senderDomain)) {
+
+      // What is queued is the value the gate bound, not the raw string: the
+      // collector re-parses `from` with its own copy of the parser.
+      // See senderAuthorization.md#boundsender.
+      const boundFrom = boundSender(fields.from, senderDomain);
+      if (boundFrom === null) {
         res
           .status(400)
           .json({ message: `'from' address must belong to the domain ${senderDomain}` });
@@ -122,7 +127,7 @@ export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Log
         domain,
         emailId,
         payload: {
-          from: fields.from,
+          from: boundFrom,
           subject: fields.subject,
           html: fields.html,
           text: fields.text,

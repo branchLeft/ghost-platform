@@ -1,9 +1,8 @@
 import { domainToASCII } from 'node:url';
 // nodemailer's own address parser, not a new dependency: `mailparser`
-// (already a dependency here) requires this exact internal path itself
-// (node_modules/mailparser/lib/mail-parser.js does
-// `require('nodemailer/lib/addressparser')`), and nodemailer ships no
-// `exports` map restricting it — verified against the installed package.
+// (already a dependency here) uses the same parser itself, and nodemailer's
+// `exports` map still serves this path (its `./lib/*.js` pattern) — the
+// typecheck and the unit suite fail if a release stops serving it.
 // It restores quoting a bare split would lose (`_recoverAddrSpec`), so a
 // quoted local part containing '@' or ',' can't be misread as a second
 // address or a different domain. No published types for this internal
@@ -89,15 +88,20 @@ function extractDomain(address: string): string | null {
   return normalizeDomain(address.slice(at + 1));
 }
 
+interface Mailbox {
+  name: string;
+  address: string;
+}
+
 /**
- * Every mailbox address a header value names, flattened out of any RFC
- * 5322 group syntax. Returns null — never an empty array — for a value
- * this shim cannot get at least one real mailbox out of (missing, blank,
- * unparseable, or a group with nothing in it), so a caller's `!addresses`
- * check refuses "couldn't tell" the same way it refuses "didn't belong"
- * rather than treating an unreadable sender as vacuously fine.
+ * Every mailbox a header value names, flattened out of any RFC 5322
+ * group syntax. Returns null — never an empty array — for a value this
+ * shim cannot get at least one real mailbox out of (missing, blank,
+ * unparseable, or a group with nothing in it), so a caller's null check
+ * refuses "couldn't tell" the same way it refuses "didn't belong" rather
+ * than treating an unreadable sender as vacuously fine.
  */
-function extractAddresses(headerValue: string | null | undefined): string[] | null {
+function extractMailboxes(headerValue: string | null | undefined): Mailbox[] | null {
   if (headerValue === null || headerValue === undefined) {
     return null;
   }
@@ -111,8 +115,18 @@ function extractAddresses(headerValue: string | null | undefined): string[] | nu
   } catch {
     return null;
   }
-  const addresses = parsed.map((entry) => entry.address).filter((a): a is string => Boolean(a));
-  return addresses.length > 0 ? addresses : null;
+  const mailboxes: Mailbox[] = [];
+  for (const entry of parsed) {
+    if (entry.address) {
+      mailboxes.push({ name: entry.name ?? '', address: entry.address });
+    }
+  }
+  return mailboxes.length > 0 ? mailboxes : null;
+}
+
+function extractAddresses(headerValue: string | null | undefined): string[] | null {
+  const mailboxes = extractMailboxes(headerValue);
+  return mailboxes ? mailboxes.map((mailbox) => mailbox.address) : null;
 }
 
 /**
@@ -133,6 +147,97 @@ export function senderBelongsToTenant(
     return false;
   }
   return addresses.every((address) => extractDomain(address) === normalizedTenantDomain);
+}
+
+/** A display name with any control character folded to a space and a trailing backslash or whitespace dropped, so it sits inside one quoted string. */
+function cleanDisplayName(name: string): string {
+  let cleaned = '';
+  for (const char of name) {
+    const code = char.charCodeAt(0);
+    cleaned += code < 0x20 || code === 0x7f ? ' ' : char;
+  }
+  // A backslash (or whitespace) at the very end is dropped: serialised it would sit
+  // immediately before the closing quote as an escaped backslash, which older address
+  // parsers read as an escaped quote. Scan-then-slice, not a trailing-anchored regex.
+  let end = cleaned.length;
+  while (end > 0 && (cleaned.charCodeAt(end - 1) === 0x5c || /\s/.test(cleaned.charAt(end - 1)))) {
+    end--;
+  }
+  return cleaned.slice(0, end).trim();
+}
+
+/** True when the text holds whitespace (any the regular-expression engine counts) or a C0 or C1 control character. */
+function holdsWhitespaceOrControl(text: string): boolean {
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || /\s/.test(char)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Ghost's own shape: a present name is always double-quoted (backslash and quote escaped), an absent one leaves the bare address. */
+function serialiseMailboxes(mailboxes: Mailbox[]): string {
+  return mailboxes
+    .map((mailbox) =>
+      mailbox.name
+        ? `"${mailbox.name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" <${mailbox.address}>`
+        : mailbox.address
+    )
+    .join(', ');
+}
+
+/**
+ * The sender a submission may carry, as the gate itself read it: the same
+ * decision as `senderBelongsToTenant`, returning the parsed mailboxes
+ * re-serialised in Ghost's shape to queue, or null when they do not belong
+ * (or the normal form does not read back as the same mailboxes). Queueing
+ * the raw string would let a later parser read another sender out of it.
+ * See senderAuthorization.md#boundsender.
+ */
+export function boundSender(
+  headerValue: string | null | undefined,
+  tenantDomain: string
+): string | null {
+  const parsed = extractMailboxes(headerValue);
+  if (!parsed) {
+    return null;
+  }
+  const normalizedTenantDomain = normalizeDomain(tenantDomain);
+  if (!normalizedTenantDomain) {
+    return null;
+  }
+  if (!parsed.every((mailbox) => extractDomain(mailbox.address) === normalizedTenantDomain)) {
+    return null;
+  }
+  // The local part is compared and queued as the parser read it, but the domain
+  // is queued as the normal form that was compared (never the spelling that was
+  // submitted: trailing dots, case, IDN mappings), and a local part holding
+  // whitespace is refused (a long header line is folded at whitespace).
+  const mailboxes: Mailbox[] = [];
+  for (const mailbox of parsed) {
+    const at = mailbox.address.lastIndexOf('@');
+    const local = mailbox.address.slice(0, at);
+    if (at < 0 || holdsWhitespaceOrControl(local)) {
+      return null;
+    }
+    mailboxes.push({
+      name: cleanDisplayName(mailbox.name),
+      address: `${local}@${normalizedTenantDomain}`,
+    });
+  }
+  const serialised = serialiseMailboxes(mailboxes);
+  const reread = extractMailboxes(serialised);
+  const sameMailboxes =
+    reread !== null &&
+    reread.length === mailboxes.length &&
+    reread.every(
+      (mailbox, index) =>
+        mailbox.address === mailboxes[index]!.address &&
+        cleanDisplayName(mailbox.name) === mailboxes[index]!.name
+    );
+  return sameMailboxes ? serialised : null;
 }
 
 /** The minimal shape `resolveSenderDomain` needs — satisfied by a real `Tenant` (store.ts) without importing it here. */

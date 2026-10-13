@@ -1,5 +1,14 @@
 # messages.ts
 
+## The queued from is the bound value
+
+The `from` the batch row carries is what `boundSender` returned, not the
+field as submitted: the mailboxes the gate parsed and checked,
+re-serialised. The drain hands the row to the collector unchanged and
+the collector parses it again; queuing the raw string would let a value
+that two parser versions read differently pass the check under one and
+be sent under the other. See senderAuthorization.md#boundsender.
+
 ## Reply-To and Sender are not checked
 
 Reply-To is deliberately NOT checked here — it names where a
