@@ -104,8 +104,10 @@ here would duplicate that gate and give this service an opinion on
 fields it never reads. What this service needs is narrower and load-
 bearing on its own: is the descriptor shaped enough for render-core's
 `servedHostnameOf` to read `kind` and `hostname` at all, so a corrupt or
-half-written file is excluded from the served set rather than crashing
-the refresh or being read as some other variant's fields.
+file with a wrong shape is excluded from the served set rather than
+crashing the refresh or being read as some other variant's fields. A
+file that cannot be read or parsed at all (a half-written rewrite, a
+transient EACCES) is handled differently: see the refresh section.
 
 ### descriptorStore DescriptorStore
 
@@ -126,8 +128,20 @@ point of view: `has()` keeps answering from the previous set until this
 completes, and a directory read failure leaves the previous set intact
 rather than clearing it — up to `maxStalenessMs`, past which `has()`
 fails closed on its own regardless of what `served` still holds. A
-per-file parse or shape failure is narrower: that one file is excluded
-and the refresh continues.
+per-file shape or hostname failure is narrower: that one file is
+excluded and the refresh continues. A per-file read or parse failure
+keeps the hostname that file served on the last good refresh, so one
+transient bad read does not drop a live allow; the skip reason says
+`carried hostname "..."`. Carry-over has no upper bound: a file that
+stays unreadable keeps its hostname for as long as the refresh runs, and
+the freshness clock still advances on every refresh that reads the
+directory. A file whose name is later removed from the directory is
+dropped on the next refresh. Carry-over only lasts while the file stays
+in the directory. Making a descriptor file unreadable, or replacing its
+content with bad JSON, needs ownership of or write access to that file;
+write access to the directory matters only for rename or replace. A
+dangling symlink or a directory named `*.json` is carried indefinitely
+too.
 
 A second call while one is already running joins the first rather than
 starting a competing read. Not `async`, deliberately: an `async`

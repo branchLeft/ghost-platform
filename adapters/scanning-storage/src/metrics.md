@@ -56,3 +56,8 @@ zero from the first write, so the first increment of a counter is visible to
   is how a reader tells.
 - The verdict channel's own health is observed only as the outcomes above.
   There is no separate "channel up" probe.
+- `scanning_storage_verdict_errors_total` counts only what the check itself
+  sees: its own timeout and a thrown error. A hold decided inside the
+  production client (its own budgets, a transport error, a malformed answer)
+  arrives as an `unavailable` verdict and is counted in
+  `scanning_storage_verdicts_total` only (`production-verdict-client.md`).

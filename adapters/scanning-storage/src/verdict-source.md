@@ -3,11 +3,18 @@
 ## Default is closed
 
 `resolveVerdictSource` is the one place that decides what answers a
-verdict question. Until the real channel exists there are two outcomes:
+verdict question. There are three outcomes:
 
 - `storage__<feature>__verdictSource=in-process-fake` selects the
   in-process fake, seeded by `refuse`, `unavailable` and `resolvePath`.
   This is the demo, dev and test path, and it is explicit.
+- `storage__<feature>__verdictSource=production` selects the production
+  client (`production-verdict-client.md`) over a transport that code passes as
+  the second argument, `{ transport, logger }`. The entry file passes none
+  yet, so naming `production` there is the third outcome below: no source,
+  every upload refused. Budgets are `verdictConnectTimeoutMs` and
+  `verdictTotalTimeoutMs`; a value set but not a positive number is also no
+  source, with the cause in the result's `configError`.
 - Anything else, including unset, selects no source at all. The decorator
   then refuses every new upload with a typed 503 (it never seals a digest,
   never writes to quarantine, and never reaches the wrapped adapter), and

@@ -171,14 +171,16 @@ class PrecheckBehaviourTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("REACHED THE END", r.stdout)
 
-    def test_a_rename_redirect_warns_and_names_both_repositories(self):
+    def test_a_rename_redirect_warns_without_printing_either_repository_name(self):
+        # The run log is public: the repository names are not printed (the
+        # lint in test_provision_tenant_flow_gate guards the workflow text).
         r = self._run(
             "branchLeft/ghost-tenant-blog",
             api_stdout="branchLeft/ghost-tenant-blog-gcp",
             api_exit=0,
         )
         self.assertIn("::warning::", r.stdout)
-        self.assertIn("branchLeft/ghost-tenant-blog-gcp", r.stdout)
+        self.assertNotIn("ghost-tenant-blog", r.stdout)
         self.assertIn("renamed", r.stdout)
 
     def test_a_case_difference_still_refuses(self):

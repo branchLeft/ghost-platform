@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveSenderDomain, senderBelongsToTenant } from '../../src/senderAuthorization.js';
+import {
+  boundSender,
+  resolveSenderDomain,
+  senderBelongsToTenant,
+} from '../../src/senderAuthorization.js';
 import type { Logger } from '../../src/log.js';
 import {
   DOMAIN_EDGE_WHITESPACE,
@@ -98,6 +102,72 @@ describe('senderBelongsToTenant', () => {
 
   it('refuses when the stored tenant domain itself is unparseable', () => {
     expect(senderBelongsToTenant('a@tenant.example.com', '')).toBe(false);
+  });
+});
+
+describe('a domain is compared as a hostname', () => {
+  const T = 'tenant.example.com';
+
+  it.each(['#', '/', '?', '\\', '\u{FF03}', '\u{FF0F}', '@', ':', '%'])(
+    'refuses an address whose domain holds %j, in either function',
+    (char) => {
+      const address = `a@${T}${char}.evil.example`;
+      expect(senderBelongsToTenant(address, T)).toBe(false);
+      expect(boundSender(address, T)).toBeNull();
+    }
+  );
+
+  it('refuses a stored tenant domain that holds a character a hostname cannot', () => {
+    expect(senderBelongsToTenant(`a@${T}`, `${T}#.evil.example`)).toBe(false);
+    expect(senderBelongsToTenant(`a@${T}`, ` ${T}`)).toBe(false);
+  });
+
+  it('still accepts a hostname with an underscore, a digit, a hyphen and an IDN label', () => {
+    expect(senderBelongsToTenant('a@mail_1.tenant-x.example', 'mail_1.tenant-x.example')).toBe(
+      true
+    );
+    expect(senderBelongsToTenant('a@xn--strae-oqa.example', 'straße.example')).toBe(true);
+  });
+});
+
+describe('boundSender', () => {
+  const T = 'tenant.example.com';
+
+  it("returns the gate-parsed mailbox in Ghost's quoted shape, not the raw string", () => {
+    expect(boundSender(`Name <a@${T}>`, T)).toBe(`"Name" <a@${T}>`);
+    expect(boundSender(`a@${T}`, T)).toBe(`a@${T}`);
+  });
+
+  it("leaves Ghost's own output unchanged, including an escaped quote and backslash in the name", () => {
+    const ghost = '"a \\"b\\" \\\\ c" <a@tenant.example.com>';
+    expect(boundSender(ghost, T)).toBe(ghost);
+  });
+
+  it('drops a comment that sits inside the domain, so no later reader can read a second domain', () => {
+    expect(boundSender(`Name <a@${T}(x)evil.com>`, T)).toBe(`"Name evil.com" <a@${T}>`);
+    expect(boundSender(`"a"@${T}(x)evil.com`, T)).toBe(`"evil.com" <a@${T}>`);
+  });
+
+  it('keeps a foreign mailbox that hides behind an escaped parenthesis out of the result', () => {
+    expect(boundSender(`Name (a \\) <b@evil.com> ) <a@${T}>`, T)).toBe(`"Name" <a@${T}>`);
+  });
+
+  it('keeps every mailbox of a multi-address value, in order', () => {
+    expect(boundSender(`A <a@${T}>, b@${T}`, T)).toBe(`"A" <a@${T}>, b@${T}`);
+  });
+
+  it('refuses what senderBelongsToTenant refuses', () => {
+    expect(boundSender('a@evil.example', T)).toBeNull();
+    expect(boundSender(`a@${T}, b@evil.example`, T)).toBeNull();
+    expect(boundSender(`[ ( ] <a@${T}> ) <b@evil.com>`, T)).toBeNull();
+    expect(boundSender('', T)).toBeNull();
+    expect(boundSender(null, T)).toBeNull();
+    expect(boundSender('undisclosed-recipients:;', T)).toBeNull();
+    expect(boundSender(`a@${T}`, '')).toBeNull();
+  });
+
+  it('folds a control character in a display name to a space', () => {
+    expect(boundSender(`"A\tB" <a@${T}>`, T)).toBe(`"A B" <a@${T}>`);
   });
 });
 
