@@ -377,7 +377,7 @@ jobs:
           # repository is itself the disclosure that a tenant is a customer.
           case "$TENANT" in
             website | edge | db | monitoring | nextcloud1 | mail-spool)
-              fail "tenant_name '$TENANT' is reserved: a host already runs a Compose stack of that name, and a tenant taking it would overwrite that stack's directory, secrets file and systemd unit."
+              fail "tenant_name is reserved: a host already runs a Compose stack of that name, and a tenant taking it would overwrite that stack's directory, secrets file and systemd unit."
               ;;
           esac
 
@@ -468,14 +468,9 @@ jobs:
           # Not a check on the media bucket, because there cannot be one: the
           # credential that could see it is the tenant's own, and this workflow
           # deliberately holds no credential that reaches any tenant's media.
-          # Stated in the summary instead, where the operator who created the
-          # bucket can compare it against what they created.
-          # Display only. The authoritative derivation is `mediaBucketName` in
-          # the tenant component, which is what the container is configured
-          # with; this echo and the job summary's two below exist so the
-          # operator can compare against the bucket they created. They are not
-          # a second source of truth, and nothing reads them back.
-          echo "this tenant's media bucket will be branchleft-media-${TENANT}"
+          # The bucket's name is not printed: a run log is public, and the name
+          # embeds the tenant's slug. The authoritative derivation is
+          # `mediaBucketName` in the tenant component.
 
           # `gh repo view` follows a rename redirect, so it reports a name as
           # taken when nothing occupies it. GitHub keeps a renamed repository's
@@ -508,9 +503,9 @@ jobs:
           existing_lower=$(printf '%s' "$existing_repo" | tr '[:upper:]' '[:lower:]')
           requested_lower=$(printf '%s' "$TENANT_REPO" | tr '[:upper:]' '[:lower:]')
           if [ "$existing_lower" = "$requested_lower" ]; then
-            fail "$TENANT_REPO already exists -- onboarding is create-only. This is also what stops an existing tenant's hand-set passphrase being minted over, which would rotate a live stack's wrapping key without re-wrapping its checkpoint."
+            fail "the tenant repository already exists -- onboarding is create-only. This is also what stops an existing tenant's hand-set passphrase being minted over, which would rotate a live stack's wrapping key without re-wrapping its checkpoint."
           elif [ -n "$existing_repo" ]; then
-            echo "::warning::$TENANT_REPO does not exist -- the name redirects to $existing_repo, which means it was renamed. The name is free and creating the repository here will disable that redirect, so existing links to $TENANT_REPO will stop resolving to $existing_repo."
+            echo "::warning::the requested repository name does not exist -- the name redirects to a repository that was renamed. The name is free and creating the repository here will disable that redirect, so existing links to the old name will stop resolving."
           fi
 
       # Before the repository exists, and before anything is minted. A missing
@@ -582,7 +577,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "::error::${TENANT_REPO} was created but the template content did not appear within 60s. Nothing further has run; recover per the runbook, starting with deleting the repo."
+          echo "::error::the tenant repository was created but the template content did not appear within 60s. Nothing further has run; recover per the runbook, starting with deleting the repo."
           exit 1
 
       # The substitution list lives in the template, not here. Which files carry
@@ -644,7 +639,7 @@ jobs:
           # `ghost-tenant-blog`'s hand-set passphrase is a repository secret,
           # which is exactly the shape this refuses.
           if gh api "repos/${TENANT_REPO}/actions/secrets/PULUMI_CONFIG_PASSPHRASE" --silent 2>/dev/null; then
-            echo "::error::${TENANT_REPO} already holds a repository-level PULUMI_CONFIG_PASSPHRASE. Refusing to overwrite it: minting over an existing tenant rotates a live stack's wrapping key without re-wrapping the checkpoint, and the value being replaced is not recoverable from here."
+            echo "::error::the tenant repository already holds a repository-level PULUMI_CONFIG_PASSPHRASE. Refusing to overwrite it: minting over an existing tenant rotates a live stack's wrapping key without re-wrapping the checkpoint, and the value being replaced is not recoverable from here."
             exit 1
           fi
 
@@ -671,7 +666,7 @@ jobs:
             # discovered: choosing private for a tenant also chooses that their
             # deploy cannot be gated.
             gh api --method PUT "repos/${TENANT_REPO}/environments/production" --silent
-            echo "::warning::${TENANT_REPO} is private, so its production environment carries no required reviewer -- protection rules are public-repository-only on this plan. Its secrets are still scoped to the deploy job."
+            echo "::warning::the tenant repository is private, so its production environment carries no required reviewer -- protection rules are public-repository-only on this plan. Its secrets are still scoped to the deploy job."
           else
             if [ -z "$TENANT_ENVIRONMENT_REVIEWERS" ]; then
               echo "::error::the TENANT_ENVIRONMENT_REVIEWERS repository variable is unset. It is the reviewers array for the tenant's production environment, e.g. [{\"type\":\"User\",\"id\":1234567}]. Refusing to create an environment with no protection rule while the template and doc 14 both state that one gates this tenant's deploy credentials."
@@ -685,13 +680,13 @@ jobs:
             # exactly the state this exists to prevent, and reports success.
             rules=$(gh api "repos/${TENANT_REPO}/environments/production" \
               --jq '[.protection_rules[].type] | join(",")') || {
-                echo "::error::could not read back ${TENANT_REPO}'s production environment. Refusing to continue without confirming its protection rule."
+                echo "::error::could not read back the tenant repository's production environment. Refusing to continue without confirming its protection rule."
                 exit 1
               }
             case ",$rules," in
-              *,required_reviewers,*) echo "${TENANT_REPO} production protection rules: $rules" ;;
+              *,required_reviewers,*) echo "the tenant repository's production protection rules: $rules" ;;
               *)
-                echo "::error::${TENANT_REPO}'s production environment came back with protection rules '$rules' and no required reviewer. Check TENANT_ENVIRONMENT_REVIEWERS names a principal with access to that repository."
+                echo "::error::the tenant repository's production environment came back with protection rules '$rules' and no required reviewer. Check TENANT_ENVIRONMENT_REVIEWERS names a principal with access to that repository."
                 exit 1
                 ;;
             esac
@@ -702,7 +697,7 @@ jobs:
           echo "TENANT_PULUMI_PASSPHRASE=$PASSPHRASE" >> "$GITHUB_ENV"
 
           {
-            echo "## ${TENANT}'s Pulumi secrets passphrase — escrowed ciphertext"
+            echo "## Pulumi secrets passphrase — escrowed ciphertext"
             echo
             echo "Base64 of the passphrase under RSA-OAEP/SHA-256 to the escrow key"
             echo "in \`infra/provisioning/escrow/\`. Decrypt it now, into the password"
@@ -736,14 +731,14 @@ jobs:
           set -euo pipefail
           ruleset_file=infra/provisioning/scripts/tenant-default-branch-ruleset.json
           if [ "$TENANT_VISIBILITY" = "private" ]; then
-            echo "::warning::${TENANT_REPO} is private: repository rulesets are not available on a private repository on this plan, so its default branch is NOT protected. Skipping the ruleset; the run does not fail."
+            echo "::warning::the tenant repository is private: repository rulesets are not available on a private repository on this plan, so its default branch is NOT protected. Skipping the ruleset; the run does not fail."
             exit 0
           fi
           ruleset_name=$(jq -r '.name' "$ruleset_file")
           existing_id=$(gh api "repos/${TENANT_REPO}/rulesets" \
             | jq -r --arg name "$ruleset_name" '[.[] | select(.name == $name) | .id] | first // empty')
           if [ -n "$existing_id" ]; then
-            echo "${TENANT_REPO} already has ruleset '${ruleset_name}' (id ${existing_id}); updating it in place"
+            echo "The tenant repository already has ruleset '${ruleset_name}' (id ${existing_id}); updating it in place"
             gh api --method PUT "repos/${TENANT_REPO}/rulesets/${existing_id}" --input "$ruleset_file" --silent
           else
             gh api --method POST "repos/${TENANT_REPO}/rulesets" --input "$ruleset_file" --silent
@@ -754,10 +749,10 @@ jobs:
             --jq '[.[].type] | sort | join(",")')
           expected="deletion,non_fast_forward,pull_request"
           if [ "$rules" != "$expected" ]; then
-            echo "::error::${TENANT_REPO} main reads back as rules '${rules}', not '${expected}'. Refusing to continue with an unprotected default branch."
+            echo "::error::the tenant repository's default branch reads back as rules '${rules}', not '${expected}'. Refusing to continue with an unprotected default branch."
             exit 1
           fi
-          echo "${TENANT_REPO} default branch protection rules: ${rules}"
+          echo "The tenant repository's default branch protection rules: ${rules}"
 
       # A second copy of the transport, in a form that can be downloaded rather
       # than reselected out of rendered markdown. Both expire; the password
@@ -840,7 +835,7 @@ jobs:
           set -euo pipefail
           config="Pulumi.${TENANT}.yaml"
           if [ ! -f "$config" ]; then
-            echo "::error::$config is missing after stack initialisation; refusing to continue"
+            echo "::error::the stack config file is missing after stack initialisation; refusing to continue"
             exit 1
           fi
           # Anchored and counted rather than "find the first one". Pulumi writes
@@ -848,12 +843,12 @@ jobs:
           # what the deletion step will recognise, and a silent mismatch there
           # commits the salt.
           if [ "$(grep -c '^encryptionsalt:' "$config" || true)" != "1" ]; then
-            echo "::error::expected exactly one line in $config starting with 'encryptionsalt:'; refusing to continue"
+            echo "::error::expected exactly one line in the stack config file starting with 'encryptionsalt:'; refusing to continue"
             exit 1
           fi
           SALT=$(sed -n 's/^encryptionsalt:[[:space:]]*//p' "$config")
           if [ -z "$SALT" ]; then
-            echo "::error::the encryptionsalt line in $config carries no value; refusing to continue"
+            echo "::error::the encryptionsalt line in the stack config file carries no value; refusing to continue"
             exit 1
           fi
           # Masked before anything else in this job can print it: the deletion
@@ -863,7 +858,7 @@ jobs:
           case "$SALT" in
             v1:*) ;;
             *)
-              echo "::error::the encryptionsalt in $config does not carry Pulumi's 'v1:' prefix; refusing to publish a value this tenant's CI would reject"
+              echo "::error::the encryptionsalt in the stack config file does not carry Pulumi's 'v1:' prefix; refusing to publish a value this tenant's CI would reject"
               exit 1
               ;;
           esac
@@ -942,11 +937,11 @@ jobs:
           # reported as "no such secret" would be a false cause in the one place
           # it costs most.
           if ! gh api "repos/${TENANT_REPO}/environments/production/secrets/PULUMI_ENCRYPTION_SALT" --silent; then
-            echo "::error::could not confirm a PULUMI_ENCRYPTION_SALT secret on ${TENANT_REPO}'s production environment (the API response is above). Refusing to delete the salt from $config: nothing else would then restore it for that repo's own deploy job."
+            echo "::error::could not confirm a PULUMI_ENCRYPTION_SALT secret on the tenant repository's production environment (the API response is above). Refusing to delete the salt from the stack config file: nothing else would then restore it for that repo's own deploy job."
             exit 1
           fi
           if [ "$(sed -n 's/^encryptionsalt:[[:space:]]*//p' "$config")" != "$TENANT_PULUMI_SALT" ]; then
-            echo "::error::$config no longer carries the salt published to ${TENANT_REPO}'s PULUMI_ENCRYPTION_SALT secret. Refusing to delete a value that secret cannot restore."
+            echo "::error::the stack config file no longer carries the salt published to the tenant repository's PULUMI_ENCRYPTION_SALT secret. Refusing to delete a value that secret cannot restore."
             exit 1
           fi
           sed -i '/^encryptionsalt:/d' "$config"
@@ -956,7 +951,7 @@ jobs:
           # the deletion above, which is the point -- the deletion removes what
           # Pulumi writes, and this decides whether anything is left.
           if ! python3 scripts/assert-no-committed-pulumi-secrets.py --scan-tree . "$config"; then
-            echo "::error::refusing to commit $config: the tenant's committed-secret guard did not clear this tree"
+            echo "::error::refusing to commit the stack config file: the tenant's committed-secret guard did not clear this tree"
             exit 1
           fi
 
@@ -1023,18 +1018,14 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Provisioning: ${TENANT}"
+            echo "## Provisioning: complete"
             echo
-            echo "- repo: \`${TENANT_REPO}\` (\`${TENANT_VISIBILITY}\`)"
-            echo "- state backend: \`${TENANT_BACKEND_URL}\`"
-            echo "- app host: \`${APP_HOST_PRIVATE_IP}\` private, \`${APP_HOST_SSH_ADDRESS}\` for CI"
-            echo "- uid: \`${TENANT_UID}\`, host port: \`${HOST_PORT}\`"
-            echo "- media bucket: \`branchleft-media-${TENANT}\` at \`${PLATFORM_MEDIA_ENDPOINT}\`"
-            echo "- media URL base: \`${PLATFORM_MEDIA_ENDPOINT}/branchleft-media-${TENANT}\`"
+            echo "This public log does not print the tenant's identifying values: its slug,"
+            echo "repository name, storage bucket or host addresses."
             echo
             echo "The media bucket is created and fenced by an operator, not by this run:"
             echo "Object Storage credentials cannot be created over any Hetzner API, only in"
-            echo "the Cloud Console. If the bucket above does not exist, or exists without the"
+            echo "the Cloud Console. If this tenant's bucket does not exist, or exists without the"
             echo "policy from \`render-media-bucket-policy.py\`, this tenant's uploads fail"
             echo "after a deploy that reported success — and an unfenced bucket is reachable"
             echo "by every S3 key in the project."
@@ -1042,14 +1033,14 @@ jobs:
             echo "### Still to do, in this order"
             echo
             echo "1. Decrypt and file the escrowed passphrase above."
-            echo "2. Create \`branchleft-media-${TENANT}\`, its lifecycle rule, its"
+            echo "2. Create this tenant's media bucket, its lifecycle rule, its"
             echo "   bucket policy and this tenant's Object Storage credential, then run"
             echo "   the verification probes. Nothing in this run did any of it, and a"
             echo "   missing bucket is uploads failing after a deploy that reported success."
-            echo "3. \`provision_tenant_db.py ${TENANT}\` on the database host, as root."
-            echo "4. \`provision_tenant_volume.py --uid ${TENANT_UID} ${TENANT}\` on the app host, as root."
-            echo "5. Write \`/etc/branchleft/${TENANT}.env\` and \`/opt/branchleft/${TENANT}/compose.yml\` from the stack's outputs, then \`systemctl enable branchleft-compose@${TENANT}\`."
-            echo "6. \`provision_deploy_slot.py --public-key-file /dev/stdin ${TENANT}\` on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
+            echo "3. Run the database provisioning script for this tenant, on the database host, as root."
+            echo "4. Run the volume provisioning script for this tenant, with its UID, on the app host, as root."
+            echo "5. Write this tenant's env file and compose file from the stack's outputs, then enable its systemd unit."
+            echo "6. Run the deploy-slot provisioning script for this tenant, on the app host, and set \`APP_HOST_DEPLOY_KEY\` on this tenant repo's \`production\` environment."
             echo "7. Add this tenant's site block, with its \`edgeRequestBodyMaxSize\`, to the edge site registry."
             echo "8. Complete and merge the handover pull request."
             echo

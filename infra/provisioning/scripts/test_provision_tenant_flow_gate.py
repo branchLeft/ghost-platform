@@ -480,5 +480,102 @@ class TheGateCannotBeOpenedAroundItsScript(unittest.TestCase):
             "gate")
 
 
+# A value that identifies a tenant or its infrastructure. Run logs and job
+# summaries of this public repository are public, so a line that prints one
+# of these leaks it. The escrow ciphertext is deliberately not on this list.
+_IDENTITY_VARIABLE = re.compile(
+    r"\$\{?(TENANT|TENANT_REPO|TENANT_UID|HOST_PORT|APP_HOST_[A-Z_]+"
+    r"|TENANT_BACKEND_URL|PLATFORM_MEDIA_ENDPOINT|config)\b\}?"
+    r"|branchleft-media-")
+
+# A line that writes to the log, the job summary or the step's annotations.
+# printf counts only when it is not piped or redirected: this workflow uses
+# printf to write files and to feed pipes, and echo to print.
+_PRINTING_LINE = re.compile(
+    r"\b(echo|fail)\b|::(error|warning|notice)::|GITHUB_STEP_SUMMARY"
+    r"|\bprintf\b(?![^|>]*[|>])")
+
+
+def _identity_prints(text):
+    """Yield (line number, line) for each printing line that interpolates an
+    identity value. Only the text from the print keyword on is checked, so a
+    guard such as `[[ -n "$X" ]] || fail "..."` does not print `$X`. A line
+    continued with a trailing backslash carries its printing status to the
+    next line, so a multi-line echo is one print; a line that begins with a
+    pipe is the continuation of a command's output, not a print."""
+    carried = False
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith(("#", "|")):
+            carried = False
+            continue
+        match = _PRINTING_LINE.search(stripped)
+        if match:
+            scope = stripped[match.start():]
+        else:
+            scope = stripped if carried else None
+        carried = (match is not None or carried) and stripped.endswith("\\")
+        if scope is not None and _IDENTITY_VARIABLE.search(scope):
+            yield number, line.rstrip()
+
+
+def _workflow_texts():
+    directory = os.path.join(_REPO_ROOT, ".github", "workflows")
+    for name in sorted(os.listdir(directory)):
+        if name.endswith((".yml", ".yaml")):
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                yield os.path.join(".github", "workflows", name), fh.read()
+
+
+class PrintedOutputCarriesNoTenantIdentity(unittest.TestCase):
+    """The lint that keeps tenant identity out of public run logs. It reads
+    every workflow in this repository, so a new workflow is covered without
+    being named here. A line that prints a slug, repository name, bucket or
+    app-host address fails it, and the failure names the line."""
+
+    def test_no_printing_line_in_any_workflow_names_a_tenant_identity_value(self):
+        offenders = [
+            f"{path}:{number}: {line.strip()}"
+            for path, text in _workflow_texts()
+            for number, line in _identity_prints(text)
+        ]
+        self.assertEqual(
+            offenders, [],
+            "a printing line (echo, fail, an annotation or the job summary) "
+            "interpolates a tenant identity value into a public run log:\n"
+            + "\n".join(offenders))
+
+    def test_the_lint_flags_each_identity_name_when_printed(self):
+        """Control case: the lint can see what it looks for."""
+        for sample in (
+                'echo "tenant ${TENANT}"',
+                'echo "$TENANT_REPO is private"',
+                'fail "$TENANT_UID out of range"',
+                'echo "$APP_HOST_PRIVATE_IP"',
+                'echo "$TENANT_BACKEND_URL"',
+                'echo "$PLATFORM_MEDIA_ENDPOINT/x"',
+                'echo "branchleft-media-x"',
+                'echo "$config is missing"',
+                '::warning::${TENANT_REPO} is private',
+                '{ echo "## ${TENANT}"; } >> "$GITHUB_STEP_SUMMARY"',
+                'printf \'%s\\n\' "$HOST_PORT"'):
+            self.assertTrue(list(_identity_prints(sample)), sample)
+
+    def test_the_lint_passes_what_is_not_a_print_or_not_an_identity(self):
+        """Control case: the lint does not flag the transport it must keep."""
+        for sample in (
+                'echo "$ESCROW"',
+                'printf \'%s\' "$TENANT_REPO" | tr A-Z a-z',
+                'printf \'%s\\n\' "$ESCROW" > escrow.b64',
+                '# echo "$TENANT" in a comment',
+                'pulumi config set slug "$TENANT" --stack "$TENANT"',
+                'echo "TENANT_PULUMI_PASSPHRASE=$PASSPHRASE" >> "$GITHUB_ENV"'):
+            self.assertEqual(list(_identity_prints(sample)), [], sample)
+
+    def test_a_continued_print_is_one_print(self):
+        sample = 'echo "ok" \\\n  "${TENANT}"'
+        self.assertEqual([n for n, _ in _identity_prints(sample)], [2])
+
+
 if __name__ == "__main__":
     unittest.main()
