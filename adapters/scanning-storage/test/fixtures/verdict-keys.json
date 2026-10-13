@@ -1,0 +1,13 @@
+{
+  "note": "Perceptual hash (verdict key) of each fixture image, by sha256 of its bytes. Checked against the real decoder by test/unit/fixture-keys.test.mjs; read by the image tests, which have no decoder of their own.",
+  "keys": {
+    "4fdb0ae8213405d8b8d712c92e32eeaa835a726a1f846ddd98960f83ec8cf7e4": {
+      "file": "clean.png",
+      "key": "Vk7cwtgEjZoJbju2qg7p+rIZqZcKs1w3N4bD+b/ABYU="
+    },
+    "8d828569218959cf3fb6351da6d8c40b58864b559e0f16a1b8b582ddcd38dce5": {
+      "file": "bad.png",
+      "key": "vbsofY2rKl/G/ABdXaIgXXcC14D/gNcoKnNXAi5YVao="
+    }
+  }
+}
