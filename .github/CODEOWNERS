@@ -1,28 +1,118 @@
-* @branchLeft/branchleft-admin
+# Code owners for gating files only. A file listed here
+# judges or gates a merge or a deploy, so the owner approves it. Every other
+# file is unowned: an agent PR touching only those merges on the reviewer App's
+# approval. There is deliberately no catch-all line, and none may be added.
+# GitHub matches case-sensitively and has no character classes, so a name word
+# is listed in its lower-case, Capitalised and UPPER-case spellings. Check an
+# edit with the codeowners/errors API: an empty list is the only signal that
+# every entry resolved (an owner without write access is dropped silently).
 
-# Verified live on 2026-09-22: GitHub reports no CODEOWNERS errors here, which
-# is the only signal that an entry resolved: a listed owner without write access
-# is dropped silently, with no error and no warning on the pull request. "The
-# file says so" is not evidence that an entry resolved — an owner without write access is
-# ignored silently.
-#
-# The try-it-now programme's reviewer identity — branchLeft/workspace#1171.
-# CODEOWNERS takes the LAST matching pattern, so this line sets the owners for
-# the tree: the reviewer account, plus the admin team so Rob's own approval
-# path is unchanged.
-#
-# The shared line above stays. SYNC-1 is `contains`, not `identical`: a repo may
-# add to this file and may never drop a shared line, and rewriting that line in
-# place is dropping it.
-* @branchLeft/branchleft-admin
+# CI workflows, actions and CI config: they decide pass or fail on every PR.
+/.github/                                        @branchLeft/branchleft-admin
+**/.github/workflows/                            @branchLeft/branchleft-admin
+**/.github/actions/                              @branchLeft/branchleft-admin
+
+# CODEOWNERS and ruleset or branch-protection files: they say who must approve.
+**/CODEOWNERS                                    @branchLeft/branchleft-admin
+**/codeowners                                    @branchLeft/branchleft-admin
+**/CodeOwners                                    @branchLeft/branchleft-admin
+**/*ruleset*                                     @branchLeft/branchleft-admin
+**/*Ruleset*                                     @branchLeft/branchleft-admin
+**/*RULESET*                                     @branchLeft/branchleft-admin
+**/*branch-protection*                           @branchLeft/branchleft-admin
+**/*Branch-Protection*                           @branchLeft/branchleft-admin
+**/*BRANCH-PROTECTION*                           @branchLeft/branchleft-admin
+**/*branch_protection*                           @branchLeft/branchleft-admin
+**/*Branch_Protection*                           @branchLeft/branchleft-admin
+**/*BRANCH_PROTECTION*                           @branchLeft/branchleft-admin
+**/*branchprotection*                            @branchLeft/branchleft-admin
+**/*BranchProtection*                            @branchLeft/branchleft-admin
+**/*BRANCHPROTECTION*                            @branchLeft/branchleft-admin
+
+# Standards escape hatches and the registry: the merge script refuses them at any depth.
+**/.standardsignore                              @branchLeft/branchleft-admin
+**/.standards.mode                               @branchLeft/branchleft-admin
+**/.standards-db-tooling                         @branchLeft/branchleft-admin
+**/AUTHORISATIONS.md                             @branchLeft/branchleft-admin
+
+# Gate scripts at any depth (merge script: a scripts dir, or guard, approv, deploy in a name).
+**/scripts/                                      @branchLeft/branchleft-admin
+**/*guard*                                       @branchLeft/branchleft-admin
+**/*Guard*                                       @branchLeft/branchleft-admin
+**/*GUARD*                                       @branchLeft/branchleft-admin
+**/*approv*                                      @branchLeft/branchleft-admin
+**/*Approv*                                      @branchLeft/branchleft-admin
+**/*APPROV*                                      @branchLeft/branchleft-admin
+**/*deploy*                                      @branchLeft/branchleft-admin
+**/*Deploy*                                      @branchLeft/branchleft-admin
+**/*DEPLOY*                                      @branchLeft/branchleft-admin
+
+# Root CI inputs: what format, lint and the root guard tests run, and what they skip.
+/package.json                                    @branchLeft/branchleft-admin
+/eslint.config.js                                @branchLeft/branchleft-admin
+/.prettierignore                                 @branchLeft/branchleft-admin
+/.gitignore                                      @branchLeft/branchleft-admin
+/.pre-commit-config.yaml                         @branchLeft/branchleft-admin
+/.python-version                                 @branchLeft/branchleft-admin
+/*.test.js                                       @branchLeft/branchleft-admin
+
+# Test runner configs: they set the coverage floors and which files are excluded.
+**/vitest.config.*                               @branchLeft/branchleft-admin
+**/vitest.local.config.*                         @branchLeft/branchleft-admin
+
+# Image build inputs push workflows ship: digest pins, non-root user, fail-closed entrypoint.
+/Dockerfile                                      @branchLeft/branchleft-admin
+/docker-entrypoint.branchleft.sh                 @branchLeft/branchleft-admin
+/portal/Dockerfile                               @branchLeft/branchleft-admin
+/services/*/Dockerfile                           @branchLeft/branchleft-admin
+**/*.sha256                                      @branchLeft/branchleft-admin
+
+# Upload block: scanning decorator verdict client, policy, refusals, theme gate, image proof.
+/adapters/scanning-storage/src/                  @branchLeft/branchleft-admin
+/adapters/scanning-storage/ghost-core-overlay/   @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
+
+# Storage gateway: its signature, credential and tenant-scope refusals stop cross-tenant requests.
+/services/storage-gateway/src/                   @branchLeft/branchleft-admin
+
+# Tenant isolation: the CI check that fails the build when a tenant table is not isolated.
+/portal/data/src/checkIsolation.ts               @branchLeft/branchleft-admin
+/portal/data/src/isolation.ts                    @branchLeft/branchleft-admin
+
+# Provisioning refusals, and the escrow public key that tenant passphrases are encrypted to.
+/infra/provisioning/                             @branchLeft/branchleft-admin
+
+# Pulumi programs CI applies to production, with their project and location guards.
+/infra/hosts/                                    @branchLeft/branchleft-admin
+/infra/demo-host/                                @branchLeft/branchleft-admin
+
+# Reviewed output diff: the golden list of tenant output changes the tests hold to.
+/infra/tenant/test/golden/                       @branchLeft/branchleft-admin
+
+# Root-run host provisioning and database deploy directories, each proven by a CI job.
+/app/                                            @branchLeft/branchleft-admin
+/control/                                        @branchLeft/branchleft-admin
+/db/                                             @branchLeft/branchleft-admin
+/demo-host/                                      @branchLeft/branchleft-admin
+
+# CSP gate verdicts, the hash derivation they use, and the pinned widget and Kalotyp bundles.
+/csp/gate/                                       @branchLeft/branchleft-admin
+/csp/derive/                                     @branchLeft/branchleft-admin
+/widgets/pins.json                               @branchLeft/branchleft-admin
+/widgets/verify-pins.test.mjs                    @branchLeft/branchleft-admin
+/vendor/kalotyp/verify-kalotyp.test.mjs          @branchLeft/branchleft-admin
+
+# Upgrade gates: release classifier's fail-closed allowlist, ring controller's backup-then-apply.
+/services/release-classifier/src/                @branchLeft/branchleft-admin
+/services/ring-controller/src/                   @branchLeft/branchleft-admin
 
 # branchLeft/standards templates/codeowners, synced whole (SYNC-1: these six
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
 # after or between them would silently take ownership of an escape hatch).
-/.standardsignore        @branchLeft/branchleft-admin
-/.standards.mode         @branchLeft/branchleft-admin
-/.docs-lint*             @branchLeft/branchleft-admin
-/tools/floors.tsv        @branchLeft/branchleft-admin
-/.standards-db-tooling   @branchLeft/branchleft-admin
-/.github/                @branchLeft/branchleft-admin
+/.standardsignore                                @branchLeft/branchleft-admin
+/.standards.mode                                 @branchLeft/branchleft-admin
+/.docs-lint*                                     @branchLeft/branchleft-admin
+/tools/floors.tsv                                @branchLeft/branchleft-admin
+/.standards-db-tooling                           @branchLeft/branchleft-admin
+/.github/                                        @branchLeft/branchleft-admin
