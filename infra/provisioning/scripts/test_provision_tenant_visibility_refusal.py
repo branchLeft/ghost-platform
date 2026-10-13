@@ -124,8 +124,8 @@ class APrivateTenantIsRefused(unittest.TestCase):
         self.assertNotEqual(rc, 0, out)
         self.assertIn("::error::", out)
         self.assertIn("refused by this public provisioning workflow", out)
-        self.assertIn("controller", out)
-        self.assertIn("hand runbook", out)
+        self.assertIn("the owner's to run", out)
+        self.assertIn("No agent or hand run", out)
 
 
 class APublicTenantStillPasses(unittest.TestCase):
