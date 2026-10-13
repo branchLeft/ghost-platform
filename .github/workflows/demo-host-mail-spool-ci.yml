@@ -1,0 +1,94 @@
+name: Demo host mail spool CI
+
+# Runs scripts/test-demo-mail-spool.sh: the render-core spool stack on a real
+# dockerd inside a privileged Docker-in-Docker stand-in for demo1, behind the
+# real container-egress policy. Its sabotage run must fail.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - render-core/src/spool.ts
+      - demo-host/provision/branchleft_demo_egress.sh
+      - scripts/test-demo-mail-spool.sh
+      - scripts/render-mail-spool-compose.mjs
+      - scripts/mail-spool-proof/**
+      - .github/workflows/demo-host-mail-spool-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - render-core/src/spool.ts
+      - demo-host/provision/branchleft_demo_egress.sh
+      - scripts/test-demo-mail-spool.sh
+      - scripts/render-mail-spool-compose.mjs
+      - scripts/mail-spool-proof/**
+      - .github/workflows/demo-host-mail-spool-ci.yml
+
+# `packages: read` because render-core's dev dependency @branchleft/tsconfig is
+# hosted on GitHub Packages.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  spool-proof:
+    name: mail spool proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: render-core/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: npm
+          cache-dependency-path: render-core/package-lock.json
+
+      - name: Build render-core
+        working-directory: render-core
+        run: |
+          npm ci
+          npm run build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Shellcheck
+        run: shellcheck scripts/test-demo-mail-spool.sh
+
+      - name: Run the spool proof
+        run: ./scripts/test-demo-mail-spool.sh
+
+      - name: Sabotage -- each break must turn the named assertion red
+        run: |
+          sabotage() {
+            mode="$1"
+            shift
+            log="$(mktemp)"
+            if SABOTAGE="$mode" ./scripts/test-demo-mail-spool.sh >"$log" 2>&1; then
+              echo "::error::SABOTAGE=$mode stayed green"
+              exit 1
+            fi
+            for line in "$@"; do
+              grep -qF "$line" "$log" || {
+                echo "::error::SABOTAGE=$mode: expected the line: $line"
+                cat "$log"
+                exit 1
+              }
+            done
+          }
+          sabotage open-route \
+            "FAIL: the spool cannot open a connection to a host outside"
+          sabotage no-spool \
+            "FAIL: Ghost's SMTP path (transactional) is accepted" \
+            "FAIL: Ghost's Mailgun-shaped path (bulk) is accepted" \
+            "FAIL: the queue holds"
+          sabotage wrong-message \
+            "PASS: the queue holds both messages" \
+            "FAIL: the drained messages are ["
