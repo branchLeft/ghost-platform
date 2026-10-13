@@ -106,6 +106,9 @@
 /services/release-classifier/src/                @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
 
+# Speckify config: the contract check's source and the publish target of the broker API package.
+/speckify.yaml                                   @branchLeft/branchleft-admin
+
 # branchLeft/standards templates/codeowners, synced whole (SYNC-1: these six
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
