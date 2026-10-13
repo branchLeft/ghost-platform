@@ -892,16 +892,15 @@ jobs:
       # each tenant its own is a separate, still-open piece of work.
       #
       # **What that scoping does NOT bound, stated rather than implied.** This
-      # credential is not scoped per stack. Once read, it lists and deletes
-      # `.pulumi/stacks/*` for every tenant in the bucket -- and destroying a
-      # checkpoint needs no ability to decrypt it. The environment gate bounds
-      # which job may read it, not what it reaches. Bounding the reach itself
-      # needs Hetzner's per-bucket key allowlisting, whose behaviour on
-      # `ListBucket` is undemonstrated and whose account caps may not fit 100
-      # tenants. What IS bounded, by name in the
-      # validation step above, is the direction that matters most -- this is
-      # never the estate's own bucket, so the reach stops before the checkpoint
-      # the production hcloud token lives in.
+      # credential is not scoped per stack. Once read, it reads, writes and
+      # deletes `.pulumi/stacks/*` for every tenant, as each tenant's own deploy
+      # job does for its own. None of that needs decryption: plaintext outputs,
+      # config and the salt are readable, and a checkpoint can be rewritten or
+      # destroyed. The environment gate bounds which job may read it, not what it
+      # reaches; bounding that needs Hetzner's per-bucket key allowlisting, whose
+      # `ListBucket` behaviour is undemonstrated and whose account caps may not
+      # fit 100 tenants. What IS bounded, by name in the validation step above,
+      # is that this is never the estate's own bucket.
       - name: Write the tenant repo's state credentials and variables
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
