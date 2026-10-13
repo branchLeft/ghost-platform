@@ -69,6 +69,7 @@ const FIRST = '0000_binding_functions';
 const REGISTER = '0001_tenant_register';
 const HEALTH = '0002_health_reading';
 const DOCUMENTS = '0003_versioned_documents';
+const MODERATION = '0004_moderation_setting';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -181,6 +182,15 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
+    // TenantDb.moderationSettings reads and saveModerationSettings inserts
+    // and, through ON CONFLICT DO UPDATE, updates the tenant's own rows. The
+    // owner role reads nothing here yet; nothing deletes a setting.
+    {
+      kind: 'table',
+      identity: 'portal.moderation_setting',
+      since: MODERATION,
+      grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
+    },
   ];
 }
 
@@ -190,6 +200,7 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.health_reading': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
+  'portal.moderation_setting': { enabled: true, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -253,6 +264,14 @@ export const POLICIES: readonly PolicyEntry[] = [
     'portal.document_acceptance',
     'tenant_isolation',
     DOCUMENTS,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  policy(
+    'portal.moderation_setting',
+    'tenant_isolation',
+    MODERATION,
     '*',
     `(${BOUND})`,
     `(${BOUND})`
@@ -364,6 +383,27 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.document_acceptance_tenant_id_kind_version_pk CREATE UNIQUE INDEX ' +
         'document_acceptance_tenant_id_kind_version_pk ON portal.document_acceptance ' +
         'USING btree (tenant_id, kind, version)',
+    ],
+  },
+  'portal.moderation_setting': {
+    since: MODERATION,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column check_id text notnull=true ${PLAIN}`,
+      `column enabled boolean notnull=true ${PLAIN}`,
+      `column sensitivity text notnull=true ${PLAIN}`,
+      `column updated_by text notnull=true ${PLAIN}`,
+      `column updated_at timestamp with time zone notnull=true ${PLAIN}`,
+      "constraint moderation_setting_check_configurable CHECK ((check_id = ANY (ARRAY['harassment'::text, " +
+        "'spam'::text, 'sexual_content'::text, 'self_harm'::text, 'off_topic'::text])))",
+      "constraint moderation_setting_sensitivity_known CHECK ((sensitivity = ANY (ARRAY['low'::text, " +
+        "'medium'::text, 'high'::text])))",
+      'constraint moderation_setting_tenant_id_check_id_pk PRIMARY KEY (tenant_id, check_id)',
+      'constraint moderation_setting_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
+        'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
+        'USING btree (tenant_id, check_id)',
     ],
   },
 };

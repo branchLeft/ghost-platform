@@ -5,6 +5,17 @@ export { assertTenantTablesIsolated, UnisolatedTableError } from '../isolation.j
 export type { Tx } from '../db.js';
 export type { HealthView } from '../reading.js';
 export {
+  COMMENT_CHECKS,
+  InvalidSettingError,
+  SENSITIVITIES,
+  UnknownCheckError,
+  type CommentCheck,
+  type CommentSettingChange,
+  type CommentSettingView,
+  type SavedModerationSettings,
+  type Sensitivity,
+} from '../moderation.js';
+export {
   NotCurrentVersionError,
   TermsNotAcceptedError,
   type AcceptanceView,

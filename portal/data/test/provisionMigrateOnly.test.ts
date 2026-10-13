@@ -148,6 +148,7 @@ describe('--migrate-only on a real server', () => {
     expect(result.out).toEqual([
       'pre-check passed: no difference from the manifest',
       'applied migration 0003_versioned_documents',
+      'applied migration 0004_moderation_setting',
       'post-check passed: the server matches the manifest',
       'portal database migrated',
     ]);
@@ -238,15 +239,14 @@ describe('--migrate-only on a real server', () => {
     expect(await logins()).toEqual(verifiers);
   });
 
-  it('applies two pending migrations in journal order, and a second run is clean', async () => {
+  it('applies the pending migrations in journal order, and a second run is clean', async () => {
     const all = readMigrations();
     expect((await run({ migrations: all.slice(0, 2) })).code).toBe(0);
     const first = await migrate();
     expect(first.err).toEqual([]);
-    expect(first.out.filter((line) => line.startsWith('applied'))).toEqual([
-      `applied migration ${all[2]!.tag}`,
-      `applied migration ${all[3]!.tag}`,
-    ]);
+    expect(first.out.filter((line) => line.startsWith('applied'))).toEqual(
+      all.slice(2).map((m) => `applied migration ${m.tag}`)
+    );
     expect(await history()).toEqual(all.map((m) => m.hash));
     expect((await migrate()).code).toBe(0);
   });

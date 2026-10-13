@@ -15,7 +15,24 @@ import {
   type DocumentView,
   type UpcomingView,
 } from '../documents.js';
-import { documentAcceptance, documentVersion, healthReading, tenantRegister } from '../schema.js';
+import {
+  COMMENT_CHECKS,
+  InvalidSettingError,
+  SENSITIVITIES,
+  UnknownCheckError,
+  deriveSavedSettings,
+  type CommentCheck,
+  type CommentSettingChange,
+  type SavedModerationSettings,
+  type Sensitivity,
+} from '../moderation.js';
+import {
+  documentAcceptance,
+  documentVersion,
+  healthReading,
+  moderationSetting,
+  tenantRegister,
+} from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
 import { bindTenant, type TenantScope } from './scope.js';
 
@@ -197,6 +214,65 @@ export class TenantDb {
         })
         .onConflictDoNothing()
     );
+  }
+
+  /** The comment-check settings the bound tenant has saved; a check never saved is absent. */
+  async moderationSettings(scope: TenantScope): Promise<SavedModerationSettings> {
+    const rows = await this.run(scope, (tx) => tx.select().from(moderationSetting));
+    return deriveSavedSettings(rows);
+  }
+
+  /**
+   * Saves comment-check settings for the bound tenant, replacing each named
+   * check's row, all or none. Only the closed list of comment checks and
+   * sensitivities is accepted: any other check, whatever tier it is in, is
+   * refused with `UnknownCheckError` before a statement runs, and the table
+   * refuses it again if this list is ever bypassed. The tenant is the scope's
+   * and nothing in the request.
+   */
+  async saveModerationSettings(
+    scope: TenantScope,
+    request: { changes: readonly CommentSettingChange[]; updatedBy: string },
+    now: Date
+  ): Promise<void> {
+    if (request.changes.length === 0) throw new InvalidSettingError('no settings to save');
+    const seen = new Set<string>();
+    const rows = request.changes.map((change) => {
+      if (!(COMMENT_CHECKS as readonly string[]).includes(change.check)) {
+        throw new UnknownCheckError(change.check);
+      }
+      if (!(SENSITIVITIES as readonly string[]).includes(change.sensitivity)) {
+        throw new InvalidSettingError(`sensitivity ${change.sensitivity} is not allowed`);
+      }
+      if (seen.has(change.check)) {
+        throw new InvalidSettingError(`check ${change.check} is named twice`);
+      }
+      seen.add(change.check);
+      return {
+        tenantId: scope.tenantId,
+        checkId: change.check as CommentCheck,
+        enabled: change.enabled,
+        sensitivity: change.sensitivity as Sensitivity,
+        updatedBy: request.updatedBy,
+        updatedAt: now,
+      };
+    });
+    await this.run(scope, async (tx) => {
+      for (const row of rows) {
+        await tx
+          .insert(moderationSetting)
+          .values(row)
+          .onConflictDoUpdate({
+            target: [moderationSetting.tenantId, moderationSetting.checkId],
+            set: {
+              enabled: row.enabled,
+              sensitivity: row.sensitivity,
+              updatedBy: row.updatedBy,
+              updatedAt: row.updatedAt,
+            },
+          });
+      }
+    });
   }
 
   /**
