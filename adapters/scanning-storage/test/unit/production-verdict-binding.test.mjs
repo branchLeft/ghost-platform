@@ -1,4 +1,7 @@
+import { readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { captureLogger, fakeTransport, NEVER } from '../helpers/fake-verdict-transport.mjs';
 
@@ -269,5 +272,56 @@ describe('ProductionVerdictClient: its budget timers are always cleared', () => 
     expect(await leavesNoTimers(failing.transport)).toBe(0);
     const malformed = fakeTransport({ ask: () => ({ classification: 'looks-fine' }) });
     expect(await leavesNoTimers(malformed.transport)).toBe(0);
+  });
+});
+
+describe('ProductionVerdictClient: no timer module is reachable from the call', () => {
+  // The dynamic check above sees only the global timer functions. This static
+  // check reads the client and every relative file it imports, transitively,
+  // and fails if any of them names node:timers or timers/promises in an
+  // import, require or dynamic import. Packages outside the relative graph are
+  // not read; the limit is stated in the PR body.
+  const SRC = fileURLToPath(new URL('../../src/', import.meta.url));
+  const CLIENT = resolve(SRC, 'production-verdict-client.js');
+  const TIMER_IMPORT =
+    /(?:\brequire\s*\(|\bimport\s*\(?|\bfrom)\s*(?<q>['"`])(?<spec>(?:node:)?(?:timers\/promises|timers))\k<q>/g;
+  const RELATIVE_IMPORT = /(?:\brequire\s*\(|\bimport\s*\(?|\bfrom)\s*(['"`])(\.\.?\/[^'"`]+)\1/g;
+
+  function resolveRelative(fromDir, spec) {
+    const base = resolve(fromDir, spec);
+    for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.mjs`, resolve(base, 'index.js')]) {
+      if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
+    }
+    throw new Error(`relative import ${spec} from ${fromDir} does not resolve to a file`);
+  }
+
+  function reachableFrom(start) {
+    const files = new Map();
+    let frontier = [start];
+    while (frontier.length > 0) {
+      const next = [];
+      for (const file of frontier) {
+        if (files.has(file)) continue;
+        const text = readFileSync(file, 'utf8');
+        files.set(file, text);
+        for (const m of text.matchAll(RELATIVE_IMPORT)) {
+          next.push(resolveRelative(dirname(file), m[2]));
+        }
+      }
+      frontier = next;
+    }
+    return files;
+  }
+
+  it('the client and every file it imports names no timer module', () => {
+    const files = reachableFrom(CLIENT);
+    expect(files.has(CLIENT)).toBe(true);
+    const offences = [];
+    for (const [file, text] of files) {
+      for (const m of text.matchAll(TIMER_IMPORT)) {
+        offences.push(`${relative(SRC, file)} imports ${m.groups.spec}`);
+      }
+    }
+    expect(offences, 'a timer module is reachable from the call under test').toEqual([]);
   });
 });
