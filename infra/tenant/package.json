@@ -25,10 +25,10 @@
   },
   "dependencies": {
     "@branchleft/ghost-platform-render-core": "0.2.0",
-    "@pulumi/pulumi": "^3.268.0"
+    "@pulumi/pulumi": "^3.269.0"
   },
   "devDependencies": {
-    "@branchleft/tsconfig": "^0.4.0",
+    "@branchleft/tsconfig": "^0.8.3",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.6.5",
     "js-yaml": "^4.3.2",
