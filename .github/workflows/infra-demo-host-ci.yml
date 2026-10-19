@@ -13,6 +13,9 @@ on:
       - 'infra/scripts/assert-no-hetzner-deletes.py'
       - 'infra/scripts/assert-environment-gated.py'
       - 'infra/scripts/test_assert_environment_gated.py'
+      - 'infra/scripts/plan-has-changes.py'
+      - 'infra/scripts/test_plan_has_changes.py'
+      - 'infra/scripts/test_apply_has_changes_gate.py'
       - '.github/workflows/infra-demo-host-ci.yml'
   pull_request:
     branches: [main]
@@ -21,6 +24,9 @@ on:
       - 'infra/scripts/assert-no-hetzner-deletes.py'
       - 'infra/scripts/assert-environment-gated.py'
       - 'infra/scripts/test_assert_environment_gated.py'
+      - 'infra/scripts/plan-has-changes.py'
+      - 'infra/scripts/test_plan_has_changes.py'
+      - 'infra/scripts/test_apply_has_changes_gate.py'
       - '.github/workflows/infra-demo-host-ci.yml'
 
 # `packages: read` because @branchleft/hetzner-host and
@@ -68,6 +74,12 @@ jobs:
           python3 infra/scripts/assert-environment-gated.py --self-test
           python3 infra/scripts/test_assert_environment_gated.py
 
+      - name: Apply-skip decision and gate structure tests
+        working-directory: .
+        run: |
+          python3 infra/scripts/test_plan_has_changes.py
+          python3 infra/scripts/test_apply_has_changes_gate.py
+
       - name: Test
         run: npm run test:unit
 
@@ -77,6 +89,8 @@ jobs:
     timeout-minutes: 30
     needs: [typecheck]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
 
     defaults:
       run:
@@ -132,6 +146,16 @@ jobs:
       - name: Preview the plan
         run: pulumi preview --stack production --json > preview.json
 
+      # The update plan is saved by a second preview, apart from the one above,
+      # so the preview.json the delete guard reads and the owner reviews is
+      # produced exactly as before. Best effort: a failure leaves no plan file,
+      # which the `noop` step reads as "changes". The plan file can hold resource
+      # inputs and secrets-provider ciphertext, and is never uploaded, printed or
+      # summarised.
+      - name: Save the update plan for the no-change check
+        continue-on-error: true
+        run: pulumi preview --stack production --save-plan preview-plan.json > /dev/null
+
       - name: Refuse a plan that destroys the demo host
         run: |
           python3 ../scripts/assert-no-hetzner-deletes.py --self-test
@@ -142,6 +166,14 @@ jobs:
             python3 -m json.tool preview.json
             exit 1
           fi
+
+      # Fails closed: `has_changes` is `false` only for a plan that parsed and
+      # changes nothing, outputs included; plan-has-changes.md says what else
+      # counts. It also puts the verdict on the first line of the job summary.
+      - name: Decide whether the plan changes anything
+        id: noop
+        if: always()
+        run: python3 ../scripts/plan-has-changes.py preview.json preview-plan.json --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
 
       - name: Write the plan to the job summary
         if: always()
@@ -164,7 +196,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [plan]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A plan that changes nothing skips this job, so its environment is never
+    # asked for an approval. Only the string 'false' skips it: an unset output
+    # asks, and a plan the decision step could not understand outputs 'true'.
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.plan.outputs.has_changes != 'false'
 
     # Its own environment, not `production`: the hosts stack's apply job
     # (infra-hosts-ci.yml) is held by `production`, and a deployment protection
