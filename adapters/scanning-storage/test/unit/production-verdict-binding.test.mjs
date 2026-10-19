@@ -185,12 +185,28 @@ describe('ProductionVerdictClient: whatever a transport throws is a hold, and th
 });
 
 describe('ProductionVerdictClient: its budget timers are always cleared', () => {
-  const liveTimers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
-
+  // Counts only the timers the call under test creates and does not clear. A
+  // process-wide count also moves when a timer another party owns fires or
+  // clears during the call; this count cannot.
   async function leavesNoTimers(transport) {
-    const before = liveTimers();
-    await clientFor(transport, { logger: { error: () => {} } }).getVerdict(KEY_A);
-    return liveTimers() - before;
+    const pending = new Set();
+    const { setTimeout: realSetTimeout, clearTimeout: realClearTimeout } = globalThis;
+    globalThis.setTimeout = (...args) => {
+      const handle = realSetTimeout(...args);
+      pending.add(handle);
+      return handle;
+    };
+    globalThis.clearTimeout = (handle) => {
+      pending.delete(handle);
+      return realClearTimeout(handle);
+    };
+    try {
+      await clientFor(transport, { logger: { error: () => {} } }).getVerdict(KEY_A);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+      globalThis.clearTimeout = realClearTimeout;
+    }
+    return pending.size;
   }
 
   it('after a clean answer', async () => {
