@@ -277,19 +277,27 @@ describe('ProductionVerdictClient: its budget timers are always cleared', () => 
 
 describe('ProductionVerdictClient: no timer module is reachable from the call', () => {
   // The dynamic check above sees only the global timer functions. This static
-  // check reads the client and every relative file it imports, transitively,
-  // and fails if any of them names node:timers or timers/promises in an
-  // import, require or dynamic import. Packages outside the relative graph are
-  // not read; the limit is stated in the PR body.
+  // check reads the client and every relative file it imports, transitively.
+  // It fails if any of them contains a quoted timer specifier, in any spelling
+  // and whatever precedes it, or mentions a loader that can reach a module by a
+  // route this check does not follow. Packages outside the relative graph are
+  // not read, and a specifier assembled at run time is not seen; both are named
+  // as limits in the PR body.
   const SRC = fileURLToPath(new URL('../../src/', import.meta.url));
   const CLIENT = resolve(SRC, 'production-verdict-client.js');
-  const TIMER_IMPORT =
-    /(?:\brequire\s*\(|\bimport\s*\(?|\bfrom)\s*(?<q>['"`])(?<spec>(?:node:)?(?:timers\/promises|timers))\k<q>/g;
+  const TIMER_SPECIFIER = /(?<q>['"`])(?<spec>(?:node:)?(?:timers\/promises|timers))\k<q>/g;
+  const LOADER = /\b(createRequire|getBuiltinModule|process\.binding|process\.dlopen)\b/g;
   const RELATIVE_IMPORT = /(?:\brequire\s*\(|\bimport\s*\(?|\bfrom)\s*(['"`])(\.\.?\/[^'"`]+)\1/g;
 
   function resolveRelative(fromDir, spec) {
     const base = resolve(fromDir, spec);
-    for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.mjs`, resolve(base, 'index.js')]) {
+    for (const candidate of [
+      base,
+      `${base}.js`,
+      `${base}.cjs`,
+      `${base}.mjs`,
+      resolve(base, 'index.js'),
+    ]) {
       if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
     }
     throw new Error(`relative import ${spec} from ${fromDir} does not resolve to a file`);
@@ -313,15 +321,22 @@ describe('ProductionVerdictClient: no timer module is reachable from the call', 
     return files;
   }
 
-  it('the client and every file it imports names no timer module', () => {
+  it('the client and every file it imports names no timer module or loader', () => {
     const files = reachableFrom(CLIENT);
     expect(files.has(CLIENT)).toBe(true);
     const offences = [];
     for (const [file, text] of files) {
-      for (const m of text.matchAll(TIMER_IMPORT)) {
-        offences.push(`${relative(SRC, file)} imports ${m.groups.spec}`);
+      const where = relative(SRC, file);
+      for (const m of text.matchAll(TIMER_SPECIFIER)) {
+        offences.push(`${where} names ${m.groups.spec}`);
+      }
+      for (const m of text.matchAll(LOADER)) {
+        offences.push(`${where} mentions ${m[1]}`);
       }
     }
-    expect(offences, 'a timer module is reachable from the call under test').toEqual([]);
+    expect(
+      offences,
+      'a timer module or module loader is reachable from the call under test'
+    ).toEqual([]);
   });
 });
