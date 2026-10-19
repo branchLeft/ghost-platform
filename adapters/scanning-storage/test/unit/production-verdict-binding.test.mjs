@@ -1,4 +1,7 @@
+import { readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { captureLogger, fakeTransport, NEVER } from '../helpers/fake-verdict-transport.mjs';
 
@@ -185,12 +188,62 @@ describe('ProductionVerdictClient: whatever a transport throws is a hold, and th
 });
 
 describe('ProductionVerdictClient: its budget timers are always cleared', () => {
-  const liveTimers = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
-
+  // Tracks the timers the call under test creates through the global timer
+  // functions, and returns how many are still live. A timeout is live until it
+  // fires or is cleared. An interval is live until clearInterval: its callback
+  // running does not end it. A timer another party owns is never in the set,
+  // so its firing or clearing during the call changes nothing here. The
+  // wrapper must see at least one timer, so a client that took its timers from
+  // another source fails here rather than passing at zero.
   async function leavesNoTimers(transport) {
-    const before = liveTimers();
-    await clientFor(transport, { logger: { error: () => {} } }).getVerdict(KEY_A);
-    return liveTimers() - before;
+    const live = new Set();
+    let created = 0;
+    const real = {
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+    };
+    globalThis.setTimeout = (fn, ...rest) => {
+      if (typeof fn !== 'function') return real.setTimeout(fn, ...rest);
+      const handle = real.setTimeout(
+        (...args) => {
+          live.delete(handle);
+          return fn(...args);
+        },
+        ...rest
+      );
+      created += 1;
+      live.add(handle);
+      return handle;
+    };
+    globalThis.setInterval = (...args) => {
+      const handle = real.setInterval(...args);
+      created += 1;
+      live.add(handle);
+      return handle;
+    };
+    globalThis.clearTimeout = (handle) => {
+      live.delete(handle);
+      return real.clearTimeout(handle);
+    };
+    globalThis.clearInterval = (handle) => {
+      live.delete(handle);
+      return real.clearInterval(handle);
+    };
+    try {
+      await clientFor(transport, { logger: { error: () => {} } }).getVerdict(KEY_A);
+    } finally {
+      globalThis.setTimeout = real.setTimeout;
+      globalThis.clearTimeout = real.clearTimeout;
+      globalThis.setInterval = real.setInterval;
+      globalThis.clearInterval = real.clearInterval;
+    }
+    expect(
+      created,
+      'the wrapper saw no timer from the call: its timers come from a source this check cannot see'
+    ).toBeGreaterThan(0);
+    return live.size;
   }
 
   it('after a clean answer', async () => {
@@ -219,5 +272,71 @@ describe('ProductionVerdictClient: its budget timers are always cleared', () => 
     expect(await leavesNoTimers(failing.transport)).toBe(0);
     const malformed = fakeTransport({ ask: () => ({ classification: 'looks-fine' }) });
     expect(await leavesNoTimers(malformed.transport)).toBe(0);
+  });
+});
+
+describe('ProductionVerdictClient: no timer module is reachable from the call', () => {
+  // The dynamic check above sees only the global timer functions. This static
+  // check reads the client and every relative file it imports, transitively.
+  // It fails if any of them contains a quoted timer specifier, in any spelling
+  // and whatever precedes it, or mentions a loader that can reach a module by a
+  // route this check does not follow. Packages outside the relative graph are
+  // not read, and a specifier assembled at run time is not seen; both are named
+  // as limits in the PR body.
+  const SRC = fileURLToPath(new URL('../../src/', import.meta.url));
+  const CLIENT = resolve(SRC, 'production-verdict-client.js');
+  const TIMER_SPECIFIER = /(?<q>['"`])(?<spec>(?:node:)?(?:timers\/promises|timers))\k<q>/g;
+  const LOADER = /\b(createRequire|getBuiltinModule|process\.binding|process\.dlopen)\b/g;
+  const RELATIVE_IMPORT = /(?:\brequire\s*\(|\bimport\s*\(?|\bfrom)\s*(['"`])(\.\.?\/[^'"`]+)\1/g;
+
+  function resolveRelative(fromDir, spec) {
+    const base = resolve(fromDir, spec);
+    for (const candidate of [
+      base,
+      `${base}.js`,
+      `${base}.cjs`,
+      `${base}.mjs`,
+      resolve(base, 'index.js'),
+    ]) {
+      if (statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
+    }
+    throw new Error(`relative import ${spec} from ${fromDir} does not resolve to a file`);
+  }
+
+  function reachableFrom(start) {
+    const files = new Map();
+    let frontier = [start];
+    while (frontier.length > 0) {
+      const next = [];
+      for (const file of frontier) {
+        if (files.has(file)) continue;
+        const text = readFileSync(file, 'utf8');
+        files.set(file, text);
+        for (const m of text.matchAll(RELATIVE_IMPORT)) {
+          next.push(resolveRelative(dirname(file), m[2]));
+        }
+      }
+      frontier = next;
+    }
+    return files;
+  }
+
+  it('the client and every file it imports names no timer module or loader', () => {
+    const files = reachableFrom(CLIENT);
+    expect(files.has(CLIENT)).toBe(true);
+    const offences = [];
+    for (const [file, text] of files) {
+      const where = relative(SRC, file);
+      for (const m of text.matchAll(TIMER_SPECIFIER)) {
+        offences.push(`${where} names ${m.groups.spec}`);
+      }
+      for (const m of text.matchAll(LOADER)) {
+        offences.push(`${where} mentions ${m[1]}`);
+      }
+    }
+    expect(
+      offences,
+      'a timer module or module loader is reachable from the call under test'
+    ).toEqual([]);
   });
 });
