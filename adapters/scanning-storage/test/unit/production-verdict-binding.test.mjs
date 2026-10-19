@@ -185,28 +185,62 @@ describe('ProductionVerdictClient: whatever a transport throws is a hold, and th
 });
 
 describe('ProductionVerdictClient: its budget timers are always cleared', () => {
-  // Counts only the timers the call under test creates and does not clear. A
-  // process-wide count also moves when a timer another party owns fires or
-  // clears during the call; this count cannot.
+  // Tracks the timers the call under test creates through the global timer
+  // functions, and returns how many are still live. A timeout is live until it
+  // fires or is cleared. An interval is live until clearInterval: its callback
+  // running does not end it. A timer another party owns is never in the set,
+  // so its firing or clearing during the call changes nothing here. The
+  // wrapper must see at least one timer, so a client that took its timers from
+  // another source fails here rather than passing at zero.
   async function leavesNoTimers(transport) {
-    const pending = new Set();
-    const { setTimeout: realSetTimeout, clearTimeout: realClearTimeout } = globalThis;
-    globalThis.setTimeout = (...args) => {
-      const handle = realSetTimeout(...args);
-      pending.add(handle);
+    const live = new Set();
+    let created = 0;
+    const real = {
+      setTimeout: globalThis.setTimeout,
+      clearTimeout: globalThis.clearTimeout,
+      setInterval: globalThis.setInterval,
+      clearInterval: globalThis.clearInterval,
+    };
+    globalThis.setTimeout = (fn, ...rest) => {
+      if (typeof fn !== 'function') return real.setTimeout(fn, ...rest);
+      const handle = real.setTimeout(
+        (...args) => {
+          live.delete(handle);
+          return fn(...args);
+        },
+        ...rest
+      );
+      created += 1;
+      live.add(handle);
+      return handle;
+    };
+    globalThis.setInterval = (...args) => {
+      const handle = real.setInterval(...args);
+      created += 1;
+      live.add(handle);
       return handle;
     };
     globalThis.clearTimeout = (handle) => {
-      pending.delete(handle);
-      return realClearTimeout(handle);
+      live.delete(handle);
+      return real.clearTimeout(handle);
+    };
+    globalThis.clearInterval = (handle) => {
+      live.delete(handle);
+      return real.clearInterval(handle);
     };
     try {
       await clientFor(transport, { logger: { error: () => {} } }).getVerdict(KEY_A);
     } finally {
-      globalThis.setTimeout = realSetTimeout;
-      globalThis.clearTimeout = realClearTimeout;
+      globalThis.setTimeout = real.setTimeout;
+      globalThis.clearTimeout = real.clearTimeout;
+      globalThis.setInterval = real.setInterval;
+      globalThis.clearInterval = real.clearInterval;
     }
-    return pending.size;
+    expect(
+      created,
+      'the wrapper saw no timer from the call: its timers come from a source this check cannot see'
+    ).toBeGreaterThan(0);
+    return live.size;
   }
 
   it('after a clean answer', async () => {
