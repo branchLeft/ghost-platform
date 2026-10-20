@@ -39,9 +39,9 @@ zero from the first write, so the first increment of a counter is visible to
 | --- | --- | --- | --- |
 | `scanning_storage_unconfigured_instances` | gauge | | Adapter instances in this process with no verdict source. Above zero means every new upload on that feature is refused. |
 | `scanning_storage_uploads_refused_total` | counter | `reason` = `unconfigured`, `verdict`, `sealed` | Uploads refused at the request. `unconfigured`: no verdict source. `verdict`: a verdict named known material. `sealed`: the same bytes were refused before. A hold later resolved to a refusal is not counted here. |
-| `scanning_storage_verdicts_total` | counter | `classification` = `csam`, `harmful-abusive-material`, `test`, `no-known-match`, `unavailable`, `other` | Every verdict outcome. A timeout or a thrown error counts as `unavailable`. A classification outside the vocabulary counts as `other`. |
-| `scanning_storage_verdict_errors_total` | counter | `kind` = `timeout`, `error` | Verdict requests that exceeded the budget or threw. A subset of the `unavailable` verdicts. |
-| `scanning_storage_verdict_duration_seconds` | histogram | `le` | Time waiting for a verdict, a timeout included. |
+| `scanning_storage_verdicts_total` | counter | `classification` = `csam`, `harmful-abusive-material`, `test`, `no-known-match`, `unavailable`, `other` | Every verdict outcome. A timeout or a thrown error counts as `unavailable`. Bytes that cannot be hashed (not an image, too small or too large, a hash that timed out, or a decoder that is missing) count as `unavailable` too, with no verdict request behind them. A classification outside the vocabulary counts as `other`. |
+| `scanning_storage_verdict_errors_total` | counter | `kind` = `timeout`, `error` | Verdict requests that exceeded the budget or threw. A subset of the `unavailable` verdicts; bytes that could not be hashed are not in it, because no request was made. |
+| `scanning_storage_verdict_duration_seconds` | histogram | `le` | Time waiting for a verdict, a timeout included. Hashing time is not in it. |
 | `scanning_storage_held_uploads` | gauge | | Uploads accepted and held unserved, waiting for a verdict. |
 | `scanning_storage_held_oldest_age_seconds` | gauge | | Age of the oldest held upload, 0 when none. A hold resumed after a restart is dated from its quarantined bytes. |
 | `scanning_storage_held_stuck` | gauge | | Holds that stopped retrying and need an operator. |

@@ -16,6 +16,13 @@ class VerdictClient {
   }
 }
 
+// The name a delivered verdict's file carries for a key. A perceptual hash
+// is base64, which has `/` in its alphabet, so the key is mapped to the
+// URL-safe alphabet without padding; a key made of hex digits is unchanged.
+function resolveFileStem(key) {
+  return String(key).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 // Simulates the channel the hold branch depends on: a digest named in
 // `unavailable` answers 'unavailable' until resolved, either in-process
 // (`deliverVerdict`) or via `resolvePath`, a test seam for the image-test
@@ -79,7 +86,10 @@ class FakeVerdictClient extends VerdictClient {
   #readResolvedFile(digest) {
     if (!this.resolvePath) return null;
     try {
-      const raw = fs.readFileSync(path.join(this.resolvePath, `${digest}.json`), 'utf8');
+      const raw = fs.readFileSync(
+        path.join(this.resolvePath, `${resolveFileStem(digest)}.json`),
+        'utf8'
+      );
       return JSON.parse(raw);
     } catch {
       return null;
@@ -103,4 +113,9 @@ class UnconfiguredVerdictClient extends VerdictClient {
   }
 }
 
-module.exports = { VerdictClient, FakeVerdictClient, UnconfiguredVerdictClient };
+module.exports = {
+  VerdictClient,
+  FakeVerdictClient,
+  UnconfiguredVerdictClient,
+  resolveFileStem,
+};

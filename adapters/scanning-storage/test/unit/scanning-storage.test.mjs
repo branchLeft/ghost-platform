@@ -23,6 +23,11 @@ const CLEAN_BYTES = Buffer.from('clean-image-bytes');
 const BAD_BYTES = Buffer.from('known-bad-image-bytes');
 const BAD_DIGEST = digestBytes(BAD_BYTES);
 
+// These tests drive the decorator with stand-in bytes that are not images,
+// so the verdict key is the content digest here. What a real image is asked
+// about is proved in wiring.test.mjs.
+const computeVerdictKey = async (buffer) => ({ hash: digestBytes(buffer) });
+
 let tmpDir;
 
 beforeEach(async () => {
@@ -62,7 +67,9 @@ function buildAdapter({
     GhostErrors,
   });
   const verdictClient = new FakeVerdictClient({ refuse, unavailable });
-  const checks = [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })];
+  const checks = [
+    createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes, computeVerdictKey }),
+  ];
   const resolvedQuarantinePath = quarantinePath ?? path.join(tmpDir, 'quarantine');
   const instance = new Adapter({
     wraps: 'FakeAdapter',
@@ -1625,7 +1632,11 @@ describe('a configured channel that does not answer in time', () => {
       wrappedConfig: { storagePath: 'wrapped' },
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [
-        createPdqKnownMaterialCheck(slowClient, { computeDigest: digestBytes, timeoutMs: 10 }),
+        createPdqKnownMaterialCheck(slowClient, {
+          computeDigest: digestBytes,
+          computeVerdictKey,
+          timeoutMs: 10,
+        }),
       ],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,
