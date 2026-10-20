@@ -1,6 +1,6 @@
 # HELP ghost_release_watcher_last_success_timestamp_seconds Unix time of the last successful poll of the Ghost registry.
 # TYPE ghost_release_watcher_last_success_timestamp_seconds gauge
-ghost_release_watcher_last_success_timestamp_seconds 1792448646
+ghost_release_watcher_last_success_timestamp_seconds 1792472150
 # HELP ghost_release_watcher_pr_writes_enabled 1 when a token is configured to open PRs, 0 when runs cannot open PRs.
 # TYPE ghost_release_watcher_pr_writes_enabled gauge
 ghost_release_watcher_pr_writes_enabled 0
