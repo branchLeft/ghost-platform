@@ -89,6 +89,8 @@ jobs:
     timeout-minutes: 30
     needs: [typecheck]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
 
     defaults:
       run:
@@ -144,6 +146,16 @@ jobs:
       - name: Preview the plan
         run: pulumi preview --stack production --json > preview.json
 
+      # The update plan is saved by a second preview, apart from the one above,
+      # so the preview.json the delete guard reads and the owner reviews is
+      # produced exactly as before. Best effort: a failure leaves no plan file,
+      # which the `noop` step reads as "changes". The plan file can hold resource
+      # inputs and secrets-provider ciphertext, and is never uploaded, printed or
+      # summarised.
+      - name: Save the update plan for the no-change check
+        continue-on-error: true
+        run: pulumi preview --stack production --save-plan preview-plan.json > /dev/null
+
       - name: Refuse a plan that destroys the estate
         run: |
           python3 ../scripts/assert-no-hetzner-deletes.py --self-test
@@ -154,6 +166,18 @@ jobs:
             python3 -m json.tool preview.json
             exit 1
           fi
+
+      # Fails closed: `has_changes` is `false` only for a plan that parsed and
+      # changes nothing, outputs included; the action's README says what else
+      # counts. It also puts the verdict on the first line of the job summary.
+      - name: Decide whether the plan changes anything
+        id: noop
+        if: always()
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@2cfa57c06773bc70172022be12a85ce4ae5bcb6b # v1.0.10
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+          working-directory: infra/hosts
 
       - name: Write the plan to the job summary
         if: always()
@@ -176,7 +200,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [plan]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A plan that changes nothing skips this job, so its environment is never
+    # asked for an approval. Only the string 'false' skips it: an unset output
+    # asks, and a plan the decision step could not understand outputs 'true'.
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.plan.outputs.has_changes != 'false'
 
     environment: production
 
