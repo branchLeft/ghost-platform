@@ -13,9 +13,6 @@ on:
       - 'infra/scripts/assert-no-hetzner-deletes.py'
       - 'infra/scripts/assert-environment-gated.py'
       - 'infra/scripts/test_assert_environment_gated.py'
-      - 'infra/scripts/plan-has-changes.py'
-      - 'infra/scripts/test_plan_has_changes.py'
-      - 'infra/scripts/test_apply_has_changes_gate.py'
       - '.github/workflows/infra-demo-host-ci.yml'
   pull_request:
     branches: [main]
@@ -24,9 +21,6 @@ on:
       - 'infra/scripts/assert-no-hetzner-deletes.py'
       - 'infra/scripts/assert-environment-gated.py'
       - 'infra/scripts/test_assert_environment_gated.py'
-      - 'infra/scripts/plan-has-changes.py'
-      - 'infra/scripts/test_plan_has_changes.py'
-      - 'infra/scripts/test_apply_has_changes_gate.py'
       - '.github/workflows/infra-demo-host-ci.yml'
 
 # `packages: read` because @branchleft/hetzner-host and
@@ -73,12 +67,6 @@ jobs:
         run: |
           python3 infra/scripts/assert-environment-gated.py --self-test
           python3 infra/scripts/test_assert_environment_gated.py
-
-      - name: Apply-skip decision and gate structure tests
-        working-directory: .
-        run: |
-          python3 infra/scripts/test_plan_has_changes.py
-          python3 infra/scripts/test_apply_has_changes_gate.py
 
       - name: Test
         run: npm run test:unit
@@ -168,12 +156,16 @@ jobs:
           fi
 
       # Fails closed: `has_changes` is `false` only for a plan that parsed and
-      # changes nothing, outputs included; plan-has-changes.md says what else
+      # changes nothing, outputs included; the action's README says what else
       # counts. It also puts the verdict on the first line of the job summary.
       - name: Decide whether the plan changes anything
         id: noop
         if: always()
-        run: python3 ../scripts/plan-has-changes.py preview.json preview-plan.json --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@2cfa57c06773bc70172022be12a85ce4ae5bcb6b # v1.0.10
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+          working-directory: infra/demo-host
 
       - name: Write the plan to the job summary
         if: always()
