@@ -1,3 +1,5 @@
+**Bias for action.** Delivering something and failing fast leads to better progress and informed decision making. Do not agonise theoretically over the exact behaviour of a system which you can observe the behaviour of: run it in the cheapest real place (a test, a check-mode run, the live API, a pre-live host) and decide from what it does. The workspace `AUTHORISATIONS.md` and never-list still apply.
+
 # CLAUDE.md — branchLeft Ghost Platform
 
 Reusable Ghost-platform pieces shared across tenants: the tenant Pulumi component (`infra/tenant`, published to GitHub Packages as `@branchleft/ghost-platform-tenant`), the tenant descriptor package (`render-core`, published to GitHub Packages as `@branchleft/ghost-platform-render-core` by `publish-render-core.yml` on a `render-core-vX.Y.Z` tag), the shared Hetzner host stack (`infra/hosts`), the Ghost container image, and CI tooling. No per-tenant identity or infrastructure lives here.
