@@ -222,6 +222,71 @@ describe('POST /v3/:domain/messages', () => {
     expect(claimOne(store)).toHaveLength(0);
   });
 
+  it('answers a refused request with the limit named, JSON, and a closing connection', async () => {
+    const res = await post(
+      multipartBody([
+        ...Array.from({ length: 1001 }, (_unused, index): [string, string] => [
+          'to',
+          `recipient-${index}@example.com`,
+        ]),
+        ['from', `noreply@${DOMAIN}`],
+      ])
+    );
+    expect(res.status).toBe(413);
+    expect(res.headers.get('connection')).toBe('close');
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({ message: 'Request exceeds the recipients limit of 1000' });
+  });
+
+  it('refuses a request with more fields than the cap and enqueues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ...Array.from({ length: 1200 }, (): [string, string] => ['o:tag', 'x']),
+      ])
+    );
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ message: 'Request exceeds the fields limit of 1100' });
+    expect(await store.countUndrainedRecipients()).toBe(0);
+  });
+
+  it('refuses a 21 MiB field without hanging, and enqueues nothing', async () => {
+    const res = await post(
+      multipartBody([
+        ['to', 'member@example.com'],
+        ['from', `noreply@${DOMAIN}`],
+        ['html', 'a'.repeat(21 * 1024 * 1024)],
+      ])
+    );
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ message: 'Request exceeds the fieldSize limit of 5242880' });
+    expect(await store.countUndrainedRecipients()).toBe(0);
+  });
+
+  it('still accepts a 1000-recipient newsletter batch with recipient-variables', async () => {
+    const addresses = Array.from(
+      { length: 1000 },
+      (_unused, index) => `recipient-${String(index).padStart(4, '0')}@example.com`
+    );
+    const variables: Record<string, { name: string }> = {};
+    for (const address of addresses) {
+      variables[address] = { name: 'Member' };
+    }
+    const res = await post(
+      multipartBody([
+        ...addresses.map((address): [string, string] => ['to', address]),
+        ['from', `noreply@${DOMAIN}`],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', JSON.stringify(variables)],
+      ])
+    );
+    expect(res.status).toBe(200);
+    expect(await store.countUndrainedRecipients()).toBe(1000);
+  });
+
   it('rejects a malformed body (unparseable multipart) with 400 rather than crashing', async () => {
     const res = await post(
       'not-a-multipart-body',

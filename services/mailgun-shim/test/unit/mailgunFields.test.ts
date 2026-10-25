@@ -1,6 +1,14 @@
 import FormData from 'form-data';
 import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
+import { Readable } from 'node:stream';
+import { findFieldLimitReason } from '../../src/mailgunFields.js';
+import { vi } from 'vitest';
+import {
+  MULTIPART_LIMITS,
+  MultipartLimitError,
+  type MultipartLimitReason,
+} from '../../src/mailgunFields.js';
 import {
   containsHeaderInjectionChars,
   isValidGhostEmailId,
@@ -469,5 +477,314 @@ describe('resolveRecipientTokens', () => {
 
   it('does not substitute a variable whose value is falsy-but-present incorrectly (e.g. an empty string value)', () => {
     expect(resolveRecipientTokens('%recipient.name%', { name: '' })).toBe('');
+  });
+});
+
+const MEBIBYTE = 1024 * 1024;
+
+/**
+ * A request stand-in whose body the test controls chunk by chunk — a real
+ * Readable, so `pipe` and `unpipe` behave exactly as they do on an
+ * IncomingMessage.
+ */
+function streamRequest(form: FormData): { req: Request; body: Buffer; source: Readable } {
+  const body = form.getBuffer();
+  const source = new Readable({ read(): void {} });
+  Object.assign(source, { headers: form.getHeaders() });
+  return { req: source as unknown as Request, body, source };
+}
+
+function sendWholeBody(form: FormData): Request {
+  const { req, body, source } = streamRequest(form);
+  source.push(body);
+  source.push(null);
+  return req;
+}
+
+function formOf(fields: Array<[string, string]>): FormData {
+  const form = new FormData();
+  for (const [name, value] of fields) {
+    form.append(name, value);
+  }
+  return form;
+}
+
+function repeatedFields(name: string, value: string, count: number): Array<[string, string]> {
+  return Array.from({ length: count }, (): [string, string] => [name, value]);
+}
+
+function recipientAddresses(count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_unused, index) => `recipient-${String(index).padStart(5, '0')}@example.com`
+  );
+}
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => null,
+    (error: unknown) => error
+  );
+}
+
+async function expectLimitRefusal(req: Request, reason: MultipartLimitReason): Promise<void> {
+  const error = await rejectionOf(parseMailgunMessageFields(req));
+  expect(error).toBeInstanceOf(MultipartLimitError);
+  expect(error).toMatchObject({
+    reason,
+    limit: MULTIPART_LIMITS[reason],
+    message: `Request exceeds the ${reason} limit of ${MULTIPART_LIMITS[reason]}`,
+  });
+}
+
+describe('MULTIPART_LIMITS', () => {
+  it('pins the agreed ceilings, so a loosened constant is a visible change', () => {
+    expect(MULTIPART_LIMITS).toEqual({
+      fields: 1100,
+      parts: 1200,
+      fieldSize: 5 * MEBIBYTE,
+      fieldNameSize: 100,
+      totalBytes: 10 * MEBIBYTE,
+      recipients: 1000,
+    });
+  });
+});
+
+describe('parseMailgunMessageFields multipart limits', () => {
+  it('refuses one field more than the field cap, naming the fields limit', async () => {
+    const req = sendWholeBody(formOf(repeatedFields('o:tag', 'x', MULTIPART_LIMITS.fields + 1)));
+    await expectLimitRefusal(req, 'fields');
+  });
+
+  it('accepts exactly the field cap', async () => {
+    const req = sendWholeBody(formOf(repeatedFields('o:tag', 'x', MULTIPART_LIMITS.fields)));
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.options.tag).toHaveLength(MULTIPART_LIMITS.fields);
+  });
+
+  it('refuses more parts than the part cap with the parts limit, when file parts keep the field count low', async () => {
+    const form = new FormData();
+    for (let index = 0; index <= MULTIPART_LIMITS.parts; index += 1) {
+      form.append('attachment', Buffer.from('x'), { filename: `file-${index}.txt` });
+    }
+    await expectLimitRefusal(sendWholeBody(form), 'parts');
+  });
+
+  it('accepts exactly the part cap, files being counted but never read', async () => {
+    const form = new FormData();
+    form.append('to', 'member-a@example.com');
+    for (let index = 1; index < MULTIPART_LIMITS.parts; index += 1) {
+      form.append('attachment', Buffer.from('x'), { filename: `file-${index}.txt` });
+    }
+    const parsed = await parseMailgunMessageFields(sendWholeBody(form));
+    expect(parsed.to).toEqual(['member-a@example.com']);
+  });
+
+  it('refuses a single field one byte over the field size cap, naming the fieldSize limit', async () => {
+    const req = sendWholeBody(formOf([['html', 'a'.repeat(MULTIPART_LIMITS.fieldSize + 1)]]));
+    await expectLimitRefusal(req, 'fieldSize');
+  });
+
+  it('accepts a single field of exactly the field size cap, untruncated', async () => {
+    const value = 'a'.repeat(MULTIPART_LIMITS.fieldSize);
+    const parsed = await parseMailgunMessageFields(sendWholeBody(formOf([['html', value]])));
+    expect(parsed.html).toHaveLength(MULTIPART_LIMITS.fieldSize);
+  });
+
+  it('refuses a field name one byte over the name cap, naming the fieldNameSize limit', async () => {
+    const req = sendWholeBody(formOf([['n'.repeat(MULTIPART_LIMITS.fieldNameSize + 1), 'v']]));
+    await expectLimitRefusal(req, 'fieldNameSize');
+  });
+
+  it('measures a field name in bytes, not characters', async () => {
+    const name = 'é'.repeat(MULTIPART_LIMITS.fieldNameSize / 2 + 1);
+    await expectLimitRefusal(sendWholeBody(formOf([[name, 'v']])), 'fieldNameSize');
+  });
+
+  it('accepts a field name of exactly the name cap', async () => {
+    const req = sendWholeBody(formOf([['n'.repeat(MULTIPART_LIMITS.fieldNameSize), 'v']]));
+    await expect(parseMailgunMessageFields(req)).resolves.toBeDefined();
+  });
+
+  it('refuses fields that are each under the size cap but together over the byte total, naming totalBytes', async () => {
+    const value = 'a'.repeat(4 * MEBIBYTE);
+    const req = sendWholeBody(
+      formOf([
+        ['html', value],
+        ['text', value],
+        ['o:first', value],
+      ])
+    );
+    await expectLimitRefusal(req, 'totalBytes');
+  });
+
+  it('counts field bytes as UTF-8, not as string length', async () => {
+    const value = 'é'.repeat(2 * MEBIBYTE);
+    const req = sendWholeBody(
+      formOf([
+        ['html', value],
+        ['text', value],
+        ['o:first', value],
+      ])
+    );
+    await expectLimitRefusal(req, 'totalBytes');
+  });
+
+  it('counts the field name towards the byte total: exactly the total passes, one more byte is refused', async () => {
+    const half = MULTIPART_LIMITS.totalBytes / 2;
+    const atTotal = formOf([
+      ['html', 'a'.repeat(half - 'html'.length)],
+      ['text', 'a'.repeat(half - 'text'.length)],
+    ]);
+    await expect(parseMailgunMessageFields(sendWholeBody(atTotal))).resolves.toBeDefined();
+
+    const overTotal = formOf([
+      ['html', 'a'.repeat(half - 'html'.length)],
+      ['text', 'a'.repeat(half - 'text'.length)],
+      ['a', ''],
+    ]);
+    await expectLimitRefusal(sendWholeBody(overTotal), 'totalBytes');
+  });
+
+  it('refuses 1001 repeated "to" fields, naming the recipients limit', async () => {
+    const req = sendWholeBody(
+      formOf(recipientAddresses(MULTIPART_LIMITS.recipients + 1).map((address) => ['to', address]))
+    );
+    await expectLimitRefusal(req, 'recipients');
+  });
+
+  it('refuses one "to" field of 1001 comma-joined addresses, counted after the split', async () => {
+    const joined = recipientAddresses(MULTIPART_LIMITS.recipients + 1).join(', ');
+    await expectLimitRefusal(sendWholeBody(formOf([['to', joined]])), 'recipients');
+  });
+
+  it('refuses recipients spread over repeated and comma-joined "to" fields together', async () => {
+    const addresses = recipientAddresses(MULTIPART_LIMITS.recipients + 1);
+    const req = sendWholeBody(
+      formOf([
+        ['to', addresses.slice(0, 500).join(',')],
+        ['to', addresses.slice(500).join(',')],
+      ])
+    );
+    await expectLimitRefusal(req, 'recipients');
+  });
+
+  it('accepts exactly 1000 recipients with recipient-variables, the real newsletter batch shape', async () => {
+    const addresses = recipientAddresses(MULTIPART_LIMITS.recipients);
+    const variables: Record<string, { name: string }> = {};
+    for (const address of addresses) {
+      variables[address] = { name: 'Member' };
+    }
+    const req = sendWholeBody(
+      formOf([
+        ...addresses.map((address): [string, string] => ['to', address]),
+        ['from', 'noreply@tenant1.example.com'],
+        ['recipient-variables', JSON.stringify(variables)],
+      ])
+    );
+    const parsed = await parseMailgunMessageFields(req);
+    expect(parsed.to).toHaveLength(MULTIPART_LIMITS.recipients);
+    expect(Object.keys(parsed.recipientVariables)).toHaveLength(MULTIPART_LIMITS.recipients);
+  });
+
+  it('does not count empty segments from stray commas towards the recipient cap', async () => {
+    const joined = `${recipientAddresses(MULTIPART_LIMITS.recipients).join(',')},, ,`;
+    const parsed = await parseMailgunMessageFields(sendWholeBody(formOf([['to', joined]])));
+    expect(parsed.to).toHaveLength(MULTIPART_LIMITS.recipients);
+  });
+
+  it('leaves the existing malformed-body and header-injection rejections as plain errors, not limit refusals', async () => {
+    const malformed = new Readable({ read(): void {} });
+    Object.assign(malformed, {
+      headers: { 'content-type': 'multipart/form-data; boundary=XBOUNDARYX' },
+    });
+    malformed.push('this is not a multipart body');
+    malformed.push(null);
+    const malformedError = await rejectionOf(
+      parseMailgunMessageFields(malformed as unknown as Request)
+    );
+    expect(malformedError).toBeInstanceOf(Error);
+    expect(malformedError).not.toBeInstanceOf(MultipartLimitError);
+
+    const injected = formOf([['from', 'a\r\nSender: ceo@evil.com']]);
+    const injectedError = await rejectionOf(parseMailgunMessageFields(sendWholeBody(injected)));
+    expect(injectedError).toBeInstanceOf(Error);
+    expect(injectedError).not.toBeInstanceOf(MultipartLimitError);
+  });
+});
+
+describe('parseMailgunMessageFields refusal handling', () => {
+  it('unpipes the request from the parser on refusal, so no further data is read for it', async () => {
+    const { req, body, source } = streamRequest(formOf(repeatedFields('o:tag', 'x', 1200)));
+    source.push(body);
+    await expectLimitRefusal(req, 'fields');
+    expect(source.listenerCount('data')).toBe(0);
+    expect(source.listenerCount('end')).toBe(0);
+  });
+
+  it('settles once: a chunk that trips two limits unpipes once and keeps the first reason', async () => {
+    const { req, body, source } = streamRequest(
+      formOf(repeatedFields('o:tag', 'x', MULTIPART_LIMITS.parts + 100))
+    );
+    const unpipeSpy = vi.spyOn(source, 'unpipe');
+    source.push(body);
+    await expectLimitRefusal(req, 'fields');
+    expect(unpipeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives data arriving after the refusal without throwing or changing the outcome', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const { req, body, source } = streamRequest(formOf(repeatedFields('o:tag', 'x', 1200)));
+      source.push(body);
+      await expectLimitRefusal(req, 'fields');
+      source.push(Buffer.from('a'.repeat(64 * 1024)));
+      source.push(null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('stops a flood across many chunks at the first limit, never reading the rest', async () => {
+    const { req, body, source } = streamRequest(formOf(repeatedFields('o:tag', 'x', 5000)));
+    const chunkSize = 4096;
+    let offset = 0;
+    const outcome = rejectionOf(parseMailgunMessageFields(req));
+    while (offset < body.length && source.listenerCount('data') > 0) {
+      source.push(body.subarray(offset, offset + chunkSize));
+      offset += chunkSize;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(await outcome).toBeInstanceOf(MultipartLimitError);
+    expect(offset).toBeLessThan(body.length);
+  });
+});
+
+describe('findFieldLimitReason', () => {
+  const untruncated = { nameTruncated: false, valueTruncated: false };
+
+  it('refuses a name Busboy reports as truncated, even when the visible name is short', () => {
+    expect(findFieldLimitReason('to', { ...untruncated, nameTruncated: true }, 2)).toBe(
+      'fieldNameSize'
+    );
+  });
+
+  it('refuses a value Busboy reports as truncated', () => {
+    expect(findFieldLimitReason('html', { ...untruncated, valueTruncated: true }, 4)).toBe(
+      'fieldSize'
+    );
+  });
+
+  it('refuses a running total over the cap and passes one at it', () => {
+    expect(findFieldLimitReason('a', untruncated, MULTIPART_LIMITS.totalBytes)).toBeNull();
+    expect(findFieldLimitReason('a', untruncated, MULTIPART_LIMITS.totalBytes + 1)).toBe(
+      'totalBytes'
+    );
   });
 });
