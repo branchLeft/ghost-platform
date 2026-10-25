@@ -13,10 +13,7 @@ carries no step at all for the component it guards, so a plan captured
 without the flag fails closed rather than silently passing.
 
 **This guard ships inside `@branchleft/ghost-platform-tenant`, not inside the
-tenant repo that runs it.** The earlier GCP-era guard lived in the template and
-carried a literal list of the component's child-resource names, which meant a
-version bump of the component could rename what the guard was watching without
-touching the guard. Shipping it beside the component it guards makes the two
+tenant repo that runs it.** Shipping it beside the component it guards makes the two
 one artifact: a rename is a diff in this directory.
 
 Three checks, guarding three different failures.

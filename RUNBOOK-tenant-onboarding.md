@@ -73,10 +73,7 @@ it is the only step in this runbook that catches it.
 **The provisioning credentials, environment-scoped.** Every
 provisioning-capable secret on `branchLeft/ghost-platform` must sit on the
 `tenant-provisioning` environment, not at the repository level, behind that
-environment's required-reviewer rule. This is the replacement for the
-Workload Identity provider condition the rewrite deletes: that one was enforced
-by Google regardless of any GitHub setting, and there is no like-for-like
-substitute. The workflow verifies both the rule and the scoping before it
+environment's required-reviewer rule. The workflow verifies both the rule and the scoping before it
 creates anything, and refuses if it cannot read either.
 
 **The tenant-state credential is its own Object Storage key pair, not

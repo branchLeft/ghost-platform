@@ -3,7 +3,7 @@
 ## Why these choices
 
 Boots the image against SQLite (dev/smoke-test only -- see `README.md`;
-production tenants use Cloud SQL MySQL), waits for a strict HTTP-200
+production tenants use MySQL), waits for a strict HTTP-200
 readiness check (not just a TCP connect, since a TCP-only check is
 misleading for Ghost's migration lock), then reports boot time and idle
 memory so they can be compared against the platform's measured baseline

@@ -3,9 +3,9 @@
 This repo's IaC, split by shape rather than lumped into one program:
 
 - **`tenant/`** -- a reusable Pulumi **component** (`GhostTenant`), not a
-  stack: the per-tenant resources (a dedicated service account, logical
-  database + DB user, storage write-isolation, Cloud Run service) that *do*
-  change per tenant. Takes the platform stack's outputs as plain
+  stack that declares no cloud resources: it renders the per-tenant values
+  that *do* change per tenant (the database and DB user names, the media
+  bucket, the Compose stack and its secrets file). Takes the platform stack's outputs as plain
   constructor args rather than resolving a `StackReference` itself, so it
   stays portable and testable independent of any one caller. Published to
   GitHub Packages as `@branchleft/ghost-platform-tenant` and instantiated
@@ -15,7 +15,7 @@ This repo's IaC, split by shape rather than lumped into one program:
   onboarding starts: the repo and its name disclose that they are a customer.
   This repo is public and holds only the reusable component, so it never
   carries a tenant's name, hostname or config whatever any one tenant chose --
-  a hostname and Cloud Run service name together are a tenant's identity, and
+  a hostname and stack name together are a tenant's identity, and
   a file listing them here would be a roster of every tenant at once,
   including the ones who chose private.
 
@@ -48,7 +48,7 @@ This repo's IaC, split by shape rather than lumped into one program:
   `branchleft-hetzner-estate` stacks (homed in `shared-infra`) for the
   network id and the edge's *applied* location, and refuses to plan if that
   location does not match the address plan's. State lives on the Hetzner
-  Object Storage backend under the passphrase provider -- not GCS -- and the
+  Object Storage backend under the passphrase provider, and the
   stack's config carries no salt and no token. Applied by CI on merge to
   `main` (`.github/workflows/infra-hosts-ci.yml`): plan job first, preview
   in the job summary, then an apply paused by the `production` environment's
@@ -72,11 +72,7 @@ This repo's IaC, split by shape rather than lumped into one program:
   tenant-passphrase-escrow and provisioning-scoping guard scripts
   `.github/workflows/provision-tenant.yml` calls at tenant-onboarding time,
   plus their unit tests. Pure-stdlib Python, tested on every PR and push by
-  `.github/workflows/infra-provisioning-scripts-ci.yml`. The Pulumi program
-  that used to sit beside it -- a per-tenant GCP deploy identity -- was
-  removed once the GCP estate it targeted was destroyed
-  (branchLeft/workspace#1000); this directory is what was left once that
-  went.
+  `.github/workflows/infra-provisioning-scripts-ci.yml`.
 
 Why split at all, rather than one program with a `sites`-style array (the
 shape `shared-infra/sites.ts` uses for the edge)? That pattern fits the edge
