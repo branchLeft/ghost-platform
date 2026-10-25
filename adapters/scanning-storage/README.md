@@ -359,8 +359,13 @@ A later upload of the real bytes replaces a copy that does not match.
 **Stuck holds.** A hold whose quarantined bytes do not match their digest,
 or whose retries fail `holdMaxFailures` times in a row (backing off
 exponentially up to `holdMaxRetryMs` between failures), is *stuck*: its
-retry loop stops, it is never promoted, and its bytes and targets stay on
-disk. It is logged once with the fixed prefix
+retry loop stops, no further promotion is attempted, and its bytes and
+targets stay on disk. A write already in flight when it timed out cannot be
+cancelled and may still land at the hold's own target. A promotion write
+that does not settle within `writeTimeoutMs` counts as a failed retry, and a
+request-path write that does not settle is rejected after the same budget
+(default 60000 ms, set through the adapter's `writeTimeoutMs` config). It is
+logged once with the fixed prefix
 `ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
 `"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
 same line again rather than resuming it. To retry a stuck hold once its

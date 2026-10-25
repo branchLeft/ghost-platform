@@ -13,6 +13,7 @@ export interface RunOptions {
   readonly statePath: string;
   readonly ntfy: NtfyConfig;
   readonly githubToken?: string;
+  readonly fetchReleasesTimeoutMs?: number;
   /** Injected for tests; defaults to the real upstream fetch. */
   readonly fetchReleases?: () => Promise<readonly GhostRelease[]>;
   /** Injected for tests; defaults to the real ntfy publish. */
@@ -29,7 +30,10 @@ export async function run(options: RunOptions): Promise<RunResult> {
 
   const releases = options.fetchReleases
     ? await options.fetchReleases()
-    : await fetchGhostReleases({ token: options.githubToken });
+    : await fetchGhostReleases({
+        token: options.githubToken,
+        timeoutMs: options.fetchReleasesTimeoutMs,
+      });
 
   const result = decide(releases, state);
 

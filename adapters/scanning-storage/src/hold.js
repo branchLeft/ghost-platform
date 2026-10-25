@@ -17,13 +17,19 @@ const {
 // Incidental, like the verdict budget in checks.js: how often a held digest
 // is re-asked, not whether it is re-asked at all.
 const DEFAULT_RETRY_INTERVAL_MS = 2000;
+// Incidental, like the retry interval: how long a write to the wrapped
+// adapter may stay unsettled before it counts as failed. It only turns
+// "waits forever" into "failed", never changes what is written or allowed.
+const DEFAULT_WRITE_TIMEOUT_MS = 60_000;
+// The largest delay setTimeout honours; anything above it fires after 1 ms.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 // A ceiling on the INTERVAL, never on how long a hold lives -- the design
 // means held forever if the verdict never resolves. This bounds the polling rate
 // during a prolonged outage without ever giving up on an item.
 const DEFAULT_MAX_RETRY_INTERVAL_MS = 60_000;
 // A bound on consecutive retries that FAIL (a throw from the filesystem or a
 // promote/refuse callback), not on retries that are merely still waiting for
-// a verdict. Past it the hold is stuck: kept, never promoted, and logged.
+// a verdict. Past it the hold is stuck: kept, no further promotion attempted, and logged.
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 8;
 // Sidecar suffix recording which target paths are waiting on a digest, so a
 // restart can tell a still-pending hold apart from a permanently quarantined
@@ -34,6 +40,40 @@ const HOLDS_SUFFIX = '.holds.json';
 // again on every restart that finds it, so a log search or alert has one
 // fixed string to match.
 const STUCK_LOG_PREFIX = 'ScanningStorageAdapter: hold stuck';
+// Logged when an upload request's own write to the wrapped adapter times out.
+const REQUEST_WRITE_TIMEOUT_LOG_PREFIX = 'ScanningStorageAdapter: request write timed out';
+
+// The errors withWriteTimeout raised, so a caller can tell its timeout from
+// a storage error whose message happens to read the same.
+const writeTimeoutErrors = new WeakSet();
+
+// A budget that is not a finite number in (0, 2147483647] would make
+// setTimeout fire at once or never, so it falls back to the default.
+function resolveWriteTimeoutMs(value) {
+  const usable =
+    typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MAX_TIMER_DELAY_MS;
+  return usable ? value : DEFAULT_WRITE_TIMEOUT_MS;
+}
+
+// Rejects once `ms` pass with the write still unsettled. The write itself
+// cannot be cancelled and may still land later.
+function withWriteTimeout(promise, ms) {
+  const write = Promise.resolve(promise);
+  write.catch(() => {});
+  let timer;
+  const timedOut = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`write timed out after ${ms} ms`);
+      writeTimeoutErrors.add(err);
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([write, timedOut]).finally(() => clearTimeout(timer));
+}
+
+function isWriteTimeoutError(err) {
+  return writeTimeoutErrors.has(err);
+}
 
 // Runs every blocking check against a buffer and returns the first
 // non-allow decision, or {decision: 'allow'} once every check clears it.
@@ -97,6 +137,7 @@ class HoldRegistry {
     retryIntervalMs = DEFAULT_RETRY_INTERVAL_MS,
     maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
     maxConsecutiveFailures = DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    writeTimeoutMs,
     logger = console,
   }) {
     // Without an owner, a registry resuming after a restart would pick up
@@ -119,6 +160,7 @@ class HoldRegistry {
     this.retryIntervalMs = retryIntervalMs;
     this.maxRetryIntervalMs = maxRetryIntervalMs;
     this.maxConsecutiveFailures = maxConsecutiveFailures;
+    this.writeTimeoutMs = resolveWriteTimeoutMs(writeTimeoutMs);
     this.logger = logger;
     // digest -> { holds: [{targetPath, onAllow, onRefuse}], timer, intervalMs, failures }
     //
@@ -367,7 +409,7 @@ class HoldRegistry {
           await this.#resolveRefused(digest, entry);
           return;
         }
-        await hold.onAllow(buffer);
+        await withWriteTimeout(hold.onAllow(buffer), this.writeTimeoutMs);
       }
       this.#forget(digest);
       this.#release(digest, { keepBytes: false });
@@ -408,7 +450,7 @@ class HoldRegistry {
       );
     }
     this.logger.error(
-      `${STUCK_LOG_PREFIX} for ${digest} (owner ${this.owner}): ${reason}; it will not be promoted`,
+      `${STUCK_LOG_PREFIX} for ${digest} (owner ${this.owner}): ${reason}; no further promotion will be attempted`,
       err
     );
   }
@@ -465,9 +507,14 @@ class HoldRegistry {
 module.exports = {
   HoldRegistry,
   evaluate,
+  withWriteTimeout,
+  isWriteTimeoutError,
+  resolveWriteTimeoutMs,
+  DEFAULT_WRITE_TIMEOUT_MS,
   DEFAULT_RETRY_INTERVAL_MS,
   DEFAULT_MAX_RETRY_INTERVAL_MS,
   DEFAULT_MAX_CONSECUTIVE_FAILURES,
   HOLDS_SUFFIX,
   STUCK_LOG_PREFIX,
+  REQUEST_WRITE_TIMEOUT_LOG_PREFIX,
 };

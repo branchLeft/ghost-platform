@@ -360,6 +360,140 @@ describe('BumpStateMachine -- verify() that cannot even run', () => {
   });
 });
 
+describe('BumpStateMachine -- revertTraffic() or stopColour() that cannot even run', () => {
+  it('a revertTraffic() that throws pages once as failed-unsafe, rather than escaping run() and stranding the tenant in reverting', async () => {
+    const deps = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      revertTraffic: vi.fn(async () => {
+        throw new Error('edge unreachable');
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
+
+    const finalState = await m.run();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(m.getState()).toBe('failed-unsafe');
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('edge unreachable', `${BUMP_ID}:edge unreachable`);
+  });
+
+  it('a revertTraffic() that throws something other than an Error still pages, with a literal fallback reason', async () => {
+    const deps = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      revertTraffic: vi.fn(async () => {
+        throw 'boom';
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
+
+    const finalState = await m.run();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('revertTraffic() threw', expect.any(String));
+  });
+
+  it('a stopColour("new") that throws after a successful revert pages once as failed-unsafe', async () => {
+    const deps = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      stopColour: vi.fn(async () => {
+        throw new Error('teardown failed');
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
+
+    const finalState = await m.run();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.revertTraffic).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('teardown failed', `${BUMP_ID}:teardown failed`);
+  });
+
+  it('a stopColour("new") that throws something other than an Error still pages, with a literal fallback reason', async () => {
+    const deps = fakeDeps({
+      verify: vi.fn(async () => ({ ok: false, reason: 'content check failed' })),
+      stopColour: vi.fn(async () => {
+        throw 'boom';
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
+
+    const finalState = await m.run();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.page).toHaveBeenCalledWith('stopColour() threw', expect.any(String));
+  });
+
+  it('persists failed-unsafe with pageSent false strictly before page(), and pageSent true strictly after', async () => {
+    const timeline: string[] = [];
+    const deps = fakeDeps({
+      backup: vi.fn(async () => {
+        timeline.push('call:backup');
+        return { ok: true };
+      }),
+      apply: vi.fn(async () => {
+        timeline.push('call:apply');
+        return { ok: true };
+      }),
+      verify: vi.fn(async () => {
+        timeline.push('call:verify');
+        return { ok: false, reason: 'content check failed' };
+      }),
+      revertTraffic: vi.fn(async () => {
+        timeline.push('call:revertTraffic');
+        throw new Error('edge unreachable');
+      }),
+      page: vi.fn(async () => {
+        timeline.push('call:page');
+      }),
+      persist: vi.fn(async (snapshot) => {
+        timeline.push(`persist:${snapshot.state}:pageSent=${snapshot.pageSent}`);
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
+
+    await m.run();
+
+    // The failed-unsafe record must be durable before the one page goes
+    // out, so a crash between the two recovers as an unpaged failure
+    // rather than a lost page; pageSent is then flipped only after page().
+    expect(timeline).toEqual([
+      'persist:backing-up:pageSent=false',
+      'call:backup',
+      'persist:backed-up:pageSent=false',
+      'persist:applying:pageSent=false',
+      'call:apply',
+      'persist:verifying:pageSent=false',
+      'call:verify',
+      'persist:reverting:pageSent=false',
+      'call:revertTraffic',
+      'persist:failed-unsafe:pageSent=false',
+      'call:page',
+      'persist:failed-unsafe:pageSent=true',
+    ]);
+  });
+
+  it('abortAfterDone() from done with a throwing revertTraffic() resolves failed-unsafe and pages once', async () => {
+    const deps = fakeDeps({
+      revertTraffic: vi.fn(async () => {
+        throw new Error('edge unreachable');
+      }),
+    });
+    const m = new BumpStateMachine(deps, createApplyLock(), { bumpId: BUMP_ID });
+    expect(await m.run()).toBe('done');
+
+    const finalState = await m.abortAfterDone();
+
+    expect(finalState).toBe('failed-unsafe');
+    expect(deps.stopColour).not.toHaveBeenCalled();
+    expect(deps.page).toHaveBeenCalledTimes(1);
+    expect(deps.page).toHaveBeenCalledWith('edge unreachable', `${BUMP_ID}:edge unreachable`);
+  });
+});
+
 describe('BumpStateMachine -- the revert-failure fallback reason', () => {
   it('falls back to the literal string when neither the revert result nor the caller names a reason', async () => {
     const deps = fakeDeps({ revertTraffic: vi.fn(async () => ({ ok: false })) });

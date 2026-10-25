@@ -49,19 +49,44 @@ interface SignalTarget {
   removeListener(signal: SignalName, handler: () => void): unknown;
 }
 
-/** Runs every registered remover, then exits 130 (SIGINT) or 143 (SIGTERM). */
+/**
+ * Exit code for a signal that arrived while a cleanup step failed: a tenant
+ * resource may still be running. 70 is not one of the codes the service
+ * already uses (0, 1, 2, 130, 143).
+ */
+export const CLEANUP_FAILED_EXIT_CODE = 70;
+
+/**
+ * Runs every registered remover, then exits 130 (SIGINT) or 143 (SIGTERM).
+ * When any remover threw, one stderr line per failed step names its label
+ * and the process exits with CLEANUP_FAILED_EXIT_CODE instead. The thrown
+ * error's message is never written, since it can carry paths. Exit is
+ * always reached, even if a stderr write throws.
+ */
 export function installSignalCleanup(
   registry: CleanupRegistry = processCleanup,
   exit: (code: number) => void = (code) => process.exit(code),
-  target: SignalTarget = process
+  target: SignalTarget = process,
+  writeStderr: (line: string) => void = (line) => {
+    process.stderr.write(`${line}\n`);
+  }
 ): () => void {
+  const cleanUpThenExit = (signal: SignalName, cleanExitCode: number): void => {
+    const failedLabels = registry.runAll();
+    for (const label of failedLabels) {
+      try {
+        writeStderr(`export-bundler: cleanup step failed on ${signal}: ${label}`);
+      } catch {
+        // A broken stderr must never stop the process from exiting.
+      }
+    }
+    exit(failedLabels.length > 0 ? CLEANUP_FAILED_EXIT_CODE : cleanExitCode);
+  };
   const onInt = () => {
-    registry.runAll();
-    exit(130);
+    cleanUpThenExit('SIGINT', 130);
   };
   const onTerm = () => {
-    registry.runAll();
-    exit(143);
+    cleanUpThenExit('SIGTERM', 143);
   };
   target.on('SIGINT', onInt);
   target.on('SIGTERM', onTerm);

@@ -130,6 +130,11 @@ class ValidationTests(unittest.TestCase):
                 with self.assertRaises(ptv.ProvisionError):
                     ptv.validate_slug(slug)
 
+    def test_rejects_mail_spool_by_name(self):
+        # The name is literal, so this does not depend on the list under test.
+        with self.assertRaises(ptv.ProvisionError):
+            ptv.validate_slug("mail-spool")
+
     def test_rejects_a_uid_outside_the_reserved_range(self):
         for uid in (0, 999, ptv.TENANT_UID_MIN - 1, ptv.TENANT_UID_MAX + 1):
             with self.subTest(uid=uid):

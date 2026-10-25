@@ -146,7 +146,7 @@ watcher type check and test` (`major-watcher-ci.yml`) is not currently
 one of this repo's required status checks** (`docker build`, `Tenant type
 check`, `Format and lint`, `docs-lint / docs-lint`, `standards / Standards
 gates` are), so a future PR touching `services/major-watcher/` can merge
-without its own 43 tests having run green.
+without its own tests having run green.
 
 ## Known limitations
 
@@ -163,3 +163,9 @@ without its own 43 tests having run green.
   (alpha through GA): tag and `published_at` land together every time, so
   this is a hedge against a practice change, not a defect against current
   practice.
+- **Outbound calls have a deadline, and a timeout fails the run.** The ntfy
+  publish and the GitHub releases fetch are each bounded per request (10
+  seconds for the publish, 30 seconds for the releases fetch). A timeout
+  fails the run with exit 1 and an `::error::` annotation, and the state
+  file is left unwritten, so the next scheduled run retries the page;
+  nothing retries inside a run.

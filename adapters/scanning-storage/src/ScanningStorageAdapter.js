@@ -44,7 +44,13 @@ module.exports = class ScanningStorageAdapter extends Adapter {
     super({
       ...config,
       metrics,
-      checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes, metrics })],
+      checks: [
+        createPdqKnownMaterialCheck(verdictClient, {
+          computeDigest: digestBytes,
+          metrics,
+          logger: config.holdLogger || console,
+        }),
+      ],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,
       refuseUploadsReason,

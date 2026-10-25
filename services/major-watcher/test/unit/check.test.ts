@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import { run } from '../../src/check.js';
 import type { GhostRelease } from '../../src/ghostReleases.js';
 
@@ -14,6 +15,21 @@ const MAJOR_6_RELEASES: GhostRelease[] = [
 const MINOR_ONLY_RELEASES: GhostRelease[] = [
   { tagName: 'v6.65.0', publishedAt: '2026-09-22T15:28:40Z', draft: false },
 ];
+
+// Behaves like real fetch: rejects with the signal's reason once it aborts, otherwise never settles.
+function stallingFetch(): Mock<typeof fetch> {
+  return vi.fn<typeof fetch>(
+    (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      })
+  );
+}
 
 describe('run (end to end, network and ntfy both faked)', () => {
   let dir: string;
@@ -140,6 +156,55 @@ describe('run (end to end, network and ntfy both faked)', () => {
       })
     ).rejects.toThrow(/ntfy publish failed/);
 
+    expect(await readFile(statePath, 'utf8')).toBe(before);
+  });
+
+  it('a stalled ntfy publish fails the run and leaves state unwritten, so the next run retries', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const before = await readFile(statePath, 'utf8');
+    const globalFetch = stallingFetch();
+    vi.stubGlobal('fetch', globalFetch);
+    try {
+      await expect(
+        run({
+          statePath,
+          ntfy: { url: 'https://ntfy.example/topic', timeoutMs: 25 },
+          fetchReleases: async () => MAJOR_6_RELEASES,
+        })
+      ).rejects.toThrow(new Error('ntfy publish timed out after 25 ms'));
+      expect(globalFetch).toHaveBeenCalledTimes(1);
+      expect(globalFetch.mock.calls[0]![0]).toBe('https://ntfy.example/topic');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(await readFile(statePath, 'utf8')).toBe(before);
+  });
+
+  it('a stalled releases fetch fails the run before any page and leaves state unwritten', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const before = await readFile(statePath, 'utf8');
+    const publishNtfy = vi.fn().mockResolvedValue(undefined);
+    const globalFetch = stallingFetch();
+    vi.stubGlobal('fetch', globalFetch);
+    try {
+      await expect(
+        run({
+          statePath,
+          ntfy: { url: 'https://ntfy.example/topic' },
+          fetchReleasesTimeoutMs: 25,
+          publishNtfy,
+        })
+      ).rejects.toThrow(new Error('GitHub releases fetch timed out after 25 ms'));
+      expect(globalFetch).toHaveBeenCalledTimes(1);
+      expect(globalFetch.mock.calls[0]![0]).toContain(
+        'https://api.github.com/repos/TryGhost/Ghost/releases'
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(publishNtfy).not.toHaveBeenCalled();
     expect(await readFile(statePath, 'utf8')).toBe(before);
   });
 });

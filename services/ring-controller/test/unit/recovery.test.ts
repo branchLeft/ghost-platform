@@ -222,6 +222,30 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     }
   );
 
+  it('recovers a tenant persisted in reverting whose revertTraffic() throws as failed-unsafe, paging once, never escaping the sweep', async () => {
+    const deps = fakeDeps({
+      revertTraffic: vi.fn(async () => {
+        throw new Error('edge unreachable');
+      }),
+    });
+    const store = memoryStore([record('reverting')]);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const { recovered, failed } = await recoverPersistedTenants(
+        store,
+        createApplyLock(),
+        () => deps
+      );
+
+      expect(recovered.map((r) => r.finalState)).toEqual(['failed-unsafe']);
+      expect(failed).toEqual([]);
+      expect(deps.page).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it('recovers a tenant persisted in reverted by retrying the new-colour teardown, never re-reverting', async () => {
     const deps = fakeDeps();
     const store = memoryStore([record('reverted')]);
