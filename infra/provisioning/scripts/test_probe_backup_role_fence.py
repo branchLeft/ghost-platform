@@ -444,7 +444,8 @@ class TestTransportPieces(unittest.TestCase):
 
     def test_a_stray_key_in_the_cleanup_listing_is_reported_and_left_alone(self):
         endpoint = FakeEndpoint(rendered_fence(), stray_key="dumps/real-backup.sql.age")
-        _, lines = run_probe(endpoint)
+        code, lines = run_probe(endpoint)
+        self.assertEqual(code, 0)
         self.assertTrue(any("dumps/real-backup.sql.age" in line and line.startswith("LEFTOVER")
                             for line in lines))
         self.assertNotIn(("operator", "s3:DeleteObjectVersion", "dumps/real-backup.sql.age",
@@ -460,7 +461,8 @@ class TestTransportPieces(unittest.TestCase):
             return original(role, access_key, action, method, key, query)
 
         endpoint.respond = respond
-        _, lines = run_probe(endpoint)
+        code, lines = run_probe(endpoint)
+        self.assertEqual(code, 0)
         self.assertTrue(any(line.startswith("LEFTOVER") and "version" in line for line in lines))
         self.assertTrue(any(line.startswith("LEFTOVER") and "multipart" in line for line in lines))
 
