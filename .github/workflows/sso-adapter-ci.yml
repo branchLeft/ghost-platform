@@ -2,7 +2,9 @@ name: SSO adapter CI
 
 # Unit tests and the coverage floor for the break-glass SSO adapter
 # (adapters/sso/). The proof against a real Ghost runs in build.yml, next to
-# the image it needs.
+# the image it needs. The overlay tests are the exception that needs Docker:
+# test/unit/global-setup.mjs takes Ghost's session-from-token.js out of the
+# digest-pinned base image (the runner has Docker) and applies the patch.
 
 on:
   push:

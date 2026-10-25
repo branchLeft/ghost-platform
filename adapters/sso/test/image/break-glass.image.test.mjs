@@ -554,17 +554,16 @@ describe('the adapter ships in the image, not the content directory', { timeout:
 });
 
 describe(
-  'the image carries the session-save overlay verbatim (LLD-5, ghost-core-overlay/README.md)',
+  'the image carries the session-save overlay, patched onto the pinned Ghost file (LLD-5, ghost-core-overlay/README.md)',
   { timeout: 60_000 },
   () => {
-    // The Dockerfile's hash guard proves the UPSTREAM file it copied the
-    // overlay onto still matches what the overlay was derived from -- it runs
-    // at build time, before the final COPY. It proves nothing about the final
-    // image: a dropped COPY line, or a build stage reordering, could still
-    // ship plain upstream. This checks the artefact that actually reaches a
-    // tenant: the built image's own copy of the file, by content hash against
-    // this repo's overlay and against the pinned upstream hash.
-    it("the built image's session-from-token.js hashes to this repo's overlay, not to upstream", () => {
+    // The Dockerfile applies the patch and checks the result against the
+    // pinned hash at build time. That proves the build step; it proves nothing
+    // about the final image: a dropped RUN line, or a later layer that put
+    // plain upstream back, would still ship the unpatched file. This checks
+    // the artefact that actually reaches a tenant: the built image's own copy
+    // of the file, by content hash against the pin the build checks.
+    it("the built image's session-from-token.js hashes to the pinned patched file and carries the save", () => {
       const cid = execFileSync('docker', ['create', IMAGE], { encoding: 'utf8' }).trim();
       let inImageBytes;
       try {
@@ -590,26 +589,23 @@ describe(
         '..',
         'ghost-core-overlay'
       );
-      const overlayBytes = fs.readFileSync(path.join(overlayDir, 'session-from-token.js'));
-      const upstreamPin = fs
-        .readFileSync(path.join(overlayDir, 'session-from-token.upstream.sha256'), 'utf8')
+      const patchedPin = fs
+        .readFileSync(path.join(overlayDir, 'session-from-token.patched.sha256'), 'utf8')
         .trim()
         .split(/\s+/)[0];
 
-      const hash = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
-      const inImageHash = hash(inImageBytes);
-      const overlayHash = hash(overlayBytes);
+      const inImageHash = crypto.createHash('sha256').update(inImageBytes).digest('hex');
 
       assert.equal(
         inImageHash,
-        overlayHash,
-        "the image's session-from-token.js does not match adapters/sso/ghost-core-overlay/session-from-token.js -- " +
-          'the Dockerfile COPY that lands the overlay is missing or was reordered ahead of a later overwrite'
+        patchedPin,
+        "the image's session-from-token.js does not match adapters/sso/ghost-core-overlay/session-from-token.patched.sha256 -- " +
+          'the Dockerfile step that applies the patch is missing or was reordered behind a later overwrite'
       );
-      assert.notEqual(
-        inImageHash,
-        upstreamPin,
-        "the image's session-from-token.js still hashes to pristine upstream -- the overlay never landed"
+      assert.match(
+        inImageBytes.toString('utf8'),
+        /req\.session\.save\(/,
+        "the image's session-from-token.js does not await the session save -- the patch never landed"
       );
     });
   }
