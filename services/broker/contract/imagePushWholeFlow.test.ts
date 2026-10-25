@@ -5,7 +5,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeTempDir } from '../src/atomicFile.js';
-import { pushImage } from '../src/controlPlanePush.js';
+import { DEFAULT_PUSH_TIMEOUT_MS, pushImage } from '../src/controlPlanePush.js';
 import { handleImagePush } from '../src/imagePush.js';
 import { createInMemoryNonceStore } from '../src/nonceStore.js';
 import { generateTestKeyPair } from '../test/helpers/signer.js';
@@ -199,4 +199,39 @@ describe('pushImage against a host that accepts the connection and never answers
     expect(((failure as Error).cause as Error).name).toBe('TimeoutError');
     expect(elapsedMs).toBeLessThan(3000);
   }, 5000);
+});
+
+describe('pushImage against a host that refuses the connection', () => {
+  it('propagates the connection failure itself, not a deadline error', async () => {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const { port } = closed.address() as AddressInfo;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const keyPair = generateTestKeyPair();
+    const tmpDir = await makeTempDir('refused-host-');
+    const tarPath = join(tmpDir, 'sent.tar');
+    await writeFile(tarPath, Buffer.from('x'));
+
+    const failure = await pushImage({
+      baseUrl: `http://127.0.0.1:${port}`,
+      digest: `sha256:${'0'.repeat(64)}`,
+      tarPath,
+      privateKeyRaw: keyPair.privateKeyRaw,
+      timeoutMs: 60_000,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as Error).message).not.toContain('did not finish within');
+  });
+});
+
+describe('DEFAULT_PUSH_TIMEOUT_MS', () => {
+  it('is a finite, positive thirty minutes', () => {
+    expect(Number.isFinite(DEFAULT_PUSH_TIMEOUT_MS)).toBe(true);
+    expect(DEFAULT_PUSH_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DEFAULT_PUSH_TIMEOUT_MS).toBe(1_800_000);
+  });
 });

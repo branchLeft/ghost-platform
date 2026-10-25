@@ -25,6 +25,8 @@ export interface PushImageArgs {
   readonly privateKeyRaw: Buffer;
   readonly nowSeconds?: number;
   readonly nonce?: string;
+  /** Total time the whole push may take, not an idle timeout; defaults to `DEFAULT_PUSH_TIMEOUT_MS`. */
+  readonly timeoutMs?: number;
 }
 
 export interface PushImageResult {
@@ -34,6 +36,12 @@ export interface PushImageResult {
 }
 
 const IMAGE_PUSH_PATH = '/image';
+
+export const DEFAULT_PUSH_TIMEOUT_MS = 30 * 60 * 1000;
+
+function isAbortError(error: unknown): error is Error {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
 
 export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
   const { size } = await stat(args.tarPath);
@@ -61,6 +69,7 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
     createReadStream(args.tarPath)
   ) as unknown as globalThis.ReadableStream<Uint8Array>;
 
+  const timeoutMs = args.timeoutMs ?? DEFAULT_PUSH_TIMEOUT_MS;
   const result = await generatedPushImage({
     baseUrl: args.baseUrl,
     // Node's fetch requires this for any request carrying a streamed body;
@@ -68,6 +77,7 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
     // the cast rather than a `@ts-expect-error` this repo's CI TypeScript
     // version may or may not agree needs one.
     ...({ duplex: 'half' } as Record<string, unknown>),
+    signal: AbortSignal.timeout(timeoutMs),
     headers: {
       'X-Broker-Timestamp': timestamp,
       'X-Broker-Nonce': nonce,
@@ -80,8 +90,16 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
   });
   // No response at all means the request itself failed (refused, reset):
   // rethrown, as a rejected `fetch` always was, rather than reported as a
-  // status this module never received.
-  if (result.response === undefined) throw result.error;
+  // status this module never received. Only the deadline's own abort is
+  // reworded.
+  if (result.response === undefined) {
+    if (isAbortError(result.error)) {
+      throw new Error(`image push did not finish within ${timeoutMs} ms`, {
+        cause: result.error,
+      });
+    }
+    throw result.error;
+  }
   const { ok, status } = result.response;
   // A non-2xx answer arrives as the parsed JSON, or the raw text when it was
   // not JSON; only the former was ever handed back.
