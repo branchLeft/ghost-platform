@@ -514,6 +514,18 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(outcome, "error")
         self.assertIn("did not complete", reason)
 
+    def test_a_redirect_with_no_s3_error_document_is_inconclusive(self):
+        self.assertEqual(verify.classify(301, b"")[0], "error")
+        self.assertEqual(verify.classify(307, b"<html>moved</html>")[0], "error")
+
+    def test_a_redirect_carrying_a_non_denial_code_is_inconclusive(self):
+        outcome, _ = verify.classify(301, b"<Error><Code>PermanentRedirect</Code></Error>")
+        self.assertEqual(outcome, "error")
+
+    def test_a_redirect_carrying_a_denial_code_is_still_read_by_its_code(self):
+        outcome, _ = verify.classify(301, b"<Error><Code>AccessDenied</Code></Error>")
+        self.assertEqual(outcome, "denied")
+
     def test_an_object_whose_own_contents_look_like_a_denial_is_still_allowed(self):
         # The body is not consulted on success, and a 2xx is a successful read
         # whatever it returned.
