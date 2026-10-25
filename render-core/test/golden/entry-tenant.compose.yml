@@ -92,6 +92,7 @@ services:
       hostSettings__limits__members__max: 500
       hostSettings__limits__staff__max: 3
       security__allowWebhookInternalIPs: false
+      hostSettings__limits__limitSocialWeb__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
@@ -206,6 +207,7 @@ services:
       hostSettings__limits__members__max: 500
       hostSettings__limits__staff__max: 3
       security__allowWebhookInternalIPs: false
+      hostSettings__limits__limitSocialWeb__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864

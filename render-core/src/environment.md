@@ -126,3 +126,11 @@ and is not yet done.
 
 Member mail is addressed through a Ghost *setting*
 (`members_support_address`, `settings.ts`), not through these keys.
+
+## Social web lock
+
+`hostSettings__limits__limitSocialWeb__disabled` is `true` for every kind and
+every cap, so Ghost locks the ActivityPub setting and the admin's Network tab
+is absent. It is unconditional, unlike the member and staff caps, which
+render only when set. `settings.ts` also turns `social_web` off, because a
+lock does not undo what an existing tenant already has.

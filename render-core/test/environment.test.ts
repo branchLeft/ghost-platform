@@ -76,6 +76,28 @@ describe('tenantEnvironment() — verdictSource', () => {
   });
 });
 
+// The Network tab is ActivityPub's surface, and no federation service exists
+// to back it. Ghost reads this flag from config only, so it must reach every
+// kind of tenant as environment, whatever the member and staff caps are.
+describe('tenantEnvironment() — social web lock', () => {
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+  ] as const)('locks the ActivityPub setting for a %s', (_label, fixture) => {
+    expect(env(fixture()).hostSettings__limits__limitSocialWeb__disabled).toBe(true);
+  });
+
+  it('locks it when every cap is null, so the lock is not a side effect of a cap', () => {
+    const base = tenantDescriptor();
+    const descriptor = {
+      ...base,
+      limits: { ...base.limits, membersCap: null, staffCap: null },
+    };
+    expect(env(descriptor).hostSettings__limits__limitSocialWeb__disabled).toBe(true);
+  });
+});
+
 describe('tenantEnvironment() — Ghost mail transport timeouts', () => {
   it.each([
     ['tenant', tenantDescriptor],
