@@ -171,12 +171,26 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
     return send(res, 403);
   }
 
+  const contentType = headerValue(req.headers['content-type']) ?? '';
+  const body =
+    contentType.split(';')[0]?.trim().toLowerCase() === 'application/x-www-form-urlencoded'
+      ? await readBody(req)
+      : null;
+  if (body === null) return send(res, 400);
+  const form = new URLSearchParams(body);
+  const passphrase = form.get('passphrase') ?? '';
+  const returnPath = safeReturnPath(form.get('r'));
+  if (passphrase.length === 0 || passphrase.length > MAX_PASSPHRASE_LENGTH) {
+    return send(res, 400);
+  }
+
   const attemptedAt = deps.nowMs();
   // Peeked, not charged: a request either tier would refuse must cost
   // neither one anything, and must not create a new /64 entry in the
   // narrow table just because the /48 tier was going to refuse it anyway
   // -- checking without charging first is what stops that. Only once both
   // agree to admit is the attempt actually recorded, on both together.
+  // See ../README.md#peek-and-the-reclaim-sweep.
   const narrowPeek = deps.ceiling.peek(source, attemptedAt);
   const broadPeek = deps.broadCeiling.peek(broadSource, attemptedAt);
   if (!narrowPeek.allowed || !broadPeek.allowed) {
@@ -191,19 +205,6 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
   }
   deps.ceiling.attempt(source, attemptedAt);
   deps.broadCeiling.attempt(broadSource, attemptedAt);
-
-  const contentType = headerValue(req.headers['content-type']) ?? '';
-  const body =
-    contentType.split(';')[0]?.trim().toLowerCase() === 'application/x-www-form-urlencoded'
-      ? await readBody(req)
-      : null;
-  if (body === null) return send(res, 400);
-  const form = new URLSearchParams(body);
-  const passphrase = form.get('passphrase') ?? '';
-  const returnPath = safeReturnPath(form.get('r'));
-  if (passphrase.length === 0 || passphrase.length > MAX_PASSPHRASE_LENGTH) {
-    return send(res, 400);
-  }
 
   const host = hostOf(req);
   const gated = host === null ? undefined : (await deps.slots()).get(host);
