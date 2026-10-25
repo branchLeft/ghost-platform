@@ -87,7 +87,13 @@ def _next_page_url(headers):
     match = NEXT_LINK.search(link)
     if match is None:
         return None
-    return urllib.parse.urljoin(REGISTRY_HOST, match.group(1))
+    joined = urllib.parse.urljoin(REGISTRY_HOST, match.group(1))
+    # The bearer token is only ever sent to the registry, so another host is refused.
+    joined_parts = urllib.parse.urlsplit(joined)
+    registry_parts = urllib.parse.urlsplit(REGISTRY_HOST)
+    if joined_parts.scheme != registry_parts.scheme or joined_parts.netloc != registry_parts.netloc:
+        raise RuntimeError(f"tag list page link points at a different host: {joined_parts.netloc}")
+    return joined
 
 
 class GitHubApi:
