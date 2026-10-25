@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { desiredState } from '../src/desired.js';
 import { validateConfig } from '../src/config.js';
-import { managementClient, ZitadelApiError, ZitadelShapeError } from '../src/management.js';
+import {
+  managementClient,
+  ZitadelApiError,
+  ZitadelShapeError,
+  ZitadelTimeoutError,
+} from '../src/management.js';
 import type { FetchLike } from '../src/management.js';
 import { HOSTNAMES } from './fakes.js';
 
@@ -204,4 +209,160 @@ describe('managementClient', () => {
     await client.createOrg('b');
     expect(seen).toEqual(['Bearer t1', 'Bearer t2']);
   });
+});
+
+const STALL_LIMIT_MS = 25;
+const STALL_TOKEN = 'T0KEN-STALL';
+
+type Answer = Awaited<ReturnType<FetchLike>>;
+
+/** Built like real fetch: settles only by rejecting with the signal's reason
+ * when the signal fires. Without a signal it never settles at all. */
+const stalledFetch: FetchLike = (_url, init) =>
+  new Promise<Answer>((_resolve, reject) => {
+    const signal: AbortSignal | undefined = init.signal;
+    signal?.addEventListener('abort', () => reject(signal.reason));
+  });
+
+/** Answers at once, then stalls while the body is read, as a connection that
+ * dies mid-answer does. */
+const stalledBodyFetch: FetchLike = async (_url, init) => ({
+  ok: true,
+  status: 200,
+  json: () =>
+    new Promise<unknown>((_resolve, reject) => {
+      const signal: AbortSignal | undefined = init.signal;
+      signal?.addEventListener('abort', () => reject(signal.reason));
+    }),
+});
+
+function clientWith(fetch: FetchLike, timeoutMs?: number) {
+  return managementClient({
+    baseUrl: 'http://zitadel.test',
+    token: () => STALL_TOKEN,
+    fetch,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+}
+
+async function failureOf(attempt: Promise<unknown>): Promise<unknown> {
+  return attempt.then(
+    () => {
+      throw new Error('the call was expected to fail');
+    },
+    (error: unknown) => error
+  );
+}
+
+function expectOnlyPathAndLimit(error: unknown, path: string): void {
+  expect(error).toBeInstanceOf(ZitadelTimeoutError);
+  const timeout = error as ZitadelTimeoutError;
+  expect(timeout.name).toBe('ZitadelTimeoutError');
+  expect(timeout.path).toBe(path);
+  expect(timeout.timeoutMs).toBe(STALL_LIMIT_MS);
+  expect(timeout.message).toBe(`Zitadel did not answer ${path} within ${STALL_LIMIT_MS} ms`);
+  expect(timeout.message).not.toContain(STALL_TOKEN);
+  expect(timeout.message).not.toContain('Bearer');
+}
+
+describe('managementClient request bounds', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('gives every request its own AbortSignal that has not fired, within the time limit', async () => {
+    const seen: AbortSignal[] = [];
+    const client = clientWith(async (_url, init) => {
+      expect(init.signal.aborted).toBe(false);
+      seen.push(init.signal);
+      return { ok: true, status: 200, json: async () => ({}) };
+    });
+    await client.findOrg('x');
+    await client.createRole('o', 'p', 'tenant-admin', 'TENANT ADMINISTRATOR');
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+    expect(seen[1]).toBeInstanceOf(AbortSignal);
+    expect(seen[0]).not.toBe(seen[1]);
+  });
+
+  it('raises a timeout error naming only the path and the limit when a stalled fetch passes the time limit', async () => {
+    const error = await failureOf(clientWith(stalledFetch, STALL_LIMIT_MS).createOrg('x'));
+    expectOnlyPathAndLimit(error, '/management/v1/orgs');
+  });
+
+  it('raises a timeout error through a public method when a stalled fetch passes the time limit', async () => {
+    const error = await failureOf(clientWith(stalledFetch, STALL_LIMIT_MS).findOrg('x'));
+    expectOnlyPathAndLimit(error, '/admin/v1/orgs/_search');
+  });
+
+  it('raises a timeout error when a stalled answer body passes the time limit', async () => {
+    const error = await failureOf(clientWith(stalledBodyFetch, STALL_LIMIT_MS).createOrg('x'));
+    expectOnlyPathAndLimit(error, '/management/v1/orgs');
+  });
+
+  it('passes a plain connection error through unchanged', async () => {
+    const refused = new Error('connection refused');
+    const error = await failureOf(
+      clientWith(async () => {
+        throw refused;
+      }, STALL_LIMIT_MS).createOrg('x')
+    );
+    expect(error).toBe(refused);
+    expect(error).not.toBeInstanceOf(ZitadelTimeoutError);
+  });
+
+  it('passes a plain answer body error through unchanged while the limit has not fired', async () => {
+    const broken = new Error('body unreadable');
+    const error = await failureOf(
+      clientWith(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw broken;
+        },
+      })).createOrg('x')
+    );
+    expect(error).toBe(broken);
+  });
+
+  it('still raises the API error for a non-2xx answer', async () => {
+    const error = await failureOf(
+      clientWith(async () => ({ ok: false, status: 503, json: async () => ({}) })).createOrg('x')
+    );
+    expect(error).toBeInstanceOf(ZitadelApiError);
+    expect((error as ZitadelApiError).status).toBe(503);
+  });
+
+  it('uses the default time limit of 30000 ms when no limit is given', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    await harness(() => ({ body: {} })).client.findOrg('x');
+    expect(timeout).toHaveBeenCalledExactlyOnceWith(30000);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2147483648, 4294967296])(
+    'falls back to the default time limit for the unusable limit %s',
+    async (unusable) => {
+      const timeout = vi.spyOn(AbortSignal, 'timeout');
+      const aborted: boolean[] = [];
+      const client = clientWith(async (_url, init) => {
+        aborted.push(init.signal.aborted);
+        return { ok: true, status: 200, json: async () => ({}) };
+      }, unusable);
+      await client.findOrg('x');
+      expect(aborted).toEqual([false]);
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(30000);
+    }
+  );
+
+  it.each([1, 2147483647])(
+    'accepts the time limit %s at the end of the allowed range',
+    async (limit) => {
+      const timeout = vi.spyOn(AbortSignal, 'timeout');
+      await clientWith(
+        async () => ({ ok: true, status: 200, json: async () => ({}) }),
+        limit
+      ).findOrg('x');
+      expect(timeout).toHaveBeenCalledExactlyOnceWith(limit);
+    }
+  );
 });
