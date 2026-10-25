@@ -12,8 +12,9 @@ import { validate } from '../src/validate.js';
 import type { render as RenderFn } from '../src/render.js';
 import type { tenantEnvironment as TenantEnvironmentFn } from '../src/environment.js';
 import type { renderSettings as RenderSettingsFn } from '../src/settings.js';
-import { TEST_ZONES, entryTenantDescriptor } from './fixtures.js';
+import { TEST_ZONES, demoDescriptor, entryTenantDescriptor } from './fixtures.js';
 import { cleanupSabotageTmp, importSabotaged } from './helpers/sourceSabotage.js';
+import { assertQueueMailTimeouts } from './helpers/queueMailTimeouts.js';
 import { uploadLimits } from '../src/runtime.js';
 import { secretsEnvPath } from '../src/naming.js';
 
@@ -182,5 +183,48 @@ describe('MAIL-ADDRESS-CONSISTENCY — source-mutation sabotage', () => {
     const { renderSettings: realRenderSettings } = await import('../src/settings.js');
     const realSettings = realRenderSettings(descriptor, TEST_ZONES);
     expect(realSettings.members_support_address).toBe(realEnv.mail__from);
+  });
+});
+
+describe('QUEUE-MAIL-TIMEOUTS — source-mutation sabotage', () => {
+  it('removing the explicit queue mail timeouts from environment.ts is caught; the real module renders them', async () => {
+    const descriptor = validate(demoDescriptor(), TEST_ZONES);
+
+    // RED: mutate environment.ts's queue-with-mail branch so the three
+    // explicit SMTP timeouts are no longer rendered -- the failure mode
+    // where a frozen spool holds a reader's request for nodemailer's
+    // multi-minute defaults.
+    const sabotaged = await importSabotaged<{ tenantEnvironment: typeof TenantEnvironmentFn }>(
+      'environment.ts',
+      (source) => {
+        const target =
+          '      mail__options__connectionTimeout: MAIL_CONNECTION_TIMEOUT_MILLISECONDS,\n' +
+          '      mail__options__greetingTimeout: MAIL_GREETING_TIMEOUT_MILLISECONDS,\n' +
+          '      mail__options__socketTimeout: MAIL_SOCKET_TIMEOUT_MILLISECONDS,\n';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in environment.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, '');
+      }
+    );
+    const sabotagedEnv = sabotaged.tenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(() => assertQueueMailTimeouts(sabotagedEnv)).toThrow();
+
+    // GREEN: the real, unmutated module renders all three timeouts.
+    const { tenantEnvironment: realTenantEnvironment } = await import('../src/environment.js');
+    const realEnv = realTenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(() => assertQueueMailTimeouts(realEnv)).not.toThrow();
   });
 });
