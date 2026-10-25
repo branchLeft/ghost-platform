@@ -68,8 +68,11 @@ rather than blocking this process, which runs as root, until some writer
 chooses to appear), `fstat`s the open descriptor (never a second `stat()`
 on the path, which would reopen the TOCTOU window `O_NOFOLLOW` exists to
 close) to require a regular file, under `IMAGE_LOAD_MAX_BYTES`, owned by
-the broker account, and only then streams that already-open descriptor
-into `docker load`'s stdin, under `IMAGE_LOAD_TIMEOUT_SECONDS`.
+the broker account, and only then copies the `st_size` bytes read at that
+`fstat` from the already-open descriptor into a pipe that is `docker load`'s
+stdin. Docker never sees the descriptor itself. `docker load` runs under
+`timeout` in its own session, with `IMAGE_LOAD_TIMEOUT_SECONDS`, and that
+timeout is enforced outside this wrapper process.
 
 ## What load pins, precisely
 
@@ -84,6 +87,14 @@ does to the directory, and a broker-owned file is exactly the power the
 broker already had before `load` existed. "Loads nothing else" means
 precisely that -- never a file the broker does not itself own -- not that
 the literal path names one unchanging file on disk.
+
+The root-side byte cap, `IMAGE_LOAD_MAX_BYTES`, is a second bound that does
+not rely on the broker. A compromised broker skips its own checks, so this
+process cannot rely on `BROKER_IMAGE_MAX_BYTES` or the broker's wrapper
+timeout catching anything. The figure duplicates the default in
+`services/broker/src/config.ts`: it is not imported, the same as every
+literal in this file. `IMAGE_LOAD_TIMEOUT_SECONDS` (300) is generous for a
+multi-hundred-MB image and was not tuned to any one measured run.
 
 ## _data_directory
 
@@ -213,14 +224,37 @@ and a FIFO planted there returns at once instead of blocking this
 process -- which runs as root -- until some writer chooses to appear (a
 compromised broker can `mkfifo` at this path exactly as easily as it can
 write a regular file). `fstat`s the resulting descriptor -- never a second
-`os.stat(path)`, which would re-resolve the name and reopen exactly the
-race `O_NOFOLLOW` closes -- and requires a regular file, no larger than
-`IMAGE_LOAD_MAX_BYTES`, owned by the broker account. `O_NONBLOCK` is
-cleared again before `docker load` ever reads the descriptor (a regular
-file's reads are never actually blocking regardless of the flag, but
-clearing it leaves nothing for a future reader of this code to wonder
-about), and the load itself runs under `IMAGE_LOAD_TIMEOUT_SECONDS` --
-`subprocess.run` kills the child on expiry rather than leaving a hung
-`docker load` behind. Only the verified, already-open descriptor is ever
-handed to `docker load`, on its stdin, so docker itself never resolves
-`path` a second time either.
+`os.stat(path)`, which would re-resolve the name and reopen exactly the race
+`O_NOFOLLOW` closes -- and requires a regular file, no larger than
+`IMAGE_LOAD_MAX_BYTES`, owned by the broker account. The wrapper then reads
+exactly the `st_size` bytes recorded at that `fstat`, in chunks, from the
+same descriptor and writes them into a pipe that is `docker load`'s stdin.
+The copy is capped at that size: a file that grows after the `fstat` is cut
+off, and a file that ends early is an error. `O_NONBLOCK` stays set; on a
+regular file it does not make reads block, so nothing depends on clearing
+it. Docker never sees the descriptor or `path`, so it never resolves `path`
+a second time either.
+
+`docker load` runs as `timeout --signal=KILL IMAGE_LOAD_TIMEOUT_SECONDS
+docker load`, in its own session and process group. The deadline is enforced
+by `timeout`, a process outside this wrapper, so it still holds if the
+wrapper is killed. If the file ends early, the wrapper kills docker's process
+group before it closes the pipe, so docker never sees a clean end of archive.
+If docker exits 0 before it has read every byte, the wrapper raises an error.
+
+Exceptions `load_image` raises, and when:
+
+- `RefusedImage`: a pre-load check above fails (cannot open, not a regular
+  file, over `IMAGE_LOAD_MAX_BYTES`, or not owned by the broker account).
+- `RuntimeError`: the file ends before `st_size` bytes are read, or docker
+  exits 0 without reading the whole archive.
+- `subprocess.TimeoutExpired`: `docker load` runs out its deadline.
+- `subprocess.CalledProcessError`: `docker load` exits non-zero.
+- `OSError`: reading the file, or starting `docker load`, fails.
+
+Not guaranteed by this code: that the bytes are the ones the broker intended.
+The broker can still write whatever bytes it likes into the file; the owner
+check, not the size cap or the timeout, is the content control (see "What
+load pins, precisely" above). Whether sudo relays a signal from the broker
+through to this wrapper on a real host has **not been verified**; the timeout
+above does not depend on that relay.
