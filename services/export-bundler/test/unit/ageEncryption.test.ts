@@ -124,6 +124,15 @@ describe('encryptToFile', () => {
     expect(await readdir(dir)).not.toContain('out.age');
   });
 
+  it('raises AgeEncryptionError and removes the destination when age never finishes', async () => {
+    const fake = await writeFakeAge(dir, ['exec sleep 30']);
+    const dest = join(dir, 'out.age');
+    const outcome = encryptToFile(Buffer.from('x'), identity.recipient, dest, fake, 300);
+    await expect(outcome).rejects.toBeInstanceOf(AgeEncryptionError);
+    await expect(outcome).rejects.toThrow(/did not finish within 300 ms/);
+    expect(await readdir(dir)).not.toContain('out.age');
+  }, 5000);
+
   it('raises AgeEncryptionError and removes the destination when age cannot be started', async () => {
     const dest = join(dir, 'out.age');
     await expect(
