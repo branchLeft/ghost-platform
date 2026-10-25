@@ -18,15 +18,44 @@ import { beforeAll, describe, expect, it } from 'vitest';
  * story, tracked on the board rather than invented speculatively here.
  */
 
-type Created = { type: string; name: string };
+type Created = { type: string; name: string; inputs: Record<string, unknown> };
 
 const created: Created[] = [];
+
+const FIREWALL_TYPE = 'hcloud:index/firewall:Firewall';
+
+const ANY_SOURCE = ['0.0.0.0/0', '::/0'];
+
+// Written out here, not read from the package's exports: a rule set the
+// package changes then fails this test instead of being compared with itself.
+const EXPECTED_RULES: Record<'edge' | 'app' | 'db' | 'mon', unknown[]> = {
+  edge: [
+    { direction: 'in', protocol: 'tcp', port: '22', sourceIps: ANY_SOURCE },
+    { direction: 'in', protocol: 'icmp', sourceIps: ANY_SOURCE },
+    { direction: 'in', protocol: 'tcp', port: '80', sourceIps: ANY_SOURCE },
+    { direction: 'in', protocol: 'tcp', port: '443', sourceIps: ANY_SOURCE },
+  ],
+  app: [
+    { direction: 'in', protocol: 'tcp', port: '22', sourceIps: ANY_SOURCE },
+    { direction: 'in', protocol: 'icmp', sourceIps: ANY_SOURCE },
+  ],
+  db: [
+    { direction: 'in', protocol: 'tcp', port: '22', sourceIps: ANY_SOURCE },
+    { direction: 'in', protocol: 'icmp', sourceIps: ANY_SOURCE },
+  ],
+  mon: [
+    { direction: 'in', protocol: 'tcp', port: '22', sourceIps: ANY_SOURCE },
+    { direction: 'in', protocol: 'icmp', sourceIps: ANY_SOURCE },
+  ],
+};
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeAll(() => {
   pulumi.runtime.setMocks(
     {
       newResource(args: pulumi.runtime.MockResourceArgs) {
-        created.push({ type: args.type, name: args.name });
+        created.push({ type: args.type, name: args.name, inputs: args.inputs });
         return { id: `${args.name}-id`, state: { ...args.inputs, ipAddress: '203.0.113.10' } };
       },
       call() {
@@ -66,4 +95,31 @@ describe('the published @branchleft/hetzner-host package, installed via npm', ()
     const ip = await new Promise((resolve) => host.publicIpv4?.apply(resolve));
     expect(ip).toBe('203.0.113.10');
   });
+});
+
+describe('the firewall each role creates', () => {
+  it.each(['edge', 'app', 'db', 'mon'] as const)(
+    'gives role %s exactly its expected inbound rules',
+    async (role) => {
+      const name = `installcheck-${role}`;
+      new Host({
+        name,
+        role,
+        serverType: 'cx23',
+        location: ESTATE_LOCATION,
+        image: 'debian-13',
+        ownerSshKeyNames: ['owner'],
+        networkId: '4242',
+        privateIp: HOST_IPS.mon1,
+        deployPublicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLE deploy@test',
+      });
+      await flush();
+
+      const firewalls = created.filter(
+        (r) => r.type === FIREWALL_TYPE && r.name === `${name}-firewall`
+      );
+      expect(firewalls).toHaveLength(1);
+      expect(firewalls[0].inputs.rules).toEqual(EXPECTED_RULES[role]);
+    }
+  );
 });
