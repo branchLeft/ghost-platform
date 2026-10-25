@@ -3,7 +3,8 @@
  * per slot (0700) holding one file (0600), written atomically, both owned
  * by the broker account. See keyStore.md#keystore.
  */
-import { chmod, lstat, mkdir, readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, open, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import { removeFileIfPresent, writeFileAtomic } from '../atomicFile.js';
 
@@ -43,34 +44,46 @@ export function createAdminKeyStore(
   return {
     async read(slot) {
       const path = join(slotDir(baseDir, slot), KEY_FILE);
-      let info;
+      // Opened once, never following a symlink and never blocking on a named
+      // pipe. Every check and the read use this handle, so the file checked
+      // is the file read.
+      let fh: FileHandle;
       try {
-        info = await lstat(path);
+        fh = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       } catch (err) {
-        if ((err as { code?: unknown }).code === 'ENOENT') return null;
+        const code = (err as { code?: unknown }).code;
+        if (code === 'ENOENT') return null;
+        if (code === 'ELOOP') {
+          throw new Error(`refusing the stored access key for slot "${slot}": not a plain file`);
+        }
         throw err;
       }
-      // A token anyone else could have read, written or swapped in is not
-      // trusted: refuse it rather than use it.
-      if (!info.isFile()) {
-        throw new Error(`refusing the stored access key for slot "${slot}": not a plain file`);
+      try {
+        // A token anyone else could have read, written or swapped in is not
+        // trusted: refuse it rather than use it.
+        const info = await fh.stat();
+        if (!info.isFile()) {
+          throw new Error(`refusing the stored access key for slot "${slot}": not a plain file`);
+        }
+        if ((info.mode & 0o777) !== 0o600) {
+          throw new Error(
+            `refusing the stored access key for slot "${slot}": mode ${(info.mode & 0o777).toString(8)}, not 600`
+          );
+        }
+        if (info.uid !== ownUid()) {
+          throw new Error(
+            `refusing the stored access key for slot "${slot}": owned by uid ${info.uid}, not this service`
+          );
+        }
+        const raw = await fh.readFile('utf8');
+        const key = raw.trim();
+        if (!isAdminApiKey(key)) {
+          throw new Error(`the stored access key for slot "${slot}" is not a Ghost Admin API key`);
+        }
+        return key;
+      } finally {
+        await fh.close();
       }
-      if ((info.mode & 0o777) !== 0o600) {
-        throw new Error(
-          `refusing the stored access key for slot "${slot}": mode ${(info.mode & 0o777).toString(8)}, not 600`
-        );
-      }
-      if (info.uid !== ownUid()) {
-        throw new Error(
-          `refusing the stored access key for slot "${slot}": owned by uid ${info.uid}, not this service`
-        );
-      }
-      const raw = await readFile(path, 'utf8');
-      const key = raw.trim();
-      if (!isAdminApiKey(key)) {
-        throw new Error(`the stored access key for slot "${slot}" is not a Ghost Admin API key`);
-      }
-      return key;
     },
 
     async write(slot, key) {
