@@ -23,6 +23,7 @@ import urllib.request
 
 DEFAULT_MYSQL_READY_TIMEOUT_S = 60.0
 DEFAULT_CONTENT_TIMEOUT_S = 90.0
+DEFAULT_IMPORT_TIMEOUT_S = 3600.0
 POLL_INTERVAL_S = 1.0
 
 # What every MySQL 8.0 server carries before anything is provisioned on it --
@@ -150,20 +151,33 @@ def restore_dump(
     port: int,
     user: str,
     password: str,
+    import_timeout_s: float = DEFAULT_IMPORT_TIMEOUT_S,
     run=subprocess.run,
 ) -> None:
     """Imports a plain SQL dump -- exactly what `dump_tenant.py` writes to
     its stdout, saved to `dump_path` unmodified -- into whatever server
     `host`:`port` names. See the module docstring for why that target must
-    never be a host already holding a live copy of this tenant's database."""
+    never be a host already holding a live copy of this tenant's database.
+    Raises DumpImportError when the import exits non-zero or does not finish
+    within `import_timeout_s`; the timeout error is raised after the dump file
+    is closed and outside the except block, so it carries no argv."""
+    timed_out = False
     with open(dump_path, "rb") as dump_file:
-        result = run(
-            ["mysql", "--host", host, "--port", str(port), "--user", user],
-            stdin=dump_file,
-            env=_child_env(password),
-            capture_output=True,
-            text=True,
-            check=False,
+        try:
+            result = run(
+                ["mysql", "--host", host, "--port", str(port), "--user", user],
+                stdin=dump_file,
+                env=_child_env(password),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=import_timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    if timed_out:
+        raise DumpImportError(
+            f"mysql import of {dump_path} into {host}:{port} did not finish within {import_timeout_s}s"
         )
     if result.returncode != 0:
         raise DumpImportError(
@@ -242,6 +256,7 @@ def restore_only(
     user: str,
     password: str,
     mysql_ready_timeout_s: float = DEFAULT_MYSQL_READY_TIMEOUT_S,
+    import_timeout_s: float = DEFAULT_IMPORT_TIMEOUT_S,
     run=subprocess.run,
     sleep=time.sleep,
     now=time.monotonic,
@@ -255,7 +270,10 @@ def restore_only(
         timeout_s=mysql_ready_timeout_s, run=run, sleep=sleep, now=now,
     )
     assert_target_has_no_live_database(host=host, port=port, user=user, password=password, run=run)
-    restore_dump(dump_path=dump_path, host=host, port=port, user=user, password=password, run=run)
+    restore_dump(
+        dump_path=dump_path, host=host, port=port, user=user, password=password,
+        import_timeout_s=import_timeout_s, run=run,
+    )
 
 
 def verify_and_undrain(
@@ -290,6 +308,7 @@ def run_drained_restore(
     flag_path: str,
     mysql_ready_timeout_s: float = DEFAULT_MYSQL_READY_TIMEOUT_S,
     content_timeout_s: float = DEFAULT_CONTENT_TIMEOUT_S,
+    import_timeout_s: float = DEFAULT_IMPORT_TIMEOUT_S,
     run=subprocess.run,
     get=_default_get,
     sleep=time.sleep,
@@ -308,6 +327,7 @@ def run_drained_restore(
         user=user,
         password=password,
         mysql_ready_timeout_s=mysql_ready_timeout_s,
+        import_timeout_s=import_timeout_s,
         run=run,
         sleep=sleep,
         now=now,

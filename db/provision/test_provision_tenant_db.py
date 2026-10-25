@@ -7,26 +7,41 @@ and its refusal of an invalid tenant name are covered here rather than left
 to a live run against db1 to discover.
 """
 
+import math
 import subprocess
 import unittest
 
 import provision_tenant_db as ptd
 from naming import InvalidTenantName
 
+FAKE_TIMEOUT_SECONDS = 7
+
 
 class FakeRun:
     """Stands in for subprocess.run against the `mysql` CLI. Each call pops
     the next queued stdout; a call with no queued response returns empty
-    stdout and exit 0."""
+    stdout and exit 0. `timeout_on_substring` makes a call whose SQL contains
+    it raise subprocess.TimeoutExpired carrying the full argv, as the real
+    subprocess.run does; the empty string matches every call."""
 
-    def __init__(self, responses=None, fail_on_substring=None):
+    def __init__(self, responses=None, fail_on_substring=None, timeout_on_substring=None):
         self.responses = list(responses or [])
         self.calls = []
+        self.timeouts = []
+        self.raised_timeouts = []
         self.fail_on_substring = fail_on_substring
+        self.timeout_on_substring = timeout_on_substring
 
-    def __call__(self, argv, env=None, capture_output=None, text=None, check=None):
+    def __call__(self, argv, env=None, capture_output=None, text=None, check=None, timeout=None):
         self.calls.append({"argv": list(argv), "env": dict(env or {})})
+        self.timeouts.append(timeout)
         sql = argv[argv.index("-e") + 1] if "-e" in argv else ""
+        if self.timeout_on_substring is not None and self.timeout_on_substring in sql:
+            expired = subprocess.TimeoutExpired(
+                cmd=argv, timeout=FAKE_TIMEOUT_SECONDS if timeout is None else timeout
+            )
+            self.raised_timeouts.append(expired)
+            raise expired
         if self.fail_on_substring and self.fail_on_substring in sql:
             return subprocess.CompletedProcess(argv, 1, stdout="", stderr="boom")
         stdout = self.responses.pop(0) if self.responses else ""
@@ -244,6 +259,65 @@ class MysqlFailureTests(unittest.TestCase):
                 password_factory=lambda: "x",
                 run=run,
             )
+
+
+def _exception_chain(exception: BaseException) -> list[BaseException]:
+    """Every exception reachable through __cause__ and __context__."""
+    seen: list[BaseException] = []
+    pending = [exception]
+    while pending:
+        current = pending.pop()
+        if any(current is already for already in seen):
+            continue
+        seen.append(current)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+    return seen
+
+
+class MysqlTimeoutTests(unittest.TestCase):
+    def _provision(self, run: FakeRun) -> ptd.ProvisionResult:
+        return ptd.provision_tenant_database(
+            "blog",
+            socket_path="/tmp/mysqld.sock",
+            admin_user="root",
+            admin_password="secret",
+            password_factory=lambda: "generated-pw",
+            run=run,
+        )
+
+    def test_every_mysql_call_gets_a_positive_finite_timeout(self):
+        run = FakeRun(responses=["0\n"])
+        self._provision(run)
+        self.assertEqual(len(run.timeouts), 2)
+        for timeout in run.timeouts:
+            self.assertIsNotNone(timeout)
+            self.assertTrue(math.isfinite(timeout))
+            self.assertGreater(timeout, 0)
+
+    def test_a_timed_out_mysql_call_raises_provision_error_naming_program_and_seconds(self):
+        run = FakeRun(timeout_on_substring="")
+        with self.assertRaises(ptd.ProvisionError) as raised:
+            self._provision(run)
+        message = str(raised.exception)
+        self.assertIn("mysql", message)
+        self.assertIn(f"{run.timeouts[0]:g}", message)
+
+    def test_a_timeout_on_create_user_leaks_neither_password_through_the_exception_chain(self):
+        run = FakeRun(responses=["0\n"], timeout_on_substring="CREATE USER")
+        with self.assertRaises(ptd.ProvisionError) as raised:
+            self._provision(run)
+
+        self.assertEqual(len(run.raised_timeouts), 1)
+        self.assertIn("generated-pw", " ".join(run.raised_timeouts[0].cmd))
+
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertIsNone(raised.exception.__context__)
+        for link in _exception_chain(raised.exception):
+            for text in (str(link), repr(link)):
+                self.assertNotIn("generated-pw", text)
+                self.assertNotIn("secret", text)
 
 
 class MainTests(unittest.TestCase):

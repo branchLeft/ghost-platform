@@ -1089,3 +1089,64 @@ describe('state file hardening', () => {
     expect(() => fs.lstatSync(stateFile(deps))).toThrow();
   });
 });
+
+describe('an incident activate that commits after a manual revoke', () => {
+  /**
+   * A fake tenant database holding only the account's status. The activate
+   * action stalls at a hook: the revoke runs to completion there, and only
+   * then does the activation commit, which is the interleaving under test.
+   */
+  function stalledActivate(afterRevoke = async () => {}) {
+    const account = { active: false };
+    let stalled = false;
+    const deps = fakeDeps();
+    deps.run = vi.fn(async ({ action }) => {
+      if (action === 'identity') return { identity: SUPPORT };
+      if (action === 'revoke') {
+        account.active = false;
+        return {
+          identity: SUPPORT,
+          found: true,
+          id: 'u1',
+          previousStatus: 'active',
+          sessionsPurged: 1,
+        };
+      }
+      if (action === 'activate') {
+        if (!stalled) {
+          stalled = true;
+          await revoke({ tenant: 'tenant-zero', reason: 'manual close' }, deps);
+          await afterRevoke(deps);
+        }
+        account.active = true;
+        return { identity: SUPPORT, id: 'u1', previousStatus: 'inactive' };
+      }
+      throw new Error(`unexpected action ${action}`);
+    });
+    return { deps, account };
+  }
+
+  const covered = (deps) => status(deps).some((s) => typeof s.deadline === 'string');
+
+  it('never leaves the account active with no state and no clock', async () => {
+    const { deps, account } = stalledActivate();
+    await grant(request(), deps).catch(() => {});
+    expect(account.active === false || covered(deps)).toBe(true);
+  });
+
+  it('refuses the grant instead of reporting it open', async () => {
+    const { deps } = stalledActivate();
+    await expect(grant(request(), deps)).rejects.toThrow(GrantRefusedError);
+    expect(records().some((r) => r.event === 'opened')).toBe(false);
+  });
+
+  it('leaves a newer grant that opened meanwhile open, and its account active', async () => {
+    const { deps, account } = stalledActivate(async (d) => {
+      d.advance(1000);
+      await grant(request(), d);
+    });
+    await expect(grant(request(), deps)).rejects.toThrow(GrantRefusedError);
+    expect(account.active).toBe(true);
+    expect(covered(deps)).toBe(true);
+  });
+});

@@ -9,21 +9,27 @@ also refuses the route for every hostname (`hetzner/edge/render.md` in
 `shared-infra`), but that is the second lock, not this one.
 
 ```sh
-node provision-owner.mjs --container <name> --email <address> --name <owner name> \
-  --site-url <https url> --site-title <title>
+node provision-owner.mjs --container <name> --secrets-file /etc/branchleft/<slug>.env \
+  --name <owner name> --site-url <https url> --site-title <title>
 ```
+
+The owner's address is the `GHOST_OWNER_EMAIL` line in `--secrets-file`, the
+tenant's root-only secrets file. It is never an argument: argv is visible in
+the host's process list and in shell history, so `--email` is refused as an
+unrecognised argument. The file's other lines are not read.
 
 ## Flow
 
 1. Reads Ghost's setup status from inside the container. A Ghost that already
    has an owner is left untouched and reported as `alreadySetUp`, but only if
-   that owner's email matches `--email` (case aside). A different owner means
+   that owner's email matches `GHOST_OWNER_EMAIL` (case aside). A different owner means
    someone else claimed it first, so the script refuses with
    `OwnerProvisionRefusedError` rather than reporting success. A second run
    never sends a second link or changes anything.
 2. Creates the owner through Ghost's own setup route, with a password
    generated inside the container and dropped. It is never printed, logged,
-   or placed in argv or env, so no one holds it.
+   or placed in argv or env, so no one holds it. The owner's address and name
+   reach the container on `docker exec` stdin, not in its argv.
 3. Asks Ghost to email the owner a password-reset link. That link is how the
    owner first signs in and chooses a password: the owner receives a link,
    never a password.

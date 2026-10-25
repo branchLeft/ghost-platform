@@ -3,12 +3,15 @@ import type { DesiredApplication } from './desired.js';
 
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body: string }
+  init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }
 ) => Promise<{
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
 }>;
+
+const DEFAULT_TIMEOUT_MS = 30000;
+const MAX_TIMER_MS = 2147483647;
 
 export interface ManagementOptions {
   /** The instance's own origin, e.g. `http://localhost:8080` for a local
@@ -18,7 +21,18 @@ export interface ManagementOptions {
    * Never logged and never echoed into an error. */
   readonly token: () => string;
   readonly fetch: FetchLike;
+  /** Limit for each request, in whole milliseconds from 1 to 2147483647.
+   * Anything else falls back to 30000. */
+  readonly timeoutMs?: number;
 }
+
+const timeoutOf = (requested: number | undefined): number =>
+  requested !== undefined &&
+  Number.isInteger(requested) &&
+  requested >= 1 &&
+  requested <= MAX_TIMER_MS
+    ? requested
+    : DEFAULT_TIMEOUT_MS;
 
 /** Carries the status and the path only. A response body can echo request
  * fields, and a request can carry a credential-derived header. */
@@ -38,6 +52,20 @@ export class ZitadelShapeError extends Error {
   constructor(path: string, expected: string) {
     super(`Zitadel's answer for ${path} did not contain ${expected}`);
     this.name = 'ZitadelShapeError';
+  }
+}
+
+/** Raised when a request reaches its time limit, whether the fetch or the
+ * answer body never settled. Carries the path and the limit only. */
+export class ZitadelTimeoutError extends Error {
+  readonly path: string;
+  readonly timeoutMs: number;
+
+  constructor(path: string, timeoutMs: number) {
+    super(`Zitadel did not answer ${path} within ${timeoutMs} ms`);
+    this.name = 'ZitadelTimeoutError';
+    this.path = path;
+    this.timeoutMs = timeoutMs;
   }
 }
 
@@ -77,8 +105,23 @@ const NAME_EQUALS = (name: string) => ({
   queries: [{ nameQuery: { name, method: 'TEXT_QUERY_METHOD_EQUALS' } }],
 });
 
+async function untilAnswered<T>(
+  signal: AbortSignal,
+  path: string,
+  timeoutMs: number,
+  step: () => Promise<T>
+): Promise<T> {
+  try {
+    return await step();
+  } catch (error) {
+    if (signal.aborted) throw new ZitadelTimeoutError(path, timeoutMs);
+    throw error;
+  }
+}
+
 export function managementClient(options: ManagementOptions): ZitadelClient {
   const base = options.baseUrl.endsWith('/') ? options.baseUrl.slice(0, -1) : options.baseUrl;
+  const timeoutMs = timeoutOf(options.timeoutMs);
 
   async function call(path: string, body: unknown, orgId?: string, method = 'POST'): Promise<Json> {
     const headers: Record<string, string> = {
@@ -87,13 +130,12 @@ export function managementClient(options: ManagementOptions): ZitadelClient {
       authorization: `Bearer ${options.token()}`,
     };
     if (orgId !== undefined) headers['x-zitadel-orgid'] = orgId;
-    const response = await options.fetch(`${base}${path}`, {
-      method,
-      headers,
-      body: JSON.stringify(body),
-    });
+    const signal = AbortSignal.timeout(timeoutMs);
+    const response = await untilAnswered(signal, path, timeoutMs, () =>
+      options.fetch(`${base}${path}`, { method, headers, body: JSON.stringify(body), signal })
+    );
     if (!response.ok) throw new ZitadelApiError(response.status, path);
-    const parsed = asRecord(await response.json());
+    const parsed = asRecord(await untilAnswered(signal, path, timeoutMs, () => response.json()));
     if (!parsed) throw new ZitadelShapeError(path, 'a JSON object');
     return parsed;
   }
