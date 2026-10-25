@@ -39,7 +39,13 @@ const deliveryClient = createDeliveryClient({
   ...(config.outcomes ? { outcomes: { returnPath: config.outcomes.returnPath } } : {}),
 });
 
-const dedupe = createSubmittedTracker(config.dedupeTtlMs);
+const dedupe = createSubmittedTracker(config.dedupeTtlMs, Date.now, {
+  ...(config.dedupeStatePath ? { statePath: config.dedupeStatePath } : {}),
+  onError: (error) => log.warn('dedupe_state_error', { error: error.message }),
+});
+if (!config.dedupeStatePath) {
+  log.warn('dedupe_not_persistent', {});
+}
 
 const health = createHealthState();
 

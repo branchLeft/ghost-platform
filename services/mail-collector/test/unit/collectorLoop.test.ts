@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCollectorRuntime } from '../../src/collectorLoop.js';
-import { createSubmittedTracker } from '../../src/dedupe.js';
+import { createSubmittedTracker, type SubmittedTracker } from '../../src/dedupe.js';
 import { createDrainClient, type DrainAck, type DrainClient } from '../../src/drainClient.js';
 import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createHealthState } from '../../src/health.js';
@@ -59,7 +59,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   function buildRuntime(
     targets: DrainTarget[],
-    overrides: { drainClient?: DrainClient; throttle?: Throttle; heartbeat?: DeadMansSwitch } = {}
+    overrides: {
+      drainClient?: DrainClient;
+      throttle?: Throttle;
+      heartbeat?: DeadMansSwitch;
+      dedupe?: SubmittedTracker;
+    } = {}
   ) {
     const store = createFakeTargetStore(targets);
     const drainClient =
@@ -75,7 +80,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     // tests below that override it specifically to prove the throttle
     // itself.
     const throttle = overrides.throttle ?? createThrottle({ messagesPerHour: 360_000 });
-    const dedupe = createSubmittedTracker(60_000);
+    const dedupe = overrides.dedupe ?? createSubmittedTracker(60_000);
     const health = createHealthState();
     const log = createLogger(() => {});
     const runtime = createCollectorRuntime({
@@ -289,6 +294,49 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
     const remaining = await realDrainClient.drain({ id: 'tenant-a', baseUrl: baseUrlA });
     expect(remaining).toEqual([]); // and eventually acked, clearing the shim's queue
+  });
+
+  it('RESTART: a process killed between accept and ack does not resubmit the id after it restarts', async () => {
+    shimA.enqueue(message('m1'));
+    const stateDir = mkdtempSync(join(tmpdir(), 'collector-dedupe-'));
+    const statePath = join(stateDir, 'submitted.json');
+    const realDrainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+    const target: DrainTarget = { id: 'tenant-a', baseUrl: baseUrlA };
+
+    // First process: mx1 accepts the message, then the process dies before
+    // the ack lands -- modelled as an ack that never reaches the shim.
+    const dyingDrainClient: DrainClient = {
+      drain: (t, signal) => realDrainClient.drain(t, signal),
+      async ack() {
+        throw new Error('process killed before the ack landed');
+      },
+    };
+    const first = buildRuntime([target], {
+      drainClient: dyingDrainClient,
+      dedupe: createSubmittedTracker(60_000, Date.now, { statePath }),
+    });
+    first.runtime.start();
+    await sink.waitForCount(1, 1000);
+    await first.runtime.stop();
+    first.deliveryClient.close();
+
+    // The shim never saw the ack, so its lease lapses and it re-offers the id.
+    shimA.simulateLostAck();
+
+    // Second process: a brand-new tracker, sharing nothing with the first
+    // but the state file on the volume.
+    const second = buildRuntime([target], {
+      dedupe: createSubmittedTracker(60_000, Date.now, { statePath }),
+    });
+    second.runtime.start();
+    await new Promise((r) => setTimeout(r, 400));
+    await second.runtime.stop();
+    second.deliveryClient.close();
+
+    expect(sink.messages).toHaveLength(1);
+    const remaining = await realDrainClient.drain(target);
+    expect(remaining).toEqual([]); // re-acked, not resubmitted
+    rmSync(stateDir, { recursive: true, force: true });
   });
 
   it('a failed GET /drain is logged and retried, not fatal to the loop', async () => {
