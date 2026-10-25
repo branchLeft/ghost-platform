@@ -23,6 +23,8 @@ export interface OwnerConsoleOptions {
   readonly fetch?: typeof fetch;
   readonly fetchKeys?: TokenVerifierOptions['fetchKeys'];
   readonly sessionSeconds?: number;
+  /** Receives one line per swallowed handler error: the step and the error name only. */
+  readonly onError?: (line: string) => void;
 }
 
 /**
@@ -55,6 +57,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     clock: options.clock,
     fetch: options.fetch,
     sessionSeconds: options.sessionSeconds,
+    onError: options.onError,
     bind: async () => true,
     landing: async () => {
       const tenants = await options.db.listHealth();
