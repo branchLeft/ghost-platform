@@ -49,7 +49,8 @@ Its shape is checked by `validateOwnerEmailSecret` inside the secret
 that still carries `ownerEmail` is refused by `validateTenantStack` before
 anything is registered.
 
-On the host, it is the address `provision-owner.mjs --email` takes
+On the host, it is the `GHOST_OWNER_EMAIL` line in the secrets file that
+`provision-owner.mjs --secrets-file` reads
 (`adapters/sso/scripts/provision-owner.md`) when the owner account is
 created.
 
