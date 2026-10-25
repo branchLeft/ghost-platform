@@ -146,7 +146,7 @@ watcher type check and test` (`major-watcher-ci.yml`) is not currently
 one of this repo's required status checks** (`docker build`, `Tenant type
 check`, `Format and lint`, `docs-lint / docs-lint`, `standards / Standards
 gates` are), so a future PR touching `services/major-watcher/` can merge
-without its own 43 tests having run green.
+without its own tests having run green.
 
 ## Known limitations
 
