@@ -13,7 +13,9 @@ const EXPECTED_TIMEOUTS: Readonly<Record<string, number>> = {
 const MINIMUM_MS = 1000;
 const MAXIMUM_MS = 10000;
 
-export function assertQueueMailTimeouts(environment: Record<string, string | number | boolean>): void {
+export function assertQueueMailTimeouts(
+  environment: Record<string, string | number | boolean>
+): void {
   for (const [key, expected] of Object.entries(EXPECTED_TIMEOUTS)) {
     const value = environment[key];
     expect(value, key).toBe(expected);

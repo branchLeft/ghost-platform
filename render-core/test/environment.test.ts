@@ -94,7 +94,7 @@ describe('tenantEnvironment() — Ghost mail transport timeouts', () => {
     expect(Object.keys(rendered).filter((key) => key.startsWith('mail__options__'))).toEqual([]);
   });
 
-  it('the smtp transport keeps nodemailer\'s defaults for now', () => {
+  it("the smtp transport keeps nodemailer's defaults for now", () => {
     const rendered = env(validate(entryTenantDescriptor(), TEST_ZONES));
     expect(rendered.mail__options__connectionTimeout).toBeUndefined();
     expect(rendered.mail__options__greetingTimeout).toBeUndefined();
