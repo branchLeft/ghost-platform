@@ -127,6 +127,34 @@ def fake_popen(code=0, stdout=b"CREATE TABLE oc_calendars();\n"):
     return popen
 
 
+class InterruptedProc(FakeProc):
+    """Raises a different interrupt on each wait, so a test can tell which one escaped."""
+
+    def __init__(self):
+        super().__init__()
+        self.waits = 0
+
+    def wait(self):
+        self.waits += 1
+        raise KeyboardInterrupt("first" if self.waits == 1 else "again")
+
+
+def scripted_popen(*outcomes):
+    """A popen that hands back each outcome in turn, raising any that is an exception."""
+    remaining = list(outcomes)
+    started = []
+
+    def popen(argv, **kwargs):
+        outcome = remaining.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        started.append(outcome)
+        return outcome
+
+    popen.started = started
+    return popen
+
+
 def plenty(_path):
     return Usage(100 << 30, 0, 50 << 30)
 
@@ -502,6 +530,43 @@ class SealTest(unittest.TestCase):
             nb.seal(self.backup, self.recipients, popen=fake_popen(code=1), which=lambda _n: "/usr/bin/age",
                     usage=plenty)
         self.assertFalse((self.root / "20260102T030405Z.tar.age").exists())
+
+    def seal_with(self, popen):
+        return nb.seal(self.backup, self.recipients, popen=popen, which=lambda _n: "/usr/bin/age", usage=plenty,
+                       say=lambda _m: None)
+
+    def test_a_pipeline_that_cannot_start_leaves_no_sealed_file(self):
+        with self.assertRaisesRegex(OSError, "no tar"):
+            self.seal_with(scripted_popen(OSError("no tar")))
+        self.assertFalse((self.root / "20260102T030405Z.tar.age").exists())
+
+    def test_a_seal_can_be_retried_after_a_failed_start(self):
+        with self.assertRaises(OSError):
+            self.seal_with(scripted_popen(OSError("no tar")))
+        out = self.seal_with(fake_popen())
+        self.assertEqual(out, self.root / "20260102T030405Z.tar.age")
+        self.assertTrue(out.exists())
+
+    def test_an_interrupt_while_waiting_leaves_no_sealed_file_and_is_not_replaced(self):
+        archive = InterruptedProc()
+        with self.assertRaisesRegex(KeyboardInterrupt, "first"):
+            self.seal_with(scripted_popen(archive, FakeProc()))
+        self.assertFalse((self.root / "20260102T030405Z.tar.age").exists())
+        self.assertTrue(archive.killed)
+
+    def test_a_refused_seal_does_not_delete_a_file_it_did_not_create(self):
+        stray = self.root / "20260102T030405Z.tar.age"
+        stray.write_bytes(b"EARLIER-SEAL")
+        with self.assertRaisesRegex(nb.Precondition, "already exists"):
+            self.seal_with(fake_popen())
+        self.assertEqual(stray.read_bytes(), b"EARLIER-SEAL")
+
+    def test_an_encryptor_that_cannot_start_stops_the_archive_already_running(self):
+        archive = FakeProc()
+        with self.assertRaisesRegex(OSError, "no age"):
+            self.seal_with(scripted_popen(archive, OSError("no age")))
+        self.assertFalse((self.root / "20260102T030405Z.tar.age").exists())
+        self.assertTrue(archive.killed)
 
 
 class PruneTest(unittest.TestCase):
