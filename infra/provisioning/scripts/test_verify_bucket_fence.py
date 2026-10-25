@@ -4019,6 +4019,16 @@ class TestApplyMode(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("THE BUCKET MAY BE LOCKED", output)
 
+    def test_a_first_policy_put_that_gets_no_response_stops_after_one_put(self):
+        answers = self._answers()
+        answers[("operator", "put-bucket-policy", FENCED)] = OSError("timed out")
+        code, output, transport = run(answers, extra_args=["--apply"])
+        self.assertEqual(code, 1)
+        self.assertRegex(output, r"FAIL\s+the policy is applied\s+-- the request did not complete")
+        puts = [c for c in transport.calls if c == ("operator", "put-bucket-policy", FENCED)]
+        self.assertEqual(len(puts), 1)
+        self.assertNotIn("THE BUCKET IS STILL ADMINISTRABLE", output)
+
     def test_apply_waits_a_dwell_between_the_two_puts(self):
         # THE CRITICAL GAP: `--apply` used to send both PUTs back to back, with
         # no dwell at all -- exactly the bug this whole file exists to fix, on
