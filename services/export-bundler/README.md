@@ -199,7 +199,9 @@ publishes no port for a container on an internal network, so the colour
 publishes nothing. Its one way in is a relay: a container of the tenant's
 own image running one fixed script that forwards `127.0.0.1:<port>` to the
 colour. The relay is read-only, has all capabilities dropped, and carries no
-environment and no volume. The dump container is the only one with a route
+environment and no volume. It also runs with `--security-opt no-new-privileges`,
+`--pids-limit 64` and `--memory 128m`, figures chosen generously for a few lines
+of Node rather than measured. The dump container is the only one with a route
 to the tenant's database server, and it reads.
 
 **No Docker logs of tenant data.** Every container in a run that can carry
