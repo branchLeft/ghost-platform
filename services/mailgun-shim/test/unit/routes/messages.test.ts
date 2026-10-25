@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import addressparser from 'nodemailer/lib/addressparser/index.js';
 import { createMessagesRouter } from '../../../src/routes/messages.js';
+import { MULTIPART_LIMITS, type MultipartLimitReason } from '../../../src/mailgunFields.js';
+import { createMailgunClient } from '../../helpers/mailgunClient.js';
 import { createDrainWake, type DrainWake } from '../../../src/drainWake.js';
 import { createTestLogger, type TestLogger } from '../../helpers/testLogger.js';
 import { createFakeStore, type FakeShimStore } from '../helpers/fakeStore.js';
@@ -763,6 +765,239 @@ describe('POST /v3/:domain/messages', () => {
 
       expect(res.status).toBe(200);
       expect(claimOne(store)).toHaveLength(1);
+    });
+  });
+
+  describe('multipart limits', () => {
+    const FROM = `noreply@${DOMAIN}`;
+    const MAX_REFUSAL_MS = 5000;
+    const MIB = 1024 * 1024;
+    const FILLER_BYTES = 20 * MIB;
+
+    /** Accepted outcomes for a body the server answers before the upload has finished. */
+    type EarlyOutcome = { status: number; body: unknown } | 'connection-failed';
+
+    function recipientAddress(index: number): string {
+      return `recipient-${String(index).padStart(4, '0')}@example.com`;
+    }
+
+    function recipientAddresses(count: number): string[] {
+      return Array.from({ length: count }, (_unused, index) => recipientAddress(index + 1));
+    }
+
+    function limitBody(reason: MultipartLimitReason): { message: string } {
+      return {
+        message: `Request exceeds the ${reason} limit of ${MULTIPART_LIMITS[reason]}`,
+      };
+    }
+
+    function isConnectionFailure(error: unknown): boolean {
+      if (!(error instanceof TypeError)) {
+        return false;
+      }
+      const cause: unknown = error.cause;
+      const code = cause instanceof Error && 'code' in cause ? cause.code : undefined;
+      return (
+        error.message === 'fetch failed' ||
+        code === 'ECONNRESET' ||
+        code === 'EPIPE' ||
+        code === 'UND_ERR_SOCKET'
+      );
+    }
+
+    async function postEarlyOutcome(body: FormData): Promise<EarlyOutcome> {
+      try {
+        const res = await post(body);
+        return { status: res.status, body: await res.json() };
+      } catch (error) {
+        if (isConnectionFailure(error)) {
+          return 'connection-failed';
+        }
+        throw error;
+      }
+    }
+
+    function expectRefusedForReason(outcome: EarlyOutcome, reason: MultipartLimitReason): void {
+      if (outcome === 'connection-failed') {
+        return;
+      }
+      expect(outcome.status).toBe(413);
+      expect(outcome.body).toEqual(limitBody(reason));
+    }
+
+    async function expectNothingQueued(): Promise<void> {
+      expect(await store.countUndrainedRecipients()).toBe(0);
+      expect(claimOne(store)).toHaveLength(0);
+    }
+
+    it('accepts exactly the cap', async () => {
+      const addresses = recipientAddresses(MULTIPART_LIMITS.recipients);
+      const variables: Record<string, { name: string; unsubscribe_url: string }> = {};
+      for (const address of addresses) {
+        variables[address] = {
+          name: `Member ${address.slice(10, 14)}`,
+          unsubscribe_url: `https://blog.example.com/unsubscribe/${'a'.repeat(300)}?address=${encodeURIComponent(address)}`,
+        };
+      }
+      const recipientVariables = JSON.stringify(variables);
+      const fields: Array<[string, string]> = [
+        ...addresses.map((address): [string, string] => ['to', address]),
+        ['from', FROM],
+        ['subject', 'Hello %recipient.name%'],
+        ['html', '<p>Hi %recipient.name%</p>'],
+        ['text', 'Hi %recipient.name%'],
+        ['recipient-variables', recipientVariables],
+      ];
+      const fieldBytes = fields.reduce(
+        (sum, [name, value]) => sum + Buffer.byteLength(name) + Buffer.byteLength(value),
+        0
+      );
+      expect(Buffer.byteLength(recipientVariables)).toBeLessThan(MULTIPART_LIMITS.fieldSize);
+      expect(fieldBytes).toBeLessThan(MULTIPART_LIMITS.totalBytes);
+
+      const res = await post(multipartBody(fields));
+
+      expect(res.status).toBe(200);
+      expect(await store.countUndrainedRecipients()).toBe(MULTIPART_LIMITS.recipients);
+    });
+
+    it('refuses one to field holding more comma-joined recipients than the cap', async () => {
+      const joined = recipientAddresses(MULTIPART_LIMITS.recipients + 1).join(',');
+      const started = Date.now();
+
+      const res = await post(
+        multipartBody([
+          ['to', joined],
+          ['from', FROM],
+          ['subject', 'Hi'],
+          ['html', '<p>hi</p>'],
+          ['text', 'hi'],
+          ['recipient-variables', '{}'],
+        ])
+      );
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual(limitBody('recipients'));
+      await expectNothingQueued();
+    });
+
+    it('refuses more fields than the cap', async () => {
+      const repeatedTags = Array.from(
+        { length: MULTIPART_LIMITS.fields + 100 },
+        (): [string, string] => ['o:tag', 'x']
+      );
+      const started = Date.now();
+
+      const res = await post(
+        multipartBody([
+          ['to', 'member@example.com'],
+          ['from', FROM],
+          ['subject', 'Hi'],
+          ['html', '<p>hi</p>'],
+          ...repeatedTags,
+        ])
+      );
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual(limitBody('fields'));
+      await expectNothingQueued();
+    });
+
+    it('refuses a field name longer than the cap', async () => {
+      const longName = `o:${'a'.repeat(MULTIPART_LIMITS.fieldNameSize - 1)}`;
+      expect(Buffer.byteLength(longName)).toBe(MULTIPART_LIMITS.fieldNameSize + 1);
+      const started = Date.now();
+
+      const res = await post(
+        multipartBody([
+          ['to', 'member@example.com'],
+          ['from', FROM],
+          ['subject', 'Hi'],
+          ['html', '<p>hi</p>'],
+          [longName, 'x'],
+        ])
+      );
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual(limitBody('fieldNameSize'));
+      await expectNothingQueued();
+    });
+
+    it('refuses more parts than the cap', async () => {
+      const form = multipartBody([
+        ['to', 'member@example.com'],
+        ['from', FROM],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+      ]);
+      for (let index = 0; index < MULTIPART_LIMITS.parts + 1; index += 1) {
+        form.append('attachment', new Blob(['x']), `part-${index}.txt`);
+      }
+      const started = Date.now();
+
+      const outcome = await postEarlyOutcome(form);
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      expectRefusedForReason(outcome, 'parts');
+      await expectNothingQueued();
+    });
+
+    it('refuses a field larger than the cap without truncating it', async () => {
+      const form = multipartBody([
+        ['html', 'a'.repeat(MULTIPART_LIMITS.fieldSize + 1)],
+        ['to', 'member@example.com'],
+        ['from', FROM],
+        ['subject', 'Hi'],
+      ]);
+      form.append('attachment', new Blob([new Uint8Array(FILLER_BYTES)]), 'filler.bin');
+      const started = Date.now();
+
+      const outcome = await postEarlyOutcome(form);
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      expectRefusedForReason(outcome, 'fieldSize');
+      await expectNothingQueued();
+    });
+
+    it('refuses fields whose total size exceeds the cap', async () => {
+      const paddingBytes = 4 * MIB;
+      const form = multipartBody([
+        ['o:pad-1', 'a'.repeat(paddingBytes)],
+        ['o:pad-2', 'b'.repeat(paddingBytes)],
+        ['o:pad-3', 'c'.repeat(paddingBytes)],
+        ['to', 'member@example.com'],
+        ['from', FROM],
+      ]);
+      form.append('attachment', new Blob([new Uint8Array(FILLER_BYTES)]), 'filler.bin');
+      const started = Date.now();
+
+      const outcome = await postEarlyOutcome(form);
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      expectRefusedForReason(outcome, 'totalBytes');
+      await expectNothingQueued();
+    });
+
+    it('mailgun.js client surfaces a limit refusal as a 413 error', async () => {
+      const client = createMailgunClient(server.baseUrl, API_KEY);
+      const started = Date.now();
+
+      await expect(
+        client.messages.create(DOMAIN, {
+          to: recipientAddresses(MULTIPART_LIMITS.recipients + 1),
+          from: FROM,
+          subject: 'Hi',
+          html: '<p>hi</p>',
+          text: 'hi',
+          'recipient-variables': '{}',
+        })
+      ).rejects.toMatchObject({ status: 413 });
+
+      expect(Date.now() - started).toBeLessThan(MAX_REFUSAL_MS);
+      await expectNothingQueued();
     });
   });
 });
