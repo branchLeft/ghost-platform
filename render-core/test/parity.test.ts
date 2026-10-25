@@ -183,16 +183,18 @@ const DECORATOR_WRAPPED_CONFIG_SUFFIXES = [
   'accessKeyId',
   'secretAccessKey',
 ];
-const EXTRA_IN_CORE_KEYS = (['images', 'media', 'files'] as const)
-  .flatMap((feature) => [
+const EXTRA_IN_CORE_KEYS = [
+  ...(['images', 'media', 'files'] as const).flatMap((feature) => [
     `storage__${feature}__adapter`,
     `storage__${feature}__wraps`,
     `storage__${feature}__quarantinePath`,
     ...DECORATOR_WRAPPED_CONFIG_SUFFIXES.map(
       (suffix) => `storage__${feature}__wrappedConfig__${suffix}`
     ),
-  ])
-  .sort();
+  ]),
+  // The ActivityPub lock is new in render-core; the frozen snapshot predates it.
+  'hostSettings__limits__limitSocialWeb__disabled',
+].sort();
 
 // The actual diff loop, factored out so the control case below can run it
 // for real instead of asserting on hand-built objects that never pass

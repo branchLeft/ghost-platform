@@ -356,6 +356,14 @@ export function tenantEnvironment(
 
     security__allowWebhookInternalIPs: false,
 
+    // Locks the ActivityPub setting off for every tenant: the admin's Network
+    // tab is that feature's surface and nothing serves the paths it calls, so
+    // it would only ever show an error. Ghost reads this flag from config
+    // only, and unlike a cap it is unconditional, so it is not part of
+    // `hostLimitsEnvironment`. `settings.ts` sets `social_web` off as well,
+    // because the lock does not remove what an existing tenant already has.
+    hostSettings__limits__limitSocialWeb__disabled: true,
+
     theme__uploadLimits__compressedBytes: limits.themeCompressedBytes,
     theme__uploadLimits__entryUncompressedBytes: limits.themeEntryUncompressedBytes,
     theme__uploadLimits__totalUncompressedBytes: limits.themeTotalUncompressedBytes,

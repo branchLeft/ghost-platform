@@ -2,6 +2,16 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## Unreleased
+
+**The Network tab is hidden on every tenant.**
+
+- **Changed output:** every rendered `compose.yml` gains
+  `hostSettings__limits__limitSocialWeb__disabled: true`, which locks Ghost's
+  ActivityPub setting.
+- **Changed output:** `ghost-settings.json` gains `social_web: false`, and
+  `GhostSettings` gains the `social_web` field.
+
 ## 0.2.0
 
 **A paying tenant's owner address reaches the host only through the secrets

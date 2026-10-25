@@ -90,6 +90,7 @@ services:
       bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'news.pro-co.example'
       security__allowWebhookInternalIPs: false
+      hostSettings__limits__limitSocialWeb__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
@@ -202,6 +203,7 @@ services:
       bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'news.pro-co.example'
       security__allowWebhookInternalIPs: false
+      hostSettings__limits__limitSocialWeb__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864

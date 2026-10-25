@@ -226,6 +226,15 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
     expect(settings.codeinjection_foot).toContain('analytics.js');
   });
 
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+  ] as const)('turns social_web off for a %s', (_label, fixture) => {
+    const settings = renderSettings(validate(fixture(), TEST_ZONES), TEST_ZONES);
+    expect(settings.social_web).toBe(false);
+  });
+
   it("sets members_support_address to the slot's own sending address", () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
     const settings = renderSettings(descriptor, TEST_ZONES);
