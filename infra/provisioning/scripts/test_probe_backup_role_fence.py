@@ -444,13 +444,14 @@ class TestTransportPieces(unittest.TestCase):
 
     def test_a_stray_key_in_the_cleanup_listing_is_reported_and_left_alone(self):
         endpoint = FakeEndpoint(rendered_fence(), stray_key="dumps/real-backup.sql.age")
-        _, lines = run_probe(endpoint)
+        code, lines = run_probe(endpoint)
         self.assertTrue(any("dumps/real-backup.sql.age" in line and line.startswith("LEFTOVER")
                             for line in lines))
+        self.assertEqual(code, 2, "\n".join(lines))
         self.assertNotIn(("operator", "s3:DeleteObjectVersion", "dumps/real-backup.sql.age",
                           {"versionId": "s1"}), endpoint.calls)
 
-    def test_a_failed_cleanup_delete_is_reported(self):
+    def test_a_failed_cleanup_delete_is_reported_and_is_not_a_pass(self):
         endpoint = FakeEndpoint(rendered_fence())
         original = endpoint.respond
 
@@ -460,9 +461,38 @@ class TestTransportPieces(unittest.TestCase):
             return original(role, access_key, action, method, key, query)
 
         endpoint.respond = respond
-        _, lines = run_probe(endpoint)
+        code, lines = run_probe(endpoint)
         self.assertTrue(any(line.startswith("LEFTOVER") and "version" in line for line in lines))
         self.assertTrue(any(line.startswith("LEFTOVER") and "multipart" in line for line in lines))
+        self.assertEqual(code, 2, "\n".join(lines))
+
+    def test_a_failed_cleanup_listing_is_not_a_pass(self):
+        endpoint = FakeEndpoint(rendered_fence())
+        original = endpoint.respond
+
+        def respond(role, access_key, action, method, key, query):
+            if role == "operator" and action == "s3:ListBucketVersions" and "prefix" in query:
+                return 403, denied_xml(), {}
+            return original(role, access_key, action, method, key, query)
+
+        endpoint.respond = respond
+        code, lines = run_probe(endpoint)
+        self.assertTrue(any(line.startswith("LEFTOVER") and "could not list" in line
+                            for line in lines))
+        self.assertEqual(code, 2, "\n".join(lines))
+
+    def test_a_leftover_turns_the_printed_result_away_from_pass(self):
+        endpoint = FakeEndpoint(rendered_fence(), stray_key="dumps/real-backup.sql.age")
+        environ = dict(ENVIRON)
+        out = io.StringIO()
+        with mock.patch.object(probe, "_sleep"), contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = probe.main(["--bucket", BUCKET, "--dwell", "20", "--recheck", "0"],
+                              environ=environ, run=endpoint)
+        text = out.getvalue()
+        self.assertEqual(code, 2, text)
+        self.assertIn("LEFTOVER", text)
+        self.assertNotIn("RESULT: PASS", text)
 
 
 class _Recorder(http.server.BaseHTTPRequestHandler):
