@@ -10,11 +10,8 @@ const { StorageBase } = require('ghost-storage-base');
 const GhostErrors = require('@tryghost/errors');
 
 const { defineScanningStorageAdapter } = require('./scanning-storage');
-const { createPdqKnownMaterialCheck } = require('./checks');
-const { resolveVerdictSource } = require('./verdict-source');
-const { SafetyPolicy } = require('./policy');
+const { buildScanner, startupProblems } = require('./wiring');
 const { getProcessMetrics, configureProcessExport } = require('./metrics');
-const { digestBytes } = require('./pdq');
 
 // The wrapped adapter is resolved the same way Ghost's own adapter manager
 // resolves any adapter: by name, from this same directory. Ghost's built
@@ -36,7 +33,6 @@ const Adapter = defineScanningStorageAdapter(StorageBase, { loadWrappedAdapterCl
 // the default is closed and what an operator sees.
 module.exports = class ScanningStorageAdapter extends Adapter {
   constructor(config = {}) {
-    const { verdictClient, refuseUploadsReason } = resolveVerdictSource(config);
     // One registry for the process, exported only when both keys are set
     // (metrics.md#configuration); nothing is written otherwise.
     const metrics = getProcessMetrics();
@@ -44,13 +40,13 @@ module.exports = class ScanningStorageAdapter extends Adapter {
     super({
       ...config,
       metrics,
-      checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes, metrics })],
-      policy: new SafetyPolicy(),
-      computeDigest: digestBytes,
-      refuseUploadsReason,
+      ...buildScanner(config, { metrics }),
       holdRetryMs: config.holdRetryMs ? Number(config.holdRetryMs) : undefined,
       holdMaxRetryMs: config.holdMaxRetryMs ? Number(config.holdMaxRetryMs) : undefined,
       holdMaxFailures: config.holdMaxFailures ? Number(config.holdMaxFailures) : undefined,
     });
+    for (const line of startupProblems()) {
+      this.logger.error(line);
+    }
   }
 };

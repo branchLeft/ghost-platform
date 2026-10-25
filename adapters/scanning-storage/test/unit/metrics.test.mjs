@@ -28,6 +28,8 @@ const GhostErrors = require('@tryghost/errors');
 const CLEAN_BYTES = Buffer.from('clean-image-bytes');
 const BAD_BYTES = Buffer.from('known-bad-image-bytes');
 const BAD_DIGEST = digestBytes(BAD_BYTES);
+// Stand-in bytes are not images, so the verdict key is the digest here.
+const computeVerdictKey = async (buffer) => ({ hash: digestBytes(buffer) });
 const SILENT_LOGGER = { error: () => {} };
 const RETRY_MS = 20;
 const WAIT = { timeout: 3000, interval: 10 };
@@ -317,7 +319,12 @@ describe('the check reports what it sees', () => {
         return { classification: 'no-known-match', source: 's', evidence: digest };
       },
     };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, metrics, now: () => clock });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeDigest,
+      computeVerdictKey,
+      metrics,
+      now: () => clock,
+    });
     await check.run({ buffer: Buffer.from('x') });
     const text = metrics.render();
     expect(
@@ -332,7 +339,12 @@ describe('the check reports what it sees', () => {
   it('counts a timeout as an error of kind timeout and an unavailable verdict', async () => {
     const metrics = new ScannerMetrics();
     const client = { getVerdict: () => new Promise(() => {}) };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, metrics, timeoutMs: 20 });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeDigest,
+      computeVerdictKey,
+      metrics,
+      timeoutMs: 20,
+    });
     const verdict = await check.run({ buffer: Buffer.from('x') });
     expect(verdict).toMatchObject({ classification: 'unavailable', source: 'timeout' });
     const text = metrics.render();
@@ -349,11 +361,46 @@ describe('the check reports what it sees', () => {
         throw new Error('channel unreachable');
       },
     };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, metrics });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeDigest,
+      computeVerdictKey,
+      metrics,
+    });
     await check.run({ buffer: Buffer.from('x') });
     const text = metrics.render();
     expect(valueOf(text, 'scanning_storage_verdict_errors_total', { kind: 'error' })).toBe(1);
     expect(valueOf(text, 'scanning_storage_verdict_errors_total', { kind: 'timeout' })).toBe(0);
+  });
+
+  it('counts bytes with no hash as unavailable, with no error and no latency', async () => {
+    const metrics = new ScannerMetrics();
+    const asked = [];
+    const client = {
+      async getVerdict(key) {
+        asked.push(key);
+        return { classification: 'no-known-match', source: 's' };
+      },
+    };
+    const noHash = async () => ({ hash: null, reason: 'not-an-image' });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeDigest,
+      computeVerdictKey: noHash,
+      metrics,
+    });
+    const verdict = await check.run({ buffer: Buffer.from('x') });
+    expect(verdict).toMatchObject({
+      classification: 'unavailable',
+      source: 'pdq-hash-unavailable',
+      evidence: computeDigest(Buffer.from('x')),
+    });
+    expect(asked).toEqual([]);
+    const text = metrics.render();
+    expect(
+      valueOf(text, 'scanning_storage_verdicts_total', { classification: 'unavailable' })
+    ).toBe(1);
+    expect(valueOf(text, 'scanning_storage_verdict_errors_total', { kind: 'timeout' })).toBe(0);
+    expect(valueOf(text, 'scanning_storage_verdict_errors_total', { kind: 'error' })).toBe(0);
+    expect(valueOf(text, 'scanning_storage_verdict_duration_seconds_count')).toBe(0);
   });
 });
 
@@ -368,7 +415,12 @@ describe('the decorator reports through an injected registry', () => {
       wrappedConfig: { storagePath: 'wrapped' },
       quarantinePath: quarantinePath ?? path.join(tmpDir, 'quarantine'),
       checks: [
-        createPdqKnownMaterialCheck(client, { computeDigest: digestBytes, metrics, timeoutMs }),
+        createPdqKnownMaterialCheck(client, {
+          computeDigest: digestBytes,
+          computeVerdictKey,
+          metrics,
+          timeoutMs,
+        }),
       ],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,

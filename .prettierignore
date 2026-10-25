@@ -36,3 +36,8 @@ adapters/sso/ghost-core-overlay/session-from-token.upstream.js
 # byte for byte by scripts/assert-broker-contract-generated.py -- reformatting
 # it would be reported there as drift.
 services/broker/src/generated/
+
+# A verbatim copy of another repository's source file, pinned by sha256 in
+# the test that reads it (adapters/scanning-storage/test/fixtures/content-safety/README.txt).
+# Reformatting it would fail that pin.
+adapters/scanning-storage/test/fixtures/content-safety/pdq-hash.ts
