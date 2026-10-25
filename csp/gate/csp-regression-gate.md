@@ -41,6 +41,13 @@ demo host.
 `node --test csp/gate/*.test.mjs` (needs `render-core` built). `csp/gate/prove-gates.sh`
 mutates each verdict rule and requires the tests to go red, then green.
 
+The CLI's run-as-main guard is tested by running a copy of the CLI from a
+directory whose path contains a space, and through a symlink. A broken capture
+must exit 1 with the RED line. If the guard still misses while the CLI is
+launched under its own basename, a piped non-empty capture exits 1 unjudged
+(a harness forces this case); an empty stdin exits 0. `prove-gates.sh` does not
+mutate this guard.
+
 ## Running the live gate
 
 Needs Docker, `csp/proof`'s own `npm install` for Playwright, and render-core built.
