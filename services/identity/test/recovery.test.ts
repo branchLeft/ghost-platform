@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OWNER_ORG_NAME } from '../src/desired.js';
 import {
   generateOneTimePassword,
@@ -32,6 +32,7 @@ interface Call {
   headers: Record<string, string>;
   body: unknown;
   redirect: string;
+  signal: AbortSignal;
 }
 
 interface World {
@@ -64,6 +65,7 @@ function makeFetch(): RecoveryFetch {
       headers: init.headers,
       body: init.body === undefined ? undefined : JSON.parse(init.body),
       redirect: init.redirect,
+      signal: init.signal,
     });
     if (world.rawFail === path) throw new Error('connection refused');
     if (world.failPath === path) return { ok: false, status: 403, json: async () => ({}) };
@@ -124,10 +126,13 @@ async function refusal(run: () => Promise<unknown>): Promise<RecoveryRefused> {
   throw new Error('expected a refusal');
 }
 
-function audit(): Record<string, unknown>[] {
+function auditText(): string {
   const file = join(dir, 'audit.log');
-  if (!existsSync(file)) return [];
-  return readFileSync(file, 'utf8')
+  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+}
+
+function audit(): Record<string, unknown>[] {
+  return auditText()
     .trim()
     .split('\n')
     .filter(Boolean)
@@ -417,6 +422,168 @@ describe('recoverOwner, the conditions that must hold', () => {
     expect((await refusal(() => recoverOwner(options(), deps({ fetch: list })))).code).toBe(
       'api-error'
     );
+  });
+});
+
+type StallKind = 'fetch' | 'answer';
+
+/** Wraps the ordinary fake so one path never answers until the request's own
+ * signal aborts. If the code under test passes no signal, the wrapped call
+ * never settles and the test hangs, which is the failure it exists to show. */
+function stallingAt(path: string, kind: StallKind): RecoveryFetch {
+  const ordinary = makeFetch();
+  return async (url, init) => {
+    if (new URL(url).pathname !== path) return ordinary(url, init);
+    calls.push({
+      url,
+      method: init.method,
+      headers: init.headers,
+      body: init.body === undefined ? undefined : JSON.parse(init.body),
+      redirect: init.redirect,
+      signal: init.signal,
+    });
+    const untilAborted = new Promise<never>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+    if (kind === 'fetch') return untilAborted;
+    return { ok: true, status: 200, json: () => untilAborted };
+  };
+}
+
+const STALLS: [string, string, StallKind][] = [
+  ['the first call never answers', '/management/v1/orgs/me', 'fetch'],
+  ['the last call, the password set, never answers', `/v2/users/${USER}/password`, 'fetch'],
+  ['an answer whose body never finishes', '/management/v1/orgs/me', 'answer'],
+];
+
+const SHORT_LIMIT_MS = 100;
+
+describe('recoverOwner, request time limit', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('gives every request its own abort signal alongside the redirect refusal', async () => {
+    world.state = 'USER_STATE_LOCKED';
+    await recoverOwner(options(), deps());
+    expect(calls.length).toBeGreaterThanOrEqual(4);
+    for (const call of calls) {
+      expect(call.signal).toBeInstanceOf(AbortSignal);
+      expect(call.redirect).toBe('error');
+    }
+    expect(new Set(calls.map((call) => call.signal)).size).toBe(calls.length);
+  });
+
+  it.each(STALLS)('refuses with an api-error that says so when %s', async (_name, path, kind) => {
+    const refused = await refusal(() =>
+      recoverOwner(
+        options({ apiTimeoutMs: SHORT_LIMIT_MS }),
+        deps({ fetch: stallingAt(path, kind) })
+      )
+    );
+    expect(refused.code).toBe('api-error');
+    expect(calls.at(-1)!.url.endsWith(path)).toBe(true);
+    expect(refused.message).toContain(path);
+    expect(refused.message).toContain('in time');
+    expect(refused.message).not.toContain('could not be reached');
+    expect(refused.message).not.toContain('not a JSON object');
+    expect(refused.message).not.toContain(TOKEN);
+  });
+
+  it.each(STALLS)(
+    'keeps the audit file to a begin and an end entry, with no secret in it, when %s',
+    async (_name, path, kind) => {
+      await refusal(() =>
+        recoverOwner(
+          options({ apiTimeoutMs: SHORT_LIMIT_MS }),
+          deps({ fetch: stallingAt(path, kind) })
+        )
+      );
+      const entries = audit();
+      expect(entries.map((entry) => entry['event'])).toEqual(['recovery.begin', 'recovery.end']);
+      expect(entries[1]!['outcome']).toBe('api-error');
+      expect(auditText()).not.toContain(TOKEN);
+      const passwordCall = calls.find((call) => call.url.endsWith('/password'));
+      if (passwordCall !== undefined) {
+        const { newPassword } = passwordCall.body as { newPassword: { password: string } };
+        expect(auditText()).not.toContain(newPassword.password);
+      }
+    }
+  );
+
+  it('does not put the one-time password in the refusal when the password set stalls', async () => {
+    const refused = await refusal(() =>
+      recoverOwner(
+        options({ apiTimeoutMs: SHORT_LIMIT_MS }),
+        deps({ fetch: stallingAt(`/v2/users/${USER}/password`, 'fetch') })
+      )
+    );
+    const { newPassword } = calls.at(-1)!.body as { newPassword: { password: string } };
+    expect(newPassword.password).toHaveLength(24);
+    expect(refused.message).not.toContain(newPassword.password);
+  });
+
+  const BAD_LIMITS = [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1.5, 2147483648, 4294967296];
+
+  it.each(BAD_LIMITS)(
+    'treats an apiTimeoutMs of %s as the default, so requests are not cut short',
+    async (apiTimeoutMs) => {
+      const stillOpen: boolean[] = [];
+      const ordinary = makeFetch();
+      const slow: RecoveryFetch = async (url, init) => {
+        // A real wait, so a limit that is wrongly taken as tiny has fired by now.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        stillOpen.push(init.signal?.aborted === false);
+        return ordinary(url, init);
+      };
+      const result = await recoverOwner(options({ apiTimeoutMs }), deps({ fetch: slow }));
+      expect(result.actions).toEqual(['password-set']);
+      expect(stillOpen).toEqual([true, true, true]);
+    }
+  );
+
+  it.each([
+    [undefined, 30000],
+    [0, 30000],
+    [-1, 30000],
+    [Number.NaN, 30000],
+    [Number.POSITIVE_INFINITY, 30000],
+    [1.5, 30000],
+    [2147483648, 30000],
+    [4294967296, 30000],
+    [1, 1],
+    [2147483647, 2147483647],
+    [4500, 4500],
+  ])('limits each request to the default or the valid value, given %s', async (given, limit) => {
+    const timeout = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation(() => new AbortController().signal);
+    await recoverOwner(options({ apiTimeoutMs: given }), deps());
+    expect(timeout.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([limit, limit, limit]);
+  });
+});
+
+describe('recoverOwner, failures that are not timeouts', () => {
+  it('keeps the unreachable sentence for a fetch that fails before the limit', async () => {
+    world.rawFail = '/management/v1/orgs/me';
+    const refused = await refusal(() => recoverOwner(options(), deps()));
+    expect(refused.code).toBe('api-error');
+    expect(refused.message).toContain('could not be reached');
+    expect(refused.message).not.toContain('in time');
+  });
+
+  it('keeps the non-object sentence for an answer body that fails before the limit', async () => {
+    const broken: RecoveryFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('unexpected end of input');
+      },
+    });
+    const refused = await refusal(() => recoverOwner(options(), deps({ fetch: broken })));
+    expect(refused.code).toBe('api-error');
+    expect(refused.message).toContain('was not a JSON object');
+    expect(refused.message).not.toContain('in time');
   });
 });
 
