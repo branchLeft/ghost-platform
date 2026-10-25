@@ -113,5 +113,16 @@ password is the per-tenant key the bulk path already carries
 against the same key store as its Mailgun-shaped API. With mail disabled,
 `queue` renders no transport at all, as before.
 
+With mail enabled, `queue` also renders three nodemailer timeouts into Ghost's
+SMTP options: `mail__options__connectionTimeout` (5000 ms),
+`mail__options__greetingTimeout` (5000 ms) and `mail__options__socketTimeout`
+(10000 ms, an idle timer that any traffic resets). Ghost sends transactional
+mail, such as a sign-in link, inside the reader's own web request, so a frozen
+spool must fail that request within seconds rather than the library's defaults
+of minutes. A spool that trickles bytes keeps resetting the idle timer, so
+these keys do not bound the total wait. The `smtp` transport is unchanged and
+keeps the library defaults. A live proof against a paused spool is a follow-up
+and is not yet done.
+
 Member mail is addressed through a Ghost *setting*
 (`members_support_address`, `settings.ts`), not through these keys.
