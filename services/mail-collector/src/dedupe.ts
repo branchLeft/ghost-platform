@@ -66,7 +66,7 @@ export function createSubmittedTracker(
     try {
       raw = readFileSync(path, 'utf8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      if ((error as { code?: unknown }).code !== 'ENOENT') {
         report(error);
       }
       return;
