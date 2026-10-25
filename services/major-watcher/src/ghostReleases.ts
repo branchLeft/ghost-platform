@@ -1,6 +1,8 @@
 // The signal: github.com/TryGhost/Ghost's own Releases API, chosen over
 // npm dist-tags and the blog/changelog. See ../README.md#signal.
 
+import { resolveTimeoutMs, rethrowOrTimeout } from './timeout.js';
+
 export interface GhostRelease {
   readonly tagName: string;
   readonly publishedAt: string;
@@ -8,6 +10,8 @@ export interface GhostRelease {
 }
 
 export type FetchLike = typeof fetch;
+
+const DEFAULT_TIMEOUT_MS = 30000;
 
 const RELEASES_URL = 'https://api.github.com/repos/TryGhost/Ghost/releases';
 
@@ -22,6 +26,8 @@ export interface FetchGhostReleasesOptions {
   readonly fetchImpl?: FetchLike;
   /** Bearer token to raise GitHub's rate limit; the workflow's own ambient GITHUB_TOKEN is enough, no dedicated secret needed. */
   readonly token?: string;
+  /** Per-request limit in whole milliseconds, 1 to 2147483647; otherwise the default of 30000. */
+  readonly timeoutMs?: number;
 }
 
 export async function fetchGhostReleases(
@@ -31,11 +37,24 @@ export async function fetchGhostReleases(
   const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
 
-  const res = await fetchImpl(`${RELEASES_URL}?per_page=${PER_PAGE}`, { headers });
+  const limitMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(limitMs);
+  const timeoutMessage = `GitHub releases fetch timed out after ${limitMs} ms`;
+  let res: Response;
+  try {
+    res = await fetchImpl(`${RELEASES_URL}?per_page=${PER_PAGE}`, { headers, signal });
+  } catch (error) {
+    rethrowOrTimeout(signal, timeoutMessage, error);
+  }
   if (!res.ok) {
     throw new Error(`GitHub releases fetch failed: ${res.status} ${res.statusText}`);
   }
-  const body: unknown = await res.json();
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (error) {
+    rethrowOrTimeout(signal, timeoutMessage, error);
+  }
   if (!Array.isArray(body)) {
     throw new Error('GitHub releases response was not an array');
   }

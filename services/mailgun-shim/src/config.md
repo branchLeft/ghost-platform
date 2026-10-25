@@ -27,4 +27,5 @@ while it runs. A message over the cap is refused mid-envelope with a
 temporary failure (RFC 5321), never trimmed and accepted: trimming would
 return a false success for the recipients silently dropped. This is the
 SMTP front door's own cap — the HTTP Mailgun-shaped route carries
-Ghost's bulk newsletter sends and has no recipient cap of its own.
+Ghost's bulk newsletter sends and has its own cap of 1,000, set in
+mailgunFields.ts (see mailgunFields.md#multipart-limits).

@@ -24,6 +24,16 @@ import { OWNER_ORG_NAME } from './desired.js';
 
 export const DEFAULT_MAX_CREDENTIAL_AGE_SECONDS = 1800;
 export const MAX_CREDENTIAL_AGE_SECONDS = 3600;
+const DEFAULT_API_TIMEOUT_MS = 30000;
+const MAX_TIMER_MS = 2147483647;
+
+const apiTimeoutOf = (requested: number | undefined): number =>
+  requested !== undefined &&
+  Number.isInteger(requested) &&
+  requested >= 1 &&
+  requested <= MAX_TIMER_MS
+    ? requested
+    : DEFAULT_API_TIMEOUT_MS;
 
 export type RefusalCode =
   | 'not-loopback'
@@ -65,6 +75,7 @@ export type RecoveryFetch = (
     /** Always `error`: a loopback request that is redirected somewhere else
      * must fail rather than carry the credential with it. */
     redirect: 'error';
+    signal: AbortSignal;
   }
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
@@ -78,6 +89,9 @@ export interface RecoveryOptions {
   readonly credentialFile: string;
   readonly auditFile: string;
   readonly maxCredentialAgeSeconds?: number;
+  /** Limit for each request to the sign-in service, in whole milliseconds from
+   * 1 to 2147483647. Anything else falls back to 30000. */
+  readonly apiTimeoutMs?: number;
 }
 
 export interface RecoveryDeps {
@@ -285,6 +299,9 @@ function asRecord(value: unknown): Json | null {
     : null;
 }
 
+const timedOutRefusal = (path: string): RecoveryRefused =>
+  new RecoveryRefused('api-error', `the sign-in service did not answer ${path} in time`);
+
 async function api(
   options: RecoveryOptions,
   deps: RecoveryDeps,
@@ -294,6 +311,7 @@ async function api(
   path: string,
   body?: unknown
 ): Promise<Json> {
+  const signal = AbortSignal.timeout(apiTimeoutOf(options.apiTimeoutMs));
   let response;
   try {
     response = await deps.fetch(`${origin}${path}`, {
@@ -306,8 +324,10 @@ async function api(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       redirect: 'error',
+      signal,
     });
   } catch {
+    if (signal.aborted) throw timedOutRefusal(path);
     throw new RecoveryRefused('api-error', `the sign-in service could not be reached for ${path}`);
   }
   if (!response.ok) {
@@ -316,7 +336,13 @@ async function api(
       `the sign-in service answered ${response.status} for ${path}`
     );
   }
-  const parsed = asRecord(await response.json().catch(() => null));
+  let answer: unknown = null;
+  try {
+    answer = await response.json();
+  } catch {
+    if (signal.aborted) throw timedOutRefusal(path);
+  }
+  const parsed = asRecord(answer);
   if (!parsed)
     throw new RecoveryRefused('api-error', `the answer for ${path} was not a JSON object`);
   return parsed;

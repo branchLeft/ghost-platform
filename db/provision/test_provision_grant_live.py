@@ -44,7 +44,7 @@ def _provisioning_sql(tenant: str, password: str) -> str:
     than run against the fake socket."""
     sent = []
 
-    def run(argv, env=None, capture_output=None, text=None, check=None):
+    def run(argv, env=None, capture_output=None, text=None, check=None, timeout=None):
         sent.append(argv[argv.index("-e") + 1])
         return subprocess.CompletedProcess(argv, 0, stdout="0\n", stderr="")
 

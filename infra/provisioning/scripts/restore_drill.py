@@ -475,7 +475,7 @@ def container_mysql_runner(*, runner: Runner, image: str, network: str) -> Runne
     the pinned recovery image on the drill's network. The password crosses
     as an environment value, never argv."""
 
-    def run(argv, *, env, stdin=None, capture_output=False, text=False, check=False):
+    def run(argv, *, env, stdin=None, capture_output=False, text=False, check=False, timeout: float | None = None):
         docker_argv = ["docker", "run", "--rm", *NO_LOGS, "--network", network]
         if stdin is not None:
             docker_argv.append("-i")
@@ -487,6 +487,7 @@ def container_mysql_runner(*, runner: Runner, image: str, network: str) -> Runne
             capture_output=capture_output,
             text=text,
             check=check,
+            timeout=timeout,
         )
 
     return run
