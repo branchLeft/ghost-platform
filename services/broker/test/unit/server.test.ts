@@ -66,6 +66,21 @@ describe('buildDeps (F5: the wiring server.ts actually uses)', () => {
     expect(deps.auth.nonces.claim('abc', nowMs)).toBe(false);
   });
 
+  it('keeps a spent nonce for the replay window plus the forward skew plus the final second', () => {
+    const deps = buildDeps(
+      fakeConfig(),
+      { render: async () => [] },
+      { configure: async () => undefined },
+      { poll: async () => new Promise(() => undefined) },
+      { load: async () => ({ imageId: 'sha256:' + '0'.repeat(64) }) }
+    );
+    const nowMs = 1_700_000_000_000;
+    const expectedNonceLifetimeMs = (60 + 5 + 1) * 1000;
+    expect(deps.auth.nonces.claim('abc', nowMs)).toBe(true);
+    expect(deps.auth.nonces.claim('abc', nowMs + expectedNonceLifetimeMs - 1)).toBe(false);
+    expect(deps.auth.nonces.claim('abc', nowMs + expectedNonceLifetimeMs)).toBe(true);
+  });
+
   it('wires a real per-slot lock -- not one that always grants a claim', () => {
     const deps = buildDeps(
       fakeConfig(),
