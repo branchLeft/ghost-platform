@@ -187,6 +187,26 @@ describe('createTokenVerifier', () => {
     expect((await v.verify(undefined as unknown as string)).ok).toBe(false);
   });
 
+  it('refuses a validly signed three-segment token over the size cap, because of the cap alone', async () => {
+    // Three segments and a good signature, so only the size cap can refuse it.
+    const oversized = sign(privateKey, { payload: { ...claims, pad: 'a'.repeat(16 * 1024) } });
+    expect(oversized.length).toBeGreaterThan(16 * 1024);
+    expect(await verifier(keys).verify(oversized)).toEqual({
+      ok: false,
+      reason: 'token is malformed',
+    });
+
+    // The same shape just under the cap is accepted, so the refusal above is the cap's doing.
+    let padding = 16 * 1024;
+    let underCap = sign(privateKey, { payload: { ...claims, pad: 'a'.repeat(padding) } });
+    while (underCap.length > 16 * 1024) {
+      padding -= 16;
+      underCap = sign(privateKey, { payload: { ...claims, pad: 'a'.repeat(padding) } });
+    }
+    expect(underCap.length).toBeLessThanOrEqual(16 * 1024);
+    expect((await verifier(keys).verify(underCap)).ok).toBe(true);
+  });
+
   it('refuses a signed payload that is not a JSON object', async () => {
     const header = b64({ alg: 'RS256', kid: 'k1' });
     const payload = b64([1]);
