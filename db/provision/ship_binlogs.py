@@ -17,6 +17,8 @@ from objectstorage import ObjectStorageError, put_object
 
 BINLOG_MYSQL_USER = "replicator"
 
+DEFAULT_FETCH_TIMEOUT_S = 300
+
 DEFAULT_MARKER_PATH = "/var/lib/branchleft-db-binlog-ship/last-shipped"
 
 # The textfile-collector directory db1's node_exporter reads, the same one
@@ -76,23 +78,33 @@ def fetch_raw_binlog(
     *, socket_path: str, password: str, log_name: str, out_dir: str, run=subprocess.run
 ) -> str:
     """Downloads `log_name` byte-for-byte into `out_dir`. `mysqlbinlog --raw`
-    treats --result-file as a directory prefix, not an exact filename."""
-    result = run(
-        [
-            "mysqlbinlog",
-            "--read-from-remote-server",
-            "--raw",
-            "--socket",
-            socket_path,
-            "--user",
-            BINLOG_MYSQL_USER,
-            f"--result-file={out_dir}/",
-            log_name,
-        ],
-        env={**os.environ, "MYSQL_PWD": password},
-        capture_output=True,
-        check=False,
-    )
+    treats --result-file as a directory prefix, not an exact filename.
+    Raises ShipError when mysqlbinlog exits non-zero or does not finish within
+    DEFAULT_FETCH_TIMEOUT_S; the timeout error is raised outside the except
+    block so it carries no argv through its exception chain."""
+    timed_out = False
+    try:
+        result = run(
+            [
+                "mysqlbinlog",
+                "--read-from-remote-server",
+                "--raw",
+                "--socket",
+                socket_path,
+                "--user",
+                BINLOG_MYSQL_USER,
+                f"--result-file={out_dir}/",
+                log_name,
+            ],
+            env={**os.environ, "MYSQL_PWD": password},
+            capture_output=True,
+            check=False,
+            timeout=DEFAULT_FETCH_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    if timed_out:
+        raise ShipError(f"mysqlbinlog for {log_name} did not finish within {DEFAULT_FETCH_TIMEOUT_S}s")
     if result.returncode != 0:
         raise ShipError(
             f"mysqlbinlog exited {result.returncode} for {log_name}: "
