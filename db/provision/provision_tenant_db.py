@@ -27,6 +27,8 @@ from naming import (
 
 DEFAULT_MAX_USER_CONNECTIONS = 10
 
+DEFAULT_SQL_TIMEOUT_S = 60
+
 # The socket bind-mounted out of the mysql container by db/stack/compose.yml
 # (`./run/mysqld:/var/run/mysqld`), reachable from the bare host at this path
 # once the stack is copied to /opt/branchleft/db per db/RUNBOOK-db.md.
@@ -46,13 +48,24 @@ def _run_sql(
     admin_password: str,
     run=subprocess.run,
 ) -> str:
-    result = run(
-        ["mysql", "--socket", socket_path, "--user", admin_user, "-N", "-B", "-e", sql],
-        env={**os.environ, "MYSQL_PWD": admin_password},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Raises ProvisionError when mysql exits non-zero or does not finish within
+    DEFAULT_SQL_TIMEOUT_S. The timeout error is raised outside the except block
+    and names neither the statement nor the argv, since a CREATE USER statement
+    carries the new password and TimeoutExpired carries the argv."""
+    timed_out = False
+    try:
+        result = run(
+            ["mysql", "--socket", socket_path, "--user", admin_user, "-N", "-B", "-e", sql],
+            env={**os.environ, "MYSQL_PWD": admin_password},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=DEFAULT_SQL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    if timed_out:
+        raise ProvisionError(f"mysql did not finish within {DEFAULT_SQL_TIMEOUT_S}s")
     if result.returncode != 0:
         raise ProvisionError(f"mysql exited {result.returncode}: {result.stderr.strip()}")
     return result.stdout
