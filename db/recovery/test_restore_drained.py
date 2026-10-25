@@ -9,6 +9,7 @@ leave to test-restore-drained-proof.sh instead.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -122,6 +123,49 @@ class RestoreDumpTests(unittest.TestCase):
             password="x", run=capturing_run,
         )
         self.assertEqual(captured["stdin"].name, self.dump_path)
+
+    def test_import_call_receives_the_timeout_passed_in(self) -> None:
+        captured = {}
+
+        def capturing_run(_args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        rd.restore_dump(
+            dump_path=self.dump_path, host="scratch", port=3306, user="root",
+            password="x", import_timeout_s=7.5, run=capturing_run,
+        )
+        self.assertEqual(captured["timeout"], 7.5)
+
+    def test_import_call_receives_the_default_timeout_when_none_is_passed(self) -> None:
+        captured = {}
+
+        def capturing_run(_args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        rd.restore_dump(
+            dump_path=self.dump_path, host="scratch", port=3306, user="root",
+            password="x", run=capturing_run,
+        )
+        self.assertEqual(captured["timeout"], rd.DEFAULT_IMPORT_TIMEOUT_S)
+
+    def test_timed_out_import_raises_dump_import_error_naming_where_and_how_long(self) -> None:
+        def timing_out_run(args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs["timeout"])
+
+        with self.assertRaises(rd.DumpImportError) as ctx:
+            rd.restore_dump(
+                dump_path=self.dump_path, host="scratch", port=3307, user="root",
+                password="x", import_timeout_s=7.5, run=timing_out_run,
+            )
+        message = str(ctx.exception)
+        self.assertIn(self.dump_path, message)
+        self.assertIn("scratch", message)
+        self.assertIn("3307", message)
+        self.assertIn("7.5", message)
+        self.assertIsNone(ctx.exception.__cause__)
+        self.assertIsNone(ctx.exception.__context__)
 
 
 class AssertTargetHasNoLiveDatabaseTests(unittest.TestCase):
@@ -309,6 +353,36 @@ class RestoreOnlyAndVerifyAndUndrainTests(unittest.TestCase):
         self.assertIn("ghost_t1", str(ctx.exception))
         self.assertEqual(calls, ["readiness", "listing"], "the import must never be attempted once refused")
 
+    def test_restore_only_forwards_the_import_timeout_to_the_import_call(self) -> None:
+        timeouts: list[float | None] = []
+
+        def run(args, **kwargs):
+            if "-e" not in args:
+                timeouts.append(kwargs.get("timeout"))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        rd.restore_only(
+            dump_path=self.dump_path, host="scratch", port=3306, user="root", password="x",
+            import_timeout_s=7.5, run=run, sleep=lambda s: None, now=lambda: 0.0,
+        )
+        self.assertEqual(timeouts, [7.5])
+
+    def test_run_drained_restore_forwards_the_import_timeout_to_the_import_call(self) -> None:
+        timeouts: list[float | None] = []
+
+        def run(args, **kwargs):
+            if "-e" not in args:
+                timeouts.append(kwargs.get("timeout"))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        rd.run_drained_restore(
+            dump_path=self.dump_path, host="scratch", port=3306, user="root", password="x",
+            base_url="http://colour/", expected_post_body="Tenant B original post", flag_path=self.flag_path,
+            import_timeout_s=7.5, run=run, get=lambda url, timeout_s: (200, "Tenant B original post"),
+            sleep=lambda s: None, now=lambda: 0.0,
+        )
+        self.assertEqual(timeouts, [7.5])
+
     def test_verify_and_undrain_clears_the_flag_on_success(self) -> None:
         rd.verify_and_undrain(
             base_url="http://colour/", expected_post_body="Tenant B original post", flag_path=self.flag_path,
@@ -485,6 +559,19 @@ class RunDrainedRestoreOrderingTests(unittest.TestCase):
         with self.assertRaises(rd.DumpImportError):
             self._run(run=run, get=lambda url, timeout_s: (200, "irrelevant"))
         self.assertTrue(os.path.exists(self.flag_path), "flag must stay set if the import failed")
+
+    def test_import_timeout_leaves_the_flag_set(self) -> None:
+        # Readiness and the empty-target listing succeed, the import hangs
+        # past its deadline. The content check would pass if reached, so a
+        # swallowed timeout would clear the flag and fail this test.
+        def run(args, **kwargs):
+            if "-e" in args:
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs["timeout"])
+
+        with self.assertRaises(rd.DumpImportError):
+            self._run(run=run, get=lambda url, timeout_s: (200, "Tenant B original post"))
+        self.assertTrue(os.path.exists(self.flag_path), "flag must stay set if the import timed out")
 
     def test_content_verification_failure_leaves_the_flag_set(self) -> None:
         """This is the control case run through the full ordered chain, not
