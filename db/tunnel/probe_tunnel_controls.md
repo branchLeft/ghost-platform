@@ -35,7 +35,7 @@ Run it while the tunnel is up: it opens its own sessions and uses local port
 
 ```bash
 bash probe_tunnel_controls.sh direct-dial --control <control host:port> \
-  --target 192.0.2.20:3306
+  --target 10.20.1.20:3306
 ```
 
 The control is a port the operator supplies, known to accept TCP connections
@@ -62,6 +62,6 @@ The probe passes a target only when the control connected and the connection to
 the target is not accepted within the timeout. If the control does not connect,
 every target reads FAIL as inconclusive, and the exit is 1.
 
-`192.0.2.20` is the database host's private address and the only one mysqld binds.
+`10.20.1.20` is `db1`'s private address and the only one mysqld binds.
 This is the replica dialling `db1` itself, which the direction rule forbids.
 It must fail at the network, not merely be discouraged.
