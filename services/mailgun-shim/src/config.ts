@@ -31,8 +31,8 @@ export interface ShimConfig {
   // (magic links, password resets, staff invites) addresses exactly one
   // recipient per message (LLD-6), so this bounds that channel alone — the
   // HTTP Mailgun-shaped route below carries Ghost's bulk newsletter sends
-  // in batches of up to 1,000 (Ghost's own DEFAULT_BATCH_SIZE) and has no
-  // recipient cap of its own.
+  // in batches of up to 1,000 (Ghost's own DEFAULT_BATCH_SIZE) and has its
+  // own cap of 1,000, set in mailgunFields.ts.
   maxRecipientsPerMessage: number;
   smtpFrontDoor: SmtpFrontDoorConfig;
 }
