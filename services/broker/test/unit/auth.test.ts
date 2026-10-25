@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { verifyRequest } from '../../src/auth.js';
+import { verifyRequest, type AuthDeps } from '../../src/auth.js';
 import { createInMemoryNonceStore } from '../../src/nonceStore.js';
 import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 
@@ -184,5 +184,102 @@ describe('verifyRequest', () => {
     const headers = headersFor(keyPair, 'POST', '/reset', body, Math.floor(nowMs / 1000), nonce);
     const legit = verifyRequest(d, 'POST', '/reset', headers, body);
     expect(legit.ok).toBe(true);
+  });
+
+  describe('nonce lifetime against the timestamp window', () => {
+    const windowSeconds = 60;
+    const forwardSkewSeconds = 5;
+    const nowMs = 1_700_000_000_000;
+    const body = Buffer.from('{"slot":"0"}');
+
+    function movableClock(): {
+      keyPair: ReturnType<typeof generateTestKeyPair>;
+      d: AuthDeps;
+      setClockMs: (ms: number) => void;
+    } {
+      let clockMs = nowMs;
+      const { keyPair, deps: fixed } = deps(nowMs, undefined, windowSeconds);
+      return {
+        keyPair,
+        d: { ...fixed, nowMs: () => clockMs },
+        setClockMs: (ms) => {
+          clockMs = ms;
+        },
+      };
+    }
+
+    // The last millisecond at which the timestamp check still admits a
+    // request signed at `timestampSeconds`.
+    function lastAcceptedMs(timestampSeconds: number): number {
+      return (timestampSeconds + windowSeconds + 1) * 1000 - 1;
+    }
+
+    it('keeps a nonce claimed at the earliest accepted instant refused until the timestamp window closes', () => {
+      const { keyPair, d, setClockMs } = movableClock();
+      const timestampSeconds = Math.floor(nowMs / 1000) + forwardSkewSeconds;
+      const headers = headersFor(keyPair, 'POST', '/reconcile', body, timestampSeconds);
+
+      expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({ ok: true });
+
+      setClockMs(lastAcceptedMs(timestampSeconds));
+      expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({
+        ok: false,
+        reason: 'nonce already used',
+      });
+    });
+
+    it('refuses the replay at every second between the claim and the last accepted instant', () => {
+      const { keyPair, d, setClockMs } = movableClock();
+      const timestampSeconds = Math.floor(nowMs / 1000) + forwardSkewSeconds;
+      const headers = headersFor(keyPair, 'POST', '/reconcile', body, timestampSeconds);
+      expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({ ok: true });
+
+      const instants: number[] = [];
+      for (let instant = nowMs + 1; instant < lastAcceptedMs(timestampSeconds); instant += 1000) {
+        instants.push(instant);
+      }
+      instants.push(lastAcceptedMs(timestampSeconds));
+
+      for (const instant of instants) {
+        setClockMs(instant);
+        expect(
+          verifyRequest(d, 'POST', '/reconcile', headers, body),
+          `replay at +${instant - nowMs} ms after the claim`
+        ).toEqual({ ok: false, reason: 'nonce already used' });
+      }
+    });
+
+    it("keeps the nonce refused to the last accepted instant for a request stamped in the clock's own second", () => {
+      const { keyPair, d, setClockMs } = movableClock();
+      const timestampSeconds = Math.floor(nowMs / 1000);
+      const headers = headersFor(keyPair, 'POST', '/reconcile', body, timestampSeconds);
+
+      expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({ ok: true });
+
+      setClockMs(lastAcceptedMs(timestampSeconds));
+      expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({
+        ok: false,
+        reason: 'nonce already used',
+      });
+    });
+
+    it.each([
+      ["stamped in the clock's own second", 0],
+      ['stamped the full forward skew ahead', forwardSkewSeconds],
+    ])(
+      'hands over to the timestamp check one millisecond later for a request %s',
+      (_label, secondsAhead) => {
+        const { keyPair, d, setClockMs } = movableClock();
+        const timestampSeconds = Math.floor(nowMs / 1000) + secondsAhead;
+        const headers = headersFor(keyPair, 'POST', '/reconcile', body, timestampSeconds);
+        expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({ ok: true });
+
+        setClockMs(lastAcceptedMs(timestampSeconds) + 1);
+        expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({
+          ok: false,
+          reason: 'timestamp outside the replay window',
+        });
+      }
+    );
   });
 });
