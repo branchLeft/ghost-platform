@@ -1143,6 +1143,24 @@ def probe_notprincipal(
     if account is None:
         return [("operator credential resolves its account", INCONCLUSIVE, reason, "", True)], evidence
     operator_arn = f"arn:aws:iam:::user/{account}:{verifier.credentials['operator'][0]}"
+    # Resolve the foreign key's account before any write: a foreign key in another
+    # account is denied by the account boundary, which would hide the policy's answer.
+    foreign_account, foreign_reason = account_of(verifier, "foreign")
+    if foreign_account is None:
+        return [("foreign credential resolves its account", INCONCLUSIVE, foreign_reason, "", True)], evidence
+    if foreign_account != account:
+        return [
+            (
+                "the foreign credential is in the operator's account",
+                FAIL,
+                f"the foreign key is outside the operator's account {account}; a foreign key in "
+                "another account is denied by the account boundary whatever the policy says, so "
+                "this probe cannot tell whether NotPrincipal works. Use a foreign key from the "
+                "operator's account. Nothing has been written.",
+                "",
+                True,
+            )
+        ], evidence
 
     free, refusal, _ = _policy_slot_is_free(
         verifier,
