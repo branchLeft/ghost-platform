@@ -38,8 +38,8 @@ MEDIA_BUCKET_PREFIX = "branchleft-media-"
 # end in a letter or a digit.
 SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*[a-z0-9]\Z|\A[a-z]\Z")
 
-# Mirrors `RESERVED_STACK_NAMES` in infra/tenant/naming.ts. Refused here as well
-# as there because this script is the FIRST thing an operator runs for a new
+# Mirrors `RESERVED_STACK_NAMES` in `render-core/src/naming.ts`. Refused here as
+# well as there because this script is the FIRST thing an operator runs for a new
 # tenant -- earlier than the component, earlier than provision-tenant.yml -- and
 # it prints commands that create a real bucket. A slug the rest of the platform
 # will later refuse must not get a bucket made for it first.
@@ -48,7 +48,7 @@ SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*[a-z0-9]\Z|\A[a-z]\Z")
 # live tenant-zero's own slug (this file's own test suite uses it as its
 # default, ordinary example throughout), not a non-tenant name, so reserving
 # it would refuse the one tenant that legitimately holds it.
-RESERVED_SLUGS = frozenset({"website", "edge", "db", "monitoring", "nextcloud1"})
+RESERVED_SLUGS = frozenset({"website", "edge", "db", "monitoring", "nextcloud1", "mail-spool"})
 
 # Ghost needs these two to serve media from a versioned bucket: Hetzner's own
 # note is that allowing `s3:GetObject` on a bucket with versioning enabled
