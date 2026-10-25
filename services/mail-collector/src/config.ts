@@ -61,6 +61,9 @@ export interface CollectorConfig {
   /** How long a delivered message id is remembered, so a re-offer caused by a lost ack is recognised and never redelivered. Comfortably longer than any realistic lease-lapse-and-re-offer horizon. */
   dedupeTtlMs: number;
 
+  /** File on a volume that outlives the process, holding the submitted ids. Unset, a restart forgets them and a re-offered id is submitted again. */
+  dedupeStatePath?: string;
+
   smtp: {
     host: string;
     port: number;
@@ -192,6 +195,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     messagesPerHour: positiveIntEnv(env, 'COLLECTOR_MESSAGES_PER_HOUR', DEFAULT_MESSAGES_PER_HOUR),
     throttleConfigPath: env.COLLECTOR_THROTTLE_CONFIG_PATH,
     dedupeTtlMs: positiveIntEnv(env, 'COLLECTOR_DEDUPE_TTL_MS', DEFAULT_DEDUPE_TTL_MS),
+    dedupeStatePath: env.COLLECTOR_DEDUPE_STATE_PATH || undefined,
     smtp: {
       host: requireEnv(env, 'COLLECTOR_SMTP_HOST'),
       port: positiveIntEnv(env, 'COLLECTOR_SMTP_PORT', 587),
