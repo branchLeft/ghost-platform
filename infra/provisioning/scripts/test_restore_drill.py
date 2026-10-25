@@ -74,6 +74,7 @@ class FakeDocker:
     def __init__(self, *, snapshot="SITE\t1\t2\t3\tNEWEST POST\n", snapshot_code=0, fail=None):
         self.calls: list[list[str]] = []
         self.envs: list[dict] = []
+        self.kwargs: list[dict] = []
         self.snapshot = snapshot
         self.snapshot_code = snapshot_code
         self.fail = fail or {}
@@ -82,6 +83,7 @@ class FakeDocker:
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
         self.envs.append(dict(kwargs.get("env") or {}))
+        self.kwargs.append(dict(kwargs))
         for marker, result in self.fail.items():
             if marker in " ".join(argv):
                 return result(argv) if callable(result) else result
@@ -522,6 +524,14 @@ class RunnerAdapterTests(unittest.TestCase):
         self.assertIn("-i", second)
         self.assertNotIn("pw", " ".join(first + second))
         self.assertEqual(docker.envs[0]["MYSQL_PWD"], "pw")
+
+    def test_timeout_is_forwarded_to_the_container_runner(self):
+        docker = FakeDocker()
+        run = rd.container_mysql_runner(runner=docker, image="rec" + DIGEST, network="net")
+        run(["mysql", "-e", "SELECT 1;"], env={"MYSQL_PWD": "pw"}, capture_output=True, text=True, timeout=7)
+        run(["mysql", "-e", "SELECT 1;"], env={"MYSQL_PWD": "pw"}, capture_output=True, text=True)
+        self.assertEqual(docker.kwargs[0]["timeout"], 7)
+        self.assertIsNone(docker.kwargs[1]["timeout"])
 
 
 class ContainersTests(unittest.TestCase):
