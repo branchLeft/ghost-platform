@@ -73,7 +73,7 @@ the ones that failed, so a crash cannot pass for a red.
   the Mailgun client's base URL handling, or any timeout Ghost applies. Those
   are proved only by a run against a real Ghost.
 - A down or hung spool is measured from the stand-in client. Ghost awaits a
-  transactional send inside the reader's request, and the rendered Ghost
-  environment sets no connection, greeting or socket timeout, so against a hung
-  spool what bounds the reader's wait is the library default, which this proof
-  does not exercise. The 6 second timeout above is the stand-in's own.
+  transactional send inside the reader's request. The rendered Ghost environment
+  now sets explicit connection (5 s), greeting (5 s) and socket-idle (10 s)
+  timeouts for a spool, and this proof does not exercise them; only a run
+  against a real Ghost does. The 6 second timeout above is the stand-in's own.

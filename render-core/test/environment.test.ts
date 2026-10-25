@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest';
 import { tenantEnvironment } from '../src/environment.js';
 import { uploadLimits } from '../src/runtime.js';
 import { secretsEnvPath } from '../src/naming.js';
+import { validate } from '../src/validate.js';
+import { assertQueueMailTimeouts } from './helpers/queueMailTimeouts.js';
 import {
   breakGlassEnabled,
   demoDescriptor,
@@ -71,5 +73,31 @@ describe('tenantEnvironment() — verdictSource', () => {
     }
     expect(Object.keys(rendered).filter((key) => /verdictsource/i.test(key))).toEqual([]);
     expect(Object.values(rendered)).not.toContain('in-process-fake');
+  });
+});
+
+describe('tenantEnvironment() — Ghost mail transport timeouts', () => {
+  it.each([
+    ['tenant', tenantDescriptor],
+    ['demo', demoDescriptor],
+  ] as const)('a %s on the queue transport renders explicit SMTP timeouts', (_label, fixture) => {
+    assertQueueMailTimeouts(env(fixture()));
+  });
+
+  it.each([
+    ['tenant', tenantDescriptor],
+    ['demo', demoDescriptor],
+  ] as const)('a %s with mail disabled renders no mail__options__* key', (_label, fixture) => {
+    const base = fixture();
+    const descriptor = validate({ ...base, mail: { ...base.mail, enabled: false } }, TEST_ZONES);
+    const rendered = env(descriptor);
+    expect(Object.keys(rendered).filter((key) => key.startsWith('mail__options__'))).toEqual([]);
+  });
+
+  it("the smtp transport keeps nodemailer's defaults for now", () => {
+    const rendered = env(validate(entryTenantDescriptor(), TEST_ZONES));
+    expect(rendered.mail__options__connectionTimeout).toBeUndefined();
+    expect(rendered.mail__options__greetingTimeout).toBeUndefined();
+    expect(rendered.mail__options__socketTimeout).toBeUndefined();
   });
 });

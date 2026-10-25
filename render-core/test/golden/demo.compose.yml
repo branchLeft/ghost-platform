@@ -59,6 +59,9 @@ services:
       mail__options__port: 2525
       mail__options__secure: false
       mail__options__auth__user: 'demo-mail.example.test'
+      mail__options__connectionTimeout: 5000
+      mail__options__greetingTimeout: 5000
+      mail__options__socketTimeout: 10000
       mail__from: 'demo-1@demo-mail.example.test'
       bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'demo-mail.example.test'
@@ -140,6 +143,9 @@ services:
       mail__options__port: 2525
       mail__options__secure: false
       mail__options__auth__user: 'demo-mail.example.test'
+      mail__options__connectionTimeout: 5000
+      mail__options__greetingTimeout: 5000
+      mail__options__socketTimeout: 10000
       mail__from: 'demo-1@demo-mail.example.test'
       bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
       bulkEmail__mailgun__domain: 'demo-mail.example.test'
