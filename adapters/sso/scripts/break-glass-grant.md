@@ -153,6 +153,11 @@ says so:
 4. Appends the closing record and removes the state file
    only if it is still the grant it read (a newer grant keeps its clock).
 
+An incident `grant` checks its own state again after the activation commits. If
+a `revoke` removed it meanwhile, the account is suspended again (unless a newer
+grant now holds the state) and the `grant` is refused, so an activation that
+lands after a revoke never leaves the account active with no clock.
+
 The state is renamed to a private `.<slug>.<pid>.<id>.claim` name first, which
 is atomic, so what is compared is exactly what is removed; no lock is taken, so
 a stuck process can never stop a later close. A state that turns out to be a
