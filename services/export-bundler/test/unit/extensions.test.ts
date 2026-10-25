@@ -277,9 +277,12 @@ describe('collectMedia', () => {
     expect(JSON.parse(String(out.files[0]?.data)).addresses).toEqual([]);
   });
 
-  it('is failed when the tenant has no object-storage media address', async () => {
+  it('is FAILED with a note naming the missing object-storage address when the tenant has none', async () => {
     const out = await collectMedia(deps({ media: { ...deps().media, baseUrl: null } }));
     expect(out.report.status).toBe('failed');
+    expect(out.report.notes).toEqual([
+      "the tenant's rendered environment names no object-storage media address",
+    ]);
     expect(out.files).toEqual([]);
   });
 

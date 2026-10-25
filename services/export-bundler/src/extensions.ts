@@ -226,10 +226,17 @@ export async function collectComments(deps: ExtensionDeps): Promise<ExtensionOut
 
 export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcome> {
   if (deps.media.baseUrl === null) {
-    return failure(
-      'media',
-      new Error("the tenant's rendered environment names no object-storage media address")
-    );
+    return {
+      report: {
+        name: 'media',
+        status: 'failed',
+        expected: null,
+        present: 0,
+        notes: ["the tenant's rendered environment names no object-storage media address"],
+        info: [],
+      },
+      files: [],
+    };
   }
   try {
     const erasureDate = parseErasureDate(deps.media.erasureDate, deps.nowSeconds);
