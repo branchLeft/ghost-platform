@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeTempDir } from '../src/atomicFile.js';
-import { pushImage } from '../src/controlPlanePush.js';
+import { DEFAULT_PUSH_TIMEOUT_MS, pushImage } from '../src/controlPlanePush.js';
 import { handleImagePush } from '../src/imagePush.js';
 import { createInMemoryNonceStore } from '../src/nonceStore.js';
 import { generateTestKeyPair } from '../test/helpers/signer.js';
@@ -149,5 +149,89 @@ describe('handleImagePush, driven by the real generated-client pushImage', () =>
 
     expect(result.status).toBe(401);
     expect(result.body).toEqual({ error: expect.any(String) });
+  });
+});
+
+describe('pushImage against a host that accepts the connection and never answers', () => {
+  let server: Server | undefined;
+  const openSockets = new Set<Socket>();
+
+  afterEach(async () => {
+    for (const socket of openSockets) socket.destroy();
+    openSockets.clear();
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    server = undefined;
+  });
+
+  it('rejects with a deadline error caused by the abort, instead of hanging', async () => {
+    let requestsReceived = 0;
+    server = createServer(() => {
+      requestsReceived += 1;
+    });
+    server.on('connection', (socket) => {
+      openSockets.add(socket);
+    });
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    const keyPair = generateTestKeyPair();
+    const tmpDir = await makeTempDir('stalled-host-');
+    const tarPath = join(tmpDir, 'sent.tar');
+    await writeFile(tarPath, Buffer.from('x'));
+    const digest = `sha256:${createHash('sha256').update('x').digest('hex')}`;
+
+    const startedAt = Date.now();
+    const failure = await pushImage({
+      baseUrl: `http://127.0.0.1:${port}`,
+      digest,
+      tarPath,
+      privateKeyRaw: keyPair.privateKeyRaw,
+      timeoutMs: 300,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(requestsReceived).toBe(1);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('did not finish within 300');
+    expect((failure as Error).cause).toBeInstanceOf(Error);
+    expect(((failure as Error).cause as Error).name).toBe('TimeoutError');
+    expect(elapsedMs).toBeLessThan(3000);
+  }, 5000);
+});
+
+describe('pushImage against a host that refuses the connection', () => {
+  it('propagates the connection failure itself, not a deadline error', async () => {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+    const { port } = closed.address() as AddressInfo;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const keyPair = generateTestKeyPair();
+    const tmpDir = await makeTempDir('refused-host-');
+    const tarPath = join(tmpDir, 'sent.tar');
+    await writeFile(tarPath, Buffer.from('x'));
+
+    const failure = await pushImage({
+      baseUrl: `http://127.0.0.1:${port}`,
+      digest: `sha256:${'0'.repeat(64)}`,
+      tarPath,
+      privateKeyRaw: keyPair.privateKeyRaw,
+      timeoutMs: 60_000,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as Error).message).not.toContain('did not finish within');
+  });
+});
+
+describe('DEFAULT_PUSH_TIMEOUT_MS', () => {
+  it('is a finite, positive thirty minutes', () => {
+    expect(Number.isFinite(DEFAULT_PUSH_TIMEOUT_MS)).toBe(true);
+    expect(DEFAULT_PUSH_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DEFAULT_PUSH_TIMEOUT_MS).toBe(1_800_000);
   });
 });

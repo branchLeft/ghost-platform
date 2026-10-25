@@ -62,7 +62,9 @@ contract says:
   byte of the image is read (`readImageHeaders`, `authenticateImagePush`),
   and the handler streams the body to disk (`receiveImage`). The generated
   client cannot stream or sign, so `controlPlanePush.ts` supplies the stream
-  and the signature itself.
+  and the signature itself. The push is bounded by a total deadline (30
+  minutes by default, overridable per call) and rejects with a plain error
+  when it passes.
 
 What is and is not checked at run time: request bodies are validated against
 the spec's schemas (in the gate); `200` bodies are validated against the
