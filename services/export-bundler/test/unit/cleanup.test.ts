@@ -3,7 +3,12 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { CleanupRegistry, dockerRemoveSync, installSignalCleanup } from '../../src/cleanup.js';
+import {
+  CLEANUP_FAILED_EXIT_CODE,
+  CleanupRegistry,
+  dockerRemoveSync,
+  installSignalCleanup,
+} from '../../src/cleanup.js';
 
 describe('CleanupRegistry', () => {
   it('runs every registered step, newest first, and empties itself', () => {
@@ -112,7 +117,7 @@ describe('installSignalCleanup failure reporting', () => {
         `export-bundler: cleanup step failed on ${signal}: broken scratch step`,
       ]);
       expect(exit).toHaveBeenCalledTimes(1);
-      expect(exit).toHaveBeenCalledWith(70);
+      expect(exit).toHaveBeenCalledWith(CLEANUP_FAILED_EXIT_CODE);
       expect(exit).not.toHaveBeenCalledWith(130);
       expect(exit).not.toHaveBeenCalledWith(143);
       expect(ran).toEqual(['healthy step after', 'healthy step before']);
@@ -136,7 +141,7 @@ describe('installSignalCleanup failure reporting', () => {
       'export-bundler: cleanup step failed on SIGINT: broken first step',
     ]);
     expect(exit).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(70);
+    expect(exit).toHaveBeenCalledWith(CLEANUP_FAILED_EXIT_CODE);
   });
 
   it.each([
@@ -163,7 +168,7 @@ describe('installSignalCleanup failure reporting', () => {
     });
     expect(() => target.emit('SIGINT')).not.toThrow();
     expect(exit).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(70);
+    expect(exit).toHaveBeenCalledWith(CLEANUP_FAILED_EXIT_CODE);
   });
 
   it('a throwing stderr write does not stop the remaining lines, and exit still runs last', () => {
@@ -187,7 +192,7 @@ describe('installSignalCleanup failure reporting', () => {
     expect(writeStderr).toHaveBeenCalledTimes(2);
     expect(recorded).toEqual(['export-bundler: cleanup step failed on SIGTERM: broken first step']);
     expect(exit).toHaveBeenCalledTimes(1);
-    expect(exit).toHaveBeenCalledWith(70);
+    expect(exit).toHaveBeenCalledWith(CLEANUP_FAILED_EXIT_CODE);
   });
 
   it('never writes the thrown error message, which can carry paths', () => {
@@ -199,7 +204,7 @@ describe('installSignalCleanup failure reporting', () => {
     target.emit('SIGINT');
     expect(written).toEqual(['export-bundler: cleanup step failed on SIGINT: broken scratch step']);
     expect(written.join('\n')).not.toContain('SECRET-IN-MESSAGE');
-    expect(exit).toHaveBeenCalledWith(70);
+    expect(exit).toHaveBeenCalledWith(CLEANUP_FAILED_EXIT_CODE);
   });
 });
 
