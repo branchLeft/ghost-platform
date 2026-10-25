@@ -30,6 +30,62 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(tags, ["6.0.0-alpine", "6.1.0-alpine"])
         self.assertIn("last=6.0.0-alpine", request.calls[2][1])
 
+    def test_a_link_to_another_host_is_refused_and_never_followed(self):
+        next_link = '<https://evil.example/v2/library/ghost/tags/list?last=x&n=1000>; rel="next"'
+        request = ScriptedRequest([
+            (200, {}, json.dumps({"token": "x"}).encode()),
+            (200, {"Link": next_link}, json.dumps({"tags": ["6.0.0"]}).encode()),
+        ])
+        with self.assertRaises(RuntimeError) as context:
+            clients.DockerHubRegistry(request=request).list_tags()
+        self.assertIn("evil.example", str(context.exception))
+        self.assertEqual(len(request.calls), 2)
+        self.assertFalse(any("evil.example" in call[1] for call in request.calls))
+        for method, url, headers, body in request.calls:
+            self.assertTrue(
+                url.startswith(f"{clients.REGISTRY_HOST}/") or url == clients.TOKEN_URL, url
+            )
+            if not url.startswith(clients.REGISTRY_HOST):
+                self.assertNotIn("Authorization", headers or {})
+
+    def test_a_scheme_downgrade_on_the_registry_host_is_refused(self):
+        next_link = '<http://registry-1.docker.io/v2/library/ghost/tags/list?last=x&n=1000>; rel="next"'
+        request = ScriptedRequest([
+            (200, {}, json.dumps({"token": "x"}).encode()),
+            (200, {"Link": next_link}, json.dumps({"tags": ["6.0.0"]}).encode()),
+        ])
+        with self.assertRaises(RuntimeError):
+            clients.DockerHubRegistry(request=request).list_tags()
+        self.assertEqual(len(request.calls), 2)
+        self.assertFalse(any(call[1].startswith("http://") for call in request.calls))
+
+    def test_an_absolute_link_on_the_registry_host_is_followed(self):
+        next_link = '<https://registry-1.docker.io/v2/library/ghost/tags/list?last=6.0.0-alpine&n=1000>; rel="next"'
+        absolute_url = "https://registry-1.docker.io/v2/library/ghost/tags/list?last=6.0.0-alpine&n=1000"
+        request = ScriptedRequest([
+            (200, {}, json.dumps({"token": "x"}).encode()),
+            (200, {"Link": next_link}, json.dumps({"tags": ["6.0.0-alpine"]}).encode()),
+            (200, {}, json.dumps({"tags": ["6.1.0-alpine"]}).encode()),
+        ])
+        tags = clients.DockerHubRegistry(request=request).list_tags()
+        self.assertEqual(tags, ["6.0.0-alpine", "6.1.0-alpine"])
+        self.assertEqual(request.calls[2][1], absolute_url)
+
+    def test_a_link_with_userinfo_or_another_port_is_refused(self):
+        links = [
+            "https://registry-1.docker.io@evil.example/v2/library/ghost/tags/list?last=x&n=1000",
+            "https://registry-1.docker.io:8443/v2/library/ghost/tags/list?last=x&n=1000",
+        ]
+        for link in links:
+            with self.subTest(link=link):
+                request = ScriptedRequest([
+                    (200, {}, json.dumps({"token": "x"}).encode()),
+                    (200, {"Link": f'<{link}>; rel="next"'}, json.dumps({"tags": ["6.0.0"]}).encode()),
+                ])
+                with self.assertRaises(RuntimeError):
+                    clients.DockerHubRegistry(request=request).list_tags()
+                self.assertEqual(len(request.calls), 2)
+
     def test_resolves_the_manifest_digest_from_the_header(self):
         request = ScriptedRequest([
             (200, {}, json.dumps({"token": "x"}).encode()),
