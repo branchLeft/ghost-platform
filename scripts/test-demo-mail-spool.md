@@ -29,8 +29,9 @@ Asserted, each from inside a container rather than from the Compose file:
   from the queue
 - the drain and ack run inside the spool's container (`drainack.js`, the same
   block the delivery runbook runs), and the queue then reads 0
-- the drain port is published on `127.0.0.1` only, and refuses a caller with no
-  token
+- `GET /drain` on the mail API listener a slot's Ghost reaches answers 404
+- the drain port is published on `127.0.0.1` only (from the drain listener's own
+  container port), and refuses a caller with no token
 - after `docker restart` of the whole stand-in (dockerd included, the policy
   re-run as the boot unit does), the spool is healthy, still holds both
   messages, and still cannot reach the outside

@@ -179,11 +179,14 @@ expect_ok "Ghost's Mailgun-shaped path (bulk) is accepted" \
 if [ "$(queued)" = 2 ]; then pass "the queue holds both messages"; else fail "the queue holds $(queued) messages, not 2"; fi
 [ "$SABOTAGE" != no-spool ] || finish
 
+echo "== the drain route"
+expect_ok "the mail API listener a slot's Ghost reaches has no /drain route" \
+    "on_slot_network branchleft-mail-30001 python /work/drainroute.py mail-spool 8080 >/dev/null 2>&1"
 echo "== the drain port"
-if [ "$(on_host "docker port $SPOOL_C 8080/tcp")" = "127.0.0.1:$DRAIN_PORT" ]; then
+if [ "$(on_host "docker port $SPOOL_C 8081/tcp")" = "127.0.0.1:$DRAIN_PORT" ]; then
     pass "the drain port is published on host loopback only"
 else
-    fail "the drain port is published as: $(on_host "docker port $SPOOL_C 8080/tcp")"
+    fail "the drain port is published as: $(on_host "docker port $SPOOL_C 8081/tcp")"
 fi
 CODE="$(on_host "wget -S -q -T 5 -O /dev/null http://127.0.0.1:$DRAIN_PORT/drain 2>&1 | sed -n 's/.*HTTP\/1.[01] \([0-9]*\).*/\1/p' | head -n 1")"
 if [ "$CODE" = 401 ]; then pass "the drain endpoint refuses a caller with no token"; else fail "the drain endpoint answered '$CODE' with no token"; fi

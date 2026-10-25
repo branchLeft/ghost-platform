@@ -17,6 +17,12 @@ export interface SmtpFrontDoorConfig {
 
 export interface ShimConfig {
   port: number;
+  /**
+   * SHIM_DRAIN_PORT: when set, the drain handover is served on this port
+   * alone and the mail API port answers 404 for /drain. Unset keeps the one
+   * combined listener.
+   */
+  drainPort?: number;
   dbPath: string;
   throttlePath?: string;
   messagesPerHour: number;
@@ -123,6 +129,29 @@ function positiveIntEnv(env: ShimEnv, name: string, fallback: number): number {
 }
 
 /**
+ * A set SHIM_DRAIN_PORT that is not a port, or that is the mail API port,
+ * stops startup: either would leave /drain on the tenant-facing listener, or
+ * leave no drain listener at all. An empty value counts as set and invalid,
+ * so a templated-away variable cannot fall back to the combined listener.
+ */
+function drainPortFrom(env: ShimEnv, port: number): number | undefined {
+  const raw = env.SHIM_DRAIN_PORT;
+  if (raw === undefined) return undefined;
+  const drainPort = Number(raw);
+  if (!Number.isInteger(drainPort) || drainPort < 1 || drainPort > 65535 || raw.trim() === '') {
+    throw new Error(
+      `SHIM_DRAIN_PORT must be a port number from 1 to 65535, got ${JSON.stringify(raw)}`
+    );
+  }
+  if (drainPort === port) {
+    throw new Error(
+      `SHIM_DRAIN_PORT (${drainPort}) must differ from PORT: /drain would be served on the mail API listener`
+    );
+  }
+  return drainPort;
+}
+
+/**
  * SHIM_DB_PATH has no safe default. An unset value or ":memory:" means
  * every restart silently drops the queue, tenant keys and suppression
  * list — the exact failure mode this store exists to close. The escape
@@ -141,8 +170,12 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
 
   const messagesPerHour = positiveIntEnv(env, 'SHIM_MESSAGES_PER_HOUR', 50);
 
+  const port = Number(env.PORT) || 8080;
+  const drainPort = drainPortFrom(env, port);
+
   return {
-    port: Number(env.PORT) || 8080,
+    port,
+    drainPort,
     dbPath,
     throttlePath: env.SHIM_THROTTLE_PATH,
     messagesPerHour,
