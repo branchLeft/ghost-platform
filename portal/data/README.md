@@ -110,6 +110,29 @@ save route must pass the changes in `COMMENT_CHECKS` order, the order the route
 uses. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
 deletes a setting, and the owner role has no grant on it.
 
+## Moderation queue
+
+`portal.moderation_item` holds one row per held subject for a tenant: the
+subject's kind and Ghost id, the member's id, the classifiers (name,
+confidence, floor-or-setting state), the status (`held`, `released`,
+`removed`, `expired`) and who decided it and when. It stores references and
+scores only. The comment text, the member's display name and the post are
+never written: `TenantDb.openModerationItem(scope, id, source)` reads the item,
+then asks the `ContentSource` (the connection to the tenant's own Ghost) for
+the content now, returns it and writes nothing. A source that resolves to null
+means Ghost no longer has the subject and the item comes back as `gone`; a
+source that rejects is an error, never `gone`.
+
+Every method takes the scope, the table is isolated like the others, and an
+id belonging to another tenant reads as absent. `holdItem` refuses anything
+that is not a bounded reference or an exact classifier (`InvalidQueueItemError`),
+and the table refuses the same references itself. The database cannot check
+what is inside the `classifiers` JSON; the code's exact-shape check is the
+control there. A subject is held once per tenant: holding it again returns the
+existing item. The tenant role may insert and select; nothing updates or
+deletes an item yet, and the owner role has no grant. The Ghost-facing
+`ContentSource` and the release and appeal actions are separate work.
+
 ## The owner path
 
 `portal/data` exports `./tenant` and `./owner` separately. Tenant-facing code

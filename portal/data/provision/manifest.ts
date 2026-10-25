@@ -70,6 +70,7 @@ const REGISTER = '0001_tenant_register';
 const HEALTH = '0002_health_reading';
 const DOCUMENTS = '0003_versioned_documents';
 const MODERATION = '0004_moderation_setting';
+const QUEUE = '0005_moderation_item';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -191,6 +192,15 @@ export function manifest(major: number, database: string): readonly ManifestObje
       since: MODERATION,
       grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
     },
+    // TenantDb.holdItem inserts, and holdItem, moderationItems and
+    // moderationItem read, the tenant's own items. Nothing updates or deletes
+    // an item yet, and the owner role reads nothing here.
+    {
+      kind: 'table',
+      identity: 'portal.moderation_item',
+      since: QUEUE,
+      grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] }],
+    },
   ];
 }
 
@@ -201,6 +211,7 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
+  'portal.moderation_item': { enabled: true, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -276,6 +287,7 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`,
     `(${BOUND})`
   ),
+  policy('portal.moderation_item', 'tenant_isolation', QUEUE, '*', `(${BOUND})`, `(${BOUND})`),
 ];
 
 /**
@@ -404,6 +416,36 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
         'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
         'USING btree (tenant_id, check_id)',
+    ],
+  },
+  'portal.moderation_item': {
+    since: QUEUE,
+    lines: [
+      `column id uuid notnull=true ${PLAIN}`,
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column subject_kind text notnull=true ${PLAIN}`,
+      `column subject_id text notnull=true ${PLAIN}`,
+      `column member_id text notnull=true ${PLAIN}`,
+      `column classifiers jsonb notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
+      `column decided_by text notnull=true ${PLAIN}`,
+      `column decided_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default id gen_random_uuid()',
+      "constraint moderation_item_classifiers_array CHECK ((jsonb_typeof(classifiers) = 'array'::text))",
+      'constraint moderation_item_pkey PRIMARY KEY (id)',
+      "constraint moderation_item_references_bounded CHECK (((subject_id ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) " +
+        "AND (member_id ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) AND (decided_by ~ '^[A-Za-z0-9_.:-]{1,64}$'::text)))",
+      "constraint moderation_item_status_known CHECK ((status = ANY (ARRAY['held'::text, " +
+        "'released'::text, 'removed'::text, 'expired'::text])))",
+      "constraint moderation_item_subject_kind_known CHECK ((subject_kind = ANY (ARRAY['comment'::text, " +
+        "'post'::text])))",
+      'constraint moderation_item_subject_unique UNIQUE (tenant_id, subject_kind, subject_id)',
+      'constraint moderation_item_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.moderation_item_pkey CREATE UNIQUE INDEX moderation_item_pkey ' +
+        'ON portal.moderation_item USING btree (id)',
+      'index portal.moderation_item_subject_unique CREATE UNIQUE INDEX moderation_item_subject_unique ' +
+        'ON portal.moderation_item USING btree (tenant_id, subject_kind, subject_id)',
     ],
   },
 };
