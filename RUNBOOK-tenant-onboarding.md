@@ -946,7 +946,7 @@ rm -f /etc/branchleft/tenant-uids/<slug>
 
 # Verify: nothing is left anywhere -- no container, no volume, no network.
 # All three must print nothing. The two content volumes are `external: true`
-# (infra/tenant/compose.ts) so that a host-side provisioning step, not
+# (render-core/src/compose.ts) so that a host-side provisioning step, not
 # Compose, owns their creation -- Compose never labels a resource it did not
 # create, so a label filter here would always print nothing regardless of
 # whether the volumes are actually gone. Check them by the exact names the
