@@ -156,4 +156,33 @@ describe('loadConfig', () => {
     expect(config.smtpFrontDoor.allowedSourceCidrs).toEqual(['10.0.0.0/8', '172.16.0.0/12']);
     expect(config.smtpFrontDoor.submitterMessagesPerMinute).toBe(5);
   });
+
+  describe('SHIM_DRAIN_PORT', () => {
+    const base = { ...baseEnv, SHIM_ALLOW_EPHEMERAL_DB: 'true' };
+
+    it('is undefined when unset, which leaves the single combined listener', () => {
+      expect(loadConfig(base).drainPort).toBeUndefined();
+    });
+
+    it('reads a port distinct from PORT', () => {
+      expect(loadConfig({ ...base, SHIM_DRAIN_PORT: '8081' }).drainPort).toBe(8081);
+      expect(loadConfig({ ...base, PORT: '9090', SHIM_DRAIN_PORT: '8081' }).drainPort).toBe(8081);
+    });
+
+    it('refuses to start when the drain port is the mail API port, explicit or defaulted', () => {
+      expect(() => loadConfig({ ...base, PORT: '9090', SHIM_DRAIN_PORT: '9090' })).toThrow(
+        /SHIM_DRAIN_PORT.*PORT/
+      );
+      expect(() => loadConfig({ ...base, SHIM_DRAIN_PORT: '8080' })).toThrow(
+        /SHIM_DRAIN_PORT.*PORT/
+      );
+    });
+
+    it.each(['', 'abc', '0', '-1', '70000', '80.5', ' '])(
+      'refuses the invalid value %j',
+      (value) => {
+        expect(() => loadConfig({ ...base, SHIM_DRAIN_PORT: value })).toThrow(/SHIM_DRAIN_PORT/);
+      }
+    );
+  });
 });
