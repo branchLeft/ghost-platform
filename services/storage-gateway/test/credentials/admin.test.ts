@@ -2,10 +2,11 @@ import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { admit } from '../../src/admit.js';
 import { createSigningSecretSource } from '../../src/credentials/secretSource.js';
 import { ADMIN_PERMISSIONS, createAdminInterface, newKeyId } from '../../src/credentials/admin.js';
+import type { AdminLogEntry, AdminLogger } from '../../src/credentials/admin.js';
 import {
   ADMIN_HEADERS,
   CALLER_KEY_ENV,
@@ -25,6 +26,13 @@ const MASTER = MasterSecret.fromBytes(Buffer.alloc(32, 0x42));
 const START_MS = 1_800_000_000_000;
 const NOW_MS = START_MS + 60_000;
 const BODY = { folder: 'opaquefolder00000001', bucket: 'shard-one' };
+const DISABLED_AT = '2026-01-01T00:00:00.000Z';
+const entries: AdminLogEntry[] = [];
+const logger: AdminLogger = {
+  admin: (entry) => {
+    entries.push(entry);
+  },
+};
 
 function keyPair() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -93,11 +101,13 @@ describe('the admin interface', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'gw-admin-'));
     store = SqliteCredentialStore.open(join(dir, 'credentials.sqlite'));
+    entries.length = 0;
     ids = ['GWFIRST0000000000000000000', 'GWSECOND000000000000000000'];
     admin = createAdminInterface({
       auth: authDeps(),
       store,
       master: MASTER,
+      logger,
       newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
     });
   });
@@ -155,7 +165,7 @@ describe('the admin interface', () => {
     it('refuses to reissue a disabled key id, leaving it disabled', () => {
       ids = ['GWSAME00000000000000000000', 'GWSAME00000000000000000000'];
       mint();
-      store.disable('GWSAME00000000000000000000');
+      store.disable('GWSAME00000000000000000000', DISABLED_AT);
       expect(mint().status).toBe(409);
       expect(store.get('GWSAME00000000000000000000')?.state).toBe('disabled');
     });
@@ -215,6 +225,7 @@ describe('the admin interface', () => {
           get: () => undefined,
         },
         master: MASTER,
+        logger,
       });
       const response = failing.handle(
         signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', BODY)
@@ -309,6 +320,7 @@ describe('the admin interface', () => {
         auth: authDeps(() => clockMs),
         store,
         master: MASTER,
+        logger,
         newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
       });
     });
@@ -322,7 +334,7 @@ describe('the admin interface', () => {
         BODY
       );
       expect(edgeAdmin.handle(request).status).toBe(201);
-      store.disableFolder(BODY.folder);
+      store.disableFolder(BODY.folder, DISABLED_AT);
       clockMs = NOW_MS + 60_500;
       const replay = edgeAdmin.handle(request);
       expect(replay.status).toBe(401);
@@ -343,7 +355,7 @@ describe('the admin interface', () => {
         }
       );
       expect(edgeAdmin.handle(request).status).toBe(201);
-      store.disableFolder(BODY.folder);
+      store.disableFolder(BODY.folder, DISABLED_AT);
       clockMs = NOW_MS + 62_000;
       const replay = edgeAdmin.handle(request);
       expect(replay.status).toBe(401);
@@ -360,7 +372,7 @@ describe('the admin interface', () => {
         BODY
       );
       expect(edgeAdmin.handle(request).status).toBe(201);
-      store.disableFolder(BODY.folder);
+      store.disableFolder(BODY.folder, DISABLED_AT);
       for (let offset = 500; offset <= 70_000; offset += 500) {
         clockMs = NOW_MS + offset;
         expect(edgeAdmin.handle(request).status).toBe(401);
@@ -379,6 +391,7 @@ describe('the admin interface', () => {
         },
         store,
         master: MASTER,
+        logger,
         newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
       });
 
@@ -394,7 +407,7 @@ describe('the admin interface', () => {
         }
       );
       expect(admin.handle(request).status).toBe(201);
-      store.disableFolder(BODY.folder);
+      store.disableFolder(BODY.folder, DISABLED_AT);
       for (const restart of [T, T + 1, T + 2, T + 4]) {
         const replay = restartedAt(restart, (restart + 0.5) * 1000).handle(request);
         expect(replay.status).toBe(401);
@@ -566,6 +579,309 @@ describe('the admin interface', () => {
       );
       expect(admin.handle(request).status).toBe(201);
       expect(admin.handle(request).status).toBe(401);
+    });
+  });
+
+  describe('the admin audit log', () => {
+    const AT = new Date(NOW_MS).toISOString();
+    const FIRST_KEY = 'GWFIRST0000000000000000000';
+    const SECOND_KEY = 'GWSECOND000000000000000000';
+    const SINK_MESSAGE = 'LOG_SINK_UNREACHABLE_CANARY';
+    const STDERR_MESSAGE = 'STDERR_CLOSED_CANARY';
+
+    class LogSinkDownError extends Error {
+      override readonly name = 'LogSinkDownError';
+    }
+
+    const throwingLogger: AdminLogger = {
+      admin: () => {
+        throw new LogSinkDownError(SINK_MESSAGE);
+      },
+    };
+
+    const adminWith = (chosen: AdminLogger) =>
+      createAdminInterface({
+        auth: authDeps(),
+        store,
+        master: MASTER,
+        logger: chosen,
+        newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
+      });
+
+    const disableKey = (caller: 'provisioning-controller' | 'erasure-job', keyId: string) =>
+      admin.handle(
+        signed(
+          caller,
+          caller === 'erasure-job' ? erasure.privateKey : controller.privateKey,
+          'POST',
+          `/credentials/${keyId}/disable`
+        )
+      );
+
+    const disableFolder = (caller: 'provisioning-controller' | 'erasure-job') =>
+      admin.handle(
+        signed(
+          caller,
+          caller === 'erasure-job' ? erasure.privateKey : controller.privateKey,
+          'POST',
+          `/folders/${BODY.folder}/disable`
+        )
+      );
+
+    const entriesFor = (operation: AdminLogEntry['operation']) =>
+      entries.filter((entry) => entry.operation === operation);
+
+    // toEqual ignores properties set to undefined, so the field names are
+    // compared as well: an entry may not carry an extra, even empty, field.
+    function expectWholeEntries(
+      actual: readonly AdminLogEntry[],
+      expected: readonly AdminLogEntry[]
+    ): void {
+      expect(actual).toEqual(expected);
+      expect(actual.map((entry) => Object.keys(entry).sort())).toEqual(
+        expected.map((entry) => Object.keys(entry).sort())
+      );
+    }
+
+    let stderrSpy: MockInstance<typeof process.stderr.write>;
+    beforeEach(() => {
+      stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('an admin disable is logged with the key id and sets disabled_at', () => {
+      const keyId = String(json(mint()).keyId);
+      const response = disableKey('erasure-job', keyId);
+      expect(response.status).toBe(200);
+      expectWholeEntries(entriesFor('disable'), [
+        {
+          event: 'admin-operation',
+          caller: 'erasure-job',
+          operation: 'disable',
+          at: AT,
+          keyId,
+          folder: BODY.folder,
+          changed: 1,
+        },
+      ]);
+      expect(store.get(keyId)?.disabledAt).toBe(AT);
+    });
+
+    it('logs a mint with the caller, key id, folder and time, and no changed count', () => {
+      expect(mint().status).toBe(201);
+      expectWholeEntries(entries, [
+        {
+          event: 'admin-operation',
+          caller: 'provisioning-controller',
+          operation: 'mint',
+          at: AT,
+          keyId: FIRST_KEY,
+          folder: BODY.folder,
+        },
+      ]);
+    });
+
+    it('logs a disable with the caller, key id, folder, time and changed 1', () => {
+      mint();
+      expect(disableKey('provisioning-controller', FIRST_KEY).status).toBe(200);
+      expectWholeEntries(entriesFor('disable'), [
+        {
+          event: 'admin-operation',
+          caller: 'provisioning-controller',
+          operation: 'disable',
+          at: AT,
+          keyId: FIRST_KEY,
+          folder: BODY.folder,
+          changed: 1,
+        },
+      ]);
+    });
+
+    it('logs a folder disable with the caller, folder, time and the count disabled', () => {
+      mint();
+      expect(disableFolder('erasure-job').status).toBe(200);
+      expectWholeEntries(entriesFor('disable-folder'), [
+        {
+          event: 'admin-operation',
+          caller: 'erasure-job',
+          operation: 'disable-folder',
+          at: AT,
+          folder: BODY.folder,
+          changed: 1,
+        },
+      ]);
+    });
+
+    it('a repeated disable and a repeated folder disable are logged with changed 0', () => {
+      mint();
+      expect(disableKey('erasure-job', FIRST_KEY).status).toBe(200);
+      expect(disableKey('erasure-job', FIRST_KEY).status).toBe(200);
+      expect(mint().status).toBe(201);
+      expect(disableFolder('erasure-job').status).toBe(200);
+      expect(disableFolder('erasure-job').status).toBe(200);
+      const disableEntry = {
+        event: 'admin-operation',
+        caller: 'erasure-job',
+        operation: 'disable',
+        at: AT,
+        keyId: FIRST_KEY,
+        folder: BODY.folder,
+      } as const;
+      const folderEntry = {
+        event: 'admin-operation',
+        caller: 'erasure-job',
+        operation: 'disable-folder',
+        at: AT,
+        folder: BODY.folder,
+      } as const;
+      expectWholeEntries(entriesFor('disable'), [
+        { ...disableEntry, changed: 1 },
+        { ...disableEntry, changed: 0 },
+      ]);
+      expectWholeEntries(entriesFor('disable-folder'), [
+        { ...folderEntry, changed: 1 },
+        { ...folderEntry, changed: 0 },
+      ]);
+      expect(store.get(SECOND_KEY)?.disabledAt).toBe(AT);
+    });
+
+    it('no log entry contains the secret', () => {
+      const secret = String(json(mint()).secret);
+      disableKey('erasure-job', FIRST_KEY);
+      disableFolder('erasure-job');
+      expect(entries).toHaveLength(3);
+      for (const entry of entries) {
+        expect(JSON.stringify(entry)).not.toContain(secret);
+        expect(entry).not.toHaveProperty('secret');
+      }
+    });
+
+    it('requests answered 400, 401, 403, 404, 409 and 503 produce no log entry', () => {
+      expect(mint().status).toBe(201);
+      expect(entries).toHaveLength(1);
+      const failing = createAdminInterface({
+        auth: authDeps(),
+        store: {
+          insert: () => {
+            throw new Error('disk full');
+          },
+          disable: () => {
+            throw new Error('disk full');
+          },
+          disableFolder: () => 0,
+          listByFolder: () => [],
+          get: () => undefined,
+        },
+        master: MASTER,
+        logger,
+      });
+      const answered = [
+        mint(),
+        admin.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', {
+            folder: 'short',
+            bucket: BODY.bucket,
+          })
+        ),
+        admin.handle(signed('portal', stranger.privateKey, 'POST', '/credentials', BODY)),
+        admin.handle(signed('erasure-job', erasure.privateKey, 'POST', '/credentials', BODY)),
+        disableKey('erasure-job', 'GWNEVERISSUED0000000000000'),
+        admin.handle(
+          signed('erasure-job', erasure.privateKey, 'POST', '/folders/unusedfolder00000001/disable')
+        ),
+        failing.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', BODY)
+        ),
+        failing.handle(
+          signed('erasure-job', erasure.privateKey, 'POST', `/credentials/${FIRST_KEY}/disable`)
+        ),
+      ].map((response) => response.status);
+      expect(answered).toEqual([409, 400, 401, 403, 404, 404, 503, 503]);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.operation).toBe('mint');
+    });
+
+    describe('when the logger throws', () => {
+      const lostLine = (operation: string) =>
+        `admin audit log entry lost: operation=${operation} error=LogSinkDownError\n`;
+      const written = (): string[] => stderrSpy.mock.calls.map((call) => String(call[0]));
+
+      it('still answers a mint and a disable as it would have, and writes one fixed line each', () => {
+        const noisy = adminWith(throwingLogger);
+        const minted = noisy.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', BODY)
+        );
+        expect(minted.status).toBe(201);
+        expect(json(minted)).toEqual({
+          keyId: FIRST_KEY,
+          folder: BODY.folder,
+          bucket: BODY.bucket,
+          state: 'active',
+          createdAt: AT,
+          secret: deriveTenantSecret(MASTER, FIRST_KEY),
+        });
+        expect(written()).toEqual([lostLine('mint')]);
+
+        const disabled = noisy.handle(
+          signed('erasure-job', erasure.privateKey, 'POST', `/credentials/${FIRST_KEY}/disable`)
+        );
+        expect(disabled.status).toBe(200);
+        expect(json(disabled)).toEqual({
+          keyId: FIRST_KEY,
+          folder: BODY.folder,
+          bucket: BODY.bucket,
+          state: 'disabled',
+          createdAt: AT,
+        });
+        expect(written()).toEqual([lostLine('mint'), lostLine('disable')]);
+
+        const foldered = noisy.handle(
+          signed('erasure-job', erasure.privateKey, 'POST', `/folders/${BODY.folder}/disable`)
+        );
+        expect(foldered.status).toBe(200);
+        expect(written()).toEqual([
+          lostLine('mint'),
+          lostLine('disable'),
+          lostLine('disable-folder'),
+        ]);
+        expect(store.get(FIRST_KEY)?.disabledAt).toBe(AT);
+      });
+
+      it('writes a line that has neither the secret, the key id, the folder nor the thrown message', () => {
+        const secret = deriveTenantSecret(MASTER, FIRST_KEY);
+        const noisy = adminWith(throwingLogger);
+        noisy.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', BODY)
+        );
+        noisy.handle(
+          signed('erasure-job', erasure.privateKey, 'POST', `/credentials/${FIRST_KEY}/disable`)
+        );
+        const everything = written().join('');
+        expect(everything).not.toBe('');
+        for (const leaked of [secret, FIRST_KEY, BODY.folder, SINK_MESSAGE]) {
+          expect(everything).not.toContain(leaked);
+        }
+      });
+
+      it('swallows a failing stderr write as well, and still answers', () => {
+        stderrSpy.mockImplementation(() => {
+          throw new Error(STDERR_MESSAGE);
+        });
+        const noisy = adminWith(throwingLogger);
+        const minted = noisy.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', BODY)
+        );
+        expect(minted.status).toBe(201);
+        expect(json(minted).secret).toBe(deriveTenantSecret(MASTER, FIRST_KEY));
+        expect(stderrSpy).toHaveBeenCalledTimes(1);
+        const disabled = noisy.handle(
+          signed('erasure-job', erasure.privateKey, 'POST', `/credentials/${FIRST_KEY}/disable`)
+        );
+        expect(disabled.status).toBe(200);
+        expect(stderrSpy).toHaveBeenCalledTimes(2);
+      });
     });
   });
 });
