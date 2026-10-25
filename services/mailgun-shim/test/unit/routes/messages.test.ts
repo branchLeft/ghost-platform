@@ -202,6 +202,26 @@ describe('POST /v3/:domain/messages', () => {
     expect(claimOne(store)).toHaveLength(0);
   });
 
+  it('refuses a request with more recipients than the cap and enqueues nothing', async () => {
+    const recipientFields: Array<[string, string]> = [];
+    for (let index = 1; index <= 1001; index += 1) {
+      recipientFields.push(['to', `recipient-${String(index).padStart(4, '0')}@example.com`]);
+    }
+    const res = await post(
+      multipartBody([
+        ...recipientFields,
+        ['from', `noreply@${DOMAIN}`],
+        ['subject', 'Hi'],
+        ['html', '<p>hi</p>'],
+        ['text', 'hi'],
+        ['recipient-variables', '{}'],
+      ])
+    );
+    expect(res.status).toBe(413);
+    expect(await store.countUndrainedRecipients()).toBe(0);
+    expect(claimOne(store)).toHaveLength(0);
+  });
+
   it('rejects a malformed body (unparseable multipart) with 400 rather than crashing', async () => {
     const res = await post(
       'not-a-multipart-body',
