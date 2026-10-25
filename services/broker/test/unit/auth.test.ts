@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { verifyRequest, type AuthDeps } from '../../src/auth.js';
+import {
+  FORWARD_SKEW_SECONDS,
+  nonceLifetimeMs,
+  verifyRequest,
+  type AuthDeps,
+} from '../../src/auth.js';
 import { createInMemoryNonceStore } from '../../src/nonceStore.js';
 import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 
@@ -188,7 +193,6 @@ describe('verifyRequest', () => {
 
   describe('nonce lifetime against the timestamp window', () => {
     const windowSeconds = 60;
-    const forwardSkewSeconds = 5;
     const nowMs = 1_700_000_000_000;
     const body = Buffer.from('{"slot":"0"}');
 
@@ -201,7 +205,11 @@ describe('verifyRequest', () => {
       const { keyPair, deps: fixed } = deps(nowMs, undefined, windowSeconds);
       return {
         keyPair,
-        d: { ...fixed, nowMs: () => clockMs },
+        d: {
+          ...fixed,
+          nonces: createInMemoryNonceStore(nonceLifetimeMs(windowSeconds)),
+          nowMs: () => clockMs,
+        },
         setClockMs: (ms) => {
           clockMs = ms;
         },
@@ -216,7 +224,7 @@ describe('verifyRequest', () => {
 
     it('keeps a nonce claimed at the earliest accepted instant refused until the timestamp window closes', () => {
       const { keyPair, d, setClockMs } = movableClock();
-      const timestampSeconds = Math.floor(nowMs / 1000) + forwardSkewSeconds;
+      const timestampSeconds = Math.floor(nowMs / 1000) + FORWARD_SKEW_SECONDS;
       const headers = headersFor(keyPair, 'POST', '/reconcile', body, timestampSeconds);
 
       expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({ ok: true });
@@ -230,7 +238,7 @@ describe('verifyRequest', () => {
 
     it('refuses the replay at every second between the claim and the last accepted instant', () => {
       const { keyPair, d, setClockMs } = movableClock();
-      const timestampSeconds = Math.floor(nowMs / 1000) + forwardSkewSeconds;
+      const timestampSeconds = Math.floor(nowMs / 1000) + FORWARD_SKEW_SECONDS;
       const headers = headersFor(keyPair, 'POST', '/reconcile', body, timestampSeconds);
       expect(verifyRequest(d, 'POST', '/reconcile', headers, body)).toEqual({ ok: true });
 
@@ -265,7 +273,7 @@ describe('verifyRequest', () => {
 
     it.each([
       ["stamped in the clock's own second", 0],
-      ['stamped the full forward skew ahead', forwardSkewSeconds],
+      ['stamped the full forward skew ahead', FORWARD_SKEW_SECONDS],
     ])(
       'hands over to the timestamp check one millisecond later for a request %s',
       (_label, secondsAhead) => {
