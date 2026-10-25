@@ -63,18 +63,24 @@ export function countAgeRecipientStanzas(ciphertext: Buffer): number {
 // The header is textual and bounded; one X25519 stanza is well under 1 KiB.
 const HEADER_READ_BYTES = 16 * 1024;
 
+export const DEFAULT_AGE_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Encrypts `plaintext` to `recipient` into a new file at `destPath`, created
  * 0600 and exclusively (an existing file is never overwritten). `plaintext`
  * reaches `age` only through its stdin pipe. On any failure the destination
  * is removed, so a half-written or unverified ciphertext is never left
  * behind for someone to hand over.
+ *
+ * Raises AgeEncryptionError when `age` cannot start, exits non-zero, or has
+ * not finished within `timeoutMs`; a timed-out `age` is killed first.
  */
 export async function encryptToFile(
   plaintext: Buffer,
   recipient: string,
   destPath: string,
-  ageCommand = 'age'
+  ageCommand = 'age',
+  timeoutMs: number = DEFAULT_AGE_TIMEOUT_MS
 ): Promise<void> {
   assertAgeRecipient(recipient);
   const handle = await open(destPath, 'wx+', 0o600);
@@ -91,12 +97,20 @@ export async function encryptToFile(
         stdin: NonNullable<typeof child.stdin>;
         stderr: NonNullable<typeof child.stderr>;
       };
+      // Rejects directly rather than waiting for 'close': a killed shell
+      // wrapper can leave a child holding the stderr pipe open.
+      const deadline = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new AgeEncryptionError(`age did not finish within ${timeoutMs} ms`));
+      }, timeoutMs);
       const stderr: Buffer[] = [];
       stderrStream.on('data', (chunk: Buffer) => stderr.push(chunk));
-      child.on('error', (err) =>
-        reject(new AgeEncryptionError(`age did not start: ${err.message}`))
-      );
+      child.on('error', (err) => {
+        clearTimeout(deadline);
+        reject(new AgeEncryptionError(`age did not start: ${err.message}`));
+      });
       child.on('close', (code) => {
+        clearTimeout(deadline);
         if (code === 0) resolve();
         else
           reject(

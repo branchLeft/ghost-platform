@@ -6,6 +6,7 @@ import {
   AgeEncryptionError,
   assertAgeRecipient,
   countAgeRecipientStanzas,
+  DEFAULT_AGE_TIMEOUT_MS,
   encryptToFile,
   InvalidAgeRecipientError,
   recipientFingerprint,
@@ -132,6 +133,19 @@ describe('encryptToFile', () => {
     await expect(outcome).rejects.toThrow(/did not finish within 300 ms/);
     expect(await readdir(dir)).not.toContain('out.age');
   }, 5000);
+
+  it('has a finite default deadline', () => {
+    expect(Number.isFinite(DEFAULT_AGE_TIMEOUT_MS)).toBe(true);
+    expect(DEFAULT_AGE_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it('leaves no pending timer behind after a successful encryption', async () => {
+    const countTimers = (): number =>
+      process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+    const before = countTimers();
+    await encryptToFile(Buffer.from('tenant data'), identity.recipient, join(dir, 'out.age'));
+    expect(countTimers()).toBeLessThanOrEqual(before);
+  });
 
   it('raises AgeEncryptionError and removes the destination when age cannot be started', async () => {
     const dest = join(dir, 'out.age');
