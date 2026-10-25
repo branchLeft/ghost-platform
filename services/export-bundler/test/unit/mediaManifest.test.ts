@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createHttpMediaProbe,
   assertSafeObjectKey,
+  countSiteRelativeReferences,
   ErasureDateError,
   MediaBaseError,
   parseErasureDate,
@@ -72,6 +73,16 @@ describe('scanMediaReferences', () => {
       'outside-tenant-prefix',
       'unsafe-key',
     ]);
+  });
+
+  it('counts distinct site-relative __GHOST_URL__ references, and lists none of them', () => {
+    expect(countSiteRelativeReferences('{"a":"__GHOST_URL__/content/images/x.png"}')).toBe(1);
+    expect(
+      countSiteRelativeReferences(
+        '{"a":"__GHOST_URL__/content/images/x.png","b":"__GHOST_URL__/content/images/x.png","c":"__GHOST_URL__/content/images/y.png"}'
+      )
+    ).toBe(2);
+    expect(countSiteRelativeReferences(`{"a":"${BASE}/a.png"}`)).toBe(0);
   });
 
   it('ignores links to other origins and text that only looks like a URL', () => {

@@ -2,6 +2,7 @@ import type { ArchiveFile } from './archive.js';
 import type { Collection, ExportFile, GhostExportClient } from './ghostExportClient.js';
 import {
   parseErasureDate,
+  countSiteRelativeReferences,
   planMedia,
   scanMediaReferences,
   type MediaProbe,
@@ -242,6 +243,7 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
     const erasureDate = parseErasureDate(deps.media.erasureDate, deps.nowSeconds);
     const scan = scanMediaReferences(deps.contentJson, deps.media.baseUrl);
     const plan = await planMedia(scan, deps.media.baseUrl, deps.mediaProbe);
+    const omittedSiteRelative = countSiteRelativeReferences(deps.contentJson);
     // An outside-prefix refusal is another tenant's or an external object: a fact, not a gap.
     // An in-prefix refusal is the tenant's own file, which the archive does not carry.
     const outsidePrefix = plan.refused.filter((r) => r.reason === 'outside-tenant-prefix').length;
@@ -255,6 +257,11 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
     }
     if (unsafeKey > 0) {
       notes.push(`${unsafeKey} tenant media references have unsafe object keys and were not listed`);
+    }
+    if (omittedSiteRelative > 0) {
+      notes.push(
+        `${omittedSiteRelative} site-relative media references were omitted, with no object key to list`
+      );
     }
     return {
       report: {

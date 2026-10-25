@@ -277,12 +277,9 @@ describe('collectMedia', () => {
     expect(JSON.parse(String(out.files[0]?.data)).addresses).toEqual([]);
   });
 
-  it('is FAILED with a note naming the missing object-storage address when the tenant has none', async () => {
+  it('is failed when the tenant has no object-storage media address', async () => {
     const out = await collectMedia(deps({ media: { ...deps().media, baseUrl: null } }));
     expect(out.report.status).toBe('failed');
-    expect(out.report.notes).toEqual([
-      "the tenant's rendered environment names no object-storage media address",
-    ]);
     expect(out.files).toEqual([]);
   });
 
@@ -326,6 +323,30 @@ describe('collectMedia', () => {
     expect(body.refused).toEqual([
       { reference: `${BASE}/what%3F.png`, reason: 'unsafe-key' },
     ]);
+  });
+
+  it('is FAILED with a note naming the missing object-storage address when the tenant has none', async () => {
+    const out = await collectMedia(deps({ media: { ...deps().media, baseUrl: null } }));
+    expect(out.report.status).toBe('failed');
+    expect(out.report.notes).toEqual([
+      "the tenant's rendered environment names no object-storage media address",
+    ]);
+    expect(out.files).toEqual([]);
+  });
+
+  it('is PARTIAL, counting the site-relative references it omitted, when content holds __GHOST_URL__ media', async () => {
+    const out = await collectMedia(
+      deps({
+        contentJson: `{"a":"${BASE}/a.png","s":"__GHOST_URL__/content/images/x.png","t":"__GHOST_URL__/content/images/y.png"}`,
+      })
+    );
+    expect(out.report.status).toBe('partial');
+    expect(out.report.notes).toEqual([
+      '2 site-relative media references were omitted, with no object key to list',
+    ]);
+    const body = JSON.parse(String(out.files[0]?.data));
+    expect(body.addresses.map((a: { key: string }) => a.key)).toEqual(['a.png']);
+    expect(JSON.stringify(body)).not.toContain('x.png');
   });
 });
 
