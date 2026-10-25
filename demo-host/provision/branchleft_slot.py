@@ -65,9 +65,12 @@ IMAGE_LOAD_PATH = f"{IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"
 # or did not catch -- a compromised broker skips its own checks, so this
 # process cannot rely on them either. The byte figure matches that
 # setting's own default in `services/broker/src/config.ts` (duplicated,
-# not imported, for the same reason every other literal here is); the
-# timeout is generous for a real multi-hundred-MB image load, not tuned to
-# any one measured run.
+# not imported, for the same reason every other literal here is). It is
+# checked against `st_size` at `fstat`, and `load_image` never copies more
+# than that size, so a file that grows later is cut off. The timeout is
+# generous for a real multi-hundred-MB image load, not tuned to any one
+# measured run; `timeout` enforces it outside this process, so it holds
+# even if this process is killed.
 IMAGE_LOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024
 IMAGE_LOAD_TIMEOUT_SECONDS = 300
 IMAGE_LOAD_CHUNK_BYTES = 1024 * 1024
@@ -514,12 +517,12 @@ class RealSlotOps:
         regular, size-bounded file owned by the broker account, then reads
         exactly the `st_size` bytes recorded at that `fstat` from the
         already-open descriptor and writes them to the stdin pipe of
-        `docker load`. The file may grow afterwards without effect and may
-        not shrink. `docker load` runs in its own process group under
-        `timeout`, so `IMAGE_LOAD_TIMEOUT_SECONDS` still holds if this
-        process is killed. See branchleft_slot.md#realslotopsload_image for
-        why each check exists and why the path is never resolved a second
-        time.
+        `docker load`. The file may grow afterwards without effect; if it
+        shrinks below `st_size`, the load fails. `docker load` runs in its
+        own process group under `timeout`, so `IMAGE_LOAD_TIMEOUT_SECONDS`
+        still holds if this process is killed. See
+        branchleft_slot.md#realslotopsload_image for why each check exists
+        and why the path is never resolved a second time.
 
         Raises:
             RefusedImage: the path failed a pre-load check.
