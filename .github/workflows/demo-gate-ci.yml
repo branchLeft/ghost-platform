@@ -7,8 +7,15 @@ name: Demo gate CI
 on:
   push:
     branches: [main]
+  # A pull request starts this only when its diff touches something the job
+  # reads: the service and render-core (linked by `file:` and built first).
+  # Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
+    paths:
+      - 'services/demo-gate/**'
+      - 'render-core/**'
+      - '.github/workflows/demo-gate-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401

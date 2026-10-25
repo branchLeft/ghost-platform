@@ -7,8 +7,13 @@ name: Drain sidecar CI
 on:
   push:
     branches: [main]
+  # A pull request starts this only when its diff touches something the job
+  # reads: the service. Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
+    paths:
+      - 'services/drain-sidecar/**'
+      - '.github/workflows/drain-sidecar-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401

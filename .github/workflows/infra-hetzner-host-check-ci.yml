@@ -12,8 +12,13 @@ name: Hetzner host check CI
 on:
   push:
     branches: [main]
+  # A pull request starts this only when its diff touches something the job
+  # reads: the package. Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
+    paths:
+      - 'infra/hetzner-host-check/**'
+      - '.github/workflows/infra-hetzner-host-check-ci.yml'
 
 # `packages: read` because @branchleft/hetzner-host and
 # @branchleft/tsconfig are both hosted on GitHub Packages, which answers 401
