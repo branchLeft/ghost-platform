@@ -123,9 +123,9 @@ restorable. The dump freshness alert is the real protection. Delete markers
 left by the expiry are not cleaned up on these four prefixes.
 
 A re-run replaces the WHOLE lifecycle configuration, not just the fields it is
-given: leave out `--db-expiration-days` and the 10-day rule on `dumps/` and
-`binlogs/` is dropped. `state/` is handled differently. Its rule is rewritten
-on every run from `--state-expiration-days` (default 10), whether or not
+given: omitting `--db-expiration-days` drops the 10-day rule on `dumps/` and
+`binlogs/`. `state/` is handled differently. Its rule is rewritten on every run
+from `--state-expiration-days` (default 10), whether or not
 `--db-expiration-days` is given. Against a put-only bucket, pass the figure
 again on every run.
 
