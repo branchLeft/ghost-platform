@@ -179,6 +179,19 @@ throwing -- not answering ok or not-ok, just failing to run -- is the
 "can't be verified" case: it goes straight to `failed-unsafe` rather
 than being treated as either a pass or an ordinary failure.
 
+## bumpStateMachine.ts: `revertOrFailUnsafe`
+
+A revert that cannot even run -- `revertTraffic()` throwing, or
+`stopColour('new')` throwing after a successful revert -- is the "cannot
+undo" case: it goes to `failed-unsafe` and pages, exactly like a throwing
+`verify()`, rather than escaping with the state stuck at `reverting`.
+This matters on recovery: `recoverFromRevertInFlight` reaches the same
+call after a restart, and without the guard it would throw again on every
+restart, so the tenant would never be paged (the startup sweep only logs
+it under `failed`). A `failed-unsafe` record with `pageSent: true` is not
+retried at restart, so that page is how a person learns the new colour
+was left running.
+
 ## bumpStateMachine.ts: `failUnsafe`
 
 Pages at least once, ever, for this bump: never on a second call from

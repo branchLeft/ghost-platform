@@ -428,11 +428,21 @@ export class BumpStateMachine {
    */
   private async revertOrFailUnsafe(reason?: string): Promise<BumpState> {
     await this.transition('reverting');
-    const revertResult = await this.deps.revertTraffic();
+
+    let revertResult: StepResult;
+    try {
+      revertResult = await this.deps.revertTraffic();
+    } catch (err) {
+      return this.failUnsafe(err instanceof Error ? err.message : 'revertTraffic() threw');
+    }
 
     if (revertResult.ok) {
       await this.transition('reverted');
-      await this.deps.stopColour('new');
+      try {
+        await this.deps.stopColour('new');
+      } catch (err) {
+        return this.failUnsafe(err instanceof Error ? err.message : 'stopColour() threw');
+      }
       return this.state;
     }
 
