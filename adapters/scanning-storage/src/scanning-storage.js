@@ -12,7 +12,14 @@ const {
   buildUncheckableError,
 } = require('./refusal-error');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
-const { HoldRegistry, evaluate } = require('./hold');
+const {
+  HoldRegistry,
+  evaluate,
+  withWriteTimeout,
+  isWriteTimeoutError,
+  resolveWriteTimeoutMs,
+  REQUEST_WRITE_TIMEOUT_LOG_PREFIX,
+} = require('./hold');
 
 const DEFAULT_TREE_MAX_ENTRIES = 5000;
 const DEFAULT_TREE_DEADLINE_MS = 30000;
@@ -273,6 +280,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         Number(config.treeDeadlineMs) > 0
           ? Number(config.treeDeadlineMs)
           : DEFAULT_TREE_DEADLINE_MS;
+      this.writeTimeoutMs = resolveWriteTimeoutMs(config.writeTimeoutMs);
       this.storedNames = new Map();
       this.reservedNames = new Map();
 
@@ -291,6 +299,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         retryIntervalMs: config.holdRetryMs,
         maxRetryIntervalMs: config.holdMaxRetryMs,
         maxConsecutiveFailures: config.holdMaxFailures,
+        writeTimeoutMs: config.writeTimeoutMs,
         logger: config.holdLogger,
       });
       // Restart-safety (load-bearing per the design): the quarantine directory is
@@ -542,7 +551,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           }
           throw buildRefusalError(GhostErrors, sealedSince);
         }
-        return proceed();
+        try {
+          return await withWriteTimeout(proceed(), this.writeTimeoutMs);
+        } catch (err) {
+          if (isWriteTimeoutError(err)) {
+            this.logger.error(REQUEST_WRITE_TIMEOUT_LOG_PREFIX, err);
+          }
+          throw err;
+        }
       }
 
       if (decision === 'refuse') {
