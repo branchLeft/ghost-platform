@@ -8,6 +8,7 @@ import {
   errorStateOf,
   readSlotState,
   recoverCrashedSlots,
+  releaseHeldEvidence,
   resetRefusal,
   writeSlotState,
   type SlotState,
@@ -103,7 +104,12 @@ describe('/reset and held evidence', () => {
       descriptor: demoDescriptor(),
     });
     expect(reconcile.status).toBe(200);
-    await writeSlotState(b.stateDir, SLOT, state);
+    const { evidence, ...rest } = state;
+    if (evidence === 'detached') {
+      await releaseHeldEvidence(b.stateDir, SLOT, rest);
+    } else {
+      await writeSlotState(b.stateDir, SLOT, state);
+    }
     return b;
   }
 
@@ -267,20 +273,58 @@ describe('writeSlotState and held evidence', () => {
     expect((await readSlotState(dir, SLOT)).evidence).toBe('frozen');
   });
 
+  it('carries an unconfirmed marker across a write that names it as undefined', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'running', colour: 'a', evidence: 'frozen' });
+    await writeSlotState(dir, SLOT, { phase: 'running', colour: 'b', evidence: undefined });
+    expect((await readSlotState(dir, SLOT)).evidence).toBe('frozen');
+  });
+
   it('carries an unrecognised marker too', async () => {
     await writeSlotState(dir, SLOT, { phase: 'error', evidence: 'FROZEN' as unknown as 'frozen' });
     await writeSlotState(dir, SLOT, { phase: 'free' });
     expect((await readSlotState(dir, SLOT)).evidence).toBe('FROZEN');
   });
 
-  it('lets a write that names the marker change it', async () => {
+  it('lets the named release path change a frozen marker to detached', async () => {
     await writeSlotState(dir, SLOT, { phase: 'detaching', evidence: 'frozen' });
-    await writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' });
+    await releaseHeldEvidence(dir, SLOT, { phase: 'error' });
     expect((await readSlotState(dir, SLOT)).evidence).toBe('detached');
   });
 
+  it('refuses a plain write of the confirmed marker and leaves the held copy in place', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'detaching', evidence: 'frozen' });
+    await expect(writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' })).rejects.toThrow(
+      /releaseHeldEvidence/
+    );
+    expect((await readSlotState(dir, SLOT)).evidence).toBe('frozen');
+  });
+
+  it('refuses the confirmed marker from every other writer, including a recovery error state', async () => {
+    await writeSlotState(dir, SLOT, { phase: 'detaching', evidence: 'frozen' });
+    await expect(
+      writeSlotState(dir, SLOT, errorStateOf({ phase: 'swapping', evidence: 'detached' }))
+    ).rejects.toThrow(/releaseHeldEvidence/);
+    await expect(
+      writeSlotState(dir, SLOT, { phase: 'free', evidence: 'detached' })
+    ).rejects.toThrow(/releaseHeldEvidence/);
+    expect((await readSlotState(dir, SLOT)).evidence).toBe('frozen');
+  });
+
+  it('lets a recovery error state keep an already-confirmed marker', async () => {
+    await releaseHeldEvidence(dir, SLOT, { phase: 'swapping', colour: 'a' });
+    const released = await readSlotState(dir, SLOT);
+    expect(released.evidence).toBe('detached');
+
+    await writeSlotState(dir, SLOT, errorStateOf({ ...released, phase: 'swapping' }));
+
+    expect(await readSlotState(dir, SLOT)).toEqual({
+      phase: 'error',
+      evidence: 'detached',
+    });
+  });
+
   it('does not invent or keep a confirmed marker', async () => {
-    await writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' });
+    await releaseHeldEvidence(dir, SLOT, { phase: 'error' });
     await writeSlotState(dir, SLOT, { phase: 'free' });
     expect('evidence' in (await readSlotState(dir, SLOT))).toBe(false);
   });
