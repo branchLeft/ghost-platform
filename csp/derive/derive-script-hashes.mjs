@@ -59,29 +59,63 @@ export function deriveScriptHashes(pages) {
   return [...hashes].sort();
 }
 
+// One page's total budget, headers and body together. A stalled Ghost must
+// fail the derivation soft, not hang the admission step that waits on it.
+export const DEFAULT_PAGE_TIMEOUT_MS = 15_000;
+
+// Fetches one page's text under a single deadline. The abort signal is a
+// courtesy to the real fetch; the race is what guarantees the deadline holds
+// even for an implementation that ignores the signal.
+async function fetchPageText(url, fetchImpl, timeoutMs) {
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`no complete response within ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  const page = (async () => {
+    const res = await fetchImpl(url, { signal: controller.signal });
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true, text: await res.text() };
+  })();
+  try {
+    return await Promise.race([page, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Fetches `paths` from `origin` and derives the hash set across all of
  * them. `kind: 'unavailable'` (LLD-5's fail-soft mark, mirrored by
  * render-core's `ThemeCsp`) covers any page that did not come back as a
- * real page: a non-200 status, or a fetch that threw. A partial hash set
+ * real page: a non-200 status, a fetch that threw, or one that did not
+ * finish (headers and body) within `timeoutMs`. A partial hash set
  * from whichever pages happened to load is worse than none, since a strict
  * policy enforced against an incomplete set blocks the theme's own scripts
  * on whichever page was missed -- so one failure fails the whole derivation,
  * not just that page.
  */
-export async function deriveThemeCsp(origin, paths, fetchImpl = fetch) {
+export async function deriveThemeCsp(
+  origin,
+  paths,
+  fetchImpl = fetch,
+  timeoutMs = DEFAULT_PAGE_TIMEOUT_MS
+) {
   const pages = [];
   for (const path of paths) {
-    let res;
+    let page;
     try {
-      res = await fetchImpl(new URL(path, origin));
+      page = await fetchPageText(new URL(path, origin), fetchImpl, timeoutMs);
     } catch (err) {
       return { kind: 'unavailable', reason: `${path}: ${err.message}` };
     }
-    if (!res.ok) {
-      return { kind: 'unavailable', reason: `${path}: HTTP ${res.status}` };
+    if (!page.ok) {
+      return { kind: 'unavailable', reason: `${path}: HTTP ${page.status}` };
     }
-    pages.push(await res.text());
+    pages.push(page.text);
   }
   return { kind: 'computed', hashes: deriveScriptHashes(pages) };
 }

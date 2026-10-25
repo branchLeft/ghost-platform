@@ -439,6 +439,35 @@ describe('the loopback transport', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+
+  it('bounds the whole request by a total deadline, not an idle timer, against a server that trickles bytes', async () => {
+    const { createServer } = await import('node:http');
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      // One byte every 50ms: each byte resets a socket-idle timer, so only a
+      // total deadline can end this request.
+      const drip = setInterval(() => res.write('.'), 50);
+      res.on('close', () => clearInterval(drip));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const started = Date.now();
+      await expect(
+        loopbackGhostTransport({
+          port,
+          siteHost: 'x.example.test',
+          method: 'GET',
+          path: '/trickle',
+          timeoutMs: 300,
+        })
+      ).rejects.toThrow('Ghost did not answer GET /trickle in time');
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 5_000);
 });
 
 describe('adminApiConfigFromEnv', () => {
