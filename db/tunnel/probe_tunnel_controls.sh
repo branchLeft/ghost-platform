@@ -9,6 +9,7 @@ ALLOWED_LISTEN_PORT="${PROBE_ALLOWED_LISTEN_PORT:-13306}"
 ALLOWED_OPEN_PORT="${PROBE_ALLOWED_OPEN_PORT:-9104}"
 LOCAL_PROBE_PORT="${PROBE_LOCAL_PORT:-23306}"
 TIMEOUT="${PROBE_TIMEOUT:-20}"
+DIAL_TIMEOUT="${PROBE_DIAL_TIMEOUT:-10}"
 SHELL_MARKER="tunnel-probe-shell-opened"
 
 failures=0
@@ -17,7 +18,7 @@ fail() { echo "FAIL $*"; failures=$((failures + 1)); }
 
 usage() {
     echo "usage: $0 key-holder --host <ip> --key <path> --known-hosts <path>" >&2
-    echo "       $0 direct-dial --target <ip:port> [--target <ip:port> ...]" >&2
+    echo "       $0 direct-dial --control <host:port> --target <host:port> [--target <host:port> ...]" >&2
     exit 2
 }
 
@@ -97,9 +98,41 @@ probe_open_allowed() {
     rm -f "$log"
 }
 
+valid_host_port() {
+    local LC_ALL=C spec="$1" port
+    [[ "$spec" =~ ^[A-Za-z0-9._-]+:[0-9]+$ ]] || return 1
+    port="${spec##*:}"
+    port="${port#"${port%%[!0]*}"}"
+    [[ -n "$port" && ${#port} -le 5 ]] && (( port >= 1 && port <= 65535 ))
+}
+
+validate_dial_timeout() {
+    if [[ "$DIAL_TIMEOUT" =~ ^[0-9]+(\.[0-9]+)?$ && "$DIAL_TIMEOUT" =~ [1-9] ]]; then
+        return 0
+    fi
+    printf 'PROBE_DIAL_TIMEOUT must be a positive number of seconds, such as 2 or 0.5: %q\n' "$DIAL_TIMEOUT" >&2
+    exit 2
+}
+
+# Host and port go to bash as positional arguments, never into the dial string.
+dial_succeeds() {
+    local host="${1%:*}" port="${1##*:}"
+    timeout "$DIAL_TIMEOUT" bash -c "exec 3<>/dev/tcp/\$1/\$2" _ "$host" "$port" 2>/dev/null
+}
+
+probe_direct_dial_control() {
+    local control="$1"
+    if dial_succeeds "$control"; then
+        pass "direct-dial control: $control accepted a connection"
+        return 0
+    fi
+    fail "direct-dial control: $control did not accept a connection, so no target result can be trusted"
+    return 1
+}
+
 probe_direct_dial() {
-    local target="$1" host="${1%:*}" port="${1##*:}"
-    if timeout 10 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
+    local target="$1"
+    if dial_succeeds "$target"; then
         fail "direct-dial: a connection to $target was accepted"
     else
         pass "direct-dial: a connection to $target was not accepted"
@@ -125,18 +158,45 @@ run_key_holder() {
     probe_open_allowed
 }
 
+probe_direct_dial_targets() {
+    local control="$1" target
+    shift
+    if probe_direct_dial_control "$control"; then
+        for target in "$@"; do
+            probe_direct_dial "$target"
+        done
+    else
+        for target in "$@"; do
+            fail "direct-dial: $target inconclusive, the control did not connect"
+        done
+    fi
+}
+
 run_direct_dial() {
-    local targets=()
+    local control="" control_count=0 targets=() target
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --target) targets+=("$2"); shift 2 ;;
+            --control)
+                [[ $# -ge 2 ]] || usage
+                control="$2"
+                control_count=$((control_count + 1))
+                shift 2
+                ;;
+            --target)
+                [[ $# -ge 2 ]] || usage
+                targets+=("$2")
+                shift 2
+                ;;
             *) usage ;;
         esac
     done
-    [[ ${#targets[@]} -gt 0 ]] || usage
+    [[ "$control_count" -eq 1 && ${#targets[@]} -gt 0 ]] || usage
+    valid_host_port "$control" || usage
     for target in "${targets[@]}"; do
-        probe_direct_dial "$target"
+        valid_host_port "$target" || usage
     done
+    validate_dial_timeout
+    probe_direct_dial_targets "$control" "${targets[@]}"
 }
 
 [[ $# -ge 1 ]] || usage
