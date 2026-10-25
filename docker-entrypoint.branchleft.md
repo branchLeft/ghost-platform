@@ -1,19 +1,19 @@
 # docker-entrypoint.branchleft.sh
 
-## Cloud Run port translation
+## Port translation
 
-Cloud Run injects the port to listen on via the `$PORT` environment variable
-(defaulting to 8080 if unset, per Cloud Run's contract) and requires the
-container to bind all interfaces. Ghost has no native concept of `$PORT` —
-it reads `server.port` / `server.host` through nconf — so this wrapper
-translates Cloud Run's convention into Ghost's own env-var config keys
+The deploy platform may inject the port to listen on via the `$PORT`
+environment variable (defaulting to 2368 if unset, matching upstream Ghost),
+and the container must bind all interfaces. Ghost has no native concept of
+`$PORT` — it reads `server.port` / `server.host` through nconf — so this
+wrapper translates that convention into Ghost's own env-var config keys
 (`server__port`, `server__host`; see `README.md` for the full nconf/env-var
 mapping) before handing off to the upstream image's entrypoint.
 
 The upstream entrypoint (`docker-entrypoint.sh`, shipped by the base
 `ghost:6.55.0-alpine` image) still needs to run first: it steps down from
 root to the `node` user via `gosu`, and seeds the (always-empty, since
-Cloud Run has no durable volume) content directory from `content.orig` on
+container has no durable volume) content directory from `content.orig` on
 every boot — that seeding is what puts the default Casper theme and
 fixture settings in place. This wrapper does not reimplement that; it
 only sets env vars and execs into it.
@@ -22,12 +22,12 @@ only sets env vars and execs into it.
 
 Ghost's compiled defaults (`ghost/core/core/shared/config/defaults.json`)
 are `storage.active=LocalImagesStorage`, with `LocalMediaStorage`/
-`LocalFilesStorage` for the media/files features — local disk. On Cloud Run,
-local disk is not durable: anything written there is not guaranteed to
-survive an instance recycle (autoscale, redeploy, crash). If `storage__*`
+`LocalFilesStorage` for the media/files features — local disk. In a
+container, local disk is not durable: anything written there is not
+guaranteed to survive a recreate (redeploy, crash, host move). If `storage__*`
 is left unconfigured, none of that fails loudly — the container boots
 cleanly, the site serves fine, an editor's upload appears to work, and the
-file is silently gone the next time the instance cycles. No error, no log
+file is silently gone the next time the container is recreated. No error, no log
 line, no alert. That combination — confidently wrong, not loudly wrong —
 makes it the platform's single most dangerous failure mode, so it is
 refused at boot here rather than merely documented in the README.
@@ -53,8 +53,8 @@ itself uses before doing its root-step-down/content-reseed work) —
 Escape hatch, local development / the SQLite smoke test only:
 `BRANCHLEFT_ALLOW_LOCAL_STORAGE=true`. Deliberately just an explicit env
 var — never inferred from `NODE_ENV`, and never inferred from the
-presence or absence of Cloud Run's own `K_SERVICE` variable. Failing to
-detect Cloud Run is not evidence a deploy is safe; a heuristic here would
+presence or absence of a platform-injected variable. Failing to detect a
+platform is not evidence a deploy is safe; a heuristic here would
 eventually be wrong in the direction that matters (a real tenant silently
 allowed through), so the guard would rather annoy a developer than trust
 an inference.
@@ -71,7 +71,7 @@ different failure mode.
 
 A non-local wrapped adapter configured without the config a working
 upload actually needs is only marginally better than a local one — it
-just moves the silent failure from "media is lost on recycle" to "media
+just moves the silent failure from "media is lost on recreate" to "media
 never uploaded in the first place" (or an opaque runtime error the first
 time someone tries). The required `S3Storage` fields are checked
 specifically, since that is the adapter this image is built around; a

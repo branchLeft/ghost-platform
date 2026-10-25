@@ -5,9 +5,8 @@
 Each tenant gets its own Object Storage bucket, reached with a credential
 allowlisted to that bucket alone. Both names are functions of the slug, so a
 tenant stack has no configurable value that could name another tenant's
-bucket — the closest thing this platform has to the IAM-condition prefix
-isolation the GCP shape used, expressed as an absence of choice rather than
-as a policy the stack has to get right.
+bucket. Isolation is an absence of choice here, not a policy the stack has to
+get right.
 
 The same derivation is written a second time, in Python, in
 `infra/provisioning/scripts/render-media-bucket-policy.py`: that script runs

@@ -54,7 +54,7 @@ If a hook fails it usually auto-fixes the issue (Prettier, whitespace) — re-st
 
 `infra/tenant` is a reusable component published as `@branchleft/ghost-platform-tenant`; it is not a deployable stack, so no deploy job belongs in its workflow. `infra/hosts` is the shared Hetzner stack; `infra/provisioning/scripts` is the live bucket-fencing and tenant-onboarding guard tooling `provision-tenant.yml` calls, not a deployable stack of its own.
 
-**Nothing in this repo may name a tenant** — not in code, comments, commit messages, or CI logs. A hostname and a Cloud Run service name together are a tenant's identity. Tenant stacks live in one repo per tenant, named `ghost-tenant-<name>` and generated from [`ghost-platform-tenant-template`](https://github.com/branchLeft/ghost-platform-tenant-template). That repo is public unless the tenant asked for it to be private — a question settled with the tenant before their onboarding starts, never decided here.
+**Nothing in this repo may name a tenant** — not in code, comments, commit messages, or CI logs. A hostname and a stack name together are a tenant's identity. Tenant stacks live in one repo per tenant, named `ghost-tenant-<name>` and generated from [`ghost-platform-tenant-template`](https://github.com/branchLeft/ghost-platform-tenant-template). That repo is public unless the tenant asked for it to be private — a question settled with the tenant before their onboarding starts, never decided here.
 
 ## Comment style
 
