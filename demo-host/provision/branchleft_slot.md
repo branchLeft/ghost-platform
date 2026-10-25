@@ -88,6 +88,14 @@ broker already had before `load` existed. "Loads nothing else" means
 precisely that -- never a file the broker does not itself own -- not that
 the literal path names one unchanging file on disk.
 
+The root-side byte cap, `IMAGE_LOAD_MAX_BYTES`, is a second bound that does
+not rely on the broker. A compromised broker skips its own checks, so this
+process cannot rely on `BROKER_IMAGE_MAX_BYTES` or the broker's wrapper
+timeout catching anything. The figure duplicates the default in
+`services/broker/src/config.ts`: it is not imported, the same as every
+literal in this file. `IMAGE_LOAD_TIMEOUT_SECONDS` (300) is generous for a
+multi-hundred-MB image and was not tuned to any one measured run.
+
 ## _data_directory
 
 The one, slot-derived path to the colour pair's shared SQLite data volume
@@ -233,6 +241,16 @@ by `timeout`, a process outside this wrapper, so it still holds if the
 wrapper is killed. If the file ends early, the wrapper kills docker's process
 group before it closes the pipe, so docker never sees a clean end of archive.
 If docker exits 0 before it has read every byte, the wrapper raises an error.
+
+Exceptions `load_image` raises, and when:
+
+- `RefusedImage`: a pre-load check above fails (cannot open, not a regular
+  file, over `IMAGE_LOAD_MAX_BYTES`, or not owned by the broker account).
+- `RuntimeError`: the file ends before `st_size` bytes are read, or docker
+  exits 0 without reading the whole archive.
+- `subprocess.TimeoutExpired`: `docker load` runs out its deadline.
+- `subprocess.CalledProcessError`: `docker load` exits non-zero.
+- `OSError`: reading the file, or starting `docker load`, fails.
 
 Not guaranteed by this code: that the bytes are the ones the broker intended.
 The broker can still write whatever bytes it likes into the file; the owner

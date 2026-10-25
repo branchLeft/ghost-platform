@@ -60,17 +60,15 @@ IMAGE_STAGING_DIR = "/var/lib/branchleft-broker/image-tmp"
 IMAGE_STAGING_FILENAME = "image.tar"
 IMAGE_LOAD_PATH = f"{IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"
 
-# Root-side bounds `RealSlotOps.load_image` enforces on its own, regardless
-# of whatever the broker's own `BROKER_IMAGE_MAX_BYTES`/wrapper-timeout did
-# or did not catch -- a compromised broker skips its own checks, so this
-# process cannot rely on them either. The byte figure matches that
-# setting's own default in `services/broker/src/config.ts` (duplicated,
-# not imported, for the same reason every other literal here is). It is
-# checked against `st_size` at `fstat`, and `load_image` never copies more
-# than that size, so a file that grows later is cut off. The timeout is
-# generous for a real multi-hundred-MB image load, not tuned to any one
-# measured run; `timeout` enforces it outside this process, so it holds
-# even if this process is killed.
+# Root-side bounds `RealSlotOps.load_image` enforces itself, whether or not
+# the broker's own `BROKER_IMAGE_MAX_BYTES` and wrapper timeout caught
+# anything: a compromised broker skips its checks, so this process cannot
+# rely on them. The byte figure duplicates `services/broker/src/config.ts`,
+# not imported, like every literal here. It is checked against `st_size` at
+# `fstat`, and `load_image` copies no more than that, so a file that grows
+# later is cut off. The timeout is generous, not tuned to one measured run.
+# `timeout` enforces it outside this process, so it holds if this process is
+# killed. Reasons: branchleft_slot.md.
 IMAGE_LOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024
 IMAGE_LOAD_TIMEOUT_SECONDS = 300
 IMAGE_LOAD_CHUNK_BYTES = 1024 * 1024
@@ -513,24 +511,14 @@ class RealSlotOps:
 
     def load_image(self, path: str) -> None:
         """Opens `path` (always `IMAGE_LOAD_PATH`) with `O_NOFOLLOW` and
-        `O_NONBLOCK`, `fstat`s the resulting descriptor to require a
-        regular, size-bounded file owned by the broker account, then reads
-        exactly the `st_size` bytes recorded at that `fstat` from the
-        already-open descriptor and writes them to the stdin pipe of
-        `docker load`. The file may grow afterwards without effect; if it
-        shrinks below `st_size`, the load fails. `docker load` runs in its
-        own process group under `timeout`, so `IMAGE_LOAD_TIMEOUT_SECONDS`
-        still holds if this process is killed. See
-        branchleft_slot.md#realslotopsload_image for why each check exists
-        and why the path is never resolved a second time.
-
-        Raises:
-            RefusedImage: the path failed a pre-load check.
-            RuntimeError: the file ended before `st_size` bytes were read,
-                or docker exited 0 without reading the whole archive.
-            subprocess.TimeoutExpired: `docker load` ran out its deadline.
-            subprocess.CalledProcessError: `docker load` exited non-zero.
-            OSError: reading the file or starting `docker load` failed.
+        `O_NONBLOCK`, `fstat`s it to require a regular, size-bounded file
+        owned by the broker, then copies exactly the `st_size` bytes read
+        at that `fstat` into `docker load`'s stdin; growth after it is
+        ignored, a shrink fails. `docker load` runs in its own process
+        group under `timeout`, so `IMAGE_LOAD_TIMEOUT_SECONDS` holds even if
+        the wrapper is killed. Raises `RefusedImage` (failed pre-load check),
+        `RuntimeError`, `subprocess.TimeoutExpired`, `CalledProcessError`,
+        `OSError`; reasons: branchleft_slot.md#realslotopsload_image.
         """
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

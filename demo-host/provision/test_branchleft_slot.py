@@ -839,17 +839,13 @@ def _read_recorded_pid(pid_file: str, seconds: float = 5.0) -> int:
 
 class RealSlotOpsLoadImageTests(unittest.TestCase):
     """`load_image` is the root-side half of the owner ruling's "loads
-    nothing else". None of this needs to run as root to prove the checks
-    exist and run in the right order: `pwd.getpwnam` is patched to name
-    this test process's own uid as "the broker account" instead of
-    `chown`ing real files, which needs root and would only prove some check
-    runs somewhere, not that it runs against the right descriptor before
-    docker is ever reached. `.github/workflows/demo-host-sudoers-ci.yml`
-    re-proves the same shapes against a real broker account and real
-    ownership; these are the fast, hermetic form.
+    nothing else". It needs no root to prove the checks exist and run in
+    order: `pwd.getpwnam` names this process's uid as "the broker account",
+    so no `chown` is needed. Why, and the real-ownership re-proof in
+    `.github/workflows/demo-host-sudoers-ci.yml`: test_branchleft_slot.md.
 
-    Docker is a shell script in a temporary directory placed first on
-    `PATH`, so the real `Popen` pipe, process group and timeout paths run.
+    Docker is a shell script first on `PATH`, so the real `Popen` pipe,
+    process group and timeout paths run.
     """
 
     def setUp(self) -> None:
