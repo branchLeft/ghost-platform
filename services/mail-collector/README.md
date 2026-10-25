@@ -135,6 +135,8 @@ not accumulate one entry per message ever sent. The TTL only needs to
 outlast the window in which a re-offer of the same id can plausibly still
 arrive (bounded by the shim's lease length plus however long an ack can
 stay lost); the default in `config.ts` is an hour, comfortably past that.
+Within that TTL an id is submitted at most once; once its entry expires, a
+later re-offer of the same id would be submitted again.
 
 ### descriptorTargets DescriptorTargetStore
 

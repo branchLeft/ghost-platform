@@ -37,16 +37,10 @@ const STATE_VERSION = 1;
 
 /**
  * Turns the shim's at-least-once drain into at-most-one submission at mx1
- * per id for as long as the entry lives: a re-offer of an already-handed-off
- * id is skipped, only re-acked. Bounded by a TTL long enough to outlast a
- * plausible re-offer window.
- *
- * With `statePath` the ids survive a restart. The caller marks an id only
- * after mx1 accepts it, never before: marking first would turn a crash
- * between the mark and the SMTP accept into a message that is skipped and
- * acked without ever having been sent. The residual window -- a crash
- * after mx1 accepts and before the mark is on disk -- can still produce one
- * duplicate; it is the cost of not losing mail.
+ * per id for as long as its entry lives (bounded by a TTL): a re-offer is
+ * skipped and only re-acked. With `statePath` the ids survive a restart.
+ * An id is marked only after mx1 accepts it, never before, so a crash in
+ * that gap can still duplicate one message.
  * See ../README.md#dedupe-createsubmittedtracker.
  */
 export function createSubmittedTracker(
