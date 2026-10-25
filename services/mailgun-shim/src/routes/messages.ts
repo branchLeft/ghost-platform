@@ -4,7 +4,7 @@ import { Router as createRouter } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { requireTenantForDomain } from '../auth.js';
 import type { Logger } from '../log.js';
-import { parseMailgunMessageFields } from '../mailgunFields.js';
+import { MultipartLimitError, parseMailgunMessageFields } from '../mailgunFields.js';
 import { tenantRateLimiter } from '../rateLimit.js';
 import { boundSender, resolveSenderDomain } from '../senderAuthorization.js';
 import type { ShimStore } from '../store.js';
@@ -53,7 +53,12 @@ export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Log
       let fields;
       try {
         fields = await parseMailgunMessageFields(req);
-      } catch {
+      } catch (error) {
+        if (error instanceof MultipartLimitError) {
+          // The unread rest of the body is abandoned, so the connection is closed after this.
+          res.status(413).set('Connection', 'close').json({ message: error.message });
+          return;
+        }
         res.status(400).json({ message: 'Failed to parse request' });
         return;
       }
