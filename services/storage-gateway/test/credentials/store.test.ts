@@ -11,6 +11,9 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MIGRATIONS_FOLDER,
@@ -27,6 +30,15 @@ const NEW = {
   createdAt: '2026-10-06T00:00:00.000Z',
 };
 const DISABLED_AT = '2026-10-08T00:00:00.000Z';
+
+// The credentials table at the 0001 shape, before disabled_at existed.
+const legacyCredentials = sqliteTable('credentials', {
+  keyId: text('key_id').primaryKey(),
+  folder: text('folder').notNull(),
+  bucket: text('bucket').notNull(),
+  state: text('state').notNull(),
+  createdAt: text('created_at').notNull(),
+});
 
 describe('SqliteCredentialStore', () => {
   let dir: string;
@@ -187,17 +199,28 @@ describe('SqliteCredentialStore', () => {
 
       const legacyPath = join(legacyDir, 'legacy.sqlite');
       // The store's own insert names every column of the current schema, so a
-      // row at the 0001 shape has to be written with SQL.
+      // row at the 0001 shape is written through a table that declares only
+      // the 0001 columns.
       SqliteCredentialStore.open(legacyPath, copiedFolder).close();
       const raw = new Database(legacyPath);
       const columns = raw.pragma('table_info(credentials)') as { name: string }[];
       expect(columns.map((column) => column.name)).not.toContain('disabled_at');
-      raw
-        .prepare(
-          "INSERT INTO credentials (key_id, folder, bucket, state, created_at) VALUES (?, ?, ?, 'active', ?)"
-        )
-        .run(NEW.keyId, NEW.folder, NEW.bucket, NEW.createdAt);
-      raw.prepare("UPDATE credentials SET state = 'disabled' WHERE key_id = ?").run(KEY);
+      const legacyDb = drizzle(raw);
+      legacyDb
+        .insert(legacyCredentials)
+        .values({
+          keyId: NEW.keyId,
+          folder: NEW.folder,
+          bucket: NEW.bucket,
+          state: 'active',
+          createdAt: NEW.createdAt,
+        })
+        .run();
+      legacyDb
+        .update(legacyCredentials)
+        .set({ state: 'disabled' })
+        .where(eq(legacyCredentials.keyId, KEY))
+        .run();
       raw.close();
 
       const upgraded = SqliteCredentialStore.open(legacyPath, MIGRATIONS_FOLDER);
