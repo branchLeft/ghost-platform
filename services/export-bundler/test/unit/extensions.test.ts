@@ -303,6 +303,50 @@ describe('collectMedia', () => {
     expect(out.report.info[0]).toBe(
       '1 references under another prefix were refused and not listed'
     );
+    // Another tenant's object is a fact about the shard, not a gap in this tenant's archive.
+    expect(out.report.status).toBe('complete');
+    expect(out.report.notes).toEqual([]);
+  });
+
+  it("is PARTIAL when the tenant's own file has a name with ? or # that cannot be archived", async () => {
+    // A literal ? or # in a file name is stored percent-encoded, so the URL parser keeps it in the path.
+    const out = await collectMedia(
+      deps({ contentJson: `{"a":"${BASE}/a.png","q":"${BASE}/what%3F.png"}` })
+    );
+    expect(out.report.status).toBe('partial');
+    expect(out.report.notes).toEqual([
+      '1 tenant media references have unsafe object keys and were not listed',
+    ]);
+    expect(out.report.info[0]).toBe(
+      '0 references under another prefix were refused and not listed'
+    );
+    const body = JSON.parse(String(out.files[0]?.data));
+    expect(body.addresses.map((a: { key: string }) => a.key)).toEqual(['a.png']);
+    expect(body.refused).toEqual([{ reference: `${BASE}/what%3F.png`, reason: 'unsafe-key' }]);
+  });
+
+  it('is FAILED with a note naming the missing object-storage address when the tenant has none', async () => {
+    const out = await collectMedia(deps({ media: { ...deps().media, baseUrl: null } }));
+    expect(out.report.status).toBe('failed');
+    expect(out.report.notes).toEqual([
+      "the tenant's rendered environment names no object-storage media address",
+    ]);
+    expect(out.files).toEqual([]);
+  });
+
+  it('is PARTIAL, counting the site-relative references it omitted, when content holds __GHOST_URL__ media', async () => {
+    const out = await collectMedia(
+      deps({
+        contentJson: `{"a":"${BASE}/a.png","s":"__GHOST_URL__/content/images/x.png","t":"__GHOST_URL__/content/images/y.png"}`,
+      })
+    );
+    expect(out.report.status).toBe('partial');
+    expect(out.report.notes).toEqual([
+      '2 site-relative media references were omitted, with no object key to list',
+    ]);
+    const body = JSON.parse(String(out.files[0]?.data));
+    expect(body.addresses.map((a: { key: string }) => a.key)).toEqual(['a.png']);
+    expect(JSON.stringify(body)).not.toContain('x.png');
   });
 });
 
