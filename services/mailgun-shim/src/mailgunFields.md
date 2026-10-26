@@ -75,6 +75,42 @@ it. This walks whatever JSON.parse actually returned, recursively, so a
 string buried under an extra level of nesting is still sanitised rather
 than silently passed through because it didn't match the declared shape.
 
+## Multipart limits
+
+`MULTIPART_LIMITS` in mailgunFields.ts caps one send request, so that one
+tenant cannot exhaust the memory of the single process that serves every
+tenant. The values are fixed, not read from the environment:
+
+- recipients: 1,000, inclusive. Counted after the comma split of `to` and
+  before dedupe. This is a hard cap on the HTTP route, separate from the
+  SMTP front door's 50 (config.ts `maxRecipientsPerMessage`).
+- fields: 1,100. Busboy's count of accepted text fields.
+- parts: 1,200. Fields plus file parts. Files are never read, so each one
+  only costs a part; the cap sits above the field cap so a body of nothing
+  but fields trips `fields` first.
+- fieldSize: 5 MiB per value. Large enough for a 1,000-recipient
+  recipient-variables JSON and a large newsletter html body.
+- fieldNameSize: 100 bytes per field name.
+- total field bytes: 10 MiB, summing the UTF-8 length of each accepted name
+  and decoded value. Files and multipart framing are not counted.
+
+The arithmetic: 1,000 recipients is Ghost's default batch size
+(`DEFAULT_BATCH_SIZE`), and the 100 fields of headroom above it cover from,
+subject, html, text, recipient-variables, `h:*` and `o:*` and `v:*` fields.
+The total cap exists because the per-count and per-size limits multiply:
+1,100 fields at 5 MiB each is over 5 GB, far past any sensible process
+memory, so the total is what keeps the memory threat closed.
+
+What is refused: a request over any cap gets `413` with
+`Request exceeds the <reason> limit of <value>` and `Connection: close`, and
+nothing is enqueued. Busboy would otherwise drop fields past a count limit
+and silently truncate long names or values, so the shim treats those
+truncations and limit events as refusals too; a truncated value is never
+accepted. Malformed bodies still get `400`.
+
+Consequence: a tenant that sets Ghost's batch size above 1,000 gets `413`
+on every batch it sends.
+
 ## Ghost email id
 
 Ghost's own `v:email-id` is always the Email model's row id, a

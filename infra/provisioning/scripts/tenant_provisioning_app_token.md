@@ -12,7 +12,9 @@ This module is that route. It signs a short-lived JWT with the App's private
 key, finds the App's installation on the organisation, and asks for an
 installation token holding exactly the permissions below. The token lasts an
 hour, is handed to later steps as a masked step output, and is revoked by the
-workflow's last step.
+workflow's last step. A minted token that the post-mint checks refuse (its
+grant or its expiry) is revoked first, best effort, before the refusal is
+raised.
 
 It fails closed. A missing id or key, an unreachable API, a refused mint, a
 response without a token, a grant that differs from the named permissions in

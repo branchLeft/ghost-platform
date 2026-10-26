@@ -382,6 +382,15 @@ Ordering is the whole safety argument: the object is written before the
 probe policy exists, the probe policy is removed before this returns
 whatever the answer was, and the probe policy can never deny the removal.
 
+The foreign key's account is resolved first, before the policy slot check and
+before anything is written. If the foreign key sits in another account, the
+engine denies it for that reason alone, whatever the policy says, so an engine
+that ignores `NotPrincipal` would still read as "operator allowed, foreign
+denied" and pass. `foreign credential resolves its account` is `INCONCLUSIVE`: the
+probe could not find out. `the foreign credential is in the operator's account` is
+`FAIL`: the probe found out, and the answer is wrong. Both rows are critical and
+stop the run before any write.
+
 THIS IS THE STEP AN OPERATOR ACTUALLY RUNS, and the render-bucket-fence and
 render-media-bucket generators both depend on its answer: if `NotPrincipal`
 does not exempt the operator, applying either policy denies the operator

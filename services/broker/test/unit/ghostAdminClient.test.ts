@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { chmod, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { promisify } from 'node:util';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SlotName, TenantDescriptor } from '@branchleft/ghost-platform-render-core';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { adminApiConfigFromEnv } from '../../src/config.js';
@@ -16,6 +18,35 @@ import { adminApiToken } from '../../src/ghostAdmin/token.js';
 import { demoDescriptor, TEST_ZONES } from '../helpers/fixtures.js';
 import { startFakeGhost, type FakeGhost } from '../helpers/fakeGhost.js';
 
+const KEY_FILE_NAME = 'ghost-admin-key';
+const swap = vi.hoisted(() => ({ armed: false, fired: false, source: '' }));
+
+// Once armed, the first lstat or open of a key file renames `swap.source` over
+// that path, so a test can make another file appear mid-read.
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  const renameOverKeyFileIfArmed = async (path: unknown): Promise<void> => {
+    if (!swap.armed || typeof path !== 'string' || !path.endsWith(KEY_FILE_NAME)) return;
+    swap.armed = false;
+    swap.fired = true;
+    await actual.rename(swap.source, path);
+  };
+  return {
+    ...actual,
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      const result = await actual.lstat(...args);
+      await renameOverKeyFileIfArmed(args[0]);
+      return result;
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      await renameOverKeyFileIfArmed(args[0]);
+      return handle;
+    },
+  };
+});
+
+const execFileAsync = promisify(execFile);
 const SLOT = '0' as SlotName;
 const PASSWORD = 'p'.repeat(43);
 
@@ -470,5 +501,35 @@ describe('the key store refuses a token it cannot trust', () => {
     await rm(path);
     await symlink(elsewhere, path);
     await expect(createAdminKeyStore(base).read('0')).rejects.toThrow('not a plain file');
+  });
+
+  it('reads the key file it checked even when another file is renamed over it mid-read', async () => {
+    const OTHER_KEY = `${'3'.repeat(24)}:${'4'.repeat(64)}`;
+    const otherPath = join(base, '0', 'other-key');
+    await writeFile(otherPath, `${OTHER_KEY}\n`);
+    await chmod(otherPath, 0o600);
+    swap.source = otherPath;
+    swap.armed = true;
+    swap.fired = false;
+    let key: string | null;
+    try {
+      key = await createAdminKeyStore(base).read('0');
+    } finally {
+      swap.armed = false;
+    }
+    expect(swap.fired).toBe(true);
+    expect(key).toBe(KEY);
+  });
+
+  it('refuses a FIFO in place of the file without hanging', async () => {
+    const path = join(base, '0', KEY_FILE_NAME);
+    await rm(path);
+    await execFileAsync('mkfifo', [path]);
+    await expect(createAdminKeyStore(base).read('0')).rejects.toThrow('not a plain file');
+  }, 5000);
+
+  it('returns null when the slot folder exists but the key file is missing', async () => {
+    await rm(join(base, '0', KEY_FILE_NAME));
+    expect(await createAdminKeyStore(base).read('0')).toBeNull();
   });
 });

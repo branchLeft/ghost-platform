@@ -160,17 +160,42 @@ export async function readSlotState(dir: string, slot: SlotName): Promise<SlotSt
 }
 
 /**
+ * The only path that may write `evidence: 'detached'`. A confirmed detach
+ * is the one thing that releases held evidence, so it is named here and
+ * nowhere else: `writeSlotState` refuses the move to it. The caller supplies the
+ * rest of the state; the marker is set by this function alone. See
+ * stateStore.md#releaseheldevidence.
+ */
+export async function releaseHeldEvidence(
+  dir: string,
+  slot: SlotName,
+  state: Omit<SlotState, 'evidence'>
+): Promise<void> {
+  await writeFileAtomic(statePath(dir, slot), JSON.stringify({ ...state, evidence: 'detached' }));
+}
+
+/**
  * Writes a slot's state. A state that does not name an `evidence` marker
  * inherits any unconfirmed one already on disk, so no transition (a
  * reconcile colour swap, a drain, a stop, a recovery) can drop held
- * evidence by building a fresh object. Only a write that names the marker
- * itself, such as the confirmed-detach write, changes it. An unreadable
- * existing file fails the write rather than risking a drop.
+ * evidence by building a fresh object. Only a write that names an
+ * unconfirmed marker changes it. Moving a held marker to `'detached'` is
+ * refused here: that is a release, and only `releaseHeldEvidence` performs
+ * it. A state already `'detached'` on disk may carry that value forward.
+ * An unreadable existing file fails the write rather than risking a drop.
  */
 export async function writeSlotState(dir: string, slot: SlotName, state: SlotState): Promise<void> {
   const existing = await readSlotState(dir, slot);
+  // The refusal is about the transition, not the value: moving a held marker
+  // to `detached` is a release, and only `releaseHeldEvidence` may do it. A
+  // state already `detached` carries that confirmation forward unchanged.
+  if (state.evidence === 'detached' && existing.evidence !== 'detached') {
+    throw new Error(
+      `slot "${slot}": refusing to move held evidence to "detached" through writeSlotState -- only releaseHeldEvidence may release held evidence`
+    );
+  }
   const carried =
-    'evidence' in state || !holdsUnconfirmedEvidence(existing.evidence)
+    state.evidence !== undefined || !holdsUnconfirmedEvidence(existing.evidence)
       ? state
       : { ...state, evidence: existing.evidence };
   await writeFileAtomic(statePath(dir, slot), JSON.stringify(carried));

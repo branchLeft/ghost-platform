@@ -10,6 +10,8 @@ let landing: () => Promise<string> = async () => '<p>HELLO</p>';
 let extra: () => Promise<string> = async () => '<p>EXTRA</p>';
 let act: (form: URLSearchParams) => Promise<string> = async () => '/extra';
 const issuer = new FakeIssuer();
+const logged: string[] = [];
+let onError: (line: string) => void = (line) => void logged.push(line);
 
 beforeAll(async () => {
   app = await serve((origin) =>
@@ -33,6 +35,7 @@ beforeAll(async () => {
       signOutLabel: 'OUT',
       clock: () => NOW,
       fetch: issuer.fetch,
+      onError: (line) => onError(line),
       bind: () => bind(),
       landing: () => landing(),
       // '/' and '/logout' are the shell's own and must not be replaced.
@@ -131,5 +134,65 @@ describe("the shell's extra pages and actions", () => {
     act = async () => '/extra';
     expect((await post(browser, '/act', 'field=V', 'https://evil.example')).status).toBe(403);
     expect((await browser.request('/act')).status).toBe(405);
+  });
+});
+
+describe('the error lines the shell hands to its hook', () => {
+  const SECRET = 'database password leaked here';
+
+  it('names the failing step and the error, and carries no message, token or code', async () => {
+    logged.length = 0;
+    bind = () => Promise.reject(new Error(SECRET));
+    const accessToken = token();
+    const code = issuer.issue(accessToken);
+    const browser = new Browser(app.origin);
+    const reply = await browser.finish(code);
+    expect(reply.status).toBe(503);
+    expect(reply.body).toBe('UNAVAILABLE');
+    expect(logged).toHaveLength(1);
+    const line = logged[0] ?? '';
+    expect(JSON.parse(line)).toEqual({ event: 'portal.error', step: 'bind', error: 'Error' });
+    expect(line).not.toContain(SECRET);
+    expect(line).not.toContain(accessToken);
+    expect(line).not.toContain(code);
+    bind = async () => 'bound';
+  });
+
+  it('names the landing and the action steps, and the error type as it is', async () => {
+    logged.length = 0;
+    bind = async () => 'bound';
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(token()));
+    landing = () => Promise.reject(new TypeError(SECRET));
+    expect((await browser.request('/')).body).toBe('FAILED');
+    landing = async () => '<p>HELLO</p>';
+    act = () => Promise.reject(new RangeError(SECRET));
+    const posted = await browser.request('/act', {
+      method: 'POST',
+      headers: { origin: app.origin, 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'field=VALUE',
+    });
+    expect(posted.body).toBe('REFUSED');
+    act = async () => '/extra';
+    expect(logged.map((line) => JSON.parse(line))).toEqual([
+      { event: 'portal.error', step: 'landing', error: 'TypeError' },
+      { event: 'portal.error', step: 'action', error: 'RangeError' },
+    ]);
+    expect(logged.join('\n')).not.toContain(SECRET);
+  });
+
+  it('is not what a failure turns on: a hook that throws changes no answer', async () => {
+    onError = () => {
+      throw new Error('the log is down');
+    };
+    try {
+      bind = () => Promise.reject(new Error(SECRET));
+      const reply = await new Browser(app.origin).finish(issuer.issue(token()));
+      expect(reply.status).toBe(503);
+      expect(reply.body).toBe('UNAVAILABLE');
+    } finally {
+      bind = async () => 'bound';
+      onError = (line) => void logged.push(line);
+    }
   });
 });

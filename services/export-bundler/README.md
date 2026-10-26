@@ -199,7 +199,9 @@ publishes no port for a container on an internal network, so the colour
 publishes nothing. Its one way in is a relay: a container of the tenant's
 own image running one fixed script that forwards `127.0.0.1:<port>` to the
 colour. The relay is read-only, has all capabilities dropped, and carries no
-environment and no volume. The dump container is the only one with a route
+environment and no volume. It also runs with `--security-opt no-new-privileges`,
+`--pids-limit 64` and `--memory 128m`, figures chosen generously for a few lines
+of Node rather than measured. The dump container is the only one with a route
 to the tenant's database server, and it reads.
 
 **No Docker logs of tenant data.** Every container in a run that can carry
@@ -212,7 +214,10 @@ remover with `cleanup.ts`: the colour, the relay and its network, the dump
 container, the scratch container and its data, the run network, the volume
 and the env files. The normal path removes them in `finally`, colour first.
 A colour that is created but fails to start is removed at once. On SIGINT
-or SIGTERM the removers run before the process exits.
+or SIGTERM the removers run before the process exits. If a remover throws,
+its label is written to stderr as `export-bundler: cleanup step failed on
+<SIGNAL>: <label>` and the process exits with code 70 instead of 130 or 143;
+a clean cleanup still exits 130 or 143.
 
 ## The export colour sends nothing and schedules nothing: the second layer
 

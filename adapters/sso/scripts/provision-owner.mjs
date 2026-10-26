@@ -4,6 +4,7 @@
 // link. See provision-owner.md for the usage, the flow and the guarantees.
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
 /** The only address Ghost listens on inside its own container. */
 const GHOST_LISTEN = '127.0.0.1:2368';
@@ -19,10 +20,29 @@ export class OwnerProvisionRefusedError extends Error {
   }
 }
 
+/** The key the render core writes to `/etc/branchleft/<slug>.env`. */
+const OWNER_EMAIL_KEY = 'GHOST_OWNER_EMAIL';
+
+/**
+ * Reads the owner's address from the tenant's secrets file text. The address
+ * is never an argument: argv is visible in the process list and in shell
+ * history. The value is not echoed in any refusal.
+ */
+export function parseOwnerEmail(secretsText) {
+  const line = secretsText.split('\n').find((l) => l.startsWith(`${OWNER_EMAIL_KEY}=`));
+  if (line === undefined) throw new Error(`${OWNER_EMAIL_KEY} is not set in the secrets file`);
+  const email = line.slice(OWNER_EMAIL_KEY.length + 1).trim();
+  // Quote marks are refused, not stripped: an env-file parser may read them as data.
+  if (!/^[^\s@"']+@[^\s@"']+$/.test(email)) {
+    throw new Error(`${OWNER_EMAIL_KEY} must be an email address`);
+  }
+  return email;
+}
+
 export function parseArgs(argv) {
   const known = {
     '--container': 'container',
-    '--email': 'email',
+    '--secrets-file': 'secretsFile',
     '--name': 'name',
     '--site-url': 'siteUrl',
     '--site-title': 'siteTitle',
@@ -44,7 +64,6 @@ export function parseArgs(argv) {
     throw new Error('--site-url must be an absolute URL');
   }
   if (url.protocol !== 'https:') throw new Error('--site-url must be an https URL');
-  if (!/^[^\s@]+@[^\s@]+$/.test(args.email)) throw new Error('--email must be an email address');
   return args;
 }
 
@@ -58,13 +77,16 @@ const INNER_SCRIPT = `
 const http = require('node:http');
 const crypto = require('node:crypto');
 const [host, port] = '${GHOST_LISTEN}'.split(':');
-const site = new URL(process.env.PROVISION_OWNER_SITE_URL);
-const headers = {
-  'content-type': 'application/json',
-  host: site.host,
-  origin: site.origin,
-  'x-forwarded-proto': 'https',
-};
+let headers;
+function readOwner() {
+  return new Promise((resolve, reject) => {
+    let text = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { text += chunk; });
+    process.stdin.on('end', () => resolve(JSON.parse(text)));
+    process.stdin.on('error', reject);
+  });
+}
 function call(method, path, body) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host, port, method, path, headers }, (res) => {
@@ -94,11 +116,19 @@ async function ownerEmail() {
   }
 }
 async function main() {
+  const owner = await readOwner();
+  const site = new URL(owner.siteUrl);
+  headers = {
+    'content-type': 'application/json',
+    host: site.host,
+    origin: site.origin,
+    'x-forwarded-proto': 'https',
+  };
   const state = await call('GET', '/ghost/api/admin/authentication/setup/');
   if (state.status !== 200) refuse('setup status answered ' + state.status + ' ' + state.text.slice(0, 300));
   if (JSON.parse(state.text).setup[0].status === true) {
     const existing = await ownerEmail();
-    if (!existing || existing.toLowerCase() !== process.env.PROVISION_OWNER_EMAIL.toLowerCase()) {
+    if (!existing || existing.toLowerCase() !== owner.email.toLowerCase()) {
       refuse('this Ghost is already set up with a different owner: it was claimed by someone else');
     }
     console.log(JSON.stringify({ created: false, alreadySetUp: true }));
@@ -106,15 +136,15 @@ async function main() {
   }
   const created = await call('POST', '/ghost/api/admin/authentication/setup/', {
     setup: [{
-      name: process.env.PROVISION_OWNER_NAME,
-      email: process.env.PROVISION_OWNER_EMAIL,
+      name: owner.name,
+      email: owner.email,
       password: crypto.randomBytes(32).toString('base64url'),
-      blogTitle: process.env.PROVISION_OWNER_SITE_TITLE,
+      blogTitle: owner.siteTitle,
     }],
   });
   if (created.status !== 201) refuse('setup answered ' + created.status + ' ' + created.text.slice(0, 300));
   const link = await call('POST', '/ghost/api/admin/authentication/password_reset/', {
-    password_reset: [{ email: process.env.PROVISION_OWNER_EMAIL }],
+    password_reset: [{ email: owner.email }],
   });
   if (link.status !== 200) refuse('the owner exists but the sign-in link request answered ' + link.status + ' ' + link.text.slice(0, 300));
   console.log(JSON.stringify({ created: true, alreadySetUp: false, linkRequested: true }));
@@ -130,28 +160,19 @@ main().catch((error) => {
  * and asks Ghost to email them a sign-in link. A Ghost that already has an
  * owner is left untouched and reported as `alreadySetUp`. Throws
  * `OwnerProvisionRefusedError` if Ghost refuses a step.
+ *
+ * The owner's values travel on the container's stdin, never in the docker
+ * argv, which the host's process list shows to every local user.
  */
 export function provisionOwner(
   { container, email, name, siteUrl, siteTitle },
   execFile = execFileSync
 ) {
-  const env = [
-    `PROVISION_OWNER_EMAIL=${email}`,
-    `PROVISION_OWNER_NAME=${name}`,
-    `PROVISION_OWNER_SITE_URL=${siteUrl}`,
-    `PROVISION_OWNER_SITE_TITLE=${siteTitle}`,
-  ];
-  const args = [
-    'exec',
-    ...env.flatMap((pair) => ['-e', pair]),
-    container,
-    'node',
-    '-e',
-    INNER_SCRIPT,
-  ];
+  const args = ['exec', '-i', container, 'node', '-e', INNER_SCRIPT];
+  const owner = JSON.stringify({ email, name, siteUrl, siteTitle });
   let output;
   try {
-    output = execFile('docker', args, { encoding: 'utf8' });
+    output = execFile('docker', args, { encoding: 'utf8', input: owner });
   } catch (error) {
     const stderr = typeof error.stderr === 'string' ? error.stderr : '';
     const at = stderr.indexOf(REFUSED_MARKER);
@@ -169,7 +190,9 @@ export function provisionOwner(
 }
 
 function main() {
-  process.stdout.write(`${JSON.stringify(provisionOwner(parseArgs(process.argv.slice(2))))}\n`);
+  const { secretsFile, ...args } = parseArgs(process.argv.slice(2));
+  const email = parseOwnerEmail(readFileSync(secretsFile, 'utf8'));
+  process.stdout.write(`${JSON.stringify(provisionOwner({ ...args, email }))}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

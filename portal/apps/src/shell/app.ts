@@ -62,6 +62,13 @@ export interface ShellOptions<S> extends OidcClient {
   readonly clock?: () => number;
   readonly fetch?: typeof fetch;
   readonly sessionSeconds?: number;
+  /**
+   * Called with one JSON line, the failing step and the error's name and
+   * nothing else, wherever the shell swallows a handler's error. The message,
+   * the stack, the code and the tokens never reach it. A hook that throws is
+   * ignored: logging must not change an answer.
+   */
+  readonly onError?: (line: string) => void;
   /** False only for local development over plain HTTP. */
   readonly secureCookies?: boolean;
 }
@@ -93,6 +100,16 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   // held here: an unauthenticated start must not use up capacity.
   const logins = new PendingLoginSealer();
   const spent = new SpentLogins(clock);
+
+  function report(step: 'bind' | 'landing' | 'action' | 'handler', error: unknown): void {
+    if (options.onError === undefined) return;
+    const name = error instanceof Error ? error.name : typeof error;
+    try {
+      options.onError(JSON.stringify({ event: 'portal.error', step, error: name }));
+    } catch {
+      // Nowhere left to report to.
+    }
+  }
 
   async function signIn(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', options.publicOrigin);
@@ -129,7 +146,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     let bound: S | null;
     try {
       bound = await options.bind(identity);
-    } catch {
+    } catch (error) {
+      report('bind', error);
       return text(response, 503, 'UNAVAILABLE', { 'set-cookie': clearLogin });
     }
     if (bound === null) return text(response, 403, 'SIGN_IN_REFUSED', { 'set-cookie': clearLogin });
@@ -180,7 +198,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
         subject: session.subject,
         orgId: session.orgId,
       });
-    } catch {
+    } catch (error) {
+      report('landing', error);
       return text(response, 500, 'FAILED');
     }
     send(
@@ -224,7 +243,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     let location: string;
     try {
       location = await run(session.bound, { subject: session.subject, orgId: session.orgId }, form);
-    } catch {
+    } catch (error) {
+      report('action', error);
       return text(response, 400, 'REFUSED');
     }
     response.writeHead(303, { ...SECURITY_HEADERS, location });
@@ -271,7 +291,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     if (route.method !== method) return text(response, 405, 'METHOD_NOT_ALLOWED');
     try {
       await route.run();
-    } catch {
+    } catch (error) {
+      report('handler', error);
       if (!response.headersSent) text(response, 500, 'FAILED');
     }
   };

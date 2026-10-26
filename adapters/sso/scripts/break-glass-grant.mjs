@@ -550,8 +550,24 @@ export async function grant({ lane, tenant, identity, reason, reference }, deps 
     }
     throw error;
   }
+  if (lane === 'incident') await refuseIfRevokedWhileActivating(deps, tenant, container, written);
   record(deps, { event: 'opened', ...state, recreated, previousStatus: result.previousStatus });
   return { ...state, recreated, previousStatus: result.previousStatus };
+}
+
+/**
+ * An activate that commits after a revoke has already removed this grant's
+ * state would leave the account active with no state and no clock. Checked
+ * after the commit, so a revoke that starts later finds the state itself. With
+ * no state the account is suspended again; a newer grant's state is its own
+ * clock, so the account is left to it. Either way this grant is refused.
+ */
+async function refuseIfRevokedWhileActivating(deps, tenant, container, written) {
+  if (stateFingerprint(deps, tenant) === written) return;
+  if (stateFingerprint(deps, tenant) === null && claimsFor(deps, tenant).length === 0) {
+    await deps.run({ container, action: 'revoke' });
+  }
+  throw new GrantRefusedError(`the grant for ${tenant} was revoked while it was opening`);
 }
 
 /**

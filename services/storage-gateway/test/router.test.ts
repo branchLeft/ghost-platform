@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ALLOWED_OPERATIONS } from '../src/contracts.js';
 import type { CredentialRecord, GatewayRequest } from '../src/contracts.js';
 import { guardTenant, routeRequest } from '../src/router.js';
 
@@ -305,5 +306,19 @@ describe('guardTenant: bucket and folder', () => {
     expect(verdict(req('GET', `/${BUCKET}/${key}`), { ...credential, bucket: 'Bad Bucket' })).toBe(
       'credential-invalid'
     );
+  });
+
+  // routeRequest refuses a key ending in a separator, so only a hand-built request reaches this clause.
+  it.each(ALLOWED_OPERATIONS)(
+    'refuses a routed key that is the folder followed by a separator and nothing else (%s)',
+    (operation) => {
+      const routed = { operation, bucket: BUCKET, key: `${FOLDER}/` };
+      expect(guardTenant(routed, credential)?.code).toBe('key-outside-folder');
+    }
+  );
+
+  it('admits a routed key with a name after the folder and separator', () => {
+    const routed = { operation: 'PutObject' as const, bucket: BUCKET, key: `${FOLDER}/a.png` };
+    expect(guardTenant(routed, credential)).toBeUndefined();
   });
 });

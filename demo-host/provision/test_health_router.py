@@ -20,6 +20,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -255,6 +256,96 @@ class FailClosedTests(_Case):
                 self.assertEqual(self.ask(port, "a"), 503)
 
 
+class DeadlineTests(_Case):
+    def _drip_listener(self, interval: float) -> str:
+        """A peer that sends one byte per `interval` and never a line end."""
+        make_tree(self.root)
+        path = hr.socket_path(self.root, SLOT, "a")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(path)
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def drip(conn):
+            with conn:
+                try:
+                    for _ in range(200):
+                        conn.sendall(b"x")
+                        time.sleep(interval)
+                except OSError:
+                    pass
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = listener.accept()
+                except OSError:
+                    return
+                threading.Thread(target=drip, args=(conn,), daemon=True).start()
+
+        threading.Thread(target=serve, daemon=True).start()
+        return path
+
+    def test_a_slow_drip_is_cut_off_at_the_total_deadline(self):
+        path = self._drip_listener(0.05)
+        started = time.monotonic()
+        with self.assertRaises(OSError):
+            hr.sidecar_status(path, timeout=0.4)
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_the_deadline_covers_the_whole_exchange_through_the_router(self):
+        self._drip_listener(0.05)
+        port = self.start_router()
+        with mock.patch.object(hr.sidecar_status, "__defaults__", (0.4,)):
+            started = time.monotonic()
+            self.assertEqual(self.ask(port, "a"), 503)
+        self.assertLess(time.monotonic() - started, 1.5)
+
+
+class ConnectionCapTests(_Case):
+    def _router(self, cap: int):
+        server = hr.make_server(SLOT, root=self.root, owner_uid=ME, port=0, max_connections=cap)
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close()))
+        return server, server.server_address[1]
+
+    def _hold(self, port: int, count: int) -> list[socket.socket]:
+        held = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(count)]
+        for conn in held:
+            self.addCleanup(conn.close)
+        return held
+
+    def _wait_for(self, server, count: int) -> None:
+        deadline = time.monotonic() + 3
+        while server.in_flight < count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(server.in_flight, count)
+
+    def test_a_connection_past_the_cap_is_refused_with_503(self):
+        self.sidecar("a", status=200)
+        server, port = self._router(2)
+        self._hold(port, 2)
+        self._wait_for(server, 2)
+        self.assertEqual(self.ask(port, "a"), 503)
+
+    def test_a_freed_slot_is_served_again(self):
+        self.sidecar("a", status=200)
+        server, port = self._router(2)
+        held = self._hold(port, 2)
+        self._wait_for(server, 2)
+        self.assertEqual(self.ask(port, "a"), 503)
+        held[0].close()
+        deadline = time.monotonic() + 3
+        while server.in_flight > 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(self.ask(port, "a"), 200)
+
+    def test_the_default_cap_is_bounded(self):
+        server, _ = self._router(hr.MAX_CONNECTIONS)
+        self.assertEqual(server.max_connections, hr.MAX_CONNECTIONS)
+        self.assertLessEqual(hr.MAX_CONNECTIONS, 64)
+
+
 class SocketDirectoryTests(_Case):
     def test_wrong_slot_directory_mode_is_refused(self):
         self.sidecar("a", status=200)
@@ -319,6 +410,16 @@ class SocketDirectoryTests(_Case):
         os.chmod(self.root, 0o777)
         with self.assertRaises(hr.SocketRefused):
             hr.verify_socket(self.root, SLOT, "a", ME)
+
+    def test_a_root_only_the_group_can_write_is_refused(self):
+        self.sidecar("a")
+        for mode in (0o770, 0o775):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.root, mode)
+                with self.assertRaises(hr.SocketRefused):
+                    hr.verify_socket(self.root, SLOT, "a", ME)
+                port = self.start_router()
+                self.assertEqual(self.ask(port, "a"), 503)
 
     def test_a_root_owned_by_someone_else_is_refused(self):
         self.sidecar("a")

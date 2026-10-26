@@ -12,6 +12,12 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 - **Changed output:** `ghost-settings.json` gains `social_web: false`, and
   `GhostSettings` gains the `social_web` field.
 
+**Changed output:** a `queue`-transport tenant or demo with mail enabled gains
+three Ghost mail environment keys (`mail__options__connectionTimeout`,
+`mail__options__greetingTimeout`, `mail__options__socketTimeout`; 5000, 5000
+and 10000 milliseconds), so a silent mail spool fails a reader's request in
+seconds instead of minutes. `smtp` transport output is unchanged.
+
 ## 0.2.0
 
 **A paying tenant's owner address reaches the host only through the secrets

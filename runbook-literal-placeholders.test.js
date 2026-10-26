@@ -19,7 +19,10 @@ const RUNBOOK_PATHS = [
   'services/broker/RUNBOOK-broker-deploy.md',
 ];
 
-const COMMAND_FENCE_LANGS = new Set(['bash', 'sql']);
+// Fences that show what a command printed, not what to run. Any other tag,
+// including none, is scanned. See runbook-literal-placeholders.md ("Which
+// fences are scanned").
+const DENIED_FENCE_LANGS = new Set(['text', 'txt', 'plaintext', 'output']);
 const FENCE_RE = /^```([a-zA-Z0-9_-]*)\s*$/;
 const PLACEHOLDER_RE = /<[^<>\n]+>/g;
 const ADDRESS_WORD_RE = /(?:^|[^a-z])(?:ip|ipv4|address|addr)$/i;
@@ -40,8 +43,8 @@ const FIXED_HOST_LITERALS = {
 const FIXED_HOST_LITERAL_VALUES = new Set(Object.values(FIXED_HOST_LITERALS));
 
 /**
- * Split a runbook's text into fenced blocks, returning only those whose
- * language is a command language this repo's runbooks use. Malformed input
+ * Split a runbook's text into fenced blocks, returning every block except
+ * those whose language is in DENIED_FENCE_LANGS. Malformed input
  * (an unterminated fence) is surfaced by leaving the last block open rather
  * than silently dropping it, so a truncated file cannot pass by accident.
  */
@@ -67,7 +70,7 @@ function commandBlocks(text) {
   if (current !== null) {
     blocks.push(current);
   }
-  return blocks.filter((b) => COMMAND_FENCE_LANGS.has(b.lang));
+  return blocks.filter((b) => !DENIED_FENCE_LANGS.has(b.lang));
 }
 
 /** See runbook-literal-placeholders.md ("`addressPlaceholders`"). */
@@ -581,6 +584,76 @@ test('self-test: the scanner leaves the corrected lookup form alone', () => {
 test('self-test: the scanner does not scan a non-command fence language', () => {
   const sample = ['```text', 'root@<edge1-ipv4>', '```'].join('\n');
   assert.deepEqual(commandBlocks(sample), []);
+});
+
+test('self-test: the scanner catches a placeholder in a sh fence', () => {
+  const sample = ['```sh', 'ssh root@<edge1-ipv4>', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>']);
+});
+
+test('self-test: the scanner catches a placeholder in a shell fence', () => {
+  const sample = ['```shell', 'ssh root@<edge1-ipv4>', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>']);
+});
+
+test('self-test: the scanner catches a placeholder in a console fence', () => {
+  const sample = ['```console', 'ssh root@<edge1-ipv4>', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>']);
+});
+
+test('self-test: the scanner catches a placeholder in an untagged fence', () => {
+  const sample = ['```', 'ssh root@<edge1-ipv4>', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>']);
+});
+
+test('self-test: the scanner catches a placeholder in a sql fence', () => {
+  const sample = ['```sql', '-- host <edge1-ipv4>', '```'].join('\n');
+  const blocks = commandBlocks(sample);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>']);
+});
+
+test('self-test: the scanner catches a fixed-host literal in an sh fence and an untagged fence', () => {
+  const shSample = ['```sh', `ssh root@${FIXED_HOST_LITERALS.edge1}`, '```'].join('\n');
+  const untaggedSample = ['```', `ssh root@${FIXED_HOST_LITERALS.edge1}`, '```'].join('\n');
+  for (const sample of [shSample, untaggedSample]) {
+    const blocks = commandBlocks(sample);
+    assert.equal(blocks.length, 1);
+    assert.deepEqual(fixedHostLiterals(blocks[0].lines.join('\n')), [FIXED_HOST_LITERALS.edge1]);
+  }
+});
+
+test('self-test: an unlisted fence tag is scanned', () => {
+  for (const tag of ['fishscript', 'zsh']) {
+    const sample = [`\`\`\`${tag}`, 'ssh root@<edge1-ipv4>', '```'].join('\n');
+    const blocks = commandBlocks(sample);
+    assert.equal(blocks.length, 1, tag);
+    assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>'], tag);
+  }
+});
+
+test('self-test: fence tags are matched case-insensitively', () => {
+  const upper = ['```SH', 'ssh root@<edge1-ipv4>', '```'].join('\n');
+  const blocks = commandBlocks(upper);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<edge1-ipv4>']);
+  const denied = ['```TEXT', 'root@<edge1-ipv4>', '```'].join('\n');
+  assert.deepEqual(commandBlocks(denied), []);
+});
+
+test('self-test: every denied fence tag is skipped', () => {
+  for (const tag of DENIED_FENCE_LANGS) {
+    const sample = [`\`\`\`${tag}`, 'root@<edge1-ipv4>', '```'].join('\n');
+    assert.deepEqual(commandBlocks(sample), [], tag);
+  }
 });
 
 test('self-test: the scanner leaves a non-address placeholder that merely names a fixed host alone', () => {

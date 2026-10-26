@@ -257,6 +257,10 @@ def images_from_env(environ: Mapping[str, str]) -> Images:
     return Images(**values)
 
 
+def metrics_dir_from_env(environ: Mapping[str, str]) -> pathlib.Path:
+    return pathlib.Path(environ.get(f"{ENV_PREFIX}METRICS_DIR", bw.DEFAULT_BACKUP_AGE_METRICS_DIR))
+
+
 def config_from_env(environ: Mapping[str, str]) -> DrillConfig:
     try:
         max_age_hours = float(environ.get(f"{ENV_PREFIX}MAX_BACKUP_AGE_HOURS", DEFAULT_MAX_BACKUP_AGE_HOURS))
@@ -270,7 +274,7 @@ def config_from_env(environ: Mapping[str, str]) -> DrillConfig:
         identity_dir=pathlib.Path(environ.get(f"{ENV_PREFIX}IDENTITY_DIR", DEFAULT_IDENTITY_DIR)),
         work_dir=pathlib.Path(environ.get(f"{ENV_PREFIX}WORK_DIR", DEFAULT_WORK_DIR)),
         flag_root=pathlib.Path(environ.get(f"{ENV_PREFIX}FLAG_ROOT", DEFAULT_FLAG_ROOT)),
-        metrics_dir=pathlib.Path(environ.get(f"{ENV_PREFIX}METRICS_DIR", bw.DEFAULT_BACKUP_AGE_METRICS_DIR)),
+        metrics_dir=metrics_dir_from_env(environ),
         max_backup_age_s=max_age_hours * 3600,
         mysql_memory=environ.get(f"{ENV_PREFIX}MYSQL_MEMORY", DEFAULT_CONTAINER_MEMORY),
         ghost_memory=environ.get(f"{ENV_PREFIX}GHOST_MEMORY", DEFAULT_CONTAINER_MEMORY),
@@ -475,7 +479,7 @@ def container_mysql_runner(*, runner: Runner, image: str, network: str) -> Runne
     the pinned recovery image on the drill's network. The password crosses
     as an environment value, never argv."""
 
-    def run(argv, *, env, stdin=None, capture_output=False, text=False, check=False):
+    def run(argv, *, env, stdin=None, capture_output=False, text=False, check=False, timeout: float | None = None):
         docker_argv = ["docker", "run", "--rm", *NO_LOGS, "--network", network]
         if stdin is not None:
             docker_argv.append("-i")
@@ -487,6 +491,7 @@ def container_mysql_runner(*, runner: Runner, image: str, network: str) -> Runne
             capture_output=capture_output,
             text=text,
             check=check,
+            timeout=timeout,
         )
 
     return run
@@ -901,7 +906,8 @@ def _previous_last_success(path: pathlib.Path) -> float | None:
     return None
 
 
-def render_metrics(report: DrillReport, *, ran_at: float, last_success: float | None) -> str:
+def render_metrics(report: DrillReport, *, ran_at: float, last_success: float | None,
+                   refusal: str | None = None) -> str:
     labels = f'tenant="{bw._escape_label_value(report.tenant)}",copy="{bw._escape_label_value(report.copy)}"'
     gauges: list[tuple[str, str, float | None]] = [
         ("last_run_timestamp_seconds", "Unix time the drill last ran.", ran_at),
@@ -921,16 +927,36 @@ def render_metrics(report: DrillReport, *, ran_at: float, last_success: float | 
                   f"{METRIC_PREFIX}{name} {value}"]
     lines += [f"# HELP {METRIC_PREFIX}last_run_info Which tenant and copy the last run drilled.",
               f"# TYPE {METRIC_PREFIX}last_run_info gauge", f"{METRIC_PREFIX}last_run_info{{{labels}}} 1"]
+    lines += [f"# HELP {METRIC_PREFIX}last_run_refused 1 if the last run was refused before it started, else 0.",
+              f"# TYPE {METRIC_PREFIX}last_run_refused gauge",
+              f"{METRIC_PREFIX}last_run_refused {1.0 if refusal else 0.0}"]
+    if refusal:
+        lines += [f"# HELP {METRIC_PREFIX}last_run_refused_info Why the last run was refused before it started.",
+                  f"# TYPE {METRIC_PREFIX}last_run_refused_info gauge",
+                  f'{METRIC_PREFIX}last_run_refused_info{{reason="{bw._escape_label_value(refusal)}"}} 1']
     return "\n".join(lines) + "\n"
 
 
-def record_metrics(report: DrillReport, *, metrics_dir: pathlib.Path, ran_at: float) -> None:
+def record_metrics(report: DrillReport, *, metrics_dir: pathlib.Path, ran_at: float,
+                   refusal: str | None = None) -> None:
     """The last-success timestamp only ever advances on a passing run, so a
-    drill that fails or stops running shows as a growing age."""
+    drill that fails, is refused, or stops running shows as a growing age."""
     metrics_dir.mkdir(parents=True, exist_ok=True)
     path = metrics_dir / METRICS_FILENAME
     last_success = ran_at if report.ok else _previous_last_success(path)
-    bw.write_textfile_atomically(path, render_metrics(report, ran_at=ran_at, last_success=last_success))
+    bw.write_textfile_atomically(
+        path, render_metrics(report, ran_at=ran_at, last_success=last_success, refusal=refusal))
+
+
+def _refuse(args: argparse.Namespace, *, environ: Mapping[str, str], hooks: Hooks, reason: str) -> int:
+    """Exports a run refused before it started, and returns its exit code.
+    The last-success timestamp is left as it was."""
+    try:
+        record_metrics(DrillReport(tenant=args.tenant or "", copy=args.copy_name or "", error=reason),
+                       metrics_dir=metrics_dir_from_env(environ), ran_at=hooks.now().timestamp(), refusal=reason)
+    except OSError as exc:
+        print(f"restore_drill: could not export the refusal: {exc}", file=sys.stderr)
+    return 2
 
 
 def format_report(report: DrillReport) -> list[str]:
@@ -977,23 +1003,23 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
         hooks.content_timeout_s = float(environ.get(f"{ENV_PREFIX}CONTENT_TIMEOUT_S", hooks.content_timeout_s))
     except ValueError:
         print(f"restore_drill: {ENV_PREFIX}CONTENT_TIMEOUT_S is not a number", file=sys.stderr)
-        return 2
+        return _refuse(args, environ=environ, hooks=hooks, reason="config")
     try:
         config = config_from_env(environ)
         tenants = read_tenants(args.tenants_file)
     except (DrillConfigError, OSError) as exc:
         print(f"restore_drill: {exc}", file=sys.stderr)
-        return 2
+        return _refuse(args, environ=environ, hooks=hooks, reason="config")
     if not tenants:
         print(f"restore_drill: {args.tenants_file} names no tenant", file=sys.stderr)
-        return 2
+        return _refuse(args, environ=environ, hooks=hooks, reason="no_tenants")
     try:
         config.flag_root.mkdir(mode=0o755, parents=True, exist_ok=True)
         lock = open(config.flag_root / "drill.lock", "w")  # noqa: SIM115 -- held for the whole run
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         print(f"restore_drill: another drill run holds the lock, or it cannot be taken: {exc}", file=sys.stderr)
-        return 2
+        return _refuse(args, environ=environ, hooks=hooks, reason="lock")
     previous = signal.signal(signal.SIGTERM, _on_sigterm)
     try:
         with lock:

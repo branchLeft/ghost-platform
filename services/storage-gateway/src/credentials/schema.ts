@@ -17,6 +17,7 @@ export const credentials = sqliteTable(
     bucket: text('bucket').notNull(),
     state: text('state', { enum: ['active', 'disabled', 'revoked'] }).notNull(),
     createdAt: text('created_at').notNull(),
+    disabledAt: text('disabled_at'),
   },
   (table) => [
     check('credentials_state_known', sql`${table.state} IN ('active', 'disabled', 'revoked')`),

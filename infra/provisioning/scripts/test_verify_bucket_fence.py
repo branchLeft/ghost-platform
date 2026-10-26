@@ -514,6 +514,18 @@ class TestClassification(unittest.TestCase):
         self.assertEqual(outcome, "error")
         self.assertIn("did not complete", reason)
 
+    def test_a_redirect_with_no_s3_error_document_is_inconclusive(self):
+        self.assertEqual(verify.classify(301, b"")[0], "error")
+        self.assertEqual(verify.classify(307, b"<html>moved</html>")[0], "error")
+
+    def test_a_redirect_carrying_a_non_denial_code_is_inconclusive(self):
+        outcome, _ = verify.classify(301, b"<Error><Code>PermanentRedirect</Code></Error>")
+        self.assertEqual(outcome, "error")
+
+    def test_a_redirect_carrying_a_denial_code_is_still_read_by_its_code(self):
+        outcome, _ = verify.classify(301, b"<Error><Code>AccessDenied</Code></Error>")
+        self.assertEqual(outcome, "denied")
+
     def test_an_object_whose_own_contents_look_like_a_denial_is_still_allowed(self):
         # The body is not consulted on success, and a 2xx is a successful read
         # whatever it returned.
@@ -1289,6 +1301,7 @@ class TestNotPrincipalProbe(unittest.TestCase):
     def _answers(self, operator_read, foreign_read):
         return {
             ("operator", "list-buckets", None): OWNER,
+            ("foreign", "list-buckets", None): OWNER,
             ("operator", "get-bucket-policy", FENCED): NO_SUCH_BUCKET_POLICY,
             ("operator", "put-object", FENCED): OK_EMPTY,
             ("operator", "put-bucket-policy", FENCED): OK_EMPTY,
@@ -4018,6 +4031,16 @@ class TestApplyMode(unittest.TestCase):
         code, output, _ = run(self._answers(), extra_args=["--apply"], transport=Sequenced(self._answers()))
         self.assertEqual(code, 1)
         self.assertIn("THE BUCKET MAY BE LOCKED", output)
+
+    def test_a_first_policy_put_that_gets_no_response_stops_after_one_put(self):
+        answers = self._answers()
+        answers[("operator", "put-bucket-policy", FENCED)] = OSError("timed out")
+        code, output, transport = run(answers, extra_args=["--apply"])
+        self.assertEqual(code, 1)
+        self.assertRegex(output, r"FAIL\s+the policy is applied\s+-- the request did not complete")
+        puts = [c for c in transport.calls if c == ("operator", "put-bucket-policy", FENCED)]
+        self.assertEqual(len(puts), 1)
+        self.assertNotIn("THE BUCKET IS STILL ADMINISTRABLE", output)
 
     def test_apply_waits_a_dwell_between_the_two_puts(self):
         # THE CRITICAL GAP: `--apply` used to send both PUTs back to back, with

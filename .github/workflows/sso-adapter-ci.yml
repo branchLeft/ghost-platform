@@ -7,8 +7,15 @@ name: SSO adapter CI
 on:
   push:
     branches: [main]
+  # A pull request starts this only when its diff touches something the job
+  # reads: the adapter, and the drain sidecar's Dockerfile (a unit test reads
+  # it). Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
+    paths:
+      - 'adapters/sso/**'
+      - 'services/drain-sidecar/Dockerfile'
+      - '.github/workflows/sso-adapter-ci.yml'
 
 permissions:
   contents: read

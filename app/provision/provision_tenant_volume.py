@@ -31,12 +31,21 @@ TENANT_UID_MAX = 30999
 
 # Mirrors `infra/tenant/naming.ts`'s slug rules; nothing imports the rule
 # across those files, so `scripts/assert-slug-pattern-consistency.py`
-# compares them rather than a shared import. `blog` is deliberately not
-# reserved -- it is tenant-zero's own live slug. See
+# compares them rather than a shared import. The reserved names are taken from
+# `render-core/src/naming.ts`, which also holds the host mail spool's own stack
+# name, `mail-spool`, that `infra/tenant/naming.ts` does not reserve. `blog` is
+# deliberately not reserved -- it is tenant-zero's own live slug. See
 # provision_tenant_volume.md#slug-pattern.
 SLUG_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 MAX_SLUG_LENGTH = 26
-RESERVED_STACK_NAMES = ("website", "edge", "db", "monitoring", "nextcloud1")
+RESERVED_STACK_NAMES = (
+    "website",
+    "edge",
+    "db",
+    "monitoring",
+    "nextcloud1",
+    "mail-spool",
+)
 
 # The UID register lives in a root-owned 0700 directory, not the tenant's own
 # content volume: unlink permission is governed by the containing directory,

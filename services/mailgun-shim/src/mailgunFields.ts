@@ -134,20 +134,143 @@ function asArray(value: string | string[] | undefined): string[] {
   return Array.isArray(value) ? value : [value];
 }
 
+/**
+ * Hard ceilings on one send request, so a single tenant cannot exhaust the
+ * memory of the process that serves every tenant. Fixed, not configurable;
+ * `recipients` is not the SMTP per-message cap. See mailgunFields.md#multipart-limits.
+ */
+export const MULTIPART_LIMITS = {
+  fields: 1100,
+  parts: 1200,
+  fieldSize: 5 * 1024 * 1024,
+  fieldNameSize: 100,
+  totalBytes: 10 * 1024 * 1024,
+  recipients: 1000,
+} as const;
+
+export type MultipartLimitReason = keyof typeof MULTIPART_LIMITS;
+
+export class MultipartLimitError extends Error {
+  readonly reason: MultipartLimitReason;
+  readonly limit: number;
+
+  constructor(reason: MultipartLimitReason) {
+    const limit = MULTIPART_LIMITS[reason];
+    super(`Request exceeds the ${reason} limit of ${limit}`);
+    this.name = 'MultipartLimitError';
+    this.reason = reason;
+    this.limit = limit;
+  }
+}
+
+/**
+ * Busboy reports `parts` and `fieldSize` as reached, not exceeded: a body of
+ * exactly that many parts, or a value of exactly that many bytes, already
+ * trips them. One more is passed so the stated ceilings are the largest
+ * accepted values. `fields` fires only on the field after the cap, as is.
+ * Busboy 1.x never applies `fieldNameSize`; the name length is checked here.
+ */
+const BUSBOY_LIMITS = {
+  fields: MULTIPART_LIMITS.fields,
+  parts: MULTIPART_LIMITS.parts + 1,
+  fieldSize: MULTIPART_LIMITS.fieldSize + 1,
+} as const;
+
+/** The limit one accepted-looking field breaks, if any; `fieldBytes` already includes this field. */
+export function findFieldLimitReason(
+  name: string,
+  info: { nameTruncated: boolean; valueTruncated: boolean },
+  fieldBytes: number
+): MultipartLimitReason | null {
+  if (info.nameTruncated || Buffer.byteLength(name) > MULTIPART_LIMITS.fieldNameSize) {
+    return 'fieldNameSize';
+  }
+  if (info.valueTruncated) {
+    return 'fieldSize';
+  }
+  return fieldBytes > MULTIPART_LIMITS.totalBytes ? 'totalBytes' : null;
+}
+
+/**
+ * Splits comma-joined `to` values into trimmed, non-empty recipients, one
+ * segment at a time so a field of nothing but commas allocates nothing.
+ *
+ * Returns null when there are more than MULTIPART_LIMITS.recipients.
+ */
+function collectRecipients(values: string[]): string[] | null {
+  const recipients: string[] = [];
+  for (const value of values) {
+    let start = 0;
+    while (start <= value.length) {
+      const comma = value.indexOf(',', start);
+      const end = comma === -1 ? value.length : comma;
+      const recipient = value.slice(start, end).trim();
+      if (recipient) {
+        recipients.push(recipient);
+        if (recipients.length > MULTIPART_LIMITS.recipients) {
+          return null;
+        }
+      }
+      start = end + 1;
+    }
+  }
+  return recipients;
+}
+
+/**
+ * Reads the multipart body of a Mailgun send request into fields. Files are
+ * never read. Refuses past MULTIPART_LIMITS: a field or part over a cap is
+ * refused rather than silently dropped or truncated, and the request is
+ * unpiped so no more of it is buffered.
+ *
+ * @throws MultipartLimitError when the body or the recipient list exceeds a limit.
+ * @throws Error when the body is malformed or a header-bound field carries
+ *   a CR, LF or NUL, or an invalid header name or v:email-id.
+ */
 export function parseMailgunMessageFields(req: Request): Promise<ParsedMessageFields> {
   return new Promise((resolve, reject) => {
     const fields: Record<string, string | string[]> = {};
-    const busboy = Busboy({ headers: req.headers });
+    const busboy = Busboy({ headers: req.headers, limits: BUSBOY_LIMITS });
+    let isSettled = false;
+    let fieldBytes = 0;
 
-    busboy.on('field', (name, value) => {
+    const refuse = (error: Error): void => {
+      if (isSettled) {
+        return;
+      }
+      isSettled = true;
+      req.unpipe(busboy);
+      reject(error);
+    };
+
+    busboy.on('fieldsLimit', () => {
+      refuse(new MultipartLimitError('fields'));
+    });
+
+    busboy.on('partsLimit', () => {
+      refuse(new MultipartLimitError('parts'));
+    });
+
+    busboy.on('field', (name, value, info) => {
+      fieldBytes += Buffer.byteLength(name) + Buffer.byteLength(value);
+      const reason = findFieldLimitReason(name, info, fieldBytes);
+      if (reason !== null) {
+        refuse(new MultipartLimitError(reason));
+        return;
+      }
       accumulate(fields, name, value);
     });
 
     busboy.on('error', (err) => {
-      reject(err instanceof Error ? err : new Error(String(err)));
+      refuse(err instanceof Error ? err : new Error(String(err)));
     });
 
     busboy.on('close', () => {
+      const to = collectRecipients(asArray(fields.to));
+      if (to === null) {
+        refuse(new MultipartLimitError('recipients'));
+        return;
+      }
       let recipientVariables: Record<string, Record<string, string>> = {};
       const rawRecipientVariables = asString(fields['recipient-variables']);
       if (rawRecipientVariables) {
@@ -230,9 +353,7 @@ export function parseMailgunMessageFields(req: Request): Promise<ParsedMessageFi
       }
 
       resolve({
-        to: asArray(fields.to)
-          .flatMap((v) => v.split(',').map((e) => e.trim()))
-          .filter(Boolean),
+        to,
         from,
         subject,
         html: asString(fields.html),

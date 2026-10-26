@@ -152,4 +152,22 @@ describe('GET /v3/:domain/events', () => {
     });
     expect(res.status).toBe(401);
   });
+
+  it('401s on the cursor route without credentials and returns no events', async () => {
+    store.recordEvent({
+      domain: DOMAIN,
+      type: 'delivered',
+      severity: null,
+      recipient: 'member@example.com',
+      emailId: null,
+      providerMessageId: null,
+      timestamp: Date.now() / 1000,
+      errorCode: null,
+      errorMessage: null,
+    });
+
+    const res = await fetch(`${server.baseUrl}/v3/${DOMAIN}/events/0`);
+    expect(res.status).toBe(401);
+    expect(await res.json()).not.toHaveProperty('items');
+  });
 });

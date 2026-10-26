@@ -10,6 +10,7 @@ data-directory rebuild while naming a log the new incarnation later reaches
 by coincidence must never be read as a valid resume point.
 """
 
+import math
 import os
 import shutil
 import subprocess
@@ -24,16 +25,29 @@ UUID_B = "bbbbbbbb-1111-1111-1111-111111111111"
 
 
 class FakeRun:
-    def __init__(self, show_binary_logs=None, fail_command=None, fail_log=None, server_uuid=UUID_A):
+    def __init__(
+        self,
+        show_binary_logs=None,
+        fail_command=None,
+        fail_log=None,
+        server_uuid=UUID_A,
+        timeout_log=None,
+    ):
         self.calls = []
+        self.timeouts = []
         self.show_binary_logs = show_binary_logs or []
         self.fail_command = fail_command
         self.fail_log = fail_log
         self.server_uuid = server_uuid
+        self.timeout_log = timeout_log
 
-    def __call__(self, argv, env=None, capture_output=None, text=None, check=None):
+    def __call__(self, argv, env=None, capture_output=None, text=None, check=None, timeout=None):
         self.calls.append(list(argv))
+        self.timeouts.append(timeout)
         command = argv[0]
+
+        if command == "mysqlbinlog" and argv[-1] == self.timeout_log:
+            raise subprocess.TimeoutExpired(argv, timeout)
 
         if command == self.fail_command:
             log_name = argv[-1] if command == "mysqlbinlog" else None
@@ -279,6 +293,75 @@ class RunShipTests(unittest.TestCase):
         # "mysql-bin.000002" would be silently skipped instead of shipped.
         self.assertEqual(shipped, ["mysql-bin.000001", "mysql-bin.000002"])
         self.assertEqual(self.uploads[-1]["key"], f"binlogs/{UUID_B}/db1-mysql-bin.000002.age")
+
+
+class FetchRawBinlogTimeoutTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out_dir = tmp.name
+
+    def _mysqlbinlog_timeouts(self, run):
+        return [t for call, t in zip(run.calls, run.timeouts) if call[0] == "mysqlbinlog"]
+
+    def test_the_mysqlbinlog_call_is_given_a_positive_finite_timeout(self):
+        run = FakeRun()
+        sb.fetch_raw_binlog(
+            socket_path="/tmp/mysqld.sock",
+            password="pw",
+            log_name="mysql-bin.000001",
+            out_dir=self.out_dir,
+            run=run,
+        )
+        (timeout,) = self._mysqlbinlog_timeouts(run)
+        self.assertIsNotNone(timeout)
+        self.assertTrue(math.isfinite(timeout))
+        self.assertGreater(timeout, 0)
+
+    def test_a_timed_out_mysqlbinlog_raises_ship_error_naming_the_command_log_and_seconds(self):
+        run = FakeRun(timeout_log="mysql-bin.000001")
+        with self.assertRaises(sb.ShipError) as caught:
+            sb.fetch_raw_binlog(
+                socket_path="/tmp/mysqld.sock",
+                password="pw",
+                log_name="mysql-bin.000001",
+                out_dir=self.out_dir,
+                run=run,
+            )
+        seconds = self._mysqlbinlog_timeouts(run)[0]
+        message = str(caught.exception)
+        self.assertIn("mysqlbinlog", message)
+        self.assertIn("mysql-bin.000001", message)
+        self.assertIn(str(seconds), message)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertIsNone(caught.exception.__context__)
+
+    def test_a_timed_out_ship_leaves_the_marker_at_the_last_success(self):
+        dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, dir, ignore_errors=True)
+        marker_path = os.path.join(dir, "last-shipped")
+        uploads = []
+        run = FakeRun(
+            show_binary_logs=["mysql-bin.000001", "mysql-bin.000002", "mysql-bin.000003"],
+            timeout_log="mysql-bin.000002",
+        )
+        with self.assertRaises(sb.ShipError):
+            sb.run_ship(
+                socket_path="/tmp/mysqld.sock",
+                password="pw",
+                recipient="age1recipient",
+                bucket="branchleft-db-backups",
+                endpoint="hel1.your-objectstorage.com",
+                region="hel1",
+                access_key="AK",
+                secret_key="SECRET",
+                marker_path=marker_path,
+                run=run,
+                upload=lambda **kwargs: uploads.append(kwargs),
+            )
+        marker = sb.load_marker(marker_path)
+        self.assertEqual(marker.log_name, "mysql-bin.000001")
+        self.assertEqual(len(uploads), 1)
 
 
 class RunStatusTests(unittest.TestCase):

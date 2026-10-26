@@ -5,6 +5,10 @@ name: Demo host stack CI
 # cloud credential. main: plan, then an apply held by the `production-demo-host`
 # environment's gate (a required reviewer, or the branchleft-reviewer App's
 # rule). See infra-hosts-ci.yml for each step.
+#
+# Its apply is routed by the spend gate as the hosts stack's is: a plan whose
+# every change is free runs in `production-free`, and any other plan stays in
+# `production-demo-host` with the owner as reviewer.
 on:
   push:
     branches: [main]
@@ -13,6 +17,11 @@ on:
       - 'infra/scripts/assert-no-hetzner-deletes.py'
       - 'infra/scripts/assert-environment-gated.py'
       - 'infra/scripts/test_assert_environment_gated.py'
+      - 'infra/scripts/choose-apply-environment.py'
+      - 'infra/scripts/test_choose_apply_environment.py'
+      - 'infra/scripts/test_apply_environment_routing.py'
+      - 'infra/scripts/fixtures/choose-apply-environment/**'
+      - '.github/workflows/infra-hosts-ci.yml'
       - '.github/workflows/infra-demo-host-ci.yml'
   pull_request:
     branches: [main]
@@ -21,6 +30,11 @@ on:
       - 'infra/scripts/assert-no-hetzner-deletes.py'
       - 'infra/scripts/assert-environment-gated.py'
       - 'infra/scripts/test_assert_environment_gated.py'
+      - 'infra/scripts/choose-apply-environment.py'
+      - 'infra/scripts/test_choose_apply_environment.py'
+      - 'infra/scripts/test_apply_environment_routing.py'
+      - 'infra/scripts/fixtures/choose-apply-environment/**'
+      - '.github/workflows/infra-hosts-ci.yml'
       - '.github/workflows/infra-demo-host-ci.yml'
 
 # `packages: read` because @branchleft/hetzner-host and
@@ -68,6 +82,12 @@ jobs:
           python3 infra/scripts/assert-environment-gated.py --self-test
           python3 infra/scripts/test_assert_environment_gated.py
 
+      - name: Apply-environment routing tests
+        working-directory: .
+        run: |
+          python3 infra/scripts/test_choose_apply_environment.py
+          python3 infra/scripts/test_apply_environment_routing.py
+
       - name: Test
         run: npm run test:unit
 
@@ -79,6 +99,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     outputs:
       has_changes: ${{ steps.noop.outputs.has_changes }}
+      # Which environment the paired apply runs in. Unset or anything but
+      # `production-free` is read as `production-demo-host`.
+      apply_environment: ${{ steps.route.outputs.environment }}
 
     defaults:
       run:
@@ -132,6 +155,7 @@ jobs:
           printf '\nencryptionsalt: %s\n' "$PULUMI_SALT_DEMO_HOST" >> Pulumi.production.yaml
 
       - name: Preview the plan
+        id: preview
         run: pulumi preview --stack production --json > preview.json
 
       # The update plan is saved by a second preview, apart from the one above,
@@ -145,6 +169,7 @@ jobs:
         run: pulumi preview --stack production --save-plan preview-plan.json > /dev/null
 
       - name: Refuse a plan that destroys the demo host
+        id: deletes
         run: |
           python3 ../scripts/assert-no-hetzner-deletes.py --self-test
           python3 ../scripts/assert-no-hetzner-deletes.py --verify-coverage .
@@ -154,6 +179,53 @@ jobs:
             python3 -m json.tool preview.json
             exit 1
           fi
+
+      # Routing, as in infra-hosts-ci.yml. These three steps never fail the
+      # plan: any trouble here leaves the output unset, which the apply reads
+      # as `production-demo-host`, where the owner approves. The gate runs
+      # only when every step before it succeeded.
+      - name: Decide whether the plan could cost money
+        id: spend
+        continue-on-error: true
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@10b735392df0f32742c0f322b666c2c7249b782c # v1.0.12
+        with:
+          preview-json: preview.json
+          working-directory: infra/demo-host
+
+      # Only the reviewer App's enabled rule on `production-free` counts
+      # (integration id 5090756); any failure to read it counts as none. The
+      # apply job checks again before it touches a credential.
+      - name: Check the free apply environment is gated
+        id: free_ready
+        if: always()
+        continue-on-error: true
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          custom=0
+          if out=$(gh api "repos/${GITHUB_REPOSITORY}/environments/production-free/deployment_protection_rules" \
+            --jq '[.custom_deployment_protection_rules[]? | select(.enabled == true and .app.id == 5090756)] | length' 2>/dev/null); then
+            custom="${out}"
+          fi
+          case "${custom}" in '' | *[!0-9]*) custom=0 ;; esac
+          ready=false
+          if [ "${custom}" -gt 0 ]; then ready=true; fi
+          echo "ready=${ready}" >> "$GITHUB_OUTPUT"
+
+      - name: Choose the apply environment
+        id: route
+        if: always()
+        continue-on-error: true
+        working-directory: .
+        env:
+          SPEND_VERDICT: ${{ steps.spend.outputs.verdict }}
+          PREVIEW_OUTCOME: ${{ steps.preview.outcome }}
+          DELETE_GUARD_OUTCOME: ${{ steps.deletes.outcome }}
+          FREE_ENVIRONMENT_READY: ${{ steps.free_ready.outputs.ready }}
+        run: |
+          python3 -I infra/scripts/choose-apply-environment.py --owner-environment production-demo-host \
+            --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
 
       # Fails closed: `has_changes` is `false` only for a plan that parsed and
       # changes nothing, outputs included; the action's README says what else
@@ -201,8 +273,9 @@ jobs:
     # whatever gates this stack. The secrets above are repository-level, so
     # none moves with the name. A job naming an environment that does not
     # exist makes GitHub create it with NO protection; the first step below
-    # fails the job closed in that case.
-    environment: production-demo-host
+    # fails the job closed in that case. A plan the spend gate says is free
+    # runs in `production-free` instead; only the exact string selects it.
+    environment: ${{ needs.plan.outputs.apply_environment == 'production-free' && 'production-free' || 'production-demo-host' }}
 
     concurrency:
       group: pulumi-demo-host-deploy
@@ -213,6 +286,7 @@ jobs:
         working-directory: infra/demo-host
 
     env:
+      APPLY_ENVIRONMENT: ${{ needs.plan.outputs.apply_environment == 'production-free' && 'production-free' || 'production-demo-host' }}
       PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_PASSPHRASE_DEMO_HOST }}
       PULUMI_SALT_DEMO_HOST: ${{ secrets.PULUMI_SALT_DEMO_HOST }}
       HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN_DEMOS }}
@@ -228,24 +302,33 @@ jobs:
 
       # After checkout: the guard script lives in the repo. Checkout reads no
       # environment secret, so the gate still precedes every credentialed step.
+      # Checks the environment this job is actually in (APPLY_ENVIRONMENT) and
+      # refuses a name that is neither of the two.
       - name: Refuse to apply through an ungated environment
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
+          case "${APPLY_ENVIRONMENT}" in
+            production-demo-host | production-free) ;;
+            *)
+              echo "::error::the apply environment is neither production-demo-host nor production-free." >&2
+              exit 1
+              ;;
+          esac
           env_json=$(mktemp)
           rules_json=$(mktemp)
           # Two reads, both required: a custom deployment protection rule
           # (the branchleft-reviewer App) is NOT listed in protection_rules,
           # only in deployment_protection_rules. Any API error fails closed.
-          gh api "repos/${GITHUB_REPOSITORY}/environments/production-demo-host" > "$env_json" \
-            || { echo "::error::could not read the production-demo-host environment" >&2; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/environments/production-demo-host/deployment_protection_rules" > "$rules_json" \
-            || { echo "::error::could not read the production-demo-host deployment protection rules" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/environments/${APPLY_ENVIRONMENT}" > "$env_json" \
+            || { echo "::error::could not read the ${APPLY_ENVIRONMENT} environment" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/environments/${APPLY_ENVIRONMENT}/deployment_protection_rules" > "$rules_json" \
+            || { echo "::error::could not read the ${APPLY_ENVIRONMENT} deployment protection rules" >&2; exit 1; }
           python3 infra/scripts/assert-environment-gated.py --self-test > /dev/null
           if ! python3 infra/scripts/assert-environment-gated.py "$env_json" "$rules_json"; then
-            echo "::error::the production-demo-host environment has neither a required-reviewer rule nor an enabled branchleft-reviewer deployment protection rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
+            echo "::error::the ${APPLY_ENVIRONMENT} environment has neither a required-reviewer rule nor an enabled branchleft-reviewer deployment protection rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply." >&2
             exit 1
           fi
 
@@ -291,6 +374,37 @@ jobs:
           python3 ../scripts/assert-no-hetzner-deletes.py --verify-coverage .
 
           if ! python3 ../scripts/assert-no-hetzner-deletes.py preview.json; then
+            echo "--- full plan follows ---"
+            python3 -m json.tool preview.json
+            exit 1
+          fi
+
+      # The route was chosen from the plan job's preview; this is the preview
+      # this apply acts on. In `production-free` nothing but a FREE verdict on
+      # it may reach `pulumi up`. In `production-demo-host` the owner has read
+      # the plan and the verdict is advisory.
+      - name: Decide whether the plan could cost money
+        id: spend
+        continue-on-error: true
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@10b735392df0f32742c0f322b666c2c7249b782c # v1.0.12
+        with:
+          preview-json: preview.json
+          working-directory: infra/demo-host
+
+      - name: Refuse a plan that could cost money on the free environment
+        env:
+          SPEND_VERDICT: ${{ steps.spend.outputs.verdict }}
+        run: |
+          case "${APPLY_ENVIRONMENT}" in
+            production-demo-host) exit 0 ;;
+            production-free) ;;
+            *)
+              echo "::error::the apply environment is neither production-demo-host nor production-free." >&2
+              exit 1
+              ;;
+          esac
+          if [ "${SPEND_VERDICT}" != "FREE" ]; then
+            echo "::error::this apply is in production-free, which is for free plans only, and the spend gate did not say FREE for the plan it is about to apply. Nothing was applied. Re-run all jobs of the run, not only the failed one: the plan is read again and a paid plan is routed to production-demo-host, where the owner approves." >&2
             echo "--- full plan follows ---"
             python3 -m json.tool preview.json
             exit 1

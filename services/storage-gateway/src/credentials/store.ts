@@ -13,6 +13,8 @@ export const MIGRATIONS_FOLDER = fileURLToPath(new URL('../../drizzle', import.m
 /** A stored credential: the record the router reads, plus its key id. */
 export interface StoredCredential extends CredentialRecord {
   readonly keyId: string;
+  /** When the credential moved from active to disabled; null while active, and for rows disabled before the column existed. */
+  readonly disabledAt: string | null;
 }
 
 export interface NewCredential {
@@ -239,12 +241,12 @@ export class SqliteCredentialStore implements CredentialStore {
       .map((row) => ({ ...row }));
   }
 
-  /** Disables every active credential for a folder; returns how many it changed. */
-  disableFolder(folder: string): number {
+  /** Disables every active credential for a folder, stamping `disabledAt` on each; returns how many it changed. */
+  disableFolder(folder: string, disabledAt: string): number {
     return this.#record(() => {
       const changed = this.#db
         .update(credentials)
-        .set({ state: 'disabled' })
+        .set({ state: 'disabled', disabledAt })
         .where(and(eq(credentials.folder, folder), eq(credentials.state, 'active')))
         .returning({ keyId: credentials.keyId })
         .all().length;
@@ -252,12 +254,12 @@ export class SqliteCredentialStore implements CredentialStore {
     });
   }
 
-  /** Moves an active credential to disabled. A credential not active is left as it is. */
-  disable(keyId: string): DisableResult {
+  /** Moves an active credential to disabled, stamping `disabledAt`. A credential not active is left as it is. */
+  disable(keyId: string, disabledAt: string): DisableResult {
     const updated = this.#record(() => {
       const rows = this.#db
         .update(credentials)
-        .set({ state: 'disabled' })
+        .set({ state: 'disabled', disabledAt })
         .where(and(eq(credentials.keyId, keyId), eq(credentials.state, 'active')))
         .returning({ keyId: credentials.keyId })
         .all();

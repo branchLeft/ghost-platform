@@ -526,6 +526,55 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       const res = await broker.signedFetch('POST', '/stop', { slot: '9' });
       expect(res.status).toBe(422);
     });
+
+    // Both requests below would be permitted by every check in the handler
+    // (the survivor is live and real traffic has advanced), so a 401 here can
+    // only come from the signature gate, and a missing gate shows up as a stop.
+    it('refuses an unsigned /stop with 401 and never stops a colour, even when the stop would otherwise be permitted', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 1);
+
+      const res = await fetch(`${broker.baseUrl}/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot: '0' }),
+      });
+      expect(res.status).toBe(401);
+
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.some((inv: string[]) => inv[2] === 'stop')).toBe(false);
+    });
+
+    it('refuses a /stop signed with a key the broker does not trust with 401 and never stops a colour', async () => {
+      broker = await startTestBroker();
+      await swappedToB();
+      broker.realTraffic.setCount('0' as SlotName, 1);
+
+      const rawBody = Buffer.from(JSON.stringify({ slot: '0' }));
+      const headers = signHeaders(
+        generateTestKeyPair(),
+        'POST',
+        '/stop',
+        rawBody,
+        Math.floor(broker.nowMs() / 1000)
+      );
+      const res = await fetch(`${broker.baseUrl}/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: rawBody,
+      });
+      expect(res.status).toBe(401);
+
+      const invocations = (await readFile(broker.wrapperLogPath, 'utf8'))
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+      expect(invocations.some((inv: string[]) => inv[2] === 'stop')).toBe(false);
+    });
   });
 
   it('a slot mid-transition (not "free", no colour recorded) is still refused with 409', async () => {

@@ -188,6 +188,10 @@ in any cloud.
   already exists is not noticed. Creation sets them correctly; a later edit made
   by hand would pass unseen.
 - Nothing is deleted: a tenant removed from the list keeps its organisation.
+- Every call to the sign-in service, from the reconciler and from owner
+  recovery, is bounded to 30 seconds per request by default. A timeout is
+  reported as a failure: the reconciler raises a timeout error, and recovery
+  refuses with an `api-error` that names only the path. It is never retried.
 
 ## Tests
 

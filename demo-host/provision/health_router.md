@@ -33,8 +33,10 @@ no colour, so none is repaired or guessed past.
   rename the router's directory); the socket not a socket (a symlink counts) or not owned by the
   router's uid. Checked on every request, never cached.
 - A socket that is missing, refuses the connection (a stale file from a
-  stopped sidecar), hangs past 1.5 s, or answers something that is not an
-  HTTP status line.
+  stopped sidecar), does not finish connect, send and the status line within
+  1.5 s in total (a peer dripping a byte at a time is cut off at the same
+  moment as a silent one), or answers something that is not an HTTP status
+  line.
 - A sidecar status other than 200.
 
 A path other than `/healthz` is 404.
@@ -49,6 +51,15 @@ so renaming or replacing any directory between the check and the connect
 cannot send the router to a different socket. The descriptors close when the
 check ends. On a machine without `/proc` (a developer's laptop) the plain
 path is used; the router only runs on the Linux demo host.
+
+## Connection cap
+
+At most 32 client connections are in flight at once. One past the cap is
+answered 503 on the accept path and closed, with no thread started, so a
+flood of idle connections to the health port cannot grow the router's
+threads without bound. The edge reads that 503 as unhealthy, like any other
+refusal here. A client that holds a connection without sending a request is
+dropped after 3 s.
 
 ## What it never does
 

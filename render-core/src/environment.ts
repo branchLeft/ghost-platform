@@ -41,6 +41,12 @@ export const SECRET_ENV_KEYS = {
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB
 const MULTIPART_CHUNK_SIZE_BYTES = 5242880; // S3Storage's own floor
 
+// Ghost sends transactional mail inside the reader's own request, so a silent
+// spool must fail that request in seconds, not the library's minutes.
+const MAIL_CONNECTION_TIMEOUT_MILLISECONDS = 5000; // TCP connect to the spool
+const MAIL_GREETING_TIMEOUT_MILLISECONDS = 5000; // wait for the spool's SMTP greeting
+const MAIL_SOCKET_TIMEOUT_MILLISECONDS = 10000; // idle time with no traffic either way
+
 /** Ghost's own three separate storage adapters — one each for images, media
  * and files, not a single shared one. The decorator is configured
  * identically, and independently, for each — see `mediaEnvironment` below. */
@@ -237,7 +243,8 @@ function mediaEnvironment(
  * `smtp` renders the three non-secret fields a caller supplies for the
  * transactional path. `queue` is the host's own mail spool: with mail
  * enabled it renders Ghost's SMTP transport pointed at the spool, from
- * `spool.ts`'s constants, and with mail disabled it renders nothing. See
+ * `spool.ts`'s constants, plus explicit nodemailer timeouts, and with mail
+ * disabled it renders nothing. The `smtp` transport renders no timeouts. See
  * environment.md#transport-environment.
  */
 function transportEnvironment(
@@ -255,6 +262,9 @@ function transportEnvironment(
       mail__options__port: MAIL_SPOOL_SMTP_PORT,
       mail__options__secure: false,
       mail__options__auth__user: sendingDomainOf(mail.identity, zones),
+      mail__options__connectionTimeout: MAIL_CONNECTION_TIMEOUT_MILLISECONDS,
+      mail__options__greetingTimeout: MAIL_GREETING_TIMEOUT_MILLISECONDS,
+      mail__options__socketTimeout: MAIL_SOCKET_TIMEOUT_MILLISECONDS,
     };
   }
   return {

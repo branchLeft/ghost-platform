@@ -565,9 +565,8 @@ jobs:
           # is chosen from an exhaustive case with no silent branch.
           case "$TENANT_VISIBILITY" in
             public) visibility_flag=--public ;;
-            private) visibility_flag=--private ;;
             *)
-              echo "::error::tenant_visibility is not public or private at the point of creating the repository; refusing"
+              echo "::error::tenant_visibility is not public at the point of creating the repository; refusing"
               exit 1
               ;;
           esac

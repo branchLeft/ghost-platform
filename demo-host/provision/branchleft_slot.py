@@ -22,7 +22,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence, Union
+from typing import IO, Protocol, Sequence, Union, cast
 
 # Mirrors `render_slot_sudoers.SLOT_NAMES` -- duplicated rather than
 # imported, because this file is installed alone at
@@ -60,16 +60,23 @@ IMAGE_STAGING_DIR = "/var/lib/branchleft-broker/image-tmp"
 IMAGE_STAGING_FILENAME = "image.tar"
 IMAGE_LOAD_PATH = f"{IMAGE_STAGING_DIR}/{IMAGE_STAGING_FILENAME}"
 
-# Root-side bounds `RealSlotOps.load_image` enforces on its own, regardless
-# of whatever the broker's own `BROKER_IMAGE_MAX_BYTES`/wrapper-timeout did
-# or did not catch -- a compromised broker skips its own checks, so this
-# process cannot rely on them either. The byte figure matches that
-# setting's own default in `services/broker/src/config.ts` (duplicated,
-# not imported, for the same reason every other literal here is); the
-# timeout is generous for a real multi-hundred-MB image load, not tuned to
-# any one measured run.
+# Root-side bounds `RealSlotOps.load_image` enforces itself, whether or not
+# the broker's own `BROKER_IMAGE_MAX_BYTES` and wrapper timeout caught
+# anything: a compromised broker skips its checks, so this process cannot
+# rely on them. The byte figure duplicates `services/broker/src/config.ts`,
+# not imported, like every literal here. It is checked against `st_size` at
+# `fstat`, and `load_image` copies no more than that, so a file that grows
+# later is cut off. The timeout is generous, not tuned to one measured run.
+# `timeout` enforces it outside this process, so it holds if this process is
+# killed. Reasons: branchleft_slot.md.
 IMAGE_LOAD_MAX_BYTES = 4 * 1024 * 1024 * 1024
 IMAGE_LOAD_TIMEOUT_SECONDS = 300
+IMAGE_LOAD_CHUNK_BYTES = 1024 * 1024
+# Statuses `timeout --signal=KILL` leaves behind on expiry: its own 124, the
+# shell's 128+9 when the group kill takes `timeout` down too, and the
+# negative signal number `Popen` reports for that same death.
+_IMAGE_LOAD_TIMEOUT_STATUSES = frozenset({124, 137, -9})
+_IMAGE_LOAD_COMMAND = ["docker", "load"]
 
 # Where a slot's own management state lives, and the systemd unit name
 # shape LLD-2 §02 names directly ("systemctl start|stop the corresponding
@@ -403,6 +410,94 @@ class SlotOps(Protocol):
     def load_image(self, path: str) -> None: ...
 
 
+def _stream_checked_bytes_into_docker_load(fd: int, expected_bytes: int) -> None:
+    """Runs `docker load` under `timeout` in its own session and feeds it
+    the first `expected_bytes` bytes of `fd`, then reports how it ended.
+
+    Raises:
+        RuntimeError: `fd` ended early, or docker exited 0 before reading it all.
+        subprocess.TimeoutExpired: docker ran out `IMAGE_LOAD_TIMEOUT_SECONDS`.
+        subprocess.CalledProcessError: docker exited non-zero.
+        OSError: reading `fd` or starting the process failed.
+    """
+    timeout_seconds = IMAGE_LOAD_TIMEOUT_SECONDS
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        ["timeout", "--signal=KILL", str(timeout_seconds), *_IMAGE_LOAD_COMMAND],
+        stdin=subprocess.PIPE,
+        start_new_session=True,
+    )
+    stdin = cast(IO[bytes], proc.stdin)
+    try:
+        pipe_broke = _write_checked_bytes(proc, stdin.fileno(), fd, expected_bytes)
+        if not pipe_broke:
+            stdin.close()
+        returncode = proc.wait()
+    except BaseException:
+        if proc.returncode is None:
+            _kill_process_group_and_reap(proc)
+        raise
+    finally:
+        stdin.close()
+    if returncode == 0 and pipe_broke:
+        raise RuntimeError("docker load exited 0 without reading the whole archive")
+    _raise_for_docker_exit(returncode, time.monotonic() - started, timeout_seconds)
+
+
+def _write_checked_bytes(
+    proc: subprocess.Popen[bytes], stdin_fd: int, fd: int, expected_bytes: int
+) -> bool:
+    """Writes `expected_bytes` bytes of `fd`, read from offset 0, to the
+    stdin of `proc` (`stdin_fd`). Returns whether docker closed the pipe first. A file
+    that ends early kills docker's group before stdin is closed, so docker
+    never sees a clean end-of-file for a truncated archive.
+
+    Raises:
+        RuntimeError: `fd` ended before `expected_bytes` bytes were read.
+        OSError: reading `fd` failed.
+    """
+    offset = 0
+    while offset < expected_bytes:
+        chunk = os.pread(fd, min(IMAGE_LOAD_CHUNK_BYTES, expected_bytes - offset), offset)
+        if not chunk:
+            _kill_process_group_and_reap(proc)
+            raise RuntimeError(
+                f"image file ended after {offset} of {expected_bytes} expected bytes"
+            )
+        try:
+            _write_all(stdin_fd, chunk)
+        except BrokenPipeError:
+            return True
+        offset += len(chunk)
+    return False
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        view = view[os.write(descriptor, view) :]
+
+
+def _kill_process_group_and_reap(proc: subprocess.Popen[bytes]) -> None:
+    os.killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
+def _raise_for_docker_exit(returncode: int, elapsed_seconds: float, timeout_seconds: int) -> None:
+    """A timeout status alone is not proof of a timeout -- docker can exit
+    124 itself -- so it counts only once the deadline had nearly passed.
+
+    Raises:
+        subprocess.TimeoutExpired: a timeout status after the deadline.
+        subprocess.CalledProcessError: any other non-zero status.
+    """
+    if returncode == 0:
+        return
+    if returncode in _IMAGE_LOAD_TIMEOUT_STATUSES and elapsed_seconds >= timeout_seconds - 1:
+        raise subprocess.TimeoutExpired(_IMAGE_LOAD_COMMAND, timeout_seconds)
+    raise subprocess.CalledProcessError(returncode, _IMAGE_LOAD_COMMAND)
+
+
 class RealSlotOps:
     """The only implementation this module ships with real effects. Every
     method is a thin, explicit-argv wrapper -- `subprocess.run` is never
@@ -416,12 +511,14 @@ class RealSlotOps:
 
     def load_image(self, path: str) -> None:
         """Opens `path` (always `IMAGE_LOAD_PATH`) with `O_NOFOLLOW` and
-        `O_NONBLOCK`, `fstat`s the resulting descriptor to require a
-        regular, size-bounded file owned by the broker account, then
-        streams only that already-open descriptor into `docker load`
-        under `IMAGE_LOAD_TIMEOUT_SECONDS`. See
-        branchleft_slot.md#realslotopsload_image for why each check exists
-        and why the path is never resolved a second time.
+        `O_NONBLOCK`, `fstat`s it to require a regular, size-bounded file
+        owned by the broker, then copies exactly the `st_size` bytes read
+        at that `fstat` into `docker load`'s stdin; growth after it is
+        ignored, a shrink fails. `docker load` runs in its own process
+        group under `timeout`, so `IMAGE_LOAD_TIMEOUT_SECONDS` holds even if
+        the wrapper is killed. Raises `RefusedImage` (failed pre-load check),
+        `RuntimeError`, `subprocess.TimeoutExpired`, `CalledProcessError`,
+        `OSError`; reasons: branchleft_slot.md#realslotopsload_image.
         """
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -447,11 +544,7 @@ class RealSlotOps:
                     f"refused: {path!r} is owned by uid {info.st_uid}, not the "
                     f"{BROKER_USER!r} account (uid {broker_uid})"
                 )
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
-            subprocess.run(
-                ["docker", "load"], stdin=fd, check=True, timeout=IMAGE_LOAD_TIMEOUT_SECONDS
-            )
+            _stream_checked_bytes_into_docker_load(fd, info.st_size)
         finally:
             os.close(fd)
 

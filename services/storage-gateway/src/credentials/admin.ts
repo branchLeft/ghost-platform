@@ -33,6 +33,27 @@ export const ADMIN_PERMISSIONS: Readonly<Record<AdminCaller, readonly AdminOpera
   'erasure-job': ['disable', 'disable-folder', 'state'],
 };
 
+/** The operations that change credentials, and so are logged. */
+export type LoggedAdminOperation = Exclude<AdminOperation, 'state'>;
+
+/** One logged admin operation. Carries no secret and is written only after the change succeeded. */
+export interface AdminLogEntry {
+  readonly event: 'admin-operation';
+  readonly caller: AdminCaller;
+  readonly operation: LoggedAdminOperation;
+  /** ISO time of the operation: the same value stored as `disabled_at` or `created_at`. */
+  readonly at: string;
+  /** Present for mint and disable. */
+  readonly keyId?: string;
+  readonly folder: string;
+  /** Credentials moved to disabled, so 0 for a repeat. Absent for mint. */
+  readonly changed?: number;
+}
+
+export interface AdminLogger {
+  admin(entry: AdminLogEntry): void;
+}
+
 export interface AdminDeps {
   readonly auth: AdminAuthDeps;
   readonly store: Pick<
@@ -40,6 +61,7 @@ export interface AdminDeps {
     'insert' | 'disable' | 'get' | 'disableFolder' | 'listByFolder'
   >;
   readonly master: MasterSecret;
+  readonly logger: AdminLogger;
   /** Defaults to {@link newKeyId}; injected by tests. */
   readonly newKeyId?: () => string;
 }
@@ -123,15 +145,33 @@ function parseMintBody(rawBody: Buffer): { folder: string; bucket: string } | un
 export function createAdminInterface(deps: AdminDeps) {
   const mintKeyId = deps.newKeyId ?? newKeyId;
 
-  function mint(rawBody: Buffer): AdminResponse {
+  // The change has already committed when this runs, so a failing logger must
+  // not turn the answer into a 503; the loss is reported on stderr instead.
+  function logOperation(entry: AdminLogEntry): void {
+    try {
+      deps.logger.admin(entry);
+    } catch (error) {
+      const name = error instanceof Error ? error.name : 'NonError';
+      try {
+        process.stderr.write(
+          `admin audit log entry lost: operation=${entry.operation} error=${name}\n`
+        );
+      } catch {
+        // stderr is the last place to report to; nothing is left to try.
+      }
+    }
+  }
+
+  function mint(caller: AdminCaller, rawBody: Buffer): AdminResponse {
     const body = parseMintBody(rawBody);
     if (body === undefined)
       return respond(400, { error: 'body must name a valid folder and bucket' });
+    const at = new Date(deps.auth.nowMs()).toISOString();
     const inserted = deps.store.insert({
       keyId: mintKeyId(),
       folder: body.folder,
       bucket: body.bucket,
-      createdAt: new Date(deps.auth.nowMs()).toISOString(),
+      createdAt: at,
     });
     if (!inserted.ok) {
       return inserted.reason === 'key-id-taken'
@@ -139,25 +179,56 @@ export function createAdminInterface(deps: AdminDeps) {
         : respond(409, { error: 'folder has an active credential; disable it by folder first' });
     }
     const credential = inserted.credential;
-    return respond(201, {
+    const response = respond(201, {
       ...describe(credential),
       secret: deriveTenantSecret(deps.master, credential.keyId),
     });
+    logOperation({
+      event: 'admin-operation',
+      caller,
+      operation: 'mint',
+      at,
+      keyId: credential.keyId,
+      folder: credential.folder,
+    });
+    return response;
   }
 
-  function disable(keyId: string): AdminResponse {
-    const result = deps.store.disable(keyId);
+  function disable(caller: AdminCaller, keyId: string): AdminResponse {
+    const at = new Date(deps.auth.nowMs()).toISOString();
+    const result = deps.store.disable(keyId, at);
     if (result === 'unknown') return respond(404, { error: 'no such credential' });
-    return respond(200, describe(deps.store.get(keyId)!));
+    const credential = deps.store.get(keyId)!;
+    const response = respond(200, describe(credential));
+    logOperation({
+      event: 'admin-operation',
+      caller,
+      operation: 'disable',
+      at,
+      keyId,
+      folder: credential.folder,
+      changed: result === 'disabled' ? 1 : 0,
+    });
+    return response;
   }
 
   // Answers with every credential the folder has ever had, so the erasure
   // job sees each key id it must account for. Never with a secret.
-  function disableFolder(folder: string): AdminResponse {
-    const disabled = deps.store.disableFolder(folder);
+  function disableFolder(caller: AdminCaller, folder: string): AdminResponse {
+    const at = new Date(deps.auth.nowMs()).toISOString();
+    const disabled = deps.store.disableFolder(folder, at);
     const all = deps.store.listByFolder(folder);
     if (all.length === 0) return respond(404, { error: 'no credential for this folder' });
-    return respond(200, { folder, disabled, credentials: all.map(describe) });
+    const response = respond(200, { folder, disabled, credentials: all.map(describe) });
+    logOperation({
+      event: 'admin-operation',
+      caller,
+      operation: 'disable-folder',
+      at,
+      folder,
+      changed: disabled,
+    });
+    return response;
   }
 
   function state(keyId: string): AdminResponse {
@@ -185,11 +256,11 @@ export function createAdminInterface(deps: AdminDeps) {
       try {
         switch (routed.op) {
           case 'mint':
-            return mint(request.rawBody);
+            return mint(auth.caller, request.rawBody);
           case 'disable-folder':
-            return disableFolder(routed.folder);
+            return disableFolder(auth.caller, routed.folder);
           case 'disable':
-            return disable(routed.keyId);
+            return disable(auth.caller, routed.keyId);
           case 'state':
             return state(routed.keyId);
         }

@@ -60,7 +60,8 @@ than a fix.
 
 ## Slug pattern
 
-Mirrors `infra/tenant/naming.ts`'s slug rules, including the reserved names:
+Mirrors `infra/tenant/naming.ts`'s slug rules; the reserved names come from
+`render-core/src/naming.ts`:
 a tenant slugged `website` would collide with the marketing site's stack.
 The trailing character is restricted to a letter or digit for the same
 reason it is there: `infra/tenant/media.ts` turns the same slug into an

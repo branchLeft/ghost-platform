@@ -486,7 +486,9 @@ def seal(
     usage=shutil.disk_usage, say=print,
 ) -> pathlib.Path:
     """Encrypts a verified backup into one age file beside it, for the off-host
-    copy, and writes its digest so the copy can be checked byte for byte."""
+    copy, and writes its digest so the copy can be checked byte for byte. On any
+    failure or interrupt the half-written file is removed and the error re-raised,
+    so the next seal can run."""
     if not (backup / MANIFEST_FILE).is_file():
         raise Precondition(f"{backup} is not a backup this script took")
     if which("age") is None:
@@ -498,24 +500,43 @@ def seal(
         raise Precondition(f"{out} already exists")
     require_free_space(backup.parent, backup_bytes(backup), usage=usage)
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        archive = popen(
-            ["tar", "cf", "-", "-C", str(backup.parent), backup.name],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        )
-        encrypt = popen(
-            ["age", "-R", str(recipient_file)], stdin=archive.stdout, stdout=handle, stderr=subprocess.DEVNULL
-        )
-        if archive.stdout is not None:
-            archive.stdout.close()
-        codes = (archive.wait(), encrypt.wait())
-    if codes != (0, 0):
-        out.unlink(missing_ok=True)
-        raise CheckFailed("sealing failed (output withheld)")
-    digest = sha256_file(out)
-    (backup.parent / f"{out.name}.sha256").write_text(f"{digest}  {out.name}\n")
+    started: list[subprocess.Popen[bytes]] = []
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            archive = popen(
+                ["tar", "cf", "-", "-C", str(backup.parent), backup.name],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            )
+            started.append(archive)
+            encrypt = popen(
+                ["age", "-R", str(recipient_file)], stdin=archive.stdout, stdout=handle, stderr=subprocess.DEVNULL
+            )
+            started.append(encrypt)
+            if archive.stdout is not None:
+                archive.stdout.close()
+            codes = (archive.wait(), encrypt.wait())
+        if codes != (0, 0):
+            raise CheckFailed("sealing failed (output withheld)")
+        digest = sha256_file(out)
+        (backup.parent / f"{out.name}.sha256").write_text(f"{digest}  {out.name}\n")
+    except BaseException:
+        discard_unfinished_seal(out, started)
+        raise
     say(f"sealed {out}: sha256={digest} bytes={out.stat().st_size}")
     return out
+
+
+def discard_unfinished_seal(out: pathlib.Path, started: list[subprocess.Popen[bytes]]) -> None:
+    """Stops the processes already started and removes the sealed file this call
+    created. Meant for an except block: nothing here may replace the error in
+    flight, so a failure while stopping a process is dropped."""
+    try:
+        for process in started:
+            with contextlib.suppress(BaseException):
+                process.kill()
+                process.wait()
+    finally:
+        out.unlink(missing_ok=True)
 
 
 def prune(root: pathlib.Path, keep: int, *, protect: pathlib.Path, say=print) -> list[pathlib.Path]:

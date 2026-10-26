@@ -25,6 +25,8 @@ export interface TenantPortalOptions {
   readonly fetch?: typeof fetch;
   readonly fetchKeys?: TokenVerifierOptions['fetchKeys'];
   readonly sessionSeconds?: number;
+  /** Receives one line per swallowed handler error: the step and the error name only. */
+  readonly onError?: (line: string) => void;
   /** The tenant's kind. Absent or unrecognised is a demo; a throw makes the page answer 500 FAILED. */
   readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind | string>;
 }
@@ -66,6 +68,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     clock: options.clock,
     fetch: options.fetch,
     sessionSeconds: options.sessionSeconds,
+    onError: options.onError,
     bind: ({ orgId }) => options.db.scopeForOrganisation(orgId),
     landing: async (scope) => {
       const own = await options.db.ownRegistration(scope);

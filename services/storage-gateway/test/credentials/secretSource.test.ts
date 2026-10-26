@@ -16,6 +16,7 @@ const rows: Record<string, StoredCredential> = {
     bucket: 'shard-one',
     state: 'active',
     createdAt: 'x',
+    disabledAt: null,
   },
   [DISABLED]: {
     keyId: DISABLED,
@@ -23,6 +24,7 @@ const rows: Record<string, StoredCredential> = {
     bucket: 'shard-one',
     state: 'disabled',
     createdAt: 'x',
+    disabledAt: null,
   },
   [REVOKED]: {
     keyId: REVOKED,
@@ -30,6 +32,7 @@ const rows: Record<string, StoredCredential> = {
     bucket: 'shard-one',
     state: 'revoked',
     createdAt: 'x',
+    disabledAt: null,
   },
 };
 const source = createSigningSecretSource({ get: (keyId) => rows[keyId] }, MASTER);

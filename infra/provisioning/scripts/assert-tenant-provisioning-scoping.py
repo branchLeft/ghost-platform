@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
+import re
 import sys
 
 # Used only when neither $GITHUB_REPOSITORY nor an explicit --repo is
@@ -71,6 +73,43 @@ def _shadowed_message(shadowed: frozenset[str], repo: str) -> str:
     )
 
 
+# A `${{ secrets.X }}` expression. Matched on any non-comment line, so a use in
+# `env:`, `with:` or `run:` all count.
+_SECRET_REFERENCE = re.compile(r"\$\{\{\s*secrets\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def workflow_secret_names(text: str) -> frozenset[str]:
+    """Every secret name the workflow text reads. Scanned across the whole
+    file rather than only the job-level `env:` block: the provision job binds
+    TENANT_PROVISIONING_APP_PRIVATE_KEY in a step-level `env:`, and a scan of
+    the job block alone would leave a required name looking unused."""
+    names: set[str] = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        names.update(_SECRET_REFERENCE.findall(line))
+    return frozenset(names)
+
+
+def verify_coverage(workflow_text: str) -> list[str]:
+    """Findings for every name present on one side only: a required name the
+    workflow never reads, or a name the workflow reads that REQUIRED_SECRETS
+    does not cover. Empty means the two sets agree."""
+    used = workflow_secret_names(workflow_text)
+    findings = [
+        f"REQUIRED_SECRETS names {name}, but the workflow never reads secrets.{name}. "
+        "The guard is checking a name nothing uses: remove it from REQUIRED_SECRETS "
+        "or restore the reference."
+        for name in sorted(REQUIRED_SECRETS - used)
+    ]
+    findings += [
+        f"the workflow reads secrets.{name}, but REQUIRED_SECRETS does not cover it. "
+        "Add it to REQUIRED_SECRETS so the scoping check sees it."
+        for name in sorted(used - REQUIRED_SECRETS)
+    ]
+    return findings
+
+
 def _self_test() -> None:
     # The passing case, and the one the pre-rename names could never reach:
     # the estate's hosts secrets sit at the repository level, ours are
@@ -126,6 +165,11 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument(
+        "--verify-coverage",
+        metavar="WORKFLOW",
+        help="check REQUIRED_SECRETS against the secrets.X names in this workflow file, both ways",
+    )
+    parser.add_argument(
         "--environment-secrets",
         help="file of newline-separated secret names scoped to the tenant-provisioning environment",
     )
@@ -148,6 +192,15 @@ def main(argv: list[str]) -> int:
 
     if args.self_test:
         _self_test()
+        return 0
+
+    if args.verify_coverage:
+        findings = verify_coverage(pathlib.Path(args.verify_coverage).read_text(encoding="utf-8"))
+        for finding in findings:
+            print(f"::error::{finding}", file=sys.stderr)
+        if findings:
+            return 1
+        print("verify-coverage OK: REQUIRED_SECRETS matches the workflow's secrets.X references")
         return 0
 
     if not args.environment_secrets or not args.repository_secrets:

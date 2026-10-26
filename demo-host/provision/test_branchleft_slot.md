@@ -58,3 +58,14 @@ would otherwise catch a signal-interrupted `open()` call and re-wrap it
 as `RefusedImage`, making a genuine hang (caught only by this alarm) look
 identical to a clean, immediate refusal. That is exactly the false green
 this test exists to not produce.
+
+## RealSlotOpsLoadImageTests
+
+None of this needs root to prove the checks exist and run in the right
+order. `pwd.getpwnam` is patched to name the test process's own uid as "the
+broker account", so the owner check runs for real. `chown` was rejected: it
+needs root, and it would only prove that some check runs somewhere, not that
+it runs against the right descriptor before docker is ever reached.
+`.github/workflows/demo-host-sudoers-ci.yml` re-proves the same shapes
+against a real broker account and real ownership; this class is the fast,
+hermetic form.

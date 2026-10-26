@@ -16,13 +16,15 @@ memory budget on a 4-8 GB host, and the platform imposes its own.
 
 The tenant's Caddy `request_body max_size` at the edge, in Caddy's own
 size syntax. The only limit that bounds the upload paths Ghost leaves
-unlimited, and the only one that rejects an oversized body before it
-reaches an app host at all.
+unlimited. It answers 413 and bounds how much of the body is ingested, but
+it does not short-circuit the handler chain: the upstream connection is
+still made and up to `max_size` bytes still reach the origin.
 
-`MiB`, not `MB`: Caddy reads `MB` as a power of ten and every other value
-derived here is a power of two. The point of deriving them from one input
-is that they cannot disagree, and a unit that means something else by
-~4.4% is a disagreement.
+`MiB`, not `MB`: every other value derived here is a power of two, and
+deriving them all from one input keeps them on one base. `64MiB` is
+67,108,864 bytes and `64MB` is 64,000,000 bytes, so `MB` is about 4.6%
+smaller, which is the restrictive direction: a limit written in `MB` would
+be tighter than the derivation intends, not looser.
 
 ## uploadLimits
 

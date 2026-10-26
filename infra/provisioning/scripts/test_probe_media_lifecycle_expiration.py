@@ -8,7 +8,9 @@ actually does. The live question is answered only by a human running
 `setup` then `check` against a real disposable bucket, days apart.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import tempfile
@@ -793,6 +795,40 @@ class TestPrefixSplitCLIWiring(unittest.TestCase):
             ):
                 code = probe.main(["check-split", "--receipt", "/tmp/r.json"])
         self.assertEqual(code, 0)
+        fake_check.assert_called_once()
+
+    def test_check_split_prints_a_pass_verdict_and_exits_zero(self):
+        verdict = (
+            "PASS (1h after upload, synthetic): media/'s noncurrent content was pruned "
+            "by its own short rule; the db-style prefix was not pruned"
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(probe, "check_prefix_split", return_value=verdict) as fake_check:
+            with mock.patch.dict(
+                "os.environ", {"AWS_ACCESS_KEY_ID": ACCESS_KEY, "AWS_SECRET_ACCESS_KEY": SECRET_KEY}
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    code = probe.main(["check-split", "--receipt", "/tmp/r.json"])
+        self.assertEqual(code, 0)
+        self.assertIn(verdict, stdout.getvalue())
+        fake_check.assert_called_once()
+
+    # Records only the exit code the script gives today for a FAIL verdict; a change to
+    # that exit code should update this test deliberately.
+    def test_check_split_prints_a_fail_verdict_and_exits_zero(self):
+        verdict = (
+            "FAIL (1h after upload, synthetic): a CURRENT object is missing on at least "
+            "one prefix, or the db-style prefix's own delete marker is gone"
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(probe, "check_prefix_split", return_value=verdict) as fake_check:
+            with mock.patch.dict(
+                "os.environ", {"AWS_ACCESS_KEY_ID": ACCESS_KEY, "AWS_SECRET_ACCESS_KEY": SECRET_KEY}
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    code = probe.main(["check-split", "--receipt", "/tmp/r.json"])
+        self.assertEqual(code, 0)
+        self.assertIn(verdict, stdout.getvalue())
         fake_check.assert_called_once()
 
     def test_check_split_has_no_bucket_flag_either(self):

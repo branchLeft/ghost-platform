@@ -16,8 +16,17 @@ name: Broker CI
 on:
   push:
     branches: [main]
+  # A pull request starts this only when its diff touches something the job
+  # reads: the service, render-core (linked by `file:` and built first) and the
+  # demo-host golden files and wrapper the unit tests compare against. Push to
+  # main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
+    paths:
+      - 'services/broker/**'
+      - 'render-core/**'
+      - 'demo-host/provision/**'
+      - '.github/workflows/broker-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401

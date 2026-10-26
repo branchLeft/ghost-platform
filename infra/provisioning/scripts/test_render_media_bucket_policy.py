@@ -365,6 +365,11 @@ class TestInputRefusals(unittest.TestCase):
                 with self.assertRaises(policy_module.PolicyInputError):
                     policy_module.media_bucket_name(slug)
 
+    def test_refuses_mail_spool_by_name(self):
+        # The name is literal, so this does not depend on the list under test.
+        with self.assertRaises(policy_module.PolicyInputError):
+            policy_module.media_bucket_name("mail-spool")
+
     def test_accepts_the_slugs_the_platform_permits(self):
         self.assertEqual(policy_module.media_bucket_name("a"), "branchleft-media-a")
         self.assertEqual(

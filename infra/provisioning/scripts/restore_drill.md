@@ -93,6 +93,15 @@ worker's own gauges, written atomically:
   backup object age, and objects audited. These are the numbers LLD-9 §08
   says every drill reports.
 - `restore_drill_last_run_info{tenant,copy}`.
+- A run refused before it started (exit 2) exports too: `restore_drill_last_run_refused`
+  is 1 and `restore_drill_last_run_refused_info{reason}` names the class, one of
+  `config` (the timeout or environment is malformed, or the tenants file cannot be
+  read), `no_tenants`, or `lock` (another run holds the drill lock, or it cannot be
+  taken). `restore_drill_last_run_timestamp_seconds` is the refused attempt's time
+  and `restore_drill_last_run_success` is 0. The last-success timestamp is carried
+  over from the previous file, not advanced. Every other run sets
+  `restore_drill_last_run_refused` to 0. The monitoring rule that reads this gauge
+  is a separate item; this file only provides the signal.
 
 ## Images
 
