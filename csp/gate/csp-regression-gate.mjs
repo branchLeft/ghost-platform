@@ -74,9 +74,7 @@ function failClosedOnMisfire() {
   if (process.stdin.isTTY) return;
   const captured = readFileSync(0, 'utf-8');
   if (captured.length === 0) return;
-  console.error(
-    'CSP REGRESSION GATE RED: run-as-main guard did not match; capture not judged'
-  );
+  console.error('CSP REGRESSION GATE RED: run-as-main guard did not match; capture not judged');
   process.exitCode = 1;
 }
 
