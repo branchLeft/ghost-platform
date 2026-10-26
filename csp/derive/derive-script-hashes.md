@@ -38,3 +38,12 @@ the same way a real end tag does.
 The home, post, tag and author pages, left to the caller because which
 slugs exist is a fact about the content on that Ghost, not something this
 tool guesses.
+
+## Fetch deadline
+
+Each page gets one total deadline, `DEFAULT_PAGE_TIMEOUT_MS`, covering the
+response headers and the body together. A page that does not finish inside
+it -- a request that never answers, or a body that stalls partway -- makes
+the derivation `kind: 'unavailable'`, the same fail-soft outcome as a page
+that returned a non-200 status. The fourth argument to `deriveThemeCsp`
+overrides the deadline.

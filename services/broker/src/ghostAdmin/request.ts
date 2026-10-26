@@ -45,24 +45,35 @@ export const loopbackGhostTransport: GhostTransport = (req) =>
       headers['Content-Type'] = 'application/json';
       headers['Content-Length'] = String(Buffer.byteLength(payload));
     }
+    // A total deadline from send to the last body byte. A socket-idle timer
+    // would be reset by every trickled byte, so a stalled-but-chatty Ghost
+    // could hold the request open indefinitely.
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const fail = (err: Error) => {
+      clearTimeout(deadline);
+      reject(err);
+    };
     const outgoing = httpRequest(
       { host: '127.0.0.1', port: req.port, method: req.method, path: req.path, headers },
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
-        res.on('end', () =>
+        res.on('end', () => {
+          clearTimeout(deadline);
           resolve({
             status: res.statusCode ?? 0,
             headers: res.headers,
             body: parseBody(Buffer.concat(chunks).toString('utf8')),
-          })
-        );
-        res.on('error', reject);
+          });
+        });
+        res.on('error', fail);
       }
     );
-    outgoing.setTimeout(req.timeoutMs, () => {
-      outgoing.destroy(new Error(`Ghost did not answer ${req.method} ${req.path} in time`));
-    });
-    outgoing.on('error', reject);
+    deadline = setTimeout(() => {
+      const err = new Error(`Ghost did not answer ${req.method} ${req.path} in time`);
+      fail(err);
+      outgoing.destroy(err);
+    }, req.timeoutMs);
+    outgoing.on('error', fail);
     outgoing.end(payload);
   });
