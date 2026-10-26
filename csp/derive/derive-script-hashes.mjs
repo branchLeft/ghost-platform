@@ -91,12 +91,10 @@ async function fetchPageText(url, fetchImpl, timeoutMs) {
  * Fetches `paths` from `origin` and derives the hash set across all of
  * them. `kind: 'unavailable'` (LLD-5's fail-soft mark, mirrored by
  * render-core's `ThemeCsp`) covers any page that did not come back as a
- * real page: a non-200 status, a fetch that threw, or one that did not
- * finish (headers and body) within `timeoutMs`. A partial hash set
- * from whichever pages happened to load is worse than none, since a strict
- * policy enforced against an incomplete set blocks the theme's own scripts
- * on whichever page was missed -- so one failure fails the whole derivation,
- * not just that page.
+ * real page: a non-200 status, a throw, or no finish within `timeoutMs`.
+ * A partial hash set is worse than none, since a strict policy enforced
+ * against an incomplete set blocks the theme's own scripts on the page
+ * that was missed -- so one failure fails the whole derivation.
  */
 export async function deriveThemeCsp(
   origin,

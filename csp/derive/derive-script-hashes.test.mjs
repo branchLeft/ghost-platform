@@ -156,24 +156,32 @@ test('deriveThemeCsp fails soft to kind "unavailable" when a fetch throws (theme
 // stalls after the headers arrive -- must not hang the admission step. The
 // deadline covers fetch and text() together, so a stall in either is the same
 // fail-soft outcome as a thrown fetch.
-test('deriveThemeCsp fails soft to kind "unavailable" when a fetch never settles', { timeout: 2000 }, async () => {
-  let signal;
-  const stalledFetch = (url, init) => {
-    signal = init?.signal;
-    return new Promise(() => {});
-  };
-  const result = await deriveThemeCsp('http://ghost.test', ['/'], stalledFetch, 50);
-  assert.equal(result.kind, 'unavailable');
-  assert.match(result.reason, /^\/: .*50ms/);
-  assert.equal(signal?.aborted, true, 'the stalled request is aborted, not left open');
-});
+test(
+  'deriveThemeCsp fails soft to kind "unavailable" when a fetch never settles',
+  { timeout: 2000 },
+  async () => {
+    let signal;
+    const stalledFetch = (url, init) => {
+      signal = init?.signal;
+      return new Promise(() => {});
+    };
+    const result = await deriveThemeCsp('http://ghost.test', ['/'], stalledFetch, 50);
+    assert.equal(result.kind, 'unavailable');
+    assert.match(result.reason, /^\/: .*50ms/);
+    assert.equal(signal?.aborted, true, 'the stalled request is aborted, not left open');
+  }
+);
 
-test('deriveThemeCsp fails soft to kind "unavailable" when the body stalls during res.text()', { timeout: 2000 }, async () => {
-  const stalledBody = async () => ({ ok: true, text: () => new Promise(() => {}) });
-  const result = await deriveThemeCsp('http://ghost.test', ['/'], stalledBody, 50);
-  assert.equal(result.kind, 'unavailable');
-  assert.match(result.reason, /50ms/);
-});
+test(
+  'deriveThemeCsp fails soft to kind "unavailable" when the body stalls during res.text()',
+  { timeout: 2000 },
+  async () => {
+    const stalledBody = async () => ({ ok: true, text: () => new Promise(() => {}) });
+    const result = await deriveThemeCsp('http://ghost.test', ['/'], stalledBody, 50);
+    assert.equal(result.kind, 'unavailable');
+    assert.match(result.reason, /50ms/);
+  }
+);
 
 test('deriveThemeCsp still computes when every page settles inside the deadline (CONTROL)', async () => {
   const fakeFetch = async () => ({ ok: true, text: async () => pageHtml([HELPER_SCRIPT]) });

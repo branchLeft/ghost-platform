@@ -442,7 +442,7 @@ describe('the loopback transport', () => {
 
   it('bounds the whole request by a total deadline, not an idle timer, against a server that trickles bytes', async () => {
     const { createServer } = await import('node:http');
-    const server = createServer((req, res) => {
+    const server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/plain' });
       // One byte every 50ms: each byte resets a socket-idle timer, so only a
       // total deadline can end this request.
