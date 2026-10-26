@@ -18,8 +18,14 @@ on:
       - 'portal/**'
       - 'services/identity/**'
       - '.github/workflows/portal-apps-ci.yml'
+  # Same set as the push filter above: the applications, the data layer they
+  # build first (both under portal/) and the identity verifier.
   pull_request:
     branches: [main]
+    paths:
+      - 'portal/**'
+      - 'services/identity/**'
+      - '.github/workflows/portal-apps-ci.yml'
 
 # `packages: read` because these packages take a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401

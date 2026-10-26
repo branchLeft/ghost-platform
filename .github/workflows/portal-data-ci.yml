@@ -17,8 +17,12 @@ on:
     paths:
       - 'portal/data/**'
       - '.github/workflows/portal-data-ci.yml'
+  # Same set as the push filter above: the data layer.
   pull_request:
     branches: [main]
+    paths:
+      - 'portal/data/**'
+      - '.github/workflows/portal-data-ci.yml'
 
 # `packages: read` because this package takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401
