@@ -317,12 +317,12 @@ describe('collectMedia', () => {
     expect(out.report.notes).toEqual([
       '1 tenant media references have unsafe object keys and were not listed',
     ]);
-    expect(out.report.info[0]).toBe('0 references under another prefix were refused and not listed');
+    expect(out.report.info[0]).toBe(
+      '0 references under another prefix were refused and not listed'
+    );
     const body = JSON.parse(String(out.files[0]?.data));
     expect(body.addresses.map((a: { key: string }) => a.key)).toEqual(['a.png']);
-    expect(body.refused).toEqual([
-      { reference: `${BASE}/what%3F.png`, reason: 'unsafe-key' },
-    ]);
+    expect(body.refused).toEqual([{ reference: `${BASE}/what%3F.png`, reason: 'unsafe-key' }]);
   });
 
   it('is FAILED with a note naming the missing object-storage address when the tenant has none', async () => {

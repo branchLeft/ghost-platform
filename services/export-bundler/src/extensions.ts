@@ -256,7 +256,9 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
       notes.push(`${plan.unverified.length} referenced objects could not be checked`);
     }
     if (unsafeKey > 0) {
-      notes.push(`${unsafeKey} tenant media references have unsafe object keys and were not listed`);
+      notes.push(
+        `${unsafeKey} tenant media references have unsafe object keys and were not listed`
+      );
     }
     if (omittedSiteRelative > 0) {
       notes.push(
