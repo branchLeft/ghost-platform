@@ -293,9 +293,9 @@ describe('writeSlotState and held evidence', () => {
 
   it('refuses a plain write of the confirmed marker and leaves the held copy in place', async () => {
     await writeSlotState(dir, SLOT, { phase: 'detaching', evidence: 'frozen' });
-    await expect(writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' })).rejects.toThrow(
-      /releaseHeldEvidence/
-    );
+    await expect(
+      writeSlotState(dir, SLOT, { phase: 'error', evidence: 'detached' })
+    ).rejects.toThrow(/releaseHeldEvidence/);
     expect((await readSlotState(dir, SLOT)).evidence).toBe('frozen');
   });
 
