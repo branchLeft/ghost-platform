@@ -804,6 +804,14 @@ class MetricsTests(unittest.TestCase):
         rd.record_metrics(rd.DrillReport(tenant="blog", copy="primary"), metrics_dir=self.dir, ran_at=5.0)
         self.assertIsNone(self._gauge("last_success_timestamp_seconds"))
 
+    def test_a_run_that_ran_clears_an_earlier_refusal(self):
+        rd.record_metrics(rd.DrillReport(tenant="blog", copy="primary", error="x"), metrics_dir=self.dir,
+                          ran_at=1.0, refusal="lock")
+        self.assertEqual(self._gauge("last_run_refused"), 1.0)
+        rd.record_metrics(rd.DrillReport(tenant="blog", copy="primary", error="x"), metrics_dir=self.dir, ran_at=2.0)
+        self.assertEqual(self._gauge("last_run_refused"), 0.0)
+        self.assertNotIn("last_run_refused_info", self.path.read_text())
+
 
 class MainTests(unittest.TestCase):
     def setUp(self):
@@ -868,6 +876,53 @@ class MainTests(unittest.TestCase):
             code, _, err, _ = self._main(report)
         self.assertEqual(code, 1)
         self.assertIn("could not export", err)
+
+    def _seed_last_success(self):
+        ok = rd.DrillReport(tenant="blog", copy="primary", ok=True, restore_s=1.0, verify_s=1.0, object_age_s=3600.0)
+        rd.record_metrics(ok, metrics_dir=self.dir, ran_at=1000.0)
+
+    def _assert_refused(self, reason):
+        text = (self.dir / rd.METRICS_FILENAME).read_text()
+        for line in (
+            "restore_drill_last_run_refused 1.0",
+            f'restore_drill_last_run_refused_info{{reason="{reason}"}} 1',
+            "restore_drill_last_run_success 0.0",
+            f"restore_drill_last_run_timestamp_seconds {NOW.timestamp()}",
+            "restore_drill_last_success_timestamp_seconds 1000.0",
+        ):
+            self.assertIn(line, text)
+
+    def test_refused_content_timeout_writes_the_refusal(self):
+        self._seed_last_success()
+        self.env["BACKUP_DRILL_CONTENT_TIMEOUT_S"] = "soon"
+        code, _, _, run = self._main()
+        self.assertEqual(code, 2)
+        run.assert_not_called()
+        self._assert_refused("config")
+
+    def test_refused_config_writes_the_refusal(self):
+        self._seed_last_success()
+        self.env.pop("BACKUP_DRILL_GHOST_IMAGE")
+        code, _, _, run = self._main()
+        self.assertEqual(code, 2)
+        run.assert_not_called()
+        self._assert_refused("config")
+
+    def test_refused_no_tenants_writes_the_refusal(self):
+        self._seed_last_success()
+        self.tenants.write_text("# nothing\n")
+        code, _, _, run = self._main()
+        self.assertEqual(code, 2)
+        run.assert_not_called()
+        self._assert_refused("no_tenants")
+
+    def test_refused_lock_writes_the_refusal(self):
+        self._seed_last_success()
+        with mock.patch.object(rd.fcntl, "flock", side_effect=BlockingIOError("held")):
+            code, _, _, run = self._main()
+        self.assertEqual(code, 2)
+        run.assert_not_called()
+        self._assert_refused("lock")
 
 
 _SIGTERM_CHILD = r"""
