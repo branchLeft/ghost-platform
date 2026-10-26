@@ -556,6 +556,8 @@ class DbCurrentVersionExpiryIsOptInTests(unittest.TestCase):
                 _, _, out = self._cli(extra)
                 self.assertIn("A re-run replaces the whole lifecycle", out)
                 self.assertIn("omitting --db-expiration-days", out)
+                self.assertIn("on dumps/ and binlogs/ drops it", out)
+                self.assertIn("state/ is rewritten on every run by --state-expiration-days", out)
 
     def test_the_cli_names_the_figure_when_it_was_written(self):
         _, _, out = self._cli(["--db-expiration-days", "10"])
