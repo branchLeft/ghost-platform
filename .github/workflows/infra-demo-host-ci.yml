@@ -46,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: infra/demo-host/.nvmrc
           registry-url: https://npm.pkg.github.com
@@ -99,7 +99,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: infra/demo-host/.nvmrc
           cache: npm
@@ -161,7 +161,7 @@ jobs:
       - name: Decide whether the plan changes anything
         id: noop
         if: always()
-        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@2cfa57c06773bc70172022be12a85ce4ae5bcb6b # v1.0.10
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@e10620f2deb20f30673917351761466eb47a9cb4 # v1.0.11
         with:
           preview-json: preview.json
           plan-file: preview-plan.json
@@ -250,7 +250,7 @@ jobs:
           fi
 
       - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: infra/demo-host/.nvmrc
           cache: npm
