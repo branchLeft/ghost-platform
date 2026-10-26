@@ -100,10 +100,21 @@ What narrows it is a `Deny` on the bucket: fence
 Set it under its own names:
 
 ```bash
-gh secret set GH_PAT_TENANT_PROVISIONING        --repo branchLeft/ghost-platform --env tenant-provisioning
+read -rsd '' TENANT_PROVISIONING_APP_PRIVATE_KEY   # paste the App private key PEM, then Ctrl-D
+gh secret set TENANT_PROVISIONING_APP_PRIVATE_KEY --repo branchLeft/ghost-platform --env tenant-provisioning <<< "$TENANT_PROVISIONING_APP_PRIVATE_KEY"
+unset TENANT_PROVISIONING_APP_PRIVATE_KEY
 gh secret set TENANT_STATE_S3_ACCESS_KEY_ID     --repo branchLeft/ghost-platform --env tenant-provisioning
 gh secret set TENANT_STATE_S3_SECRET_ACCESS_KEY --repo branchLeft/ghost-platform --env tenant-provisioning
 gh secret delete GH_PAT_TENANT_PROVISIONING     --repo branchLeft/ghost-platform
+```
+
+The App ID is a repository variable, not a secret; the mint step reads it as
+`vars.TENANT_PROVISIONING_APP_ID`. Its value is the numeric ID shown on the App's
+settings page, read here rather than written into the command:
+
+```bash
+read -r TENANT_PROVISIONING_APP_ID
+gh variable set TENANT_PROVISIONING_APP_ID --repo branchLeft/ghost-platform --body "$TENANT_PROVISIONING_APP_ID"
 ```
 
 **Do not delete `HETZNER_S3_ACCESS_KEY_ID` / `HETZNER_S3_SECRET_ACCESS_KEY` at
@@ -935,7 +946,7 @@ rm -f /etc/branchleft/tenant-uids/<slug>
 
 # Verify: nothing is left anywhere -- no container, no volume, no network.
 # All three must print nothing. The two content volumes are `external: true`
-# (infra/tenant/compose.ts) so that a host-side provisioning step, not
+# (render-core/src/compose.ts) so that a host-side provisioning step, not
 # Compose, owns their creation -- Compose never labels a resource it did not
 # create, so a label filter here would always print nothing regardless of
 # whether the volumes are actually gone. Check them by the exact names the
