@@ -7,6 +7,11 @@
 Description=branchLeft demo-host broker
 Documentation=https://github.com/branchLeft/ghost-platform/blob/main/services/broker/RUNBOOK-broker-deploy.md
 After=network.target
+# A broker stuck in a fast crash loop is an operator problem, not something
+# this unit should paper over by respawning it forever at the sudoers
+# boundary's own front door. systemd reads the start limit from [Unit] only.
+StartLimitIntervalSec=300
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -20,11 +25,6 @@ ExecStart=/opt/branchleft/broker/node/bin/node --preserve-symlinks-main /opt/bra
 
 Restart=on-failure
 RestartSec=5s
-# A broker stuck in a fast crash loop is an operator problem, not something
-# this unit should paper over by respawning it forever at the sudoers
-# boundary's own front door.
-StartLimitIntervalSec=300
-StartLimitBurst=6
 
 TimeoutStopSec=30s
 
