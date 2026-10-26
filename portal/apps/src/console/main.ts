@@ -6,5 +6,9 @@ import { createOwnerConsole } from './app.js';
 
 const config = loadConsoleConfig(process.env);
 const pool = new pg.Pool({ connectionString: config.databaseUrl });
-const console_ = createOwnerConsole({ ...config, db: new OwnerDb(pool) });
+const console_ = createOwnerConsole({
+  ...config,
+  db: new OwnerDb(pool),
+  onError: (line) => process.stderr.write(`${line}\n`),
+});
 createServer((request, response) => void console_(request, response)).listen(config.port);
