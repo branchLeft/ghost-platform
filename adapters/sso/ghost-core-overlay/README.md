@@ -95,3 +95,13 @@ A Ghost bump arrives as a change to the `FROM` line. If the build then fails wit
    as `<hash>  session-from-token.js` in `session-from-token.patched.sha256`.
 5. Run the unit suite (`npm run coverage` in `adapters/sso/`), rebuild the image, and run the break-glass image
    test, including the looped concurrent-login subtest.
+
+## Baseline sources for the unit tests
+
+The baseline comes from, in order:
+  1. GHOST_SESSION_FROM_TOKEN_BASELINE, a path to the baseline file (for a
+     caller that already has it out of the image);
+  2. the image named by the root Dockerfile's one FROM line, through
+     `docker create` and `docker cp`.
+When neither works the run fails loudly: a skipped overlay test would read
+as a pass.

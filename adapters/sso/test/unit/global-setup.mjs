@@ -4,19 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Builds, once per run, the file the unit tests exercise: Ghost's own
-// session-from-token.js from the digest-pinned base image the root Dockerfile
-// builds on, with ghost-core-overlay/session-from-token.patch applied by the
-// same script the image build runs. Nothing of Ghost's is committed; the
-// output goes to ghost-core-overlay/derived/ (git-ignored).
-//
-// The baseline comes from, in order:
-//   1. GHOST_SESSION_FROM_TOKEN_BASELINE, a path to the baseline file (for a
-//      caller that already has it out of the image);
-//   2. the image named by the root Dockerfile's one FROM line, through
-//      `docker create` and `docker cp`.
-// When neither works the run fails loudly: a skipped overlay test would read
-// as a pass.
+// Builds, once per run, the patched session-from-token.js the unit tests use.
+// Baseline sources and the fail-loudly rule: see
+// adapters/sso/ghost-core-overlay/README.md.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SSO_DIR = path.resolve(__dirname, '../..');
