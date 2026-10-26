@@ -20,8 +20,9 @@ second-recipient ciphertext -- is proven by `media-backup-restore-proof.sh`.
 ## PutOnlyBackupTests
 
 Backup runs through the REAL signing and request code against a fake S3
-endpoint patched in for `urllib.request.urlopen`, where the backup bucket
-answers 403 to anything but a PUT, as the put-only key's fence does. Every
+endpoint patched in for the shared opener's `open` (`_OPENER` in
+`objectstorage.py`), where the backup bucket answers 403 to anything but a
+PUT, as the put-only key's fence does. Every
 request is recorded, so the tests can say that no DELETE is issued to any
 bucket however a delete would be routed, that the backup bucket sees only
 PUTs, and that the manifest is the last PUT of a run. A control test shows

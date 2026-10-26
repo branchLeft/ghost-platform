@@ -20,12 +20,32 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from typing import IO
 
 ALGORITHM = "AWS4-HMAC-SHA256"
 
 
 class ObjectStorageError(Exception):
     """The request did not complete, or the endpoint rejected it."""
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses every redirect, so a 3xx is returned like any other response.
+    See objectstorage.md#urllib_request."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+_OPENER = urllib.request.build_opener(NoRedirectHandler())
 
 
 def _sign(key: bytes, message: str) -> bytes:
@@ -134,7 +154,7 @@ def urllib_request(
     for name, value in headers.items():
         request.add_header(name, value)
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with _OPENER.open(request, timeout=120) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -241,7 +261,7 @@ def _urllib_get_with_headers(url: str, headers: dict[str, str]) -> tuple[int, by
     for name, value in headers.items():
         request.add_header(name, value)
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
+        with _OPENER.open(request, timeout=120) as response:
             return response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(), dict(exc.headers or {})

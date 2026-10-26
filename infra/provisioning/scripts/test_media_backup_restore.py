@@ -37,6 +37,7 @@ from media_backup_restore import (
     sha256_hex,
 )
 import media_backup_restore
+import shared_objectstorage
 from shared_objectstorage import ObjectStorageError
 
 ENDPOINT = "sandbox.example.test"
@@ -855,7 +856,7 @@ class _FakeResponse:
 
 
 class PutOnlyHttp:
-    """A fake S3 endpoint patched in for `urllib.request.urlopen`, so the REAL
+    """A fake S3 endpoint patched in for the shared opener's `open`, so the REAL
     signing and request code in `shared_objectstorage` runs and every request
     this module could make is observed, however it is routed. A bucket in
     `put_only` answers 403 to anything but a PUT, the way the backup bucket's
@@ -915,7 +916,7 @@ class PutOnlyBackupTests(unittest.TestCase):
         self.http = PutOnlyHttp(put_only={"backup"})
         self.http.seed("live-a", "content/images/a.jpg", b"a bytes")
         self.http.seed("live-a", "content/images/b.jpg", b"b bytes")
-        patcher = mock.patch("urllib.request.urlopen", self.http)
+        patcher = mock.patch.object(shared_objectstorage._module._OPENER, "open", self.http)
         patcher.start()
         self.addCleanup(patcher.stop)
 
