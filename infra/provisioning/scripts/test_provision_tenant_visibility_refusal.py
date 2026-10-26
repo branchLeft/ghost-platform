@@ -24,6 +24,7 @@ WORKFLOW = (
 )
 
 VALIDATE_STEP = "Validate inputs"
+CREATE_STEP = "Generate the tenant repo from the template"
 
 # Steps that create a repository or write a credential, in the order the
 # job runs them. The validation step must precede every one of them.
@@ -34,6 +35,9 @@ MUTATING_STEPS = (
     "Protect the generated repository's default branch",
     "Write the tenant repo's state credentials and variables",
     "Open the handover pull request",
+    "Upload the escrowed ciphertext",
+    "Initialise the tenant stack and write its non-secret config",
+    "Publish this tenant's encryption salt to its own environment secret",
 )
 
 STEP_LINE = re.compile(r"^      - name: (.+)$")
@@ -87,25 +91,28 @@ def _run_body(step):
 
 
 def _visibility_case(body):
-    """The `case "$TENANT_VISIBILITY" ... esac` block of the validation body."""
+    """The first `case "$TENANT_VISIBILITY" ... esac` block of a step body."""
     start = None
     for i, line in enumerate(body):
         if line.startswith('case "$TENANT_VISIBILITY" in'):
             start = i
             break
     if start is None:
-        raise AssertionError("no visibility case block in the validation step")
+        raise AssertionError("no visibility case block in the step")
     for j in range(start, len(body)):
         if body[j] == "esac":
             return body[start : j + 1]
     raise AssertionError("visibility case block has no closing esac")
 
 
-def _run_visibility(visibility):
-    """Execute the extracted visibility check with TENANT_VISIBILITY set to
-    `visibility`. Returns (returncode, combined output)."""
-    block = _visibility_case(_run_body(_step_lines(_read_workflow(), VALIDATE_STEP)))
+def _run_visibility(visibility, step=VALIDATE_STEP, print_after=""):
+    """Execute the visibility case block of `step` with TENANT_VISIBILITY set
+    to `visibility`, then run `print_after` if given. Returns (returncode,
+    combined output)."""
+    block = _visibility_case(_run_body(_step_lines(_read_workflow(), step)))
     script = 'fail() { echo "::error::$1"; exit 1; }\n' + "\n".join(block) + "\n"
+    if print_after:
+        script += print_after + "\n"
     directory = tempfile.mkdtemp(prefix="visibility-refusal-")
     path = os.path.join(directory, "check.sh")
     with open(path, "w", encoding="utf-8") as fh:
@@ -127,6 +134,22 @@ class APrivateTenantIsRefused(unittest.TestCase):
         self.assertIn("the owner's to run", out)
         self.assertIn("No agent or hand run", out)
 
+    def test_other_spellings_of_private_are_refused(self):
+        for value in (
+            "Private",
+            "PRIVATE",
+            "pRiVaTe",
+            " private",
+            "private ",
+            "Public",
+            "PUBLIC",
+            "",
+        ):
+            with self.subTest(value=value):
+                rc, out = _run_visibility(value)
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("::error::", out)
+
 
 class APublicTenantStillPasses(unittest.TestCase):
     def test_public_passes_without_error(self):
@@ -140,18 +163,39 @@ class APublicTenantStillPasses(unittest.TestCase):
         self.assertIn("tenant_visibility was not answered", out)
 
 
+class TheRepositoryCreationStepHasNoPrivateArm(unittest.TestCase):
+    def test_creation_case_refuses_private_and_every_other_spelling(self):
+        for value in ("private", "Private", "PRIVATE", ""):
+            with self.subTest(value=value):
+                rc, out = _run_visibility(
+                    value, CREATE_STEP, print_after='echo "$visibility_flag"'
+                )
+                self.assertNotEqual(rc, 0, out)
+                self.assertNotIn("--private", out)
+
+    def test_creation_case_still_picks_public(self):
+        rc, out = _run_visibility(
+            "public", CREATE_STEP, print_after='echo "$visibility_flag"'
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip(), "--public")
+
+
 class TheRefusalPrecedesEveryMutation(unittest.TestCase):
     def test_validation_runs_before_any_repository_or_credential_step(self):
         names = _step_names(_read_workflow())
         self.assertIn(VALIDATE_STEP, names)
         validate_at = names.index(VALIDATE_STEP)
         for step in MUTATING_STEPS:
-            self.assertIn(step, names, f"{step!r} no longer exists; update this list")
-            self.assertLess(
-                validate_at,
-                names.index(step),
-                f"{VALIDATE_STEP!r} must run before {step!r}",
-            )
+            with self.subTest(step=step):
+                self.assertIn(
+                    step, names, f"{step!r} no longer exists; update this list"
+                )
+                self.assertLess(
+                    validate_at,
+                    names.index(step),
+                    f"{VALIDATE_STEP!r} must run before {step!r}",
+                )
 
 
 if __name__ == "__main__":
