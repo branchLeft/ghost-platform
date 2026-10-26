@@ -20,7 +20,8 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_EMPTY_POLL_BACKOFF_MS` | no (default `250`) | Backoff after a `GET /drain` that answered with zero messages, before polling that host again. |
 | `COLLECTOR_MESSAGES_PER_HOUR` | no (default `50`) | The estate-wide send-rate ceiling, moved here from the shim's per-spool bucket. |
 | `COLLECTOR_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override file, `{"messagesPerHour": N}`. |
-| `COLLECTOR_DEDUPE_TTL_MS` | no (default `3600000`) | How long a delivered message id is remembered, to recognise a re-offer caused by a lost ack. |
+| `COLLECTOR_DEDUPE_TTL_MS` | no (default `3600000`) | How long a submitted message id is remembered, to recognise a re-offer caused by a lost ack. |
+| `COLLECTOR_DEDUPE_STATE_PATH` | no (off) | File, on a volume that outlives the container and is writable by the `node` user, the submitted ids are kept in. Unset, the ids live in memory only: a restart forgets them and the collector logs `dedupe_not_persistent` at start-up. |
 | `COLLECTOR_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | yes / no (`587`) / yes / yes | mx1's authenticated SMTP submission endpoint. |
 | `COLLECTOR_SMTP_SECURE` | no (default `false`) | `true` for implicit TLS. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
@@ -118,11 +119,24 @@ process has already handed to mx1 is enough: a re-offer caused by a lost
 ack is recognised here and skipped, not resubmitted — only re-acked, to
 finally clear it from the shim's queue.
 
+With `COLLECTOR_DEDUPE_STATE_PATH` set, the ids are also written to that file
+(temp file, fsync, rename, directory fsync), so the same skip holds across a
+restart: the file is read back at start-up and a re-offered id is only
+re-acked. An id is written after mx1 accepts the message, never before —
+writing first would turn a crash before the SMTP accept into a message that is
+skipped and acked without ever being sent, which loses mail. The window that
+remains is a crash after mx1 accepts and before the write lands, which can
+still produce one duplicate. A state file that cannot be read or written is
+logged as `dedupe_state_error` and the in-memory tracker carries on; the
+collector does not stop draining over it.
+
 Bounded by a TTL rather than kept forever, so a long-running process does
 not accumulate one entry per message ever sent. The TTL only needs to
 outlast the window in which a re-offer of the same id can plausibly still
 arrive (bounded by the shim's lease length plus however long an ack can
 stay lost); the default in `config.ts` is an hour, comfortably past that.
+Within that TTL an id is submitted at most once; once its entry expires, a
+later re-offer of the same id would be submitted again.
 
 ### descriptorTargets DescriptorTargetStore
 

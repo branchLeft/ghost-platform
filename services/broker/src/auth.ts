@@ -18,7 +18,18 @@ const TIMESTAMP_PATTERN = /^[0-9]{1,20}$/;
 // ordinary clock drift between the caller and this host -- never more,
 // because every second of forward slack is a second a captured request
 // stays valid for again once the window has otherwise elapsed.
-const FORWARD_SKEW_SECONDS = 5;
+export const FORWARD_SKEW_SECONDS = 5;
+
+/**
+ * How long a spent nonce must be remembered. The timestamp check admits a
+ * request from FORWARD_SKEW_SECONDS before its timestamp until the end of
+ * the second `timestamp + replayWindowSeconds`, so the nonce has to
+ * outlive that whole span; remembering it for the window alone lets a
+ * captured request be replayed once the nonce is forgotten.
+ */
+export function nonceLifetimeMs(replayWindowSeconds: number): number {
+  return (replayWindowSeconds + FORWARD_SKEW_SECONDS + 1) * 1000;
+}
 
 /**
  * Checks run in this order deliberately: format, then the replay window

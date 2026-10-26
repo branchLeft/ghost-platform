@@ -55,6 +55,18 @@ with, the worker writing to this bucket. Confirm it is firing-capable before
 step 5; without it a stalled dump pipeline is silent until the 35-day
 noncurrent tail runs out.
 
+Read-back for that alert: the rule `TenantBackupAgeHigh` must appear in the
+rules edge1's Prometheus has loaded. Run it from the workstation with
+`$EDGE1_IPV4` set as in `hetzner/RUNBOOK-monitoring.md` in
+`branchLeft/shared-infra`, under "What has to be true first":
+
+```bash
+ssh -i ~/.ssh/id_ed25519_hetzner root@"$EDGE1_IPV4" 'curl -s http://127.0.0.1:9090/api/v1/rules' | grep -o '"name":"TenantBackupAgeHigh"'
+```
+
+Expected: one line, `"name":"TenantBackupAgeHigh"`. No output means the rule is
+not loaded on edge1: stop, the alert is not firing-capable, and step 5 does not run.
+
 ## 1. Confirm the checkout
 
 From a checkout of `branchLeft/ghost-platform` on `main`, current enough that
@@ -130,8 +142,11 @@ Expected: `exit 0`. Compare it with the live policy; the expected result is no
 difference at all, and any difference is a stop:
 
 ```bash
-AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=fsn1 aws --endpoint-url https://fsn1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-tenant-backups --query Policy --output text | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))' > /tmp/live-policy.norm; python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$POLICY_FILE" > /tmp/new-policy.norm; diff /tmp/live-policy.norm /tmp/new-policy.norm && echo "policies identical"
+NORM_DIR=$(mktemp -d); AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=fsn1 aws --endpoint-url https://fsn1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-tenant-backups --query Policy --output text | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))' > "$NORM_DIR/live-policy.norm"; python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$POLICY_FILE" > "$NORM_DIR/new-policy.norm"; diff "$NORM_DIR/live-policy.norm" "$NORM_DIR/new-policy.norm" && echo "policies identical"; rm -rf "$NORM_DIR"
 ```
+
+`$NORM_DIR` is removed at the end of this command, whatever the diff says.
+Only `$POLICY_FILE` outlives this step, because step 5 and the rollback read it.
 
 ## 5. Apply
 
@@ -201,6 +216,11 @@ of something, so prove it on the throwaway bucket (step 10 deletes it
 afterwards), with the lab credential from step 8, not on the real one. The
 bucket is in hel1, so retry any dropped connection.
 
+**Stated assumption:** this proof runs on the hel1 throwaway bucket's engine,
+not on fsn1, where `branchleft-tenant-backups` lives. The PASS is taken to
+hold for the fsn1 engine only if both engines apply lifecycle rules alike.
+This step does not check that; it is an assumption the reader carries.
+
 The three probe prefixes share no leading text, and none of them is the real
 bucket's `media/`, so the rule set mirrors the real one without overlapping
 itself:
@@ -244,7 +264,8 @@ from one rule. A `media-probe/` listing with the current version still
 engine. A `media-probe/` delete marker that is missing is not a failure, only a
 note to send back: it means something cleaned it up. A listing for
 `expiry-probe/` showing no versions at all would mean the object was truly
-deleted, not expired by this rule: not a PASS. If either probe is still current
+deleted, not expired by this rule: not a PASS. Its next action is to roll back
+(see `## Rollback`, below) and report. If either probe is still current
 after 72 hours (the lifecycle pass can lag, so re-check at 72, and again at 96
 for `media-probe/`, before concluding), or the control changed, **step 5 must
 not stay applied**: roll back with the rollback below and report. Do the proof

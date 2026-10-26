@@ -64,6 +64,8 @@ The URL may omit the password (`postgres://LOGIN@HOST:PORT/portal`): the `pg`
 driver then reads `PGPASSWORD` from the process environment, so the password
 need not appear in the URL file. Plain HTTP is accepted only for a loopback origin.
 
+A pending sign-in rides in a cookie sealed under a key drawn at start, so a restart drops every pending sign-in and several instances cannot accept each other's cookie.
+
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity
 verifier first (`npm ci && npm run build` in `portal/data` and

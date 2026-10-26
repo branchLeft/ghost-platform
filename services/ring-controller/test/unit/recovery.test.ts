@@ -368,9 +368,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     // side, and `abandonedRun` is never awaited again. Only the durable
     // record on disk survives.
     await waitForState(store, 'tenant-a', 'applying');
-    // Margin for the microtask that invokes apply() itself, which runs
-    // immediately after the persisted write above resolves.
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(crashedDeps.apply).toHaveBeenCalledTimes(1), { timeout: 2000 });
     expect(crashedDeps.apply).toHaveBeenCalledTimes(1);
 
     // A fresh process: new deps, new lock object, same tenant id, reading
@@ -542,9 +540,7 @@ describe('crash-and-restart -- real file store, real ApplyLock, through the real
     // returns, so the on-disk record still says false.
     await waitForState(store, 'tenant-dedupe', 'failed-unsafe');
     expect((await store.load('tenant-dedupe'))?.pageSent).toBe(false);
-    // Margin for the microtask that calls page() itself, which runs
-    // immediately after the 'failed-unsafe' persist above resolves.
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => expect(liveDedupeKeys).toHaveLength(1), { timeout: 2000 });
     expect(liveDedupeKeys).toHaveLength(1);
 
     const recoveryDedupeKeys: string[] = [];

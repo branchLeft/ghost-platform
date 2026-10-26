@@ -42,9 +42,10 @@ class FakeApi:
     """Records every call and answers the two mint endpoints. Each answer is
     overridable so a test can break exactly one thing."""
 
-    def __init__(self, installation=(200, {"id": 42}), minted=None):
+    def __init__(self, installation=(200, {"id": 42}), minted=None, revoke=(204, None)):
         self.calls = []
         self.installation = installation
+        self.revoke = revoke
         self.minted = minted if minted is not None else (
             201,
             {
@@ -60,7 +61,15 @@ class FakeApi:
             return self.installation
         if url.endswith("/access_tokens"):
             return self.minted
+        if method == "DELETE" and url.endswith("/installation/token"):
+            if isinstance(self.revoke, BaseException):
+                raise self.revoke
+            return self.revoke
         return 404, None
+
+
+def _deletes(api):
+    return [call for call in api.calls if call[0] == "DELETE"]
 
 
 def _minted_with(**overrides):
@@ -269,6 +278,103 @@ class MintTokenTests(unittest.TestCase):
             _mint(broken)
 
 
+class RevokeOnRefusalTests(unittest.TestCase):
+    def _assert_refused_and_revoked(self, api, message):
+        with self.assertRaises(app_token.TokenError) as ctx:
+            _mint(api)
+        self.assertEqual(str(ctx.exception), message)
+        deletes = _deletes(api)
+        self.assertEqual(len(deletes), 1)
+        _, url, headers, _ = deletes[0]
+        self.assertEqual(url, app_token.API_ROOT + "/installation/token")
+        self.assertEqual(headers["Authorization"], "Bearer ghs_FAKETOKEN")
+
+    def test_a_token_wider_than_requested_is_revoked_before_the_refusal(self):
+        wide = dict(app_token.REQUIRED_PERMISSIONS, members="write")
+        self._assert_refused_and_revoked(
+            FakeApi(minted=_minted_with(permissions=wide)),
+            "the minted token does not hold exactly the named permissions: "
+            "extra permission(s) members:write")
+
+    def test_a_token_narrower_than_requested_is_revoked_before_the_refusal(self):
+        narrow = dict(app_token.REQUIRED_PERMISSIONS)
+        del narrow["administration"]
+        self._assert_refused_and_revoked(
+            FakeApi(minted=_minted_with(permissions=narrow)),
+            "the minted token does not hold exactly the named permissions: "
+            "missing permission(s) administration")
+
+    def test_a_token_with_no_permissions_is_revoked_before_the_refusal(self):
+        self._assert_refused_and_revoked(
+            FakeApi(minted=_minted_with(permissions=None)),
+            "the minted token does not hold exactly the named permissions: "
+            "the response carried no permissions mapping")
+
+    def test_a_token_expiring_beyond_an_hour_is_revoked_before_the_refusal(self):
+        self._assert_refused_and_revoked(
+            FakeApi(minted=_minted_with(expires_at=_iso(NOW + 86400))),
+            "the minted token's expiry is not a short-lived one")
+
+    def test_an_already_expired_token_is_revoked_before_the_refusal(self):
+        self._assert_refused_and_revoked(
+            FakeApi(minted=_minted_with(expires_at=_iso(NOW - 5))),
+            "the minted token's expiry is not a short-lived one")
+
+    def test_a_token_with_an_unreadable_expiry_is_revoked_before_the_refusal(self):
+        for value in (None, "tomorrow", 12):
+            with self.subTest(expires_at=repr(value)):
+                self._assert_refused_and_revoked(
+                    FakeApi(minted=_minted_with(expires_at=value)),
+                    "the token response carried no readable expires_at")
+
+    def test_a_failed_revoke_still_raises_the_original_refusal(self):
+        wide = dict(app_token.REQUIRED_PERMISSIONS, members="write")
+        message = ("the minted token does not hold exactly the named permissions: "
+                   "extra permission(s) members:write")
+        failures = (
+            ("a 500 answer", {"revoke": (500, None)}),
+            ("a TokenError", {"revoke": app_token.TokenError("down")}),
+            ("a UnicodeEncodeError", {"revoke": UnicodeEncodeError(
+                "ascii", "x", 0, 1, "reason")}),
+            ("a RuntimeError", {"revoke": RuntimeError("boom")}),
+        )
+        for label, options in failures:
+            with self.subTest(failure=label):
+                api = FakeApi(minted=_minted_with(permissions=wide), **options)
+                with self.assertRaises(app_token.TokenError) as ctx:
+                    _mint(api)
+                self.assertEqual(type(ctx.exception), app_token.TokenError)
+                self.assertEqual(str(ctx.exception), message)
+                self.assertEqual(len(_deletes(api)), 1)
+
+    def test_the_refusal_never_carries_the_token(self):
+        for minted in (_minted_with(permissions=None),
+                       _minted_with(expires_at=_iso(NOW - 5))):
+            with self.subTest(minted=minted[1]):
+                with self.assertRaises(app_token.TokenError) as ctx:
+                    _mint(FakeApi(minted=minted))
+                self.assertNotIn("ghs_FAKETOKEN", str(ctx.exception))
+
+    def test_a_successful_mint_is_not_revoked(self):
+        api = FakeApi()
+        self.assertEqual(_mint(api), "ghs_FAKETOKEN")
+        self.assertEqual(_deletes(api), [])
+
+    def test_a_refused_or_tokenless_mint_makes_no_revoke_call(self):
+        cases = (
+            ("a 422 mint", FakeApi(minted=(422, {"message": "nope"}))),
+            ("a 201 without a JSON object", FakeApi(minted=(201, None))),
+        ) + tuple(
+            ("token %r" % (token,), FakeApi(minted=_minted_with(token=token)))
+            for token in ("", "  ", None, 5)
+        )
+        for label, api in cases:
+            with self.subTest(case=label):
+                with self.assertRaises(app_token.TokenError):
+                    _mint(api)
+                self.assertEqual(_deletes(api), [])
+
+
 class JwtAndSignerTests(unittest.TestCase):
     def test_the_jwt_has_three_unpadded_segments_and_the_right_claims(self):
         jwt = app_token.build_jwt(123, _fake_sign, NOW)
@@ -459,6 +565,17 @@ class RunMintTests(unittest.TestCase):
         env = dict(self.env)
         del env["GITHUB_REPOSITORY_OWNER"]
         self.assertEqual(self._run(env=env)[0], 1)
+
+    def test_run_mint_revokes_a_refused_token_and_exits_one(self):
+        wide = FakeApi(minted=_minted_with(
+            permissions=dict(app_token.REQUIRED_PERMISSIONS, members="write")))
+        code, out, err = self._run(api=wide)
+        self.assertEqual(code, 1)
+        self.assertFalse(os.path.exists(self.output))
+        self.assertNotIn("ghs_FAKETOKEN", out + err)
+        deletes = _deletes(wide)
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(deletes[0][2]["Authorization"], "Bearer ghs_FAKETOKEN")
 
 
 class RunRevokeTests(unittest.TestCase):

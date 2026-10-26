@@ -25,11 +25,18 @@ never a hardcoded string and never an unresolved placeholder.
   known fixed host, never a `/32` or a CIDR, and never a threaded
   `$VARIABLE` reference.
 
+## Which fences are scanned
+
+Every fence that opens in column 0 with a bare tag (or no tag) is scanned,
+except the deny-list `DENIED_FENCE_LANGS` in the test file: `text`, `txt`,
+`plaintext` and `output`. Those four hold what a command printed, not what
+to run -- wherever a runbook shows output it uses one of these tags, and a
+placeholder there is never pasted. Any other tag, including `json`, `yaml`
+and an untagged fence, is scanned until someone adds it to the list on
+purpose. Indented fences, and openers with text after the tag, are not read.
+
 ## Deliberately narrower than "no `<...>` anywhere in a fenced block" or "no IPv4-shaped token anywhere in a fenced block"
 
-- Only `bash` and `sql` fences count as command blocks in this repo's
-  runbooks -- `text`/`yaml`/`json` fences here hold illustrative sample
-  output, never something pasted and run.
 - The address word must be *trailing*, not merely present, so a
   per-invocation credential id such as `<db1 backup key id>` is left
   alone: it is not an address, and this scanner does not track resource

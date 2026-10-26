@@ -15,7 +15,9 @@ import re
 import socket
 import stat
 import sys
-from typing import Iterator, Sequence
+import threading
+import time
+from typing import Any, Iterator, Sequence
 
 # Mirrors render_demo_edge.py. Duplicated rather than imported: this file is
 # installed alone on the demo host. test_health_router.py fails if either
@@ -34,9 +36,14 @@ SOCKET_ROOT = "/var/lib/branchleft/demo-router"
 SOCKET_NAME = "health.sock"
 SOCKET_DIR_MODE = 0o700
 
+# The whole exchange with a sidecar (connect, send, read), not each receive.
 BACKEND_TIMEOUT_SECONDS = 1.5
 CLIENT_TIMEOUT_SECONDS = 3.0
 MAX_BACKEND_RESPONSE_BYTES = 8192
+# Concurrent client connections. One slot's edge check is a handful per
+# second, so this is generous; it bounds threads, not throughput.
+MAX_CONNECTIONS = 32
+REFUSAL = b"HTTP/1.0 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
 STATUS_LINE = re.compile(rb"\AHTTP/1\.[01] ([0-9]{3}) ")
 
 
@@ -151,14 +158,25 @@ def verify_socket(root: str, slot: str, colour: str, owner_uid: int) -> str:
 
 def sidecar_status(path: str, timeout: float = BACKEND_TIMEOUT_SECONDS) -> int:
     """The HTTP status the sidecar answered on `path`. Any failure to ask or
-    to understand the answer is an exception, never a status."""
+    to understand the answer is an exception, never a status. `timeout` bounds
+    the whole exchange: a peer that drips a byte at a time cannot extend it."""
     request = f"GET {HEALTH_URI} HTTP/1.0\r\nHost: sidecar\r\nConnection: close\r\n\r\n".encode()
+    deadline = time.monotonic() + timeout
+
+    def remaining() -> float:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("sidecar did not answer within the deadline")
+        return left
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
-        conn.settimeout(timeout)
+        conn.settimeout(remaining())
         conn.connect(path)
+        conn.settimeout(remaining())
         conn.sendall(request)
         received = b""
         while len(received) < MAX_BACKEND_RESPONSE_BYTES and b"\r\n" not in received:
+            conn.settimeout(remaining())
             chunk = conn.recv(1024)
             if not chunk:
                 break
@@ -216,9 +234,54 @@ def make_handler(root: str, slot: str, owner_uid: int) -> type[http.server.BaseH
     return Handler
 
 
+_Request = socket.socket | tuple[bytes, socket.socket]
+
+
 class RouterServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(self, *args: Any, max_connections: int = MAX_CONNECTIONS, **kwargs: Any) -> None:
+        self.max_connections = max_connections
+        self._in_flight = 0
+        self._lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
+    @property
+    def in_flight(self) -> int:
+        with self._lock:
+            return self._in_flight
+
+    def process_request(self, request: _Request, client_address: object) -> None:
+        """Past the cap a connection is answered 503 at once and closed,
+        without a thread: the edge reads that as unhealthy, the same as any
+        other failure here."""
+        with self._lock:
+            admitted = self._in_flight < self.max_connections
+            if admitted:
+                self._in_flight += 1
+        if not admitted:
+            assert isinstance(request, socket.socket)
+            with contextlib.suppress(OSError):
+                request.settimeout(0.1)
+                request.sendall(REFUSAL)
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._release()
+            raise
+
+    def process_request_thread(self, request: _Request, client_address: object) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        with self._lock:
+            self._in_flight -= 1
 
 
 def make_server(
@@ -227,11 +290,13 @@ def make_server(
     root: str = SOCKET_ROOT,
     owner_uid: int = ROUTER_UID,
     port: int | None = None,
+    max_connections: int = MAX_CONNECTIONS,
 ) -> RouterServer:
     if slot not in SLOT_NAMES:
         raise ValueError(f"unknown slot {slot!r}")
     bind_port = slot_health_port(slot) if port is None else port
-    return RouterServer((EDGE_ADDR, bind_port), make_handler(root, slot, owner_uid))
+    handler = make_handler(root, slot, owner_uid)
+    return RouterServer((EDGE_ADDR, bind_port), handler, max_connections=max_connections)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -250,5 +250,79 @@ class RepoInterpolationTests(unittest.TestCase):
         self.assertNotIn("wrong/repo", stderr)
 
 
+WORKFLOW_FIXTURE = """\
+name: fixture
+jobs:
+  provision:
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Mint
+        env:
+          TENANT_PROVISIONING_APP_PRIVATE_KEY: ${{ secrets.TENANT_PROVISIONING_APP_PRIVATE_KEY }}
+        run: echo ok
+"""
+
+REAL_WORKFLOW = pathlib.Path(__file__).resolve().parents[3] / ".github" / "workflows" / "provision-tenant.yml"
+
+
+class VerifyCoverageTests(unittest.TestCase):
+    def _workflow(self, text: str) -> str:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = pathlib.Path(directory.name) / "provision-tenant.yml"
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def _run(self, workflow: str) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = guard.main(["--verify-coverage", workflow])
+        return rc, stdout.getvalue(), stderr.getvalue()
+
+    def test_todays_pair_passes_against_the_real_workflow(self):
+        rc, _, stderr = self._run(str(REAL_WORKFLOW))
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(stderr, "")
+
+    def test_todays_pair_passes_against_the_fixture(self):
+        rc, _, stderr = self._run(self._workflow(WORKFLOW_FIXTURE))
+        self.assertEqual(rc, 0, stderr)
+
+    def test_renamed_workflow_secret_is_red_and_names_both_sides(self):
+        renamed = WORKFLOW_FIXTURE.replace(
+            "secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY", "secrets.TENANT_STATE_S3_SECRET_KEY"
+        )
+        rc, _, stderr = self._run(self._workflow(renamed))
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", stderr)
+        # The workflow now reads a name the guard does not cover...
+        self.assertIn("TENANT_STATE_S3_SECRET_KEY", stderr)
+        # ...and the guard still requires a name the workflow no longer reads.
+        self.assertIn("TENANT_STATE_S3_SECRET_ACCESS_KEY", stderr)
+
+    def test_stale_required_entry_is_red(self):
+        with patch.object(guard, "REQUIRED_SECRETS", guard.REQUIRED_SECRETS | {"TENANT_RETIRED_SECRET"}):
+            rc, _, stderr = self._run(self._workflow(WORKFLOW_FIXTURE))
+        self.assertEqual(rc, 1)
+        self.assertIn("TENANT_RETIRED_SECRET", stderr)
+        self.assertIn("::error::", stderr)
+
+    def test_a_workflow_with_no_secret_references_is_red(self):
+        rc, _, stderr = self._run(self._workflow("name: empty\njobs: {}\n"))
+        self.assertEqual(rc, 1)
+        self.assertIn("TENANT_PROVISIONING_APP_PRIVATE_KEY", stderr)
+
+    def test_commented_out_reference_does_not_count_as_a_use(self):
+        commented = WORKFLOW_FIXTURE.replace(
+            "          TENANT_PROVISIONING_APP_PRIVATE_KEY: ${{ secrets.TENANT_PROVISIONING_APP_PRIVATE_KEY }}",
+            "          # TENANT_PROVISIONING_APP_PRIVATE_KEY: ${{ secrets.TENANT_PROVISIONING_APP_PRIVATE_KEY }}",
+        )
+        rc, _, stderr = self._run(self._workflow(commented))
+        self.assertEqual(rc, 1)
+        self.assertIn("TENANT_PROVISIONING_APP_PRIVATE_KEY", stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

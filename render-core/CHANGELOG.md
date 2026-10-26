@@ -4,6 +4,14 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**The Network tab is hidden on every tenant.**
+
+- **Changed output:** every rendered `compose.yml` gains
+  `hostSettings__limits__limitSocialWeb__disabled: true`, which locks Ghost's
+  ActivityPub setting.
+- **Changed output:** `ghost-settings.json` gains `social_web: false`, and
+  `GhostSettings` gains the `social_web` field.
+
 **Changed output:** a `queue`-transport tenant or demo with mail enabled gains
 three Ghost mail environment keys (`mail__options__connectionTimeout`,
 `mail__options__greetingTimeout`, `mail__options__socketTimeout`; 5000, 5000

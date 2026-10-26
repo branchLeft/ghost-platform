@@ -11,7 +11,9 @@ import base64
 import datetime
 import hashlib
 import hmac
+import http.server
 import io
+import threading
 import unittest
 import unittest.mock
 import urllib.parse
@@ -840,15 +842,15 @@ class UrllibRequestTests(unittest.TestCase):
         def __exit__(self, *exc):
             return False
 
-    def _urlopen(self, captured, result):
-        def urlopen(request, timeout=None):
+    def _fake_open(self, captured, result):
+        def fake_open(request, timeout=None):
             captured["request"] = request
             captured["timeout"] = timeout
             if isinstance(result, Exception):
                 raise result
             return result
 
-        return urlopen
+        return fake_open
 
     def test_a_zero_byte_put_still_carries_a_body(self):
         # `data=None` makes urllib send no Content-Length, which this endpoint
@@ -856,7 +858,7 @@ class UrllibRequestTests(unittest.TestCase):
         # probe object is exactly that.
         captured = {}
         with unittest.mock.patch.object(
-            os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+            os3._OPENER, "open", self._fake_open(captured, self._Response())
         ):
             os3.urllib_request("https://host/b/k", {}, b"", "PUT")
         self.assertEqual(captured["request"].data, b"")
@@ -864,7 +866,7 @@ class UrllibRequestTests(unittest.TestCase):
     def test_a_get_sends_no_body_at_all(self):
         captured = {}
         with unittest.mock.patch.object(
-            os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+            os3._OPENER, "open", self._fake_open(captured, self._Response())
         ):
             os3.urllib_request("https://host/b", {}, b"", "GET")
         self.assertIsNone(captured["request"].data)
@@ -881,7 +883,7 @@ class UrllibRequestTests(unittest.TestCase):
             with self.subTest(method=method, payload=payload):
                 captured = {}
                 with unittest.mock.patch.object(
-                    os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+                    os3._OPENER, "open", self._fake_open(captured, self._Response())
                 ):
                     os3.urllib_request("https://host/b/k", {}, payload, method)
                 self.assertEqual(captured["request"].get_method(), method)
@@ -915,7 +917,7 @@ class UrllibRequestTests(unittest.TestCase):
         # between its two reads and removes it only once they return.
         captured = {}
         with unittest.mock.patch.object(
-            os3.urllib.request, "urlopen", self._urlopen(captured, self._Response())
+            os3._OPENER, "open", self._fake_open(captured, self._Response())
         ):
             os3.urllib_request("https://host/b", {}, b"", "GET")
         self.assertEqual(captured["timeout"], 120)
@@ -925,7 +927,7 @@ class UrllibRequestTests(unittest.TestCase):
             "https://host/b", 403, "Forbidden", {}, io.BytesIO(b"<Error/>")
         )
         with unittest.mock.patch.object(
-            os3.urllib.request, "urlopen", self._urlopen({}, error)
+            os3._OPENER, "open", self._fake_open({}, error)
         ):
             self.assertEqual(os3.urllib_request("https://host/b", {}, b"", "GET"), (403, b"<Error/>"))
 
@@ -936,10 +938,103 @@ class UrllibRequestTests(unittest.TestCase):
         ):
             with self.subTest(failure=type(failure).__name__):
                 with unittest.mock.patch.object(
-                    os3.urllib.request, "urlopen", self._urlopen({}, failure)
+                    os3._OPENER, "open", self._fake_open({}, failure)
                 ):
                     with self.assertRaises(os3.ObjectStorageError):
                         os3.urllib_request("https://host/b", {}, b"", "GET")
+
+
+class _RecordingHandler(http.server.BaseHTTPRequestHandler):
+    """Answers every verb with `server.reply` and records each request it gets."""
+
+    def log_message(self, *args: object) -> None:
+        del args
+
+    def _answer(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        if length:
+            self.rfile.read(length)
+        self.server.received.append((self.command, dict(self.headers)))
+        status, location, body = self.server.reply
+        self.send_response(status)
+        if location is not None:
+            self.send_header("Location", location)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_PUT = do_DELETE = _answer
+
+
+class RedirectIsNotFollowedTests(unittest.TestCase):
+    """A redirect is handed back, never followed: a signed request is bound to
+    one host and path, and its Authorization header must not reach a redirect
+    target. Real loopback servers, so the stdlib's own redirect handling runs."""
+
+    REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+    ORIGIN_BODY = b"<Error><Code>Moved</Code></Error>"
+    AUTHORIZATION = "AWS4-HMAC-SHA256 Credential=ghs_FAKETOKEN"
+
+    def _start_server(self, reply):
+        server = http.server.HTTPServer(("127.0.0.1", 0), _RecordingHandler)
+        server.reply = reply
+        server.received = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def _servers(self):
+        target = self._start_server((200, None, b"target body"))
+        origin = self._start_server((302, None, self.ORIGIN_BODY))
+        target_url = f"http://127.0.0.1:{target.server_port}/b/k"
+        origin_url = f"http://127.0.0.1:{origin.server_port}/b/k"
+        return origin, target, origin_url, target_url
+
+    def test_a_redirect_on_get_is_returned_not_followed(self):
+        origin, target, origin_url, target_url = self._servers()
+        for status in self.REDIRECT_STATUSES:
+            with self.subTest(status=status):
+                origin.reply = (status, target_url, self.ORIGIN_BODY)
+                target.received.clear()
+                self.assertEqual(
+                    os3.urllib_request(origin_url, {}, b"", "GET"), (status, self.ORIGIN_BODY)
+                )
+                _, body, _ = os3._urllib_get_with_headers(origin_url, {})
+                self.assertEqual(body, self.ORIGIN_BODY)
+                self.assertEqual(target.received, [])
+
+    def test_the_signed_authorization_header_never_reaches_a_redirect_target(self):
+        origin, target, origin_url, target_url = self._servers()
+        origin.reply = (302, target_url, self.ORIGIN_BODY)
+        headers = {"Authorization": self.AUTHORIZATION}
+        os3.urllib_request(origin_url, headers, b"", "GET")
+        os3._urllib_get_with_headers(origin_url, headers)
+        self.assertEqual(origin.received[0][1]["Authorization"], self.AUTHORIZATION)
+        self.assertEqual(target.received, [])
+
+    def test_the_header_variant_returns_the_location_header_without_following_it(self):
+        origin, target, origin_url, target_url = self._servers()
+        origin.reply = (301, target_url, self.ORIGIN_BODY)
+        status, body, headers = os3._urllib_get_with_headers(origin_url, {})
+        self.assertEqual((status, body), (301, self.ORIGIN_BODY))
+        lowered = {name.lower(): value for name, value in headers.items()}
+        self.assertEqual(lowered["location"], target_url)
+        self.assertEqual(target.received, [])
+
+    def test_a_redirect_on_put_and_delete_is_still_returned(self):
+        origin, target, origin_url, target_url = self._servers()
+        for method in ("PUT", "DELETE"):
+            for status in (301, 307):
+                with self.subTest(method=method, status=status):
+                    origin.reply = (status, target_url, self.ORIGIN_BODY)
+                    target.received.clear()
+                    self.assertEqual(
+                        os3.urllib_request(origin_url, {}, b"x", method),
+                        (status, self.ORIGIN_BODY),
+                    )
+                    self.assertEqual(target.received, [])
 
 
 if __name__ == "__main__":

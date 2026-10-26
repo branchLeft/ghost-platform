@@ -35,6 +35,32 @@ function findFreePort(): Promise<number> {
   });
 }
 
+/**
+ * The child prints "listening" before its HTTP stack accepts connections, so
+ * a request sent straight after that line can hit a refused or reset socket.
+ * Poll until any HTTP response comes back, ignoring the connection errors of
+ * a server that is not yet accepting, and fail after a 5 s deadline.
+ */
+async function waitForHttp(baseUrl: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      const res = await fetch(`${baseUrl}/drain/outcomes`, { method: 'POST' });
+      await res.arrayBuffer();
+      return;
+    } catch (err) {
+      const code = (err as { cause?: { code?: string } }).cause?.code;
+      if (code !== 'ECONNREFUSED' && code !== 'ECONNRESET') {
+        throw err;
+      }
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`server printed listening but never answered HTTP at ${baseUrl}`);
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function withServer(
   extraEnv: Record<string, string>,
   run: (baseUrl: string) => Promise<void>
@@ -82,6 +108,7 @@ async function withServer(
       };
       check();
     });
+    await waitForHttp(`http://127.0.0.1:${port}`);
     await run(`http://127.0.0.1:${port}`);
   } finally {
     const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()));

@@ -565,6 +565,126 @@ describe('login', () => {
       (await login(PASSPHRASE, { r: '/\\evil.example', source: '203.0.113.5' })).headers.location
     ).toBe('/');
   });
+
+  it.each([
+    { label: 'narrow', limits: { narrow: 10, broad: 100 } },
+    { label: 'broad', limits: { narrow: 100, broad: 10 } },
+  ])('ten malformed POSTs do not lock a valid login', async ({ limits }) => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createDerivationGate(4, 64);
+    let calls = 0;
+    const countingGate: DerivationGate = {
+      run: (fn) => {
+        calls += 1;
+        return inner.run(fn);
+      },
+    };
+    h = await start({
+      derivationGate: countingGate,
+      ceiling: createAttemptCeiling({ limit: limits.narrow, windowMs: 60_000, maxSources: 100 }),
+      broadCeiling: createAttemptCeiling({
+        limit: limits.broad,
+        windowMs: 60_000,
+        maxSources: 100,
+      }),
+    });
+    const source = '203.0.113.1';
+    const malformedKinds: Array<() => Promise<Reply>> = [
+      () => login(PASSPHRASE, { source, contentType: 'application/json' }),
+      () =>
+        send(
+          'POST',
+          '/__gate/login',
+          { host: HOST, 'x-forwarded-for': source },
+          `passphrase=${PASSPHRASE}`
+        ),
+      () => login('', { source }),
+      () => login('x'.repeat(257), { source }),
+      () =>
+        send(
+          'POST',
+          '/__gate/login',
+          {
+            host: HOST,
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-forwarded-for': source,
+          },
+          `passphrase=${'x'.repeat(4096)}`
+        ),
+    ];
+    // Two passes over the five kinds: ten malformed requests from one source.
+    for (const sendMalformed of [...malformedKinds, ...malformedKinds]) {
+      expect((await sendMalformed()).status).toBe(400);
+    }
+    const valid = await login(PASSPHRASE, { source });
+    expect(valid.status).toBe(303);
+    expect(valid.headers['set-cookie']).toBeDefined();
+    expect(calls).toBe(1);
+  });
+
+  it('ten wrong passphrases still lock the eleventh', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      ceiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+      broadCeiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+    });
+    for (let i = 0; i < 10; i++) expect((await login('wrong')).status).toBe(401);
+    const locked = await login(PASSPHRASE);
+    expect(locked.status).toBe(429);
+    expect(locked.headers['retry-after']).toBe('60');
+    expect(locked.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('concurrent well-formed attempts cannot exceed the ceiling', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createDerivationGate(4, 64);
+    let calls = 0;
+    const countingGate: DerivationGate = {
+      run: (fn) => {
+        calls += 1;
+        return inner.run(fn);
+      },
+    };
+    h = await start({
+      derivationGate: countingGate,
+      ceiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
+      broadCeiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
+    });
+    const replies = await Promise.all(Array.from({ length: 10 }, () => login('wrong')));
+    const statuses = replies.map((reply) => reply.status).sort((a, b) => a - b);
+    expect(statuses).toEqual([401, 401, 401, 429, 429, 429, 429, 429, 429, 429]);
+    expect(calls).toBe(3);
+  });
+
+  it.each([
+    { label: 'unknown host', host: 'unknown.demo.example', prepare: (): void => undefined },
+    {
+      label: 'no lease',
+      host: HOST,
+      prepare: (): void => {
+        h.leases.delete(SLOT);
+      },
+    },
+    {
+      label: 'untied lease',
+      host: HOST,
+      prepare: (): void => {
+        h.leases.set(SLOT, { lease: LEASE_1, hashId: 'deadbeefdeadbeef' as HashId });
+      },
+    },
+  ])(
+    'unknown-host, no-lease and untied requests are charged before they derive',
+    async ({ host, prepare }) => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      h = await start({
+        ceiling: createAttemptCeiling({ limit: 1, windowMs: 60_000, maxSources: 100 }),
+        broadCeiling: createAttemptCeiling({ limit: 1, windowMs: 60_000, maxSources: 100 }),
+      });
+      prepare();
+      expect((await login(PASSPHRASE, { host })).status).toBe(401);
+      expect((await login(PASSPHRASE, { host })).status).toBe(429);
+    }
+  );
 });
 
 /**

@@ -6,5 +6,9 @@ import { createTenantPortal } from './app.js';
 
 const config = loadTenantConfig(process.env);
 const pool = new pg.Pool({ connectionString: config.databaseUrl });
-const portal = createTenantPortal({ ...config, db: new TenantDb(pool) });
+const portal = createTenantPortal({
+  ...config,
+  db: new TenantDb(pool),
+  onError: (line) => process.stderr.write(`${line}\n`),
+});
 createServer((request, response) => void portal(request, response)).listen(config.port);

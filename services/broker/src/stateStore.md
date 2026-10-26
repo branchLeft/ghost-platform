@@ -57,8 +57,25 @@ fresh-deploy failure path resets the slot. Boot recovery never moves a
 cannot release held evidence.
 
 `writeSlotState` carries any unconfirmed marker already on disk into a write
-that does not name `evidence`, so no transition (a reconcile colour swap, a
-stop, a recovery) can drop it. Only a write that names the marker changes it.
+whose `evidence` is absent or `undefined`, so no transition (a reconcile colour
+swap, a stop, a recovery) can drop it. Only a write that names an unconfirmed
+marker changes it.
+
+## releaseHeldEvidence
+
+Release is a contract, not a convention. `releaseHeldEvidence` is the only
+code path that moves a held marker to `evidence: 'detached'`. It is the one
+place a confirmed detach lands, and it sets the marker itself: its caller
+supplies the rest of the state and cannot name the marker.
+
+The rule is about the transition, not the value. `writeSlotState` refuses a
+write that names `'detached'` when the marker on disk is not already
+`'detached'`: a move from absent-or-`frozen` to `'detached'` is a release, and
+only `releaseHeldEvidence` performs it. A write that names `'detached'` over a
+marker already `'detached'` is allowed, so a recovery's `errorStateOf` of a
+released slot keeps its confirmation and does not throw on a fail-closed path.
+Any change to who may release held evidence must change this function and
+this rule together.
 
 ## assertHashRotated
 

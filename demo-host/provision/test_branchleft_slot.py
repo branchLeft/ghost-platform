@@ -16,9 +16,11 @@ import contextlib
 import fcntl
 import io
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -797,16 +799,53 @@ class RealSlotOpsFilesystemTests(unittest.TestCase):
             self.assertTrue(os.path.isdir(target))
 
 
+_NEEDS_TIMEOUT = unittest.skipUnless(shutil.which("timeout"), "needs GNU coreutils timeout")
+
+
+def _process_is_gone(pid: int) -> bool:
+    """A zombie still answers `os.kill(pid, 0)`, so its state is read from
+    /proc: absent or `Z` both mean the process no longer runs."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat_line = handle.read()
+    except FileNotFoundError:
+        return True
+    state = stat_line.rsplit(b")", 1)[1].split()[0]
+    return state == b"Z"
+
+
+def _wait_until_gone(pid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if _process_is_gone(pid):
+            return True
+        time.sleep(0.05)
+    return _process_is_gone(pid)
+
+
+def _read_recorded_pid(pid_file: str, seconds: float = 5.0) -> int:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            with open(pid_file, "r", encoding="ascii") as handle:
+                text = handle.read()
+        except FileNotFoundError:
+            text = ""
+        if text.endswith("\n"):
+            return int(text)
+        time.sleep(0.02)
+    raise AssertionError(f"{pid_file} never received a pid")
+
+
 class RealSlotOpsLoadImageTests(unittest.TestCase):
     """`load_image` is the root-side half of the owner ruling's "loads
-    nothing else". None of this needs to run as root to prove the checks
-    exist and run in the right order: `pwd.getpwnam` is patched to name
-    this test process's own uid as "the broker account" instead of
-    `chown`ing real files, which needs root and would only prove some check
-    runs somewhere, not that it runs against the right descriptor before
-    docker is ever reached. `.github/workflows/demo-host-sudoers-ci.yml`
-    re-proves the same shapes against a real broker account and real
-    ownership; these are the fast, hermetic form.
+    nothing else". It needs no root to prove the checks exist and run in
+    order: `pwd.getpwnam` names this process's uid as "the broker account",
+    so no `chown` is needed. Why, and the real-ownership re-proof in
+    `.github/workflows/demo-host-sudoers-ci.yml`: test_branchleft_slot.md.
+
+    Docker is a shell script first on `PATH`, so the real `Popen` pipe,
+    process group and timeout paths run.
     """
 
     def setUp(self) -> None:
@@ -816,37 +855,191 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             "branchleft_slot.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=self._own_uid)
         )
         self._patch.start()
+        self._fakebin = self._path("fakebin")
+        os.makedirs(self._fakebin)
+        self._path_patch = mock.patch.dict(
+            os.environ, {"PATH": self._fakebin + os.pathsep + os.environ["PATH"]}
+        )
+        self._path_patch.start()
+        self._pid_files: list[str] = []
 
     def tearDown(self) -> None:
+        for pid_file in self._pid_files:
+            self._kill_recorded_group(pid_file)
+        self._path_patch.stop()
         self._patch.stop()
         self._tmp.cleanup()
 
     def _path(self, name: str) -> str:
         return os.path.join(self._tmp.name, name)
 
-    def test_feeds_dockers_stdin_the_files_own_bytes_through_the_verified_descriptor(self):
-        # Never mocks `os.open`/`os.fstat` themselves -- only `subprocess.run`
-        # -- so this proves the real open()/fstat() calls ran against a real
-        # file and produced a descriptor that genuinely carries that file's
-        # bytes, not merely that some fd-shaped object reached the call.
+    def _write_fake_docker(self, body: str) -> None:
+        script = self._path("fakebin/docker")
+        with open(script, "w", encoding="ascii") as handle:
+            handle.write("#!/bin/sh\n" + body)
+        os.chmod(script, 0o755)
+
+    def _pid_file(self, name: str = "docker.pid") -> str:
+        pid_file = self._path(name)
+        self._pid_files.append(pid_file)
+        return pid_file
+
+    def _kill_recorded_group(self, pid_file: str) -> None:
+        try:
+            with open(pid_file, "r", encoding="ascii") as handle:
+                pid = int(handle.read())
+        except (FileNotFoundError, ValueError):
+            return
+        try:
+            group = os.getpgid(pid)
+            if group != os.getpgrp():
+                os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def _stage(self, content: bytes) -> str:
         path = self._path("image.tar")
-        content = b"the exact bytes docker load must read"
         with open(path, "wb") as handle:
             handle.write(content)
+        return path
 
-        captured: dict[str, bytes] = {}
+    @_NEEDS_TIMEOUT
+    def test_feeds_dockers_stdin_the_files_own_bytes_through_the_verified_descriptor(self):
+        # Never mocks `os.open`/`os.fstat` -- docker is a real executable on
+        # PATH reading a real pipe, so this proves the open()/fstat()
+        # descriptor genuinely carried the file's bytes to its stdin.
+        content = b"the exact bytes docker load must read"
+        path = self._stage(content)
+        out_file, argv_file = self._path("out.bin"), self._path("argv.txt")
+        self._write_fake_docker(f'echo "$@" > {argv_file}\ncat > {out_file}\n')
 
-        def fake_run(argv, *, stdin, check, timeout):
-            captured["bytes"] = os.read(stdin, len(content) + 1)
-            return SimpleNamespace(returncode=0)
+        bs.RealSlotOps().load_image(path)
 
-        with mock.patch("branchleft_slot.subprocess.run", side_effect=fake_run) as run:
+        with open(out_file, "rb") as handle:
+            self.assertEqual(handle.read(), content)
+        with open(argv_file, "r", encoding="ascii") as handle:
+            self.assertEqual(handle.read().strip(), "load")
+
+    @_NEEDS_TIMEOUT
+    def test_a_file_that_grows_during_the_load_is_cut_off_at_the_size_checked(self):
+        content = bytes(range(256)) * 800
+        path = self._stage(content)
+        recorded_size = os.stat(path).st_size
+        out_file = self._path("out.bin")
+        self._write_fake_docker(f"printf 'APPENDED-BY-A-COMPROMISED-BROKER' >> {path}\ncat > {out_file}\n")
+
+        bs.RealSlotOps().load_image(path)
+
+        with open(out_file, "rb") as handle:
+            received = handle.read()
+        self.assertEqual(received, content)
+        self.assertEqual(len(received), recorded_size)
+
+    def test_the_read_chunk_is_at_most_one_mebibyte(self):
+        self.assertLessEqual(bs.IMAGE_LOAD_CHUNK_BYTES, 1024 * 1024)
+
+    @_NEEDS_TIMEOUT
+    def test_a_file_truncated_during_the_load_is_an_error_and_docker_is_killed(self):
+        eight_mebibytes = 8 * 1024 * 1024
+        path = self._stage(b"\0" * eight_mebibytes)
+        pid_file, finished = self._pid_file(), self._path("finished")
+        self._write_fake_docker(
+            f"echo $$ > {pid_file}\n: > {path}\ncat > {self._path('out.bin')}\necho done > {finished}\n"
+        )
+
+        with self.assertRaises(RuntimeError) as caught:
             bs.RealSlotOps().load_image(path)
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], ["docker", "load"])
-        self.assertTrue(run.call_args.kwargs["check"])
-        self.assertEqual(run.call_args.kwargs["timeout"], bs.IMAGE_LOAD_TIMEOUT_SECONDS)
-        self.assertEqual(captured["bytes"], content)
+
+        self.assertIn(str(eight_mebibytes), str(caught.exception))
+        self.assertTrue(_wait_until_gone(_read_recorded_pid(pid_file), 3))
+        self.assertFalse(os.path.exists(finished))
+
+    @_NEEDS_TIMEOUT
+    def test_a_truncated_load_kills_docker_before_closing_its_stdin(self):
+        # If stdin were closed first, docker would see a clean end-of-file
+        # and could finish loading a truncated archive and exit 0.
+        path = self._stage(b"\0" * (8 * 1024 * 1024))
+        self._write_fake_docker(f": > {path}\ncat > /dev/null\n")
+        spawned: list[subprocess.Popen[bytes]] = []
+        stdin_closed_at_kill: list[bool] = []
+        real_popen, real_killpg = subprocess.Popen, os.killpg
+
+        def spy_popen(*args, **kwargs):
+            spawned.append(real_popen(*args, **kwargs))
+            return spawned[-1]
+
+        def spy_killpg(pgid, sig):
+            stdin_closed_at_kill.append(spawned[0].stdin.closed)
+            self.assertEqual((pgid, sig), (spawned[0].pid, signal.SIGKILL))
+            real_killpg(pgid, sig)
+
+        with mock.patch("branchleft_slot.subprocess.Popen", side_effect=spy_popen):
+            with mock.patch("branchleft_slot.os.killpg", side_effect=spy_killpg):
+                with self.assertRaises(RuntimeError):
+                    bs.RealSlotOps().load_image(path)
+
+        self.assertEqual(stdin_closed_at_kill, [False])
+
+    @_NEEDS_TIMEOUT
+    def test_docker_exiting_before_reading_its_stdin_is_an_error_naming_its_exit_status(self):
+        path = self._stage(b"\0" * (4 * 1024 * 1024))
+        self._write_fake_docker("exit 3\n")
+
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            bs.RealSlotOps().load_image(path)
+
+        self.assertEqual(caught.exception.returncode, 3)
+
+    @_NEEDS_TIMEOUT
+    def test_docker_exiting_zero_without_reading_the_whole_archive_is_an_error(self):
+        path = self._stage(b"\0" * (4 * 1024 * 1024))
+        self._write_fake_docker("exit 0\n")
+
+        with self.assertRaises(RuntimeError) as caught:
+            bs.RealSlotOps().load_image(path)
+
+        self.assertIn("without reading the whole archive", str(caught.exception))
+
+    @_NEEDS_TIMEOUT
+    def test_docker_exiting_124_at_once_is_a_docker_failure_not_a_timeout(self):
+        path = self._stage(b"x")
+        self._write_fake_docker("exit 124\n")
+
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            bs.RealSlotOps().load_image(path)
+
+        self.assertEqual(caught.exception.returncode, 124)
+
+    @_NEEDS_TIMEOUT
+    def test_docker_load_is_started_in_its_own_session_under_the_wall_clock_timeout(self):
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\n")
+
+        with mock.patch("branchleft_slot.subprocess.Popen", wraps=subprocess.Popen) as popen:
+            bs.RealSlotOps().load_image(path)
+
+        popen.assert_called_once()
+        self.assertEqual(
+            popen.call_args.args[0],
+            ["timeout", "--signal=KILL", str(bs.IMAGE_LOAD_TIMEOUT_SECONDS), "docker", "load"],
+        )
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.PIPE)
+        self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+
+    @_NEEDS_TIMEOUT
+    def test_the_timeout_is_read_when_the_load_starts_not_when_the_module_is_imported(self):
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\n")
+
+        with mock.patch.object(bs, "IMAGE_LOAD_TIMEOUT_SECONDS", 7):
+            with mock.patch("branchleft_slot.subprocess.Popen", wraps=subprocess.Popen) as popen:
+                bs.RealSlotOps().load_image(path)
+
+        self.assertIn("7", popen.call_args.args[0])
 
     def test_refuses_a_symlink_at_the_exact_path_without_following_it(self):
         real_target = self._path("real.tar")
@@ -855,10 +1048,10 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         link_path = self._path("image.tar")
         os.symlink(real_target, link_path)
 
-        with mock.patch("branchleft_slot.subprocess.run") as run:
+        with mock.patch("branchleft_slot.subprocess.Popen") as popen:
             with self.assertRaises(bs.RefusedImage):
                 bs.RealSlotOps().load_image(link_path)
-        run.assert_not_called()
+        popen.assert_not_called()
 
     def test_refuses_a_non_regular_file_at_the_exact_path(self):
         # A directory rather than a FIFO: opening a FIFO with no writer
@@ -867,43 +1060,40 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         dir_path = self._path("image.tar")
         os.makedirs(dir_path)
 
-        with mock.patch("branchleft_slot.subprocess.run") as run:
+        with mock.patch("branchleft_slot.subprocess.Popen") as popen:
             with self.assertRaises(bs.RefusedImage):
                 bs.RealSlotOps().load_image(dir_path)
-        run.assert_not_called()
+        popen.assert_not_called()
 
     def test_refuses_a_regular_file_not_owned_by_the_broker_account(self):
-        path = self._path("image.tar")
-        with open(path, "wb") as handle:
-            handle.write(b"x")
+        path = self._stage(b"x")
         # A uid this file is guaranteed not to be owned by -- the point
         # under test is the mismatch itself, not which uid it mismatches.
         wrong_uid = self._own_uid + 1
         with mock.patch(
             "branchleft_slot.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=wrong_uid)
         ):
-            with mock.patch("branchleft_slot.subprocess.run") as run:
+            with mock.patch("branchleft_slot.subprocess.Popen") as popen:
                 with self.assertRaises(bs.RefusedImage):
                     bs.RealSlotOps().load_image(path)
-        run.assert_not_called()
+        popen.assert_not_called()
 
     def test_refuses_a_missing_path(self):
         path = self._path("never-written.tar")
-        with mock.patch("branchleft_slot.subprocess.run") as run:
+        with mock.patch("branchleft_slot.subprocess.Popen") as popen:
             with self.assertRaises(bs.RefusedImage):
                 bs.RealSlotOps().load_image(path)
-        run.assert_not_called()
+        popen.assert_not_called()
 
+    @_NEEDS_TIMEOUT
     def test_a_failing_docker_load_propagates_rather_than_being_swallowed(self):
-        path = self._path("image.tar")
-        with open(path, "wb") as handle:
-            handle.write(b"x")
-        with mock.patch(
-            "branchleft_slot.subprocess.run",
-            side_effect=subprocess.CalledProcessError(1, ["docker", "load"]),
-        ):
-            with self.assertRaises(subprocess.CalledProcessError):
-                bs.RealSlotOps().load_image(path)
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\nexit 1\n")
+
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            bs.RealSlotOps().load_image(path)
+
+        self.assertEqual(caught.exception.returncode, 1)
 
     def test_refuses_a_fifo_at_the_exact_path_without_blocking(self):
         # Without O_NONBLOCK, root's own open(2) on a fifo blocks until a
@@ -924,42 +1114,85 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         previous_handler = signal.signal(signal.SIGALRM, _timeout_handler)
         signal.alarm(5)
         try:
-            with mock.patch("branchleft_slot.subprocess.run") as run:
+            with mock.patch("branchleft_slot.subprocess.Popen") as popen:
                 with self.assertRaises(bs.RefusedImage):
                     bs.RealSlotOps().load_image(fifo_path)
-            run.assert_not_called()
+            popen.assert_not_called()
         finally:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous_handler)
 
     def test_refuses_a_regular_file_over_the_size_cap(self):
-        path = self._path("image.tar")
-        with open(path, "wb") as handle:
-            handle.write(b"x")
+        path = self._stage(b"x")
         with mock.patch.object(bs, "IMAGE_LOAD_MAX_BYTES", 0):
-            with mock.patch("branchleft_slot.subprocess.run") as run:
+            with mock.patch("branchleft_slot.subprocess.Popen") as popen:
                 with self.assertRaises(bs.RefusedImage):
                     bs.RealSlotOps().load_image(path)
-        run.assert_not_called()
+        popen.assert_not_called()
 
-    def test_docker_load_runs_under_the_wall_clock_timeout(self):
-        path = self._path("image.tar")
-        with open(path, "wb") as handle:
-            handle.write(b"x")
-        with mock.patch("branchleft_slot.subprocess.run") as run:
-            bs.RealSlotOps().load_image(path)
-        self.assertEqual(run.call_args.kwargs["timeout"], bs.IMAGE_LOAD_TIMEOUT_SECONDS)
-
+    @_NEEDS_TIMEOUT
     def test_a_docker_load_timeout_propagates_rather_than_leaving_it_hung(self):
-        path = self._path("image.tar")
-        with open(path, "wb") as handle:
-            handle.write(b"x")
-        with mock.patch(
-            "branchleft_slot.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(["docker", "load"], bs.IMAGE_LOAD_TIMEOUT_SECONDS),
-        ):
+        path = self._stage(b"x")
+        pid_file = self._pid_file()
+        self._write_fake_docker(f"echo $$ > {pid_file}\nexec sleep 30\n")
+
+        with mock.patch.object(bs, "IMAGE_LOAD_TIMEOUT_SECONDS", 1):
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                bs.RealSlotOps().load_image(path)
+
+        self.assertIn("1", str(caught.exception))
+        self.assertIn("timed out", str(caught.exception))
+        self.assertTrue(_wait_until_gone(_read_recorded_pid(pid_file), 3))
+
+    @_NEEDS_TIMEOUT
+    def test_a_timeout_while_the_wrapper_is_still_writing_is_reported_as_a_timeout(self):
+        path = self._stage(b"\0" * (4 * 1024 * 1024))
+        pid_file = self._pid_file()
+        self._write_fake_docker(f"echo $$ > {pid_file}\nexec sleep 30\n")
+
+        with mock.patch.object(bs, "IMAGE_LOAD_TIMEOUT_SECONDS", 1):
             with self.assertRaises(subprocess.TimeoutExpired):
                 bs.RealSlotOps().load_image(path)
+
+        self.assertTrue(_wait_until_gone(_read_recorded_pid(pid_file), 3))
+
+    @_NEEDS_TIMEOUT
+    def test_killing_the_wrapper_does_not_leave_docker_load_running_past_the_deadline(self):
+        path = self._stage(b"x" * 1024)
+        pid_file = self._pid_file()
+        self._write_fake_docker(
+            f"exec > {self._path('docker.out')} 2>&1\necho $$ > {pid_file}\nexec sleep 600\n"
+        )
+        driver = self._path("driver.py")
+        with open(driver, "w", encoding="ascii") as handle:
+            handle.write(
+                "import os, sys\n"
+                "from types import SimpleNamespace\n"
+                f"sys.path.insert(0, {os.path.dirname(os.path.abspath(__file__))!r})\n"
+                "import branchleft_slot as bs\n"
+                "bs.pwd.getpwnam = lambda name: SimpleNamespace(pw_uid=os.getuid())\n"
+                "bs.IMAGE_LOAD_TIMEOUT_SECONDS = 2\n"
+                "bs.RealSlotOps().load_image(sys.argv[1])\n"
+            )
+        with open(self._path("driver.out"), "wb") as out:
+            wrapper = subprocess.Popen(
+                [sys.executable, driver, path],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=out,
+            )
+        try:
+            docker_pid = _read_recorded_pid(pid_file)
+            self.assertIsNone(wrapper.poll())
+            self.assertFalse(_process_is_gone(docker_pid))
+
+            wrapper.kill()
+            wrapper.wait(timeout=5)
+
+            self.assertTrue(_wait_until_gone(docker_pid, 2 + 5))
+        finally:
+            wrapper.kill()
+            wrapper.wait(timeout=5)
 
 
 if __name__ == "__main__":

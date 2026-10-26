@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createBrokerHandler, type BrokerDeps } from './app.js';
 import type { AdminApiClient } from './adminApi.js';
+import { nonceLifetimeMs } from './auth.js';
 import { createInMemoryNonceStore } from './nonceStore.js';
 import { loadConfig, type BrokerConfig, type BrokerEnv } from './config.js';
 import { createDrainFlagStore } from './drainFlag.js';
@@ -85,7 +86,7 @@ export function buildDeps(
     auth: {
       verifyKey: config.verifyKey,
       replayWindowSeconds: config.replayWindowSeconds,
-      nonces: createInMemoryNonceStore(config.replayWindowSeconds * 1000),
+      nonces: createInMemoryNonceStore(nonceLifetimeMs(config.replayWindowSeconds)),
       processStartSeconds: config.processStartSeconds,
       nowMs: config.nowMs,
     },

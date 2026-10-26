@@ -20,6 +20,7 @@ describe('loadConfig', () => {
     expect(config.drainTimeoutMs).toBe(40000);
     expect(config.messagesPerHour).toBe(50);
     expect(config.dedupeTtlMs).toBe(3600000);
+    expect(config.dedupeStatePath).toBeUndefined();
     expect(config.smtp).toEqual({
       host: 'mx1.example.internal',
       port: 587,

@@ -203,7 +203,8 @@ def _parse_expiry(value):
 
 def mint_token(app_id, pem, org, http=http_request, sign=None, now=None):
     """Exchange the App's key for an installation token holding exactly
-    REQUIRED_PERMISSIONS. Returns the token string, or raises TokenError."""
+    REQUIRED_PERMISSIONS. Returns the token string, or raises TokenError.
+    A minted token that the post-mint checks refuse is revoked first."""
     if not str(app_id or "").strip():
         raise TokenError("%s is empty or unset" % APP_ID_ENV)
     if not (pem or "").strip():
@@ -250,6 +251,17 @@ def mint_token(app_id, pem, org, http=http_request, sign=None, now=None):
     if not isinstance(token, str) or not token.strip():
         raise TokenError("the mint response carried no token")
 
+    try:
+        _check_minted_token(minted, clock)
+    except TokenError:
+        _revoke_refused_token(token, http)
+        raise
+    return token
+
+
+def _check_minted_token(minted, clock):
+    """Raises TokenError when the minted token's grant or expiry is not the
+    one requested. The refusal is raised by the caller after revocation."""
     problems = permission_problems(minted.get("permissions"))
     if problems:
         raise TokenError(
@@ -259,7 +271,15 @@ def mint_token(app_id, pem, org, http=http_request, sign=None, now=None):
     expires = _parse_expiry(minted.get("expires_at"))
     if not clock < expires <= clock + MAX_TOKEN_LIFETIME_SECONDS:
         raise TokenError("the minted token's expiry is not a short-lived one")
-    return token
+
+
+def _revoke_refused_token(token, http):
+    """Best effort. revoke_token catches only TokenError, so any other failure
+    is swallowed here, or it would replace the refusal the caller raises."""
+    try:
+        revoke_token(token, http=http)
+    except Exception:
+        pass
 
 
 def revoke_token(token, http=http_request):

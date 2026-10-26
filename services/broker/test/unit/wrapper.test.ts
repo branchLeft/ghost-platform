@@ -73,6 +73,20 @@ describe('createSlotWrapper', () => {
     await expect(wrapper.reset('0' as SlotName)).rejects.toBeInstanceOf(WrapperError);
   });
 
+  it('rejects with a WrapperError when the wrapper runs longer than timeoutMs', async () => {
+    const slow = createSlotWrapper({
+      command: FAKE_WRAPPER,
+      prefix: [process.execPath],
+      timeoutMs: 200,
+    });
+    process.env.FAKE_WRAPPER_SLEEP_MS = '3000';
+    try {
+      await expect(slow.reset('0' as SlotName)).rejects.toBeInstanceOf(WrapperError);
+    } finally {
+      delete process.env.FAKE_WRAPPER_SLEEP_MS;
+    }
+  });
+
   it('refuses to run with no command and no prefix configured, rather than spawning an empty argv[0]', async () => {
     const empty = createSlotWrapper({ command: '', prefix: [], timeoutMs: 1000 });
     await expect(empty.reset('0' as SlotName)).rejects.toThrow(/wrapper command is empty/);

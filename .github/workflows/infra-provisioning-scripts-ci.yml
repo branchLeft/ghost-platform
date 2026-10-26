@@ -28,8 +28,23 @@ name: Provisioning scripts CI
 on:
   push:
     branches: [main]
+  # A pull request starts this only when its diff touches something the suite
+  # reads. That reaches outside infra/provisioning: db/ (the dump, recovery and
+  # object-storage modules, the runbook's image pins and the MySQL config the
+  # tests read), the whole of .github/workflows (the provision-tenant gate
+  # tests scan that directory), render-core's naming.ts and the app host's
+  # volume script (compared for agreement), the bucket-fencing runbook, and the
+  # pinned Python version. Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
+    paths:
+      - 'infra/provisioning/**'
+      - 'db/**'
+      - 'render-core/src/naming.ts'
+      - 'app/provision/provision_tenant_volume.py'
+      - 'RUNBOOK-bucket-fencing.md'
+      - '.python-version'
+      - '.github/workflows/**'
 
 permissions:
   contents: read

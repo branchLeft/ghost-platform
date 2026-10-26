@@ -54,6 +54,14 @@ A body is sent whenever there is one, and for `PUT`/`POST` even when it is
 empty: `data=None` makes urllib send no `Content-Length`, which this
 endpoint answers with `411 Length Required` for a zero-byte PUT.
 
+A redirect is never followed. The requests go through `_OPENER`, whose
+`NoRedirectHandler` refuses every 3xx, so the stdlib default of following a
+redirect on GET is switched off. The reason is the signature: a SigV4
+request is bound to one host and path, and the default would re-send every
+header, `Authorization` included, to the redirect target. The 3xx comes
+back as `(status, body)` like any other non-2xx response, and
+`_urllib_get_with_headers` returns its `Location` header unfollowed.
+
 `http.client.HTTPException` is caught alongside `OSError` because a
 truncated or malformed response is not an `OSError` and would otherwise
 escape as an exception type no caller expects. The fence verifier removes
