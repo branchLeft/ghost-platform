@@ -19,8 +19,8 @@
     "drizzle-orm": "^0.45.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
-    "mailparser": "^3.9.38",
-    "smtp-server": "^3.19.21"
+    "mailparser": "^3.12.4",
+    "smtp-server": "^3.21.1"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.3.1",
@@ -35,7 +35,7 @@
     "drizzle-kit": "^0.31.11",
     "form-data": "^4.0.6",
     "mailgun.js": "10.4.0",
-    "nodemailer": "^10.1.0",
+    "nodemailer": "^10.2.1",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
   },
