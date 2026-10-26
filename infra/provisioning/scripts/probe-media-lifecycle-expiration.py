@@ -210,6 +210,26 @@ def prefix_split_lifecycle_document(
     )
 
 
+def describe_prefix_split_document(document: bytes | None = None) -> list[tuple[str, str]]:
+    """(prefix, NoncurrentDays) for every Rule in the lifecycle document, read
+    back out of the bytes so a message naming the rules cannot drift from what
+    was applied."""
+    root = ET.fromstring(document if document is not None else prefix_split_lifecycle_document())
+    described = []
+    for rule in root:
+        if _local_name(rule.tag) != "Rule":
+            continue
+        prefix, days = "", "-"
+        for element in rule.iter():
+            name = _local_name(element.tag)
+            if name == "Prefix" and not prefix:
+                prefix = element.text or ""
+            elif name == "NoncurrentDays" and days == "-":
+                days = element.text or "-"
+        described.append((prefix, days))
+    return described
+
+
 def _local_name(tag: str) -> str:
     """Strips the S3 XML namespace off an ElementTree tag, the same way
     `db/provision/objectstorage.py`'s own helper of the same name does for
@@ -419,7 +439,7 @@ def setup_prefix_split(
     receipt_path: pathlib.Path,
 ) -> str:
     """See the module docstring's PREFIX-SPLIT MODE section. Enables
-    versioning, applies the two-rule split, then under EACH prefix creates a
+    versioning, applies the lifecycle document, then under EACH prefix creates a
     control object (current, never touched again), a noncurrent-making
     overwrite, and a noncurrent-making delete -- recording the two resulting
     noncurrent version ids in the receipt immediately, because that is the
@@ -503,10 +523,11 @@ def setup_prefix_split(
     }
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
 
+    applied_rules = describe_prefix_split_document(lifecycle_body)
+    rules_summary = ", ".join(f"{prefix} NoncurrentDays={days}" for prefix, days in applied_rules)
     return (
-        f"prefix-split setup complete on {bucket}: versioning enabled, two-rule split applied "
-        f"(media/ NoncurrentDays={media_noncurrent_days}, dumps/ (representing dumps/+binlogs/) "
-        f"NoncurrentDays={db_noncurrent_days}); under each prefix, a control object plus a "
+        f"prefix-split setup complete on {bucket}: versioning enabled, lifecycle document applied "
+        f"with {len(applied_rules)} rules ({rules_summary}); under each prefix, a control object plus a "
         f"noncurrent version from an overwrite and one from a delete were created and their "
         f"version ids recorded.\n"
         f"Receipt written to {receipt_path}.\n"
@@ -730,8 +751,13 @@ def main(argv: list[str] | None = None) -> int:
     # the receipt `setup` wrote, so `check` cannot be pointed at a bucket
     # other than the one it uploaded to by a mistyped flag.
 
+    split_rules = describe_prefix_split_document()
     split_setup_parser = subparsers.add_parser(
-        "setup-split", help="prefix-split mode: apply the real two-rule shape and the canaries"
+        "setup-split",
+        help=(
+            f"prefix-split mode: apply the real lifecycle document ({len(split_rules)} rules: "
+            f"{', '.join(prefix for prefix, _ in split_rules)}) and the canaries"
+        ),
     )
     split_setup_parser.add_argument("--bucket", required=True)
     split_setup_parser.add_argument("--endpoint", default="https://hel1.your-objectstorage.com")
