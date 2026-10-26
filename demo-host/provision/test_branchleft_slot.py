@@ -804,11 +804,12 @@ _NEEDS_TIMEOUT = unittest.skipUnless(shutil.which("timeout"), "needs GNU coreuti
 
 def _process_is_gone(pid: int) -> bool:
     """A zombie still answers `os.kill(pid, 0)`, so its state is read from
-    /proc: absent or `Z` both mean the process no longer runs."""
+    /proc: absent or `Z` both mean the process no longer runs. A read that
+    fails with ESRCH (ProcessLookupError) while the process exits is gone too."""
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             stat_line = handle.read()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
     state = stat_line.rsplit(b")", 1)[1].split()[0]
     return state == b"Z"
@@ -835,6 +836,37 @@ def _read_recorded_pid(pid_file: str, seconds: float = 5.0) -> int:
             return int(text)
         time.sleep(0.02)
     raise AssertionError(f"{pid_file} never received a pid")
+
+
+class _ExitingProcStat:
+    """Stands in for `/proc/<pid>/stat` as the kernel answers it while the
+    process exits: the open succeeds, then the read fails with ESRCH, which
+    CPython raises as `ProcessLookupError`."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self):
+        raise ProcessLookupError("No such process")
+
+
+class ProcessIsGoneTests(unittest.TestCase):
+    def test_a_reaped_process_is_gone(self):
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(timeout=10)  # reaped: the pid no longer names a process
+        self.assertTrue(_process_is_gone(child.pid))
+
+    def test_a_process_that_exits_during_the_state_read_is_gone(self):
+        # The race: the child has already exited, and the read of its /proc
+        # state fails with ESRCH instead of the open failing with ENOENT.
+        # That is "gone", not an error.
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait(timeout=10)
+        with mock.patch("builtins.open", return_value=_ExitingProcStat()):
+            self.assertTrue(_process_is_gone(child.pid))
 
 
 class RealSlotOpsLoadImageTests(unittest.TestCase):
