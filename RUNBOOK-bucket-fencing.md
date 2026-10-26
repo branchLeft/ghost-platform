@@ -769,6 +769,18 @@ entirely produces that exact operator read, and reading it as an exemption is
 the withdrawn conclusion described in "Six things reduce the chance of ever
 getting here," above.
 
+- **`foreign credential resolves its account` — `INCONCLUSIVE`.** Nothing was
+  written. The probe could not read the foreign key's account, because its
+  list-buckets call was refused or returned no usable owner, or the endpoint
+  treated it as anonymous. Check that the foreign key is the one you intended,
+  that it is valid and signed, fix it, and run the probe again. Do not apply the
+  real fence on this run's result.
+- **`the foreign credential is in the operator's account` — `FAIL`.** Nothing
+  was written. The foreign key belongs to a different account from the operator.
+  The account boundary would deny it whatever the policy says, so this run could
+  not show whether `NotPrincipal` works. The foreign key must be a key in the
+  operator's own account that the policy does not name. Replace it, run the
+  probe again, and do not apply the real fence on this run's result.
 - **`NotPrincipal EXEMPTS the named key` — `FAIL`.** Stop. This engine does not
   read `NotPrincipal` as an exemption — it denied the operator, whom the
   statement names as exempt — so applying the **`NotPrincipal`-based** fence

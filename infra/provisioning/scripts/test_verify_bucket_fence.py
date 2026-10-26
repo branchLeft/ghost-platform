@@ -1289,6 +1289,7 @@ class TestNotPrincipalProbe(unittest.TestCase):
     def _answers(self, operator_read, foreign_read):
         return {
             ("operator", "list-buckets", None): OWNER,
+            ("foreign", "list-buckets", None): OWNER,
             ("operator", "get-bucket-policy", FENCED): NO_SUCH_BUCKET_POLICY,
             ("operator", "put-object", FENCED): OK_EMPTY,
             ("operator", "put-bucket-policy", FENCED): OK_EMPTY,
