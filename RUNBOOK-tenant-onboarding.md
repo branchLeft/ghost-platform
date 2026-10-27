@@ -685,18 +685,28 @@ EOF
 python3 scripts/assert-no-committed-pulumi-secrets.py --scan-tree .
 ```
 
-Then fill in `known_hosts` with the app host's SSH host key, taken from the host
-over your own root session — never `ssh-keyscan`, which is trust-on-first-use
-and would record whatever answered:
+There is no `known_hosts` step per tenant. The provisioning run fills it from
+the host-key register (`infra/provisioning/host-key-register.txt`, role
+`app1`) and the address you gave it, so the handover branch already carries it.
+It fails, naming the command below, if `app1` has not been recorded.
+
+An estate host's key is recorded once, by a person, from the host itself —
+never `ssh-keyscan`, which is trust-on-first-use and would record whatever
+answered. The register holds the key by role and no address, and `record` never
+overwrites a recorded key: rotating a host's key is a reviewed edit to the
+register file. From a platform checkout, on a branch:
 
 ```bash
 APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
-  'cat /etc/ssh/ssh_host_ed25519_key.pub'
+  'cat /etc/ssh/ssh_host_ed25519_key.pub' \
+  | python3 infra/provisioning/scripts/host_key_register.py record app1
 ```
 
-Write one line into `known_hosts`: `$APP1_IPV4` (the value the lookup above
-printed) followed by that whole output. Commit and push, but do not merge yet.
+It prints `recorded app1 SHA256:...`; compare that fingerprint with
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` run on the host. Land the
+changed register by pull request. Commit and push the handover branch, but do
+not merge it yet.
 
 The salt is not in the escrow ciphertext: it is in the tenant repository's
 `PULUMI_ENCRYPTION_SALT` environment secret, which is write-only. If you no
