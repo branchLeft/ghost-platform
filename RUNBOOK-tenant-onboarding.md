@@ -537,8 +537,10 @@ signed "https://hel1.your-objectstorage.com/$BUCKET?list-type=2&max-keys=1"
 # d. Media is append-only for the tenant's own key. Expect 403 AccessDenied.
 signed -X DELETE "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 
-# e. The tenant cannot edit the fence that constrains it. Expect AccessDenied
-#    on both. This key sits inside the tenant's own container, so without these
+# e. The tenant cannot edit the fence that constrains it. Expect `AccessDenied`
+#    on both, and read the Code, not only the status: `SignatureDoesNotMatch`
+#    is also a 403, and it means the request was never judged, so it is a
+#    broken instrument, not a pass. This key sits inside the tenant's own container, so without these
 #    the tenant can replace the policy, publish the listing with a bucket ACL,
 #    or expire every object with a lifecycle rule -- destroying its media
 #    without ever calling delete.
@@ -554,10 +556,10 @@ signed -X DELETE "https://hel1.your-objectstorage.com/$BUCKET/probe.txt"
 #    cannot render one. `put-bucket-versioning` is the probe that found the
 #    original defect -- the tenant key changing versioning on a live bucket --
 #    so leaving it unreadable would retire the check that started all of this.
-signed "https://hel1.your-objectstorage.com/$BUCKET?policy"
+signed "https://hel1.your-objectstorage.com/$BUCKET?policy="
 signed -X PUT -H 'Content-Type: application/xml' \
   --data '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>' \
-  "https://hel1.your-objectstorage.com/$BUCKET?versioning"
+  "https://hel1.your-objectstorage.com/$BUCKET?versioning="
 
 # f. The tenant's key does not reach branchleft-db-backups, a FENCED bucket in
 #    THE SAME PROJECT. The bucket named here has to be both: an unfenced one
@@ -577,7 +579,10 @@ export AWS_ACCESS_KEY_ID="$OP_KEY"; export AWS_SECRET_ACCESS_KEY="$OP_SECRET"
 
 **Every one of (b) through (f) must return `AccessDenied`, (a) must return
 `hello`, and all three controls — the operator's `branchleft-db-backups`
-listing, g1 and g2 — must succeed.** If any tenant probe succeeds,
+listing, g1 and g2 — must succeed.** Read the error code as well as the
+status: a 403 whose code is `SignatureDoesNotMatch` (or anything other than
+`AccessDenied`) means the instrument failed, not that the fence held. Stop,
+fix `signed`, and re-run the block rather than recording it. If any tenant probe succeeds,
 stop and do not hand over the credential: none of these failures is visible
 from the tenant's side, and (c) in particular fails silently for every other
 tenant on the platform, not just this one. **If either control listing fails,
