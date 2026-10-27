@@ -2,8 +2,9 @@
 
 Static reversibility check for a Ghost upgrade range. It reads the migration
 source shipped at the target release tag and decides whether the range may
-take the automatic fast path or must go to the tenant-consent path. Nothing
-is executed, and no image is pulled.
+take the automatic fast path or must be held until the owner, the system
+administrator, consents. The tenant is not asked. Nothing is executed, and no
+image is pulled.
 
 Scope: this classifies. It does not open PRs, move tenants, or change state.
 
