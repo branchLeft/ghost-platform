@@ -22,15 +22,11 @@ widgets/dist/
 vendor/kalotyp/kalotyp.js
 vendor/kalotyp/kalotyp.css
 
-# A vendored, patched copy of one Ghost-core file (adapters/sso/ghost-core-overlay/README.md).
-# Its build-time guard hashes the upstream file it was derived from; reformatting
-# our copy to house style would widen every future upstream diff with cosmetic
-# noise, making re-derivation on a Ghost upgrade harder to review, not easier.
-# session-from-token.upstream.js is the pristine baseline the guard hash and the
-# re-derivation diff both depend on -- same reasoning, it must stay byte-for-byte
-# upstream.
-adapters/sso/ghost-core-overlay/session-from-token.js
-adapters/sso/ghost-core-overlay/session-from-token.upstream.js
+# The unit tests' build output (adapters/sso/ghost-core-overlay/README.md): Ghost's
+# own file with our patch applied. Its bytes are pinned by a hash, so house style
+# must never be applied to it. Git-ignored; listed here so a local format run
+# does not touch it either.
+adapters/sso/ghost-core-overlay/derived/
 
 # Speckify's output for the broker contract, committed as generated and checked
 # byte for byte by scripts/assert-broker-contract-generated.py -- reformatting

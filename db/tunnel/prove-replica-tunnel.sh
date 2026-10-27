@@ -63,7 +63,7 @@ probes_key_holder() {
 
 probes_direct_dial() {
     on_dbt1 bash /opt/tunnel/probe_tunnel_controls.sh direct-dial \
-        --target "$DB1_ORG_IP:3306" --target "$DB1_WAN_IP:3306"
+        --control "$DB1_WAN_IP:22" --target "$DB1_ORG_IP:3306" --target "$DB1_WAN_IP:3306"
 }
 
 expect_green() {
@@ -236,6 +236,7 @@ docker network connect "$P-org" "$P-dbt1"
 expect_red "db-t1 can reach db1 directly" probes_direct_dial
 docker network disconnect "$P-org" "$P-dbt1"
 expect_green "reverted" probes_direct_dial
+expect_red "direct-dial control unreachable" on_dbt1 bash /opt/tunnel/probe_tunnel_controls.sh direct-dial --control "$DB1_WAN_IP:1" --target "$DB1_ORG_IP:3306"
 
 step "Replication still healthy after every sabotage"
 db1_sql -e "INSERT INTO blog.posts (title) VALUES ('after-sabotage');"

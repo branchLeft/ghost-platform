@@ -113,6 +113,16 @@ export function scanMediaReferences(contentJson: string, mediaBaseUrl: string): 
   return { keys: [...keys].sort(), refused: [...refused.values()] };
 }
 
+/**
+ * Site-relative media references (the JSON-only import form) carry no origin,
+ * so no object key can be derived from them. They are counted, never listed.
+ */
+const SITE_RELATIVE_PATTERN = /__GHOST_URL__\/[^\s"'<>()\\]+/g;
+
+export function countSiteRelativeReferences(contentJson: string): number {
+  return new Set(contentJson.match(SITE_RELATIVE_PATTERN) ?? []).size;
+}
+
 export interface MediaProbeResult {
   readonly exists: boolean;
   readonly bytes: number | null;

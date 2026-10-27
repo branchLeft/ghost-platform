@@ -747,6 +747,11 @@ def cleanup(verifier: Verifier, bucket: str) -> list[str]:
     return problems
 
 
+def _get_policy_command(host: str, bucket: str) -> str:
+    """The by-hand read of the stored policy, for a write whose response was lost."""
+    return f"aws --endpoint-url https://{host} s3api get-bucket-policy --bucket {bucket}"
+
+
 def account_of(verifier: Verifier, role: str) -> tuple[str | None, str]:
     """The storage account a credential belongs to, from ListAllMyBuckets.
 
@@ -1369,9 +1374,9 @@ class _temporary_policy:
                     f"the PUT of the probe policy got no response ({reason}), so it may or "
                     f"may not be on {self.bucket}. Nothing was deleted, because a DELETE "
                     f"here removes whatever is on the bucket rather than only this probe. "
-                    f"Check by hand before doing anything else: aws --endpoint-url "
-                    f"https://{self.verifier.host} s3api get-bucket-policy --bucket "
-                    f"{self.bucket}. A policy with Id {self.policy_id} is this probe. "
+                    f"Check by hand before doing anything else: "
+                    f"{_get_policy_command(self.verifier.host, self.bucket)}. "
+                    f"A policy with Id {self.policy_id} is this probe. "
                     f"{self.consequence}",
                     "",
                     True,
@@ -3207,7 +3212,24 @@ def apply_fence(
         return rows, False
 
     put = _policy_probe("operator", bucket, "PUT", policy_document)
-    first_outcome, first_reason = classify(*verifier.request(put))
+    first_status, first_body, first_failure = verifier.request(put)
+    first_outcome, first_reason = classify(first_status, first_body, first_failure)
+    if first_status is None:
+        # No response means the PUT may have reached the engine: the fence may be
+        # live and this run cannot tell. A non-critical failure would end without
+        # the lockout banner or the check, so it is critical and says what to run.
+        rows.append(
+            (
+                "the policy is applied",
+                INCONCLUSIVE,
+                f"the PUT got no response ({first_reason}), so the policy's fate is unknown: "
+                f"it may or may not be on {bucket}. Nothing was deleted or retried. Check by "
+                f"hand before doing anything else: {_get_policy_command(verifier.host, bucket)}",
+                "",
+                True,
+            )
+        )
+        return rows, True
     rows.append(
         (
             "the policy is applied",

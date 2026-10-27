@@ -2,6 +2,7 @@ import type { ArchiveFile } from './archive.js';
 import type { Collection, ExportFile, GhostExportClient } from './ghostExportClient.js';
 import {
   parseErasureDate,
+  countSiteRelativeReferences,
   planMedia,
   scanMediaReferences,
   type MediaProbe,
@@ -226,21 +227,43 @@ export async function collectComments(deps: ExtensionDeps): Promise<ExtensionOut
 
 export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcome> {
   if (deps.media.baseUrl === null) {
-    return failure(
-      'media',
-      new Error("the tenant's rendered environment names no object-storage media address")
-    );
+    return {
+      report: {
+        name: 'media',
+        status: 'failed',
+        expected: null,
+        present: 0,
+        notes: ["the tenant's rendered environment names no object-storage media address"],
+        info: [],
+      },
+      files: [],
+    };
   }
   try {
     const erasureDate = parseErasureDate(deps.media.erasureDate, deps.nowSeconds);
     const scan = scanMediaReferences(deps.contentJson, deps.media.baseUrl);
     const plan = await planMedia(scan, deps.media.baseUrl, deps.mediaProbe);
+    const omittedSiteRelative = countSiteRelativeReferences(deps.contentJson);
+    // An outside-prefix refusal is another tenant's or an external object: a fact, not a gap.
+    // An in-prefix refusal is the tenant's own file, which the archive does not carry.
+    const outsidePrefix = plan.refused.filter((r) => r.reason === 'outside-tenant-prefix').length;
+    const unsafeKey = plan.refused.length - outsidePrefix;
     const notes: string[] = [];
     if (plan.missing.length > 0) {
       notes.push(`${plan.missing.length} referenced objects are not in storage`);
     }
     if (plan.unverified.length > 0) {
       notes.push(`${plan.unverified.length} referenced objects could not be checked`);
+    }
+    if (unsafeKey > 0) {
+      notes.push(
+        `${unsafeKey} tenant media references have unsafe object keys and were not listed`
+      );
+    }
+    if (omittedSiteRelative > 0) {
+      notes.push(
+        `${omittedSiteRelative} site-relative media references were omitted, with no object key to list`
+      );
     }
     return {
       report: {
@@ -250,7 +273,7 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
         present: plan.addresses.length,
         notes,
         info: [
-          `${plan.refused.length} references under another prefix were refused and not listed`,
+          `${outsidePrefix} references under another prefix were refused and not listed`,
           `public addresses only, no media bytes: they stop working after ${erasureDate}`,
         ],
       },

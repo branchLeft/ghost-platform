@@ -5,7 +5,9 @@ repos:
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
-        exclude: ^widgets/dist/
+        # A unified diff carries a lone space for each blank context line;
+        # stripping it breaks the patch (adapters/sso/ghost-core-overlay/).
+        exclude: ^(widgets/dist/|adapters/sso/ghost-core-overlay/.*\.patch$)
       - id: end-of-file-fixer
         # widgets/dist/ is vendored third-party bundles, content-addressed by
         # sha384 in widgets/pins.json -- adding a trailing newline changes
