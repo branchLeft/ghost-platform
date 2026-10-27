@@ -34,6 +34,7 @@ import {
   tenantRegister,
 } from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
+import { assertBindingIntact } from './binding.js';
 import { bindTenant, type TenantScope } from './scope.js';
 
 export interface TenantRegistration {
@@ -54,11 +55,19 @@ export class TenantDb {
     this.db = connect(pool);
   }
 
+  /**
+   * Runs `work` in one transaction as `portal_tenant` with the scope's tenant
+   * bound. Before the commit the binding is confirmed intact (`assertBindingIntact`):
+   * work that rebinds the session or leaves the role is refused with
+   * `TenantBindingChangedError`, and the transaction rolls back whole.
+   */
   run<T>(scope: TenantScope, work: (tx: Tx) => Promise<T>): Promise<T> {
     return this.db.transaction(async (tx) => {
       await enterRole(tx, 'portal_tenant');
       await bind(tx, 'portal.tenant_id', scope.tenantId);
-      return work(tx);
+      const result = await work(tx);
+      await assertBindingIntact(tx, scope);
+      return result;
     });
   }
 
