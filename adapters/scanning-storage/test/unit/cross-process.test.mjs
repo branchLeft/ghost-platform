@@ -9,8 +9,14 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
 const { digestBytes } = require('../../src/pdq.js');
-const { RELEASING_INFIX } = require('../../src/quarantine.js');
+const { RELEASING_INFIX, sweepOrphans, ORPHAN_LOG_PREFIX } = require('../../src/quarantine.js');
 
+const CRASH_ACTOR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  'helpers',
+  'hold-crash-actor.cjs'
+);
 const ACTOR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -85,30 +91,78 @@ const ORDERS = [
   ['seal', 'seal', 'release', 'release'],
 ];
 
+async function runInterleaving(releaserRole, order) {
+  const actors = { [releaserRole]: startActor(releaserRole), seal: startActor('seal') };
+  await waitForAny([`${releaserRole}.at0`]);
+  await waitForAny(['seal.at0']);
+
+  const step = { [releaserRole]: 0, seal: 0 };
+  for (const role of order.map((name) => (name === 'release' ? releaserRole : name))) {
+    if (fsSync.existsSync(path.join(controlDir, `${role}.done`))) continue;
+    await fs.writeFile(path.join(controlDir, `${role}.go${step[role]}`), '');
+    step[role] += 1;
+    await waitForAny(step[role] === 1 ? [`${role}.at1`, `${role}.done`] : [`${role}.done`]);
+  }
+
+  const results = await Promise.all([actors[releaserRole].exited, actors.seal.exited]);
+  for (const { code, stderr } of results) expect(code, stderr).toBe(0);
+
+  const names = await fs.readdir(quarantinePath);
+  expect(names).toContain(`${DIGEST}.refused.json`);
+  expect(names.filter((n) => n.includes(RELEASING_INFIX))).toEqual([]);
+  await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
+}
+
 describe('a refusal sealed in one process while another releases the same bytes', () => {
   it.each(ORDERS.map((order) => [order.join(' > '), order]))(
     'keeps the sealed bytes behind the record: %s',
-    async (_name, order) => {
-      const actors = { release: startActor('release'), seal: startActor('seal') };
-      await waitForAny(['release.at0']);
-      await waitForAny(['seal.at0']);
-
-      const step = { release: 0, seal: 0 };
-      for (const role of order) {
-        if (fsSync.existsSync(path.join(controlDir, `${role}.done`))) continue;
-        await fs.writeFile(path.join(controlDir, `${role}.go${step[role]}`), '');
-        step[role] += 1;
-        await waitForAny(step[role] === 1 ? [`${role}.at1`, `${role}.done`] : [`${role}.done`]);
-      }
-
-      const results = await Promise.all([actors.release.exited, actors.seal.exited]);
-      for (const { code, stderr } of results) expect(code, stderr).toBe(0);
-
-      const names = await fs.readdir(quarantinePath);
-      expect(names).toContain(`${DIGEST}.refused.json`);
-      expect(names.filter((n) => n.includes(RELEASING_INFIX))).toEqual([]);
-      await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
-    },
+    (_name, order) => runInterleaving('release', order),
     30_000
   );
+});
+
+describe('a refusal sealed in one process while another sweeps the same orphaned bytes', () => {
+  beforeEach(async () => {
+    const then = new Date(Date.now() - 60 * 60 * 1000);
+    await fs.utimes(path.join(quarantinePath, DIGEST), then, then);
+  });
+
+  it.each(ORDERS.map((order) => [order.join(' > '), order]))(
+    'keeps the sealed bytes behind the record: %s',
+    (_name, order) => runInterleaving('sweep', order),
+    30_000
+  );
+});
+
+describe('a process killed between a hold writing its bytes and its sidecar', () => {
+  it('leaves orphaned bytes that the next start-up sweep accounts for', async () => {
+    await fs.rm(path.join(quarantinePath, DIGEST));
+    const child = spawn(process.execPath, [CRASH_ACTOR, quarantinePath, bytesFile], {
+      env: {},
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    const { code, signal } = await new Promise((resolve) => {
+      child.on('exit', (exitCode, exitSignal) => resolve({ code: exitCode, signal: exitSignal }));
+    });
+    expect(signal, `exit code ${code}: ${stderr}`).toBe('SIGKILL');
+
+    expect(await fs.readdir(quarantinePath)).toEqual([DIGEST]);
+    const then = new Date(Date.now() - 60 * 60 * 1000);
+    await fs.utimes(path.join(quarantinePath, DIGEST), then, then);
+
+    const lines = [];
+    const removed = sweepOrphans(quarantinePath, {
+      minAgeMs: 1000,
+      logger: { error: (message) => lines.push(message) },
+    });
+
+    expect(removed).toBe(1);
+    expect(await fs.readdir(quarantinePath)).toEqual([]);
+    expect(lines).toEqual([expect.stringContaining(ORPHAN_LOG_PREFIX)]);
+    expect(lines[0]).toContain(DIGEST);
+  });
 });

@@ -17,6 +17,10 @@ const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
 const { digestBytes } = require('../../src/pdq.js');
 const { sealRefusal } = require('../../src/quarantine.js');
+const {
+  DEFAULT_ORPHAN_MIN_AGE_MS,
+  DEFAULT_ORPHAN_SWEEP_INTERVAL_MS,
+} = require('../../src/hold.js');
 const GhostErrors = require('@tryghost/errors');
 
 const CLEAN_BYTES = Buffer.from('clean-image-bytes');
@@ -55,6 +59,8 @@ function buildAdapter({
   holdMaxRetryMs,
   holdMaxFailures,
   holdLogger = SILENT_LOGGER,
+  holdOrphanMinAgeMs,
+  holdOrphanSweepIntervalMs,
   overwriteWindowMs,
 } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
@@ -75,6 +81,8 @@ function buildAdapter({
     holdMaxRetryMs,
     holdMaxFailures,
     holdLogger,
+    holdOrphanMinAgeMs,
+    holdOrphanSweepIntervalMs,
     overwriteWindowMs,
   });
   return { instance, verdictClient, quarantinePath: resolvedQuarantinePath };
@@ -1468,6 +1476,63 @@ describe('stale aside copies at start-up', () => {
       [BAD_DIGEST, `${BAD_DIGEST}.refused.json`].sort()
     );
     await expect(fs.readFile(path.join(quarantinePath, BAD_DIGEST))).resolves.toEqual(BAD_BYTES);
+  });
+});
+
+describe('orphaned quarantine bytes at start-up', () => {
+  async function ageFile(file) {
+    const then = new Date(Date.now() - 60 * 60 * 1000);
+    await fs.utimes(file, then, then);
+  }
+
+  it('the adapter removes aged bytes that nothing is waiting on, and logs the digest', async () => {
+    const quarantinePath = path.join(tmpDir, 'quarantine');
+    await fs.mkdir(quarantinePath);
+    const orphan = path.join(quarantinePath, digestBytes(CLEAN_BYTES));
+    await fs.writeFile(orphan, CLEAN_BYTES);
+    await ageFile(orphan);
+    const lines = [];
+
+    buildAdapter({
+      quarantinePath,
+      holdLogger: { error: (message) => lines.push(message) },
+    });
+
+    expect(await fs.readdir(quarantinePath)).toEqual([]);
+    expect(lines).toEqual([expect.stringContaining(digestBytes(CLEAN_BYTES))]);
+  });
+
+  it('the adapter leaves a sealed refusal alone however old it is', async () => {
+    const { quarantinePath } = buildAdapter();
+    await sealRefusal(
+      quarantinePath,
+      BAD_DIGEST,
+      BAD_BYTES,
+      { classification: 'csam' },
+      digestBytes
+    );
+    await ageFile(path.join(quarantinePath, BAD_DIGEST));
+
+    buildAdapter({ quarantinePath });
+
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [BAD_DIGEST, `${BAD_DIGEST}.refused.json`].sort()
+    );
+  });
+
+  it('the age and interval come from the adapter config', async () => {
+    const { instance: configured } = buildAdapter({
+      holdOrphanMinAgeMs: '1234',
+      holdOrphanSweepIntervalMs: '5678',
+    });
+    expect(configured.hold.orphanMinAgeMs).toBe(1234);
+    expect(configured.hold.orphanSweepIntervalMs).toBe(5678);
+    configured.hold.stopAll();
+
+    const { instance: defaulted } = buildAdapter({ holdOrphanMinAgeMs: 'not-a-number' });
+    expect(defaulted.hold.orphanMinAgeMs).toBe(DEFAULT_ORPHAN_MIN_AGE_MS);
+    expect(defaulted.hold.orphanSweepIntervalMs).toBe(DEFAULT_ORPHAN_SWEEP_INTERVAL_MS);
+    defaulted.hold.stopAll();
   });
 });
 

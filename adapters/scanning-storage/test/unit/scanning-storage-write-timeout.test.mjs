@@ -214,8 +214,16 @@ describe('the timer of a request-path write', () => {
     vi.useFakeTimers();
   });
 
+  // The registry's periodic orphan sweep also holds a timer; it is not the
+  // one counted here.
+  function buildAdapterWithoutSweepTimer() {
+    const built = buildAdapter();
+    built.adapter.hold.stopAll();
+    return built;
+  }
+
   it('is cleared once the write settles in time', async () => {
-    const { adapter } = buildAdapter();
+    const { adapter } = buildAdapterWithoutSweepTimer();
 
     await adapter.saveRaw(CLEAN_BYTES, TARGET_PATH);
 
@@ -223,7 +231,7 @@ describe('the timer of a request-path write', () => {
   });
 
   it('is cleared once the write fails in time', async () => {
-    const { adapter } = buildAdapter();
+    const { adapter } = buildAdapterWithoutSweepTimer();
     adapter.wrapped.saveRaw = async () => {
       throw new Error('bucket unavailable');
     };
@@ -234,7 +242,7 @@ describe('the timer of a request-path write', () => {
   });
 
   it('is running while the write is pending, and fires at the budget', async () => {
-    const { adapter } = buildAdapter();
+    const { adapter } = buildAdapterWithoutSweepTimer();
     adapter.wrapped.saveRaw = NEVER_SETTLES;
     const outcome = adapter.saveRaw(CLEAN_BYTES, TARGET_PATH).catch((caught) => caught);
 
