@@ -6,7 +6,7 @@
 // have been acked. The spool's throttle hands over one message at a time at
 // first, so this loops.
 const want = Number(process.argv[2]);
-const base = 'http://127.0.0.1:8080';
+const base = 'http://127.0.0.1:8081';
 const auth = { Authorization: `Bearer ${process.env.SHIM_DRAIN_TOKEN}` };
 
 async function main() {

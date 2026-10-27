@@ -8,6 +8,7 @@ import {
   MAIL_SPOOL_BASE_URL,
   MAIL_SPOOL_DATA_VOLUME,
   MAIL_SPOOL_DRAIN_BRIDGE,
+  MAIL_SPOOL_DRAIN_CONTAINER_PORT,
   MAIL_SPOOL_DRAIN_NETWORK,
   MAIL_SPOOL_HTTP_PORT,
   MAIL_SPOOL_SERVICE,
@@ -104,7 +105,16 @@ describe('renderMailSpoolStack()', () => {
 
   it('publishes one port only: the drain port, on host loopback', () => {
     const service = spoolService(mailSpoolDocument(demoHostArgs()));
-    expect(service.ports).toEqual([`127.0.0.1:${DRAIN_PORT}:${MAIL_SPOOL_HTTP_PORT}`]);
+    expect(service.ports).toEqual(['127.0.0.1:8095:8081']);
+  });
+
+  it('serves the drain handover on a listener of its own, never the one the tenant networks reach', () => {
+    const service = spoolService(mailSpoolDocument(demoHostArgs()));
+    const environment = service.environment as Rec;
+    expect(MAIL_SPOOL_DRAIN_CONTAINER_PORT).not.toBe(MAIL_SPOOL_HTTP_PORT);
+    expect(environment.PORT).toBe(MAIL_SPOOL_HTTP_PORT);
+    expect(environment.SHIM_DRAIN_PORT).toBe(MAIL_SPOOL_DRAIN_CONTAINER_PORT);
+    expect(service.ports).not.toContain(expect.stringContaining(`:${MAIL_SPOOL_HTTP_PORT}`));
   });
 
   it('pins the image by digest in the rendered file itself', () => {
@@ -119,7 +129,7 @@ describe('renderMailSpoolStack()', () => {
     );
     const environment = spoolService(mailSpoolDocument(demoHostArgs())).environment as Rec;
     expect(Object.keys(environment).sort()).toEqual(
-      ['PORT', 'SHIM_DB_PATH', 'SHIM_DRAIN_TOKEN', 'SMTP_LISTEN_PORT'].sort()
+      ['PORT', 'SHIM_DB_PATH', 'SHIM_DRAIN_PORT', 'SHIM_DRAIN_TOKEN', 'SMTP_LISTEN_PORT'].sort()
     );
   });
 
@@ -266,16 +276,44 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
     [
       'the drain port bound to a private address instead of loopback',
       (d) => {
-        spoolService(d).ports = [`10.20.1.50:${DRAIN_PORT}:${MAIL_SPOOL_HTTP_PORT}`];
+        spoolService(d).ports = [`10.20.1.50:${DRAIN_PORT}:${MAIL_SPOOL_DRAIN_CONTAINER_PORT}`];
       },
       /on host loopback only/,
     ],
     [
       'the drain port bound to every address',
       (d) => {
-        spoolService(d).ports = [`${DRAIN_PORT}:${MAIL_SPOOL_HTTP_PORT}`];
+        spoolService(d).ports = [`${DRAIN_PORT}:${MAIL_SPOOL_DRAIN_CONTAINER_PORT}`];
       },
       /publishes exactly one port/,
+    ],
+    [
+      'the drain port published from the mail API listener',
+      (d) => {
+        spoolService(d).ports = [`127.0.0.1:${DRAIN_PORT}:${MAIL_SPOOL_HTTP_PORT}`];
+      },
+      /publishes exactly one port/,
+    ],
+    [
+      'no separate drain listener configured, so /drain shares the mail API listener',
+      (d) => {
+        delete (spoolService(d).environment as Rec).SHIM_DRAIN_PORT;
+      },
+      /\/drain on the tenant-facing listener/,
+    ],
+    [
+      'the drain listener set to the mail API port',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_PORT = MAIL_SPOOL_HTTP_PORT;
+      },
+      /\/drain on the tenant-facing listener/,
+    ],
+    [
+      'the mail API listener moved onto the drain listener port',
+      (d) => {
+        (spoolService(d).environment as Rec).PORT = MAIL_SPOOL_DRAIN_CONTAINER_PORT;
+      },
+      /\/drain on the tenant-facing listener/,
     ],
     [
       'an `expose` entry',
@@ -499,11 +537,30 @@ describe('the posture check guards the renderer itself -- source-mutation sabota
     const broken = await sabotagedRender((s) =>
       replaceOrFail(
         s,
-        'ports: [`${MAIL_SPOOL_DRAIN_BIND_ADDRESS}:${args.drainPort}:${MAIL_SPOOL_HTTP_PORT}`],',
-        'ports: [`0.0.0.0:${args.drainPort}:${MAIL_SPOOL_HTTP_PORT}`],'
+        'ports: [drainPublish(args.drainPort)],',
+        'ports: [`0.0.0.0:${args.drainPort}:${MAIL_SPOOL_DRAIN_CONTAINER_PORT}`],'
       )
     );
     expect(() => broken(demoHostArgs())).toThrow(/on host loopback only/);
+  });
+
+  it('RED: a renderer that leaves /drain on the mail API listener is refused at render time', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(s, 'SHIM_DRAIN_PORT: MAIL_SPOOL_DRAIN_CONTAINER_PORT,', '')
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/\/drain on the tenant-facing listener/);
+    expect(() => renderMailSpoolStack(demoHostArgs())).not.toThrow();
+  });
+
+  it('RED: a renderer that publishes the mail API listener as the drain port is refused at render time', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(
+        s,
+        'ports: [drainPublish(args.drainPort)],',
+        'ports: [`127.0.0.1:${args.drainPort}:${MAIL_SPOOL_HTTP_PORT}`],'
+      )
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/publishes exactly one port/);
   });
 
   it('RED: a renderer that writes the drain token as a value is refused at render time', async () => {

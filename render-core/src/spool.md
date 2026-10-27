@@ -43,8 +43,22 @@ which lands on the spool's port on the host's loopback (LLD-6 addendum
 `06a-ops1-reaches-spools.md` in `ghost-platform-docs`, the owner's ruling on
 ops1's tunnel). That note requires the drain listener to be bound to
 `127.0.0.1`, never a public or wildcard address. So the spool publishes
-exactly one port, `127.0.0.1:<drainPort>:8080`, and the posture check refuses
+exactly one port, `127.0.0.1:<drainPort>:8081`, and the posture check refuses
 any other.
+
+The drain handover has a listener of its own. Inside the container the mail API
+listens on 8080 (`PORT`), which every tenant network reaches, and serves no
+`/drain` route: it answers 404 whatever token a caller holds. The drain
+handover listens on 8081 (`SHIM_DRAIN_PORT`) and is the port that is published.
+The posture check refuses a spool with no `SHIM_DRAIN_PORT`, with either port
+set to anything but its constant, or that publishes the mail API port, because
+each leaves `/drain` on the listener the tenant networks reach. The shim
+itself refuses to start with `SHIM_DRAIN_PORT` equal to `PORT`.
+
+The drain listener still binds every interface inside the container, so it is
+reachable on a tenant network's address for the spool, behind the drain token
+alone. Binding it to the drain network's own address needs a fixed subnet for
+that network, which is a host-level choice not made here.
 
 ## The drain network
 
@@ -77,6 +91,8 @@ before returning. It refuses:
   has egress);
 - the drain network without its fixed bridge name or with masquerade on;
 - any port other than the one loopback drain port, and any `expose`;
+- `/drain` on the listener the tenant networks reach: a missing or altered
+  `PORT` or `SHIM_DRAIN_PORT`, or the mail API port published;
 - the drain token as anything but a `${VAR:?...}` reference;
 - an ephemeral queue, an overridden SMTP bind, an image not pinned by digest,
   any mount but the spool's own data volume;
