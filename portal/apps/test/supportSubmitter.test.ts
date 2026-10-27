@@ -193,6 +193,19 @@ describe('a ticket that is refused', () => {
     expect(reader.reads).toBe(0);
   });
 
+  it('is refused when the form has neither field', async () => {
+    const { submitter, mailer } = build();
+    expect(
+      await refusalOf(() => submitter.submit('HOME', bindTenant(TENANT_ONE), formOf({})))
+    ).toBe('INVALID_CONTACT');
+    expect(
+      await refusalOf(() =>
+        submitter.submit('HOME', bindTenant(TENANT_ONE), formOf({ contact: FAKE_CONTACT }))
+      )
+    ).toBe('EMPTY_MESSAGE');
+    expect(mailer.sent).toHaveLength(0);
+  });
+
   it('does not use up the limit', async () => {
     const { submitter, mailer } = build();
     for (let attempt = 0; attempt < MAX_TICKETS_PER_WINDOW + 2; attempt += 1) {
@@ -233,6 +246,16 @@ describe('a mailer that fails', () => {
     for (const secret of [FAKE_RECIPIENT, FAKE_CONTACT, 'SECRET_MESSAGE']) {
       expect(error.message).not.toContain(secret);
     }
+  });
+});
+
+describe('a mailer that rejects with something that is not an error', () => {
+  it('still raises SEND_FAILED', async () => {
+    const { submitter, mailer } = build();
+    mailer.send = () => Promise.reject('REJECTED_TEXT');
+    expect(await refusalOf(() => submitter.submit('HOME', bindTenant(TENANT_ONE), ticket()))).toBe(
+      'SEND_FAILED'
+    );
   });
 });
 
