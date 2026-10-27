@@ -184,7 +184,9 @@ function readTopLevelIsoBoxes(buffer) {
   return boxes;
 }
 
-// True when the movie box holds a track whose handler is video or sound.
+// True when the movie box holds a track whose handler is video or sound. Out
+// of search steps without a decision it returns true, so an undecided file is
+// refused rather than passed as an image.
 function hasVideoOrSoundTrack(buffer, movieBox) {
   const payloadStart = movieBox.start + movieBox.headerBytes;
   let from = payloadStart;
@@ -199,7 +201,7 @@ function hasVideoOrSoundTrack(buffer, movieBox) {
     }
     from = found + 4;
   }
-  return false;
+  return true;
 }
 
 function isVideoOrAudioWithFileType(buffer, boxes) {
@@ -207,9 +209,14 @@ function isVideoOrAudioWithFileType(buffer, boxes) {
   if (brand === null || !IMAGE_BRANDS.has(brand)) {
     return true;
   }
-  // An image brand is the claim of the file, not a fact about its tracks.
+  // An image brand is the claim of the file, not a fact about its tracks. A
+  // top-level walk that stopped at its box limit before any movie box leaves
+  // the file undecided, so it is refused rather than passed as an image.
   const movieBox = boxes.find((box) => box.type === 'moov');
-  return movieBox !== undefined && hasVideoOrSoundTrack(buffer, movieBox);
+  if (movieBox === undefined) {
+    return boxes.length >= ISO_MAX_TOP_LEVEL_BOXES;
+  }
+  return hasVideoOrSoundTrack(buffer, movieBox);
 }
 
 function detectIsoBaseMedia(buffer) {

@@ -149,6 +149,44 @@ async function expectRefusedAsVideoAudio(promise) {
   expect(error.errorType).toBe('UnsupportedMediaTypeError');
 }
 
+// Reviewer reproductions: an image brand in front of a real video track. Each
+// one pushes the movie box past one of the detector's bounded walks.
+function imageBrandFileType() {
+  return bytes.box('ftyp', Buffer.concat([Buffer.from('mif1', 'latin1'), Buffer.alloc(4)]));
+}
+
+const VIDEO_HANDLER_BOX = bytes.box(
+  'hdlr',
+  Buffer.concat([Buffer.alloc(8), Buffer.from('vide', 'latin1'), Buffer.alloc(12)])
+);
+const VIDEO_TRACK = bytes.box('trak', bytes.box('mdia', VIDEO_HANDLER_BOX));
+
+// Seventy free boxes before the movie box: the top-level walk stops at 64.
+function imageBrandWithMovieBoxBeyondTopLevelWalk() {
+  const freeBoxes = Array.from({ length: 70 }, () => bytes.box('free'));
+  return Buffer.concat([
+    imageBrandFileType(),
+    ...freeBoxes,
+    bytes.box('moov', VIDEO_TRACK),
+    bytes.box('mdat', Buffer.alloc(32, 0x5a)),
+  ]);
+}
+
+// A movie box whose first 300 'hdlr' strings are decoys: the handler search
+// runs out of its 256 steps before it reaches the real track.
+function imageBrandWithHandlerSearchExhausted() {
+  const decoys = Buffer.concat(
+    Array.from({ length: 300 }, () =>
+      Buffer.concat([Buffer.from('hdlr', 'latin1'), Buffer.alloc(12)])
+    )
+  );
+  return Buffer.concat([
+    imageBrandFileType(),
+    bytes.box('moov', Buffer.concat([bytes.box('free', decoys), VIDEO_TRACK])),
+    bytes.box('mdat', Buffer.alloc(32, 0x5a)),
+  ]);
+}
+
 describe('video and audio on a tier that refuses them', () => {
   describe.each(REFUSING_TIER_CLASSES)('%s', (_tierName, allowVideoAudio) => {
     describe.each(FEATURES)('storage:%s', (feature) => {
@@ -194,6 +232,24 @@ describe('video and audio on a tier that refuses them', () => {
     for (const buffer of others) {
       await expectRefusedAsVideoAudio(instance.saveRaw(buffer, '2026/10/other.bin'));
     }
+    expect(verdictClient.asked).toEqual([]);
+    expect(storedCount(instance)).toBe(0);
+  });
+
+  it('refuses an image-brand video whose movie box lies beyond the top-level walk, on the demo tier', async () => {
+    const { instance, verdictClient } = buildAdapter({ allowVideoAudio: false });
+    await expectRefusedAsVideoAudio(
+      instance.saveRaw(imageBrandWithMovieBoxBeyondTopLevelWalk(), '2026/10/x.avif')
+    );
+    expect(verdictClient.asked).toEqual([]);
+    expect(storedCount(instance)).toBe(0);
+  });
+
+  it('refuses an image-brand video whose handler search runs out of steps, on the demo tier', async () => {
+    const { instance, verdictClient } = buildAdapter({ allowVideoAudio: false });
+    await expectRefusedAsVideoAudio(
+      instance.saveRaw(imageBrandWithHandlerSearchExhausted(), '2026/10/x.avif')
+    );
     expect(verdictClient.asked).toEqual([]);
     expect(storedCount(instance)).toBe(0);
   });
