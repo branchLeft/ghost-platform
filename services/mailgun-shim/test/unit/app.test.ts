@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from '../../src/app.js';
+import { createApp, createDrainApp, createMailApp } from '../../src/app.js';
 import { createDrainWake, type DrainWake } from '../../src/drainWake.js';
 import { createUnlimitedThrottle } from '../helpers/testThrottle.js';
 import { createFakeStore, type FakeShimStore } from './helpers/fakeStore.js';
@@ -119,5 +119,75 @@ describe('createApp — wires the Mailgun-shaped routers, the drain handover, he
     const body = await res.text();
     expect(body).toContain('mailgun_shim_oldest_undrained_age_seconds 0');
     expect(body).toContain('mailgun_shim_undrained_recipients 0');
+  });
+});
+
+describe('the split listeners — /drain exists on the drain app alone', () => {
+  let store: FakeShimStore;
+  let wake: DrainWake;
+  let mail: StartedRouter;
+  let drain: StartedRouter;
+
+  beforeEach(async () => {
+    store = createFakeStore();
+    store.registerTenant(DOMAIN, API_KEY, DOMAIN);
+    wake = createDrainWake();
+    mail = await listenApp(createMailApp(store, wake));
+    drain = await listenApp(
+      createDrainApp(store, wake, DRAIN_TOKEN, DRAIN_OPTIONS, createUnlimitedThrottle())
+    );
+  });
+
+  afterEach(async () => {
+    await mail.close();
+    await drain.close();
+  });
+
+  const bearer = { Authorization: `Bearer ${DRAIN_TOKEN}` };
+
+  it.each([
+    ['GET', '/drain'],
+    ['POST', '/drain/ack'],
+    ['POST', '/drain/outcomes'],
+  ])('the mail listener 404s %s %s even with the right drain token', async (method, path) => {
+    const res = await fetch(`${mail.baseUrl}${path}`, {
+      method,
+      headers: { ...bearer, 'Content-Type': 'application/json' },
+      body: method === 'POST' ? '{}' : undefined,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('the mail listener still serves the Mailgun-shaped API, healthz and metrics', async () => {
+    const events = await fetch(`${mail.baseUrl}/v3/${DOMAIN}/events`, {
+      headers: { Authorization: basicAuthHeader('api', API_KEY) },
+    });
+    expect(events.status).toBe(200);
+    expect((await fetch(`${mail.baseUrl}/healthz`)).status).toBe(200);
+    expect((await fetch(`${mail.baseUrl}/metrics`)).status).toBe(200);
+  });
+
+  it('the drain listener serves the drain handover behind its bearer token', async () => {
+    expect((await fetch(`${drain.baseUrl}/drain`)).status).toBe(401);
+    const res = await fetch(`${drain.baseUrl}/drain`, { headers: bearer });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ messages: [] });
+  });
+
+  it('the drain listener serves no Mailgun-shaped route', async () => {
+    const events = await fetch(`${drain.baseUrl}/v3/${DOMAIN}/events`, {
+      headers: { Authorization: basicAuthHeader('api', API_KEY) },
+    });
+    expect(events.status).toBe(404);
+    const send = await fetch(`${drain.baseUrl}/v3/${DOMAIN}/messages`, {
+      method: 'POST',
+      headers: { Authorization: basicAuthHeader('api', API_KEY) },
+    });
+    expect(send.status).toBe(404);
+  });
+
+  it('the drain listener keeps healthz and metrics, which the host-side probe reads', async () => {
+    expect((await fetch(`${drain.baseUrl}/healthz`)).status).toBe(200);
+    expect((await fetch(`${drain.baseUrl}/metrics`)).status).toBe(200);
   });
 });

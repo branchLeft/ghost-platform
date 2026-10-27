@@ -1,4 +1,4 @@
-import { createApp } from './app.js';
+import { createApp, createDrainApp, createMailApp } from './app.js';
 import { startCleanupScheduler } from './cleanup.js';
 import { loadConfig } from './config.js';
 import { createDrainWake } from './drainWake.js';
@@ -18,20 +18,24 @@ const throttle = createThrottle({
 });
 const cleanup = startCleanupScheduler(store, log);
 
-const app = createApp(
-  store,
-  wake,
-  config.drainToken,
-  {
-    holdMs: config.drainHoldMs,
-    leaseSeconds: config.drainLeaseSeconds,
-    batchLimit: config.drainBatchLimit,
-    pollIntervalMs: config.drainPollIntervalMs,
-    outcomesEnabled: config.drainOutcomesEnabled,
-  },
-  throttle,
-  log
-);
+const drainOptions = {
+  holdMs: config.drainHoldMs,
+  leaseSeconds: config.drainLeaseSeconds,
+  batchLimit: config.drainBatchLimit,
+  pollIntervalMs: config.drainPollIntervalMs,
+  outcomesEnabled: config.drainOutcomesEnabled,
+};
+
+// With a drain port the handover has a listener of its own and the mail API
+// listener has no /drain route; without one both share the single listener.
+const app =
+  config.drainPort === undefined
+    ? createApp(store, wake, config.drainToken, drainOptions, throttle, log)
+    : createMailApp(store, wake, log);
+const drainApp =
+  config.drainPort === undefined
+    ? undefined
+    : createDrainApp(store, wake, config.drainToken, drainOptions, throttle, log);
 
 const smtpFrontDoor = createSmtpFrontDoor({
   store,
@@ -53,6 +57,12 @@ const smtpFrontDoor = createSmtpFrontDoor({
 });
 void smtpFrontDoor.listen(config.smtpFrontDoor.port, config.smtpFrontDoor.host);
 
+const drainServer =
+  drainApp &&
+  drainApp.listen(config.drainPort, () => {
+    log.info('worker_lifecycle', { event: 'drain_listening', port: config.drainPort });
+  });
+
 const server = app.listen(config.port, () => {
   log.info('worker_lifecycle', { event: 'listening', port: config.port });
 });
@@ -60,6 +70,7 @@ const server = app.listen(config.port, () => {
 function shutdown(signal: string): void {
   log.info('worker_lifecycle', { event: 'shutdown_start', signal });
   cleanup.stop();
+  drainServer?.close();
   server.close(() => {
     void smtpFrontDoor.close().then(() => {
       store.close();
