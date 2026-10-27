@@ -448,7 +448,9 @@ def probe(curl: Curl, *, dwell: float, recheck: float, run_id: str) -> tuple[int
     verdicts = {v for v, _ in results.values()}
     if FAIL in verdicts:
         return 1, lines
-    if INCONCLUSIVE in verdicts:
+    # Probe objects left in the bucket are a run that did not finish cleanly,
+    # whatever the verdicts say: never a PASS.
+    if INCONCLUSIVE in verdicts or leftovers:
         return 2, lines
     return 0, lines
 

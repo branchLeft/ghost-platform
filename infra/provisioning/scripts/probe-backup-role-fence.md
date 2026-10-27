@@ -63,5 +63,7 @@ curl on stdin, never on its command line where `ps` would show them:
   PROBE_WRITER_ACCESS_KEY_ID    PROBE_WRITER_SECRET_ACCESS_KEY
   PROBE_READER_ACCESS_KEY_ID    PROBE_READER_SECRET_ACCESS_KEY
 
-Exit status: 0 every check passed in both passes; 1 a check failed; 2 the
-run was inconclusive or could not start.
+Exit status: 0 every check passed in both passes and cleanup left nothing
+behind; 1 a check failed; 2 the run was inconclusive, could not start, or
+cleanup left probe objects in the bucket (a LEFTOVER line names each one).
+A failing check takes precedence over leftovers, so the code is 1 then.
