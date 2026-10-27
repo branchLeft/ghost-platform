@@ -181,6 +181,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.max_backup_age_s, rd.DEFAULT_MAX_BACKUP_AGE_HOURS * 3600)
         self.assertNotIn("SK", repr(config.copies[0]))
 
+    def test_environment_cannot_disable_the_tmpfs_check(self):
+        for value in ("0", "1", ""):
+            with self.subTest(value=value), self.assertRaisesRegex(rd.DrillConfigError, "tmpfs check"):
+                rd.config_from_env(_env(BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR=value))
+        self.assertTrue(rd.config_from_env(_env()).require_volatile_work_dir)
+
+    def test_main_refuses_the_environment_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            env = _env(BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR="0", BACKUP_DRILL_FLAG_ROOT=str(root / "f"),
+                       BACKUP_DRILL_METRICS_DIR=str(root / "m"))
+            docker = FakeDocker()
+            hooks = rd.Hooks(runner=docker, now=lambda: NOW)
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                code = rd.main(["--tenants-file", str(root / "t")], hooks=hooks, environ=env)
+        self.assertNotEqual(code, 0)
+        self.assertIn("tmpfs check", err.getvalue())
+        self.assertEqual(docker.calls, [])
+
     def test_both_copies_in_order(self):
         extra = {f"BACKUP_DRILL_COPY_SECONDARY_{s}": "v" for s in ("BUCKET", "ENDPOINT", "REGION", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY")}
         config = rd.config_from_env(_env(**extra, BACKUP_DRILL_COPY_SECONDARY_OBJECT_KEY_PREFIX="db/"))
@@ -565,6 +584,13 @@ class ContainersTests(unittest.TestCase):
             if call[:3] == ["docker", "run", "-d"]:
                 self.assertIn(f"{rd.CONTAINER_LABEL}=r", call)
 
+    def test_mysql_datadir_is_a_bounded_tmpfs(self):
+        docker = FakeDocker()
+        rd.Containers(runner=docker, run_id="r").start_mysql(image="m" + DIGEST, password="rootpw", memory="1g")
+        run = next(c for c in docker.calls if c[:3] == ["docker", "run", "-d"] and "restore-drill-mysql-r" in c)
+        self.assertEqual(run[run.index("--tmpfs") + 1], f"{rd.MYSQL_DATADIR}:rw,noexec,nosuid,size={rd.MYSQL_TMPFS_SIZE}")
+        self.assertEqual(rd.MYSQL_DATADIR, "/var/lib/mysql")
+
     def test_pull_only_the_images_not_already_present(self):
         images = rd.Images(recovery="r" + DIGEST, mysql="m" + DIGEST, ghost="g" + DIGEST, sidecar="s" + DIGEST)
         docker = FakeDocker(fail={"inspect --format {{.Id}} g": _completed([], code=1, err="No such image")})
@@ -935,8 +961,7 @@ root = pathlib.Path(sys.argv[2])
 ids = root / "ids"
 recipient = sys.argv[3]
 env = t._env(BACKUP_DRILL_IDENTITY_DIR=str(ids), BACKUP_DRILL_WORK_DIR=str(root / "work"),
-             BACKUP_DRILL_FLAG_ROOT=str(root / "flags"), BACKUP_DRILL_METRICS_DIR=str(root / "metrics"),
-             BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR="0")
+             BACKUP_DRILL_FLAG_ROOT=str(root / "flags"), BACKUP_DRILL_METRICS_DIR=str(root / "metrics"))
 dump = t._encrypt(b"CREATE DATABASE ghost_blog;\n" + t.MANIFEST.to_trailer(), recipient)
 store = t.FakeStore({"primary": {"dumps/blog/20261003T014000Z.sql.age": dump}})
 
@@ -946,7 +971,8 @@ def block(argv):
 
 docker = t.FakeDocker(fail={"network create": block})
 hooks = rd.Hooks(runner=docker, store=store, now=lambda: t.NOW, run_id=lambda: "sig1")
-code = rd.main(["--tenants-file", str(root / "tenants"), "--copy", "primary"], hooks=hooks, environ=env)
+code = rd.main(["--allow-disk-work-dir", "--tenants-file", str(root / "tenants"), "--copy", "primary"],
+               hooks=hooks, environ=env)
 removed = [c for c in docker.calls if c[:4] == ["docker", "rm", "-f", "-v"]]
 (root / "removed").write_text(str(len(removed)))
 sys.exit(code)

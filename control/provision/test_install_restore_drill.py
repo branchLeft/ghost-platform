@@ -110,6 +110,12 @@ class ReadinessTests(Case):
         self.assertTrue(any("BACKUP_DRILL_GHOST_IMAGE" in p for p in problems))
         self.assertNotIn(SECRET, "\n".join(problems))
 
+    def test_env_file_may_not_disable_the_tmpfs_check(self):
+        for value in ("0", "1"):
+            with self.subTest(value=value):
+                self.box.write_drill(env=GOOD_ENV + f"BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR={value}\n")
+                self.assertTrue(any("tmpfs check" in p for p in self.problems()))
+
     def test_missing_copy_credential_named_not_valued(self):
         env = GOOD_ENV.replace(f"BACKUP_DRILL_COPY_PRIMARY_SECRET_ACCESS_KEY={SECRET}\n", "")
         self.box.write_drill(env=env)
@@ -245,6 +251,11 @@ class UnitFileTests(unittest.TestCase):
         self.assertEqual(service["EnvironmentFile"], str(ird.ENV_FILE))
         self.assertEqual(service["Type"], "oneshot")
         self.assertEqual(service["NoNewPrivileges"], "yes")
+
+    def test_service_does_not_switch_off_the_tmpfs_check(self):
+        text = (REPO_ROOT / "control/provision" / ird.SERVICE_UNIT).read_text()
+        self.assertNotIn("REQUIRE_VOLATILE_WORK_DIR", text)
+        self.assertNotIn("--allow-disk-work-dir", text)
 
     def test_timer_is_weekly_at_night_and_catches_up(self):
         timer = _unit(ird.TIMER_UNIT)["Timer"]

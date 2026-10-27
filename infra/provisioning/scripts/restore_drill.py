@@ -44,6 +44,16 @@ VOLATILE_FILESYSTEMS = frozenset({"tmpfs", "ramfs"})
 DEFAULT_FLAG_ROOT = "/run/branchleft-restore-drill"
 DEFAULT_MAX_BACKUP_AGE_HOURS = 48.0
 DEFAULT_CONTAINER_MEMORY = "1g"
+# The restored datadir is held in memory, and tmpfs pages count against the
+# container's --memory cap: 512m of data plus mysqld's ~128m default buffer
+# pool and ~100m of overhead stays inside the 1g default. A restored blog
+# is tens of megabytes; a dump that outgrows this fails the drill loudly
+# (disk full) rather than spilling to ops1's disk.
+MYSQL_DATADIR = "/var/lib/mysql"
+MYSQL_TMPFS_SIZE = "512m"
+# Read from the environment this would let one line in the env file switch
+# off the tmpfs refusal, so its presence at all is a configuration error.
+DISABLED_CHECK_ENV = f"{ENV_PREFIX}REQUIRE_VOLATILE_WORK_DIR"
 IDENTITY_SUFFIX = ".key"
 
 CONTAINER_LABEL = "branchleft.restore-drill"
@@ -261,7 +271,17 @@ def metrics_dir_from_env(environ: Mapping[str, str]) -> pathlib.Path:
     return pathlib.Path(environ.get(f"{ENV_PREFIX}METRICS_DIR", bw.DEFAULT_BACKUP_AGE_METRICS_DIR))
 
 
+def refuse_check_override(environ: Mapping[str, str]) -> None:
+    """The dump-only-on-tmpfs check has no environment switch; any value,
+    '1' included, is refused so that a stale line cannot linger."""
+    if DISABLED_CHECK_ENV in environ:
+        raise DrillConfigError(
+            f"{DISABLED_CHECK_ENV} is set; the tmpfs check cannot be changed from the environment"
+        )
+
+
 def config_from_env(environ: Mapping[str, str]) -> DrillConfig:
+    refuse_check_override(environ)
     try:
         max_age_hours = float(environ.get(f"{ENV_PREFIX}MAX_BACKUP_AGE_HOURS", DEFAULT_MAX_BACKUP_AGE_HOURS))
     except ValueError as exc:
@@ -278,7 +298,7 @@ def config_from_env(environ: Mapping[str, str]) -> DrillConfig:
         max_backup_age_s=max_age_hours * 3600,
         mysql_memory=environ.get(f"{ENV_PREFIX}MYSQL_MEMORY", DEFAULT_CONTAINER_MEMORY),
         ghost_memory=environ.get(f"{ENV_PREFIX}GHOST_MEMORY", DEFAULT_CONTAINER_MEMORY),
-        require_volatile_work_dir=environ.get(f"{ENV_PREFIX}REQUIRE_VOLATILE_WORK_DIR", "1") != "0",
+        require_volatile_work_dir=True,
     )
 
 
@@ -695,7 +715,8 @@ class Containers:
     def start_mysql(self, *, image: str, password: str, memory: str) -> None:
         self._docker(["network", "create", *self._label(), self.network])
         self._docker(
-            ["run", "-d", "--name", self.mysql, "--network", self.network, "--memory", memory, *self._label(),
+            ["run", "-d", "--name", self.mysql, "--network", self.network, "--memory", memory,
+             "--tmpfs", f"{MYSQL_DATADIR}:rw,noexec,nosuid,size={MYSQL_TMPFS_SIZE}", *self._label(),
              "-e", "MYSQL_ROOT_PASSWORD", image],
             env_extra={"MYSQL_ROOT_PASSWORD": password},
         )
@@ -994,6 +1015,9 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
     parser.add_argument("--copy", dest="copy_name", help="restore from this copy instead of this week's choice")
     parser.add_argument("--cleanup", action="store_true",
                         help="remove what a killed run left behind (the unit's ExecStopPost); run nothing")
+    parser.add_argument("--allow-disk-work-dir", action="store_true",
+                        help="local proof only: skip the tmpfs check. The unit never passes it, and the "
+                             "environment cannot")
     args = parser.parse_args(argv)
     hooks = hooks or Hooks()
     environ = os.environ if environ is None else environ
@@ -1006,6 +1030,8 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
         return _refuse(args, environ=environ, hooks=hooks, reason="config")
     try:
         config = config_from_env(environ)
+        if args.allow_disk_work_dir:
+            config = dataclasses.replace(config, require_volatile_work_dir=False)
         tenants = read_tenants(args.tenants_file)
     except (DrillConfigError, OSError) as exc:
         print(f"restore_drill: {exc}", file=sys.stderr)

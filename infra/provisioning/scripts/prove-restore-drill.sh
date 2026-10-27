@@ -156,9 +156,8 @@ drill_exec() {
         BACKUP_DRILL_WORK_DIR="$WORK/drill-work" \
         BACKUP_DRILL_FLAG_ROOT="$WORK/flags" \
         BACKUP_DRILL_METRICS_DIR="$WORK/metrics" \
-        BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR=0 \
         BACKUP_DRILL_CONTENT_TIMEOUT_S=240 \
-        "$PYTHON" "$DRILL" --tenants-file "$WORK/tenants" "$@"
+        "$PYTHON" "$DRILL" --allow-disk-work-dir --tenants-file "$WORK/tenants" "$@"
 }
 drill() {
     (drill_exec "$@") >"$WORK/drill.out" 2>&1

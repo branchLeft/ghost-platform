@@ -139,14 +139,27 @@ Only in memory-backed storage, and never in a log:
 - **At the start of every run**, any `run-*` directory an earlier run left
   behind is swept.
 
-The restore MySQL server keeps its data in an anonymous Docker volume, which
-`docker rm -v` removes with the container.
+The restore MySQL server's datadir, `/var/lib/mysql`, is a Docker `--tmpfs`
+mount of 512m, so the restored (decrypted) tenant data never reaches ops1's
+disk and vanishes with the container. tmpfs pages count against the
+container's `--memory` cap, so the size is chosen inside the `1g` default:
+512m of data, mysqld's default buffer pool of about 128m and its own
+overhead. A restored blog is tens of megabytes; a dump that outgrows the
+mount fails the drill with a full-disk error rather than spilling to disk.
+If `BACKUP_DRILL_MYSQL_MEMORY` is lowered, the mount must still fit under it.
+
+The "dump only on tmpfs" refusal has no environment switch. Setting
+`BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR` to any value makes the drill refuse
+to run, and `install_restore_drill.py` refuses to enable the timer while the
+env file carries it. The only bypass is the `--allow-disk-work-dir` flag,
+which the proof passes and the unit never does.
 
 ## What it costs the host
 
 Up to two containers capped at `BACKUP_DRILL_MYSQL_MEMORY` and
 `BACKUP_DRILL_GHOST_MEMORY` (default `1g` each), for the length of one run, on
-Sunday night. The decrypted dump exists on disk for the same window.
+Sunday night. Neither the decrypted dump nor the restored datadir is on disk
+in that window; both are in memory.
 LLD-9 §10 names this weekly plaintext event and bounds it; it belongs on the
 platform DPIA.
 
@@ -192,10 +205,18 @@ So that it can read the logs of short-lived containers, the proof puts a
 under a label rather than letting them auto-remove, and saves each
 container's logs and volume names just before every `docker rm`.
 
-The proof runs on a workstation's temporary directory, so it sets
-`BACKUP_DRILL_REQUIRE_VOLATILE_WORK_DIR=0`. The tmpfs refusal itself is
+The proof runs on a workstation's temporary directory, so it passes
+`--allow-disk-work-dir`. The tmpfs refusal itself is
 unit-tested, and so is the SIGTERM path, with a real signal sent to a real
 process holding a decrypted dump.
 
 The sabotages edit `restore_drill.py` in place and restore it on exit,
 whatever happens.
+
+## What a passing drill does not prove
+
+The backup and the drill record the database as it was. If a live tenant
+database were reset to Ghost's install defaults, its next backup would be of
+those defaults, and the drill would restore them and pass. This is by design:
+the manifest records the source as it was, and the drill proves that a backup
+restores, not that its content is the content anyone expects.
