@@ -93,7 +93,8 @@ characters), and every header value (to, from, reply-to, subject) is checked
 again before the mailer is called. The message is trimmed, refused when empty,
 and bounded at 1000 characters. Each refusal is a `SupportTicketError` with a
 fixed message that never holds what was posted, which the shell turns into its
-plain `REFUSED`; the shell logs the error name only. Nothing is echoed back and
+plain `REFUSED`; the shell logs the error name only. A rejected read of the
+register row or the health reading is one too (`READ_FAILED`): nothing is sent. Nothing is echoed back and
 no ticket is stored.
 
 Abuse is bounded by a per-tenant fixed window held in memory and driven by the

@@ -2,7 +2,18 @@ import pg from 'pg';
 import { bindTenant, TenantDb, type HealthView } from 'ghost-platform-portal-data/tenant';
 import { ORG_A, ORG_B, TENANT_A, TENANT_B } from '../../data/test/helpers.js';
 import { reading } from './supportHarness.js';
-import { defineSupportRouteTests, VERSION_A, VERSION_B } from './supportRouteScenarios.js';
+import {
+  defineSupportRouteTests,
+  VERSION_A,
+  VERSION_B,
+  type BreakRead,
+  type TicketRead,
+} from './supportRouteScenarios.js';
+
+interface BrokenRead {
+  read?: TicketRead;
+  failure?: Error;
+}
 
 type AnsweredMethod =
   | 'scopeForOrganisation'
@@ -18,7 +29,7 @@ type AnsweredMethod =
  * with no database. It keys everything by the scope's tenant, as the real one
  * does, and fails closed on any call it was not given an answer for.
  */
-function inMemoryTenantDb(): TenantDb {
+function inMemoryTenantDb(broken: BrokenRead): TenantDb {
   const registered = new Map<string, string>([
     [ORG_A, TENANT_A],
     [ORG_B, TENANT_B],
@@ -39,11 +50,14 @@ function inMemoryTenantDb(): TenantDb {
       const tenant = registered.get(org);
       return tenant === undefined ? null : bindTenant(tenant);
     },
-    ownRegistration: async (scope) => ({
-      tenantId: scope.tenantId,
-      zitadelOrgId: 'org',
-    }),
-    ownHealth: async (scope) => readings.get(scope.tenantId) ?? null,
+    ownRegistration: async (scope) => {
+      if (broken.read === 'ownRegistration') throw broken.failure;
+      return { tenantId: scope.tenantId, zitadelOrgId: 'org' };
+    },
+    ownHealth: async (scope) => {
+      if (broken.read === 'ownHealth') throw broken.failure;
+      return readings.get(scope.tenantId) ?? null;
+    },
     pendingAcceptances: async () => [],
     currentDocuments: async () => [],
     acceptances: async () => [],
@@ -60,6 +74,12 @@ function inMemoryTenantDb(): TenantDb {
   });
 }
 
-const db = inMemoryTenantDb();
+const broken: BrokenRead = {};
+const db = inMemoryTenantDb(broken);
 
-defineSupportRouteTests(() => db);
+const breakRead: BreakRead = (read, failure) => {
+  broken.read = read;
+  broken.failure = failure;
+};
+
+defineSupportRouteTests(() => db, breakRead);

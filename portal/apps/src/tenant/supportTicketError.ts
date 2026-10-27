@@ -6,6 +6,7 @@ export type SupportTicketRefusal =
   | 'INVALID_MESSAGE'
   | 'INVALID_HEADER_VALUE'
   | 'TENANT_NOT_REGISTERED'
+  | 'READ_FAILED'
   | 'SEND_FAILED';
 
 const MESSAGES: Readonly<Record<SupportTicketRefusal, string>> = {
@@ -15,6 +16,7 @@ const MESSAGES: Readonly<Record<SupportTicketRefusal, string>> = {
   INVALID_MESSAGE: 'the message contains a character that is not allowed',
   INVALID_HEADER_VALUE: 'a mail header value is empty or contains a line break or NUL',
   TENANT_NOT_REGISTERED: 'the signed-in tenant has no register row',
+  READ_FAILED: 'the tenant data needed for the ticket could not be read',
   SEND_FAILED: 'the mailer did not send the ticket',
 };
 

@@ -37,13 +37,19 @@ class FakeReader implements SupportReader {
   ]);
   registered = new Set<string>([TENANT_ONE, TENANT_TWO]);
   reads = 0;
+  /** What each read rejects with, when set. */
+  readonly failures: { ownRegistration?: Error | string; ownHealth?: Error | string } = {};
 
   async ownRegistration(scope: TenantScope): Promise<{ tenantId: string } | null> {
     this.reads += 1;
+    if (this.failures.ownRegistration !== undefined) {
+      return Promise.reject(this.failures.ownRegistration);
+    }
     return this.registered.has(scope.tenantId) ? { tenantId: scope.tenantId } : null;
   }
 
   async ownHealth(scope: TenantScope): Promise<HealthView | null> {
+    if (this.failures.ownHealth !== undefined) return Promise.reject(this.failures.ownHealth);
     return this.readings.get(scope.tenantId) ?? null;
   }
 }
@@ -228,6 +234,43 @@ describe('the ticket limit through the submitter', () => {
     advance(WINDOW_SECONDS);
     expect(await submitter.submit('HOME', bindTenant(TENANT_ONE), ticket())).toBe(SENT_PATH);
   });
+});
+
+describe('a read that fails', () => {
+  const DATABASE_FAILURE = `connection refused ${TENANT_ONE} ${FAKE_CONTACT} SECRET_MESSAGE`;
+
+  it.each(['ownRegistration', 'ownHealth'] as const)(
+    'raises READ_FAILED when %s rejects, with none of the ticket in it, and sends nothing',
+    async (read) => {
+      const { submitter, mailer, reader } = build();
+      const failure = new Error(DATABASE_FAILURE);
+      reader.failures[read] = failure;
+      const raised = await submitter
+        .submit('HOME', bindTenant(TENANT_ONE), ticket('SECRET_MESSAGE'))
+        .catch((error: Error) => error);
+      expect(raised).toBeInstanceOf(SupportTicketError);
+      const error = raised as SupportTicketError;
+      expect(error.reason).toBe('READ_FAILED');
+      expect(error.name).toBe('SupportTicketError');
+      expect(error.cause).toBe(failure);
+      for (const secret of [TENANT_ONE, FAKE_CONTACT, FAKE_RECIPIENT, 'SECRET_MESSAGE']) {
+        expect(error.message).not.toContain(secret);
+      }
+      expect(mailer.sent).toHaveLength(0);
+    }
+  );
+
+  it.each(['ownRegistration', 'ownHealth'] as const)(
+    'still raises READ_FAILED when %s rejects with something that is not an error',
+    async (read) => {
+      const { submitter, mailer, reader } = build();
+      reader.failures[read] = 'REJECTED_TEXT';
+      expect(
+        await refusalOf(() => submitter.submit('HOME', bindTenant(TENANT_ONE), ticket()))
+      ).toBe('READ_FAILED');
+      expect(mailer.sent).toHaveLength(0);
+    }
+  );
 });
 
 describe('a mailer that fails', () => {

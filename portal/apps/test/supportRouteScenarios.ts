@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { TenantDb } from 'ghost-platform-portal-data/tenant';
 import { ORG_A, ORG_B, TENANT_A, TENANT_B } from '../../data/test/helpers.js';
 import { createTenantPortal } from '../src/tenant/app.js';
@@ -18,14 +18,21 @@ const SECRET_MESSAGE = 'SECRET_MESSAGE_BODY';
 
 const FORM = 'application/x-www-form-urlencoded';
 
+/** The two reads a ticket needs, which a data layer that can be made to fail lets the suite break. */
+export type TicketRead = 'ownRegistration' | 'ownHealth';
+
+/** Makes one read reject with the given error until `undefined` is passed. */
+export type BreakRead = (read: TicketRead | undefined, failure?: Error) => void;
+
 /**
  * The support-ticket behaviour seen through the real route. `getDb` must
  * answer a `TenantDb` whose tenant A holds VERSION_A and tenant B holds
  * VERSION_B (and the two register rows of the shared fixture); it is read
  * once the suite starts, so a database fixture may be built in an earlier
- * `beforeAll`.
+ * `beforeAll`. `breakRead`, where the data layer can fail on demand, adds the
+ * scenarios for a read that rejects.
  */
-export function defineSupportRouteTests(getDb: () => TenantDb): void {
+export function defineSupportRouteTests(getDb: () => TenantDb, breakRead?: BreakRead): void {
   describe('support tickets through the route', () => {
     const issuer = new FakeIssuer();
     const mailer = new RecordingMailer();
@@ -399,6 +406,43 @@ export function defineSupportRouteTests(getDb: () => TenantDb): void {
         }
       });
     });
+
+    if (breakRead !== undefined) {
+      describe('a read that fails', () => {
+        afterEach(() => breakRead(undefined));
+
+        it.each(['ownRegistration', 'ownHealth'] as const)(
+          'answers the shell refusal when %s rejects, sends nothing and logs the error name only',
+          async (read) => {
+            reset();
+            const browser = await signedIn(app.origin, ORG_A);
+            breakRead(
+              read,
+              new Error(`connection refused ${TENANT_A} ${FAKE_CONTACT} ${SECRET_MESSAGE}`)
+            );
+            const reply = await post(browser, '/support/send', {
+              contact: FAKE_CONTACT,
+              message: SECRET_MESSAGE,
+            });
+            expect(reply.status).toBe(400);
+            expect(reply.body).toBe('REFUSED');
+            expect(reply.location).toBeNull();
+            expect(mailer.sent).toHaveLength(0);
+            expect(errorLines).toEqual([
+              JSON.stringify({
+                event: 'portal.error',
+                step: 'action',
+                error: 'SupportTicketError',
+              }),
+            ]);
+            for (const secret of [TENANT_A, FAKE_CONTACT, FAKE_RECIPIENT, SECRET_MESSAGE]) {
+              expect(reply.body).not.toContain(secret);
+              expect(errorLines.join('\n')).not.toContain(secret);
+            }
+          }
+        );
+      });
+    }
 
     describe('with no mailer injected', () => {
       it.each([

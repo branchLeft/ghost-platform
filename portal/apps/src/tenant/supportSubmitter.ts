@@ -50,15 +50,15 @@ export class TicketSubmitter {
    * the tenant is over its limit.
    *
    * @throws {SupportTicketError} INVALID_CONTACT, EMPTY_MESSAGE, MESSAGE_TOO_LONG,
-   *   INVALID_MESSAGE, TENANT_NOT_REGISTERED, INVALID_HEADER_VALUE or SEND_FAILED.
+   *   INVALID_MESSAGE, TENANT_NOT_REGISTERED, READ_FAILED, INVALID_HEADER_VALUE or SEND_FAILED.
    */
   async submit(screen: RecordedScreen, scope: TenantScope, form: URLSearchParams): Promise<string> {
     const contact = validateContact(form.get('contact') ?? '');
     const message = validateMessage(form.get('message') ?? '');
     if (!this.#options.limiter.tryTake(scope.tenantId)) return LIMITED_PATH;
-    const registration = await this.#options.reader.ownRegistration(scope);
+    const registration = await this.#read(() => this.#options.reader.ownRegistration(scope));
     if (registration === null) throw new SupportTicketError('TENANT_NOT_REGISTERED');
-    const health = await this.#options.reader.ownHealth(scope);
+    const health = await this.#read(() => this.#options.reader.ownHealth(scope));
     const context = buildContextLines({ tenantId: registration.tenantId, health, screen });
     await this.#deliver({
       to: this.#options.recipient,
@@ -68,6 +68,18 @@ export class TicketSubmitter {
       body: renderTicketBody(context, message),
     });
     return SENT_PATH;
+  }
+
+  /** A failed read becomes a refusal, so the shell logs its name and not a driver's. */
+  async #read<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      throw new SupportTicketError(
+        'READ_FAILED',
+        error instanceof Error ? { cause: error } : undefined
+      );
+    }
   }
 
   async #deliver(message: SupportMessage): Promise<void> {
