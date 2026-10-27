@@ -68,11 +68,25 @@ function buildUncheckableError(GhostErrors) {
   });
 }
 
+// Video and audio on a tier that does not accept them. Nothing was hashed or
+// checked: no automated check exists for them, so they are declined by what
+// they are. The wording is a placeholder the owner replaces.
+const VIDEO_AUDIO_REFUSED_MESSAGE = 'VIDEO_AUDIO_REFUSED_MESSAGE_PLACEHOLDER';
+const VIDEO_AUDIO_REFUSED_CONTEXT = 'VIDEO_AUDIO_REFUSED_CONTEXT_PLACEHOLDER';
+
+function buildVideoAudioRefusedError(GhostErrors) {
+  return new GhostErrors.UnsupportedMediaTypeError({
+    message: VIDEO_AUDIO_REFUSED_MESSAGE,
+    context: VIDEO_AUDIO_REFUSED_CONTEXT,
+  });
+}
+
 module.exports = {
   buildRefusalError,
   buildScannerUnconfiguredError,
   buildVerdictPendingError,
   buildUncheckableError,
+  buildVideoAudioRefusedError,
   GENERIC_CONTEXT,
   UNCONFIGURED_MESSAGE,
   UNCONFIGURED_CONTEXT,
@@ -80,5 +94,7 @@ module.exports = {
   VERDICT_PENDING_CONTEXT,
   UNCHECKABLE_MESSAGE,
   UNCHECKABLE_CONTEXT,
+  VIDEO_AUDIO_REFUSED_MESSAGE,
+  VIDEO_AUDIO_REFUSED_CONTEXT,
   specificContext,
 };
