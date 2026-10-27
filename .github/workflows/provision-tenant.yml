@@ -1031,6 +1031,7 @@ jobs:
             must already exist: the stack derives the bucket name from the slug
             and nothing here creates it, so a missing bucket is a tenant whose
             uploads fail after the deploy succeeded.
+
           `known_hosts` is already filled: the provisioning run wrote the app
           host's SSH host key into it from the platform repository's host-key
           register, which a person recorded once from the host itself -- never

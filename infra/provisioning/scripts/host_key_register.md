@@ -64,10 +64,11 @@ refuses a missing required role. `provision-tenant.yml` runs it, and a dry
 
 ## The proof
 
-`test_host_key_register.py::RealSshdTests` starts an unprivileged `sshd` on
-loopback with a host key made by `ssh-keygen` for the test, records that key,
-fills the file, and runs a real `ssh` with `StrictHostKeyChecking=yes`: it
-connects; with one character of the recorded key changed it is refused with ssh's
+`test_host_key_register.py::RealSshdTests` is the control for the trust root: a
+real ssh client held to a real sshd by the filled file. It starts an unprivileged
+`sshd` on loopback with a host key made by `ssh-keygen` for the test, records that
+key, fills the file, and runs a real `ssh` with `StrictHostKeyChecking=yes` and
+nothing else to trust: it connects; with one character of the recorded key changed it is refused with ssh's
 own `Host key verification failed`; restored, it connects. The file is the tool's
 output unchanged; ssh is given `HostKeyAlias` so the port-less line is the one
 looked up on a non-default port. On CI a missing `sshd` fails the test rather than

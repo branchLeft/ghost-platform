@@ -554,14 +554,8 @@ class RealKeygenTests(unittest.TestCase):
 class RealSshdTests(unittest.TestCase):
     """The control for the trust root: a real ssh client held to a real sshd by the filled file.
 
-    An unprivileged sshd listens on loopback with a freshly generated host key.
-    The register holds that key; `fill` writes the known_hosts file; ssh runs
-    with StrictHostKeyChecking=yes and nothing else to trust. It must connect.
-    One character of the recorded key is changed and the same command must be
-    refused by ssh's own host-key verification. The key is restored and it must
-    connect again. The known_hosts file is the tool's output unchanged: ssh is
-    given `HostKeyAlias=<address>` so the line, which carries no port, is the
-    one looked up for a listener on a non-default port.
+    The steps, the fixture and the reason for HostKeyAlias are in
+    host_key_register.md under "The proof".
     """
 
     ADDRESS = "127.0.0.1"

@@ -2,13 +2,11 @@
 """Host-key register: each estate host's SSH public host key, by role.
 
 The register is one reviewed file of `role ssh-ed25519 base64` lines. A host
-is named by a role, never by an address; the address is supplied by whoever
-fills a `known_hosts` file, at fill time. A key that is not in the register is
-refused, never accepted on first use. The tool never contacts a network and
-never runs `ssh-keyscan`. See host_key_register.md.
-
+is named by role, never by address; the address is supplied by whoever fills
+a `known_hosts` file, at fill time. A key not in the register is refused, never
+accepted on first use. The tool never contacts a network or runs `ssh-keyscan`.
 The functions are the interface (the provisioning controller imports them);
-the command line is a thin layer over them.
+the command line is a thin layer over them. Narrative: host_key_register.md.
 """
 
 from __future__ import annotations
