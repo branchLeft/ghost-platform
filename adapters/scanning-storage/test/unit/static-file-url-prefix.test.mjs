@@ -66,9 +66,7 @@ async function writeTempFile(name) {
 
 // Ghost's importer strips each segment of the prefix from the entry name.
 function stripStaticFileURLPrefix(store, name) {
-  const folderRegexes = store.staticFileURLPrefix
-    .split('/')
-    .map((dir) => new RegExp(`^${dir}/`));
+  const folderRegexes = store.staticFileURLPrefix.split('/').map((dir) => new RegExp(`^${dir}/`));
   return folderRegexes.reduce((rest, regex) => rest.replace(regex, ''), name);
 }
 
