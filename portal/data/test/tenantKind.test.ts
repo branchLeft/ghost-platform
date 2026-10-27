@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { OwnerDb } from '../src/owner/index.js';
 import { tenantRegister } from '../src/schema.js';
@@ -125,16 +126,12 @@ describe('the owner registers a tenant with a kind', () => {
 describe('the table refuses a bad kind even to a statement that skips the code', () => {
   const id = '88888888-8888-4888-8888-888888888888';
 
-  it.each([null, 'real', 'demo', '', 'TENANT'])('refuses a raw insert of %j', async (kind) => {
-    const message = await fx.admin
-      .query(
-        'INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id, kind) VALUES ($1, $2, $3)',
-        [id, 'org-raw', kind]
-      )
-      .then(
-        () => 'did not fail',
-        (error: Error) => error.message
-      );
+  it.each([null, 'real', 'demo', '', 'TENANT'])('refuses a direct insert of %j', async (kind) => {
+    const message = await dbMessage(
+      fx.adminDb
+        .insert(tenantRegister)
+        .values({ tenantId: id, zitadelOrgId: 'org-raw', kind: kind as never })
+    );
     expect(message).toMatch(
       kind === null
         ? /null value in column "kind"/
@@ -143,25 +140,21 @@ describe('the table refuses a bad kind even to a statement that skips the code',
   });
 
   it('refuses an insert that names no kind at all, as there is no default', async () => {
-    const message = await fx.admin
-      .query('INSERT INTO portal.tenant_register (tenant_id, zitadel_org_id) VALUES ($1, $2)', [
-        id,
-        'org-nokind',
-      ])
-      .then(
-        () => 'did not fail',
-        (error: Error) => error.message
-      );
+    const message = await dbMessage(
+      fx.adminDb
+        .insert(tenantRegister)
+        .values({ tenantId: id, zitadelOrgId: 'org-nokind' } as never)
+    );
     expect(message).toMatch(/null value in column "kind"/);
   });
 
   it('refuses an update of a stored kind to a bad one', async () => {
-    const message = await fx.admin
-      .query("UPDATE portal.tenant_register SET kind = 'real' WHERE tenant_id = $1", [TENANT_B])
-      .then(
-        () => 'did not fail',
-        (error: Error) => error.message
-      );
+    const message = await dbMessage(
+      fx.adminDb
+        .update(tenantRegister)
+        .set({ kind: 'real' as never })
+        .where(eq(tenantRegister.tenantId, TENANT_B))
+    );
     expect(message).toMatch(/violates check constraint "tenant_register_kind_known"/);
   });
 });
