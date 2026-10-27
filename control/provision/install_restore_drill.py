@@ -72,6 +72,7 @@ def env_problems(path: pathlib.Path, *, owner_uid: int = 0) -> list[str]:
             values[match.group(1)] = match.group(2)
     drill = _drill_module()
     try:
+        drill.refuse_check_override(values)
         drill.copies_from_env(values)
         drill.images_from_env(values)
     except drill.DrillConfigError as exc:
