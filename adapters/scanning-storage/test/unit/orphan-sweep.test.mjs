@@ -233,6 +233,27 @@ describe('sweepOrphans', () => {
     expect(logger.lines).toEqual([]);
   });
 
+  it('logs and leaves bytes it cannot examine, rather than guess', async () => {
+    await writeOrphan();
+    const logger = recordingLogger();
+
+    const removed = sweep({
+      logger,
+      // Called once, after the directory is listed: the directory is swapped
+      // for a plain file, so examining an entry fails with something other
+      // than "missing".
+      now: () => {
+        fsSync.rmSync(quarantinePath, { recursive: true });
+        fsSync.writeFileSync(quarantinePath, 'a file, not a directory');
+        return Date.now();
+      },
+    });
+
+    expect(removed).toBe(0);
+    expect(logger.lines).toHaveLength(1);
+    expect(logger.lines[0]).toContain('ENOTDIR');
+  });
+
   it('puts the bytes back when a sidecar lands after they were moved aside', async () => {
     await writeOrphan();
     const logger = recordingLogger();
