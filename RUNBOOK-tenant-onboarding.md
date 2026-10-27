@@ -224,9 +224,21 @@ no-op, so mid-incident that message reads as "the revert failed" at the moment
 certainty matters most. Confirm either way:
 
 ```bash
-gh variable list --repo branchLeft/ghost-platform \
-  | grep TENANT_PROVISIONING_FLOW_HETZNERISED || echo CLOSED
+if out=$(gh variable list --repo branchLeft/ghost-platform); then
+  if printf '%s\n' "$out" | grep -q TENANT_PROVISIONING_FLOW_HETZNERISED; then
+    echo "OPEN: TENANT_PROVISIONING_FLOW_HETZNERISED is still set"
+  else
+    echo CLOSED
+  fi
+else
+  echo "COULD NOT CHECK: gh variable list failed. Do not read this as closed."
+fi
 ```
+
+The check fails closed: `CLOSED` prints only when `gh` succeeded and the name
+is absent. A failed `gh` (expired token, rate limit, network) prints
+`COULD NOT CHECK`, and the gate is then unconfirmed: retry the check before
+going further.
 
 The comparison is against the literal string `true`, so any other value is also
 closed — but delete it rather than setting `false`, so its absence and its
@@ -873,9 +885,19 @@ Undo in the reverse of the order things were made:
    ```bash
    gh variable delete TENANT_PROVISIONING_FLOW_HETZNERISED \
      --repo branchLeft/ghost-platform
-   gh variable list --repo branchLeft/ghost-platform \
-     | grep TENANT_PROVISIONING_FLOW_HETZNERISED || echo CLOSED
+   if out=$(gh variable list --repo branchLeft/ghost-platform); then
+     if printf '%s\n' "$out" | grep -q TENANT_PROVISIONING_FLOW_HETZNERISED; then
+       echo "OPEN: TENANT_PROVISIONING_FLOW_HETZNERISED is still set"
+     else
+       echo CLOSED
+     fi
+   else
+     echo "COULD NOT CHECK: gh variable list failed. Do not read this as closed."
+   fi
    ```
+
+   `CLOSED` prints only when the list succeeded and the name is absent. On
+   `COULD NOT CHECK`, the gate is unconfirmed: retry the check, do not record it.
 
    `gh: Not Found (HTTP 404)` on the delete means it was already closed.
 
