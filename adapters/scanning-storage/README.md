@@ -39,22 +39,56 @@ serves nothing until one arrives. It does **not** build:
   polls for that). `Policy.decide` can still return `'flag'`, for the
   advisory/text route, and the adapter fails loudly rather than guessing
   a behaviour if it ever sees one.
-- **A behaviour for video (`storage:media`) or arbitrary files
-  (`storage:files`).** PDQ is an image hash; the design names video as
-  undesigned. Which behaviour to build for either content type is an open
-  product decision for the platform owner, not made here. The decorator
-  class wraps any of the three storage
-  features identically, and `PdqKnownMaterialCheck` is attached unconditionally
-  regardless of which feature the instance services -- it is not
-  image-specific, it just hashes whatever bytes it is given. So configuring
-  `storage:media`/`storage:files` with this adapter today is **not**
-  structurally inert: a digest in `refuse` would be refused on video or an
-  arbitrary file exactly as on an image. It is harmless only because no
-  committed config wires media/files to this adapter and `refuse` defaults
-  to empty -- inert by absence of configuration, not by construction.
-  Nothing here chooses a *scanning* behaviour for video or files (no check
-  computes a video-appropriate hash, no policy is tuned for that content
-  type); the byte-hashing plumbing simply doesn't distinguish them.
+- **An automated check for video, audio or arbitrary files.** PDQ is an
+  image hash and no automated check for video or arbitrary files exists; it
+  is not built here, and no frame sampling or fingerprinting is designed.
+  What the decorator does with each kind of upload today is in "Kinds of
+  upload and tiers" below.
+
+## Kinds of upload and tiers
+
+The decorator wraps all three storage features (`storage:images`,
+`storage:media`, `storage:files`) identically, so it decides what an upload
+is from its bytes, never from its file name or declared type, and applies
+the same rule on every feature and through both `save()` and `saveRaw()`.
+`src/media-kind.js` recognises video and audio by container signature
+(`src/media-kind.md` lists the families and what is not recognised). One
+fact about the tier decides the rest: `storage__<feature>__tier`.
+
+| Upload | Demo | Hobbyist (entry) | Professional | Tier unknown or malformed |
+|---|---|---|---|---|
+| Image | existing check | existing check | existing check | existing check |
+| Non-video media (a video's poster image), arbitrary files, bytes the detector does not recognise | existing check | existing check | existing check | existing check |
+| Video or audio, recognised by container signature | refused, 415 | refused, 415 | accepted, stored, not scanned | refused, 415 |
+
+- **The existing check** is the blocking check, refusal records, policy and
+  hold path described in the rest of this file, unchanged in what it asks.
+  It looks up the digest of the bytes; it is not a video or audio scanner.
+  Nothing reaches the wrapped adapter except after an `allow`.
+- **A refused video or audio upload** is declined before anything is hashed,
+  looked up, checked, quarantined, held or written, so it asks no verdict
+  and leaves nothing behind. It is counted as
+  `scanning_storage_uploads_refused_total{reason="video-audio"}`
+  (`src/metrics.md`).
+- **A Professional video or audio upload** is stored as it arrived. Nothing
+  in this adapter scans it, and no metric or log line counts it as scanned
+  or clean. The control for that tier is the owner's own due diligence and
+  manual check-ins, by his ruling of 24 September 2026 (recorded in the
+  design document's amendment of that date), not anything in this code.
+- **The tier key.** Only the exact string `professional` accepts video and
+  audio (`src/tier-policy.md`). Unset, empty, a different case, a stray
+  space, a boolean, `entry`, `demo`, `hobbyist` or a typo all refuse, so a
+  mistake can only fail closed. It is read from boot config only.
+- **Not yet reachable.** render-core renders no `tier` key for any tenant or
+  demo, so every rendered configuration refuses video and audio on all three
+  features today. Accepting them on a Professional tenant needs a tier field
+  on the tenant descriptor and render-core rendering the key from it.
+- **What this does not cover.** A video in a container the detector does not
+  recognise is not refused: it is checked as bytes by the existing check
+  like any other file, which is not a video check. Arbitrary non-video files
+  have no tier policy of their own beyond the existing check. Theme files
+  are screened by `screenTree()` as before and are not treated as media
+  uploads.
 
 ## Theme uploads
 
@@ -183,8 +217,8 @@ The same keys apply under `storage__media__*` and `storage__files__*`.
 
 What is measured about the scanner, and the owner's service level targets,
 are in `SLO.md`.
-Wrapping `media`/`files` today only makes sense once a `Check` exists for
-that content type; until then it is configuration with no effect.
+`storage__<feature>__tier` is the one key that is not a row above: it decides
+whether video and audio are accepted (see "Kinds of upload and tiers").
 
 ## The seam
 
