@@ -1,5 +1,8 @@
 # session-from-token.js
 
+Documents Ghost's `session-from-token.js` as the image ships it: Ghost's own file with
+`session-from-token.patch` applied at build time (see `README.md`). No copy of the file is committed.
+
 ## SessionFromToken
 
 Returns a connect middleware function which exchanges a token for a session.
