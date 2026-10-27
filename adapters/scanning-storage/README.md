@@ -176,6 +176,8 @@ container, one block per storage feature (`images`, `media`, `files`):
 | `storage__images__holdRetryMs` | How often a held digest is first re-asked. Incidental, like the verdict budget in `checks.js` -- defaults to 2 seconds. |
 | `storage__images__holdMaxRetryMs` | The ceiling that interval backs off to on repeated non-answers -- a bound on the polling *rate* during a prolonged outage, never on how long a hold lives. Defaults to 60 seconds. |
 | `storage__images__holdMaxFailures` | How many consecutive retries may *fail* (a throw from the filesystem or the wrapped adapter, not a verdict that is still pending) before the hold is stuck. Defaults to 8. |
+| `storage__images__holdOrphanMinAgeMs` | How old quarantined bytes with no sidecar and no refusal record must be before they are logged and removed (see "The hold branch"). Defaults to 10 minutes; zero, negative or non-numeric values use the default. |
+| `storage__images__holdOrphanSweepIntervalMs` | How often that sweep runs after start-up. Defaults to 5 minutes. |
 | `storage__images__treeMaxEntries` | The most files and directories a theme tree may hold before it is declined unread (see "Theme uploads"). Read from the images feature only. Defaults to 5000. |
 | `storage__images__treeDeadlineMs` | How long a theme tree's verdicts may take in all before the tree is declined. Checked between files, so it overruns by at most one verdict timeout. Read from the images feature only. Defaults to 30000. |
 
@@ -310,7 +312,8 @@ event loop.
   match, else a `<digest>.releasing.*` copy is moved back, else they are
   rewritten from the buffer in hand.
 - `releaseBytes`, the only code that removes quarantined bytes (a hold's
-  last-owner promotion), has three. _Move aside_: rename `<digest>` to a
+  last-owner promotion, and the orphan sweep below, which removes through
+  it), has three. _Move aside_: rename `<digest>` to a
   unique `<digest>.releasing.<pid>.<random>`. _Check_: look for the record.
   _Finish_: if there is one, rename the copy back, otherwise unlink the
   copy. Only the aside name is ever unlinked.
@@ -371,6 +374,54 @@ logged once with the fixed prefix
 same line again rather than resuming it. To retry a stuck hold once its
 cause is fixed, remove that owner's `stuck` entry from the sidecar and
 restart Ghost.
+
+**Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
+between the two leaves bytes under `<digest>` with no sidecar and no
+refusal record. They were never served, but nothing would ever resume or
+remove them, and the sidecar was the only record of the target path they
+were held for, so they cannot be resumed either. The registry therefore
+sweeps them: once at start-up, right after the aside-copy sweep and before
+the adapter's constructor returns, and then every
+`holdOrphanSweepIntervalMs` on a timer that never keeps the process alive
+and that `stopAll` ends. A file is an orphan when it is a regular file
+whose name is not a dotfile (a live writer's temp file), an aside copy, a
+sidecar or a refusal record; it is older than `holdOrphanMinAgeMs`; and no
+sidecar of any owner and no refusal record sits beside it. Each removal is
+logged with the fixed prefix `ScanningStorageAdapter: orphaned quarantine
+bytes`, then the digest and the age. Nothing about the digest's shape is
+assumed: a name is classified by what it is not.
+
+Removing bytes nobody got a verdict on is the intended behaviour: they are
+unreachable, and a person who uploaded them has to upload again. A refusal's
+bytes and record are never touched: a sealed refusal is bytes and a record
+with no sidecar, so the record is what exempts them, and the sweep looks for
+it twice. The removal is `releaseBytes`' own protocol (move aside, check,
+then unlink the aside name) with one more thing checked after the move: if
+a sidecar or a record exists by then, the bytes are put back. Only presence
+counts, so a sidecar or record that cannot be read or stat-ed keeps the bytes
+and is logged. A failed sweep, at start-up or from the timer, is logged and
+never thrown.
+
+`HoldRegistry#hold` leaves bytes that already match their digest alone, so
+an old orphan could be swept between that check and the sidecar write, by
+this process or another. After the sidecar is written, `hold` therefore
+confirms the bytes are still there and matching, and writes them again if
+not. Once the sidecar exists no sweep removes them, so the two orders both
+end with the bytes and the sidecar. A sealer is covered by the same
+argument as a releaser: it writes the record before the bytes, so a sweep
+either sees the record and puts the bytes back, or moved them aside first
+and the sealer restores or rewrites them. `test/unit/cross-process.test.mjs`
+runs a sealer and a sweep as two real processes in all six orders, and
+kills a real `hold` between its two writes.
+
+The default age is 10 minutes. It has to be far larger than the longest a
+live writer can sit between its two writes: the write timeout is 60 seconds
+and the gap is otherwise a few file operations, so a live upload is never
+old enough to be swept, and the cost of a larger margin is only that a
+crash's leftover lingers a little longer. The default interval is 5
+minutes; a shorter one only finds an orphan sooner. Neither setting accepts
+zero, a negative or a non-numeric value: such a value falls back to the
+default, because an age of zero would sweep a live writer's bytes.
 
 ## What Ghost's extension point does, and the traps in it
 
