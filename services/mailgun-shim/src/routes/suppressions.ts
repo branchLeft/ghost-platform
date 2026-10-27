@@ -25,8 +25,8 @@ export function createSuppressionsRouter(store: ShimStore): Router {
       }
       next();
     },
-    tenantRateLimiter(60),
     requireTenantForDomain(store),
+    tenantRateLimiter(60),
     (req: Request, res: Response) => {
       const domain = req.params.domain as string;
       const type = req.params.type as SuppressionType;
