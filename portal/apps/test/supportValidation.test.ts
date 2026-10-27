@@ -15,7 +15,7 @@ const LINE_BREAK_SIBLINGS = [
   ['a paragraph separator (U+2029)', '\u2029'],
 ] as const;
 
-function refusalOf(run: () => unknown): SupportTicketRefusal | 'NOT_REFUSED' {
+function refusalOf(run: () => void): SupportTicketRefusal | 'NOT_REFUSED' {
   try {
     run();
   } catch (error) {

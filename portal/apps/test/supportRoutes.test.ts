@@ -4,6 +4,15 @@ import { ORG_A, ORG_B, TENANT_A, TENANT_B } from '../../data/test/helpers.js';
 import { reading } from './supportHarness.js';
 import { defineSupportRouteTests, VERSION_A, VERSION_B } from './supportRouteScenarios.js';
 
+type AnsweredMethod =
+  | 'scopeForOrganisation'
+  | 'ownRegistration'
+  | 'ownHealth'
+  | 'pendingAcceptances'
+  | 'currentDocuments'
+  | 'acceptances'
+  | 'upcomingSubprocessors';
+
 /**
  * A tenant data layer that answers from memory, so the route behaviour runs
  * with no database. It keys everything by the scope's tenant, as the real one
@@ -25,16 +34,16 @@ function inMemoryTenantDb(): TenantDb {
       }),
     ],
   ]);
-  const answers: Record<string, (...args: never[]) => unknown> = {
-    scopeForOrganisation: async (org: string) => {
+  const answers: Pick<TenantDb, AnsweredMethod> = {
+    scopeForOrganisation: async (org) => {
       const tenant = registered.get(org);
       return tenant === undefined ? null : bindTenant(tenant);
     },
-    ownRegistration: async (scope: { tenantId: string }) => ({
+    ownRegistration: async (scope) => ({
       tenantId: scope.tenantId,
       zitadelOrgId: 'org',
     }),
-    ownHealth: async (scope: { tenantId: string }) => readings.get(scope.tenantId) ?? null,
+    ownHealth: async (scope) => readings.get(scope.tenantId) ?? null,
     pendingAcceptances: async () => [],
     currentDocuments: async () => [],
     acceptances: async () => [],
@@ -43,9 +52,10 @@ function inMemoryTenantDb(): TenantDb {
   // The pool is never used: every method the portal calls here is answered above.
   return new Proxy(new TenantDb(new pg.Pool()), {
     get(_target, property) {
-      const answer = answers[String(property)];
-      if (answer === undefined) throw new TypeError(`no in-memory answer for ${String(property)}`);
-      return answer;
+      if (!Object.hasOwn(answers, property)) {
+        throw new TypeError(`no in-memory answer for ${String(property)}`);
+      }
+      return answers[property as AnsweredMethod];
     },
   });
 }

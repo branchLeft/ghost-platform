@@ -72,7 +72,7 @@ function build(overrides: { recipient?: string; sender?: string } = {}) {
 const ticket = (message = 'MESSAGE_TEXT', extra: Record<string, string> = {}) =>
   formOf({ contact: FAKE_CONTACT, message, ...extra });
 
-async function refusalOf(run: () => Promise<unknown>): Promise<string> {
+async function refusalOf(run: () => Promise<string>): Promise<string> {
   try {
     await run();
   } catch (error) {
