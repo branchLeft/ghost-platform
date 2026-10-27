@@ -3,12 +3,20 @@
 // recording-s3-double.cjs) and a Ghost container. Every resource carries the
 // branchleft.agent label so a leftover is attributable, and every teardown
 // removes its container with its anonymous volumes.
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
+
+export { docker, sleep };
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DOUBLE_SCRIPT = path.join(HERE, 'recording-s3-double.cjs');
@@ -18,12 +26,6 @@ export const SITE_URL = 'http://localhost:2368';
 const BOOT_TIMEOUT_MS = 90_000;
 const OWNER_EMAIL = 'owner@example.com';
 const OWNER_PASSWORD = crypto.randomBytes(24).toString('hex');
-
-export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-export function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
 
 export function dockerOk(...args) {
   return spawnSync('docker', args, { encoding: 'utf8' });
@@ -41,20 +43,15 @@ export function removeNetwork(name) {
   dockerOk('network', 'rm', name);
 }
 
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 export class RecordingDouble {
-  static async start(image, network, bucket) {
-    const s3Port = await freePort();
+  static start(image, network, bucket) {
+    return runStep('start recording double', () => RecordingDouble.#start(image, network, bucket), {
+      deadlineMs: 120_000,
+    });
+  }
+
+  static async #start(image, network, bucket) {
+    const s3Port = await reservePort();
     const name = uniqueName('contract-double');
     docker(
       'run',
@@ -140,8 +137,14 @@ export class GhostContainer {
   // host, so a fetch of its own pages and assets is the one remote fetch
   // allowed in production mode: that is how the inliner and oEmbed scenarios
   // run without development mode (which breaks uploads).
-  static async start(image, env, { network, volumes = [] }) {
-    const port = await freePort();
+  static start(image, env, options) {
+    return runStep('start Ghost container', () => GhostContainer.#start(image, env, options), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  static async #start(image, env, { network, volumes = [] }) {
+    const port = await reservePort();
     const name = uniqueName('contract-ghost');
     const fullEnv = {
       url: SITE_URL,
@@ -180,19 +183,12 @@ export class GhostContainer {
   }
 
   async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${this.base}/`);
-        if (res.status === 200) return true;
-      } catch {
-        // not listening yet
-      }
-      const state = dockerOk('inspect', '-f', '{{.State.Running}}', this.name).stdout?.trim();
-      if (state !== 'true') return false;
-      await sleep(500);
-    }
-    return false;
+    const result = await pollHttp200(`${this.base}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+    });
+    this.bootDetail = result.detail;
+    return result.ok;
   }
 
   logs() {

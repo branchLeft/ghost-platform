@@ -4,13 +4,19 @@
 // the README's "Tests" section.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
 import { buildThemeZip } from '../helpers/theme-zip.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -24,10 +30,6 @@ if (!IMAGE) {
 const OWNER_EMAIL = 'owner@example.com';
 const OWNER_PASSWORD = crypto.randomBytes(24).toString('hex');
 const BOOT_TIMEOUT_MS = 90_000;
-
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
 
 function dockerOk(...args) {
   return spawnSync('docker', args, { encoding: 'utf8' });
@@ -74,19 +76,6 @@ function reclaimHostOwnership(hostDir) {
   }
 }
 
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 function sha256Hex(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
@@ -100,8 +89,14 @@ class GhostContainer {
   // `network`: joins a shared, user-defined Docker network instead of the
   // default bridge -- see createNetwork's own comment for why that is what
   // makes the S3 tier's own container-to-container addressing portable.
-  static async start(env = {}, { volumes = [], network = 'bridge' } = {}) {
-    const port = await freePort();
+  static start(env = {}, options = {}) {
+    return runStep('start Ghost container', () => GhostContainer.#start(env, options), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  static async #start(env, { volumes = [], network = 'bridge' }) {
+    const port = await reservePort();
     const name = `scan-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const fullEnv = {
       url: `http://localhost:${port}`,
@@ -143,19 +138,12 @@ class GhostContainer {
   }
 
   async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${this.base}/`);
-        if (res.status === 200) return true;
-      } catch {
-        // not listening yet
-      }
-      const state = dockerOk('inspect', '-f', '{{.State.Running}}', this.name).stdout?.trim();
-      if (state !== 'true') return false;
-      await sleep(500);
-    }
-    return false;
+    const result = await pollHttp200(`${this.base}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+    });
+    this.bootDetail = result.detail;
+    return result.ok;
   }
 
   logs() {
@@ -303,8 +291,14 @@ class S3MockDouble {
   // to `network` (so a container on that same network, i.e. the Ghost
   // container under test, can reach it by name) at once -- Docker allows
   // both on the same container.
-  static async start(network) {
-    const port = await freePort();
+  static start(network) {
+    return runStep('start s3mock double', () => S3MockDouble.#start(network), {
+      deadlineMs: 300_000, // includes a registry pull of the mock's image
+    });
+  }
+
+  static async #start(network) {
+    const port = await reservePort();
     const name = `scan-s3mock-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     docker(
       'run',
@@ -399,7 +393,11 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
       });
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -488,7 +486,11 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
       });
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -553,7 +555,11 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
       });
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -644,7 +650,11 @@ describe('the scanning storage decorator, wrapping S3Storage', () => {
           { network }
         );
 
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -724,7 +734,11 @@ describe('the hold branch, against a real Ghost', () => {
       );
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -821,7 +835,11 @@ describe('the hold branch, against a real Ghost', () => {
       );
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -831,7 +849,11 @@ describe('the hold branch, against a real Ghost', () => {
         assert.equal(await ghost.getStatus(originalPath), 404, 'held before the restart');
 
         await ghost.restart();
-        assert.equal(ghost.booted, true, `ghost did not re-boot after restart:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not re-boot after restart (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
 
         // (a): still not served immediately after the restart -- the
         // quarantine bytes never left the served tree's absence, and a
@@ -971,7 +993,11 @@ describe('the hold branch, against a real Ghost', () => {
           }
         );
 
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -1055,7 +1081,11 @@ describe('a refusal in one feature, against a real Ghost', () => {
       );
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -1132,7 +1162,11 @@ describe('a theme upload, against a real Ghost', () => {
       const ghost = await GhostContainer.start(decoratorEnv());
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -1183,7 +1217,11 @@ describe('a theme upload, against a real Ghost', () => {
       );
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -1275,7 +1313,11 @@ describe('a theme upload, against a real Ghost', () => {
       );
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 
@@ -1324,7 +1366,11 @@ describe('a theme upload, against a real Ghost', () => {
       const ghost = await GhostContainer.start(decoratorEnv());
 
       try {
-        assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+        assert.equal(
+          ghost.booted,
+          true,
+          `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+        );
         await ghost.setupOwner();
         const cookie = await ghost.login();
 

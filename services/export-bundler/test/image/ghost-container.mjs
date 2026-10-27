@@ -1,36 +1,31 @@
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import http from 'node:http';
-import net from 'node:net';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+} from '../../../../test-support/image-harness.mjs';
+
+export { docker };
 
 export const SITE_URL = 'https://tenant.example.test';
 export const LABEL = 'branchleft.agent=export-reimport-image-test';
 const BOOT_TIMEOUT_MS = 120_000;
-
-export function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * One real Ghost container on its own throwaway SQLite database, reached the
  * way the edge would reach it: the tenant's own host name and https.
  */
 export class GhostContainer {
-  static async start() {
-    const port = await freePort();
+  static start() {
+    return runStep('start Ghost container', () => GhostContainer.#start(), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  static async #start() {
+    const port = await reservePort();
     const name = `export-reimport-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const env = {
       url: SITE_URL,
@@ -66,10 +61,11 @@ export class GhostContainer {
     );
     const container = new GhostContainer(name, port);
     docker('start', name);
-    if (!(await container.waitForHome())) {
+    const booted = await container.waitForHome();
+    if (!booted.ok) {
       const logs = container.logs();
       container.remove();
-      throw new Error(`Ghost did not boot: ${logs}`);
+      throw new Error(`Ghost did not boot (${booted.detail}): ${logs}`);
     }
     return container;
   }
@@ -79,18 +75,13 @@ export class GhostContainer {
     this.port = port;
   }
 
-  async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        if ((await this.request('GET', '/')).status === 200) return true;
-      } catch {
-        // not listening yet
-      }
-      if (docker('inspect', '-f', '{{.State.Running}}', this.name).trim() !== 'true') return false;
-      await sleep(500);
-    }
-    return false;
+  // Through the tenant's own host name, so it goes by request(), not a bare fetch.
+  waitForHome() {
+    return pollHttp200(`http://127.0.0.1:${this.port}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+      probe: (signal) => this.request('GET', '/', undefined, {}, signal).then((res) => res.status),
+    });
   }
 
   logs() {
@@ -102,7 +93,7 @@ export class GhostContainer {
   }
 
   /** A raw request; `body` is a Buffer/string sent as is, or an object sent as JSON. */
-  request(method, path, body, headers = {}) {
+  request(method, path, body, headers = {}, signal) {
     return new Promise((resolve, reject) => {
       const isJson = body !== undefined && !Buffer.isBuffer(body) && typeof body !== 'string';
       const payload = isJson ? JSON.stringify(body) : body;
@@ -112,6 +103,7 @@ export class GhostContainer {
           port: this.port,
           method,
           path,
+          signal,
           headers: {
             ...(isJson ? { 'content-type': 'application/json' } : {}),
             host: new URL(SITE_URL).host,

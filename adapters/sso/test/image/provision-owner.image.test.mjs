@@ -8,10 +8,15 @@
 //   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import http from 'node:http';
-import net from 'node:net';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
 import { decodeMail, SmtpSink } from '../helpers/smtp-sink.mjs';
 import { OwnerProvisionRefusedError, provisionOwner } from '../../scripts/provision-owner.mjs';
 
@@ -26,26 +31,15 @@ const VISITOR_EMAIL = 'visitor@example.test';
 const BOOT_TIMEOUT_MS = 90_000;
 const LABEL = 'branchleft.agent=provision-owner-image-test';
 
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 class GhostContainer {
-  static async start(smtpPort) {
-    const port = await freePort();
+  static start(smtpPort) {
+    return runStep('start Ghost container', () => GhostContainer.#start(smtpPort), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  static async #start(smtpPort) {
+    const port = await reservePort();
     const name = `provision-owner-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const env = {
       url: SITE_URL,
@@ -85,7 +79,8 @@ class GhostContainer {
     );
     const container = new GhostContainer(name, port);
     docker('start', name);
-    assert.ok(await container.waitForHome(), `Ghost did not boot: ${container.logs()}`);
+    const booted = await container.waitForHome();
+    assert.ok(booted.ok, `Ghost did not boot (${booted.detail}): ${container.logs()}`);
     return container;
   }
 
@@ -94,19 +89,13 @@ class GhostContainer {
     this.port = port;
   }
 
-  async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        const res = await this.request('GET', '/');
-        if (res.status === 200) return true;
-      } catch {
-        // not listening yet
-      }
-      if (docker('inspect', '-f', '{{.State.Running}}', this.name).trim() !== 'true') return false;
-      await sleep(500);
-    }
-    return false;
+  // Through the tenant's own host name, so it goes by request(), not a bare fetch.
+  waitForHome() {
+    return pollHttp200(`http://127.0.0.1:${this.port}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+      probe: (signal) => this.request('GET', '/', undefined, {}, signal).then((res) => res.status),
+    });
   }
 
   logs() {
@@ -119,7 +108,7 @@ class GhostContainer {
 
   // The request an outsider's browser would make, as the proxy would
   // forward it: the tenant's own host name and https.
-  request(method, path, body, extraHeaders = {}) {
+  request(method, path, body, extraHeaders = {}, signal) {
     return new Promise((resolve, reject) => {
       const req = http.request(
         {
@@ -127,6 +116,7 @@ class GhostContainer {
           port: this.port,
           method,
           path,
+          signal,
           headers: {
             'content-type': 'application/json',
             host: new URL(SITE_URL).host,

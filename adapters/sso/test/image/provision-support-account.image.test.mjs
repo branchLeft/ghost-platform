@@ -8,9 +8,14 @@
 //   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import net from 'node:net';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+} from '../../../../test-support/image-harness.mjs';
 import { claimsFor, generateKeyPair, mint } from '../helpers/token.mjs';
 import {
   ActiveExistingRowError,
@@ -30,26 +35,15 @@ const ACTIVE_SUPPORT = 'support-active-complete@platform.example';
 const BOOT_TIMEOUT_MS = 90_000;
 const key = generateKeyPair();
 
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 class GhostContainer {
-  static async start() {
-    const port = await freePort();
+  static start() {
+    return runStep('start Ghost container', () => GhostContainer.#start(), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  static async #start() {
+    const port = await reservePort();
     const name = `provision-support-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const env = {
       url: `http://localhost:${port}`,
@@ -90,19 +84,12 @@ class GhostContainer {
   }
 
   async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${this.base}/`);
-        if (res.status === 200) return true;
-      } catch {
-        // not listening yet
-      }
-      const state = docker('inspect', '-f', '{{.State.Running}}', this.name).trim();
-      if (state !== 'true') return false;
-      await sleep(500);
-    }
-    return false;
+    const result = await pollHttp200(`${this.base}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+    });
+    this.bootDetail = result.detail;
+    return result.ok;
   }
 
   sql(statement, ...params) {
@@ -144,7 +131,7 @@ let ghost;
 
 before(async () => {
   ghost = await GhostContainer.start();
-  assert.equal(ghost.booted, true, 'Ghost failed to boot');
+  assert.equal(ghost.booted, true, `Ghost failed to boot (${ghost.bootDetail})`);
 });
 
 after(() => {

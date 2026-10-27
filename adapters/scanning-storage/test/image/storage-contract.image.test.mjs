@@ -151,7 +151,7 @@ describe('the storage request contract, against the real Ghost image', () => {
         volumes: [{ host: resolveDir, container: '/var/lib/ghost/content/verdict-resolve' }],
       }
     );
-    assert.equal(ghost.booted, true, `ghost did not boot:\n${ghost.logs()}`);
+    assert.equal(ghost.booted, true, `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`);
     await ghost.setupOwner();
     await ghost.login();
   });
