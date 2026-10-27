@@ -81,8 +81,8 @@ export function createEventsRouter(store: ShimStore): Router {
   };
 
   const limiter = tenantRateLimiter(120);
-  router.get('/v3/:domain/events', limiter, requireTenantForDomain(store), handler);
-  router.get('/v3/:domain/events/:cursor', limiter, requireTenantForDomain(store), handler);
+  router.get('/v3/:domain/events', requireTenantForDomain(store), limiter, handler);
+  router.get('/v3/:domain/events/:cursor', requireTenantForDomain(store), limiter, handler);
 
   return router;
 }
