@@ -149,6 +149,7 @@ describe('--migrate-only on a real server', () => {
       'pre-check passed: no difference from the manifest',
       'applied migration 0003_versioned_documents',
       'applied migration 0004_moderation_setting',
+      'applied migration 0005_moderation_item',
       'post-check passed: the server matches the manifest',
       'portal database migrated',
     ]);

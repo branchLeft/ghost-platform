@@ -11,6 +11,7 @@ import {
   foreignKey,
   text,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -238,6 +239,86 @@ export const moderationSetting = portal
         'moderation_setting_sensitivity_known',
         sql`${table.sensitivity} IN (${sql.raw(sqlList(SENSITIVITIES))})`
       ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/** What a queue item is about; the content itself is never stored. */
+export const SUBJECT_KINDS = ['comment', 'post'] as const;
+export type SubjectKind = (typeof SUBJECT_KINDS)[number];
+
+/** Where a queue item stands. A new item is held; the other states are set by later work. */
+export const ITEM_STATUSES = ['held', 'released', 'removed', 'expired'] as const;
+export type ItemStatus = (typeof ITEM_STATUSES)[number];
+
+/** Whether a classifier's floor is mandatory or the tenant's own setting applied. */
+export const CLASSIFIER_STATES = ['floor', 'setting'] as const;
+export type ClassifierState = (typeof CLASSIFIER_STATES)[number];
+
+/** One classifier's verdict on the held subject: a name and a score, no text. */
+export interface StoredClassifier {
+  name: string;
+  confidence: number;
+  state: ClassifierState;
+}
+
+/**
+ * The shape every reference stored in the queue must have (Ghost ids, member
+ * ids, the deciding party). Letters, digits and four punctuation marks, at
+ * most 64 characters: a sentence of comment text cannot be written into a
+ * column that holds it. Mirrored in the table's constraints.
+ */
+export const REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]{1,64}$';
+
+/**
+ * A tenant's moderation queue: one row per held subject, a reference to the
+ * content in the tenant's own Ghost and the safety service's decision about
+ * it. It never holds the comment text, the member's display name or the post;
+ * those are fetched live when an item is opened. Isolated like every tenant
+ * table; a tenant inserts and reads, and nothing here updates or deletes yet.
+ */
+export const moderationItem = portal
+  .table(
+    'moderation_item',
+    {
+      id: uuid('id').primaryKey().defaultRandom(),
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      subjectKind: text('subject_kind').notNull(),
+      subjectId: text('subject_id').notNull(),
+      memberId: text('member_id').notNull(),
+      classifiers: jsonb('classifiers').$type<StoredClassifier[]>().notNull(),
+      status: text('status').notNull(),
+      decidedBy: text('decided_by').notNull(),
+      decidedAt: timestamp('decided_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      unique('moderation_item_subject_unique').on(
+        table.tenantId,
+        table.subjectKind,
+        table.subjectId
+      ),
+      check(
+        'moderation_item_subject_kind_known',
+        sql`${table.subjectKind} IN (${sql.raw(sqlList(SUBJECT_KINDS))})`
+      ),
+      check(
+        'moderation_item_status_known',
+        sql`${table.status} IN (${sql.raw(sqlList(ITEM_STATUSES))})`
+      ),
+      check(
+        'moderation_item_references_bounded',
+        sql`${table.subjectId} ~ ${sql.raw(`'${REFERENCE_PATTERN}'`)} AND ${table.memberId} ~ ${sql.raw(`'${REFERENCE_PATTERN}'`)} AND ${table.decidedBy} ~ ${sql.raw(`'${REFERENCE_PATTERN}'`)}`
+      ),
+      check('moderation_item_classifiers_array', sql`jsonb_typeof(${table.classifiers}) = 'array'`),
       pgPolicy('tenant_isolation', {
         as: 'permissive',
         for: 'all',

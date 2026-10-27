@@ -78,6 +78,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0002_health_reading',
       'applied migration 0003_versioned_documents',
       'applied migration 0004_moderation_setting',
+      'applied migration 0005_moderation_item',
       'post-check passed: the server matches the manifest',
       'boundary verified',
       'portal database provisioned',
@@ -101,6 +102,12 @@ describe('the provisioning lifecycle', () => {
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'UPDATE')).toBe(true);
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.moderation_setting', 'SELECT')).toBe(false);
+    // A tenant holds and reads its own queue items; nothing changes or deletes one yet.
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'INSERT')).toBe(true);
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'SELECT')).toBe(true);
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'UPDATE')).toBe(false);
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'DELETE')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.moderation_item', 'SELECT')).toBe(false);
     // A bare login session, with no SET ROLE, holds nothing in the portal schema.
     expect(await privilege(TENANT, 'portal.tenant_register', 'SELECT')).toBe(false);
   });
@@ -153,7 +160,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 6 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 7 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 

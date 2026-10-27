@@ -27,14 +27,27 @@ import {
   type Sensitivity,
 } from '../moderation.js';
 import {
+  InvalidQueueItemError,
+  deriveQueueItem,
+  validateHold,
+  type ContentSource,
+  type HoldRequest,
+  type ItemStatus,
+  type OpenedItem,
+  type QueueItemView,
+} from '../moderationQueue.js';
+import {
   documentAcceptance,
   documentVersion,
   healthReading,
+  moderationItem,
   moderationSetting,
   tenantRegister,
 } from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
 import { bindTenant, type TenantScope } from './scope.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface TenantRegistration {
   tenantId: string;
@@ -273,6 +286,101 @@ export class TenantDb {
           });
       }
     });
+  }
+
+  /**
+   * Stores a held classification as a queue item for the bound tenant. Only
+   * references and scores are accepted (`InvalidQueueItemError` otherwise),
+   * the tenant is the scope's, and a subject already in the queue is returned
+   * as it stands rather than duplicated or overwritten.
+   */
+  async holdItem(scope: TenantScope, request: HoldRequest, now: Date): Promise<QueueItemView> {
+    validateHold(request);
+    const row = await this.run(scope, async (tx) => {
+      const inserted = await tx
+        .insert(moderationItem)
+        .values({
+          tenantId: scope.tenantId,
+          subjectKind: request.subjectKind as 'comment' | 'post',
+          subjectId: request.subjectId,
+          memberId: request.memberId,
+          classifiers: request.classifiers.map((c) => ({
+            name: c.name,
+            confidence: c.confidence,
+            state: c.state,
+          })),
+          status: 'held',
+          decidedBy: request.decidedBy,
+          decidedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted[0]) return inserted[0];
+      const existing = await tx
+        .select()
+        .from(moderationItem)
+        .where(
+          and(
+            eq(moderationItem.subjectKind, request.subjectKind),
+            eq(moderationItem.subjectId, request.subjectId)
+          )
+        );
+      return existing[0];
+    });
+    if (!row) throw new InvalidQueueItemError('the item could not be stored');
+    return deriveQueueItem(row);
+  }
+
+  /** The bound tenant's queue items, newest decision first; optionally one status only. */
+  async moderationItems(scope: TenantScope, status?: ItemStatus): Promise<QueueItemView[]> {
+    const rows = await this.run(scope, (tx) =>
+      tx
+        .select()
+        .from(moderationItem)
+        .where(status ? eq(moderationItem.status, status) : undefined)
+        .orderBy(desc(moderationItem.decidedAt), asc(moderationItem.id))
+    );
+    return rows.map(deriveQueueItem);
+  }
+
+  /** One of the bound tenant's items, or null: another tenant's id is simply absent. */
+  async moderationItem(scope: TenantScope, id: string): Promise<QueueItemView | null> {
+    if (!UUID.test(id)) return null;
+    const rows = await this.run(scope, (tx) =>
+      tx.select().from(moderationItem).where(eq(moderationItem.id, id))
+    );
+    return rows[0] ? deriveQueueItem(rows[0]) : null;
+  }
+
+  /**
+   * Opens an item: the stored decision plus the content fetched from the
+   * tenant's own Ghost now. Nothing fetched is written anywhere; content
+   * Ghost no longer has comes back as `gone`, which is a result, not an error.
+   * The fetch runs after the read transaction has closed.
+   */
+  async openModerationItem(
+    scope: TenantScope,
+    id: string,
+    source: ContentSource
+  ): Promise<OpenedItem | null> {
+    const item = await this.moderationItem(scope, id);
+    if (!item) return null;
+    const live = await source.fetch({
+      tenantId: scope.tenantId,
+      subjectKind: item.subjectKind,
+      subjectId: item.subjectId,
+      memberId: item.memberId,
+    });
+    if (!live) return { item, content: { state: 'gone' } };
+    return {
+      item,
+      content: {
+        state: 'present',
+        text: live.text,
+        memberDisplayName: live.memberDisplayName,
+        postTitle: live.postTitle,
+      },
+    };
   }
 
   /**
