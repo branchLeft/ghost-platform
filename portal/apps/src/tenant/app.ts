@@ -10,6 +10,8 @@ import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
 import { moderationBody, saveModeration, type TenantKind } from './moderationSettings.js';
+import type { SupportSettings } from './supportMailer.js';
+import { createSupportRoutes } from './supportRoutes.js';
 
 export interface TenantPortalOptions {
   readonly issuer: string;
@@ -29,6 +31,8 @@ export interface TenantPortalOptions {
   readonly onError?: (line: string) => void;
   /** The tenant's kind. Absent or unrecognised is a demo; a throw makes the page answer 500 FAILED. */
   readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind | string>;
+  /** Absent, there is no support page, no support action and no navigation entry. */
+  readonly support?: SupportSettings;
 }
 
 /**
@@ -50,6 +54,9 @@ export function createTenantPortal(options: TenantPortalOptions) {
   });
   const now = (): Date =>
     new Date((options.clock ?? (() => Math.floor(Date.now() / 1000)))() * 1000);
+  const support = createSupportRoutes(options.support, options.db, () =>
+    Math.floor(now().getTime() / 1000)
+  );
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -63,6 +70,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      ...support.nav,
     ],
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
@@ -77,11 +85,14 @@ export function createTenantPortal(options: TenantPortalOptions) {
       const pending = await options.db.pendingAcceptances(scope, now());
       const notice =
         pending.length === 0 ? '' : '<p><a href="/documents">DOCUMENTS_AWAIT_ACCEPTANCE</a></p>';
-      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}`;
+      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}${support.linkFrom('HOME')}`;
     },
     pages: {
-      '/moderation': (scope) =>
-        moderationBody(scope, options.tenantKind, (bound) => options.db.moderationSettings(bound)),
+      ...support.pages,
+      '/moderation': async (scope) =>
+        (await moderationBody(scope, options.tenantKind, (bound) =>
+          options.db.moderationSettings(bound)
+        )) + support.linkFrom('MODERATION'),
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([
@@ -90,15 +101,18 @@ export function createTenantPortal(options: TenantPortalOptions) {
           options.db.acceptances(scope),
           options.db.upcomingSubprocessors(scope, at),
         ]);
-        return renderDocuments(
-          documents,
-          new Set(pending.map((d) => `${d.kind}:${d.version}`)),
-          accepted,
-          upcoming
+        return (
+          renderDocuments(
+            documents,
+            new Set(pending.map((d) => `${d.kind}:${d.version}`)),
+            accepted,
+            upcoming
+          ) + support.linkFrom('DOCUMENTS')
         );
       },
     },
     actions: {
+      ...support.actions,
       '/moderation/save': async (scope, identity, form) => {
         await saveModeration({
           scope,

@@ -79,7 +79,9 @@ describe('the message', () => {
   });
 
   it('is bounded: the limit is accepted and one more is refused', () => {
-    expect(validateMessage('m'.repeat(MAX_MESSAGE_CHARACTERS))).toHaveLength(MAX_MESSAGE_CHARACTERS);
+    expect(validateMessage('m'.repeat(MAX_MESSAGE_CHARACTERS))).toHaveLength(
+      MAX_MESSAGE_CHARACTERS
+    );
     expect(refusalOf(() => validateMessage('m'.repeat(MAX_MESSAGE_CHARACTERS + 1)))).toBe(
       'MESSAGE_TOO_LONG'
     );
