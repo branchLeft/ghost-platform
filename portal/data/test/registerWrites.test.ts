@@ -129,6 +129,9 @@ describe('the register policy, with the writes granted for the test', () => {
     });
   });
 
+  // An update that names columns in its WHERE also needs the policy's USING to
+  // pass on the new row, so this holds the policy as a whole; the insert above is
+  // the case only the WITH CHECK answers.
   it('refuses an update that moves its own row to another tenant, by the policy', async () => {
     await withRegisterWrites(async () => {
       const error = await rejection(
