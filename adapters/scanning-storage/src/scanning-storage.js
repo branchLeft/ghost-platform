@@ -257,6 +257,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       const WrappedClass = loadWrappedAdapterClass(wraps);
       this.wrapped = new WrappedClass(wrappedConfig);
       this.storagePath = this.wrapped.storagePath;
+      // Ghost's content importer reads this to name imported files, so it must
+      // match the wrapped adapter.
+      this.staticFileURLPrefix = this.wrapped.staticFileURLPrefix;
       this.quarantinePath = config.quarantinePath;
       this.wrappedConfig = wrappedConfig || {};
       // Only the checks that may refuse ever run here: an advisory check
