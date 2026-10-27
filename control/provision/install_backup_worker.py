@@ -26,10 +26,14 @@ import backup_recipients  # noqa: E402
 SERVICE_USER = "backup-worker"
 SERVICE_UNIT = "branchleft-backup-worker.service"
 TIMER_UNIT = "branchleft-backup-worker.timer"
-UNIT_FILES = (SERVICE_UNIT, TIMER_UNIT)
+# The first dump of a newly enrolled tenant: copied into place so that
+# enrol_tenant_backup.py can start an instance, but never enabled or started here.
+FIRST_DUMP_UNIT_TEMPLATE = "branchleft-backup-worker-first-dump@.service"
+UNIT_FILES = (SERVICE_UNIT, TIMER_UNIT, FIRST_DUMP_UNIT_TEMPLATE)
 
-# Everything the loop imports or loads by path at run time, relative to a
-# release root. backup_worker.py resolves db/provision/ from its own location.
+# Everything the loop and the enrolment entry point import or load by path at
+# run time, relative to a release root. backup_worker.py resolves db/provision/
+# from its own location; restore_drill.py loads db/recovery/restore_drained.py.
 REQUIRED_RELEASE_FILES = (
     "infra/provisioning/scripts/nightly_dump_loop.py",
     "infra/provisioning/scripts/backup_worker.py",
@@ -43,8 +47,13 @@ REQUIRED_RELEASE_FILES = (
     "db/provision/dump_tenant.py",
     "db/provision/naming.py",
     "db/provision/objectstorage.py",
+    "infra/provisioning/scripts/enrol_tenant_backup.py",
+    "infra/provisioning/scripts/restore_drill.py",
+    "db/recovery/restore_drained.py",
+    "control/provision/install_backup_worker.py",
     "control/provision/branchleft-backup-worker.service",
     "control/provision/branchleft-backup-worker.timer",
+    f"control/provision/{FIRST_DUMP_UNIT_TEMPLATE}",
 )
 
 # The names nightly_dump_loop.main() and backup_worker's required copy read.

@@ -71,6 +71,18 @@ can never drift into writing a metric two different ways. See
 including the lock-wait gauge's proxy nature under
 `RemoteMysqldumpTransport`, the real transport both callers now share.
 
+## Enrolling a tenant
+
+A tenant is added to this loop by `enrol_tenant_backup.py`, run once as root
+on the control host with the tenant's slug and its own stack file. It mints
+the tenant's age key, keeps the private half in the identity directory the
+restore drill reads and, encrypted, in a private spare bucket, adds the
+tenant to the tenants and recipients files, and has the first dump taken by
+`branchleft-backup-worker-first-dump@<tenant>.service`, which runs this
+loop's `--tenant` form as the service account. The enrolment itself never
+dumps and never creates a run-lock or metrics file. See
+`enrol_tenant_backup.md` for the order, the exit codes and what is checked.
+
 ## Where it runs
 
 The loop runs on the control host, under `branchleft-backup-worker.timer`,
