@@ -8,6 +8,13 @@ import {
 } from '../src/tenant/supportValidation.js';
 import { SupportTicketError, type SupportTicketRefusal } from '../src/tenant/supportTicketError.js';
 
+/** Characters other than CR and LF that some mail software also treats as a line end. */
+const LINE_BREAK_SIBLINGS = [
+  ['a next line (U+0085)', '\u0085'],
+  ['a line separator (U+2028)', '\u2028'],
+  ['a paragraph separator (U+2029)', '\u2029'],
+] as const;
+
 function refusalOf(run: () => unknown): SupportTicketRefusal | 'NOT_REFUSED' {
   try {
     run();
@@ -33,6 +40,16 @@ describe('the contact address', () => {
   ])('is refused with %s', (_name, value) => {
     expect(refusalOf(() => validateContact(value))).toBe('INVALID_CONTACT');
   });
+
+  it.each(LINE_BREAK_SIBLINGS)(
+    'is refused with %s, in the middle or trailing, which trimming must not hide',
+    (_name, character) => {
+      expect(refusalOf(() => validateContact(`a@example.org${character}bcc: x@example.org`))).toBe(
+        'INVALID_CONTACT'
+      );
+      expect(refusalOf(() => validateContact(`a@example.org${character}`))).toBe('INVALID_CONTACT');
+    }
+  );
 
   it.each([
     ['no @', 'example.org'],
@@ -108,5 +125,9 @@ describe('a header value', () => {
     ['nothing', ''],
   ])('is refused with %s', (_name, value) => {
     expect(refusalOf(() => assertHeaderValue(value))).toBe('INVALID_HEADER_VALUE');
+  });
+
+  it.each(LINE_BREAK_SIBLINGS)('is refused with %s', (_name, character) => {
+    expect(refusalOf(() => assertHeaderValue(`A${character}B`))).toBe('INVALID_HEADER_VALUE');
   });
 });

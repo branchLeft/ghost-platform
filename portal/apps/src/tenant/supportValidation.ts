@@ -11,7 +11,9 @@ export const MAX_CONTACT_LENGTH = 254;
  */
 export const MAX_MESSAGE_CHARACTERS = 1000;
 
-const LINE_BREAK_OR_NUL = /[\r\n\0]/;
+// CR and LF end a header line; NUL truncates one; U+0085, U+2028 and U+2029 are
+// line ends to some mail software and Unicode-aware parsers.
+const LINE_BREAK_OR_NUL = /[\r\n\0\u0085\u2028\u2029]/;
 const NOT_IN_AN_ADDRESS = /[\s,;<>"\\]/;
 
 /**
@@ -55,7 +57,7 @@ export function validateMessage(raw: string): string {
 /**
  * A mail header value must be one non-empty line.
  *
- * @throws {SupportTicketError} INVALID_HEADER_VALUE for an empty value or a CR, LF or NUL.
+ * @throws {SupportTicketError} INVALID_HEADER_VALUE for an empty value, a line break or a NUL.
  */
 export function assertHeaderValue(value: string): void {
   if (value === '' || LINE_BREAK_OR_NUL.test(value)) {

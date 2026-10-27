@@ -52,7 +52,7 @@ The portal does not choose a transport. `createTenantPortal` takes an optional
 (`send(message)`, in `src/tenant/supportMailer.ts`), and `recipient` and `sender`
 are injected addresses, never literals in source. Without it there is no
 `/support*` page or action (all answer 404), no navigation item and no link: the
-portal is as it was. An injected address that is empty or holds a CR, LF or NUL
+portal is as it was. An injected address that is empty or holds a line break or NUL
 stops the portal being built. `src/tenant/main.ts` does not wire a mailer yet,
 so the page is absent until a later change injects one.
 
@@ -86,8 +86,8 @@ navigation, and each form posts to its own send path (for example
 `/support/home/send`). The action for a send path knows its screen from the
 table; nothing about it is read from the request.
 
-Header injection is closed: the contact address is refused if it holds a CR, LF
-or NUL (checked before trimming) or is not one plausible address (one `@`, no
+Header injection is closed: the contact address is refused if it holds a line break
+(CR, LF, U+0085, U+2028 or U+2029) or a NUL (checked before trimming) or is not one plausible address (one `@`, no
 whitespace, comma, semicolon, angle bracket, quote or backslash, at most 254
 characters), and every header value (to, from, reply-to, subject) is checked
 again before the mailer is called. The message is trimmed, refused when empty,
