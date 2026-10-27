@@ -41,12 +41,8 @@ const STATE_VERSION = 1;
  * id is skipped, only re-acked. Bounded by a TTL long enough to outlast a
  * plausible re-offer window.
  *
- * With `statePath` the ids survive a restart. The caller marks an id only
- * after mx1 accepts it, never before: marking first would turn a crash
- * between the mark and the SMTP accept into a message that is skipped and
- * acked without ever having been sent. The residual window -- a crash
- * after mx1 accepts and before the mark is on disk -- can still produce one
- * duplicate; it is the cost of not losing mail.
+ * With `statePath` the ids survive a restart. The write-after-accept ordering
+ * and its residual duplicate window are in ../README.md (dedupe, state file).
  * See ../README.md#dedupe-createsubmittedtracker.
  */
 export function createSubmittedTracker(
