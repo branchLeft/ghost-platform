@@ -12,6 +12,7 @@ const GhostErrors = require('@tryghost/errors');
 const { defineScanningStorageAdapter } = require('./scanning-storage');
 const { createPdqKnownMaterialCheck } = require('./checks');
 const { resolveVerdictSource } = require('./verdict-source');
+const { resolveTierPolicy } = require('./tier-policy');
 const { SafetyPolicy } = require('./policy');
 const { getProcessMetrics, configureProcessExport } = require('./metrics');
 const { digestBytes } = require('./pdq');
@@ -54,6 +55,7 @@ module.exports = class ScanningStorageAdapter extends Adapter {
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,
       refuseUploadsReason,
+      allowVideoAudio: resolveTierPolicy(config).allowVideoAudio,
       holdRetryMs: config.holdRetryMs ? Number(config.holdRetryMs) : undefined,
       holdMaxRetryMs: config.holdMaxRetryMs ? Number(config.holdMaxRetryMs) : undefined,
       holdMaxFailures: config.holdMaxFailures ? Number(config.holdMaxFailures) : undefined,

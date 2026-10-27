@@ -10,7 +10,9 @@ const {
   buildScannerUnconfiguredError,
   buildVerdictPendingError,
   buildUncheckableError,
+  buildVideoAudioRefusedError,
 } = require('./refusal-error');
+const { detectVideoAudioFamily } = require('./media-kind');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const {
   HoldRegistry,
@@ -235,6 +237,10 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         typeof config.refuseUploadsReason === 'string' && config.refuseUploadsReason.length > 0
           ? config.refuseUploadsReason
           : null;
+      // Set by the entry file from the tier. Only the boolean true accepts
+      // video and audio, so a decorator built without the option, or with
+      // any other value, refuses them. See tier-policy.md.
+      this.allowVideoAudio = config.allowVideoAudio === true;
       this.logger = config.holdLogger || console;
       this.metrics =
         config.metrics && typeof config.metrics.recordRefusal === 'function'
@@ -458,12 +464,16 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           throw buildVerdictPendingError(GhostErrors);
         }
         const buffer = await fs.readFile(filePath);
-        await this.#scanAndProceed(buffer, {
-          proceed: async () => {},
-          onHold: async () => {
-            throw buildVerdictPendingError(GhostErrors);
+        await this.#scanAndProceed(
+          buffer,
+          {
+            proceed: async () => {},
+            onHold: async () => {
+              throw buildVerdictPendingError(GhostErrors);
+            },
           },
-        });
+          { isMediaUpload: false }
+        );
       }
     }
 
@@ -525,7 +535,42 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       return expiresAt > Date.now();
     }
 
-    async #scanAndProceed(buffer, { proceed, onHold }) {
+    // Video and audio have no automated check, so what they are decides
+    // their fate before any hashing, record lookup, check, quarantine write
+    // or hold. Decided from the bytes alone, whichever feature or entry point
+    // carried them. A tier that accepts them stores them unchecked: nothing
+    // here records a verdict or says they were scanned (see tier-policy.md).
+    #decideVideoAudio(family, proceed) {
+      if (this.allowVideoAudio) {
+        return this.#proceedWithWriteTimeout(proceed);
+      }
+      if (this.metrics) {
+        this.metrics.recordRefusal('video-audio');
+      }
+      this.logger.error(
+        `ScanningStorageAdapter: UPLOAD_REFUSED_VIDEO_AUDIO wraps=${this.wrapsName} family=${family}`
+      );
+      throw buildVideoAudioRefusedError(GhostErrors);
+    }
+
+    async #proceedWithWriteTimeout(proceed) {
+      try {
+        return await withWriteTimeout(proceed(), this.writeTimeoutMs);
+      } catch (err) {
+        if (isWriteTimeoutError(err)) {
+          this.logger.error(REQUEST_WRITE_TIMEOUT_LOG_PREFIX, err);
+        }
+        throw err;
+      }
+    }
+
+    // `isMediaUpload` is false only for a theme tree, whose files are served
+    // as theme assets and are not uploads to a media feature.
+    async #scanAndProceed(buffer, { proceed, onHold }, { isMediaUpload = true } = {}) {
+      const videoAudioFamily = isMediaUpload ? detectVideoAudioFamily(buffer) : null;
+      if (videoAudioFamily !== null) {
+        return this.#decideVideoAudio(videoAudioFamily, proceed);
+      }
       // A digest any feature has refused stays refused here too, whatever a
       // verdict would say now: positive verdicts never expire.
       const digest = this.computeDigest(buffer);
@@ -551,14 +596,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           }
           throw buildRefusalError(GhostErrors, sealedSince);
         }
-        try {
-          return await withWriteTimeout(proceed(), this.writeTimeoutMs);
-        } catch (err) {
-          if (isWriteTimeoutError(err)) {
-            this.logger.error(REQUEST_WRITE_TIMEOUT_LOG_PREFIX, err);
-          }
-          throw err;
-        }
+        return this.#proceedWithWriteTimeout(proceed);
       }
 
       if (decision === 'refuse') {
