@@ -51,6 +51,8 @@ services:
       storage__images__adapter: 'ScanningStorageAdapter'
       storage__images__wraps: 'S3Storage'
       storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__images__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__images__metricsTenant: 'pro-co'
       storage__images__wrappedConfig__bucket: 'branchleft-media-pro-co'
       storage__images__wrappedConfig__region: 'eu'
       storage__images__wrappedConfig__endpoint: 'https://s3.endpoint.example'
@@ -62,6 +64,8 @@ services:
       storage__media__adapter: 'ScanningStorageAdapter'
       storage__media__wraps: 'S3Storage'
       storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__media__metricsTenant: 'pro-co'
       storage__media__wrappedConfig__bucket: 'branchleft-media-pro-co'
       storage__media__wrappedConfig__region: 'eu'
       storage__media__wrappedConfig__endpoint: 'https://s3.endpoint.example'
@@ -73,6 +77,8 @@ services:
       storage__files__adapter: 'ScanningStorageAdapter'
       storage__files__wraps: 'S3Storage'
       storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__files__metricsTenant: 'pro-co'
       storage__files__wrappedConfig__bucket: 'branchleft-media-pro-co'
       storage__files__wrappedConfig__region: 'eu'
       storage__files__wrappedConfig__endpoint: 'https://s3.endpoint.example'
@@ -111,6 +117,7 @@ services:
     volumes:
       - 'ghost-pro-co-content:/var/lib/ghost/content'
       - 'ghost-pro-co-adapters:/var/lib/ghost/content/adapters:ro'
+      - 'ghost-pro-co-metrics:/var/lib/ghost/metrics'
     healthcheck:
       test:
         - 'CMD'
@@ -164,6 +171,8 @@ services:
       storage__images__adapter: 'ScanningStorageAdapter'
       storage__images__wraps: 'S3Storage'
       storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__images__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__images__metricsTenant: 'pro-co'
       storage__images__wrappedConfig__bucket: 'branchleft-media-pro-co'
       storage__images__wrappedConfig__region: 'eu'
       storage__images__wrappedConfig__endpoint: 'https://s3.endpoint.example'
@@ -175,6 +184,8 @@ services:
       storage__media__adapter: 'ScanningStorageAdapter'
       storage__media__wraps: 'S3Storage'
       storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__media__metricsTenant: 'pro-co'
       storage__media__wrappedConfig__bucket: 'branchleft-media-pro-co'
       storage__media__wrappedConfig__region: 'eu'
       storage__media__wrappedConfig__endpoint: 'https://s3.endpoint.example'
@@ -186,6 +197,8 @@ services:
       storage__files__adapter: 'ScanningStorageAdapter'
       storage__files__wraps: 'S3Storage'
       storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__files__metricsTenant: 'pro-co'
       storage__files__wrappedConfig__bucket: 'branchleft-media-pro-co'
       storage__files__wrappedConfig__region: 'eu'
       storage__files__wrappedConfig__endpoint: 'https://s3.endpoint.example'
@@ -224,6 +237,7 @@ services:
     volumes:
       - 'ghost-pro-co-content:/var/lib/ghost/content'
       - 'ghost-pro-co-adapters:/var/lib/ghost/content/adapters:ro'
+      - 'ghost-pro-co-metrics:/var/lib/ghost/metrics'
     healthcheck:
       test:
         - 'CMD'
@@ -246,4 +260,6 @@ volumes:
   ghost-pro-co-content:
     external: true
   ghost-pro-co-adapters:
+    external: true
+  ghost-pro-co-metrics:
     external: true

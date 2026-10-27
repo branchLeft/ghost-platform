@@ -4,6 +4,25 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**A paying tenant's scanner health export is switched on, into a volume of its own.**
+
+- **Changed output:** a paying tenant's environment gains six keys:
+  `storage__<feature>__metricsTextfilePath` (`/var/lib/ghost/metrics/scanner.prom`)
+  and `storage__<feature>__metricsTenant` (the slug), for each of `images`,
+  `media` and `files`. A demo gains none.
+- **Changed output:** a paying tenant's `compose.yml` gains the service volume
+  `ghost-<slug>-metrics:/var/lib/ghost/metrics` (read-write) on both `ghost-a`
+  and `ghost-b`, and declares that volume `external: true`. A demo gains neither.
+- **Changed output:** the `provision.sh` comment of a paying tenant says "three
+  named volumes" instead of "two". The command line is unchanged.
+- New export `metricsVolumeName(slug)` (`ghost-<slug>-metrics`).
+- **Rollout:** the volume is `external`, so a host without it cannot start the
+  stack. Before a package carrying this change is deployed to a host, re-run
+  `app/provision/provision_tenant_volume.py` for each existing tenant on it
+  (idempotent; it creates only the missing volume). The tenant image must carry
+  the adapter's unique temporary-name write with or before that deploy, because
+  both colours write into this one directory.
+
 **The Network tab is hidden on every tenant.**
 
 - **Changed output:** every rendered `compose.yml` gains

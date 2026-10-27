@@ -24,6 +24,7 @@ import sys
 VOLUME_NAME_PREFIX = "ghost-"
 CONTENT_VOLUME_SUFFIX = "-content"
 ADAPTERS_VOLUME_SUFFIX = "-adapters"
+METRICS_VOLUME_SUFFIX = "-metrics"
 
 # Mirrors `infra/tenant/runtime.ts`.
 TENANT_UID_MIN = 30000
@@ -68,6 +69,12 @@ CONTENT_MODE = 0o700
 # stack also mounts it `:ro`; this is the half that still holds if that mount
 # option is ever lost.
 ADAPTERS_MODE = 0o555
+# The scanning adapter writes its Prometheus textfile here, as the tenant's own
+# uid, so the tenant owns the directory. World-readable and world-traversable
+# so the host's exporter, another user, can read the file. The tenant writes
+# this volume and the host only reads it. See
+# provision_tenant_volume.md#the-metrics-volume.
+METRICS_MODE = 0o755
 
 
 class ProvisionError(Exception):
@@ -80,6 +87,10 @@ def content_volume_name(slug: str) -> str:
 
 def adapters_volume_name(slug: str) -> str:
     return f"{VOLUME_NAME_PREFIX}{slug}{ADAPTERS_VOLUME_SUFFIX}"
+
+
+def metrics_volume_name(slug: str) -> str:
+    return f"{VOLUME_NAME_PREFIX}{slug}{METRICS_VOLUME_SUFFIX}"
 
 
 def validate_slug(slug: str) -> None:
@@ -289,8 +300,9 @@ def provision_tenant_volumes(
     actions: list[str] = []
     content = content_volume_name(slug)
     adapters = adapters_volume_name(slug)
+    metrics = metrics_volume_name(slug)
 
-    for name in (content, adapters):
+    for name in (content, adapters, metrics):
         if volume_exists(name, run=run):
             actions.append(f"volume {name} already existed")
         else:
@@ -327,6 +339,14 @@ def provision_tenant_volumes(
     fs.chown(adapters_path, 0, 0)
     fs.chmod(adapters_path, ADAPTERS_MODE)
     actions.append(f"{adapters} owned by 0:0 at {oct(ADAPTERS_MODE)}")
+
+    # Nothing is written into this volume here: it holds only the file the
+    # tenant's own process creates, so there is no seed and no copy-up to
+    # guard against beyond the ownership below.
+    metrics_path = volume_mountpoint(metrics, run=run)
+    fs.chown(metrics_path, uid, uid)
+    fs.chmod(metrics_path, METRICS_MODE)
+    actions.append(f"{metrics} owned by {uid}:{uid} at {oct(METRICS_MODE)}")
 
     return actions
 

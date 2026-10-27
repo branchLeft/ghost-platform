@@ -20,3 +20,13 @@ plus `mail-spool` (the host spool's stack, rendered by this package);
 `naming.test.ts` pins the two together, so a name added to one side alone
 fails the build. Slug uniqueness across tenants is a separate problem that
 neither list can answer.
+
+## Metrics volume
+
+`metricsVolumeName` is `ghost-<slug>-metrics`, the third per-tenant named
+volume beside the content and adapters ones. One volume per tenant, never a
+directory shared between tenants: a tenant writes its own volume, so a shared
+one would let it overwrite another tenant's metrics file. The host-side
+provisioning script (`app/provision/provision_tenant_volume.py`) mirrors the
+suffix. The volume holds nothing but the scanner's metrics file, so it is not
+tenant data and `identity.ts` does not list it.

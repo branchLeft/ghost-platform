@@ -8,7 +8,8 @@
 import { validatePrivateIpV4 } from './brand.js';
 import type { ResourceCaps, TenantDescriptor } from './descriptor.js';
 import type { UploadLimits } from './runtime.js';
-import { adaptersVolumeName, contentVolumeName, stackName } from './naming.js';
+import { METRICS_MOUNT_PATH } from './environment.js';
+import { adaptersVolumeName, contentVolumeName, metricsVolumeName, stackName } from './naming.js';
 import type { YamlValue } from './yaml.js';
 import { toYaml } from './yaml.js';
 
@@ -70,10 +71,16 @@ function ghostService(
   args: ComposeStackArgs,
   colour: Colour,
   content: string,
-  adapters: string
+  adapters: string,
+  metrics: string | null
 ): Record<string, YamlValue> {
   const hostPort = colour === 'a' ? args.ports.a : args.ports.b;
   const volumes = [`${content}:${CONTENT_MOUNT_PATH}`, `${adapters}:${ADAPTERS_MOUNT_PATH}:ro`];
+  if (metrics !== null) {
+    // Read-write, on purpose: the tenant's own process creates and rewrites
+    // the scanner's metrics file here. See compose.md#the-metrics-volume.
+    volumes.push(`${metrics}:${METRICS_MOUNT_PATH}`);
+  }
   if (args.dataMount) {
     volumes.push(`${args.dataMount.volumeName}:${args.dataMount.path}`);
   }
@@ -126,11 +133,18 @@ function ghostService(
 function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   const content = contentVolumeName(args.slug);
   const adapters = adaptersVolumeName(args.slug);
+  // Exactly the condition under which `environment.ts` renders the metrics
+  // keys (a paying tenant, whose media is always object storage): a demo
+  // mounts no metrics volume and names no metrics key.
+  const metrics = args.kind === 'demo' ? null : metricsVolumeName(args.slug);
 
   const volumes: Record<string, YamlValue> = {
     [content]: { external: true },
     [adapters]: { external: true },
   };
+  if (metrics !== null) {
+    volumes[metrics] = { external: true };
+  }
   if (args.dataMount) {
     volumes[args.dataMount.volumeName] = { external: true };
   }
@@ -138,8 +152,8 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   return {
     name: stackName(args.slug),
     services: {
-      'ghost-a': ghostService(args, 'a', content, adapters),
-      'ghost-b': ghostService(args, 'b', content, adapters),
+      'ghost-a': ghostService(args, 'a', content, adapters, metrics),
+      'ghost-b': ghostService(args, 'b', content, adapters, metrics),
     },
     ...(args.mailNetwork
       ? { networks: { [args.mailNetwork]: { name: args.mailNetwork, external: true } } }

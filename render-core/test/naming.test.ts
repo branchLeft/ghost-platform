@@ -13,6 +13,7 @@ import {
   contentVolumeName,
   databaseAndUserName,
   imageEnvPath,
+  metricsVolumeName,
   secretsEnvPath,
   sqlIdentifier,
   stackDirectory,
@@ -58,6 +59,13 @@ describe('naming.ts', () => {
     expect(contentVolumeName(slug)).toBe('ghost-my-tenant-content');
     expect(adaptersVolumeName(slug)).toBe('ghost-my-tenant-adapters');
     expect(contentVolumeName(slug)).not.toBe(adaptersVolumeName(slug));
+  });
+
+  it('the metrics volume is a third, slug-scoped name distinct from the other two', () => {
+    expect(metricsVolumeName(slug)).toBe('ghost-my-tenant-metrics');
+    expect(metricsVolumeName(slug)).not.toBe(contentVolumeName(slug));
+    expect(metricsVolumeName(slug)).not.toBe(adaptersVolumeName(slug));
+    expect(metricsVolumeName('other-tenant' as Slug)).not.toBe(metricsVolumeName(slug));
   });
 
   describe('validateSlugAvailability()', () => {

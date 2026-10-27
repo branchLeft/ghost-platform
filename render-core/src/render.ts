@@ -118,7 +118,7 @@ function shellQuote(value: string): string {
 }
 
 /**
- * The exact root-run command that must create a paying tenant's two named
+ * The exact root-run command that must create a paying tenant's three named
  * volumes, owned to its uid, before its unit can start. A demo renders no
  * equivalent command. See render.md#provision-script.
  */
@@ -131,7 +131,7 @@ function renderProvisionScript(descriptor: TenantStackDescriptor): string {
     );
   } else {
     lines.push(
-      `# Provisions ${descriptor.slug}'s two named volumes before ${stackName(descriptor.slug)}'s`,
+      `# Provisions ${descriptor.slug}'s three named volumes before ${stackName(descriptor.slug)}'s`,
       '# unit is enabled. Idempotent; safe to re-run.',
       `/root/platform-provision/provision_tenant_volume.py --uid ${shellQuote(String(descriptor.uid))} ${shellQuote(descriptor.slug)}`
     );

@@ -29,6 +29,27 @@ never sees half a file. A failing write is logged once and retried; it never
 affects an upload. Mounting the directory into the container and reading it
 on the host are infrastructure, not this module.
 
+## The textfile write
+
+The file is written to a temporary name beside it, then renamed over it. The
+temporary name is `<file>.tmp-<hostname>-<pid>-<random>`: the hostname reduced
+to `A-Za-z0-9._-` (and cut to 64 characters), the process id, and six random
+bytes in hex. The random part alone makes every write's name unique. The
+hostname (a container's id) and the pid are there so an operator who finds a
+stray file can tell which writer left it. The name never ends in `.prom`, so
+the collector skips it.
+
+It is unique per write because a tenant's two colours are separate containers
+running this code with the same pid, very likely, and sharing one metrics
+directory: a name made of the pid alone would have both write, tear and rename
+the one temporary file. A write or rename that fails removes its own temporary
+file, since a new name every time would otherwise leave one file per interval
+for as long as the failure lasts. A process killed mid-write still leaves its
+temporary file; nothing reads it, and nothing cleans it up.
+
+Two writers on one file still means the last rename wins. When both colours
+export to the same path, the series are one process's at a time, not a sum.
+
 ## Series
 
 Every series carries the `tenant` label. Counters and gauges are written at

@@ -28,7 +28,10 @@ still renders bare `storage__active`/`storage__S3Storage__*` (recorded,
 frozen, in `INFRA_TENANT_BLOG_ENV` above), because `blog` (tenant-zero) has
 not been migrated onto the scanning decorator — that migration is separate
 work from shipping the decorator in render-core. `EXTRA_IN_CORE_KEYS` below
-names what render-core renders instead. The mail-transport gap
+names what render-core renders instead, which includes the six scanner
+metrics export keys (`storage__<feature>__metricsTextfilePath` and
+`__metricsTenant`): they are new in render-core and the frozen snapshot
+predates them. The mail-transport gap
 `environment.ts#transportEnvironment`'s own doc comment used to name is
 closed — see the known-diverged-keys section for what render-core renders
 for those four keys instead of a fifth gap.
