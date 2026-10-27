@@ -16,6 +16,7 @@ import contextlib
 import fcntl
 import io
 import os
+import re
 import shutil
 import signal
 import sqlite3
@@ -176,14 +177,22 @@ class SlotNamesDriftGuardTests(unittest.TestCase):
 
 
 class FakeSlotOps:
-    def __init__(self) -> None:
+    def __init__(self, content_volume: str | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
+        self.content_volume = content_volume
 
     def systemctl(self, action: str, unit: str) -> None:
         self.calls.append(("systemctl", action, unit))
 
     def load_image(self, path: str) -> None:
         self.calls.append(("load_image", path))
+
+    def read_content_volume_name(self, slot_dir: str) -> str | None:
+        self.calls.append(("read_content_volume_name", slot_dir))
+        return self.content_volume
+
+    def remove_volume_contents(self, volume_dir: str) -> None:
+        self.calls.append(("remove_volume_contents", volume_dir))
 
     def remove_dir_contents(self, path: str) -> None:
         self.calls.append(("remove_dir_contents", path))
@@ -230,19 +239,61 @@ class PerformDispatchTests(unittest.TestCase):
             self.assertNotIn("demo-3-b", call)
 
     def test_reset_stops_both_colours_then_wipes_state_in_order(self):
-        ops = FakeSlotOps()
+        ops = FakeSlotOps(content_volume="ghost-demo-5-content")
         bs.perform(bs.ResetInvocation(slot="4"), ops)
         self.assertEqual(
             ops.calls,
             [
                 ("systemctl", "stop", "branchleft-compose@demo-4-a"),
                 ("systemctl", "stop", "branchleft-compose@demo-4-b"),
+                ("read_content_volume_name", "/opt/branchleft/demo-4"),
+                ("remove_volume_contents", "/var/lib/docker/volumes/ghost-demo-30005-data/_data"),
+                ("remove_volume_contents", "/var/lib/docker/volumes/ghost-demo-5-content/_data"),
                 ("remove_dir_contents", "/opt/branchleft/demo-4"),
                 ("remove_file_if_present", "/etc/branchleft/demo-4-a.env"),
                 ("remove_file_if_present", "/etc/branchleft/demo-4-b.env"),
                 ("recreate_empty_dir", "/opt/branchleft/demo-4"),
             ],
         )
+
+    def test_reset_with_no_content_volume_empties_only_the_data_volume(self):
+        ops = FakeSlotOps(content_volume=None)
+        bs.perform(bs.ResetInvocation(slot="4"), ops)
+        wipes = [call for call in ops.calls if call[0] == "remove_volume_contents"]
+        self.assertEqual(
+            wipes, [("remove_volume_contents", "/var/lib/docker/volumes/ghost-demo-30005-data/_data")]
+        )
+        self.assertIn(("remove_dir_contents", "/opt/branchleft/demo-4"), ops.calls)
+
+    def test_reset_that_cannot_resolve_the_content_volume_wipes_nothing(self):
+        class AmbiguousOps(FakeSlotOps):
+            def read_content_volume_name(self, slot_dir: str) -> str | None:
+                raise bs.RefusedVolume("two content volumes")
+
+        ops = AmbiguousOps()
+        with self.assertRaises(bs.RefusedVolume):
+            bs.perform(bs.ResetInvocation(slot="4"), ops)
+        self.assertEqual([call[0] for call in ops.calls], ["systemctl", "systemctl"])
+
+    def test_reset_never_names_the_adapters_volume(self):
+        ops = FakeSlotOps(content_volume="ghost-demo-5-content")
+        bs.perform(bs.ResetInvocation(slot="4"), ops)
+        for call in ops.calls:
+            self.assertNotIn("adapters", " ".join(call))
+
+    def test_a_refused_data_volume_leaves_the_slot_directory_and_env_files_alone(self):
+        class RefusingOps(FakeSlotOps):
+            def remove_volume_contents(self, volume_dir: str) -> None:
+                super().remove_volume_contents(volume_dir)
+                raise bs.RefusedVolume("a symlink")
+
+        ops = RefusingOps(content_volume="ghost-demo-5-content")
+        with self.assertRaises(bs.RefusedVolume):
+            bs.perform(bs.ResetInvocation(slot="4"), ops)
+        names = [call[0] for call in ops.calls]
+        self.assertNotIn("remove_dir_contents", names)
+        self.assertNotIn("remove_file_if_present", names)
+        self.assertNotIn("recreate_empty_dir", names)
 
     def test_reset_wipes_before_recreating_never_the_other_way(self):
         ops = FakeSlotOps()
@@ -756,6 +807,7 @@ class RealSlotOpsWiringTests(unittest.TestCase):
             with mock.patch.object(bs, "LOCK_DIR", tmp), \
                 mock.patch.object(bs, "SLOT_DIR", os.path.join(tmp, "demo-{slot}")), \
                 mock.patch.object(bs, "ETC_DIR", tmp), \
+                mock.patch.object(bs, "DOCKER_VOLUME_ROOT", Path(tmp) / "volumes"), \
                 mock.patch("branchleft_slot.subprocess.run") as run:
                 bs.perform(bs.ResetInvocation(slot="1"), bs.RealSlotOps())
         for call in run.call_args_list:
@@ -797,6 +849,363 @@ class RealSlotOpsFilesystemTests(unittest.TestCase):
             target = os.path.join(tmp, "demo-2")
             bs.RealSlotOps().recreate_empty_dir(target)
             self.assertTrue(os.path.isdir(target))
+
+
+GOLDEN_COMPOSE = Path(__file__).parents[2] / "render-core" / "test" / "golden" / "demo.compose.yml"
+BRAND_TS = Path(__file__).parents[2] / "render-core" / "src" / "brand.ts"
+
+_COMPOSE_TEMPLATE = """\
+services:
+  ghost-a:
+    volumes:
+      - '{content}:/var/lib/ghost/content'
+      - '{slug_adapters}:/var/lib/ghost/content/adapters:ro'
+      - 'ghost-demo-30002-data:/data/demo-1'
+volumes:
+  {content}:
+    external: true
+  {slug_adapters}:
+    external: true
+  ghost-demo-30002-data:
+    external: true
+"""
+
+
+def _compose_text(content: str = "ghost-demo-2-content") -> str:
+    return _COMPOSE_TEMPLATE.format(
+        content=content, slug_adapters=content.replace("-content", "-adapters")
+    )
+
+
+class ContentVolumeNameTests(unittest.TestCase):
+    """The name comes out of a file the broker wrote, and a root process
+    builds a path to empty from it: only an exact content-volume name passes."""
+
+    def test_reads_the_name_from_the_golden_rendered_compose(self):
+        self.assertEqual(
+            bs._content_volume_name(GOLDEN_COMPOSE.read_text()), "ghost-demo-1-content"
+        )
+
+    def test_reads_the_name_from_a_shaped_compose(self):
+        self.assertEqual(bs._content_volume_name(_compose_text()), "ghost-demo-2-content")
+
+    def test_accepts_a_quoted_key(self):
+        text = "volumes:\n  'ghost-demo-3-content':\n    external: true\n"
+        self.assertEqual(bs._content_volume_name(text), "ghost-demo-3-content")
+
+    def test_the_data_and_adapters_volumes_are_never_the_content_volume(self):
+        text = "volumes:\n  ghost-demo-30001-data:\n  ghost-demo-1-adapters:\n"
+        self.assertIsNone(bs._content_volume_name(text))
+
+    def test_a_name_with_a_path_separator_or_dotdot_is_not_a_candidate(self):
+        for name in ("ghost-../x-content", "ghost-a/b-content", "ghost-..-content", "../ghost-a-content"):
+            with self.subTest(name=name):
+                self.assertIsNone(bs._content_volume_name(f"volumes:\n  {name}:\n"))
+
+    def test_uppercase_and_leading_digit_slugs_are_not_candidates(self):
+        for name in ("ghost-Demo-1-content", "ghost-1demo-content", "ghost--content", "ghost-demo--content"):
+            with self.subTest(name=name):
+                self.assertIsNone(bs._content_volume_name(f"volumes:\n  {name}:\n"))
+
+    def test_the_slug_is_capped_at_the_length_render_core_allows(self):
+        longest = "a" * 63
+        self.assertEqual(
+            bs._content_volume_name(f"volumes:\n  ghost-{longest}-content:\n"),
+            f"ghost-{longest}-content",
+        )
+        too_long = "a" * 64
+        self.assertIsNone(bs._content_volume_name(f"volumes:\n  ghost-{too_long}-content:\n"))
+
+    def test_a_key_outside_the_top_level_volumes_block_is_ignored(self):
+        text = (
+            "services:\n  ghost-a:\n    volumes:\n      - 'ghost-demo-9-content:/x'\n"
+            "    ghost-demo-8-content:\n"
+            "networks:\n  ghost-demo-7-content:\n"
+        )
+        self.assertIsNone(bs._content_volume_name(text))
+
+    def test_two_distinct_content_volumes_are_refused_not_guessed(self):
+        text = "volumes:\n  ghost-demo-1-content:\n  ghost-demo-2-content:\n"
+        with self.assertRaises(bs.RefusedVolume):
+            bs._content_volume_name(text)
+
+    def test_the_same_name_twice_is_one_volume(self):
+        text = "volumes:\n  ghost-demo-1-content:\nvolumes:\n  ghost-demo-1-content:\n"
+        self.assertEqual(bs._content_volume_name(text), "ghost-demo-1-content")
+
+    def test_garbage_and_empty_text_name_no_volume(self):
+        for text in ("", "\x00\xff not yaml {{{", "volumes:\n", "volumes: [ghost-demo-1-content]\n"):
+            with self.subTest(text=text):
+                self.assertIsNone(bs._content_volume_name(text))
+
+    def test_the_slug_grammar_matches_render_cores_own(self):
+        brand = BRAND_TS.read_text()
+        pattern = re.search(r"const SLUG_PATTERN = /\^(.*)\$/;", brand)
+        length = re.search(r"const MAX_SLUG_LENGTH = (\d+);", brand)
+        self.assertIsNotNone(pattern)
+        self.assertIsNotNone(length)
+        self.assertEqual(re.sub(r"\((?!\?)", "(?:", pattern.group(1)), bs._SLUG_PATTERN)
+        self.assertEqual(int(length.group(1)), bs._MAX_SLUG_LENGTH)
+
+    def test_the_content_directory_is_a_direct_child_of_the_volume_root(self):
+        self.assertEqual(
+            bs._content_directory("ghost-demo-2-content"),
+            bs.DOCKER_VOLUME_ROOT / "ghost-demo-2-content" / "_data",
+        )
+
+
+class ReadContentVolumeNameTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.slot_dir = self._tmp.name
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _read(self):
+        return bs.RealSlotOps().read_content_volume_name(self.slot_dir)
+
+    def test_reads_the_name_from_the_slots_compose_file(self):
+        Path(self.slot_dir, "compose.yml").write_text(_compose_text())
+        self.assertEqual(self._read(), "ghost-demo-2-content")
+
+    def test_a_missing_compose_file_skips_rather_than_failing(self):
+        self.assertIsNone(self._read())
+
+    def test_a_symlinked_compose_file_is_skipped_not_followed(self):
+        outside = Path(self.slot_dir, "elsewhere.yml")
+        outside.write_text(_compose_text())
+        os.symlink(outside, Path(self.slot_dir, "compose.yml"))
+        self.assertIsNone(self._read())
+
+    def test_a_directory_named_compose_yml_is_skipped(self):
+        os.mkdir(Path(self.slot_dir, "compose.yml"))
+        self.assertIsNone(self._read())
+
+    def test_a_fifo_named_compose_yml_is_skipped_without_blocking(self):
+        os.mkfifo(Path(self.slot_dir, "compose.yml"))
+        self.assertIsNone(self._read())
+
+    def test_an_oversize_compose_file_is_skipped(self):
+        padding = "# " + "x" * bs._COMPOSE_MAX_BYTES + "\n"
+        Path(self.slot_dir, "compose.yml").write_text(padding + _compose_text())
+        self.assertIsNone(self._read())
+
+    def test_unparseable_bytes_skip_rather_than_failing(self):
+        Path(self.slot_dir, "compose.yml").write_bytes(b"\xff\xfe\x00 volumes:\n \x80")
+        self.assertIsNone(self._read())
+
+    def test_an_ambiguous_compose_file_is_refused(self):
+        Path(self.slot_dir, "compose.yml").write_text(
+            "volumes:\n  ghost-demo-1-content:\n  ghost-demo-2-content:\n"
+        )
+        with self.assertRaises(bs.RefusedVolume):
+            self._read()
+
+
+class VolumeEmptyingResetTests(unittest.TestCase):
+    """`reset` against a real temporary tree standing in for the host: the
+    slot directory, the env files, the lock directory and Docker's volume
+    root are all patched into one scratch directory. Slot 1 is uid 30002, so
+    its data volume is `ghost-demo-30002-data`; its content volume is whatever
+    the slot's `compose.yml` says, here `ghost-demo-2-content`."""
+
+    SLOT = "1"
+    CONTENT = "ghost-demo-2-content"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp.name)
+        self.volumes = tmp / "volumes"
+        self.slot_dir = tmp / "demo-1"
+        self.etc = tmp / "etc"
+        self.outside = tmp / "outside"
+        for path in (self.volumes, self.slot_dir, self.etc, self.outside):
+            path.mkdir()
+        self.outside_file = self.outside / "precious.txt"
+        self.outside_file.write_text("precious")
+        self.outside_dir = self.outside / "precious-dir"
+        self.outside_dir.mkdir()
+        self.sentinel = self.outside_dir / "sentinel.txt"
+        self.sentinel.write_text("sentinel")
+
+        patches = [
+            mock.patch.object(bs, "LOCK_DIR", str(tmp / "lock")),
+            mock.patch.object(bs, "SLOT_DIR", str(tmp / "demo-{slot}")),
+            mock.patch.object(bs, "ETC_DIR", str(self.etc)),
+            mock.patch.object(bs, "DOCKER_VOLUME_ROOT", self.volumes),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(self._tmp.cleanup)
+        run_patch = mock.patch("branchleft_slot.subprocess.run")
+        self.run_mock = run_patch.start()
+        self.addCleanup(run_patch.stop)
+
+        self.data = self.volumes / "ghost-demo-30002-data" / "_data"
+        self.content = self.volumes / self.CONTENT / "_data"
+        self.adapters = self.volumes / "ghost-demo-2-adapters" / "_data"
+        for path in (self.data, self.content, self.adapters):
+            path.mkdir(parents=True)
+        (self.adapters / "marker").write_text("platform code")
+        (self.slot_dir / "compose.yml").write_text(_compose_text(self.CONTENT))
+        (self.etc / "demo-1-a.env").write_text("x")
+
+    def _seed(self, volume: Path) -> None:
+        (volume / "marker").write_text("visitor data")
+        (volume / "nested" / "deeper").mkdir(parents=True)
+        (volume / "nested" / "deeper" / "marker").write_text("visitor data")
+        os.symlink(self.outside_file, volume / "link-to-file")
+        os.symlink(self.outside_dir, volume / "link-to-dir")
+        os.symlink(self.outside_dir, volume / "nested" / "link-to-dir")
+
+    def _reset(self) -> int:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = bs.main([self.SLOT, "reset"])
+        self.stderr = err.getvalue()
+        return code
+
+    def _assert_outside_untouched(self) -> None:
+        self.assertEqual(self.outside_file.read_text(), "precious")
+        self.assertEqual(self.sentinel.read_text(), "sentinel")
+
+    def test_reset_empties_the_data_and_content_volumes_but_not_the_volumes(self):
+        self._seed(self.data)
+        self._seed(self.content)
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertTrue(self.data.is_dir() and not self.data.is_symlink())
+        self.assertTrue(self.content.is_dir() and not self.content.is_symlink())
+        self.assertEqual(os.listdir(self.data), [])
+        self.assertEqual(os.listdir(self.content), [])
+
+    def test_reset_removes_planted_links_as_links_and_leaves_their_targets(self):
+        self._seed(self.data)
+        self._seed(self.content)
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self._assert_outside_untouched()
+
+    def test_reset_never_touches_the_adapters_volume(self):
+        self._seed(self.data)
+        self._seed(self.content)
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertEqual(os.listdir(self.adapters), ["marker"])
+        self.assertEqual((self.adapters / "marker").read_text(), "platform code")
+
+    def test_reset_still_empties_the_slot_directory_and_env_files(self):
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertTrue(self.slot_dir.is_dir())
+        self.assertEqual(os.listdir(self.slot_dir), [])
+        self.assertFalse((self.etc / "demo-1-a.env").exists())
+
+    def test_reset_runs_only_systemctl(self):
+        self._seed(self.data)
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertTrue(self.run_mock.call_args_list)
+        for call in self.run_mock.call_args_list:
+            self.assertEqual(call.args[0][0], "systemctl")
+
+    def test_reset_with_no_volumes_on_the_host_succeeds(self):
+        shutil.rmtree(self.volumes)
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertEqual(os.listdir(self.slot_dir), [])
+
+    def test_reset_with_a_volume_that_was_never_created_skips_it(self):
+        shutil.rmtree(self.volumes / self.CONTENT)
+        (self.data / "marker").write_text("visitor data")
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertEqual(os.listdir(self.data), [])
+
+    def test_reset_with_no_compose_file_still_empties_the_data_volume(self):
+        (self.slot_dir / "compose.yml").unlink()
+        (self.data / "marker").write_text("visitor data")
+        (self.content / "marker").write_text("visitor data")
+        self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertEqual(os.listdir(self.data), [])
+        # Without a compose file the content volume cannot be named: left alone.
+        self.assertEqual(os.listdir(self.content), ["marker"])
+
+    def test_a_volume_directory_that_is_a_symlink_is_refused_and_nothing_is_removed(self):
+        shutil.rmtree(self.volumes / "ghost-demo-30002-data")
+        os.symlink(self.outside, self.volumes / "ghost-demo-30002-data")
+        self.assertEqual(self._reset(), 1)
+        self.assertIn("refused", self.stderr)
+        self._assert_outside_untouched()
+        self.assertTrue(self.outside.is_dir())
+        self.assertEqual(os.listdir(self.slot_dir), ["compose.yml"])
+
+    def test_a_data_directory_that_is_a_symlink_is_refused_and_nothing_is_removed(self):
+        shutil.rmtree(self.data)
+        os.symlink(self.outside_dir, self.data)
+        self.assertEqual(self._reset(), 1)
+        self.assertIn("refused", self.stderr)
+        self._assert_outside_untouched()
+        self.assertEqual(os.listdir(self.slot_dir), ["compose.yml"])
+
+    def test_a_data_directory_that_is_a_regular_file_is_refused(self):
+        shutil.rmtree(self.data)
+        self.data.write_text("not a directory")
+        self.assertEqual(self._reset(), 1)
+        self.assertIn("refused", self.stderr)
+        self.assertEqual(self.data.read_text(), "not a directory")
+        self.assertEqual(os.listdir(self.slot_dir), ["compose.yml"])
+
+    def test_a_content_directory_that_is_a_symlink_is_refused_and_leaves_the_target(self):
+        shutil.rmtree(self.content)
+        os.symlink(self.outside_dir, self.content)
+        self.assertEqual(self._reset(), 1)
+        self.assertIn("refused", self.stderr)
+        self._assert_outside_untouched()
+        # The slot directory survives so the content volume can still be found on a retry.
+        self.assertEqual(os.listdir(self.slot_dir), ["compose.yml"])
+
+    def test_an_ambiguous_compose_file_refuses_before_any_volume_is_emptied(self):
+        (self.slot_dir / "compose.yml").write_text(
+            "volumes:\n  ghost-demo-2-content:\n  ghost-demo-3-content:\n"
+        )
+        (self.data / "marker").write_text("visitor data")
+        (self.content / "marker").write_text("visitor data")
+        self.assertEqual(self._reset(), 1)
+        self.assertEqual(os.listdir(self.data), ["marker"])
+        self.assertEqual(os.listdir(self.content), ["marker"])
+
+    def test_a_path_that_is_not_a_direct_child_of_the_volume_root_is_refused(self):
+        ops = bs.RealSlotOps()
+        for bad in (
+            str(self.outside_dir),
+            str(self.volumes / "a" / "b" / "_data"),
+            str(self.volumes / "ghost-demo-2-content" / "other"),
+            str(self.volumes / ".." / "_data"),
+        ):
+            with self.subTest(path=bad):
+                with self.assertRaises(bs.RefusedVolume):
+                    ops.remove_volume_contents(bad)
+        self._assert_outside_untouched()
+
+    def test_a_directory_swapped_for_a_symlink_after_the_listing_is_removed_as_a_link(self):
+        victim = self.data / "victim"
+        victim.mkdir()
+        real_open = os.open
+
+        def swap_then_open(name, flags, *args, **kwargs):
+            if name == "victim" and victim.exists() and not victim.is_symlink():
+                shutil.rmtree(victim)
+                os.symlink(self.outside_dir, victim)
+            return real_open(name, flags, *args, **kwargs)
+
+        with mock.patch("branchleft_slot.os.open", side_effect=swap_then_open):
+            self.assertEqual(self._reset(), 0, self.stderr)
+        self.assertEqual(os.listdir(self.data), [])
+        self._assert_outside_untouched()
+
+    def test_a_tree_nested_past_the_depth_cap_is_refused_not_recursed_into(self):
+        deep = self.data
+        for _ in range(bs._MAX_VOLUME_DEPTH + 2):
+            deep = deep / "d"
+        deep.mkdir(parents=True)
+        self.assertEqual(self._reset(), 1)
+        self.assertIn("refused", self.stderr)
 
 
 _NEEDS_TIMEOUT = unittest.skipUnless(shutil.which("timeout"), "needs GNU coreutils timeout")

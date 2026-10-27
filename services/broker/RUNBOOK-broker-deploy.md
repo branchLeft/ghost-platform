@@ -240,5 +240,10 @@ docker rm -f broker-boot-proof
 - **`BROKER_SLOT_DIR_BASE` and the wrapper's slot directory.** Fixed: the
   broker writes under `<BROKER_SLOT_DIR_BASE>/demo-<slot>/`, the directory
   the wrapper's `reset` wipes, so a reset clears what a reconcile wrote.
+  `reset` also empties the contents of the slot's Ghost data volume and
+  content volume (never the adapters volume, and never removing a volume),
+  so the next lease starts from a fresh Ghost. It finds the content volume by
+  reading the name from the slot's `compose.yml` before emptying the
+  directory; `demo-host/provision/branchleft_slot.md` has the detail.
   Both sides are pinned by tests to `demo-host/provision/slot-dirs.golden.json`,
   derived from the sudoers generator's slot table.

@@ -9,9 +9,11 @@ and never does per invocation, and precisely what the `load` verb pins.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import pwd
+import re
 import select
 import shutil
 import signal
@@ -120,6 +122,108 @@ def _data_directory(slot: str) -> Path:
     """
     uid = UID_BASE + int(slot)
     return DOCKER_VOLUME_ROOT / f"ghost-demo-{uid}-data" / "_data"
+
+
+# The slug in `ghost-<slug>-content` arrives with each lease, so `reset` reads
+# it from the slot's `compose.yml`, not from the slot. The grammar mirrors
+# `render-core/src/brand.ts`, duplicated for the same installed-alone reason as
+# `UID_BASE`; `ContentVolumeNameTests` is its drift guard. Reasons and the
+# residual risk: branchleft_slot.md#content-volume-emptying.
+_SLUG_PATTERN = r"[a-z](?:[a-z0-9-]*[a-z0-9])?"
+_MAX_SLUG_LENGTH = 63
+_CONTENT_VOLUME_KEY = re.compile(rf"  (['\"]?)ghost-({_SLUG_PATTERN})-content\1:[ \t]*")
+_COMPOSE_MAX_BYTES = 1024 * 1024
+# `remove_volume_contents` stops here rather than recursing to a
+# `RecursionError`; no Ghost content tree is anywhere near it.
+_MAX_VOLUME_DEPTH = 64
+
+
+class RefusedVolume(ValueError):
+    """Raised when a volume's contents must not be emptied: its directory is
+    a symlink or not a directory, a mount point sits inside it, it nests past
+    `_MAX_VOLUME_DEPTH`, or the slot's `compose.yml` names two content volumes.
+    `main` turns it into a nonzero exit; nothing is removed on the refused path.
+    """
+
+
+def _content_volume_name(compose_text: str) -> str | None:
+    """The one content volume the rendered `compose.yml` declares, or None.
+
+    Reads only the top-level `volumes:` block (column-0 `volumes:` up to the
+    next column-0 line) for two-space-indented keys, and keeps a key only if
+    it is exactly `ghost-<slug>-content` with a legal slug. Anything else --
+    the `-data` and `-adapters` volumes, a name holding `/` or `..`, an
+    over-long slug -- is not a candidate. Two distinct candidates are
+    ambiguous and raise `RefusedVolume` rather than pick one. The text is
+    written by the broker, so it is input to a root process.
+    """
+    names: set[str] = set()
+    in_volumes = False
+    for line in compose_text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_volumes = line.rstrip() == "volumes:"
+            continue
+        if not in_volumes:
+            continue
+        match = _CONTENT_VOLUME_KEY.fullmatch(line)
+        if match and len(match.group(2)) <= _MAX_SLUG_LENGTH:
+            names.add(f"ghost-{match.group(2)}-content")
+    if len(names) > 1:
+        raise RefusedVolume(
+            f"refused: the slot's compose.yml declares {len(names)} content volumes "
+            f"({', '.join(sorted(names))}); will not guess which one to empty"
+        )
+    return next(iter(names), None)
+
+
+def _content_directory(name: str) -> Path:
+    """The content volume's data directory, a direct child of
+    `DOCKER_VOLUME_ROOT` by construction: `name` has passed
+    `_content_volume_name`'s anchored pattern, which has no path separator."""
+    return DOCKER_VOLUME_ROOT / name / "_data"
+
+
+def _empty_directory_by_fd(dir_fd: int, dev: int, depth: int) -> None:
+    """Removes everything inside the directory open as `dir_fd`, never
+    following a link. Every name is resolved relative to a directory
+    descriptor, so a path component swapped for a symlink after the listing
+    is met with `O_NOFOLLOW` rather than followed. A tenant's container
+    writes into these volumes, so that race is the one to expect.
+    """
+    if depth > _MAX_VOLUME_DEPTH:
+        raise RefusedVolume(f"refused: volume nests deeper than {_MAX_VOLUME_DEPTH} directories")
+    with os.scandir(dir_fd) as scan:
+        entries = [(entry.name, entry.is_dir(follow_symlinks=False)) for entry in scan]
+    for name, is_dir in entries:
+        if is_dir:
+            try:
+                child_fd = os.open(
+                    name, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=dir_fd
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
+                    raise
+                # Swapped for a link or file since the listing: remove it as one.
+                os.unlink(name, dir_fd=dir_fd)
+                continue
+            try:
+                if os.fstat(child_fd).st_dev != dev:
+                    raise RefusedVolume(
+                        "refused: a mount point sits inside the volume; will not cross it"
+                    )
+                _empty_directory_by_fd(child_fd, dev, depth + 1)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=dir_fd)
+        else:
+            try:
+                os.unlink(name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
 
 
 # The one query this module ever runs for `email-batches`, a literal
@@ -404,6 +508,8 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
 
 class SlotOps(Protocol):
     def systemctl(self, action: str, unit: str) -> None: ...
+    def read_content_volume_name(self, slot_dir: str) -> str | None: ...
+    def remove_volume_contents(self, volume_dir: str) -> None: ...
     def remove_dir_contents(self, path: str) -> None: ...
     def remove_file_if_present(self, path: str) -> None: ...
     def recreate_empty_dir(self, path: str) -> None: ...
@@ -548,6 +654,84 @@ class RealSlotOps:
         finally:
             os.close(fd)
 
+    def read_content_volume_name(self, slot_dir: str) -> str | None:
+        """The slot's content volume name from `<slot_dir>/compose.yml`, or
+        None when there is nothing to read: no file, a link or other
+        non-regular file, one over `_COMPOSE_MAX_BYTES`, or no content volume
+        in it. Opened `O_NOFOLLOW | O_NONBLOCK`, so a planted link or FIFO is
+        skipped rather than followed or waited on. Raises `RefusedVolume` for
+        an ambiguous file. Reasons: branchleft_slot.md#content-volume-emptying.
+        """
+        path = os.path.join(slot_dir, "compose.yml")
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            return None
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _COMPOSE_MAX_BYTES:
+                return None
+            data = os.read(fd, _COMPOSE_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+        if len(data) > _COMPOSE_MAX_BYTES:
+            return None
+        return _content_volume_name(data.decode("utf-8", errors="replace"))
+
+    def remove_volume_contents(self, volume_dir: str) -> None:
+        """Empties `volume_dir`, which must be exactly
+        `DOCKER_VOLUME_ROOT/<name>/_data`, without removing it and without
+        following a link. The volume directory and `_data` are each opened
+        `O_NOFOLLOW | O_DIRECTORY` relative to the one before, so neither can
+        be a symlink or a mount-crossing path; a missing one means the volume
+        was never created and is skipped. Raises `RefusedVolume` for a link,
+        a non-directory or a path that is not a direct child of the root.
+        Reasons: branchleft_slot.md#content-volume-emptying.
+        """
+        target = Path(volume_dir)
+        if (
+            target.name != "_data"
+            or target.parent.parent != DOCKER_VOLUME_ROOT
+            or target.parent.name in ("", ".", "..")
+        ):
+            raise RefusedVolume(
+                f"refused: {volume_dir!r} is not <volume root>/<name>/_data"
+            )
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+        try:
+            root_fd = os.open(DOCKER_VOLUME_ROOT, os.O_RDONLY | os.O_DIRECTORY)
+        except FileNotFoundError:
+            return
+        try:
+            volume_fd = self._open_volume_child(target.parent.name, flags, root_fd, volume_dir)
+            if volume_fd is None:
+                return
+            try:
+                data_fd = self._open_volume_child("_data", flags, volume_fd, volume_dir)
+                if data_fd is None:
+                    return
+                try:
+                    _empty_directory_by_fd(data_fd, os.fstat(data_fd).st_dev, 0)
+                finally:
+                    os.close(data_fd)
+            finally:
+                os.close(volume_fd)
+        finally:
+            os.close(root_fd)
+
+    @staticmethod
+    def _open_volume_child(name: str, flags: int, parent_fd: int, shown: str) -> int | None:
+        try:
+            return os.open(name, flags, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise RefusedVolume(
+                    f"refused: {name!r} under {shown!r} is a link or not a directory"
+                ) from exc
+            raise
+
     def remove_dir_contents(self, path: str) -> None:
         if not os.path.isdir(path):
             return
@@ -608,7 +792,16 @@ def perform(invocation: Invocation, ops: SlotOps) -> None:
             unit = UNIT_TEMPLATE.format(slot=invocation.slot, colour=colour)
             ops.systemctl("stop", unit)
 
+        # The tenant's Ghost data lives in two Docker volumes outside the slot
+        # directory. The content volume's name is only on disk in that
+        # directory's `compose.yml`, so it is read first, and an ambiguous file
+        # refuses before anything is wiped. Contents only; the adapters volume is
+        # never named. See branchleft_slot.md#content-volume-emptying.
         slot_dir = SLOT_DIR.format(slot=invocation.slot)
+        content_volume = ops.read_content_volume_name(slot_dir)
+        ops.remove_volume_contents(str(_data_directory(invocation.slot)))
+        if content_volume is not None:
+            ops.remove_volume_contents(str(_content_directory(content_volume)))
         ops.remove_dir_contents(slot_dir)
         for colour in COLOURS:
             ops.remove_file_if_present(
