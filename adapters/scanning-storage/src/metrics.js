@@ -212,14 +212,11 @@ class ScannerMetrics {
 
 const MAX_HOSTNAME_LENGTH = 64;
 
-// The temporary name is unique per write, not per process id. A tenant's two
-// colours are separate containers running the same image and share one metrics
-// directory; each container has its own process id namespace, so both node
-// processes very likely have the same pid, and a pid-only name would have them
-// write, tear and rename one file. The random part alone guarantees the
-// uniqueness; the hostname (a container's id) and pid only let an operator
-// tell which writer left a stray file. The name does not end in .prom, so a
-// collector skips it. metrics.md#the-textfile-write has the reference.
+// Unique per write, never per pid alone: a tenant's two colours are separate
+// containers sharing one directory, and their pids very likely collide. The
+// random part guarantees uniqueness; hostname and pid only name the writer.
+// The name does not end in .prom, so a collector skips it. See
+// metrics.md#the-textfile-write.
 function temporaryTextfileName(
   file,
   {
