@@ -590,6 +590,29 @@ class TestSetupPrefixSplit(unittest.TestCase):
                     self._run(tmp, bucket="branchleft-media-blog")
         self.assertEqual(calls, [])
 
+    def test_the_setup_message_names_the_document_rule_count_and_prefixes(self):
+        # The count and the prefixes are read back out of the bytes that were
+        # applied, not restated here, so a generator that gains or loses a
+        # rule changes this expectation by itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(probe, "signed_request", side_effect=self._fake_transport()):
+                message = self._run(tmp)
+        rule_count = probe.prefix_split_lifecycle_document().decode().count("<Rule>")
+        self.assertIn(f"{rule_count} rules", message)
+        self.assertNotIn("two-rule", message)
+        for prefix in ("dumps/", "binlogs/", "media/", "fence-probe/", "state/"):
+            self.assertIn(f"{prefix} NoncurrentDays=", message)
+
+    def test_the_setup_split_help_names_the_document_rule_count(self):
+        import contextlib as _ctx
+        buf = io.StringIO()
+        with _ctx.redirect_stdout(buf), self.assertRaises(SystemExit):
+            probe.main(["--help"])
+        help_text = " ".join(buf.getvalue().split())
+        rule_count = probe.prefix_split_lifecycle_document().decode().count("<Rule>")
+        self.assertIn(f"{rule_count} rules", help_text)
+        self.assertNotIn("two-rule", help_text)
+
     def test_earliest_decisive_check_is_based_on_the_media_days_not_the_db_days(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(probe, "signed_request", side_effect=self._fake_transport()):

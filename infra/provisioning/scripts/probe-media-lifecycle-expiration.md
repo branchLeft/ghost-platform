@@ -257,9 +257,10 @@ question the rest of this script answers, and a config that assumes prefix
 scoping "obviously" works is the same unproven-assumption shape this whole
 tool exists to replace with a real answer.
 
-This mode applies the literal two-rule shape
+This mode applies the whole lifecycle document
 `db/provision/configure_backup_bucket.py`'s `lifecycle_document()` renders
-for its `media/` and database prefixes (one database-style prefix stands in
+(five rules, counted and named by the setup message; the canaries sit under
+two of its prefixes, `media/` and `dumps/`) (one database-style prefix stands in
 for both `dumps/` and `binlogs/`: both carry the identical rule, so the
 mechanism under test — a prefix-scoped `NoncurrentVersionExpiration` — does
 not depend on which literal database prefix string is used). Under each
