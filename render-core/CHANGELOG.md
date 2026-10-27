@@ -18,6 +18,18 @@ three Ghost mail environment keys (`mail__options__connectionTimeout`,
 and 10000 milliseconds), so a silent mail spool fails a reader's request in
 seconds instead of minutes. `smtp` transport output is unchanged.
 
+**The mail spool serves `/drain` on its own listener, not the one tenants reach.**
+
+- **Changed output:** the spool service's environment gains
+  `SHIM_DRAIN_PORT: 8081` beside `PORT: 8080`, and its published port is
+  `127.0.0.1:<drainPort>:8081` instead of `127.0.0.1:<drainPort>:8080`.
+- New export `MAIL_SPOOL_DRAIN_CONTAINER_PORT` (8081).
+- `assertSpoolPosture` refuses a spool whose `PORT` is not 8080 or whose
+  `SHIM_DRAIN_PORT` is not 8081, so `/drain` can never stay on the
+  tenant-facing listener. The digest-pin rule is unchanged.
+- Needs a mailgun-shim image that reads `SHIM_DRAIN_PORT`; pin one built from
+  `12e983d` or later.
+
 ## 0.2.0
 
 **A paying tenant's owner address reaches the host only through the secrets

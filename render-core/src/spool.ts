@@ -27,8 +27,14 @@ export const MAIL_SPOOL_STACK = 'mail-spool';
 export const MAIL_SPOOL_SERVICE = 'mail-spool';
 
 /** The spool's HTTP listener inside its container: the Mailgun-shaped API
- * Ghost's bulk sender calls, and the drain endpoint ops1 calls. */
+ * Ghost's bulk sender calls. The tenant networks reach this listener, so it
+ * serves no drain route. */
 export const MAIL_SPOOL_HTTP_PORT = 8080;
+
+/** The spool's drain listener inside its container, the only one that serves
+ * `/drain`. Published on host loopback and never the same port as the one
+ * above. See spool.md#the-drain-port. */
+export const MAIL_SPOOL_DRAIN_CONTAINER_PORT = 8081;
 
 /** The spool's SMTP front door inside its container, for Ghost's
  * transactional sender. Never published. */
@@ -38,6 +44,11 @@ export const MAIL_SPOOL_SMTP_PORT = 2525;
  * above, so Ghost's environment and the spool's own listener cannot name
  * different places. */
 export const MAIL_SPOOL_BASE_URL = `http://${MAIL_SPOOL_SERVICE}:${MAIL_SPOOL_HTTP_PORT}`;
+
+/** The `ports` entry that publishes the drain listener, and the only one. */
+function drainPublish(drainPort: number): string {
+  return `${MAIL_SPOOL_DRAIN_BIND_ADDRESS}:${drainPort}:${MAIL_SPOOL_DRAIN_CONTAINER_PORT}`;
+}
 
 /** The only address the drain port is ever published on. See
  * spool.md#the-drain-port. */
@@ -150,13 +161,14 @@ export function mailSpoolDocument(args: MailSpoolStackArgs): Record<string, Yaml
         },
         environment: {
           PORT: MAIL_SPOOL_HTTP_PORT,
+          SHIM_DRAIN_PORT: MAIL_SPOOL_DRAIN_CONTAINER_PORT,
           SMTP_LISTEN_PORT: MAIL_SPOOL_SMTP_PORT,
           SHIM_DB_PATH: DB_PATH,
           [MAIL_SPOOL_DRAIN_TOKEN_KEY]:
             `\${${MAIL_SPOOL_DRAIN_TOKEN_KEY}:?set ${MAIL_SPOOL_DRAIN_TOKEN_KEY} in ` +
             `${MAIL_SPOOL_SECRETS_PATH}}`,
         },
-        ports: [`${MAIL_SPOOL_DRAIN_BIND_ADDRESS}:${args.drainPort}:${MAIL_SPOOL_HTTP_PORT}`],
+        ports: [drainPublish(args.drainPort)],
         networks: [MAIL_SPOOL_DRAIN_NETWORK, ...tenantNetworks],
         volumes: [`${MAIL_SPOOL_DATA_VOLUME}:${DATA_MOUNT_PATH}`],
         healthcheck: healthcheck(),
@@ -292,7 +304,7 @@ function checkPorts(
   at: (message: string) => void
 ): void {
   const ports = Array.isArray(service.ports) ? service.ports : [];
-  const expected = `${MAIL_SPOOL_DRAIN_BIND_ADDRESS}:${drainPort}:${MAIL_SPOOL_HTTP_PORT}`;
+  const expected = drainPublish(drainPort);
   if (ports.length !== 1 || ports[0] !== expected) {
     at(
       `publishes ${JSON.stringify(ports)} -- the spool publishes exactly one port, ` +
@@ -314,6 +326,15 @@ function checkEnvironment(service: Record<string, YamlValue>, at: (message: stri
   if (typeof token !== 'string' || !SECRET_REFERENCE.test(token)) {
     at(`must carry ${MAIL_SPOOL_DRAIN_TOKEN_KEY} as a \`\${VAR:?...}\` reference, never a value`);
   }
+  if (
+    environment.PORT !== MAIL_SPOOL_HTTP_PORT ||
+    environment.SHIM_DRAIN_PORT !== MAIL_SPOOL_DRAIN_CONTAINER_PORT
+  ) {
+    at(
+      `must serve /drain on the drain listener alone: PORT ${MAIL_SPOOL_HTTP_PORT} and ` +
+        `SHIM_DRAIN_PORT ${MAIL_SPOOL_DRAIN_CONTAINER_PORT}, never /drain on the tenant-facing listener`
+    );
+  }
   if (environment.SHIM_ALLOW_EPHEMERAL_DB !== undefined) {
     at('must not allow an ephemeral queue: a restart would drop every queued message');
   }
@@ -325,7 +346,7 @@ function checkEnvironment(service: Record<string, YamlValue>, at: (message: stri
 /**
  * Re-reads a rendered spool document and refuses anything that would give
  * the spool a route off the host, publish anything but the loopback drain
- * port, carry a secret, or drop the runtime hardening. See
+ * port, serve /drain on the listener the tenant networks reach, carry a secret, or drop the runtime hardening. See
  * spool.md#the-posture-check.
  */
 export function assertSpoolPosture(document: Record<string, YamlValue>, drainPort: number): void {
