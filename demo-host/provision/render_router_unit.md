@@ -39,3 +39,9 @@ read-only filesystem, private `/tmp` and devices.
    read a 200).
 4. Stopping and starting a colour unit leaves the router's `ActiveEnterTimestamp`
    unchanged.
+5. The drain sidecar script is installed root-owned and not writable by anyone
+   else, from the checkout: `install -o root -g root -m 0755 demo_sidecar.py
+   /usr/local/lib/branchleft/demo_sidecar.py`. Then
+   `stat -c '%U %G %a' /usr/local/lib/branchleft/demo_sidecar.py` prints
+   `root root 755`. Every colour unit's `ExecStartPost=` and `ExecStop=` run
+   this path, so a missing file fails every colour start.
