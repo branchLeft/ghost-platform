@@ -154,16 +154,21 @@ export function defineSupportRouteTests(getDb: () => TenantDb, breakRead?: Break
         }
       });
 
-      it('renders only ALL_CAPS placeholders on every support page', async () => {
+      it.each([
+        ['/support', 'SUPPORT_TITLE'],
+        ['/support/home', 'SUPPORT_TITLE'],
+        ['/support/sent', 'TICKET_SENT'],
+        ['/support/limited', 'TICKET_LIMIT_REACHED'],
+      ])('renders only ALL_CAPS placeholders as the visible text of %s', async (path, heading) => {
         const browser = await signedIn(app.origin, ORG_A);
-        for (const path of ['/support', '/support/home', '/support/sent', '/support/limited']) {
-          const page = await browser.request(path);
-          const text = page.body
-            .replace(/<style[\s\S]*?<\/style>/g, '')
-            .replace(/<[^>]*>/g, ' ')
-            .trim();
-          for (const word of text.split(/\s+/)) expect(word, path).toMatch(/^[A-Z0-9_]+$/);
-        }
+        const page = await browser.request(path);
+        // The text between a tag's end and the next tag's start: attributes are never in it,
+        // and the stylesheet is a separate route, so none is in the document.
+        const words = [...page.body.matchAll(/>([^<]*)</g)].flatMap((match) =>
+          (match[1] ?? '').split(/\s+/).filter((word) => word !== '')
+        );
+        expect(words).toContain(heading);
+        for (const word of words) expect(word, path).toMatch(/^[A-Z0-9_]+$/);
       });
     });
 
