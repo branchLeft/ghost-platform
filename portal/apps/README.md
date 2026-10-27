@@ -36,8 +36,12 @@ form that posts to `/moderation/save`. The save is refused whole for a tenant
 whose kind is not exactly `REAL` and for any request that names an absolute or
 mandatory-floor check anywhere in a field name (`NotConfigurableError`, from
 `assertConfigurable`), then for any field the page does not send. The article
-checks are not saved yet and stay disabled. The `tenantKind` seam is not wired
-in `main.ts`, so every tenant is a demo until it is.
+checks are not saved yet and stay disabled. The kind comes from the tenant's own
+register row (`TenantDb.ownKind`), supplied inside `createTenantPortal`, so
+there is no option to forget. A kind that is absent or not exactly `REAL` or
+`DEMO` is an error, never a default: the page answers 500 `FAILED` and renders
+nothing, and the save answers 400 `REFUSED` and stores nothing. A valid `DEMO`
+keeps the demo notice, no form, and a refused save.
 
 ## Why two applications
 

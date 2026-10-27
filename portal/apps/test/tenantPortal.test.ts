@@ -348,23 +348,21 @@ describe('the tenant portal surface', () => {
 });
 
 describe('the tenant moderation page, through the route', () => {
-  const withKind = (kind?: () => Promise<string>) =>
-    serve((origin) =>
-      createTenantPortal({
-        issuer: ISSUER,
-        clientId: CLIENT_PORTAL,
-        projectId: PROJECT_ID,
-        publicOrigin: origin,
-        allowedOrgIds: new Set([ORG_A, ORG_B, ORG_UNREGISTERED]),
-        db: new TenantDb(fixture.tenant),
-        secureCookies: false,
-        clock: () => now,
-        fetch: issuer.fetch,
-        fetchKeys: async () => jwks,
-        sessionSeconds: 600,
-        ...(kind === undefined ? {} : { tenantKind: async () => kind() }),
-      })
-    );
+  /**
+   * The control case's database: everything is the real tenant data layer
+   * except the kind read, which answers whatever it is given. An undefined
+   * answer is a kind that was never supplied.
+   */
+  const dbWithKind = (kind: () => Promise<unknown>): TenantDb => {
+    const real = new TenantDb(fixture.tenant);
+    return new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'ownKind') return kind;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
 
   it('is linked from the navigation', async () => {
     const browser = new Browser(app.origin);
@@ -374,55 +372,80 @@ describe('the tenant moderation page, through the route', () => {
     expect(landing.body).toContain('href="/moderation"');
   });
 
-  it('gives an absent kind the demo notice and no controls', async () => {
-    const server = await withKind();
-    try {
-      const browser = new Browser(server.origin);
-      await signIn(browser, tenantToken(ORG_A));
-      const page = await browser.request('/moderation');
-      expect(page.status).toBe(200);
-      expect(page.body).toContain('DEMO_NO_MODERATION_SETTINGS');
-      expect(page.body).not.toContain('<input');
-    } finally {
-      await server.close();
+  it('gives a REAL-registered tenant the moderation controls through the route', async () => {
+    // Tenant A is registered REAL in the fixture and nothing else is supplied:
+    // the portal is built exactly as main.ts builds it.
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_A));
+    const page = await browser.request('/moderation');
+    expect(page.status).toBe(200);
+    expect(page.body).not.toContain('DEMO_NO_MODERATION_SETTINGS');
+    // The shell's own sign-out form sits in the header, outside <main>; the
+    // settings body carries one form, to the save route, and no link.
+    const main = page.body.slice(page.body.indexOf('<main>'));
+    expect(main).toContain('FLOOR_HEADING');
+    expect(main).toContain('SETTINGS_NOT_YET_SAVED');
+    expect(main.match(/<form\b/g)).toHaveLength(1);
+    expect(main).toContain('action="/moderation/save"');
+    expect(main).not.toContain('href=');
+    expect(main).not.toContain('/moderation/appeal');
+    const fields = main.match(/<(input|select)\b[^>]*>/g) ?? [];
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      expect(field).toMatch(/name="comment\.[a-z_]+\.(enabled|sensitivity)"/);
     }
   });
 
-  it.each([['demo'], ['PUBLISHER'], ['']])(
-    'gives the kind %j the demo notice and no controls',
+  it('gives a DEMO-registered tenant the demo notice and no controls', async () => {
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_B));
+    const page = await browser.request('/moderation');
+    expect(page.status).toBe(200);
+    expect(page.body).toContain('DEMO_NO_MODERATION_SETTINGS');
+    expect(page.body).not.toContain('<input');
+    expect(page.body).not.toContain('<select');
+    expect(page.body).not.toContain('/moderation/save');
+  });
+
+  it.each([[undefined], ['real'], ['demo'], ['Real'], ['PUBLISHER'], [''], [null]])(
+    'refuses the kind %j: the page fails, with no controls and no demo notice (control case)',
     async (value) => {
-      const server = await withKind(async () => value);
+      const server = await serve((origin) =>
+        portalOn(
+          origin,
+          dbWithKind(async () => value)
+        )
+      );
       try {
         const browser = new Browser(server.origin);
         await signIn(browser, tenantToken(ORG_A));
         const page = await browser.request('/moderation');
-        expect(page.body).toContain('DEMO_NO_MODERATION_SETTINGS');
+        expect(page.status).toBe(500);
+        expect(page.body).toBe('FAILED');
         expect(page.body).not.toContain('<input');
         expect(page.body).not.toContain('<select');
+        expect(page.body).not.toContain('DEMO_NO_MODERATION_SETTINGS');
       } finally {
         await server.close();
       }
     }
   );
 
-  it('gives a REAL tenant the page: the floor, one save form of comment controls, no dead link', async () => {
-    const server = await withKind(async () => 'REAL');
+  it('fails the page when the kind cannot be read at all', async () => {
+    const server = await serve((origin) =>
+      portalOn(
+        origin,
+        dbWithKind(async () => {
+          throw new Error('register unreadable');
+        })
+      )
+    );
     try {
       const browser = new Browser(server.origin);
       await signIn(browser, tenantToken(ORG_A));
       const page = await browser.request('/moderation');
-      // The shell's own sign-out form sits in the header, outside <main>; the
-      // settings body carries one form, to the save route, and no link.
-      const main = page.body.slice(page.body.indexOf('<main>'));
-      expect(main).toContain('FLOOR_HEADING');
-      expect(main).toContain('SETTINGS_NOT_YET_SAVED');
-      expect(main.match(/<form\b/g)).toHaveLength(1);
-      expect(main).toContain('action="/moderation/save"');
-      expect(main).not.toContain('href=');
-      expect(main).not.toContain('/moderation/appeal');
-      for (const field of main.match(/<(input|select)\b[^>]*>/g) ?? []) {
-        expect(field).toMatch(/name="comment\.[a-z_]+\.(enabled|sensitivity)"/);
-      }
+      expect(page.status).toBe(500);
+      expect(page.body).not.toContain('DEMO_NO_MODERATION_SETTINGS');
     } finally {
       await server.close();
     }
