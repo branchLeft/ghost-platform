@@ -4037,10 +4037,54 @@ class TestApplyMode(unittest.TestCase):
         answers[("operator", "put-bucket-policy", FENCED)] = OSError("timed out")
         code, output, transport = run(answers, extra_args=["--apply"])
         self.assertEqual(code, 1)
-        self.assertRegex(output, r"FAIL\s+the policy is applied\s+-- the request did not complete")
         puts = [c for c in transport.calls if c == ("operator", "put-bucket-policy", FENCED)]
         self.assertEqual(len(puts), 1)
         self.assertNotIn("THE BUCKET IS STILL ADMINISTRABLE", output)
+
+    def test_a_lost_first_put_is_critical_inconclusive_and_names_the_check(self):
+        answers = self._answers()
+        answers[("operator", "put-bucket-policy", FENCED)] = OSError("timed out")
+        rows, applied = verify.apply_fence(
+            verify.Verifier(
+                endpoint=ENDPOINT,
+                region="hel1",
+                credentials={
+                    "operator": (OPERATOR_KEY, "s"),
+                    "workload": (WORKLOAD_KEY, "s"),
+                    "foreign": (FOREIGN_KEY, "s"),
+                },
+                transport=Transport(answers),
+            ),
+            bucket=FENCED,
+            policy_document=POLICY_DOCUMENT,
+            dwell_seconds=0,
+        )
+        self.assertTrue(applied)
+        row = next(r for r in rows if r[0] == "the policy is applied")
+        name, status, reason, _, critical = row
+        self.assertEqual(status, verify.INCONCLUSIVE)
+        self.assertTrue(critical)
+        self.assertIn("fate is unknown", reason)
+        self.assertIn(
+            f"aws --endpoint-url https://{ENDPOINT_HOST} s3api get-bucket-policy --bucket {FENCED}",
+            reason,
+        )
+
+    def test_a_lost_first_put_prints_the_lockout_banner(self):
+        answers = self._answers()
+        answers[("operator", "put-bucket-policy", FENCED)] = OSError("timed out")
+        code, output, _ = run(answers, extra_args=["--apply"])
+        self.assertEqual(code, 1)
+        self.assertRegex(output, r"INCONCLUSIVE\s+the policy is applied\s+--")
+        self.assertIn("THE BUCKET MAY BE LOCKED", output)
+
+    def test_a_refused_first_put_stays_a_plain_failure(self):
+        answers = self._answers()
+        answers[("operator", "put-bucket-policy", FENCED)] = ACCESS_DENIED_WRITE
+        code, output, _ = run(answers, extra_args=["--apply"])
+        self.assertEqual(code, 1)
+        self.assertRegex(output, r"FAIL\s+the policy is applied")
+        self.assertNotIn("fate is unknown", output)
 
     def test_apply_waits_a_dwell_between_the_two_puts(self):
         # THE CRITICAL GAP: `--apply` used to send both PUTs back to back, with

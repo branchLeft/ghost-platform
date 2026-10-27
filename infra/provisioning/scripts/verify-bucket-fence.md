@@ -1043,6 +1043,15 @@ fence was actually written -- which is also why the plain verify mode this
 `--apply` run is normally followed by (steps 1f/2d) does not need a dwell
 of its own: it never reads sooner than this one already waited.
 
+A FIRST PUT THAT GETS NO RESPONSE IS NOT A REFUSED ONE. A refusal (a 4xx
+or 5xx answer) is a plain failure: the engine said no. No response at all
+means the request may have reached the engine, so the fence may be live and
+this run cannot tell. That case is a critical INCONCLUSIVE row saying the
+policy's fate is unknown and printing the by-hand `get-bucket-policy` read,
+`applied` is true so the lockout banner prints, and nothing is retried or
+deleted -- the same condition, and the same command, as the temporary
+policy path.
+
 ## report
 
 `rows` are `(name, status, reason, note, critical)`.
