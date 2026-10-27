@@ -13,7 +13,7 @@ import { containsHeaderInjectionChars } from './mailgunFields.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
 import type { DrainWake } from './drainWake.js';
 import type { Logger } from './log.js';
-import { boundSender, resolveSenderDomain } from './senderAuthorization.js';
+import { boundSender, rawFromHeaderValue, resolveSenderDomain } from './senderAuthorization.js';
 import type { ShimStore } from './store.js';
 
 /**
@@ -841,8 +841,11 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             }
             /* v8 ignore stop */
             const headerFrom = parsed.from?.text;
+            // The gate also reads the header as written: `from.text` is already decoded.
             const boundHeaderFrom =
-              headerFrom !== undefined ? boundSender(headerFrom, senderDomain) : undefined;
+              headerFrom !== undefined
+                ? boundSender(headerFrom, senderDomain, rawFromHeaderValue(parsed.headerLines))
+                : undefined;
             if (headerFrom !== undefined && boundHeaderFrom === null) {
               log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
               const err = new Error(

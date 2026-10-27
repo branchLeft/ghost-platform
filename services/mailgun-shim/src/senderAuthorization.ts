@@ -124,6 +124,111 @@ function extractMailboxes(headerValue: string | null | undefined): Mailbox[] | n
   return mailboxes.length > 0 ? mailboxes : null;
 }
 
+/** Spans of text shaped like an encoded word: `=?`, a charset, a `q` or `b` marker, then text up to the next `?=`. */
+function encodedWordSpans(text: string): Array<readonly [number, number]> {
+  const spans: Array<readonly [number, number]> = [];
+  let from = 0;
+  // Each pass either consumes a span or moves one character on, and a charset
+  // scan stops at the next '?', so the whole scan is linear in the input.
+  for (;;) {
+    const open = text.indexOf('=?', from);
+    if (open < 0) {
+      break;
+    }
+    let charsetEnd = open + 2;
+    while (
+      charsetEnd < text.length &&
+      text.charAt(charsetEnd) !== '?' &&
+      !/\s/.test(text.charAt(charsetEnd))
+    ) {
+      charsetEnd++;
+    }
+    const marker = text.charAt(charsetEnd + 1);
+    const shaped =
+      charsetEnd > open + 2 &&
+      text.charAt(charsetEnd) === '?' &&
+      (marker === 'q' || marker === 'Q' || marker === 'b' || marker === 'B') &&
+      text.charAt(charsetEnd + 2) === '?';
+    if (!shaped) {
+      from = open + 1;
+      continue;
+    }
+    const close = text.indexOf('?=', charsetEnd + 3);
+    if (close < 0) {
+      break;
+    }
+    spans.push([open, close + 2]);
+    from = close + 2;
+  }
+  return spans;
+}
+
+/** The mailbox and group layout of a parse, with each address and none of the names. */
+function layoutOf(entries: ParsedAddress[]): string {
+  return entries
+    .map((entry) =>
+      entry.group
+        ? `g(${layoutOf(entry.group)})`
+        : entry.address
+          ? JSON.stringify(entry.address)
+          : 'n'
+    )
+    .join(',');
+}
+
+/** True when `=?` or `?=` sits in an address, in a group name, or in a name with no address. */
+function delimiterOutsideDisplayName(entries: ParsedAddress[]): boolean {
+  const holdsDelimiter = (text: string | undefined) =>
+    text !== undefined && (text.includes('=?') || text.includes('?='));
+  return entries.some((entry) => {
+    if (entry.group) {
+      return holdsDelimiter(entry.name) || delimiterOutsideDisplayName(entry.group);
+    }
+    return holdsDelimiter(entry.address ? entry.address : entry.name);
+  });
+}
+
+/**
+ * True when the text holds encoded-word syntax anywhere but in a display
+ * name: in an address, in a group name, or in a way that changes how the text
+ * splits into mailboxes. Refused, never decoded. See
+ * senderAuthorization.md#encoded-words.
+ */
+export function refusesEncodedWord(text: string): boolean {
+  if (!text.includes('=?') && !text.includes('?=')) {
+    return false;
+  }
+  // Each encoded word read as one opaque atom, the way a MIME reader splits it.
+  let masked = '';
+  let at = 0;
+  for (const [start, end] of encodedWordSpans(text)) {
+    masked += `${text.slice(at, start)}eword`;
+    at = end;
+  }
+  masked += text.slice(at);
+  try {
+    const asWritten = addressparser(text);
+    return (
+      layoutOf(asWritten) !== layoutOf(addressparser(masked)) ||
+      delimiterOutsideDisplayName(asWritten)
+    );
+  } catch {
+    return true;
+  }
+}
+
+/** The From header as it was written, unfolded: every From line of a parsed message, or undefined when it has none. See senderAuthorization.md#encoded-words. */
+export function rawFromHeaderValue(
+  headerLines: ReadonlyArray<{ key: string; line: string }>
+): string | undefined {
+  const values = headerLines
+    .filter((header) => header.key === 'from')
+    .map((header) =>
+      header.line.slice(header.line.indexOf(':') + 1).replace(/\r?\n(?=[ \t])/g, '')
+    );
+  return values.length > 0 ? values.join(', ') : undefined;
+}
+
 function extractAddresses(headerValue: string | null | undefined): string[] | null {
   const mailboxes = extractMailboxes(headerValue);
   return mailboxes ? mailboxes.map((mailbox) => mailbox.address) : null;
@@ -138,6 +243,9 @@ export function senderBelongsToTenant(
   headerValue: string | null | undefined,
   tenantDomain: string
 ): boolean {
+  if (typeof headerValue === 'string' && refusesEncodedWord(headerValue)) {
+    return false;
+  }
   const addresses = extractAddresses(headerValue);
   if (!addresses) {
     return false;
@@ -194,12 +302,19 @@ function serialiseMailboxes(mailboxes: Mailbox[]): string {
  * re-serialised in Ghost's shape to queue, or null when they do not belong
  * (or the normal form does not read back as the same mailboxes). Queueing
  * the raw string would let a later parser read another sender out of it.
- * See senderAuthorization.md#boundsender.
+ * See senderAuthorization.md#boundsender and #encoded-words.
  */
 export function boundSender(
   headerValue: string | null | undefined,
-  tenantDomain: string
+  tenantDomain: string,
+  rawHeaderValue?: string
 ): string | null {
+  if (typeof headerValue === 'string' && refusesEncodedWord(headerValue)) {
+    return null;
+  }
+  if (rawHeaderValue !== undefined && refusesEncodedWord(rawHeaderValue)) {
+    return null;
+  }
   const parsed = extractMailboxes(headerValue);
   if (!parsed) {
     return null;
