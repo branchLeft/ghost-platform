@@ -70,6 +70,7 @@ const REGISTER = '0001_tenant_register';
 const HEALTH = '0002_health_reading';
 const DOCUMENTS = '0003_versioned_documents';
 const MODERATION = '0004_moderation_setting';
+const KIND = '0005_tenant_kind';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -136,9 +137,10 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['USAGE'] },
       ],
     },
-    // TenantDb.ownRegistration and scopeForOrganisation read; OwnerDb
+    // TenantDb.ownRegistration, ownKind and scopeForOrganisation read; OwnerDb
     // registerTenant inserts, listTenants and listHealth read. Nothing
-    // updates or deletes a registration.
+    // updates or deletes a registration, so a tenant cannot change its own
+    // kind (the tenant role holds SELECT alone).
     {
       kind: 'table',
       identity: 'portal.tenant_register',
@@ -287,6 +289,11 @@ export const POLICIES: readonly PolicyEntry[] = [
 export interface TableShape {
   since: string;
   lines: readonly string[];
+  /**
+   * What a later migration added to the table: expected once that migration
+   * is applied, and an extra before it, like any other line.
+   */
+  added?: readonly { since: string; lines: readonly string[] }[];
 }
 
 const PLAIN = 'generated=- identity=-';
@@ -317,6 +324,17 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'ON portal.tenant_register USING btree (tenant_id)',
       'index portal.tenant_register_zitadel_org_id_unique CREATE UNIQUE INDEX ' +
         'tenant_register_zitadel_org_id_unique ON portal.tenant_register USING btree (zitadel_org_id)',
+    ],
+    // The kind has no default: a row that names none is refused by NOT NULL.
+    added: [
+      {
+        since: KIND,
+        lines: [
+          `column kind text notnull=true ${PLAIN}`,
+          "constraint tenant_register_kind_known CHECK ((kind = ANY (ARRAY['REAL'::text, " +
+            "'DEMO'::text])))",
+        ],
+      },
     ],
   },
   'portal.health_reading': {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { InvalidTenantKindError, parseTenantKind } from 'ghost-platform-portal-data/tenant';
 import {
   ABSOLUTE_CHECKS,
   ARTICLE_CHECKS,
@@ -10,7 +11,6 @@ import {
   moderationBody,
   NotConfigurableError,
   parseModerationForm,
-  parseTenantKind,
   renderFloorRow,
   renderModeration,
   renderSensitivity,
@@ -23,7 +23,7 @@ import {
 
 const ARTICLES = ['article_check_a'];
 const REAL = (articleChecks: readonly string[] = ARTICLES) => ({
-  kind: 'REAL',
+  kind: 'REAL' as const,
   settings: defaultSettings(articleChecks),
   articleChecks,
 });
@@ -151,22 +151,29 @@ describe('the tenant kind is closed', () => {
     [true],
     [{ kind: 'REAL' }],
     [['REAL']],
-  ])('treats %j as a demo, which renders the notice and no controls', (value) => {
-    expect(parseTenantKind(value)).toBe('DEMO');
-    const html = renderModeration({
-      kind: value,
-      settings: defaultSettings(ARTICLES),
-      articleChecks: ARTICLES,
-    });
-    expect(html).toContain('DEMO_NO_MODERATION_SETTINGS');
-    expect(controls(html)).toEqual([]);
+  ])('refuses %j: it is neither a real tenant nor a demo, and renders nothing', (value) => {
+    expect(() => parseTenantKind(value)).toThrow(InvalidTenantKindError);
+    expect(() =>
+      renderModeration({
+        kind: value as never,
+        settings: defaultSettings(ARTICLES),
+        articleChecks: ARTICLES,
+      })
+    ).toThrow(InvalidTenantKindError);
   });
 });
 
 describe('moderationBody, the route body', () => {
-  it('is a demo when no seam is given', async () => {
-    const html = await moderationBody({}, undefined);
+  it('throws when no seam is given, rather than showing the demo notice', async () => {
+    await expect(moderationBody({}, undefined as never)).rejects.toBeInstanceOf(
+      InvalidTenantKindError
+    );
+  });
+
+  it('is the demo notice for a DEMO the seam returns', async () => {
+    const html = await moderationBody({}, async () => 'DEMO');
     expect(html).toContain('DEMO_NO_MODERATION_SETTINGS');
+    expect(controls(html)).toEqual([]);
   });
 
   it('is the configurable page only when the seam returns REAL', async () => {
@@ -185,24 +192,34 @@ describe('moderationBody, the route body', () => {
     expect(real).toMatch(/name="comment\.harassment\.enabled" value="1" checked>/);
   });
 
-  it('reads nothing from storage for a demo or an absent seam', async () => {
+  it('reads nothing from storage for a demo, an absent seam or a bad kind', async () => {
     let reads = 0;
     const load = async () => {
       reads += 1;
       return {};
     };
     await moderationBody({}, async () => 'DEMO', load);
-    await moderationBody({}, undefined, load);
+    await expect(moderationBody({}, undefined as never, load)).rejects.toThrow();
+    await expect(moderationBody({}, async () => 'real', load)).rejects.toThrow();
     expect(reads).toBe(0);
   });
 
-  it.each([['demo'], ['PUBLISHER'], [''], [undefined]])(
-    'is a demo when the seam returns %j',
+  it.each([['demo'], ['PUBLISHER'], [''], [undefined], [null]])(
+    'throws, and renders nothing, when the seam returns %j',
     async (value) => {
-      const html = await moderationBody({}, async () => value);
-      expect(html).toContain('DEMO_NO_MODERATION_SETTINGS');
+      await expect(moderationBody({}, async () => value)).rejects.toBeInstanceOf(
+        InvalidTenantKindError
+      );
     }
   );
+
+  it('does not catch a seam that throws', async () => {
+    await expect(
+      moderationBody({}, async () => {
+        throw new Error('register unreadable');
+      })
+    ).rejects.toThrow('register unreadable');
+  });
 
   it('passes the scope to the seam', async () => {
     const seen: unknown[] = [];
@@ -405,8 +422,23 @@ describe('the save work', () => {
     expect(call.request.changes).toHaveLength(COMMENT_CHECKS.length);
   });
 
-  it.each([['DEMO'], ['demo'], ['PUBLISHER'], [''], [undefined]])(
-    'refuses a save for the kind %j, and writes nothing',
+  it('refuses a save for a demo slot, and writes nothing', async () => {
+    const { impl, saved } = store();
+    await expect(
+      saveModeration({
+        scope: 's',
+        kindOf: async () => 'DEMO',
+        store: impl,
+        updatedBy: 'u',
+        form: posted(),
+        now: NOW,
+      })
+    ).rejects.toBeInstanceOf(SettingsNotAvailableError);
+    expect(saved).toEqual([]);
+  });
+
+  it.each([['demo'], ['PUBLISHER'], [''], [undefined], [null]])(
+    'refuses a save for the unrecognised kind %j, and writes nothing',
     async (kind) => {
       const { impl, saved } = store();
       await expect(
@@ -418,23 +450,23 @@ describe('the save work', () => {
           form: posted(),
           now: NOW,
         })
-      ).rejects.toBeInstanceOf(SettingsNotAvailableError);
+      ).rejects.toBeInstanceOf(InvalidTenantKindError);
       expect(saved).toEqual([]);
     }
   );
 
-  it('refuses a save when there is no kind seam', async () => {
+  it('refuses a save when there is no kind seam, and writes nothing', async () => {
     const { impl, saved } = store();
     await expect(
       saveModeration({
         scope: 's',
-        kindOf: undefined,
+        kindOf: undefined as never,
         store: impl,
         updatedBy: 'u',
         form: posted(),
         now: NOW,
       })
-    ).rejects.toBeInstanceOf(SettingsNotAvailableError);
+    ).rejects.toBeInstanceOf(InvalidTenantKindError);
     expect(saved).toEqual([]);
   });
 

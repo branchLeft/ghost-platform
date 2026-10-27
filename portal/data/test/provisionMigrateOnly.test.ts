@@ -149,6 +149,7 @@ describe('--migrate-only on a real server', () => {
       'pre-check passed: no difference from the manifest',
       'applied migration 0003_versioned_documents',
       'applied migration 0004_moderation_setting',
+      'applied migration 0005_tenant_kind',
       'post-check passed: the server matches the manifest',
       'portal database migrated',
     ]);
@@ -249,6 +250,55 @@ describe('--migrate-only on a real server', () => {
     );
     expect(await history()).toEqual(all.map((m) => m.hash));
     expect((await migrate()).code).toBe(0);
+  });
+
+  it('adds the tenant kind to a register that already exists, and checks it in the manifest', async () => {
+    const all = readMigrations();
+    expect(all[all.length - 1]!.tag).toBe('0005_tenant_kind');
+    // A database at the migration before the kind passes the manifest check
+    // without the column: the column is expected only once its migration is.
+    const before = await run({ migrations: all.slice(0, -1) });
+    expect(before.err).toEqual([]);
+    expect(before.code).toBe(0);
+    const [absent] = await admin(
+      PROV_DB,
+      `SELECT count(*) AS n FROM information_schema.columns
+        WHERE table_schema = 'portal' AND table_name = 'tenant_register' AND column_name = 'kind'`
+    );
+    expect(absent!.rows[0].n).toBe('0');
+    const result = await migrate();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('applied migration 0005_tenant_kind');
+    expect(result.out).toContain('post-check passed: the server matches the manifest');
+    const [present] = await admin(
+      PROV_DB,
+      `SELECT is_nullable, column_default FROM information_schema.columns
+        WHERE table_schema = 'portal' AND table_name = 'tenant_register' AND column_name = 'kind'`
+    );
+    expect(present!.rows).toEqual([{ is_nullable: 'NO', column_default: null }]);
+    expect((await migrate()).code).toBe(0);
+  });
+
+  it('refuses a kind column the manifest does not describe, and a missing one', async () => {
+    expect((await run()).code).toBe(0);
+    await admin(
+      PROV_DB,
+      'ALTER TABLE portal.tenant_register ALTER COLUMN kind SET DEFAULT $$REAL$$'
+    );
+    const defaulted = await migrate();
+    expect(defaulted.code).toBe(1);
+    expect(defaulted.err.join('\n')).toMatch(/M21: portal\.tenant_register default kind/);
+    await admin(PROV_DB, 'ALTER TABLE portal.tenant_register ALTER COLUMN kind DROP DEFAULT');
+    await admin(
+      PROV_DB,
+      'ALTER TABLE portal.tenant_register DROP CONSTRAINT tenant_register_kind_known'
+    );
+    const unchecked = await migrate();
+    expect(unchecked.code).toBe(1);
+    expect(unchecked.err.join('\n')).toMatch(
+      /missing M21: portal\.tenant_register constraint tenant_register_kind_known/
+    );
   });
 
   it('refuses before commit a migration whose object the manifest does not grant, writing nothing', async () => {

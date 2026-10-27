@@ -1,10 +1,14 @@
 import {
   COMMENT_CHECKS,
+  InvalidTenantKindError,
   SENSITIVITIES,
+  TENANT_KINDS,
+  parseTenantKind,
   type CommentCheck,
   type CommentSettingChange,
   type SavedModerationSettings,
   type Sensitivity,
+  type TenantKind,
 } from 'ghost-platform-portal-data/tenant';
 import { escapeHtml } from '../shell/html.js';
 
@@ -32,9 +36,9 @@ export type { CommentCheck, Sensitivity };
 /** The article check set is an owner decision that has not been made: empty. */
 export const ARTICLE_CHECKS: readonly string[] = [];
 
-export const TENANT_KINDS = ['REAL', 'DEMO'] as const;
-
-export type TenantKind = (typeof TENANT_KINDS)[number];
+/** The tenant kinds are defined once, with the register that stores them. */
+export { TENANT_KINDS };
+export type { TenantKind };
 
 export interface CommentSetting {
   readonly enabled: boolean;
@@ -145,13 +149,17 @@ export function parseModerationForm(form: URLSearchParams): CommentSettingChange
 }
 
 /**
- * Only an exact member of TENANT_KINDS is a tenant kind. Anything else, including
- * a wrong-case or empty string, a missing value or a non-string, is a demo.
+ * The tenant's kind from the seam, parsed strictly. An absent seam, a seam that
+ * throws, or a value that is not an exact member of TENANT_KINDS is an error:
+ * there is no default, so a kind that was never supplied cannot pass for either
+ * a real tenant or a demo slot.
  */
-export function parseTenantKind(value: unknown): TenantKind {
-  return typeof value === 'string' && (TENANT_KINDS as readonly string[]).includes(value)
-    ? (value as TenantKind)
-    : 'DEMO';
+async function kindFrom<S>(
+  scope: S,
+  kindOf: ((scope: S) => Promise<unknown>) | undefined
+): Promise<TenantKind> {
+  if (typeof kindOf !== 'function') throw new InvalidTenantKindError();
+  return parseTenantKind(await kindOf(scope));
 }
 
 /** The defaults are placeholders, not a decision: the page never presents them as saved. */
@@ -218,7 +226,7 @@ export function renderSensitivity(
 }
 
 export interface ModerationView {
-  readonly kind: unknown;
+  readonly kind: TenantKind;
   readonly settings: ModerationSettings;
   readonly articleChecks: readonly string[];
   /** True once the tenant has saved any comment check; false shows the placeholder-defaults notice. */
@@ -226,10 +234,12 @@ export interface ModerationView {
 }
 
 /**
- * The moderation page body. Only an exact REAL tenant gets the controls; any
- * other kind gets the demo notice and no form. The comment controls sit in one
- * form that posts to the save route; the floor has no input and no link, and
- * the article controls stay disabled outside the form.
+ * The moderation page body. Only an exact REAL tenant gets the controls; an
+ * exact DEMO gets the demo notice and no form; any other kind is an error and
+ * renders nothing, so a bad kind cannot fall through to the demo notice. The
+ * comment controls sit in one form that posts to the save route; the floor has
+ * no input and no link, and the article controls stay disabled outside the
+ * form.
  */
 export function renderModeration(view: ModerationView): string {
   if (parseTenantKind(view.kind) !== 'REAL') {
@@ -289,17 +299,17 @@ export function withSaved(
 }
 
 /**
- * The page's body for one signed-in tenant. The kind comes from the seam. An
- * absent seam, or a value that is not an exact tenant kind, is a demo and reads
- * nothing from storage. A seam or a read that throws is not caught here: the
- * shell answers 500 FAILED and renders no page.
+ * The page's body for one signed-in tenant. The kind comes from the seam and
+ * is required: an absent seam, or a value that is not an exact tenant kind,
+ * throws and a demo slot reads nothing from storage. A seam or a read that
+ * throws is not caught here: the shell answers 500 FAILED and renders no page.
  */
 export async function moderationBody<S>(
   scope: S,
-  kindOf: ((scope: S) => Promise<unknown>) | undefined,
+  kindOf: (scope: S) => Promise<unknown>,
   load?: (scope: S) => Promise<SavedModerationSettings>
 ): Promise<string> {
-  const kind = parseTenantKind(kindOf === undefined ? undefined : await kindOf(scope));
+  const kind = await kindFrom(scope, kindOf);
   const defaults = defaultSettings(ARTICLE_CHECKS);
   const saved = kind === 'REAL' && load !== undefined ? await load(scope) : {};
   return renderModeration({
@@ -311,22 +321,23 @@ export async function moderationBody<S>(
 }
 
 /**
- * The save route's work. Only an exact REAL tenant may save (a demo slot, an
- * absent seam or an unrecognised kind is refused with
- * `SettingsNotAvailableError`, the same rule that decides what the page
- * shows). The form is parsed whole, naming any absolute or floor check with
- * `NotConfigurableError`, and only then written: a refused form saves nothing.
+ * The save route's work. Only an exact REAL tenant may save: a demo slot is
+ * refused with `SettingsNotAvailableError`, and an absent seam or an
+ * unrecognised kind throws, so nothing is written for a kind that was never
+ * supplied (the route answers both with 400 REFUSED). The form is parsed whole,
+ * naming any absolute or floor check with `NotConfigurableError`, and only then
+ * written: a refused form saves nothing.
  */
 export async function saveModeration<S>(request: {
   readonly scope: S;
-  readonly kindOf: ((scope: S) => Promise<unknown>) | undefined;
+  readonly kindOf: (scope: S) => Promise<unknown>;
   readonly store: ModerationStore<S>;
   readonly updatedBy: string;
   readonly form: URLSearchParams;
   readonly now: Date;
 }): Promise<void> {
   const { scope, kindOf, store, updatedBy, form, now } = request;
-  const kind = parseTenantKind(kindOf === undefined ? undefined : await kindOf(scope));
+  const kind = await kindFrom(scope, kindOf);
   if (kind !== 'REAL') throw new SettingsNotAvailableError();
   const changes = parseModerationForm(form);
   await store.saveModerationSettings(scope, { changes, updatedBy }, now);

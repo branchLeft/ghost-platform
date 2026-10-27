@@ -120,8 +120,9 @@ export async function createFixture(): Promise<Fixture> {
 
   const adminDb = connect(admin);
   await adminDb.insert(tenantRegister).values([
-    { tenantId: TENANT_A, zitadelOrgId: ORG_A },
-    { tenantId: TENANT_B, zitadelOrgId: ORG_B },
+    // Tenant A is a real tenant and tenant B is a demo slot.
+    { tenantId: TENANT_A, zitadelOrgId: ORG_A, kind: 'REAL' },
+    { tenantId: TENANT_B, zitadelOrgId: ORG_B, kind: 'DEMO' },
   ]);
 
   const tenant = testPool(database, TENANT_LOGIN, LOGIN_PASSWORD, 1);
