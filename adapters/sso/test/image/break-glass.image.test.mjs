@@ -22,7 +22,7 @@ import {
 } from '../../../../test-support/image-harness.mjs';
 import { claimsFor, generateKeyPair, mint } from '../helpers/token.mjs';
 
-const IMAGE = process.env.IMAGE;
+const IMAGE = 'ghost-platform:nope'; // THROWAWAY SABOTAGE, never merged
 if (!IMAGE) {
   throw new Error('IMAGE must name the built Ghost image, e.g. IMAGE=ghost-platform:ci');
 }
