@@ -392,7 +392,7 @@ describe('the periodic orphan sweep', () => {
     expect(logger.lines[0]).toContain(ORPHAN_LOG_PREFIX);
   });
 
-  it('keeps running on an unref-ed timer that stopAll ends', async () => {
+  it('runs on an unref-ed timer that stopAll ends', async () => {
     const registry = buildRegistry({ orphanSweepIntervalMs: TICK_MS });
     resume(registry);
 
