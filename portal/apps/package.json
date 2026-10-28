@@ -17,13 +17,17 @@
   "dependencies": {
     "ghost-platform-identity": "link:../../services/identity",
     "ghost-platform-portal-data": "link:../data",
+    "nodemailer": "^9.1.1",
     "pg": "^8.13.0"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.4.0",
     "@types/node": "^26.5.1",
+    "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.11.0",
+    "@types/smtp-server": "^3.5.13",
     "@vitest/coverage-v8": "4.1.11",
+    "smtp-server": "^3.13.5",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
   }

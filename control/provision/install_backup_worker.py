@@ -48,6 +48,7 @@ REQUIRED_RELEASE_FILES = (
     "db/provision/naming.py",
     "db/provision/objectstorage.py",
     "infra/provisioning/scripts/enrol_tenant_backup.py",
+    "infra/provisioning/scripts/erase_tenant_backup_identity.py",
     "infra/provisioning/scripts/restore_drill.py",
     "db/recovery/restore_drained.py",
     "control/provision/install_backup_worker.py",

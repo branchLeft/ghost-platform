@@ -83,6 +83,18 @@ loop's `--tenant` form as the service account. The enrolment itself never
 dumps and never creates a run-lock or metrics file. See
 `enrol_tenant_backup.md` for the order, the exit codes and what is checked.
 
+## Erasing a tenant's backup identity
+
+`erase_tenant_backup_identity.py`, run once as root on the control host with
+the tenant's slug, is the other end of the enrolment: it destroys every copy
+of the tenant's private key (the identity file and any stray copy of it in the
+identity directory, and the wrapped spare with every version of it), takes the
+tenant off the two lists, and then reads every location back. It exits 3
+while any copy remains or any location cannot be read. It never reads or
+unwraps the spare, so it needs no wrapping key. See
+`erase_tenant_backup_identity.md` for the list of locations, the order and the
+exit codes.
+
 ## Where it runs
 
 The loop runs on the control host, under `branchleft-backup-worker.timer`,

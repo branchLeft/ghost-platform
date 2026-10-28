@@ -57,8 +57,34 @@ The portal does not choose a transport. `createTenantPortal` takes an optional
 are injected addresses, never literals in source. Without it there is no
 `/support*` page or action (all answer 404), no navigation item and no link: the
 portal is as it was. An injected address that is empty or holds a line break or NUL
-stops the portal being built. `src/tenant/main.ts` does not wire a mailer yet,
-so the page is absent until a later change injects one.
+stops the portal being built.
+
+`src/tenant/main.ts` builds `support` from the variables below
+(`loadSupportSettings`, `src/tenant/supportConfig.ts`) and sends over
+authenticated SMTP (`createSmtpSupportMailer`, `src/tenant/supportSmtpMailer.ts`).
+Anything missing or invalid turns support off, not the portal: it starts, every
+`/support*` path answers 404 and one stderr line names the variables at fault,
+never a value.
+
+```text
+PORTAL_SUPPORT_SMTP_HOST            the mail server's DNS name, never an IP
+PORTAL_SUPPORT_SMTP_PORT            default 587
+PORTAL_SUPPORT_SMTP_SECURITY        STARTTLS (default) or IMPLICIT
+PORTAL_SUPPORT_SMTP_USER            the login: an address
+PORTAL_SUPPORT_SMTP_PASSWORD_FILE   a file holding the login's secret
+PORTAL_SUPPORT_SENDER               the From address
+PORTAL_SUPPORT_RECIPIENT            where tickets go
+```
+
+`PORTAL_SUPPORT_SENDER` and `PORTAL_SUPPORT_SMTP_USER` must be the same address:
+the mail server accepts a sender only from the account that logged in, so when they
+differ support stays off. STARTTLS logs in only after the upgrade and never falls
+back to cleartext; the server's certificate is always verified, and the
+certificate must name the host in `PORTAL_SUPPORT_SMTP_HOST`. A failed send
+reaches the shell as `SupportTicketError('SEND_FAILED')`, and
+stderr gets one line with a short code from a closed set (`CONNECT_FAILED`,
+`TLS_FAILED`, `AUTH_FAILED`, `REJECTED`, `TIMEOUT`, `SEND_FAILED`) and nothing the
+tenant or the server said.
 
 What the email carries, as `NAME: value` lines in this order, from the closed
 list `CONTEXT_FIELDS` in `src/tenant/supportContext.ts`: `TENANT_ID`,

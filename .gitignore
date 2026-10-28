@@ -23,6 +23,7 @@ __pycache__/
 package-lock.json
 portal/*/dist
 portal/*/coverage
+portal/apps/test/.mutants/
 
 # Speckify build output (speckify build writes here by default)
 .speckify/
