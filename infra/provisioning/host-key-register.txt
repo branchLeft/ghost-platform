@@ -1,0 +1,11 @@
+# Host-key register: each estate host's SSH public host key, one line per host role.
+#
+# Line format: role ssh-ed25519 base64key
+#
+# Public keys only. No address, no host name and no comment text carrying either:
+# a host is named by its role, and the address is given when a known_hosts file
+# is filled.
+#
+# A key is added once, from the host itself, with the record command of the tool
+# that reads this file. Never from a key scan. Changing a recorded key is a
+# reviewed edit to this file, never a record.
