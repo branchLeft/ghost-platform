@@ -69,7 +69,14 @@ function differences(observations: readonly Observation[]): Difference[] {
   return out;
 }
 
-const PRINCIPALS: readonly Principal[] = ['tenantRole', 'ownerRole', 'tenantLogin', 'ownerLogin'];
+const PRINCIPALS: readonly Principal[] = [
+  'tenantRole',
+  'ownerRole',
+  'provisionerRole',
+  'tenantLogin',
+  'ownerLogin',
+  'provisionerLogin',
+];
 
 /** The checkpoint of a fully provisioned database: every principal, every migration. */
 export function checkpointFor(

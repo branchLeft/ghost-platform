@@ -10,10 +10,10 @@ export function connect(pool: Pool): PortalDb {
   return drizzle(pool, { schema });
 }
 
-export type PortalRole = 'portal_tenant' | 'portal_owner';
+export type PortalRole = 'portal_tenant' | 'portal_owner' | 'portal_provisioner';
 
 /**
- * Drops the transaction to one of the two portal roles. The role is local to
+ * Drops the transaction to one of the portal roles. The role is local to
  * the transaction, so a pooled connection never carries it to the next caller.
  */
 export async function enterRole(tx: Tx, role: PortalRole): Promise<void> {

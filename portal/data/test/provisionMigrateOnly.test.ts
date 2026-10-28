@@ -15,6 +15,7 @@ import { testUrl } from './helpers.js';
 import {
   OWNER,
   PROV_DB,
+  PROVISIONER,
   TENANT,
   TENANT_PW,
   admin,
@@ -35,6 +36,7 @@ const ENV = {
   PORTAL_DATABASE_NAME: PROV_DB,
   PORTAL_TENANT_LOGIN: TENANT,
   PORTAL_OWNER_LOGIN: OWNER,
+  PORTAL_PROVISIONER_LOGIN: PROVISIONER,
 };
 
 /** The flag run with the administrator URL file alone: any other file read throws. */
@@ -104,6 +106,7 @@ describe('--migrate-only without a server', () => {
     const config = loadConfig(ENV, [], read, false);
     expect(config.tenantPassword).toBe('');
     expect(config.ownerPassword).toBe('');
+    expect(config.provisionerPassword).toBe('');
     expect(() => loadConfig(ENV, [], read)).toThrow(/PORTAL_TENANT_PASSWORD_FILE/);
   });
 
@@ -141,7 +144,7 @@ describe('--migrate-only on a real server', () => {
   it('applies the pending migration with its grants and changes no password or role', async () => {
     await provisionedBeforeDocuments();
     const before = await logins();
-    expect(before).toHaveLength(4);
+    expect(before).toHaveLength(6);
     const result = await migrate();
     expect(result.err).toEqual([]);
     expect(result.code).toBe(0);
@@ -150,6 +153,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0003_versioned_documents',
       'applied migration 0004_moderation_setting',
       'applied migration 0005_tenant_kind',
+      'applied migration 0006_demo_lifecycle_register',
       'post-check passed: the server matches the manifest',
       'portal database migrated',
     ]);
@@ -198,11 +202,34 @@ describe('--migrate-only on a real server', () => {
     }
   });
 
+  it('refuses a server provisioned before the provisioner role existed, creating nothing', async () => {
+    await provisionedBeforeDocuments();
+    // What a server provisioned before this role existed looks like: the role and
+    // its login absent, nothing of theirs granted.
+    await admin(PROV_DB, 'REVOKE USAGE ON SCHEMA portal FROM portal_provisioner');
+    await admin(
+      'postgres',
+      `REVOKE CONNECT ON DATABASE ${PROV_DB} FROM ${PROVISIONER}`,
+      `DROP ROLE ${PROVISIONER}`,
+      'DROP ROLE portal_provisioner'
+    );
+    const result = await migrate();
+    expect(result.code).toBe(1);
+    expect(result.err).toEqual([
+      `provision failed: migrate refused: role portal_provisioner, ${PROVISIONER} is absent; --migrate-only creates no role, run the full provision first`,
+    ]);
+    const [rows] = await admin(
+      'postgres',
+      "SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_provisioner', '${PROVISIONER}')"
+    );
+    expect(rows!.rows[0].n).toBe(0);
+  });
+
   it('refuses on a bare server: roles first, creating neither them nor the database', async () => {
     const result = await migrate();
     expect(result.code).toBe(1);
     expect(result.err.join('\n')).toMatch(
-      /migrate refused: role portal_tenant, portal_owner, .* is absent/
+      /migrate refused: role portal_tenant, portal_owner, portal_provisioner, .* is absent/
     );
     const [rows] = await admin(
       'postgres',
@@ -217,7 +244,9 @@ describe('--migrate-only on a real server', () => {
       'CREATE ROLE portal_tenant NOLOGIN',
       'CREATE ROLE portal_owner NOLOGIN',
       `CREATE ROLE ${TENANT} LOGIN`,
-      `CREATE ROLE ${OWNER} LOGIN`
+      `CREATE ROLE ${OWNER} LOGIN`,
+      'CREATE ROLE portal_provisioner NOLOGIN',
+      `CREATE ROLE ${PROVISIONER} LOGIN`
     );
     const result = await migrate();
     expect(result.code).toBe(1);
@@ -254,10 +283,11 @@ describe('--migrate-only on a real server', () => {
 
   it('adds the tenant kind to a register that already exists, and checks it in the manifest', async () => {
     const all = readMigrations();
-    expect(all[all.length - 1]!.tag).toBe('0005_tenant_kind');
+    const kindIndex = all.findIndex((migration) => migration.tag === '0005_tenant_kind');
+    expect(kindIndex).toBeGreaterThan(0);
     // A database at the migration before the kind passes the manifest check
     // without the column: the column is expected only once its migration is.
-    const before = await run({ migrations: all.slice(0, -1) });
+    const before = await run({ migrations: all.slice(0, kindIndex) });
     expect(before.err).toEqual([]);
     expect(before.code).toBe(0);
     const [absent] = await admin(
@@ -310,9 +340,11 @@ describe('--migrate-only on a real server', () => {
       statements: [...all[3]!.statements, 'CREATE TABLE portal.rogue (id integer)'],
     };
     await expect(
-      migratePortal({ ...provConfig(), tenantPassword: '', ownerPassword: '' }, () => undefined, {
-        migrations: [...all.slice(0, 3), rogue],
-      })
+      migratePortal(
+        { ...provConfig(), tenantPassword: '', ownerPassword: '', provisionerPassword: '' },
+        () => undefined,
+        { migrations: [...all.slice(0, 3), rogue] }
+      )
     ).rejects.toThrow(/refused/);
     expect(await history()).toEqual(before);
     const [tables] = await admin(
@@ -339,6 +371,7 @@ describe('--migrate-only on a real server', () => {
           PORTAL_DATABASE_NAME: PROV_DB,
           PORTAL_TENANT_LOGIN: TENANT,
           PORTAL_OWNER_LOGIN: OWNER,
+          PORTAL_PROVISIONER_LOGIN: PROVISIONER,
         },
         encoding: 'utf8',
       });

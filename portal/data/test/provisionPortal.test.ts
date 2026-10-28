@@ -16,6 +16,7 @@ import { dropDatabase, testPool, testUrl } from './helpers.js';
 import {
   OWNER,
   PROV_DB,
+  PROVISIONER,
   TENANT,
   TENANT_PW,
   admin,
@@ -71,7 +72,7 @@ describe('the provisioning lifecycle', () => {
     expect(result.code).toBe(0);
     expect(result.out).toEqual([
       'pre-check passed: no difference from the manifest',
-      `created portal_tenant, portal_owner, ${TENANT}, ${OWNER}`,
+      `created portal_tenant, portal_owner, portal_provisioner, ${TENANT}, ${OWNER}, ${PROVISIONER}`,
       `created database ${PROV_DB}`,
       'applied migration 0000_binding_functions',
       'applied migration 0001_tenant_register',
@@ -79,6 +80,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0003_versioned_documents',
       'applied migration 0004_moderation_setting',
       'applied migration 0005_tenant_kind',
+      'applied migration 0006_demo_lifecycle_register',
       'post-check passed: the server matches the manifest',
       'boundary verified',
       'portal database provisioned',
@@ -116,14 +118,19 @@ describe('the provisioning lifecycle', () => {
   it('changes nothing but the passwords on a second run', async () => {
     expect((await run()).code).toBe(0);
     const before = await stateSnapshot();
-    const second = await run({}, { tenant: 'rotated-tenant-1', owner: 'rotated-owner-1' });
+    const second = await run(
+      {},
+      { tenant: 'rotated-tenant-1', owner: 'rotated-owner-1', provisioner: 'rotated-prov-1' }
+    );
     expect(second.err).toEqual([]);
     expect(second.code).toBe(0);
     expect(second.out).toContain('passwords rotated');
     expect(second.out.some((line) => line.startsWith('applied migration'))).toBe(false);
     const after = await stateSnapshot();
     const strip = (lines: string[]): string[] =>
-      lines.filter((line) => !line.startsWith(`${TENANT} `) && !line.startsWith(`${OWNER} `));
+      lines.filter(
+        (line) => ![TENANT, OWNER, PROVISIONER].some((login) => line.startsWith(`${login} `))
+      );
     expect(strip(after)).toEqual(strip(before));
     expect(after).not.toEqual(before);
     await connectAs(TENANT, 'rotated-tenant-1');
@@ -161,7 +168,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 7 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 8 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 
@@ -176,8 +183,9 @@ describe('the provisioning lifecycle', () => {
     // The probe runs after the logins and the database exist: the refusal says
     // so rather than claiming nothing changed.
     expect(result.err.at(-1)).toBe(
-      'provision failed: refused: 4 difference(s) from the manifest; already done by this run: ' +
-        `created portal_tenant, portal_owner, ${TENANT}, ${OWNER}; created database ${PROV_DB} (empty)`
+      'provision failed: refused: 6 difference(s) from the manifest; already done by this run: ' +
+        `created portal_tenant, portal_owner, portal_provisioner, ${TENANT}, ${OWNER}, ${PROVISIONER}; ` +
+        `created database ${PROV_DB} (empty)`
     );
     expect(result.err.join('\n')).not.toContain('nothing was changed');
   });
@@ -306,7 +314,11 @@ describe('the compiled command', () => {
     await resetServer();
   }, 60000);
 
-  function compiled(tenantPassword: string, ownerPassword: string) {
+  function compiled(
+    tenantPassword: string,
+    ownerPassword: string,
+    provisionerPassword = 'prov-pw'
+  ) {
     if (!existsSync(dist))
       throw new Error('run `npm run build` first: the compiled command is missing');
     const dir = mkdtempSync(join(tmpdir(), 'portal-provision-'));
@@ -315,6 +327,7 @@ describe('the compiled command', () => {
       PORTAL_ADMIN_URL_FILE: testUrl('postgres'),
       PORTAL_TENANT_PASSWORD_FILE: tenantPassword,
       PORTAL_OWNER_PASSWORD_FILE: ownerPassword,
+      PORTAL_PROVISIONER_PASSWORD_FILE: provisionerPassword,
     })) {
       env[name] = join(dir, name);
       writeFileSync(env[name], content);
@@ -327,6 +340,7 @@ describe('the compiled command', () => {
           PORTAL_DATABASE_NAME: PROV_DB,
           PORTAL_TENANT_LOGIN: TENANT,
           PORTAL_OWNER_LOGIN: OWNER,
+          PORTAL_PROVISIONER_LOGIN: PROVISIONER,
         },
         encoding: 'utf8',
       });

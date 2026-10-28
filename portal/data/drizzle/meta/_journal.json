@@ -43,6 +43,13 @@
       "when": 1793142124449,
       "tag": "0005_tenant_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793145191147,
+      "tag": "0006_demo_lifecycle_register",
+      "breakpoints": true
     }
   ]
 }
