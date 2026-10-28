@@ -13,7 +13,7 @@ a demo's own `appHostIp` field carries.
 Needs Docker and the `ghost-platform:ci` image (built by this repo's
 `docker build .` at the repo root — see `build.yml`'s "docker build" job,
 which already builds and smoke-tests it on every PR). `render-core-ci.yml`
-runs `npm ci`/test/coverage inside `render-core/` only and never builds that
+runs `pnpm install --frozen-lockfile`/test/coverage inside `render-core/` only and never builds that
 image, so this suite detects its absence and skips rather than failing a CI
 job that has no way to produce it — proven locally, where both
 preconditions hold.

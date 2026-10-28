@@ -294,7 +294,7 @@ fi
 echo
 
 echo "--- building the export bundler ---"
-(cd "$BUNDLER_DIR" && PATH="$NODE_BIN_DIR:$PATH" npx tsc -p tsconfig.build.json)
+(cd "$BUNDLER_DIR" && PATH="$NODE_BIN_DIR:$PATH" pnpm exec tsc -p tsconfig.build.json)
 echo "PASS: built dist/"
 echo
 

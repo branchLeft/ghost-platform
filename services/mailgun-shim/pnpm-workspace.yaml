@@ -1,0 +1,9 @@
+# Moved from package.json's `overrides`, which pnpm does not read.
+overrides:
+  nodemailer: ^10.1.0
+  deepmerge-ts: ^8.0.2
+
+# pnpm 11 blocks dependency build scripts unless named here. esbuild runs
+# from its platform binary package without its postinstall.
+allowBuilds:
+  esbuild: false

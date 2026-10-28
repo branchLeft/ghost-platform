@@ -60,7 +60,7 @@ everything that differs arrives as environment variables.
 #   @branchleft:registry=https://npm.pkg.github.com
 #   //npm.pkg.github.com/:_authToken=YOUR_GITHUB_PAT
 
-npm install @branchleft/ghost-platform-tenant
+pnpm add @branchleft/ghost-platform-tenant
 ```
 
 ## Usage

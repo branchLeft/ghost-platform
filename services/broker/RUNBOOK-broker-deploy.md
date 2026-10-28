@@ -13,11 +13,11 @@ the demo host, once that host exists. It does not cover:
 A step below that depends on one of those lands as a named gap, not a
 worked step -- see "Left out, deliberately" at the end.
 
-## Runtime: a bundled single file, not a plain `npm ci` on the host
+## Runtime: a bundled single file, not a plain `pnpm install --frozen-lockfile` on the host
 
 `services/broker/package.json` depends on
 `@branchleft/ghost-platform-render-core` via `file:../../render-core`.
-Installed locally (`npm ci` in this checkout), that resolves to a symlink
+Installed locally (`pnpm install --frozen-lockfile` in this checkout), that resolves to a symlink
 four directories up (`node_modules/@branchleft/ghost-platform-render-core
 -> ../../../../render-core`) -- proven by running it, not assumed. render-
 core's own `package.json` says why a normal host install can't lean on the
@@ -26,7 +26,7 @@ exists for it yet" (`CLAUDE.md`). A host install would therefore need the
 whole monorepo checkout staged at that exact relative layout, which is
 fragile to rsync and easy to let drift from what actually shipped.
 
-Instead, `npm run bundle` (`esbuild.bundle.mjs`) produces five self-
+Instead, `pnpm run bundle` (`esbuild.bundle.mjs`) produces five self-
 contained ESM files with render-core (and this package's own modules)
 inlined:
 
@@ -106,8 +106,8 @@ because no publish path exists yet either -- see "Delivery path" below).
 
    ```bash
    cd services/broker
-   npm ci
-   npm run bundle
+   pnpm install --frozen-lockfile
+   pnpm run bundle
    ssh demo1 'sudo mkdir -p /opt/branchleft/broker/releases'
    RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
    rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
@@ -167,7 +167,7 @@ never an in-place overwrite of `current/`, so a broker mid-request never
 sees half-written files:
 
 ```bash
-cd services/broker && npm ci && npm run bundle
+cd services/broker && pnpm install --frozen-lockfile && pnpm run bundle
 RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
 rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
 ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current && sudo systemctl restart branchleft-broker.service"
@@ -210,7 +210,7 @@ the issue or the systemd docs -- is explained in full in `systemd/README.md`,
 with a short pointer at each line the finding fixed.
 
 Run locally the same way CI does, from the repo root (the build needs both
-`demo-host/provision/` and `services/broker/dist/bundle/` -- run `npm run
+`demo-host/provision/` and `services/broker/dist/bundle/` -- run `pnpm run
 bundle` in `services/broker` first):
 
 ```bash

@@ -21,5 +21,5 @@ In order, on one site:
    left as it was.
 4. **Reset**: `forget` deletes the token file.
 
-Run it with `npx vitest run test/live/ghostAdminClient.live.test.ts` after
+Run it with `pnpm exec vitest run test/live/ghostAdminClient.live.test.ts` after
 `docker pull` of the pinned image.

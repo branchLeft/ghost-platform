@@ -246,8 +246,8 @@ of `portal_owner` alone, so the tenant-facing connection cannot assume that role
 ## Running the tests
 
 ```sh
-nvm use && npm ci
-PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres npm run coverage
+nvm use && pnpm install --frozen-lockfile
+PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres pnpm run coverage
 ```
 
 The URL must be a superuser on a throwaway cluster started with
@@ -256,7 +256,7 @@ provisioner's included) (writable by the server's user, since
 the pg_hba tests rewrite and restore it), because the provisioning command
 refuses any rule that lets a portal login reach another database. CI runs the
 suite on PostgreSQL 14 and 17. The suite creates and drops its own databases.
-After a schema edit, `npm run generate` writes the migration; CI fails if the
+After a schema edit, `pnpm run generate` writes the migration; CI fails if the
 committed one differs.
 
 ## Provisioning a database
@@ -265,7 +265,7 @@ One command, run by the operator as a database administrator and never by the
 portal. In the portal-apps image, from `/app/portal/data`:
 
 ```sh
-node dist/provision/provisionMain.js   # or: npm run provision
+node dist/provision/provisionMain.js   # or: pnpm run provision
 ```
 
 Every input is a file named by an environment variable; a secret in argv or in

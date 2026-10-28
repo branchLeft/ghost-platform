@@ -38,7 +38,7 @@ Asserted, each from inside a container rather than from the Compose file:
 
 ## Running it
 
-`./scripts/test-demo-mail-spool.sh` must exit 0. It needs `npm ci && npm run
+`./scripts/test-demo-mail-spool.sh` must exit 0. It needs `pnpm install --frozen-lockfile && pnpm run
 build` in `render-core` first, and creates only containers and a network under
 one prefix. `SABOTAGE=open-route`, `SABOTAGE=no-spool` and
 `SABOTAGE=wrong-message` each must exit 1.

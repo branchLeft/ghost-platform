@@ -45,6 +45,6 @@ report-only policy wired in as an *enforcing* header instead — the exact
 bug the render core's own `contentSecurityPolicyMode` flag exists to
 prevent — which blocks Ghost's own inline scripts too, and the "exactly one
 violation" assertion goes red), then a final GREEN restoring the correct
-wiring. Needs Docker and `proof/`'s own `npm install` for Playwright — never
+wiring. Needs Docker and `proof/`'s own `pnpm install` for Playwright — never
 run in CI, like `widgets/proof/`. Run it from the repo root:
 `./csp/proof/run-proof.sh`.

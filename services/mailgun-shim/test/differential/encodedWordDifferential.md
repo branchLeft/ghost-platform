@@ -6,7 +6,7 @@ sender gate's rule on encoded-word text (`src/senderAuthorization.md#encoded-wor
 against the readers themselves, so the rule is held to what readers do and not
 to what the gate expects.
 
-It is not part of `npm run test:unit`: a full run takes several minutes. The
+It is not part of `pnpm run test:unit`: a full run takes several minutes. The
 unit tests carry the pinned rows; this carries the breadth.
 
 ## What it does
@@ -31,7 +31,7 @@ unit tests carry the pinned rows; this carries the breadth.
 ## Running it
 
 ```text
-npm run build
+pnpm run build
 node test/differential/encodedWordDifferential.mjs [--seed N] [--size N] [--concurrency N] [--json] [--control] [--show N]
 ```
 

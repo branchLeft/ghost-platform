@@ -146,7 +146,7 @@ Four things are load-bearing, all proven by test
    dependencies (`esbuild`) cannot load inside a Linux container. The
    equivalent `it.skipIf(process.platform !== 'linux')` test in the
    suite itself passes when run directly on a Linux host or container
-   with its own `npm install`; it is not run by `vitest` inside the
+   with its own `pnpm install`; it is not run by `vitest` inside the
    harness above. `recoverFromApplying` holds the same lock for its
    whole settle-and-verify tail, so the invariant holds structurally
    during recovery too, not by convention.

@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "The drain worker: holds a drain connection into every host the tenant/demo descriptor names, delivers each message over authenticated SMTP submission, and acks it back -- see ghost-platform-docs/19-try-it-now-design/06-mail-delivery.html.",
   "type": "module",
   "main": "dist/server.js",
@@ -29,8 +30,5 @@
     "smtp-server": "^3.13.5",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "nodemailer": "^9.1.1"
   }
 }

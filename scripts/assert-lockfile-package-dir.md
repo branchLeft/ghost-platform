@@ -9,7 +9,7 @@ free text and the filesystem: it accepts only `services/<name>` or
 `adapters/<name>`, where `<name>` is lowercase alphanumeric groups joined
 by single hyphens -- no leading, trailing or doubled hyphen, no path
 separator inside `<name>` and no way to spell `..`. A value this rejects
-never reaches `npm install`, `git add` or a shell string.
+never reaches `pnpm install`, `git add` or a shell string.
 
 This checks *shape* only -- that the value cannot address anything outside
 the two directories npm packages live in here. Whether the directory exists

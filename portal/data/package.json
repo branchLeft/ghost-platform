@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "The portal's storage layer over PostgreSQL: a tenant-facing query cannot be expressed without a tenant bound at the session, and the owner console's cross-tenant reads sit behind a separate entry point (see ghost-platform-docs/19-try-it-now-design/08-portal.html sections 01, 10 and 10b).",
   "type": "module",
   "exports": {

@@ -1,7 +1,7 @@
 // The containerised grant and expire tools against the built Ghost image: the
 // real host wrapper and the real expire unit's command line, run in the pinned
 // Node image with the Docker Engine socket, against a real Ghost. Usage:
-//   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
+//   IMAGE=ghost-platform:ci pnpm --dir adapters/sso run test:image
 // See break-glass-container.image.test.md for what each case proves.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';

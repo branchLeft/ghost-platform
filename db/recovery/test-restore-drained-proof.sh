@@ -15,7 +15,7 @@ cd "$REPO_ROOT"
 GHOST_IMAGE="${1:?usage: test-restore-drained-proof.sh <ghost-platform-image> <drain-sidecar-dist-dir>}"
 SIDECAR_DIR="${2:?usage: test-restore-drained-proof.sh <ghost-platform-image> <drain-sidecar-dist-dir>}"
 [ -f "$SIDECAR_DIR/dist/server.js" ] || {
-    echo "FAILED: $SIDECAR_DIR/dist/server.js not found -- build it first (npm run build)" >&2
+    echo "FAILED: $SIDECAR_DIR/dist/server.js not found -- build it first (pnpm run build)" >&2
     exit 1
 }
 SIDECAR_NODE_MODULES="$(cd "$SIDECAR_DIR/node_modules" && pwd)"

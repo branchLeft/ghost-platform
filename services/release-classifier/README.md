@@ -184,7 +184,7 @@ never has one.
 
 ## Tests
 
-    npm test
+    pnpm test
 
 Run on the Node version in `.nvmrc`. The fixtures under `test/fixtures/versions/` and
 `test/fixtures/fast-path/` are copies of upstream Ghost source (see Licence).

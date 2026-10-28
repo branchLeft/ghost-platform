@@ -9,7 +9,7 @@ Node image, the options, the mounts and the Engine socket are the production
 ones. The Ghost is real (SQLite, the real adapter and session middleware); the
 timer answer is a `systemctl` stub, because there is no systemd here.
 
-Usage: `IMAGE=ghost-platform:ci npm run test:image` in `adapters/sso`. Needs
+Usage: `IMAGE=ghost-platform:ci pnpm run test:image` in `adapters/sso`. Needs
 Docker with the Node image already pulled (the wrapper never pulls).
 
 ## Cases

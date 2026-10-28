@@ -55,9 +55,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Built from the repository root: the service depends on render-core
-      # through a relative `file:` link, so the build context must contain
+      # through a relative `link:` dependency, so the build context must contain
       # both (see services/demo-gate/Dockerfile). The secret is consumed by
-      # a `RUN --mount` there, so it reaches `npm ci` without entering a
+      # a `RUN --mount` there, so it reaches `pnpm install` without entering a
       # layer or the build history.
       - name: Build gate image
         env:

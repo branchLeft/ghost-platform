@@ -5,7 +5,7 @@
 # man's switch's own Done-means checklist, run against real processes
 # rather than mocks.
 #
-# Run from services/mail-collector/, after `npm run build`.
+# Run from services/mail-collector/, after `pnpm run build`.
 set -euo pipefail
 
 COMPOSE="docker compose -f docker-compose.deadmans-switch-proof.yml"

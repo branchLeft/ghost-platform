@@ -1,6 +1,6 @@
 // The minter, the two grant lanes and the four-hour clock against the built
 // Ghost image. Usage:
-//   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
+//   IMAGE=ghost-platform:ci pnpm --dir adapters/sso run test:image
 // See break-glass-lanes.image.test.md for what each case proves and why the
 // minter runs in a container here.
 import { after, before, describe, it } from 'node:test';
