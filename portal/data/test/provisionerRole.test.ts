@@ -125,10 +125,11 @@ describe('the provisioner role writes the register and the events, insert only',
   });
 
   it('leaves the rows it could not change exactly as they were', async () => {
-    const stored = await fx.admin.query('SELECT 1 FROM portal.hostname_register WHERE label = $1', [
-      label,
-    ]);
-    expect(stored.rowCount).toBe(1);
+    const stored = await fx.adminDb
+      .select()
+      .from(hostnameRegister)
+      .where(eq(hostnameRegister.label, label));
+    expect(stored).toHaveLength(1);
   });
 
   it('touches no other portal table', async () => {

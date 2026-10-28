@@ -1,5 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { LABEL_ALPHABET, LABEL_LENGTH, isAllowedTransition, type DemoState } from './demoStates.js';
+import {
+  LABEL_ALPHABET,
+  LABEL_LENGTH,
+  LABEL_LETTER_MASK,
+  isAllowedTransition,
+  type DemoState,
+} from './demoStates.js';
 import type { demoStateEvent } from './schema.js';
 
 export {
@@ -219,12 +225,12 @@ export function assertExtensionAllowed(
 /**
  * A new hostname label: 20 characters of base32 from the operating system's
  * random source. It takes nothing from the demo, the prospect or the slot.
- * `random` is the seam for a test; the 256 byte values divide evenly by the
- * 32 letters, so each letter is equally likely.
+ * `random` is the seam for a test. The low five bits of a byte choose the
+ * letter, so each of the 32 letters is equally likely.
  */
 export function generateLabel(random: (size: number) => Uint8Array = randomBytes): string {
   const bytes = random(LABEL_LENGTH);
   let label = '';
-  for (const byte of bytes) label += LABEL_ALPHABET.charAt(byte % LABEL_ALPHABET.length);
+  for (const byte of bytes) label += LABEL_ALPHABET.charAt(byte & LABEL_LETTER_MASK);
   return label;
 }

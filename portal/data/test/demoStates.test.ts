@@ -15,6 +15,7 @@ import {
   DEMO_TRANSITIONS,
   LABEL_ALPHABET,
   LABEL_LENGTH,
+  LABEL_LETTER_MASK,
   LABEL_PATTERN,
   SLOT_HOLDING_STATES,
   STATES_BEFORE_LEASE,
@@ -172,12 +173,26 @@ describe('generateLabel', () => {
     expect(labels.size).toBe(200);
   });
 
-  it('uses every letter equally from the random source: byte value mod 32 chooses the letter', () => {
+  it('picks letters without bias: the mask fits the alphabet, and each letter is reached by exactly 8 of the 256 byte values', () => {
+    expect(LABEL_ALPHABET).toHaveLength(32);
+    expect(LABEL_LETTER_MASK).toBe(LABEL_ALPHABET.length - 1);
+    expect(Number.isInteger(256 / LABEL_ALPHABET.length)).toBe(true);
+    expect(LABEL_ALPHABET.length & LABEL_LETTER_MASK).toBe(0);
+    const reached = new Map<string, number>();
+    for (let byte = 0; byte < 256; byte += 1) {
+      const label = generateLabel(() => new Uint8Array(LABEL_LENGTH).fill(byte));
+      const letter = label.charAt(0);
+      expect(label).toBe(letter.repeat(LABEL_LENGTH));
+      reached.set(letter, (reached.get(letter) ?? 0) + 1);
+    }
+    expect([...reached.keys()].sort().join('')).toBe([...LABEL_ALPHABET].sort().join(''));
+    expect([...reached.values()].every((count) => count === 8)).toBe(true);
+  });
+
+  it('uses the low five bits of each random byte to choose its letter', () => {
     const bytes = Uint8Array.from({ length: LABEL_LENGTH }, (_, index) => index * 13 + 5);
     const label = generateLabel(() => bytes);
-    expect([...label]).toEqual(
-      [...bytes].map((byte) => LABEL_ALPHABET.charAt(byte % LABEL_ALPHABET.length))
-    );
+    expect([...label]).toEqual([...bytes].map((byte) => LABEL_ALPHABET.charAt(byte & 31)));
     expect(generateLabel(() => new Uint8Array(LABEL_LENGTH).fill(255))).toBe(
       LABEL_ALPHABET.charAt(31).repeat(LABEL_LENGTH)
     );

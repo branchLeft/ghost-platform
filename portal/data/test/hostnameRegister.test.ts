@@ -11,6 +11,9 @@ import {
 import { LABEL_ALPHABET, LABEL_LENGTH, LABEL_PATTERN } from '../src/demoStates.js';
 import { OwnerDb } from '../src/owner/index.js';
 import { ProvisionerDb } from '../src/provisioner/index.js';
+import { eq, inArray } from 'drizzle-orm';
+import { hostnameRegister, hostnameRetirement } from '../src/schema.js';
+import { databaseClock, portalColumns, refusal, storedRegisterRows } from './demoHelpers.js';
 import { createFixture, type Fixture } from './helpers.js';
 
 let fx: Fixture;
@@ -42,33 +45,39 @@ function labelled(...labels: string[]): { db: ProvisionerDb; calls: unknown[][] 
   return { db, calls };
 }
 
-async function registerRows(): Promise<Record<string, unknown>[]> {
-  const result = await fx.admin.query<{ row: Record<string, unknown> }>(
-    'SELECT to_jsonb(r) AS row FROM portal.hostname_register r ORDER BY label'
-  );
-  return result.rows.map((r) => r.row);
-}
+const registerRows = (): ReturnType<typeof storedRegisterRows> => storedRegisterRows(fx.adminDb);
+
+/** Plants a register row as the administrator, bypassing the operation, to see what the table refuses. */
+const plantRegister = (label: string, demoId: string): Promise<unknown> =>
+  fx.adminDb
+    .insert(hostnameRegister)
+    .values({ label, demoId })
+    .then(() => undefined);
+
+const registerCount = async (label: string): Promise<number> =>
+  (await fx.adminDb.select().from(hostnameRegister).where(eq(hostnameRegister.label, label)))
+    .length;
+
+const retirementCount = async (label: string): Promise<number> =>
+  (await fx.adminDb.select().from(hostnameRetirement).where(eq(hostnameRetirement.label, label)))
+    .length;
 
 describe('allocating a hostname', () => {
   it('gives a demo one label of 20 base32 characters, recorded with the database clock', async () => {
     const demoId = await claimed();
-    const before = await fx.admin.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+    const before = await databaseClock(fx.adminDb);
     const label = await provisioner.allocateHostname(demoId);
-    const after = await fx.admin.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+    const after = await databaseClock(fx.adminDb);
     expect(label).toHaveLength(LABEL_LENGTH);
     expect(label).toMatch(new RegExp(LABEL_PATTERN));
     expect(await provisioner.hostname(demoId)).toBe(label);
-    const [stored] = (
-      await fx.admin.query<{ allocated_at: Date; demo_id: string }>(
-        'SELECT allocated_at, demo_id FROM portal.hostname_register WHERE label = $1',
-        [label]
-      )
-    ).rows;
-    expect(stored!.demo_id).toBe(demoId);
-    expect(stored!.allocated_at.getTime()).toBeGreaterThanOrEqual(
-      before.rows[0]!.now.getTime() - 1
-    );
-    expect(stored!.allocated_at.getTime()).toBeLessThanOrEqual(after.rows[0]!.now.getTime());
+    const [stored] = await fx.adminDb
+      .select()
+      .from(hostnameRegister)
+      .where(eq(hostnameRegister.label, label));
+    expect(stored!.demoId).toBe(demoId);
+    expect(stored!.allocatedAt.getTime()).toBeGreaterThanOrEqual(before - 1);
+    expect(stored!.allocatedAt.getTime()).toBeLessThanOrEqual(after);
   });
 
   it('gives two demos two different labels', async () => {
@@ -106,20 +115,15 @@ describe('allocating a hostname', () => {
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     const refused = results.find((r) => r.status === 'rejected');
     expect((refused as PromiseRejectedResult).reason).toBeInstanceOf(HostnameReusedError);
-    const stored = await fx.admin.query(
-      "SELECT 1 FROM portal.hostname_register WHERE label = 'yyyyyyyyyyyyyyyyyyyy'"
-    );
-    expect(stored.rowCount).toBe(1);
+    expect(await registerCount('yyyyyyyyyyyyyyyyyyyy')).toBe(1);
   });
 
   it('refuses the same label at the table for a process that is not this code', async () => {
     const label = await provisioner.allocateHostname(await claimed());
-    await expect(
-      fx.admin.query('INSERT INTO portal.hostname_register (label, demo_id) VALUES ($1, $2)', [
-        label,
-        randomUUID(),
-      ])
-    ).rejects.toMatchObject({ code: '23505', constraint: 'hostname_register_pkey' });
+    expect(await refusal(plantRegister(label, randomUUID()))).toMatchObject({
+      code: '23505',
+      constraint: 'hostname_register_pkey',
+    });
   });
 
   it('never allocates a label again after its retirement', async () => {
@@ -134,12 +138,10 @@ describe('allocating a hostname', () => {
     const demoId = await claimed();
     await provisioner.allocateHostname(demoId);
     await expect(provisioner.allocateHostname(demoId)).rejects.toThrow(DemoHostnameExistsError);
-    await expect(
-      fx.admin.query('INSERT INTO portal.hostname_register (label, demo_id) VALUES ($1, $2)', [
-        'wwwwwwwwwwwwwwwwwwww',
-        demoId,
-      ])
-    ).rejects.toMatchObject({ code: '23505', constraint: 'hostname_register_demo_id_unique' });
+    expect(await refusal(plantRegister('wwwwwwwwwwwwwwwwwwww', demoId))).toMatchObject({
+      code: '23505',
+      constraint: 'hostname_register_demo_id_unique',
+    });
   });
 
   it('allocates while the demo is CLAIMED and at no other time', async () => {
@@ -176,11 +178,7 @@ describe('allocating a hostname', () => {
 });
 
 describe('the label shape the table pins', () => {
-  const insert = (label: string): Promise<unknown> =>
-    fx.admin.query('INSERT INTO portal.hostname_register (label, demo_id) VALUES ($1, $2)', [
-      label,
-      randomUUID(),
-    ]);
+  const insert = (label: string): Promise<unknown> => plantRegister(label, randomUUID());
 
   it.each([
     ['upper case', 'ABCDEFGHIJKLMNOPQRST'],
@@ -190,20 +188,20 @@ describe('the label shape the table pins', () => {
     ['a hyphen', 'abcdefghijklmnop-rst'],
     ['empty', ''],
   ])('refuses a label that is %s', async (_name, label) => {
-    await expect(insert(label)).rejects.toMatchObject({
+    expect(await refusal(insert(label))).toMatchObject({
       code: '23514',
       constraint: 'hostname_register_label_shape',
     });
   });
 
   it('accepts every letter of the alphabet', async () => {
-    await insert(LABEL_ALPHABET.slice(1, LABEL_LENGTH + 1));
-    await insert(LABEL_ALPHABET.slice(-LABEL_LENGTH));
-    const stored = await fx.admin.query(
-      'SELECT 1 FROM portal.hostname_register WHERE label = ANY($1)',
-      [[LABEL_ALPHABET.slice(1, LABEL_LENGTH + 1), LABEL_ALPHABET.slice(-LABEL_LENGTH)]]
-    );
-    expect(stored.rowCount).toBe(2);
+    const labels = [LABEL_ALPHABET.slice(1, LABEL_LENGTH + 1), LABEL_ALPHABET.slice(-LABEL_LENGTH)];
+    for (const label of labels) await insert(label);
+    const stored = await fx.adminDb
+      .select()
+      .from(hostnameRegister)
+      .where(inArray(hostnameRegister.label, labels));
+    expect(stored).toHaveLength(2);
   });
 });
 
@@ -212,71 +210,42 @@ describe('retiring a hostname', () => {
     const demoId = await claimed();
     const label = await provisioner.allocateHostname(demoId);
     const before = await registerRows();
-    const marker = await fx.admin.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+    const marker = await databaseClock(fx.adminDb);
     await provisioner.retireHostname(label);
     expect(await registerRows()).toEqual(before);
-    const [row] = (
-      await fx.admin.query<{ label: string; retired_at: Date }>(
-        'SELECT label, retired_at FROM portal.hostname_retirement WHERE label = $1',
-        [label]
-      )
-    ).rows;
+    const [row] = await fx.adminDb
+      .select()
+      .from(hostnameRetirement)
+      .where(eq(hostnameRetirement.label, label));
     expect(row!.label).toBe(label);
-    expect(row!.retired_at.getTime()).toBeGreaterThanOrEqual(marker.rows[0]!.now.getTime() - 1);
+    expect(row!.retiredAt.getTime()).toBeGreaterThanOrEqual(marker - 1);
   });
 
   it('refuses a label that is not in the register', async () => {
     const error = await provisioner.retireHostname('vvvvvvvvvvvvvvvvvvvv').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(UnknownHostnameError);
-    const none = await fx.admin.query(
-      "SELECT 1 FROM portal.hostname_retirement WHERE label = 'vvvvvvvvvvvvvvvvvvvv'"
-    );
-    expect(none.rowCount).toBe(0);
+    expect(await retirementCount('vvvvvvvvvvvvvvvvvvvv')).toBe(0);
   });
 
   it('refuses a second retirement of the same label', async () => {
     const label = await provisioner.allocateHostname(await claimed());
     await provisioner.retireHostname(label);
     await expect(provisioner.retireHostname(label)).rejects.toThrow(HostnameRetiredError);
-    const rows = await fx.admin.query('SELECT 1 FROM portal.hostname_retirement WHERE label = $1', [
-      label,
-    ]);
-    expect(rows.rowCount).toBe(1);
+    expect(await retirementCount(label)).toBe(1);
   });
 });
 
 describe('what the register holds', () => {
-  async function columns(table: string): Promise<string[]> {
-    const result = await fx.admin.query<{ column_name: string }>(
-      `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'portal' AND table_name = $1 ORDER BY ordinal_position`,
-      [table]
-    );
-    return result.rows.map((row) => row.column_name);
-  }
-
   it('is a label, an opaque demo id and the allocation time, and nothing a prospect typed', async () => {
-    expect(await columns('hostname_register')).toEqual(['label', 'demo_id', 'allocated_at']);
-  });
-
-  it('keeps a retirement to a label and a time', async () => {
-    expect(await columns('hostname_retirement')).toEqual(['label', 'retired_at']);
-  });
-
-  it('types the demo id as a uuid and the times as timestamps, so no free text fits beside the label', async () => {
-    const result = await fx.admin.query<{
-      table_name: string;
-      column_name: string;
-      data_type: string;
-    }>(
-      `SELECT table_name, column_name, data_type FROM information_schema.columns
-        WHERE table_schema = 'portal' AND table_name IN ('hostname_register', 'hostname_retirement')
-        ORDER BY table_name, ordinal_position`
-    );
-    expect(result.rows.map((r) => `${r.table_name}.${r.column_name} ${r.data_type}`)).toEqual([
+    expect(await portalColumns(fx.adminDb, ['hostname_register'])).toEqual([
       'hostname_register.label text',
       'hostname_register.demo_id uuid',
       'hostname_register.allocated_at timestamp with time zone',
+    ]);
+  });
+
+  it('keeps a retirement to a label and a time', async () => {
+    expect(await portalColumns(fx.adminDb, ['hostname_retirement'])).toEqual([
       'hostname_retirement.label text',
       'hostname_retirement.retired_at timestamp with time zone',
     ]);

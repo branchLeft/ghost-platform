@@ -94,5 +94,11 @@ export const EXTENSION_DAYS = 14;
 
 /** A hostname label: 20 characters of lower-case base32, 100 bits, inside the 63-character DNS limit. */
 export const LABEL_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+/**
+ * Selects a letter from a random byte without bias: the alphabet is 32 long, a
+ * power of two that divides the 256 byte values, so the low five bits are
+ * uniform. A test pins the length, so a longer alphabet cannot slip in a bias.
+ */
+export const LABEL_LETTER_MASK = 31;
 export const LABEL_LENGTH = 20;
 export const LABEL_PATTERN = '^[a-z2-7]{20}$';

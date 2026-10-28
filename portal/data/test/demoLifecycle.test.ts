@@ -13,6 +13,17 @@ import {
   type DemoEventView,
 } from '../src/demoLifecycle.js';
 import { ProvisionerDb } from '../src/provisioner/index.js';
+import { demoStateEvent } from '../src/schema.js';
+import {
+  databaseClock,
+  endShiftSeconds,
+  refusal,
+  secondsBetween,
+  storedEventRows,
+  storedRegisterRows,
+  waitForLockWait,
+  type StoredEvent,
+} from './demoHelpers.js';
 import { createFixture, type Fixture } from './helpers.js';
 
 let fx: Fixture;
@@ -61,36 +72,18 @@ async function reachedState(demoId: string): Promise<DemoState | undefined> {
   return (await provisioner.currentState(demoId))?.toState;
 }
 
-/** Every stored column of one demo's rows, as the database prints them (microseconds kept). */
-async function storedRows(demoId: string): Promise<Record<string, unknown>[]> {
-  const result = await fx.admin.query<{ row: Record<string, unknown> }>(
-    'SELECT to_jsonb(e) AS row FROM portal.demo_state_event e WHERE demo_id = $1 ORDER BY sequence',
-    [demoId]
-  );
-  return result.rows.map((r) => r.row);
-}
+const storedRows = (demoId: string): ReturnType<typeof storedEventRows> =>
+  storedEventRows(fx.adminDb, demoId);
 
-async function storedRegisterRows(demoId: string): Promise<Record<string, unknown>[]> {
-  const result = await fx.admin.query<{ row: Record<string, unknown> }>(
-    'SELECT to_jsonb(r) AS row FROM portal.hostname_register r WHERE demo_id = $1',
-    [demoId]
-  );
-  return result.rows.map((r) => r.row);
-}
+/** Plants a row as the administrator, bypassing the operations, to see what the table itself refuses. */
+const plant = (values: typeof demoStateEvent.$inferInsert): Promise<unknown> =>
+  fx.adminDb
+    .insert(demoStateEvent)
+    .values(values)
+    .then(() => undefined);
 
-async function seconds(
-  from: string,
-  to: string,
-  demoId: string,
-  sequence: number
-): Promise<number> {
-  const result = await fx.admin.query<{ s: string }>(
-    `SELECT extract(epoch FROM ${to} - ${from})::text AS s FROM portal.demo_state_event
-      WHERE demo_id = $1 AND sequence = $2`,
-    [demoId, sequence]
-  );
-  return Number(result.rows[0]!.s);
-}
+const at = (iso: string): Date => new Date(iso);
+const HOUR = 3600 * 1000;
 
 describe('a demo moves through every state', () => {
   it('walks VERIFIED, CLAIMED, PROVISIONING, LIVE, EXPIRING, PURGED, keeping each transition as a row', async () => {
@@ -261,18 +254,23 @@ describe('every ordered pair of states, through the operation, against the datab
 describe('the lease: seven days from the database clock, on entry to PROVISIONING', () => {
   it('stores an end exactly seven days after the issue time, from the database clock', async () => {
     const demoId = await walk(['CLAIMED']);
-    const before = await fx.admin.query<{ now: Date }>('SELECT clock_timestamp() AS now');
+    const before = await databaseClock(fx.adminDb);
     const event = await provisioner.transition(demoId, 'PROVISIONING');
-    const after = await fx.admin.query<{ now: Date }>('SELECT clock_timestamp() AS now');
-    expect(event.leaseIssuedAt!.getTime()).toBeGreaterThanOrEqual(
-      before.rows[0]!.now.getTime() - 1
-    );
-    expect(event.leaseIssuedAt!.getTime()).toBeLessThanOrEqual(after.rows[0]!.now.getTime());
-    const stored = await storedRows(demoId);
-    const row = stored.at(-1)!;
-    expect(row['to_state']).toBe('PROVISIONING');
-    expect(await seconds('lease_issued_at', 'lease_ends_at', demoId, 3)).toBe(7 * 24 * 3600);
-    expect(row['lease_issued_at']).toBe(row['recorded_at']);
+    const after = await databaseClock(fx.adminDb);
+    expect(event.leaseIssuedAt!.getTime()).toBeGreaterThanOrEqual(before - 1);
+    expect(event.leaseIssuedAt!.getTime()).toBeLessThanOrEqual(after);
+    const row = (await storedRows(demoId)).at(-1)!;
+    expect(row.to_state).toBe('PROVISIONING');
+    expect(
+      await secondsBetween(
+        fx.adminDb,
+        demoId,
+        3,
+        demoStateEvent.leaseIssuedAt,
+        demoStateEvent.leaseEndsAt
+      )
+    ).toBe(7 * 24 * 3600);
+    expect(row.lease_issued_at).toBe(row.recorded_at);
   });
 
   it('is issued by PROVISIONING and not before: no term while VERIFIED, WAITING or CLAIMED', async () => {
@@ -293,69 +291,106 @@ describe('the lease: seven days from the database clock, on entry to PROVISIONIN
 
   it('refuses at the table a term that is not seven days, or that does not start at the row time', async () => {
     const demoId = await walk(['CLAIMED']);
-    const insert = (issued: string, ends: string): Promise<unknown> =>
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at, recorded_at)
-         VALUES ($1, 3, 2, 'CLAIMED', 'PROVISIONING', $2, $3, '2030-01-08T00:00:00Z')`,
-        [demoId, issued, ends]
-      );
-    await expect(insert('2030-01-08T00:00:00Z', '2030-01-14T00:00:00Z')).rejects.toMatchObject({
+    const start = at('2030-01-08T00:00:00Z');
+    const provisioning = (issued: Date, ends: Date): Promise<unknown> =>
+      plant({
+        demoId,
+        sequence: 3,
+        previousSequence: 2,
+        fromState: 'CLAIMED',
+        toState: 'PROVISIONING',
+        leaseIssuedAt: issued,
+        leaseEndsAt: ends,
+        recordedAt: start,
+      });
+    expect(
+      await refusal(provisioning(start, new Date(start.getTime() + 144 * HOUR)))
+    ).toMatchObject({
       constraint: 'demo_state_event_term_set',
     });
-    await expect(insert('2029-12-01T00:00:00Z', '2029-12-08T00:00:00Z')).rejects.toMatchObject({
+    const earlier = new Date(start.getTime() - 38 * 24 * HOUR);
+    expect(
+      await refusal(provisioning(earlier, new Date(earlier.getTime() + 168 * HOUR)))
+    ).toMatchObject({
       constraint: 'demo_state_event_term_set',
     });
-    await insert('2030-01-08T00:00:00Z', '2030-01-15T00:00:00Z');
+    expect(
+      await refusal(provisioning(start, new Date(start.getTime() + 168 * HOUR)))
+    ).toBeUndefined();
   });
 
   it('never has a null end from PROVISIONING on', async () => {
     const demoId = await walk(['CLAIMED']);
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-         VALUES ($1, 3, 2, 'CLAIMED', 'PROVISIONING')`,
-        [demoId]
+    expect(
+      await refusal(
+        plant({
+          demoId,
+          sequence: 3,
+          previousSequence: 2,
+          fromState: 'CLAIMED',
+          toState: 'PROVISIONING',
+        })
       )
-    ).rejects.toMatchObject({ constraint: 'demo_state_event_lease_by_state' });
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at)
-         VALUES ($1, 3, 2, 'CLAIMED', 'KILLED', now())`,
-        [demoId]
+    ).toMatchObject({ constraint: 'demo_state_event_lease_by_state' });
+    expect(
+      await refusal(
+        plant({
+          demoId,
+          sequence: 3,
+          previousSequence: 2,
+          fromState: 'CLAIMED',
+          toState: 'KILLED',
+          leaseIssuedAt: new Date(),
+        })
       )
-    ).rejects.toMatchObject({ constraint: 'demo_state_event_lease_complete' });
+    ).toMatchObject({ constraint: 'demo_state_event_lease_complete' });
   });
 
   it('refuses at the table a term whose end is not after its start, and a term before PROVISIONING', async () => {
     const demoId = await walk(['CLAIMED', 'PROVISIONING']);
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at)
-         VALUES ($1, 4, 3, 'PROVISIONING', 'LIVE', '2030-01-08T00:00:00Z', '2030-01-01T00:00:00Z')`,
-        [demoId]
+    expect(
+      await refusal(
+        plant({
+          demoId,
+          sequence: 4,
+          previousSequence: 3,
+          fromState: 'PROVISIONING',
+          toState: 'LIVE',
+          leaseIssuedAt: at('2030-01-08T00:00:00Z'),
+          leaseEndsAt: at('2030-01-01T00:00:00Z'),
+        })
       )
-    ).rejects.toMatchObject({ constraint: 'demo_state_event_lease_finite' });
+    ).toMatchObject({ constraint: 'demo_state_event_lease_finite' });
+    const issued = new Date();
+    const ends = new Date(issued.getTime() + 24 * HOUR);
     const early = await walk(['CLAIMED']);
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at)
-         VALUES ($1, 3, 2, 'CLAIMED', 'KILLED', now(), now() + interval '1 day')`,
-        [early]
+    expect(
+      await refusal(
+        plant({
+          demoId: early,
+          sequence: 3,
+          previousSequence: 2,
+          fromState: 'CLAIMED',
+          toState: 'KILLED',
+          leaseIssuedAt: issued,
+          leaseEndsAt: ends,
+        })
       )
-    ).resolves.toBeDefined();
+    ).toBeUndefined();
     const waiting = await walk(['CLAIMED']);
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at)
-         VALUES ($1, 3, 2, 'CLAIMED', 'WAITING', now(), now() + interval '1 day')`,
-        [waiting]
+    expect(
+      await refusal(
+        plant({
+          demoId: waiting,
+          sequence: 3,
+          previousSequence: 2,
+          fromState: 'CLAIMED',
+          toState: 'WAITING',
+          leaseIssuedAt: issued,
+          leaseEndsAt: ends,
+        })
       )
-    ).rejects.toMatchObject({ constraint: 'demo_state_event_lease_by_state' });
+    ).toMatchObject({ constraint: 'demo_state_event_lease_by_state' });
   });
 });
 
@@ -366,15 +401,15 @@ describe('the extension: the end moves by 14 days and nothing else', () => {
     await provisioner.transition(demoId, 'PROVISIONING');
     await provisioner.transition(demoId, 'LIVE');
     const before = await storedRows(demoId);
-    const registerBefore = await storedRegisterRows(demoId);
+    const registerBefore = await storedRegisterRows(fx.adminDb, demoId);
     const event = await provisioner.extend(demoId);
     const after = await storedRows(demoId);
     expect(after).toHaveLength(before.length + 1);
     // Every earlier row is byte for byte the same.
     expect(after.slice(0, before.length)).toEqual(before);
     // The new row differs from the one before it in the transition and the end alone.
-    const strip = (row: Record<string, unknown>): Record<string, unknown> => {
-      const copy = { ...row };
+    const strip = (row: StoredEvent): Record<string, unknown> => {
+      const copy: Record<string, unknown> = { ...row };
       for (const key of [
         'sequence',
         'previous_sequence',
@@ -394,17 +429,13 @@ describe('the extension: the end moves by 14 days and nothing else', () => {
       from_state: 'LIVE',
       extension_days: 14,
     });
-    const endShift = await fx.admin.query<{ s: string }>(
-      `SELECT extract(epoch FROM b.lease_ends_at - a.lease_ends_at)::text AS s
-         FROM portal.demo_state_event a, portal.demo_state_event b
-        WHERE a.demo_id = $1 AND b.demo_id = $1 AND a.sequence = $2 AND b.sequence = $3`,
-      [demoId, before.length, before.length + 1]
+    expect(await endShiftSeconds(fx.adminDb, demoId, before.length, before.length + 1)).toBe(
+      14 * 24 * 3600
     );
-    expect(Number(endShift.rows[0]!.s)).toBe(14 * 24 * 3600);
     expect(event.toState).toBe('EXTENDED');
     // The register row is untouched.
     expect(registerBefore).toHaveLength(1);
-    expect(await storedRegisterRows(demoId)).toEqual(registerBefore);
+    expect(await storedRegisterRows(fx.adminDb, demoId)).toEqual(registerBefore);
   });
 
   it('keeps the hostname through an extension', async () => {
@@ -458,15 +489,22 @@ describe('the extension: the end moves by 14 days and nothing else', () => {
 
   it('refuses at the table an extension amount on any row but EXTENDED, or a negative one', async () => {
     const demoId = await walk(PATH.LIVE);
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at, extension_days)
-         SELECT demo_id, 5, 4, 'LIVE', 'EXPIRING', lease_issued_at, lease_ends_at, 14
-           FROM portal.demo_state_event WHERE demo_id = $1 AND sequence = 4`,
-        [demoId]
-      )
-    ).rejects.toMatchObject({ constraint: 'demo_state_event_extension_only_extended' });
+    const live = (await provisioner.currentState(demoId))!;
+    const expiring = {
+      demoId,
+      sequence: 5,
+      previousSequence: 4,
+      fromState: 'LIVE',
+      toState: 'EXPIRING',
+      leaseIssuedAt: live.leaseIssuedAt,
+      leaseEndsAt: live.leaseEndsAt,
+    };
+    expect(await refusal(plant({ ...expiring, extensionDays: 14 }))).toMatchObject({
+      constraint: 'demo_state_event_extension_only_extended',
+    });
+    expect(await refusal(plant({ ...expiring, extensionDays: -1 }))).toMatchObject({
+      constraint: 'demo_state_event_extension_only_extended',
+    });
   });
 });
 
@@ -477,36 +515,52 @@ describe('a rebuild keeps the term', () => {
     await provisioner.transition(demoId, 'LIVE');
     const rows = await storedRows(demoId);
     const [live, rebuilding, rebuilt] = [rows[3]!, rows[4]!, rows[5]!];
-    expect(rebuilding['lease_ends_at']).toBe(live['lease_ends_at']);
-    expect(rebuilt['lease_ends_at']).toBe(live['lease_ends_at']);
-    expect(rebuilt['lease_issued_at']).toBe(live['lease_issued_at']);
-    expect(rebuilt['extension_days']).toBe(0);
-    expect(rebuilt['recorded_at']).not.toBe(live['recorded_at']);
+    expect(rebuilding.lease_ends_at).toBe(live.lease_ends_at);
+    expect(rebuilt.lease_ends_at).toBe(live.lease_ends_at);
+    expect(rebuilt.lease_issued_at).toBe(live.lease_issued_at);
+    expect(rebuilt.extension_days).toBe(0);
+    expect(rebuilt.recorded_at).not.toBe(live.recorded_at);
   });
 
   it('on day six still ends on day seven', async () => {
     const demoId = randomUUID();
-    await fx.admin.query(
-      `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-       VALUES ($1, 1, NULL, NULL, 'VERIFIED'), ($1, 2, 1, 'VERIFIED', 'CLAIMED')`,
-      [demoId]
-    );
-    await fx.admin.query(
-      `INSERT INTO portal.demo_state_event
-         (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at, recorded_at)
-       SELECT $1, s.sequence, s.sequence - 1, s.from_state, s.to_state, t.issued, t.issued + interval '168 hours', t.issued
-         FROM (VALUES (3, 'CLAIMED', 'PROVISIONING'), (4, 'PROVISIONING', 'LIVE')) AS s(sequence, from_state, to_state),
-              (SELECT now() - interval '6 days' AS issued) t`,
-      [demoId]
-    );
+    const issued = new Date(Date.now() - 6 * 24 * HOUR);
+    const ends = new Date(issued.getTime() + 168 * HOUR);
+    await plant({ demoId, sequence: 1, toState: 'VERIFIED' });
+    await plant({
+      demoId,
+      sequence: 2,
+      previousSequence: 1,
+      fromState: 'VERIFIED',
+      toState: 'CLAIMED',
+    });
+    await plant({
+      demoId,
+      sequence: 3,
+      previousSequence: 2,
+      fromState: 'CLAIMED',
+      toState: 'PROVISIONING',
+      leaseIssuedAt: issued,
+      leaseEndsAt: ends,
+      recordedAt: issued,
+    });
+    await plant({
+      demoId,
+      sequence: 4,
+      previousSequence: 3,
+      fromState: 'PROVISIONING',
+      toState: 'LIVE',
+      leaseIssuedAt: issued,
+      leaseEndsAt: ends,
+    });
     const before = (await storedRows(demoId)).at(-1)!;
     await provisioner.transition(demoId, 'REBUILDING');
     const rebuilt = await provisioner.transition(demoId, 'LIVE');
     const after = (await storedRows(demoId)).at(-1)!;
-    expect(after['lease_ends_at']).toBe(before['lease_ends_at']);
+    expect(after.lease_ends_at).toBe(before.lease_ends_at);
     const remaining = rebuilt.leaseEndsAt!.getTime() - Date.now();
     expect(remaining).toBeGreaterThan(0);
-    expect(remaining).toBeLessThan(24 * 3600 * 1000);
+    expect(remaining).toBeLessThan(24 * HOUR);
   });
 
   it('keeps an extended end through a promotion that returns, and the same hostname', async () => {
@@ -531,22 +585,30 @@ describe('a rebuild keeps the term', () => {
 });
 
 describe('the table itself refuses what the operation would not make', () => {
-  const NOW = '2030-01-08T00:00:00Z';
-  const END = '2030-01-15T00:00:00Z';
+  const NOW = at('2030-01-08T00:00:00Z');
+  const END = at('2030-01-15T00:00:00Z');
+  const WITHOUT_TERM: readonly DemoState[] = [
+    'VERIFIED',
+    'WAITING',
+    'CLAIMED',
+    'FAILED',
+    'KILLED',
+    'FROZEN',
+  ];
 
   /** A row claiming `from` to `to` as position 2 after position 1, with every other check satisfied. */
-  function claim(
-    demoId: string,
-    from: DemoState,
-    to: DemoState
-  ): Promise<{ rowCount: number | null }> {
-    const leased = ![...'VERIFIED WAITING CLAIMED FAILED KILLED FROZEN'.split(' ')].includes(to);
-    return fx.admin.query(
-      `INSERT INTO portal.demo_state_event
-         (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at, recorded_at)
-       VALUES ($1, 2, 1, $2, $3, $4, $5, $6)`,
-      [demoId, from, to, leased ? NOW : null, leased ? END : null, NOW]
-    );
+  function claim(demoId: string, from: DemoState, to: DemoState): Promise<unknown> {
+    const leased = !WITHOUT_TERM.includes(to);
+    return plant({
+      demoId,
+      sequence: 2,
+      previousSequence: 1,
+      fromState: from,
+      toState: to,
+      leaseIssuedAt: leased ? NOW : null,
+      leaseEndsAt: leased ? END : null,
+      recordedAt: NOW,
+    });
   }
 
   const forbidden = DEMO_STATES.flatMap((from) =>
@@ -556,7 +618,7 @@ describe('the table itself refuses what the operation would not make', () => {
   it.each(forbidden)(
     'refuses %s to %s on a database that has never seen the operation',
     async (from, to) => {
-      await expect(claim(randomUUID(), from, to)).rejects.toMatchObject({
+      expect(await refusal(claim(randomUUID(), from, to))).toMatchObject({
         code: '23514',
         constraint: 'demo_state_event_transition_allowed',
       });
@@ -564,50 +626,43 @@ describe('the table itself refuses what the operation would not make', () => {
   );
 
   it('refuses a first row that is not VERIFIED from nothing', async () => {
-    const insert = (to: string, from: string | null, previous: number | null): Promise<unknown> =>
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-         VALUES ($1, 1, $2, $3, $4)`,
-        [randomUUID(), previous, from, to]
-      );
-    await expect(insert('CLAIMED', null, null)).rejects.toMatchObject({
+    const first = (to: string, from: string | null, previous: number | null): Promise<unknown> =>
+      plant({
+        demoId: randomUUID(),
+        sequence: 1,
+        previousSequence: previous,
+        fromState: from,
+        toState: to,
+      });
+    expect(await refusal(first('CLAIMED', null, null))).toMatchObject({
       constraint: 'demo_state_event_transition_allowed',
     });
-    await expect(insert('CLAIMED', 'VERIFIED', null)).rejects.toMatchObject({
+    expect(await refusal(first('CLAIMED', 'VERIFIED', null))).toMatchObject({
       constraint: 'demo_state_event_sequence_chain',
     });
-    await expect(insert('VERIFIED', null, 0)).rejects.toMatchObject({
+    expect(await refusal(first('VERIFIED', null, 0))).toMatchObject({
       constraint: 'demo_state_event_sequence_chain',
     });
   });
 
   it('refuses a row that does not continue the demo’s real previous row', async () => {
     const demoId = await walk(['CLAIMED']);
+    const stale = (
+      sequence: number,
+      previous: number,
+      from: string,
+      to: string
+    ): Promise<unknown> =>
+      plant({ demoId, sequence, previousSequence: previous, fromState: from, toState: to });
     // The latest row is CLAIMED; a row that says it moves on from VERIFIED is a stale worker's.
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-         VALUES ($1, 3, 1, 'VERIFIED', 'WAITING')`,
-        [demoId]
-      )
-    ).rejects.toMatchObject({ constraint: 'demo_state_event_sequence_chain' });
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-         VALUES ($1, 3, 2, 'VERIFIED', 'WAITING')`,
-        [demoId]
-      )
-    ).rejects.toMatchObject({
+    expect(await refusal(stale(3, 1, 'VERIFIED', 'WAITING'))).toMatchObject({
+      constraint: 'demo_state_event_sequence_chain',
+    });
+    expect(await refusal(stale(3, 2, 'VERIFIED', 'WAITING'))).toMatchObject({
       code: '23503',
       constraint: 'demo_state_event_continues_previous_fk',
     });
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-         VALUES ($1, 5, 4, 'CLAIMED', 'WAITING')`,
-        [demoId]
-      )
-    ).rejects.toMatchObject({
+    expect(await refusal(stale(5, 4, 'CLAIMED', 'WAITING'))).toMatchObject({
       code: '23503',
       constraint: 'demo_state_event_continues_previous_fk',
     });
@@ -615,47 +670,56 @@ describe('the table itself refuses what the operation would not make', () => {
 
   it('refuses a second row at a position already taken', async () => {
     const demoId = await walk(['CLAIMED']);
-    await expect(
-      fx.admin.query(
-        `INSERT INTO portal.demo_state_event (demo_id, sequence, previous_sequence, from_state, to_state)
-         VALUES ($1, 2, 1, 'VERIFIED', 'WAITING')`,
-        [demoId]
+    expect(
+      await refusal(
+        plant({
+          demoId,
+          sequence: 2,
+          previousSequence: 1,
+          fromState: 'VERIFIED',
+          toState: 'WAITING',
+        })
       )
-    ).rejects.toMatchObject({ code: '23505' });
+    ).toMatchObject({ code: '23505' });
   });
 });
 
 describe('two transitions of one demo cannot both be recorded', () => {
   it('fails the later writer with a typed error when another row took the next position first', async () => {
     const demoId = await walk(PATH.LIVE);
-    const competitor = await fx.admin.connect();
-    try {
-      await competitor.query('BEGIN');
-      await competitor.query(
-        `INSERT INTO portal.demo_state_event
-           (demo_id, sequence, previous_sequence, from_state, to_state, lease_issued_at, lease_ends_at)
-         SELECT demo_id, 5, 4, 'LIVE', 'EXPIRING', lease_issued_at, lease_ends_at
-           FROM portal.demo_state_event WHERE demo_id = $1 AND sequence = 4`,
-        [demoId]
-      );
-      // The operation reads the latest committed row (LIVE), then waits on the open position.
-      const racing = provisioner.transition(demoId, 'PROMOTING');
-      const settled = racing.then(
-        () => 'recorded',
-        (error: unknown) => error
-      );
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const waiting = await fx.admin.query(
-          "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()"
-        );
-        if (waiting.rowCount !== 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      await competitor.query('COMMIT');
-      expect(await settled).toBeInstanceOf(ConcurrentTransitionError);
-    } finally {
-      competitor.release();
-    }
+    const live = (await provisioner.currentState(demoId))!;
+    let releaseCompetitor!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseCompetitor = resolve;
+    });
+    let competitorInserted!: () => void;
+    const inserted = new Promise<void>((resolve) => {
+      competitorInserted = resolve;
+    });
+    // A competing transaction takes position 5 and holds it open.
+    const competitor = fx.adminDb.transaction(async (tx) => {
+      await tx.insert(demoStateEvent).values({
+        demoId,
+        sequence: 5,
+        previousSequence: 4,
+        fromState: 'LIVE',
+        toState: 'EXPIRING',
+        leaseIssuedAt: live.leaseIssuedAt,
+        leaseEndsAt: live.leaseEndsAt,
+      });
+      competitorInserted();
+      await gate;
+    });
+    await inserted;
+    // The operation reads the latest committed row (LIVE), then waits on the open position.
+    const settled = provisioner.transition(demoId, 'PROMOTING').then(
+      () => 'recorded',
+      (error: unknown) => error
+    );
+    await waitForLockWait(fx.adminDb);
+    releaseCompetitor();
+    await competitor;
+    expect(await settled).toBeInstanceOf(ConcurrentTransitionError);
     expect(await reachedState(demoId)).toBe('EXPIRING');
     expect((await provisioner.history(demoId)).map((e) => e.sequence)).toEqual([1, 2, 3, 4, 5]);
   }, 30000);
