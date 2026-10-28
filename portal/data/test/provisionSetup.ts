@@ -17,8 +17,10 @@ export const PROV_DB = 'portal_prov';
 export const OTHER_DB = 'portal_prov_other';
 export const TENANT = 'portal_prov_tenant';
 export const OWNER = 'portal_prov_owner';
+export const PROVISIONER = 'portal_prov_provisioner';
 export const TENANT_PW = 'tenant-secret-9f2c41';
 export const OWNER_PW = 'owner-secret-77ab03';
+export const PROVISIONER_PW = 'provisioner-secret-5d19e8';
 
 export function provConfig(): ProvisionConfig {
   return {
@@ -28,6 +30,8 @@ export function provConfig(): ProvisionConfig {
     tenantPassword: TENANT_PW,
     ownerLogin: OWNER,
     ownerPassword: OWNER_PW,
+    provisionerLogin: PROVISIONER,
+    provisionerPassword: PROVISIONER_PW,
   };
 }
 
@@ -40,12 +44,13 @@ export interface Run {
 /** The command's whole behaviour, in process, from its file inputs. */
 export async function run(
   options: ProvisionOptions = {},
-  passwords: { tenant?: string; owner?: string } = {}
+  passwords: { tenant?: string; owner?: string; provisioner?: string } = {}
 ): Promise<Run> {
   const files: Record<string, string> = {
     admin: testUrl('postgres'),
     tenant: passwords.tenant ?? TENANT_PW,
     owner: passwords.owner ?? OWNER_PW,
+    provisioner: passwords.provisioner ?? PROVISIONER_PW,
   };
   const out: string[] = [];
   const err: string[] = [];
@@ -54,9 +59,11 @@ export async function run(
       PORTAL_ADMIN_URL_FILE: 'admin',
       PORTAL_TENANT_PASSWORD_FILE: 'tenant',
       PORTAL_OWNER_PASSWORD_FILE: 'owner',
+      PORTAL_PROVISIONER_PASSWORD_FILE: 'provisioner',
       PORTAL_DATABASE_NAME: PROV_DB,
       PORTAL_TENANT_LOGIN: TENANT,
       PORTAL_OWNER_LOGIN: OWNER,
+      PORTAL_PROVISIONER_LOGIN: PROVISIONER,
     },
     [],
     { out: (line) => out.push(line), err: (line) => err.push(line) },
@@ -89,7 +96,14 @@ export async function resetServer(): Promise<void> {
     // Fail with a diagnosis rather than hang until the hook times out.
     await pool.query("SET statement_timeout = '2s'");
     for (const database of [PROV_DB, OTHER_DB]) await dropDatabase(pool, database);
-    for (const role of [TENANT, OWNER, 'portal_tenant', 'portal_owner']) {
+    for (const role of [
+      TENANT,
+      OWNER,
+      PROVISIONER,
+      'portal_tenant',
+      'portal_owner',
+      'portal_provisioner',
+    ]) {
       await pool.query(`DROP ROLE IF EXISTS "${role}"`);
     }
   } catch (error) {
@@ -119,7 +133,7 @@ export async function stateSnapshot(): Promise<string[]> {
     const checkpoint = checkpointFor(
       major,
       PROV_DB,
-      principalNames(TENANT, OWNER),
+      principalNames(TENANT, OWNER, PROVISIONER),
       readMigrations().map((m) => m.tag)
     );
     return await snapshot(client, checkpoint);

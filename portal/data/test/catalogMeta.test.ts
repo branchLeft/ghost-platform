@@ -7,7 +7,7 @@ import {
   SHARED_OID_CATALOGS,
   SUPPORTED_MAJORS,
 } from '../provision/catalogSnapshot.js';
-import { MECHANISMS } from '../provision/manifest.js';
+import { MECHANISMS, ROW_SECURITY, TABLE_SHAPES, manifest } from '../provision/manifest.js';
 import { readMigrations } from '../provision/migrations.js';
 import { SNAPSHOTS } from './catalog/index.js';
 import { EXTRAS } from './closedWorldFixtures.js';
@@ -30,6 +30,16 @@ describe('the mechanism list and its fixtures', () => {
       Array.from({ length: 29 }, (_, i) => `M${String(i + 1).padStart(2, '0')}`)
     );
     expect(MECHANISMS.filter((m) => m.external === true).map((m) => m.id)).toEqual(['M26']);
+  });
+
+  it('gives every table the manifest manages a shape and a row-security entry', () => {
+    // A table with no shape entry is not compared with anything: the check passes it vacuously.
+    const tables = manifest(17, 'portal')
+      .filter((object) => object.kind === 'table')
+      .map((object) => object.identity)
+      .sort();
+    expect(Object.keys(TABLE_SHAPES).sort()).toEqual(tables);
+    expect(Object.keys(ROW_SECURITY).sort()).toEqual(tables);
   });
 
   it('has a committed snapshot for exactly the supported versions', () => {

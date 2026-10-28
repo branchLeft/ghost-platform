@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connect } from '../src/db.js';
 import { OwnerDb } from '../src/owner/index.js';
+import { ProvisionerDb } from '../src/provisioner/index.js';
 import { TenantDb, bindTenant, type Tx } from '../src/tenant/index.js';
 import { note } from './fixtureSchema.js';
 import { TENANT_A, TENANT_B, createFixture, type Fixture } from './helpers.js';
@@ -66,5 +67,15 @@ describe('the owner role switch', () => {
   it('lists every tenant for that login only through the owner role', async () => {
     const tenants = await new OwnerDb(fx.dual).listTenants();
     expect(tenants.map((t) => t.tenantId).sort()).toEqual([TENANT_A, TENANT_B]);
+  });
+});
+
+describe('the provisioner role switch', () => {
+  it('runs a provisioner statement as portal_provisioner', async () => {
+    expect(await new ProvisionerDb(fx.provisioner).run(currentUser)).toBe('portal_provisioner');
+  });
+
+  it('runs as portal_provisioner for a login that also holds the other roles', async () => {
+    expect(await new ProvisionerDb(fx.dual).run(currentUser)).toBe('portal_provisioner');
   });
 });

@@ -8,6 +8,7 @@
   "exports": {
     "./tenant": "./dist/src/tenant/index.js",
     "./owner": "./dist/src/owner/index.js",
+    "./provisioner": "./dist/src/provisioner/index.js",
     "./migrate": "./dist/src/migrate.js"
   },
   "scripts": {

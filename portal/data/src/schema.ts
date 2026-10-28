@@ -11,9 +11,18 @@ import {
   foreignKey,
   text,
   timestamp,
+  unique,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { TENANT_KINDS } from './tenantKind.js';
+import {
+  DEMO_STATES,
+  LABEL_PATTERN,
+  LEASE_DAYS,
+  NEXT_STATES,
+  STATES_BEFORE_LEASE,
+  STATES_WITH_LEASE,
+} from './demoStates.js';
 
 /**
  * Both roles are created by provisioning, never by a migration, so they are
@@ -257,3 +266,100 @@ export const moderationSetting = portal
     ]
   )
   .enableRLS();
+
+/** The role that writes the hostname register and the demo's state events; declared as existing like the others. */
+export const portalProvisioner = pgRole('portal_provisioner').existing();
+
+const TRANSITION_ALLOWED = DEMO_STATES.filter((from) => NEXT_STATES[from].length > 0)
+  .map((from) => `(from_state = '${from}' AND to_state IN (${sqlList(NEXT_STATES[from])}))`)
+  .join(' OR ');
+
+/**
+ * One row per transition of a demo, appended and never changed: the demo's
+ * state history and the only place its state is held. The current state and
+ * the term in force are the latest row's. The database refuses a pair that is
+ * not an allowed transition (check), a row that does not continue the demo's
+ * real previous row (foreign key on the previous sequence and state) and two
+ * rows for one position (primary key). The term (`lease_*`) belongs to rows
+ * from PROVISIONING on; on that row it is seven days and starts at the row's
+ * own database-clock time. No person is recorded.
+ */
+export const demoStateEvent = portal.table(
+  'demo_state_event',
+  {
+    demoId: uuid('demo_id').notNull(),
+    sequence: integer('sequence').notNull(),
+    previousSequence: integer('previous_sequence'),
+    fromState: text('from_state'),
+    toState: text('to_state').notNull(),
+    leaseIssuedAt: timestamp('lease_issued_at', { withTimezone: true }),
+    leaseEndsAt: timestamp('lease_ends_at', { withTimezone: true }),
+    extensionDays: integer('extension_days').notNull().default(0),
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.demoId, table.sequence] }),
+    unique('demo_state_event_demo_sequence_state_unique').on(
+      table.demoId,
+      table.sequence,
+      table.toState
+    ),
+    foreignKey({
+      name: 'demo_state_event_continues_previous_fk',
+      columns: [table.demoId, table.previousSequence, table.fromState],
+      foreignColumns: [table.demoId, table.sequence, table.toState],
+    }),
+    check(
+      'demo_state_event_transition_allowed',
+      sql`(${table.fromState} IS NULL AND ${table.sequence} = 1 AND ${table.toState} = 'VERIFIED') OR (${table.fromState} IS NOT NULL AND (${sql.raw(TRANSITION_ALLOWED)}))`
+    ),
+    check(
+      'demo_state_event_sequence_chain',
+      sql`${table.sequence} >= 1 AND (${table.sequence} = 1) = (${table.previousSequence} IS NULL) AND (${table.previousSequence} IS NULL) = (${table.fromState} IS NULL) AND (${table.previousSequence} IS NULL OR ${table.previousSequence} = ${table.sequence} - 1)`
+    ),
+    check(
+      'demo_state_event_lease_complete',
+      sql`(${table.leaseIssuedAt} IS NULL) = (${table.leaseEndsAt} IS NULL)`
+    ),
+    check('demo_state_event_lease_finite', sql`${table.leaseEndsAt} > ${table.leaseIssuedAt}`),
+    check(
+      'demo_state_event_lease_by_state',
+      sql`(${table.toState} IN (${sql.raw(sqlList(STATES_BEFORE_LEASE))}) AND ${table.leaseEndsAt} IS NULL) OR (${table.toState} IN (${sql.raw(sqlList(STATES_WITH_LEASE))}) AND ${table.leaseEndsAt} IS NOT NULL) OR ${table.toState} IN ('FAILED', 'KILLED', 'FROZEN')`
+    ),
+    check(
+      'demo_state_event_term_set',
+      sql`${table.toState} <> 'PROVISIONING' OR (${table.leaseIssuedAt} = ${table.recordedAt} AND ${table.leaseEndsAt} = ${table.leaseIssuedAt} + make_interval(hours => ${sql.raw(String(LEASE_DAYS * 24))}))`
+    ),
+    check(
+      'demo_state_event_extension_only_extended',
+      sql`${table.extensionDays} >= 0 AND (${table.extensionDays} = 0 OR ${table.toState} = 'EXTENDED')`
+    ),
+  ]
+);
+
+/**
+ * Every hostname ever allocated, one row per demo and one per label, for all
+ * time: the primary key is the label and `demo_id` is unique, so a name is
+ * never given twice and a demo never has a second. Append-only by grant: the
+ * writing role may insert and cannot update or delete. It holds no personal
+ * data: the label is random, the demo id opaque.
+ */
+export const hostnameRegister = portal.table(
+  'hostname_register',
+  {
+    label: text('label').primaryKey(),
+    demoId: uuid('demo_id').notNull().unique(),
+    allocatedAt: timestamp('allocated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check('hostname_register_label_shape', sql`${table.label} ~ ${sql.raw(`'${LABEL_PATTERN}'`)}`),
+  ]
+);
+
+/** A hostname's retirement is a row here, keyed on the label, so the register itself is never edited. */
+export const hostnameRetirement = portal.table('hostname_retirement', {
+  label: text('label')
+    .primaryKey()
+    .references(() => hostnameRegister.label),
+  retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+});

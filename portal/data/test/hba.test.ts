@@ -20,6 +20,10 @@ const target = {
   logins: [
     { name: 'portal_tenant_login', reaches: ['portal_tenant_login', 'portal_tenant'] },
     { name: 'portal_owner_login', reaches: ['portal_owner_login', 'portal_owner'] },
+    {
+      name: 'portal_provisioner_login',
+      reaches: ['portal_provisioner_login', 'portal_provisioner'],
+    },
   ],
 };
 
@@ -30,6 +34,7 @@ describe('the static pg_hba rule', () => {
       rule(2, ['zitadel'], ['zitadel']),
       rule(3, ['portal_tenant_login'], ['portal']),
       rule(4, ['portal_owner_login'], ['portal']),
+      rule(8, ['portal_provisioner_login'], ['portal']),
       rule(5, ['postgres'], ['postgres', 'zitadel', 'portal']),
       rule(6, ['all'], ['all'], 'reject'),
       rule(7, ['all'], ['all'], 'reject'),
@@ -39,6 +44,12 @@ describe('the static pg_hba rule', () => {
 
   it.each([
     ['the stock image rule', ['all'], ['all'], /portal_tenant_login \(as all\) reach database all/],
+    [
+      'the provisioner role as a group',
+      ['+portal_provisioner'],
+      ['postgres'],
+      /portal_provisioner_login \(as \+portal_provisioner\)/,
+    ],
     [
       'a login named with another database',
       ['portal_owner_login'],

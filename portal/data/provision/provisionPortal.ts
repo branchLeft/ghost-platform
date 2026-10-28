@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { bind, connect, enterRole, type Tx } from '../src/db.js';
-import { documentAcceptance, healthReading, tenantRegister } from '../src/schema.js';
+import {
+  demoStateEvent,
+  documentAcceptance,
+  healthReading,
+  hostnameRegister,
+  hostnameRetirement,
+  tenantRegister,
+} from '../src/schema.js';
 import {
   checkAgainstManifest,
   formatDifference,
@@ -35,11 +42,14 @@ export interface ProvisionConfig {
   tenantPassword: string;
   ownerLogin: string;
   ownerPassword: string;
+  provisionerLogin: string;
+  provisionerPassword: string;
 }
 
 export const DEFAULT_DATABASE = 'portal';
 export const DEFAULT_TENANT_LOGIN = 'portal_tenant_login';
 export const DEFAULT_OWNER_LOGIN = 'portal_owner_login';
+export const DEFAULT_PROVISIONER_LOGIN = 'portal_provisioner_login';
 
 type Env = Record<string, string | undefined>;
 type Read = (path: string) => string;
@@ -63,7 +73,7 @@ function secretFile(env: Env, name: string, read: Read): string {
 }
 
 /**
- * Reads the administrator connection and both login passwords from files named
+ * Reads the administrator connection and the three login passwords from files named
  * by the environment. The environment holds paths only; a secret passed as an
  * argument or a variable is refused, because both are visible in `ps` and in
  * the container's inspect output.
@@ -79,7 +89,12 @@ export function loadConfig(
       'takes no arguments but --migrate-only: every input is a file named by an environment variable'
     );
   }
-  for (const name of ['PORTAL_ADMIN_URL', 'PORTAL_TENANT_PASSWORD', 'PORTAL_OWNER_PASSWORD']) {
+  for (const name of [
+    'PORTAL_ADMIN_URL',
+    'PORTAL_TENANT_PASSWORD',
+    'PORTAL_OWNER_PASSWORD',
+    'PORTAL_PROVISIONER_PASSWORD',
+  ]) {
     if (env[name] !== undefined) {
       throw new Error(`${name} is not read: use ${name}_FILE, a path to a file`);
     }
@@ -94,6 +109,7 @@ export function loadConfig(
     PORTAL_DATABASE_NAME: env['PORTAL_DATABASE_NAME'] ?? DEFAULT_DATABASE,
     PORTAL_TENANT_LOGIN: env['PORTAL_TENANT_LOGIN'] ?? DEFAULT_TENANT_LOGIN,
     PORTAL_OWNER_LOGIN: env['PORTAL_OWNER_LOGIN'] ?? DEFAULT_OWNER_LOGIN,
+    PORTAL_PROVISIONER_LOGIN: env['PORTAL_PROVISIONER_LOGIN'] ?? DEFAULT_PROVISIONER_LOGIN,
   };
   for (const [name, value] of Object.entries(names)) {
     try {
@@ -102,14 +118,25 @@ export function loadConfig(
       throw new Error(`${name} must be a plain lower-case identifier`);
     }
   }
-  if (names.PORTAL_TENANT_LOGIN === names.PORTAL_OWNER_LOGIN) {
-    throw new Error('the tenant and owner logins must differ');
+  const logins = [
+    names.PORTAL_TENANT_LOGIN,
+    names.PORTAL_OWNER_LOGIN,
+    names.PORTAL_PROVISIONER_LOGIN,
+  ];
+  if (new Set(logins).size !== logins.length) {
+    throw new Error('the tenant, owner and provisioner logins must differ');
   }
   // `--migrate-only` sets no password, so it reads no password file.
   const tenantPassword = withPasswords ? secretFile(env, 'PORTAL_TENANT_PASSWORD_FILE', read) : '';
   const ownerPassword = withPasswords ? secretFile(env, 'PORTAL_OWNER_PASSWORD_FILE', read) : '';
-  if (withPasswords)
-    for (const password of [tenantPassword, ownerPassword]) scramVerifier(password);
+  const provisionerPassword = withPasswords
+    ? secretFile(env, 'PORTAL_PROVISIONER_PASSWORD_FILE', read)
+    : '';
+  if (withPasswords) {
+    for (const password of [tenantPassword, ownerPassword, provisionerPassword]) {
+      scramVerifier(password);
+    }
+  }
   return {
     adminUrl,
     database: names.PORTAL_DATABASE_NAME,
@@ -117,6 +144,8 @@ export function loadConfig(
     tenantPassword,
     ownerLogin: names.PORTAL_OWNER_LOGIN,
     ownerPassword,
+    provisionerLogin: names.PORTAL_PROVISIONER_LOGIN,
+    provisionerPassword,
   };
 }
 
@@ -130,7 +159,12 @@ function urlUserinfo(value: string): string {
 /** Removes every secret in `config`, in raw and URL-encoded form, from a message. */
 export function redact(message: string, config: Partial<ProvisionConfig>): string {
   const secrets = new Set<string>();
-  for (const value of [config.adminUrl, config.tenantPassword, config.ownerPassword]) {
+  for (const value of [
+    config.adminUrl,
+    config.tenantPassword,
+    config.ownerPassword,
+    config.provisionerPassword,
+  ]) {
     if (value !== undefined && value !== '') {
       secrets.add(value);
       for (const form of [encodeURIComponent(value), urlUserinfo(value), escape(value)]) {
@@ -260,16 +294,20 @@ async function expectOutcome(
 /**
  * Connects as each login and proves the boundary the data layer's guarantee
  * rests on: the tenant login can reach the tenant role and not the owner
- * role, the owner login the reverse, and a tenant-role read with no tenant
- * bound fails instead of returning rows. A behavioural smoke test after the
+ * role, the owner login the reverse, the provisioner login reaches its role
+ * alone and can read but neither update nor delete what it writes, and a
+ * tenant-role read with no tenant bound fails instead of returning rows. A behavioural smoke test after the
  * check has passed, not the control. `tables` names the portal tables the
  * applied migrations have made; by default, all of them.
  */
 export async function verifyBoundary(
   config: ProvisionConfig,
-  tables: readonly string[] = Object.keys(PORTAL_TABLES)
+  tables: readonly string[] = [...Object.keys(PORTAL_TABLES), ...Object.keys(PROVISIONER_TABLES)]
 ): Promise<void> {
-  const present = tables.map((name) => PORTAL_TABLES[name]!);
+  const present = tables
+    .filter((name) => name in PORTAL_TABLES)
+    .map((name) => PORTAL_TABLES[name]!);
+  const written = tables.filter((name) => name in PROVISIONER_TABLES);
   await withPool(
     urlFor(config, config.database, config.tenantLogin),
     async (pool) => {
@@ -277,6 +315,12 @@ export async function verifyBoundary(
       await expectOutcome(pool, 'tenant login assumes portal_tenant', 'ok', asTenant);
       await expectOutcome(pool, 'tenant login assumes portal_owner', PERMISSION_DENIED, (tx) =>
         enterRole(tx, 'portal_owner')
+      );
+      await expectOutcome(
+        pool,
+        'tenant login assumes portal_provisioner',
+        PERMISSION_DENIED,
+        (tx) => enterRole(tx, 'portal_provisioner')
       );
       await expectOutcome(pool, 'tenant login creates in public', PERMISSION_DENIED, (tx) =>
         tx.execute(sql`CREATE TABLE public.portal_provision_probe (id integer)`)
@@ -310,8 +354,50 @@ export async function verifyBoundary(
       await expectOutcome(pool, 'owner login assumes portal_tenant', PERMISSION_DENIED, (tx) =>
         enterRole(tx, 'portal_tenant')
       );
+      await expectOutcome(pool, 'owner login assumes portal_provisioner', PERMISSION_DENIED, (tx) =>
+        enterRole(tx, 'portal_provisioner')
+      );
     },
     config.ownerPassword
+  );
+  await withPool(
+    urlFor(config, config.database, config.provisionerLogin),
+    async (pool) => {
+      await expectOutcome(pool, 'provisioner login assumes portal_provisioner', 'ok', (tx) =>
+        enterRole(tx, 'portal_provisioner')
+      );
+      await expectOutcome(pool, 'provisioner login assumes portal_owner', PERMISSION_DENIED, (tx) =>
+        enterRole(tx, 'portal_owner')
+      );
+      await expectOutcome(
+        pool,
+        'provisioner login assumes portal_tenant',
+        PERMISSION_DENIED,
+        (tx) => enterRole(tx, 'portal_tenant')
+      );
+      for (const name of written) {
+        const probe = PROVISIONER_TABLES[name]!;
+        const asProvisioner = (tx: Tx): Promise<void> => enterRole(tx, 'portal_provisioner');
+        await expectOutcome(pool, `provisioner reads ${name}`, 'ok', async (tx) => {
+          await asProvisioner(tx);
+          await probe.read(tx);
+        });
+        await expectOutcome(pool, `provisioner updates ${name}`, PERMISSION_DENIED, async (tx) => {
+          await asProvisioner(tx);
+          await probe.update(tx);
+        });
+        await expectOutcome(
+          pool,
+          `provisioner deletes from ${name}`,
+          PERMISSION_DENIED,
+          async (tx) => {
+            await asProvisioner(tx);
+            await probe.remove(tx);
+          }
+        );
+      }
+    },
+    config.provisionerPassword
   );
 }
 
@@ -323,6 +409,47 @@ const PORTAL_TABLES: Record<
   'portal.tenant_register': tenantRegister,
   'portal.health_reading': healthReading,
   'portal.document_acceptance': documentAcceptance,
+};
+
+interface ProvisionerProbe {
+  read: (tx: Tx) => Promise<unknown>;
+  update: (tx: Tx) => Promise<unknown>;
+  remove: (tx: Tx) => Promise<unknown>;
+}
+
+/**
+ * The tables the provisioner writes, each with the three statements the smoke
+ * test tries. The update and delete match no row: a missing privilege is
+ * refused before any row is looked at.
+ */
+const PROVISIONER_TABLES: Record<string, ProvisionerProbe> = {
+  'portal.demo_state_event': {
+    read: (tx) => tx.select().from(demoStateEvent),
+    update: (tx) =>
+      tx
+        .update(demoStateEvent)
+        .set({ extensionDays: 0 })
+        .where(sql`false`),
+    remove: (tx) => tx.delete(demoStateEvent).where(sql`false`),
+  },
+  'portal.hostname_register': {
+    read: (tx) => tx.select().from(hostnameRegister),
+    update: (tx) =>
+      tx
+        .update(hostnameRegister)
+        .set({ demoId: PROBE_TENANT })
+        .where(sql`false`),
+    remove: (tx) => tx.delete(hostnameRegister).where(sql`false`),
+  },
+  'portal.hostname_retirement': {
+    read: (tx) => tx.select().from(hostnameRetirement),
+    update: (tx) =>
+      tx
+        .update(hostnameRetirement)
+        .set({ label: '' })
+        .where(sql`false`),
+    remove: (tx) => tx.delete(hostnameRetirement).where(sql`false`),
+  },
 };
 
 /**
@@ -343,8 +470,15 @@ export class ProvisionRefused extends Error {
   }
 }
 
-const PRINCIPALS: readonly Principal[] = ['tenantRole', 'ownerRole', 'tenantLogin', 'ownerLogin'];
-const LOGINS: readonly Principal[] = ['tenantLogin', 'ownerLogin'];
+const PRINCIPALS: readonly Principal[] = [
+  'tenantRole',
+  'ownerRole',
+  'provisionerRole',
+  'tenantLogin',
+  'ownerLogin',
+  'provisionerLogin',
+];
+const LOGINS: readonly Principal[] = ['tenantLogin', 'ownerLogin', 'provisionerLogin'];
 /**
  * Serialises runs of this command; any constant would do. PostgreSQL scopes
  * an advisory lock to one database, so the session lock serialises only runs
@@ -453,6 +587,7 @@ async function hbaCheck(client: pg.ClientBase, config: ProvisionConfig, names: N
   for (const [login, role] of [
     ['tenantLogin', 'tenantRole'],
     ['ownerLogin', 'ownerRole'],
+    ['provisionerLogin', 'provisionerRole'],
   ] as const) {
     const reach = await client.query(
       `SELECT r.rolname FROM pg_roles l, pg_roles r
@@ -569,7 +704,7 @@ export async function provisionPortal(
   options: ProvisionOptions = {}
 ): Promise<void> {
   const migrations = options.migrations ?? readMigrations();
-  const names = principalNames(config.tenantLogin, config.ownerLogin);
+  const names = principalNames(config.tenantLogin, config.ownerLogin, config.provisionerLogin);
   const maintenance = poolFor(urlFor(config, maintenanceDatabase(config)));
   const lock = await pinned(maintenance);
   try {
@@ -612,6 +747,7 @@ export async function provisionPortal(
     const passwords: Record<string, string> = {
       tenantLogin: config.tenantPassword,
       ownerLogin: config.ownerPassword,
+      provisionerLogin: config.provisionerPassword,
     };
     await inTransaction(lock, '', async () => {
       for (const principal of PRINCIPALS) {
@@ -671,7 +807,7 @@ export async function provisionPortal(
   const tags = migrations.map((m) => m.tag);
   await verifyBoundary(
     config,
-    Object.keys(PORTAL_TABLES).filter((name) =>
+    [...Object.keys(PORTAL_TABLES), ...Object.keys(PROVISIONER_TABLES)].filter((name) =>
       manifest(14, config.database).some((o) => o.identity === name && tags.includes(o.since))
     )
   );
@@ -700,7 +836,7 @@ export async function migratePortal(
   options: ProvisionOptions = {}
 ): Promise<void> {
   const migrations = options.migrations ?? readMigrations();
-  const names = principalNames(config.tenantLogin, config.ownerLogin);
+  const names = principalNames(config.tenantLogin, config.ownerLogin, config.provisionerLogin);
   const maintenance = poolFor(urlFor(config, maintenanceDatabase(config)));
   const lock = await pinned(maintenance);
   try {

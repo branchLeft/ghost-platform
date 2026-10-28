@@ -20,6 +20,7 @@ import { scramVerifier } from '../provision/scram.js';
 
 const TENANT_PW = 'tenant-secret-9f2c41';
 const OWNER_PW = 'owner-secret-77ab03';
+const PROVISIONER_PW = 'provisioner-secret-5d19e8';
 const ADMIN_PW = 'admin-secret-c0ffee';
 
 function files(entries: Record<string, string>): { dir: string; env: Record<string, string> } {
@@ -37,40 +38,56 @@ const GOOD = {
   PORTAL_ADMIN_URL_FILE: `postgres://admin:${ADMIN_PW}@db.invalid:5432/postgres\n`,
   PORTAL_TENANT_PASSWORD_FILE: `${TENANT_PW}\n`,
   PORTAL_OWNER_PASSWORD_FILE: `${OWNER_PW}\n`,
+  PORTAL_PROVISIONER_PASSWORD_FILE: `${PROVISIONER_PW}\n`,
 };
 
 describe('loadConfig', () => {
-  it('reads the connection and both passwords from files, trimming one newline', () => {
+  it('reads the connection and the three passwords from files, trimming one newline', () => {
     const { dir, env } = files(GOOD);
     const config = loadConfig(env, []);
     rmSync(dir, { recursive: true });
     expect(config.adminUrl).toBe(`postgres://admin:${ADMIN_PW}@db.invalid:5432/postgres`);
     expect(config.tenantPassword).toBe(TENANT_PW);
     expect(config.ownerPassword).toBe(OWNER_PW);
+    expect(config.provisionerPassword).toBe(PROVISIONER_PW);
     expect(config.database).toBe('portal');
     expect(config.tenantLogin).toBe('portal_tenant_login');
     expect(config.ownerLogin).toBe('portal_owner_login');
+    expect(config.provisionerLogin).toBe('portal_provisioner_login');
   });
 
   it('takes the database and login names from the environment when given', () => {
     const { dir, env } = files(GOOD);
     const config = loadConfig(
-      { ...env, PORTAL_DATABASE_NAME: 'p2', PORTAL_TENANT_LOGIN: 't2', PORTAL_OWNER_LOGIN: 'o2' },
+      {
+        ...env,
+        PORTAL_DATABASE_NAME: 'p2',
+        PORTAL_TENANT_LOGIN: 't2',
+        PORTAL_OWNER_LOGIN: 'o2',
+        PORTAL_PROVISIONER_LOGIN: 'p3',
+      },
       []
     );
     rmSync(dir, { recursive: true });
-    expect([config.database, config.tenantLogin, config.ownerLogin]).toEqual(['p2', 't2', 'o2']);
+    expect([
+      config.database,
+      config.tenantLogin,
+      config.ownerLogin,
+      config.provisionerLogin,
+    ]).toEqual(['p2', 't2', 'o2', 'p3']);
   });
 
-  it.each(['PORTAL_ADMIN_URL_FILE', 'PORTAL_TENANT_PASSWORD_FILE', 'PORTAL_OWNER_PASSWORD_FILE'])(
-    'refuses with a clear error when %s is missing',
-    (name) => {
-      const { dir, env } = files(GOOD);
-      delete env[name];
-      expect(() => loadConfig(env, [])).toThrow(new RegExp(`${name} must name a file`));
-      rmSync(dir, { recursive: true });
-    }
-  );
+  it.each([
+    'PORTAL_ADMIN_URL_FILE',
+    'PORTAL_TENANT_PASSWORD_FILE',
+    'PORTAL_OWNER_PASSWORD_FILE',
+    'PORTAL_PROVISIONER_PASSWORD_FILE',
+  ])('refuses with a clear error when %s is missing', (name) => {
+    const { dir, env } = files(GOOD);
+    delete env[name];
+    expect(() => loadConfig(env, [])).toThrow(new RegExp(`${name} must name a file`));
+    rmSync(dir, { recursive: true });
+  });
 
   it('refuses an unreadable file by naming the path, not any content', () => {
     const { dir, env } = files(GOOD);
@@ -100,21 +117,23 @@ describe('loadConfig', () => {
     expect(message).not.toContain(ADMIN_PW);
   });
 
-  it.each(['PORTAL_ADMIN_URL', 'PORTAL_TENANT_PASSWORD', 'PORTAL_OWNER_PASSWORD'])(
-    'refuses a secret placed in %s itself',
-    (name) => {
-      const { dir, env } = files(GOOD);
-      let message = '';
-      try {
-        loadConfig({ ...env, [name]: 'inline-secret-value' }, []);
-      } catch (error) {
-        message = (error as Error).message;
-      }
-      rmSync(dir, { recursive: true });
-      expect(message).toContain(`use ${name}_FILE`);
-      expect(message).not.toContain('inline-secret-value');
+  it.each([
+    'PORTAL_ADMIN_URL',
+    'PORTAL_TENANT_PASSWORD',
+    'PORTAL_OWNER_PASSWORD',
+    'PORTAL_PROVISIONER_PASSWORD',
+  ])('refuses a secret placed in %s itself', (name) => {
+    const { dir, env } = files(GOOD);
+    let message = '';
+    try {
+      loadConfig({ ...env, [name]: 'inline-secret-value' }, []);
+    } catch (error) {
+      message = (error as Error).message;
     }
-  );
+    rmSync(dir, { recursive: true });
+    expect(message).toContain(`use ${name}_FILE`);
+    expect(message).not.toContain('inline-secret-value');
+  });
 
   it('refuses any argument, since argv is visible in the process list', () => {
     const { dir, env } = files(GOOD);
@@ -128,12 +147,21 @@ describe('redact', () => {
     adminUrl: 'postgres://admin:p%40ss@host:5432/postgres',
     tenantPassword: 'tenant pw/1',
     ownerPassword: OWNER_PW,
+    provisionerPassword: PROVISIONER_PW,
   };
 
-  it('removes the URL, its password decoded and encoded, and both login passwords', () => {
-    const text = `a ${config.adminUrl} b p%40ss c p@ss d tenant pw/1 e tenant%20pw%2F1 f ${OWNER_PW}`;
+  it('removes the URL, its password decoded and encoded, and every login password', () => {
+    const text = `a ${config.adminUrl} b p%40ss c p@ss d tenant pw/1 e tenant%20pw%2F1 f ${OWNER_PW} g ${PROVISIONER_PW}`;
     const out = redact(text, config);
-    for (const secret of ['p%40ss', 'p@ss', 'tenant pw/1', 'tenant%20pw%2F1', OWNER_PW, 'admin:']) {
+    for (const secret of [
+      'p%40ss',
+      'p@ss',
+      'tenant pw/1',
+      'tenant%20pw%2F1',
+      OWNER_PW,
+      PROVISIONER_PW,
+      'admin:',
+    ]) {
       expect(out).not.toContain(secret);
     }
     expect(out).toContain('[redacted]');
@@ -213,7 +241,7 @@ describe('login passwords never reach the SQL text', () => {
   it('sends a verifier, not the password, when it creates or rotates a login', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login');
+    const names = principalNames('a_login', 'b_login', 'c_login');
     await createPrincipal(fake, names, 'tenantLogin', nasty);
     await rotatePassword(fake, 'b_login', nasty);
     expect(seen.length).toBe(2);
@@ -225,15 +253,17 @@ describe('login passwords never reach the SQL text', () => {
     expect(seen[0]).toMatch(/^CREATE ROLE "a_login" LOGIN NOINHERIT NOSUPERUSER .* NOBYPASSRLS /);
   });
 
-  it('creates a role with no password and the owner role alone with BYPASSRLS', async () => {
+  it('creates a role with no password, the owner role alone with BYPASSRLS, and the provisioner without', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login');
+    const names = principalNames('a_login', 'b_login', 'c_login');
     await createPrincipal(fake, names, 'tenantRole');
     await createPrincipal(fake, names, 'ownerRole');
+    await createPrincipal(fake, names, 'provisionerRole');
     expect(seen).toEqual([
       'CREATE ROLE "portal_tenant" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
       'CREATE ROLE "portal_owner" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS',
+      'CREATE ROLE "portal_provisioner" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
     ]);
   });
 
@@ -339,6 +369,7 @@ describe('loadConfig names', () => {
     ['PORTAL_DATABASE_NAME', 'a"b'],
     ['PORTAL_TENANT_LOGIN', 'Upper'],
     ['PORTAL_OWNER_LOGIN', 'x; drop'],
+    ['PORTAL_PROVISIONER_LOGIN', 'Mixed'],
   ])('refuses %s=%s before anything touches a server', (name, value) => {
     const { dir, env } = files(GOOD);
     expect(() => loadConfig({ ...env, [name]: value }, [])).toThrow(
@@ -347,11 +378,15 @@ describe('loadConfig names', () => {
     rmSync(dir, { recursive: true });
   });
 
-  it('refuses one login for both roles', () => {
+  it.each([
+    ['PORTAL_TENANT_LOGIN', 'PORTAL_OWNER_LOGIN'],
+    ['PORTAL_OWNER_LOGIN', 'PORTAL_PROVISIONER_LOGIN'],
+    ['PORTAL_TENANT_LOGIN', 'PORTAL_PROVISIONER_LOGIN'],
+  ])('refuses one login for two roles: %s and %s', (first, second) => {
     const { dir, env } = files(GOOD);
-    expect(() =>
-      loadConfig({ ...env, PORTAL_TENANT_LOGIN: 'same', PORTAL_OWNER_LOGIN: 'same' }, [])
-    ).toThrow('must differ');
+    expect(() => loadConfig({ ...env, [first]: 'same', [second]: 'same' }, [])).toThrow(
+      'must differ'
+    );
     rmSync(dir, { recursive: true });
   });
 
@@ -363,14 +398,15 @@ describe('loadConfig names', () => {
 });
 
 describe('the statements the command writes', () => {
-  const names = principalNames('t_login', 'o_login');
+  const names = principalNames('t_login', 'o_login', 'v_login');
 
-  it('revokes PUBLIC from a new database and grants CONNECT to the two logins', () => {
+  it('revokes PUBLIC from a new database and grants CONNECT to the three logins', () => {
     const database = manifest(17, 'portal').find((o) => o.kind === 'database')!;
     expect(grantStatements(database, names, 17)).toEqual([
       'REVOKE ALL ON DATABASE "portal" FROM PUBLIC',
       'GRANT CONNECT ON DATABASE "portal" TO "t_login"',
       'GRANT CONNECT ON DATABASE "portal" TO "o_login"',
+      'GRANT CONNECT ON DATABASE "portal" TO "v_login"',
     ]);
   });
 

@@ -124,11 +124,78 @@ save route must pass the changes in `COMMENT_CHECKS` order, the order the route
 uses. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
 deletes a setting, and the owner role has no grant on it.
 
+## The demo lifecycle, its term and the hostname register
+
+A demo is the owner side's record of one prospect's tenancy; the lifecycle
+document (`ghost-platform-docs/19-try-it-now-design/12-demo-lifecycle.html`,
+sections 03 and 05) owns the design. Three tables hold it. None has a tenant
+column or a row policy, and the protection is the grants, as for
+`document_version`.
+
+**States and transitions.** `src/demoStates.ts` holds one closed list of 14
+states (`VERIFIED`, `WAITING`, `CLAIMED`, `PROVISIONING`, `LIVE`, `EXTENDED`,
+`EXPIRING`, `REBUILDING`, `PROMOTING`, `PROMOTED`, `FAILED`, `KILLED`, `FROZEN`,
+`PURGED`) and the one closed set of allowed moves between them. The five
+terminal states (`PURGED`, `FAILED`, `KILLED`, `FROZEN`, `PROMOTED`) have no way
+out, a self-transition is refused, and the kill switch and content flag
+(`KILLED`, `FROZEN`) leave every state that holds a slot (`CLAIMED` to
+`PROMOTING`). A new demo for the same address is a new demo, not a move.
+`portal.demo_state_event` is append-only: one row per transition, with its time
+on the database clock and the term then in force, and no person. The current
+state is the latest row. The database refuses what the code would not write:
+a check pins the allowed pairs, a foreign key makes each row continue the
+demo's real previous row, and the primary key on (demo, sequence) lets only
+one of two simultaneous transitions from a state win (the other gets
+`ConcurrentTransitionError`). Three rules are code's: an extension is
+`extend`'s and never a bare transition, a promotion that does not complete
+returns to the state it came from, and a lease is carried on unchanged.
+
+**The term.** Entering `PROVISIONING` issues a term of exactly seven days
+(`LEASE_DAYS`), starting at that row's own database-clock time: no operation
+takes a time from its caller, and a check refuses a `PROVISIONING` row whose
+issue time is not its own record time or whose end is not seven days on. The
+end is never null from `PROVISIONING` on. A self-service extension
+(`ProvisionerDb.extend`, LIVE or EXPIRING to EXTENDED) moves the end on by 14
+days (`EXTENSION_DAYS`) and changes nothing else: the issue time, the hostname
+and every earlier row are as they were, and it appends one row. There is one
+extension per demo; any further time is the owner's, not built here, and the
+tables do not forbid it. A rebuild (`REBUILDING` to `LIVE`) keeps the end it
+had, so a rebuild on day six still ends on day seven. The transition set has
+no `REBUILDING` exit from `EXTENDED`, so a dead extended demo cannot be
+rebuilt as the table stands.
+
+**The register.** `portal.hostname_register` holds every hostname ever
+allocated: the label, an opaque demo id and the allocation time, and nothing a
+prospect typed. The label is the primary key, so a name is never given twice,
+and the demo id is unique, so a demo has one hostname for its whole life (a
+rebuild keeps it). The label is 20 base32 characters (100 bits) from the
+operating system's random source, takes nothing from the demo or the slot, and
+a check pins its shape. Retirement is a row in `portal.hostname_retirement`,
+keyed on the label, never an edit of the register; a retired label cannot be
+allocated again, and a label not in the register or already retired is refused
+(`UnknownHostnameError`, `HostnameRetiredError`).
+
+**Who writes them.** `portal_provisioner`, a third role, used only by the
+control-plane lifecycle worker (not built here) through
+the `./provisioner` export (`ProvisionerDb`). It can
+`INSERT` and `SELECT` the three tables and can neither `UPDATE` nor `DELETE` any
+of them: refused at the permission level, SQLSTATE `42501`, which the provisioning
+command's own check (M06) and smoke test both hold. The owner role may only
+`SELECT` them (`OwnerDb.listDemos`, `demoHistory`, `demoHostname`,
+`listHostnames`); the tenant role holds nothing on them. The internet-facing
+prospect path is a separate role, not made here.
+
+Control cases (each is a test that fails if the mechanism is removed): the
+full 14 by 14 matrix of states, through the operation and straight at the
+table; the term read back from the stored row; the extension's before and
+after record; a rebuild's end; the label's uniqueness, with two simultaneous
+allocations; and the provisioner's `UPDATE` and `DELETE` refused with `42501`.
+
 ## The owner path
 
-`portal/data` exports `./tenant` and `./owner` separately. Tenant-facing code
-imports the first only; a test fails if anything under `src/tenant` imports the
-owner path or the migrator. The owner pool connects as a login that is a member
+`portal/data` exports `./tenant`, `./owner` and `./provisioner` separately.
+Tenant-facing code imports the first only; a test fails if anything under
+`src/tenant` imports the owner path, the provisioner path or the migrator. The owner pool connects as a login that is a member
 of `portal_owner` alone, so the tenant-facing connection cannot assume that role.
 
 ## Running the tests
@@ -139,7 +206,8 @@ PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres npm run cov
 ```
 
 The URL must be a superuser on a throwaway cluster started with
-`test/pg_hba.ci.conf` as its `hba_file` (writable by the server's user, since
+`test/pg_hba.ci.conf` as its `hba_file` (it names each test login, the
+provisioner's included) (writable by the server's user, since
 the pg_hba tests rewrite and restore it), because the provisioning command
 refuses any rule that lets a portal login reach another database. CI runs the
 suite on PostgreSQL 14 and 17. The suite creates and drops its own databases.
@@ -163,15 +231,22 @@ the variable itself is refused.
 | `PORTAL_ADMIN_URL_FILE`       | administrator connection URL (host and user required) |
 | `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
 | `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
+| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII) |
 | `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
 | `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
 | `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
+| `PORTAL_PROVISIONER_LOGIN`    | optional, default `portal_provisioner_login`          |
+
+The three logins must differ and their passwords come from three files. A full
+run needs all three password files: the manifest is closed, so a run without
+the provisioner's is refused rather than provisioning two of three.
 
 The command creates what is absent, checks everything, and repairs nothing.
-`provision/manifest.ts` is the closed manifest: the two roles and two logins
+`provision/manifest.ts` is the closed manifest: the three roles and three logins
 with their exact attributes (all `NOINHERIT`; the apps always `SET LOCAL
 ROLE`), one membership per login, and every grant, each justified by a call
-site. No role may `DELETE`, and the owner role may not `UPDATE` the register.
+site. No role may `DELETE`, the owner role may not `UPDATE` the tenant register,
+and the provisioner role may not `UPDATE` anything.
 
 1. **Check, before any write.** The whole privilege state of the server is
    compared with the manifest through the closed list of mechanisms
@@ -196,7 +271,8 @@ site. No role may `DELETE`, and the owner role may not `UPDATE` the register.
    grants on what they created, and the check against the full manifest
    before commit.
 5. A smoke test connects as each login (`42501` permission denied, `28000` no
-   tenant bound).
+   tenant bound; the provisioner login may read what it writes and may neither
+   update nor delete it).
 
 Concurrent runs are serialised by an advisory lock. PostgreSQL scopes advisory
 locks to one database, so the session lock held on the maintenance database
@@ -218,6 +294,10 @@ full manifest before commit. It creates no role and no database and sets no
 password, so the logins' stored verifiers are byte for byte unchanged. It
 refuses with `migrate refused: role ... is absent` or `migrate refused:
 database ... is absent, not provisioned` when the full provision has not run.
+A server last provisioned before `portal_provisioner` existed is such a case:
+`--migrate-only` refuses naming the missing role and login, and the full run
+(with the provisioner's password file) comes first, then `--migrate-only` for
+later migrations.
 It skips steps 3 and 5, which need the login passwords. Run again with
 nothing pending, it applies nothing and prints `no pending migrations`.
 

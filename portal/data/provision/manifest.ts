@@ -4,22 +4,42 @@
 // never repairs. A migration that adds an object needs an entry here, or the
 // migration-sync test fails before the migration can reach a server.
 
-/** The four principals, by the part each plays. */
-export type Principal = 'tenantRole' | 'ownerRole' | 'tenantLogin' | 'ownerLogin';
+/** The six principals, by the part each plays. */
+export type Principal =
+  | 'tenantRole'
+  | 'ownerRole'
+  | 'provisionerRole'
+  | 'tenantLogin'
+  | 'ownerLogin'
+  | 'provisionerLogin';
 export type Grantee = Principal | 'PUBLIC';
 
 export const TENANT_ROLE = 'portal_tenant';
 export const OWNER_ROLE = 'portal_owner';
+export const PROVISIONER_ROLE = 'portal_provisioner';
 
 export interface Names {
   tenantRole: string;
   ownerRole: string;
+  provisionerRole: string;
   tenantLogin: string;
   ownerLogin: string;
+  provisionerLogin: string;
 }
 
-export function principalNames(tenantLogin: string, ownerLogin: string): Names {
-  return { tenantRole: TENANT_ROLE, ownerRole: OWNER_ROLE, tenantLogin, ownerLogin };
+export function principalNames(
+  tenantLogin: string,
+  ownerLogin: string,
+  provisionerLogin: string
+): Names {
+  return {
+    tenantRole: TENANT_ROLE,
+    ownerRole: OWNER_ROLE,
+    provisionerRole: PROVISIONER_ROLE,
+    tenantLogin,
+    ownerLogin,
+    provisionerLogin,
+  };
 }
 
 /** The attributes each principal has, exactly (M01). */
@@ -32,14 +52,18 @@ export const ROLE_ATTRIBUTES: Record<Principal, RoleAttributes> = {
   tenantRole: { canLogin: false, bypassRls: false },
   // The owner console's cross-tenant reads bypass row security by attribute.
   ownerRole: { canLogin: false, bypassRls: true },
+  // Writes the hostname register and the demo's state events, insert-only.
+  provisionerRole: { canLogin: false, bypassRls: false },
   tenantLogin: { canLogin: true, bypassRls: false },
   ownerLogin: { canLogin: true, bypassRls: false },
+  provisionerLogin: { canLogin: true, bypassRls: false },
 };
 
 /** Each login is a member of exactly one role (M02). */
 export const MEMBERSHIPS: readonly (readonly [Principal, Principal])[] = [
   ['tenantLogin', 'tenantRole'],
   ['ownerLogin', 'ownerRole'],
+  ['provisionerLogin', 'provisionerRole'],
 ];
 
 export type ObjectKind = 'database' | 'schema' | 'table' | 'sequence' | 'function';
@@ -71,6 +95,7 @@ const HEALTH = '0002_health_reading';
 const DOCUMENTS = '0003_versioned_documents';
 const MODERATION = '0004_moderation_setting';
 const KIND = '0005_tenant_kind';
+const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -102,6 +127,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
       grants: [
         { grantee: 'tenantLogin', privileges: ['CONNECT'] },
         { grantee: 'ownerLogin', privileges: ['CONNECT'] },
+        { grantee: 'provisionerLogin', privileges: ['CONNECT'] },
       ],
     },
     publicSchema(major),
@@ -135,6 +161,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
       grants: [
         { grantee: 'tenantRole', privileges: ['USAGE'] },
         { grantee: 'ownerRole', privileges: ['USAGE'] },
+        { grantee: 'provisionerRole', privileges: ['USAGE'] },
       ],
     },
     // TenantDb.ownRegistration, ownKind and scopeForOrganisation read; OwnerDb
@@ -193,6 +220,40 @@ export function manifest(major: number, database: string): readonly ManifestObje
       since: MODERATION,
       grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
     },
+    // ProvisionerDb appends events and reads the latest to decide the next;
+    // OwnerDb.listDemos and demoHistory read. No role updates or deletes an
+    // event: the history is the record, and the tenant role holds nothing.
+    {
+      kind: 'table',
+      identity: 'portal.demo_state_event',
+      since: DEMO_LIFECYCLE,
+      grants: [
+        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
+      ],
+    },
+    // ProvisionerDb.allocateHostname inserts; OwnerDb.listHostnames reads. The
+    // register is append-only by grant: no role may update or delete a row.
+    {
+      kind: 'table',
+      identity: 'portal.hostname_register',
+      since: DEMO_LIFECYCLE,
+      grants: [
+        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
+      ],
+    },
+    // ProvisionerDb.retireHostname inserts; a retirement is a row, never an
+    // edit of the register. OwnerDb.listHostnames reads.
+    {
+      kind: 'table',
+      identity: 'portal.hostname_retirement',
+      since: DEMO_LIFECYCLE,
+      grants: [
+        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
+      ],
+    },
   ];
 }
 
@@ -203,6 +264,9 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
+  'portal.demo_state_event': { enabled: false, forced: false },
+  'portal.hostname_register': { enabled: false, forced: false },
+  'portal.hostname_retirement': { enabled: false, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -422,6 +486,80 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
         'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
         'USING btree (tenant_id, check_id)',
+    ],
+  },
+  'portal.demo_state_event': {
+    since: DEMO_LIFECYCLE,
+    lines: [
+      `column demo_id uuid notnull=true ${PLAIN}`,
+      `column extension_days integer notnull=true ${PLAIN}`,
+      `column from_state text notnull=false ${PLAIN}`,
+      `column lease_ends_at timestamp with time zone notnull=false ${PLAIN}`,
+      `column lease_issued_at timestamp with time zone notnull=false ${PLAIN}`,
+      `column previous_sequence integer notnull=false ${PLAIN}`,
+      `column recorded_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column sequence integer notnull=true ${PLAIN}`,
+      `column to_state text notnull=true ${PLAIN}`,
+      'default extension_days 0',
+      'default recorded_at now()',
+      'constraint demo_state_event_continues_previous_fk FOREIGN KEY (demo_id, ' +
+        'previous_sequence, from_state) REFERENCES portal.demo_state_event(demo_id, sequence, to_state)',
+      'constraint demo_state_event_demo_id_sequence_pk PRIMARY KEY (demo_id, sequence)',
+      'constraint demo_state_event_demo_sequence_state_unique UNIQUE (demo_id, sequence, ' +
+        'to_state)',
+      'constraint demo_state_event_extension_only_extended CHECK (((extension_days >= 0) AND ' +
+        "((extension_days = 0) OR (to_state = 'EXTENDED'::text))))",
+      'constraint demo_state_event_lease_by_state CHECK ((((to_state = ANY ' +
+        "(ARRAY['VERIFIED'::text, 'WAITING'::text, 'CLAIMED'::text])) AND (lease_ends_at IS NULL)) OR ((to_state = ANY (ARRAY['PROVISIONING'::text, 'LIVE'::text, 'EXTENDED'::text, 'EXPIRING'::text, 'REBUILDING'::text, 'PROMOTING'::text, 'PROMOTED'::text, 'PURGED'::text])) AND (lease_ends_at IS NOT NULL)) OR (to_state = ANY (ARRAY['FAILED'::text, 'KILLED'::text, 'FROZEN'::text]))))",
+      'constraint demo_state_event_lease_complete CHECK (((lease_issued_at IS NULL) = ' +
+        '(lease_ends_at IS NULL)))',
+      'constraint demo_state_event_lease_finite CHECK ((lease_ends_at > lease_issued_at))',
+      'constraint demo_state_event_sequence_chain CHECK (((sequence >= 1) AND ((sequence = ' +
+        '1) = (previous_sequence IS NULL)) AND ((previous_sequence IS NULL) = (from_state IS NULL)) AND ((previous_sequence IS NULL) OR (previous_sequence = (sequence - 1)))))',
+      "constraint demo_state_event_term_set CHECK (((to_state <> 'PROVISIONING'::text) OR " +
+        '((lease_issued_at = recorded_at) AND (lease_ends_at = (lease_issued_at + make_interval(hours => 168))))))',
+      "constraint demo_state_event_transition_allowed CHECK ((((from_state IS NULL) AND (sequence = 1) AND (to_state = 'VERIFIED'::text)) OR ((from_state IS NOT NULL) AND (((from_state = 'VERIFIED'::text) AND (to_state = ANY (ARRAY['CLAIMED'::text, 'WAITING'::text])))" +
+        " OR ((from_state = 'WAITING'::text) AND (to_state = 'CLAIMED'::text))" +
+        " OR ((from_state = 'CLAIMED'::text) AND (to_state = ANY (ARRAY['PROVISIONING'::text, 'WAITING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+        " OR ((from_state = 'PROVISIONING'::text) AND (to_state = ANY (ARRAY['LIVE'::text, 'FAILED'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+        " OR ((from_state = 'LIVE'::text) AND (to_state = ANY (ARRAY['EXPIRING'::text, 'EXTENDED'::text, 'PROMOTING'::text, 'REBUILDING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+        " OR ((from_state = 'EXTENDED'::text) AND (to_state = ANY (ARRAY['EXPIRING'::text, 'PROMOTING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+        " OR ((from_state = 'EXPIRING'::text) AND (to_state = ANY (ARRAY['PURGED'::text, 'EXTENDED'::text, 'PROMOTING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+        " OR ((from_state = 'REBUILDING'::text) AND (to_state = ANY (ARRAY['LIVE'::text, 'FAILED'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+        " OR ((from_state = 'PROMOTING'::text) AND (to_state = ANY (ARRAY['PROMOTED'::text, 'LIVE'::text, 'EXTENDED'::text, 'EXPIRING'::text, 'KILLED'::text, 'FROZEN'::text])))))))",
+      'index portal.demo_state_event_demo_id_sequence_pk CREATE UNIQUE INDEX ' +
+        'demo_state_event_demo_id_sequence_pk ON portal.demo_state_event USING btree (demo_id, sequence)',
+      'index portal.demo_state_event_demo_sequence_state_unique CREATE UNIQUE INDEX ' +
+        'demo_state_event_demo_sequence_state_unique ON portal.demo_state_event USING btree (demo_id, sequence, to_state)',
+    ],
+  },
+  'portal.hostname_register': {
+    since: DEMO_LIFECYCLE,
+    lines: [
+      `column allocated_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column demo_id uuid notnull=true ${PLAIN}`,
+      `column label text notnull=true ${PLAIN}`,
+      'default allocated_at now()',
+      'constraint hostname_register_demo_id_unique UNIQUE (demo_id)',
+      "constraint hostname_register_label_shape CHECK ((label ~ '^[a-z2-7]{20}$'::text))",
+      'constraint hostname_register_pkey PRIMARY KEY (label)',
+      'index portal.hostname_register_demo_id_unique CREATE UNIQUE INDEX ' +
+        'hostname_register_demo_id_unique ON portal.hostname_register USING btree (demo_id)',
+      'index portal.hostname_register_pkey CREATE UNIQUE INDEX hostname_register_pkey ON ' +
+        'portal.hostname_register USING btree (label)',
+    ],
+  },
+  'portal.hostname_retirement': {
+    since: DEMO_LIFECYCLE,
+    lines: [
+      `column label text notnull=true ${PLAIN}`,
+      `column retired_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default retired_at now()',
+      'constraint hostname_retirement_label_hostname_register_label_fk FOREIGN KEY (label) ' +
+        'REFERENCES portal.hostname_register(label)',
+      'constraint hostname_retirement_pkey PRIMARY KEY (label)',
+      'index portal.hostname_retirement_pkey CREATE UNIQUE INDEX hostname_retirement_pkey ON ' +
+        'portal.hostname_retirement USING btree (label)',
     ],
   },
 };

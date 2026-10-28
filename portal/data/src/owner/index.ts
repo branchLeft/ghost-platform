@@ -11,11 +11,14 @@ import {
   type DocumentView,
   type SubprocessorEntry,
 } from '../documents.js';
+import { eventsOf, hostnameOf, listDemos, listHostnames } from '../demoReads.js';
+import type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 import { documentVersion, healthReading, tenantRegister } from '../schema.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
 export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
+export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 import { parseTenantId } from '../tenantId.js';
 import { parseTenantKind } from '../tenantKind.js';
 import type { TenantRegistration } from '../tenant/session.js';
@@ -123,6 +126,26 @@ export class OwnerDb {
         health: row.reading ? deriveHealthView(row.reading) : null,
       }));
     });
+  }
+
+  /** Every demo with its current state, term and hostname: the console's read. It writes nothing. */
+  listDemos(): Promise<DemoSummary[]> {
+    return this.run(listDemos);
+  }
+
+  /** One demo's history, oldest transition first. */
+  demoHistory(demoId: string): Promise<DemoEventView[]> {
+    return this.run((tx) => eventsOf(tx, demoId));
+  }
+
+  /** The label allocated to a demo; null before it has one. */
+  demoHostname(demoId: string): Promise<string | null> {
+    return this.run((tx) => hostnameOf(tx, demoId));
+  }
+
+  /** The hostname register in full, each label with its retirement when it has one. */
+  listHostnames(): Promise<HostnameView[]> {
+    return this.run(listHostnames);
   }
 
   /**
