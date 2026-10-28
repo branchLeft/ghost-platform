@@ -1,0 +1,92 @@
+# The host's one mail spool, deployed as `mail-spool` under
+# /opt/branchleft/mail-spool.
+#
+# Rendered by @branchleft/ghost-platform-render-core. Do not hand-edit on
+# the host: the networks and the one published port below are what keep
+# queued mail on this host, and a file that drops one still starts.
+#
+# `${SHIM_DRAIN_TOKEN}` comes from /etc/branchleft/mail-spool.env,
+# root-owned 0600 and written by an operator alone.
+name: 'mail-spool'
+services:
+  mail-spool:
+    image: 'ghcr.io/branchleft/mailgun-shim@sha256:c32a32e93025aeb2b397b5dbf8e8b17e59256f56e3e881ffc49c71f6b8965571'
+    restart: 'unless-stopped'
+    user: '31000:31000'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=16m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 128
+    mem_limit: '256m'
+    memswap_limit: '256m'
+    cpus: '0.5'
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    environment:
+      PORT: 8080
+      SHIM_DRAIN_PORT: 8081
+      SMTP_LISTEN_PORT: 2525
+      SHIM_DB_PATH: '/data/spool.sqlite'
+      SHIM_DRAIN_TOKEN: '${SHIM_DRAIN_TOKEN:?set SHIM_DRAIN_TOKEN in /etc/branchleft/mail-spool.env}'
+    ports:
+      - '127.0.0.1:8095:8081'
+    networks:
+      - 'branchleft-mail-spool-drain'
+      - 'branchleft-mail-30001'
+      - 'branchleft-mail-30002'
+      - 'branchleft-mail-30003'
+      - 'branchleft-mail-30004'
+      - 'branchleft-mail-30005'
+      - 'branchleft-mail-30006'
+      - 'branchleft-mail-30007'
+    volumes:
+      - 'branchleft-mail-spool-data:/data'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - 'fetch(''http://127.0.0.1:8080/healthz'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '20s'
+networks:
+  branchleft-mail-spool-drain:
+    name: 'branchleft-mail-spool-drain'
+    driver: 'bridge'
+    driver_opts:
+      com.docker.network.bridge.name: 'br-mailspool'
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
+  branchleft-mail-30001:
+    name: 'branchleft-mail-30001'
+    internal: true
+  branchleft-mail-30002:
+    name: 'branchleft-mail-30002'
+    internal: true
+  branchleft-mail-30003:
+    name: 'branchleft-mail-30003'
+    internal: true
+  branchleft-mail-30004:
+    name: 'branchleft-mail-30004'
+    internal: true
+  branchleft-mail-30005:
+    name: 'branchleft-mail-30005'
+    internal: true
+  branchleft-mail-30006:
+    name: 'branchleft-mail-30006'
+    internal: true
+  branchleft-mail-30007:
+    name: 'branchleft-mail-30007'
+    internal: true
+volumes:
+  branchleft-mail-spool-data:
+    external: true
