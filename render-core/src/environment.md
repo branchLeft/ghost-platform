@@ -134,3 +134,36 @@ every cap, so Ghost locks the ActivityPub setting and the admin's Network tab
 is absent. It is unconditional, unlike the member and staff caps, which
 render only when set. `settings.ts` also turns `social_web` off, because a
 lock does not undo what an existing tenant already has.
+
+## Scanner metrics export
+
+Every paying tenant's object-storage branch renders two more keys per
+storage feature, six in all: `storage__<feature>__metricsTextfilePath`
+(`/var/lib/ghost/metrics/scanner.prom`) and `storage__<feature>__metricsTenant`
+(the tenant's slug). They are what turns the scanning adapter's health export
+on (`adapters/scanning-storage/src/metrics.md`), which is what the scanner
+alert rules read. The adapter exports only when both are set, needs an
+absolute path ending `.prom`, and exports one file per process (the first
+feature to configure wins), so all three features get identical values. A
+typo in either key turns the export off silently, which is why the tests
+pin the exact values.
+
+The path sits in the tenant's own metrics volume, which `compose.ts` mounts
+(see compose.md#the-metrics-volume). A demo renders neither key nor mount:
+its local-media branch is untouched, and so is the never-reached
+non-scanning branch.
+
+**Both colours write this one file.** `ghost-a` and `ghost-b` share one
+rendered environment and one volume, and the broker leaves the old colour
+running, drained, for the whole bake window after a swap. During that window
+two processes rewrite the one file every 15 seconds and the last writer
+wins, so the counters flap between the two processes' totals and `increase()`
+over that window is inflated. This is accepted for now rather than rendering
+a file per colour, which would carry identical label sets and make the node
+exporter's textfile collector reject the scrape. A design for it is open
+work.
+
+The tenant writes this volume, so nothing read from it can be trusted to
+name the right tenant: the `tenant` label in the file is the tenant's own
+claim. The host-side reader must take the label from the volume it read, not
+from the file (`app/provision/provision_tenant_volume.md#the-metrics-volume`).

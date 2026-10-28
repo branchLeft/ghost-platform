@@ -188,6 +188,9 @@ const EXTRA_IN_CORE_KEYS = [
     `storage__${feature}__adapter`,
     `storage__${feature}__wraps`,
     `storage__${feature}__quarantinePath`,
+    // The scanner health export is new in render-core; the frozen snapshot predates it.
+    `storage__${feature}__metricsTextfilePath`,
+    `storage__${feature}__metricsTenant`,
     ...DECORATOR_WRAPPED_CONFIG_SUFFIXES.map(
       (suffix) => `storage__${feature}__wrappedConfig__${suffix}`
     ),

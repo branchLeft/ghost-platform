@@ -54,8 +54,10 @@ keys it cannot yet, and why.
 
 ## Provision script
 
-The exact root-run command that must create a paying tenant's two named
-volumes, owned to its uid, before its unit can start — ported from
+The exact root-run command that must create a paying tenant's three named
+volumes (content, adapters and metrics), owned as
+`app/provision/provision_tenant_volume.md` describes, before its unit can
+start — ported from
 `infra/tenant/index.ts`'s `hostProvisioningCommand`, at the path
 `RUNBOOK-tenant-onboarding.md` actually invokes it from (a bare command name
 would fail "command not found" as a standalone script).

@@ -1,6 +1,8 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 // The names, types and label values below are the contract an alert rule in
@@ -208,13 +210,45 @@ class ScannerMetrics {
   }
 }
 
+const MAX_HOSTNAME_LENGTH = 64;
+
+// Unique per write, never per pid alone: a tenant's two colours are separate
+// containers sharing one directory, and their pids very likely collide. The
+// random part guarantees uniqueness; hostname and pid only name the writer.
+// The name does not end in .prom, so a collector skips it. See
+// metrics.md#the-textfile-write.
+function temporaryTextfileName(
+  file,
+  {
+    hostname = os.hostname(),
+    pid = process.pid,
+    random = crypto.randomBytes(6).toString('hex'),
+  } = {}
+) {
+  const host = String(hostname)
+    .replace(/[^A-Za-z0-9._-]/g, '')
+    .slice(0, MAX_HOSTNAME_LENGTH);
+  return `${file}.tmp-${host || 'unknown'}-${pid}-${random}`;
+}
+
 // Write-then-rename in the same directory, so a reader never sees half a
-// file. The temporary name does not end in .prom, so a collector skips it.
+// file. A failed write or rename removes its temporary file: the name is new
+// every time, so a persistent failure would otherwise leave one file per
+// export interval.
 function writeTextfileAtomic(file, text) {
-  const temporary = `${file}.tmp-${process.pid}`;
+  const temporary = temporaryTextfileName(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(temporary, text, { mode: 0o644 });
-  fs.renameSync(temporary, file);
+  try {
+    fs.writeFileSync(temporary, text, { mode: 0o644 });
+    fs.renameSync(temporary, file);
+  } catch (err) {
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      // Nothing was written, or it is already gone; the original error is the one to report.
+    }
+    throw err;
+  }
 }
 
 // Starts the periodic textfile export and returns its stop function. Never
@@ -293,6 +327,7 @@ module.exports = {
   LATENCY_BUCKETS_SECONDS,
   MISCONFIGURED_TOKEN,
   ScannerMetrics,
+  temporaryTextfileName,
   writeTextfileAtomic,
   startTextfileExport,
   getProcessMetrics,

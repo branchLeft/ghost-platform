@@ -139,3 +139,12 @@ export function contentVolumeName(slug: Slug): string {
 export function adaptersVolumeName(slug: Slug): string {
   return `ghost-${slug}-adapters`;
 }
+
+/**
+ * The directory the scanning adapter writes its Prometheus textfile into. Its
+ * own volume, never shared between tenants: a shared directory would let one
+ * tenant overwrite another's file. See naming.md#metrics-volume.
+ */
+export function metricsVolumeName(slug: Slug): string {
+  return `ghost-${slug}-metrics`;
+}

@@ -123,6 +123,7 @@ export {
   composeUnitName,
   contentVolumeName,
   databaseAndUserName,
+  metricsVolumeName,
   secretsEnvPath,
   sqlIdentifier,
   stackDirectory,

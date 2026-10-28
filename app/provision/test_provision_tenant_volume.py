@@ -146,6 +146,13 @@ class ValidationTests(unittest.TestCase):
         # here produces a stack whose external volumes do not exist.
         self.assertEqual(ptv.content_volume_name("blog"), "ghost-blog-content")
         self.assertEqual(ptv.adapters_volume_name("blog"), "ghost-blog-adapters")
+        # render-core/src/naming.ts#metricsVolumeName is the other side.
+        self.assertEqual(ptv.metrics_volume_name("blog"), "ghost-blog-metrics")
+
+    def test_the_metrics_volume_is_scoped_to_its_tenant(self):
+        self.assertNotEqual(ptv.metrics_volume_name("blog"), ptv.metrics_volume_name("news"))
+        self.assertNotEqual(ptv.metrics_volume_name("blog"), ptv.content_volume_name("blog"))
+        self.assertNotEqual(ptv.metrics_volume_name("blog"), ptv.adapters_volume_name("blog"))
 
 
 class ClaimParsingTests(unittest.TestCase):
@@ -165,9 +172,43 @@ class FirstProvisionTests(unittest.TestCase):
         self.fs = FakeFs()
         self.actions = provision("blog", 30001, self.docker, self.fs)
 
-    def test_creates_both_volumes(self):
-        self.assertIn("ghost-blog-content", self.docker.volumes)
-        self.assertIn("ghost-blog-adapters", self.docker.volumes)
+    def test_creates_exactly_the_three_volumes(self):
+        # The exact set, not a membership check: a fourth volume, or one fewer,
+        # is a different stack from the one render-core declares `external`.
+        self.assertEqual(
+            sorted(self.docker.volumes),
+            ["ghost-blog-adapters", "ghost-blog-content", "ghost-blog-metrics"],
+        )
+        created = [call[-1] for call in self.docker.calls if call[1:3] == ["volume", "create"]]
+        self.assertEqual(
+            sorted(created), ["ghost-blog-adapters", "ghost-blog-content", "ghost-blog-metrics"]
+        )
+
+    def test_owns_the_metrics_volume_to_the_tenant_uid_at_0755(self):
+        # The tenant's own process writes the file; the host's exporter, another
+        # user, reads it, so the directory is traversable by everyone.
+        path = self.docker.volumes["ghost-blog-metrics"]
+        self.assertEqual(self.fs.owners[path], (30001, 30001))
+        self.assertEqual(self.fs.modes[path], 0o755)
+
+    def test_the_metrics_volume_gets_no_seed_file(self):
+        # It holds only the file the tenant's process creates.
+        path = self.docker.volumes["ghost-blog-metrics"]
+        self.assertEqual([p for p in self.fs.files if p.startswith(path)], [])
+
+    def test_the_three_volumes_carry_their_three_owners_side_by_side(self):
+        owners = {
+            name: (self.fs.owners[path], self.fs.modes[path])
+            for name, path in self.docker.volumes.items()
+        }
+        self.assertEqual(
+            owners,
+            {
+                "ghost-blog-content": ((30001, 30001), 0o700),
+                "ghost-blog-adapters": ((0, 0), 0o555),
+                "ghost-blog-metrics": ((30001, 30001), 0o755),
+            },
+        )
 
     def test_owns_the_content_volume_to_the_tenant_uid_at_0700(self):
         path = self.docker.volumes["ghost-blog-content"]
@@ -219,6 +260,58 @@ class IdempotencyTests(unittest.TestCase):
         self.assertTrue(any("already existed" in a for a in actions))
 
 
+class TopUpTests(unittest.TestCase):
+    """A tenant provisioned before the metrics volume existed is topped up by a re-run."""
+
+    def snapshot(self, docker, fs):
+        content = docker.volumes["ghost-blog-content"]
+        adapters = docker.volumes["ghost-blog-adapters"]
+        return {
+            "files": dict(fs.files),
+            "content": (fs.owners[content], fs.modes[content]),
+            "adapters": (fs.owners[adapters], fs.modes[adapters]),
+            "register": (fs.files[f"{CLAIMS}/blog"], fs.owners[f"{CLAIMS}/blog"], fs.modes[f"{CLAIMS}/blog"]),
+            "seed": fs.files[f"{content}/{ptv.SEED_FILE}"],
+        }
+
+    def host_with_only_the_first_two_volumes(self):
+        docker, fs = FakeDocker(), FakeFs()
+        provision("blog", 30001, docker, fs)
+        # What a host provisioned by the earlier two-volume script holds.
+        metrics = docker.volumes.pop("ghost-blog-metrics")
+        fs.owners.pop(metrics)
+        fs.modes.pop(metrics)
+        docker.calls.clear()
+        return docker, fs
+
+    def test_a_rerun_creates_only_the_missing_metrics_volume(self):
+        docker, fs = self.host_with_only_the_first_two_volumes()
+        before = self.snapshot(docker, fs)
+        actions = provision("blog", 30001, docker, fs)
+        created = [call[-1] for call in docker.calls if call[1:3] == ["volume", "create"]]
+        self.assertEqual(created, ["ghost-blog-metrics"])
+        self.assertIn("created volume ghost-blog-metrics", actions)
+        self.assertIn("volume ghost-blog-content already existed", actions)
+        self.assertIn("volume ghost-blog-adapters already existed", actions)
+        # The content volume, its seed file and the register entry are untouched.
+        self.assertEqual(self.snapshot(docker, fs), before)
+        path = docker.volumes["ghost-blog-metrics"]
+        self.assertEqual((fs.owners[path], fs.modes[path]), ((30001, 30001), 0o755))
+
+    def test_a_rerun_with_all_three_present_creates_nothing_and_changes_no_ownership(self):
+        docker, fs = FakeDocker(), FakeFs()
+        provision("blog", 30001, docker, fs)
+        owners, modes, files = dict(fs.owners), dict(fs.modes), dict(fs.files)
+        docker.calls.clear()
+        actions = provision("blog", 30001, docker, fs)
+        self.assertEqual([c for c in docker.calls if c[1:3] == ["volume", "create"]], [])
+        for name in ("content", "adapters", "metrics"):
+            self.assertIn(f"volume ghost-blog-{name} already existed", actions)
+        self.assertEqual(fs.owners, owners)
+        self.assertEqual(fs.modes, modes)
+        self.assertEqual(fs.files, files)
+
+
 class UidCollisionTests(unittest.TestCase):
     def test_refuses_a_uid_another_tenant_already_holds(self):
         docker, fs = FakeDocker(), FakeFs()
@@ -241,6 +334,15 @@ class UidCollisionTests(unittest.TestCase):
         provision("blog", 30001, docker, fs)
         provision("news", 30002, docker, fs)
         self.assertIn("ghost-news-content", docker.volumes)
+
+    def test_each_tenant_gets_its_own_metrics_volume_owned_to_its_own_uid(self):
+        docker, fs = FakeDocker(), FakeFs()
+        provision("blog", 30001, docker, fs)
+        provision("news", 30002, docker, fs)
+        blog, news = docker.volumes["ghost-blog-metrics"], docker.volumes["ghost-news-metrics"]
+        self.assertNotEqual(blog, news)
+        self.assertEqual(fs.owners[blog], (30001, 30001))
+        self.assertEqual(fs.owners[news], (30002, 30002))
 
     def test_refuses_changing_a_provisioned_tenants_uid(self):
         # The content is 0700 to the old uid; re-owning it is a migration with

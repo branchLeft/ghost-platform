@@ -90,6 +90,17 @@ const LOCAL_WRAPPED_ADAPTER: Record<StorageFeature, string> = {
  * name cannot collide between them. */
 const QUARANTINE_PATH = '/var/lib/ghost/content/quarantine';
 
+/** The directory a paying tenant's metrics volume is mounted at, in both
+ * colours. `compose.ts` mounts it; the file below sits in it. One home for
+ * both, so the rendered path and the mount cannot drift apart. */
+export const METRICS_MOUNT_PATH = '/var/lib/ghost/metrics';
+
+/** The file the scanning adapter writes its Prometheus textfile to. The
+ * adapter requires an absolute path ending `.prom` and exports to one file
+ * per process, so all three storage features are given exactly this value.
+ * See environment.md#scanner-metrics-export. */
+export const METRICS_TEXTFILE_PATH = `${METRICS_MOUNT_PATH}/scanner.prom`;
+
 /**
  * The image's fail-closed boot guard refuses this unset for local storage;
  * a demo is its documented escape hatch. See environment.md#local-storage-boot-guard.
@@ -210,6 +221,11 @@ function mediaEnvironment(
       env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
       env[`storage__${feature}__wraps`] = 'S3Storage';
       env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
+      // The scanner's health export. Both keys, identical for all three
+      // features: the adapter turns the export on only with both set, and
+      // exports one file per process (the first feature to configure wins).
+      env[`storage__${feature}__metricsTextfilePath`] = METRICS_TEXTFILE_PATH;
+      env[`storage__${feature}__metricsTenant`] = slug;
       env[`storage__${feature}__wrappedConfig__bucket`] = bucket;
       env[`storage__${feature}__wrappedConfig__region`] = media.region;
       env[`storage__${feature}__wrappedConfig__endpoint`] = media.endpoint;

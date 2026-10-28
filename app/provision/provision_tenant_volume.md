@@ -89,3 +89,47 @@ reach: deleting it makes this script read the slug as unclaimed, and a
 missing claim never compares equal to a real UID, so the next tenant
 provisioned on that number would have been accepted onto it. The register
 has to sit where the subject of the check cannot write.
+
+## The metrics volume
+
+The script creates a third volume per tenant, `ghost-<slug>-metrics`, beside
+the content and adapters volumes, in the same loop. It is the directory the
+scanning adapter writes its Prometheus textfile into
+(`adapters/scanning-storage/src/metrics.md`). The rendered stack mounts it
+read-write at `/var/lib/ghost/metrics` in both colours, and the adapter writes
+`/var/lib/ghost/metrics/scanner.prom` there every 15 seconds
+(`render-core/src/compose.md#the-metrics-volume`).
+
+Ownership is the tenant's uid and gid at mode `0755`. **The tenant writes and
+the host only reads.** The tenant's own process creates the file, so it owns
+the directory; the host's exporter is another user, so the directory is
+readable and traversable by everyone. The script writes nothing into this
+volume and seeds nothing, because the image has no `/var/lib/ghost/metrics`
+and so no image path for Docker to copy into it.
+
+**Rolling out to a host that already has tenants.** The rendered stack
+declares this volume `external`, so on a host where it does not exist Compose
+refuses to start the stack, and a live tenant would fail its next deploy. Before
+a package that renders the metrics volume is deployed to a host, run this
+script again, as root, for each existing tenant on it, with that tenant's
+existing uid (`--list-claims` prints them):
+
+```sh
+provision_tenant_volume.py --uid 30001 blog
+```
+
+The re-run is idempotent. It reports "already existed" for each volume the
+host holds, creates only the missing metrics volume, and writes the register
+entry and the seed file with the values they already hold. The ownership it
+sets is the same as before for the volumes that existed. A uid that differs
+from the one already registered is refused, as always. The tenant image must
+carry the adapter's unique temporary-name write with or before the deploy,
+because both colours write into this one directory.
+
+**For whoever builds the host-side reader (the node exporter's textfile
+directory).** The reader must not copy a file's `tenant` label on trust. The
+tenant writes its own volume, so it can write any series it likes, including
+another tenant's `tenant` label, and a reader that forwards the file as it
+finds it lets one tenant forge another's health. Set the label from the
+volume the file was read from, never from the file. The register above names
+the slug a volume belongs to.

@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const metricsModulePath = require.resolve('../../src/metrics.js');
 const {
   ScannerMetrics,
+  temporaryTextfileName,
   writeTextfileAtomic,
   startTextfileExport,
   MISCONFIGURED_TOKEN,
@@ -179,6 +180,94 @@ describe('the textfile export', () => {
     writeTextfileAtomic(file, 'a 1\n');
     expect(fsSync.readFileSync(file, 'utf8')).toBe('a 1\n');
     expect(fsSync.readdirSync(path.dirname(file))).toEqual(['scanner.prom']);
+  });
+
+  // A tenant's two colours are separate containers (separate process id
+  // namespaces) sharing one metrics directory, so two writers very likely have
+  // the same pid. Their temporary names must still never meet.
+  describe('the temporary name', () => {
+    const FILE = '/var/lib/ghost/metrics/scanner.prom';
+
+    it('differs between two writers with the same pid and different hostnames', () => {
+      const a = temporaryTextfileName(FILE, { hostname: 'colour-a', pid: 7, random: 'aaaaaa' });
+      const b = temporaryTextfileName(FILE, { hostname: 'colour-b', pid: 7, random: 'aaaaaa' });
+      expect(a).not.toBe(b);
+    });
+
+    it('differs between two writers with the same pid and hostname, by its random part', () => {
+      const a = temporaryTextfileName(FILE, { hostname: 'h', pid: 7, random: 'aaaaaa' });
+      const b = temporaryTextfileName(FILE, { hostname: 'h', pid: 7, random: 'bbbbbb' });
+      expect(a).not.toBe(b);
+    });
+
+    it('is different on every call with no injected identity', () => {
+      const names = new Set(Array.from({ length: 50 }, () => temporaryTextfileName(FILE)));
+      expect(names.size).toBe(50);
+    });
+
+    it('sits beside the file, names its writer, and never ends in .prom', () => {
+      const name = temporaryTextfileName(FILE, { hostname: 'colour-a', pid: 7, random: 'abc123' });
+      expect(name).toBe(`${FILE}.tmp-colour-a-7-abc123`);
+      expect(path.dirname(name)).toBe(path.dirname(FILE));
+      expect(name.endsWith('.prom')).toBe(false);
+    });
+
+    it('reduces a hostname to filename-safe characters, and bounds it', () => {
+      const odd = temporaryTextfileName(FILE, { hostname: 'a/b c\\d', pid: 1, random: 'x' });
+      expect(odd).toBe(`${FILE}.tmp-abcd-1-x`);
+      expect(temporaryTextfileName(FILE, { hostname: '/ /', pid: 1, random: 'x' })).toBe(
+        `${FILE}.tmp-unknown-1-x`
+      );
+      const long = temporaryTextfileName(FILE, { hostname: 'h'.repeat(300), pid: 1, random: 'x' });
+      expect(long).toBe(`${FILE}.tmp-${'h'.repeat(64)}-1-x`);
+    });
+
+    it('is what the real write uses: two writes by one pid, then two hostnames, never share a path', () => {
+      const file = path.join(tmpDir, 'scanner.prom');
+      const used = [];
+      const realWrite = fsSync.writeFileSync;
+      const writeSpy = vi.spyOn(fsSync, 'writeFileSync').mockImplementation((target, ...rest) => {
+        used.push(target);
+        return realWrite(target, ...rest);
+      });
+      const hostSpy = vi.spyOn(os, 'hostname');
+      try {
+        hostSpy.mockReturnValue('colour-a');
+        writeTextfileAtomic(file, 'a 1\n');
+        hostSpy.mockReturnValue('colour-b');
+        writeTextfileAtomic(file, 'a 1\n');
+        writeTextfileAtomic(file, 'a 1\n');
+      } finally {
+        writeSpy.mockRestore();
+        hostSpy.mockRestore();
+      }
+      expect(used).toHaveLength(3);
+      expect(new Set(used).size).toBe(3);
+      expect(used[0]).toContain('.tmp-colour-a-');
+      expect(used[1]).toContain('.tmp-colour-b-');
+      expect(used.every((target) => !target.endsWith('.prom'))).toBe(true);
+    });
+  });
+
+  it('leaves no temporary file behind when the rename fails', () => {
+    const file = path.join(tmpDir, 'scanner.prom');
+    fsSync.mkdirSync(file);
+    expect(() => writeTextfileAtomic(file, 'a 1\n')).toThrow();
+    expect(fsSync.readdirSync(tmpDir)).toEqual(['scanner.prom']);
+  });
+
+  it('reports the write error, not a cleanup error, when nothing was written', () => {
+    const file = path.join(tmpDir, 'scanner.prom');
+    const failure = new Error('disk full');
+    const writeSpy = vi.spyOn(fsSync, 'writeFileSync').mockImplementation(() => {
+      throw failure;
+    });
+    try {
+      expect(() => writeTextfileAtomic(file, 'a 1\n')).toThrow(failure);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    expect(fsSync.readdirSync(tmpDir)).toEqual([]);
   });
 
   it('writes at once, then on every interval, and stops when told to', () => {

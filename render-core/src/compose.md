@@ -41,3 +41,27 @@ network is `external` here because the spool's own stack creates and owns it.
 So a Ghost started before its host's spool fails to start, rather than
 starting with nowhere to send mail. `default` has to be named once any
 network is listed, or Compose drops it and the published port with it.
+
+## The metrics volume
+
+A paying tenant mounts a third named volume, `ghost-<slug>-metrics`
+(`naming.ts#metricsVolumeName`), read-write at `/var/lib/ghost/metrics` in
+both `ghost-a` and `ghost-b`, and declares it `external`. It is the
+directory the scanning adapter writes its Prometheus textfile into
+(`environment.md#scanner-metrics-export`). The container root is read-only,
+so the adapter needs a writable mounted volume to write at all. It is a
+named volume of the tenant's own, never a shared directory and never a host
+path: a shared directory would let one tenant overwrite another's file, and
+`assertRuntimePosture` refuses a host path.
+
+The tenant writes the volume and the host only reads it. A demo mounts
+nothing there: the condition is `kind !== 'demo'`, the same one that
+selects the object-storage environment that names the file.
+
+**Rollout hazard.** The volume is `external`, so on a host where it does not
+exist Compose refuses to start the stack. Before a render containing this
+volume is deployed to a host, run `app/provision/provision_tenant_volume.py`
+again for each existing tenant on it. The script is idempotent and creates
+only the missing volume. The tenant image must carry the adapter's
+unique-temporary-name write (`adapters/scanning-storage/src/metrics.md`) with
+or before that render, because both colours now write into one directory.
