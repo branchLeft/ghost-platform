@@ -12,6 +12,8 @@ const CODES: RefusalCode[] = [
   'bucket-not-allowed',
   'key-outside-folder',
   'upload-not-bound',
+  'rate-limited',
+  'writes-disabled',
 ];
 
 describe('refusal', () => {
@@ -32,5 +34,12 @@ describe('refusal', () => {
     expect(refusalBody(refusal('operation-not-allowed'))).toContain('<Code>AccessDenied</Code>');
     expect(refusalBody(refusal('target-malformed'))).toContain('<Code>InvalidURI</Code>');
     expect(refusalBody(refusal('internal-error'))).toContain('<Code>ServiceUnavailable</Code>');
+  });
+
+  it('answers a rate limit with the SlowDown code the SDK retries, and a write switch with a plain 503', () => {
+    expect(refusal('rate-limited').status).toBe(503);
+    expect(refusalBody(refusal('rate-limited'))).toContain('<Code>SlowDown</Code>');
+    expect(refusal('writes-disabled').status).toBe(503);
+    expect(refusalBody(refusal('writes-disabled'))).toContain('<Code>ServiceUnavailable</Code>');
   });
 });

@@ -60,7 +60,11 @@ export type RefusalCode =
   /** The object key is outside the tenant's folder. */
   | 'key-outside-folder'
   /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
-  | 'upload-not-bound';
+  | 'upload-not-bound'
+  /** The tenant is over its request rate. Retryable: the SDK retries a SlowDown. */
+  | 'rate-limited'
+  /** Writes are switched off for this tenant or for every tenant. Reads still work. */
+  | 'writes-disabled';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {

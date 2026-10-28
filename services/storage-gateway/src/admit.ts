@@ -8,6 +8,7 @@ import type {
 } from './contracts.js';
 import { refusal } from './refusal.js';
 import { guardTenant, routeRequest, type RoutedRequest } from './router.js';
+import type { TenantLimits } from './limits/index.js';
 import type { UploadBindings } from './uploads.js';
 
 /** One logged refusal. Carries no object key, bucket or request target. */
@@ -39,6 +40,12 @@ export interface AdmitDependencies {
    * tenant's upload id. Absent, no binding is enforced.
    */
   readonly uploads?: UploadBindings;
+  /**
+   * When given, an otherwise admitted request must also pass the tenant's
+   * write switches and rate limit. It is asked last, so a refused request
+   * never spends a tenant's allowance.
+   */
+  readonly limits?: TenantLimits;
 }
 
 export type AdmitResult =
@@ -122,6 +129,16 @@ export async function admit(
     }
     if (!bound) {
       return refuse('upload-not-bound', { keyId, folder, operation: routed.route.operation });
+    }
+  }
+
+  if (deps.limits !== undefined) {
+    const context = { keyId, folder, operation: routed.route.operation };
+    try {
+      const decision = deps.limits.check({ keyId, operation: routed.route.operation });
+      if (!decision.ok) return refuse(decision.refusal.code, context);
+    } catch {
+      return refuse('internal-error', context);
     }
   }
 
