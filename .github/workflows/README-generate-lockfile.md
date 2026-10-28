@@ -72,3 +72,81 @@ failure means only that CI hasn't run yet, and how to start it: close and
 reopen the pull request carrying the branch, or push an ordinary commit to
 it. Both are actions a person already takes to get CI running today; this
 just tells them to, and fails until they do.
+
+# generate-pnpm-lockfile.yml
+
+## What it does
+
+One dispatch converts every `package-lock.json` in the repository to a
+`pnpm-lock.yaml` in the same directory and commits the swap to a feature
+branch through `createCommitOnBranch` (GitHub signs the commit; the job reads
+it back and fails unless `verification.verified` is true). It takes one input,
+`branch`, and refuses `main`, `master` and any branch a ruleset protects. It
+is a one-off conversion: it needs a `package-lock.json` to convert and fails
+when there is none. Keeping a pnpm lockfile current afterwards is a different
+job.
+
+The commit, the signing read-back and the "no CI at the new head" failure work
+as described under "Why createCommitOnBranch" and "Why fail closed" above.
+
+## Why one lockfile per package, not one for the workspace
+
+`pnpm-workspace.yaml` sets `sharedWorkspaceLockfile: false`, so the directories
+stay a workspace (one store, `workspace:*` links, `pnpm --filter`) while each
+keeps its own lockfile.
+
+A single root lockfile cannot hold what this repository has locked. Run on
+the 23 packages plus the root, `pnpm import` writes a lockfile per package,
+and merging them leaves the same snapshot key (for example
+`@sigstore/sign@4.1.1`) with a different dependency body in different
+packages, because the packages locked different transitive versions. One body
+has to win, and the package that loses is handed versions it never locked. In
+a trial merge (with the private `@branchleft/*` packages left out, since no
+credential for them was available), `infra/hetzner-host-check` ended up with two copies
+of `@pulumi/pulumi` (3.258.0 as its direct dependency and 3.259.0 under
+`@pulumi/hcloud`), which a Pulumi program must not have. Per-package
+lockfiles keep every package's graph exactly as npm locked it. Moving to one
+root lockfile later is a deliberate version change, taken package by package,
+not a side effect of this conversion.
+
+## The steps
+
+1. `convert.py dirs` lists the directories holding a `package-lock.json`.
+2. `convert.py stage` builds two trees under `$RUNNER_TEMP`: an import tree
+   with each `package.json` (a `workspace:` link put back to the `file:` spec
+   its lockfile recorded) and `package-lock.json`, and a final tree with the
+   branch's own `package.json` files and `pnpm-workspace.yaml`. Both get an
+   `.npmrc` the job writes, never the branch's own: a branch's `.npmrc` could
+   point `@branchleft` at another host next to the run's token.
+3. `pnpm import` runs in each import directory. pnpm reads only the root
+   lockfile inside a workspace, hence the isolated trees.
+4. Each imported lockfile is copied into the final tree and
+   `pnpm install --lockfile-only --ignore-scripts` finalises it, re-resolving
+   only what an import cannot carry: workspace links and `overrides`.
+5. `convert.py compare` refuses the commit unless, for every directory, each
+   direct dependency resolves to the version in that directory's own
+   `package-lock.json`, and every package in the generated lockfile is a
+   version that same `package-lock.json` locked.
+6. The lockfiles are copied into the checkout, the `package-lock.json` files
+   removed, and `convert.py changes` matches `git status --porcelain`
+   whole-line against exactly that swap.
+
+The program lives inside the workflow file on purpose: the job runs against
+whatever branch was dispatched, and a program kept in the repository could be
+missing or edited on that branch. `workflow-pnpm-lockfile-convert.test.js`
+extracts it from the YAML and runs it over fixtures.
+
+## What the branch must carry
+
+- `pnpm-workspace.yaml` with `packages:` listing every directory that has a
+  `package-lock.json` (except the root), `sharedWorkspaceLockfile: false`, and
+  only the keys `packages`, `allowBuilds`, `overrides`.
+- An `overrides:` entry for every name a `package.json` lists under npm's
+  `overrides`. pnpm ignores npm's field, and a pnpm override applies to the
+  whole workspace, so one package's override is written as a selector such as
+  `parent@version>name` to keep it from reaching another package.
+- No `pnpm` or `resolutions` field in any `package.json`.
+
+If a refusal says pnpm resolved a version a package never locked, the cause is
+usually a missing override or a dependency npm resolved differently; the
+message names the directory, the package and the versions.

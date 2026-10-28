@@ -1,0 +1,601 @@
+name: Generate pnpm lockfiles in CI
+
+# Converts every package-lock.json in the repository to a pnpm-lock.yaml in
+# the same directory, in CI, with the run's own GITHUB_TOKEN. Reading the
+# private @branchleft/* packages needs a credential no workstation holds.
+# The design, the guards and what each one refuses are in
+# README-generate-lockfile.md ("pnpm conversion").
+#
+# workflow_dispatch only, never push, pull_request or pull_request_target:
+# the generate job holds contents: write and ends by writing a commit, so
+# dispatching it, as someone with write access, is itself the authorisation.
+# main, master and any branch a ruleset protects are refused.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch (in this repository) to check out, convert the lockfiles on, and commit to'
+        required: true
+
+# Deny by default; each job below states exactly what it needs.
+permissions: {}
+
+# One dispatch at a time per branch, so two runs cannot race one commit.
+concurrency:
+  group: generate-pnpm-lockfile-${{ inputs.branch }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate the branch and refuse a protected one
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      branch: ${{ steps.shape.outputs.branch }}
+
+    steps:
+      - name: Validate branch shape and refuse main
+        id: shape
+        env:
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          [ -n "$BRANCH" ] || fail "branch is empty"
+
+          # A qualified ref passes the name check and the ruleset lookup
+          # below (which takes a short name), but checkout takes it
+          # literally, so it could validate one ref and write another.
+          case "$BRANCH" in
+            refs/*)
+              fail "branch '$BRANCH' must be a short branch name, not a qualified ref"
+              ;;
+          esac
+
+          # Fixed refusal, independent of the live ruleset lookup below.
+          case "$BRANCH" in
+            main | master)
+              fail "branch '$BRANCH' is refused outright: this workflow writes a commit, and main/master are never a target."
+              ;;
+          esac
+
+          # A conservative allow-list, not the full ref-name grammar: the
+          # value becomes a checkout ref and a createCommitOnBranch name.
+          [[ "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] \
+            || fail "branch '$BRANCH' contains characters outside A-Za-z0-9._/- , or does not start with one of those"
+          [[ "$BRANCH" != *..* ]] \
+            || fail "branch '$BRANCH' contains '..' -- not a well-formed ref name"
+          [[ "$BRANCH" != */ && "$BRANCH" != *.lock ]] \
+            || fail "branch '$BRANCH' is not a well-formed ref name"
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      # rules/branches/{branch} answers with the rules that would apply to a
+      # push on that branch right now, whether or not it exists. Any non-200
+      # counts as protected: better to block a legitimate branch than to
+      # write to one this job failed to prove unprotected.
+      - name: Refuse a branch a ruleset currently protects
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.shape.outputs.branch }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! RULES_JSON="$(gh api "repos/$REPO/rules/branches/$BRANCH" 2>"$RUNNER_TEMP/rules-error.txt")"; then
+            echo "::error::could not read the ruleset rules that apply to '$BRANCH' ($(cat "$RUNNER_TEMP/rules-error.txt")); refusing rather than guessing whether it is protected"
+            exit 1
+          fi
+          RULE_COUNT="$(printf '%s' "$RULES_JSON" | jq 'length')"
+          if [ "$RULE_COUNT" -gt 0 ]; then
+            echo "::error::refusing '$BRANCH': $RULE_COUNT ruleset rule(s) currently apply to it. This workflow commits directly and never targets a branch a ruleset protects."
+            exit 1
+          fi
+          echo "OK: no ruleset rule currently applies to '$BRANCH'"
+
+  generate:
+    name: Convert and commit the lockfiles
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      # The qualified ref is assembled only here, and validate refused any
+      # input already starting with refs/. persist-credentials is off: the
+      # commit goes through the API with GH_TOKEN in one step's environment,
+      # so no step that runs pnpm ever sees a write token in .git/config.
+      - name: Checkout target branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/${{ needs.validate.outputs.branch }}
+          persist-credentials: false
+
+      - name: Confirm the branch has what the conversion reads
+        env:
+          BRANCH: ${{ needs.validate.outputs.branch }}
+        run: |
+          set -euo pipefail
+          for f in package.json .nvmrc pnpm-workspace.yaml; do
+            if [ ! -f "$f" ]; then
+              echo "::error::'$f' does not exist on branch '$BRANCH'"
+              exit 1
+            fi
+          done
+          if ! grep -q '"packageManager": "pnpm@' package.json; then
+            echo "::error::package.json on '$BRANCH' does not set packageManager to pnpm"
+            exit 1
+          fi
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+
+      # Inline on purpose: this job runs against whatever branch was
+      # dispatched, and a program that had to exist on that branch could be
+      # missing there or edited there. The program is tested from this file by
+      # workflow-pnpm-lockfile-convert.test.js.
+      - name: Write the conversion program
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pnpm-convert"
+          cat > "$RUNNER_TEMP/pnpm-convert/convert.py" <<'PYCONVERT'
+          import base64
+          import json
+          import os
+          import shutil
+          import sys
+
+          ALLOWED_TOP = {"lockfileVersion", "settings", "overrides", "importers", "packages", "snapshots"}
+          WORKSPACE_KEYS = ("packages", "allowBuilds", "overrides", "sharedWorkspaceLockfile")
+          DEP_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
+          NPMRC = "@branchleft:registry=https://npm.pkg.github.com\n"
+
+
+          def fail(msg):
+              print("::error::" + msg)
+              sys.exit(1)
+
+
+          def read_json(path):
+              with open(path, encoding="utf-8") as fh:
+                  return json.load(fh)
+
+
+          def read_lines(path):
+              with open(path, encoding="utf-8") as fh:
+                  return [ln.rstrip("\n") for ln in fh if ln.strip()]
+
+
+          def lock_dirs(checkout):
+              found = []
+              for base, names, files in os.walk(checkout):
+                  names[:] = [n for n in names if n not in ("node_modules", ".git")]
+                  if "package-lock.json" in files:
+                      found.append(os.path.relpath(base, checkout))
+              return sorted(found, key=lambda d: (d != ".", d))
+
+
+          def entry_key(line):
+              body = line[2:]
+              if body.startswith("'"):
+                  i = 1
+                  while i < len(body):
+                      if body[i] == "'" and body[i + 1 : i + 2] == "'":
+                          i += 2
+                          continue
+                      if body[i] == "'":
+                          break
+                      i += 1
+                  return body[1:i].replace("''", "'")
+              j = body.find(":")
+              return body[:j] if j >= 0 else body
+
+
+          def section_lines(path, name):
+              lines, on = [], False
+              with open(path, encoding="utf-8") as fh:
+                  for raw in fh:
+                      line = raw.rstrip("\n")
+                      if line and not line.startswith(" "):
+                          on = line == name + ":"
+                          continue
+                      if on:
+                          lines.append(line)
+              return lines
+
+
+          def check_sections(path):
+              with open(path, encoding="utf-8") as fh:
+                  tops = [ln.split(":", 1)[0] for ln in fh if ln.strip() and not ln.startswith((" ", "#"))]
+              extra = [t for t in tops if t not in ALLOWED_TOP]
+              if extra:
+                  fail(f"{path}: top-level section(s) {extra} would change resolution; this workflow carries no catalogs, patches or hooks")
+
+
+          def parse_importers(path):
+              result, cur, field, dep = {}, None, None, None
+              for line in section_lines(path, "importers"):
+                  if not line.strip():
+                      continue
+                  indent = len(line) - len(line.lstrip(" "))
+                  text = line.strip()
+                  if indent == 2:
+                      cur, field, dep = entry_key(line), None, None
+                      result[cur] = {}
+                  elif indent == 4:
+                      field, dep = (text[:-1] if text.endswith(":") else text), None
+                      if field in DEP_FIELDS:
+                          result[cur].setdefault(field, {})
+                  elif indent == 6 and field in DEP_FIELDS:
+                      dep = entry_key(line[4:])
+                      result[cur][field][dep] = {}
+                  elif indent == 8 and field in DEP_FIELDS and dep is not None:
+                      key, _, value = text.partition(":")
+                      result[cur][field][dep][key] = value.strip().strip("'")
+              return result
+
+
+          def pnpm_package_versions(path):
+              versions = {}
+              for line in section_lines(path, "packages"):
+                  if line.startswith("  ") and not line.startswith("   ") and line.strip():
+                      name, sep, ver = entry_key(line).rpartition("@")
+                      if sep and name and ver[:1].isdigit():
+                          versions.setdefault(name, set()).add(ver)
+              return versions
+
+
+          def npm_versions(lock):
+              found = {}
+              for key, meta in lock.get("packages", {}).items():
+                  if "node_modules/" in key and not meta.get("link") and meta.get("version"):
+                      name = meta.get("name", key.rsplit("node_modules/", 1)[1])
+                      found.setdefault(name, set()).add(meta["version"])
+              return found
+
+
+          def read_workspace(path):
+              members, overrides, shared, on = [], [], None, None
+              with open(path, encoding="utf-8") as fh:
+                  for raw in fh:
+                      line = raw.rstrip("\n")
+                      if line and not line.startswith((" ", "#", "-")):
+                          on = line.split(":", 1)[0]
+                          if on not in WORKSPACE_KEYS:
+                              fail(f"pnpm-workspace.yaml: top-level key {on!r} is not allowed here; only {', '.join(WORKSPACE_KEYS)}")
+                          if on == "sharedWorkspaceLockfile":
+                              shared = line.split(":", 1)[1].strip()
+                          continue
+                      text = line.strip()
+                      if on == "packages" and text.startswith("- "):
+                          members.append(text[2:].strip().strip("'\""))
+                      elif on == "overrides" and text and not text.startswith("#"):
+                          overrides.append(entry_key("  " + text))
+              return members, overrides, shared
+
+
+          def override_covered(name, workspace_overrides):
+              return any(k == name or k.endswith(">" + name) for k in workspace_overrides)
+
+
+          def cmd_dirs(checkout):
+              dirs = lock_dirs(checkout)
+              if not dirs:
+                  fail("no package-lock.json found in the checkout; there is nothing to convert")
+              for d in dirs:
+                  if not os.path.isfile(os.path.join(checkout, d, "package.json")):
+                      fail(f"{d} has a package-lock.json but no package.json")
+                  print(d)
+
+
+          def cmd_stage(checkout, import_tree, final_tree):
+              dirs = lock_dirs(checkout)
+              ws = os.path.join(checkout, "pnpm-workspace.yaml")
+              if not os.path.isfile(ws):
+                  fail("pnpm-workspace.yaml is missing on this branch")
+              members, ws_overrides, shared = read_workspace(ws)
+              if shared != "false":
+                  fail("pnpm-workspace.yaml must set sharedWorkspaceLockfile: false; this workflow writes one pnpm-lock.yaml per package")
+              expected = sorted(d for d in dirs if d != ".")
+              if sorted(members) != expected:
+                  fail(f"pnpm-workspace.yaml packages {sorted(members)} do not match the directories holding a package-lock.json {expected}")
+              for d in dirs:
+                  pkg = read_json(os.path.join(checkout, d, "package.json"))
+                  for banned in ("pnpm", "resolutions"):
+                      if banned in pkg:
+                          fail(f"{d}/package.json carries {banned!r}, which would change resolution; refusing")
+                  for name in pkg.get("overrides", {}):
+                      if not override_covered(name, ws_overrides):
+                          fail(f"{d}/package.json overrides {name!r} for npm, but pnpm-workspace.yaml has no overrides entry for it; pnpm ignores npm's overrides field")
+                  lock = read_json(os.path.join(checkout, d, "package-lock.json"))
+                  root = lock.get("packages", {}).get("", {})
+                  imported = json.loads(json.dumps(pkg))
+                  for field in DEP_FIELDS:
+                      for name, spec in list(imported.get(field, {}).items()):
+                          if str(spec).startswith("workspace:"):
+                              locked = root.get(field, {}).get(name, "")
+                              if not locked.startswith(("file:", "link:")):
+                                  fail(f"{d}: {name} is {spec} in package.json but {locked!r} in package-lock.json; cannot import a link it never locked")
+                              imported[field][name] = locked
+                  out = os.path.join(import_tree, d)
+                  os.makedirs(out, exist_ok=True)
+                  with open(os.path.join(out, "package.json"), "w", encoding="utf-8") as fh:
+                      json.dump(imported, fh, indent=2)
+                      fh.write("\n")
+                  shutil.copy(os.path.join(checkout, d, "package-lock.json"), os.path.join(out, "package-lock.json"))
+                  with open(os.path.join(out, ".npmrc"), "w", encoding="utf-8") as fh:
+                      fh.write(NPMRC)
+                  os.makedirs(os.path.join(final_tree, d), exist_ok=True)
+                  shutil.copy(os.path.join(checkout, d, "package.json"), os.path.join(final_tree, d, "package.json"))
+              tree = os.path.normpath(import_tree)
+              for d in dirs:
+                  for field in DEP_FIELDS:
+                      for name, spec in read_json(os.path.join(import_tree, d, "package.json")).get(field, {}).items():
+                          if str(spec).startswith(("file:", "link:")):
+                              target = os.path.normpath(os.path.join(import_tree, d, str(spec).split(":", 1)[1]))
+                              if os.path.commonpath([target, tree]) != tree or not os.path.isfile(os.path.join(target, "package.json")):
+                                  fail(f"{d}: {name} links to {spec}, which is not one of the directories being converted")
+              shutil.copy(ws, os.path.join(final_tree, "pnpm-workspace.yaml"))
+              with open(os.path.join(final_tree, ".npmrc"), "w", encoding="utf-8") as fh:
+                  fh.write(NPMRC)
+              print(f"staged {len(dirs)} package directories")
+
+
+          def cmd_imports(checkout, import_tree):
+              dirs = lock_dirs(checkout)
+              for d in dirs:
+                  path = os.path.join(import_tree, d, "pnpm-lock.yaml")
+                  if not os.path.isfile(path):
+                      fail(f"pnpm import produced no pnpm-lock.yaml for {d}")
+                  check_sections(path)
+              print(f"OK: {len(dirs)} imports for {len(dirs)} package-lock.json files")
+
+
+          def cmd_compare(checkout, final_tree):
+              dirs = lock_dirs(checkout)
+              problems = []
+              for d in dirs:
+                  path = os.path.join(final_tree, d, "pnpm-lock.yaml")
+                  if not os.path.isfile(path):
+                      problems.append(f"{d}: no pnpm-lock.yaml was generated")
+                      continue
+                  check_sections(path)
+                  importers = parse_importers(path)
+                  if list(importers) != ["."]:
+                      problems.append(f"{d}: expected exactly one importer '.', got {sorted(importers)}")
+                      continue
+                  lock = read_json(os.path.join(checkout, d, "package-lock.json"))
+                  root = lock.get("packages", {}).get("", {})
+                  wanted = set()
+                  for field in DEP_FIELDS:
+                      wanted |= set(root.get(field, {}))
+                  have = {}
+                  for field in DEP_FIELDS:
+                      have.update(importers["."].get(field, {}))
+                  if wanted != set(have):
+                      problems.append(f"{d}: direct dependencies differ: only in package-lock.json {sorted(wanted - set(have))}; only in pnpm {sorted(set(have) - wanted)}")
+                      continue
+                  for name, rec in sorted(have.items()):
+                      entry = lock["packages"].get(f"node_modules/{name}")
+                      got = rec.get("version", "")
+                      if entry is None:
+                          problems.append(f"{d}: {name} is a direct dependency but package-lock.json has no top-level entry for it")
+                      elif got.startswith("link:") != bool(entry.get("link")):
+                          problems.append(f"{d}: {name} is a link in only one of package-lock.json and the generated lockfile")
+                      elif not got.startswith("link:"):
+                          got = got.split("(", 1)[0]
+                          got = got.rsplit("@", 1)[1] if "@" in got[1:] else got
+                          if got != entry.get("version"):
+                              problems.append(f"{d}: {name} is {entry.get('version')} in package-lock.json but {got} in the generated lockfile")
+                  locked = npm_versions(lock)
+                  generated = pnpm_package_versions(path)
+                  if not locked or not generated:
+                      problems.append(f"{d}: one side named no packages; refusing to trust an empty comparison")
+                  for name, versions in sorted(generated.items()):
+                      for version in sorted(versions - locked.get(name, set())):
+                          problems.append(f"{d}: pnpm resolved {name}@{version}, which this package's package-lock.json did not lock (locked: {sorted(locked.get(name, []))})")
+              if problems:
+                  print("::error::the generated lockfiles moved a dependency or dropped a package:")
+                  for p in problems:
+                      print("  " + p)
+                  sys.exit(1)
+              print(f"OK: {len(dirs)} lockfiles; each resolves only the versions its own package-lock.json locked, and every direct dependency matches")
+
+
+          def cmd_changes(status_file, dirs_file):
+              dirs = [ln.strip() for ln in read_lines(dirs_file)]
+              expected = set()
+              for d in dirs:
+                  prefix = "" if d == "." else d + "/"
+                  expected.add(f"?? {prefix}pnpm-lock.yaml")
+                  expected.add(f" D {prefix}package-lock.json")
+              actual = set(read_lines(status_file))
+              if actual != expected:
+                  print("::error::the working tree differs from the lockfile swap:")
+                  for line in sorted(actual - expected):
+                      print("  unexpected: " + line)
+                  for line in sorted(expected - actual):
+                      print("  missing: " + line)
+                  sys.exit(1)
+              print(f"OK: exactly the lockfile swap ({len(dirs)} additions and {len(dirs)} deletions)")
+
+
+          def cmd_request(out_path, dirs_file, checkout, repo, branch, oid):
+              additions, deletions = [], []
+              for d in [ln.strip() for ln in read_lines(dirs_file)]:
+                  prefix = "" if d == "." else d + "/"
+                  with open(os.path.join(checkout, prefix + "pnpm-lock.yaml"), "rb") as fh:
+                      contents = base64.b64encode(fh.read()).decode("ascii")
+                  additions.append({"path": prefix + "pnpm-lock.yaml", "contents": contents})
+                  deletions.append({"path": prefix + "package-lock.json"})
+              commit_input = {
+                  "branch": {"repositoryNameWithOwner": repo, "branchName": branch},
+                  "message": {"headline": "ci: generate pnpm-lock.yaml files, remove package-lock.json files"},
+                  "fileChanges": {"additions": additions, "deletions": deletions},
+                  "expectedHeadOid": oid,
+              }
+              with open(out_path, "w", encoding="utf-8") as fh:
+                  json.dump(commit_input, fh)
+              print(f"request: {len(additions)} additions, {len(deletions)} deletions")
+
+
+          if __name__ == "__main__":
+              cmd, args = sys.argv[1], sys.argv[2:]
+              {
+                  "dirs": cmd_dirs,
+                  "stage": cmd_stage,
+                  "imports": cmd_imports,
+                  "compare": cmd_compare,
+                  "changes": cmd_changes,
+                  "request": cmd_request,
+              }[cmd](*args)
+          PYCONVERT
+
+      - name: List the package directories to convert
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/pnpm-convert/convert.py" dirs "$GITHUB_WORKSPACE" > "$RUNNER_TEMP/pnpm-convert/dirs.txt"
+          echo "converting $(wc -l < "$RUNNER_TEMP/pnpm-convert/dirs.txt") package directories"
+
+      # Two trees under $RUNNER_TEMP, never the checkout: the checkout's own
+      # .npmrc outranks setup-node's user-level config, and a branch author
+      # could point @branchleft at a foreign registry beside the run's token.
+      # The import tree holds each package.json and package-lock.json with
+      # its links back as file: specs; the final tree holds the branch's own
+      # package.json files and workspace file. Both get an .npmrc written
+      # here, never the branch's.
+      - name: Stage the import tree and the workspace tree
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          mkdir -p "$D/import" "$D/final"
+          python3 "$D/convert.py" stage "$GITHUB_WORKSPACE" "$D/import" "$D/final"
+
+      # pnpm import reads one package-lock.json and takes no --ignore-scripts
+      # (it installs nothing). Run per directory because, inside a workspace,
+      # it reads only the root lockfile.
+      - name: Import each package-lock.json
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          while read -r dir; do
+            echo "::group::pnpm import $dir"
+            pnpm -C "$D/import/$dir" import
+            echo "::endgroup::"
+          done < "$D/dirs.txt"
+          python3 "$D/convert.py" imports "$GITHUB_WORKSPACE" "$D/import"
+
+      # pnpm install --lockfile-only finalises the format and re-resolves only
+      # what the imports could not carry: the workspace links and any
+      # overrides from pnpm-workspace.yaml. Everything else is the import.
+      - name: Finalise the lockfiles in the workspace layout
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          while read -r dir; do
+            cp "$D/import/$dir/pnpm-lock.yaml" "$D/final/$dir/pnpm-lock.yaml"
+          done < "$D/dirs.txt"
+          pnpm -C "$D/final" install --lockfile-only --ignore-scripts
+
+      - name: Refuse a version pnpm resolved that package-lock.json did not lock
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          python3 "$D/convert.py" compare "$GITHUB_WORKSPACE" "$D/final"
+
+      - name: Apply the generated lockfiles
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          while read -r dir; do
+            cp "$D/final/$dir/pnpm-lock.yaml" "$dir/pnpm-lock.yaml"
+            rm "$dir/package-lock.json"
+          done < "$D/dirs.txt"
+
+      # Everything above ran in $RUNNER_TEMP, so the checkout must show
+      # exactly the swap: one added pnpm-lock.yaml and one deleted
+      # package-lock.json per directory, matched whole-line.
+      - name: Refuse any change beyond the lockfile swap
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          git status --porcelain > "$D/status.txt"
+          python3 "$D/convert.py" changes "$D/status.txt" "$D/dirs.txt"
+
+      # git commit and git push produce a commit GitHub does not sign, which a
+      # signed-commits ruleset refuses. createCommitOnBranch commits are
+      # signed by GitHub, and the read-back below proves it. expectedHeadOid
+      # makes GitHub refuse the write if the branch moved since checkout.
+      - name: Commit the lockfile swap via the GitHub API
+        id: commit
+        env:
+          BRANCH: ${{ needs.validate.outputs.branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/pnpm-convert"
+          HEAD_OID="$(git rev-parse HEAD)"
+
+          # The content is over the 128 KiB argv/env string cap, so the
+          # program writes the mutation input to a file, jq wraps it with
+          # --slurpfile, and gh reads the finished request with --input.
+          python3 "$D/convert.py" request "$D/input.json" "$D/dirs.txt" "$GITHUB_WORKSPACE" "$REPO" "$BRANCH" "$HEAD_OID"
+          # shellcheck disable=SC2016
+          QUERY='mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid url } } }'
+          jq -n --arg query "$QUERY" --slurpfile input "$D/input.json" \
+            '{query: $query, variables: {input: $input[0]}}' > "$D/request.json"
+          RESPONSE="$(gh api graphql --input "$D/request.json")"
+
+          NEW_OID="$(printf '%s' "$RESPONSE" | jq -r '.data.createCommitOnBranch.commit.oid // empty')"
+          if [ -z "$NEW_OID" ]; then
+            echo "::error::createCommitOnBranch returned no commit oid; response: $RESPONSE"
+            exit 1
+          fi
+
+          # Read back from the API: the mutation succeeding proves GitHub
+          # accepted the write, not that it signed it.
+          VERIFICATION="$(gh api "repos/$REPO/commits/$NEW_OID")"
+          VERIFIED="$(printf '%s' "$VERIFICATION" | jq -r '.commit.verification.verified')"
+          if [ "$VERIFIED" != "true" ]; then
+            REASON="$(printf '%s' "$VERIFICATION" | jq -r '.commit.verification.reason')"
+            echo "::error::commit $NEW_OID is not signed (verification.verified=$VERIFIED, reason=$REASON) -- refusing to report success on an unsigned commit"
+            exit 1
+          fi
+
+          echo "OK: committed $NEW_OID, verification.verified=true"
+          echo "oid=$NEW_OID" >> "$GITHUB_OUTPUT"
+
+      # A GITHUB_TOKEN write fires no push or pull_request event, so no check
+      # run exists at the new head. Fail the run rather than let a pull
+      # request show green with nothing having run; the commit itself is fine.
+      - name: Fail closed -- the new head has no CI yet
+        env:
+          NEW_OID: ${{ steps.commit.outputs.oid }}
+          BRANCH: ${{ needs.validate.outputs.branch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Lockfiles committed and signed -- but the new head has no CI yet"
+            echo
+            echo "Commit \`$NEW_OID\` on \`$BRANCH\` landed and is GitHub-signed (\`verification.verified=true\`, checked above). This run fails on purpose: a \`GITHUB_TOKEN\`-authenticated write fires no \`push\`/\`pull_request\` event, so no check has run at this SHA."
+            echo
+            echo "To start CI: close and reopen the pull request carrying this branch, or push an ordinary commit to \`$BRANCH\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::commit $NEW_OID landed and is signed, but no CI has run at this head -- see the job summary"
+          exit 1
