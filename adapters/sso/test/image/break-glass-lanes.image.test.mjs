@@ -5,13 +5,19 @@
 // minter runs in a container here.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
 import {
   defaultDeps,
   expire,
@@ -38,23 +44,6 @@ const SUPPORT = 'support@platform.example';
 const OWNER = 'owner@example.com';
 const STAFF = 'staff-admin@tenant.example';
 const BOOT_TIMEOUT_MS = 90_000;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-lanes-'));
 const keyDirs = { a: path.join(work, 'key-a'), b: path.join(work, 'key-b') };
 const auditDir = path.join(work, 'audit');
@@ -138,8 +127,14 @@ function mintToken(keyName = 'a', ttl = '600') {
 }
 
 class Tenant {
-  async start(keyName) {
-    this.port = this.port ?? (await freePort());
+  start(keyName) {
+    return runStep('start tenant Ghost', () => this.#start(keyName), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  async #start(keyName) {
+    this.port = this.port ?? (await reservePort());
     this.base = `http://localhost:${this.port}`;
     this.name = `${TENANT}-ghost-a-1`;
     const env = {
@@ -184,16 +179,15 @@ class Tenant {
   }
 
   async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        if ((await fetch(`${this.base}/`)).status === 200) return;
-      } catch {
-        // not listening yet
-      }
-      await sleep(500);
+    const result = await pollHttp200(`${this.base}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+    });
+    if (!result.ok) {
+      throw new Error(
+        `Ghost did not boot (${result.detail}):\n${this.logs().slice(-40).join('\n')}`
+      );
     }
-    throw new Error(`Ghost did not boot:\n${this.logs().slice(-40).join('\n')}`);
   }
 
   remove() {

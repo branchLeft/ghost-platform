@@ -5,9 +5,15 @@
 // provision-support-account-mysql.image.test.md.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import net from 'node:net';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
 import {
   PartialRowMismatchError,
   provisionSupportAccount,
@@ -34,23 +40,6 @@ const DB_USER = 'ghost_test';
 // as an explicit `-e` value for these two throwaway containers.
 const ROOT_PASSWORD = crypto.randomBytes(24).toString('hex');
 const DB_PASSWORD = crypto.randomBytes(24).toString('hex');
-
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // The official mysql image starts in two phases: a temporary, socket-only
 // bootstrap server that runs init scripts (creating MYSQL_DATABASE and
@@ -89,20 +78,12 @@ async function waitForMysqlReady() {
   return false;
 }
 
-async function waitForGhostHome(base) {
-  const deadline = Date.now() + BOOT_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${base}/`);
-      if (res.status === 200) return true;
-    } catch {
-      // not listening yet
-    }
-    const state = docker('inspect', '-f', '{{.State.Running}}', GHOST_NAME).trim();
-    if (state !== 'true') return false;
-    await sleep(1000);
-  }
-  return false;
+function waitForGhostHome(base) {
+  return pollHttp200(`${base}/`, {
+    containerName: GHOST_NAME,
+    deadlineMs: BOOT_TIMEOUT_MS,
+    sleepMs: 1000,
+  });
 }
 
 function sqlOnGhost(statement, ...params) {
@@ -151,7 +132,10 @@ function sqlOnGhost(statement, ...params) {
 
 let ghostBase;
 
-before(async () => {
+// Covers two image pulls and two boots, each with its own wait below.
+before(() => runStep('boot MySQL and Ghost', bootBackends, { deadlineMs: 480_000 }));
+
+async function bootBackends() {
   docker('network', 'create', NETWORK);
   docker(
     'run',
@@ -180,7 +164,7 @@ before(async () => {
   const mysqlReady = await waitForMysqlReady();
   assert.equal(mysqlReady, true, 'MySQL failed to become ready');
 
-  const port = await freePort();
+  const port = await reservePort();
   const env = {
     url: `http://localhost:${port}`,
     database__client: 'mysql',
@@ -228,8 +212,8 @@ before(async () => {
   );
   ghostBase = `http://localhost:${port}`;
   const ghostReady = await waitForGhostHome(ghostBase);
-  assert.equal(ghostReady, true, 'Ghost failed to boot against MySQL');
-});
+  assert.equal(ghostReady.ok, true, `Ghost failed to boot against MySQL (${ghostReady.detail})`);
+}
 
 after(() => {
   spawnSync('docker', ['rm', '-f', GHOST_NAME]);

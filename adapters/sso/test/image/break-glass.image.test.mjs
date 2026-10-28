@@ -8,12 +8,18 @@
 // refusing adapter from one that is not wired in at all.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
 import { claimsFor, generateKeyPair, mint } from '../helpers/token.mjs';
 
 const IMAGE = process.env.IMAGE;
@@ -29,26 +35,15 @@ const BOOT_TIMEOUT_MS = 90_000;
 const tenantKey = generateKeyPair();
 const otherKey = generateKeyPair();
 
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 class GhostContainer {
-  static async start({ adapterConfig, active = 'BreakGlassSSO', plant } = {}) {
-    const port = await freePort();
+  static start(options = {}) {
+    return runStep('start Ghost container', () => GhostContainer.#start(options), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  static async #start({ adapterConfig, active = 'BreakGlassSSO', plant } = {}) {
+    const port = await reservePort();
     const name = `bg-sso-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const env = {
       url: `http://localhost:${port}`,
@@ -93,19 +88,16 @@ class GhostContainer {
   }
 
   async waitForHome() {
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${this.base}/`);
-        if (res.status === 200) return true;
-      } catch {
-        // not listening yet
-      }
-      const state = docker('inspect', '-f', '{{.State.Running}}', this.name).trim();
-      if (state !== 'true') return false;
-      await sleep(500);
-    }
-    return false;
+    const result = await pollHttp200(`${this.base}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+    });
+    this.bootDetail = result.detail;
+    return result.ok;
+  }
+
+  bootError() {
+    return `Ghost did not boot (${this.bootDetail}):\n${this.logs().slice(-40).join('\n')}`;
   }
 
   logs() {
@@ -308,7 +300,7 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
 
   before(async () => {
     ghost = await GhostContainer.start({ adapterConfig: goodConfig });
-    assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
+    assert.ok(ghost.booted, ghost.bootError());
     await ghost.setupOwner();
     supportId = ghost.createSupportUser('inactive');
   });
@@ -456,7 +448,7 @@ describe('break-glass against a real Ghost (LLD-5 B3, B4)', { timeout: 300_000 }
     const first = await ghost.attempt(used);
     assert.equal(first.status, 200, `adapter said: ${JSON.stringify(first.adapter)}`);
     await ghost.restart();
-    assert.ok(ghost.booted, 'Ghost did not come back after restart');
+    assert.ok(ghost.booted, ghost.bootError());
     const replay = await ghost.attempt(used);
     assert.deepEqual(
       { status: replay.status, email: replay.email },
@@ -506,7 +498,7 @@ describe('the adapter on the boot path (LLD-5 B5)', { timeout: 600_000 }, () => 
     it(`boots and serves 200 with ${name}, and refuses every token`, async () => {
       const ghost = await GhostContainer.start({ adapterConfig });
       try {
-        assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
+        assert.ok(ghost.booted, ghost.bootError());
         const r = await ghost.attempt(validToken());
         assert.equal(r.status, 403, `adapter said: ${JSON.stringify(r.adapter)}`);
         const lines = await ghost.adapterLinesSince();
@@ -538,7 +530,7 @@ describe('the adapter ships in the image, not the content directory', { timeout:
   it('a planted content adapter is ignored in favour of the image’s', async () => {
     const ghost = await GhostContainer.start({ adapterConfig: goodConfig, plant: planted });
     try {
-      assert.ok(ghost.booted, `Ghost did not boot:\n${ghost.logs().slice(-40).join('\n')}`);
+      assert.ok(ghost.booted, ghost.bootError());
       await ghost.setupOwner();
       const r = await ghost.attempt(validToken({ sub: OWNER }, otherKey.privateKey));
       assert.deepEqual(
@@ -564,17 +556,17 @@ describe(
     // the artefact that actually reaches a tenant: the built image's own copy
     // of the file, by content hash against the pin the build checks.
     it("the built image's session-from-token.js hashes to the pinned patched file and carries the save", () => {
-      const cid = execFileSync('docker', ['create', IMAGE], { encoding: 'utf8' }).trim();
+      const cid = docker('create', IMAGE).trim();
       let inImageBytes;
       try {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-overlay-check-'));
         try {
           const dest = path.join(tmp, 'in-image.js');
-          execFileSync('docker', [
+          docker(
             'cp',
             `${cid}:/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js`,
-            dest,
-          ]);
+            dest
+          );
           inImageBytes = fs.readFileSync(dest);
         } finally {
           fs.rmSync(tmp, { recursive: true, force: true });

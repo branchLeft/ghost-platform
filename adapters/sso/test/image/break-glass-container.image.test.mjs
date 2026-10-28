@@ -5,13 +5,19 @@
 // See break-glass-container.image.test.md for what each case proves.
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../../../test-support/image-harness.mjs';
 import { provisionSupportAccount } from '../../scripts/provision-support-account.mjs';
 
 const IMAGE = process.env.IMAGE;
@@ -31,23 +37,6 @@ const SUPPORT = 'support@platform.example';
 const OWNER = 'owner@example.com';
 const BOOT_TIMEOUT_MS = 90_000;
 const LABEL = ['--label', 'branchleft.agent=break-glass-container-test'];
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function docker(...args) {
-  return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-}
-
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-ctr-'));
 const stateDir = path.join(work, 'grants');
 const logDir = path.join(work, 'log');
@@ -181,8 +170,14 @@ function mintToken() {
 }
 
 class Tenant {
-  async start() {
-    this.port = await freePort();
+  start() {
+    return runStep('start tenant Ghost', () => this.#start(), {
+      deadlineMs: BOOT_TIMEOUT_MS + 60_000,
+    });
+  }
+
+  async #start() {
+    this.port = await reservePort();
     this.base = `http://localhost:${this.port}`;
     this.name = `${TENANT}-ghost-a-1`;
     const env = {
@@ -223,16 +218,11 @@ class Tenant {
       ...Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
       IMAGE
     );
-    const deadline = Date.now() + BOOT_TIMEOUT_MS;
-    for (;;) {
-      try {
-        if ((await fetch(`${this.base}/`)).status === 200) break;
-      } catch {
-        // not listening yet
-      }
-      if (Date.now() > deadline) throw new Error('Ghost did not boot');
-      await sleep(500);
-    }
+    const booted = await pollHttp200(`${this.base}/`, {
+      containerName: this.name,
+      deadlineMs: BOOT_TIMEOUT_MS,
+    });
+    if (!booted.ok) throw new Error(`Ghost did not boot (${booted.detail})`);
     await sleep(1500); // the adapter compares whole seconds against its own start
   }
 
