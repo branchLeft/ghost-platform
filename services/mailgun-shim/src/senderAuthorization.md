@@ -98,12 +98,21 @@ and the SMTP header From inherit it. It refuses when:
 - `=?` or `?=` sits in an address (the local part or the domain, bare or in
   angle brackets), in a group name, or in a name with no address. This covers
   a whole word, a word cut short, and what is left of a word that a line
-  fold split; and
+  fold split. The delimiters are looked for in the parse, not in the text as
+  submitted: a quoted local part that writes each `=` and `?` as a
+  quoted-pair (`"\=\?utf-8\?q\?x\?\="`) holds neither delimiter literally, and
+  the parser unquotes it. A bare quoted address is unquoted by the parser; an
+  angle address is left as written, so the check resolves quoted-pairs and
+  drops quote marks itself; and
 - an encoded word changes how the text splits into mailboxes and groups. Each
   word is replaced by one opaque atom, the way a MIME reader tokenises it,
   and the text is read again. If the addresses or the layout differ, the text
   is refused. This catches a word whose text holds a character that ends a
   token (an angle bracket, a colon, a comma, a quote, a parenthesis).
+
+`boundSender` also applies the delimiter check to each local part it queues
+and to the re-serialised result, so what is queued has been checked in the
+form a reader sees.
 
 An encoded word in a display name is accepted. A mail library writes a
 non-ASCII name as one, and Ghost's own transactional mail reaches the SMTP

@@ -92,6 +92,8 @@ function rawWord(rng, text) {
 function words(rng, parts) {
   return parts.map((part) => word(rng, part)).join(pick(rng, SEPARATORS));
 }
+/** Each `=` and `?` written as a quoted-pair, so the submitted text holds neither delimiter literally. */
+const escapeDelimiters = (text) => text.replace(/[=?]/g, (ch) => `\\${ch}`);
 /** A fold (CRLF then a space) placed after a word or inside one. */
 function fold(rng, value) {
   if (rng() < 0.5) {
@@ -174,6 +176,53 @@ const TEMPLATES = [
   // two mailboxes
   { p: 'second mailbox', f: (r) => `alice@${TENANT}, ${word(r, `bob@${FOREIGN}`)}` },
   { p: 'second mailbox', f: (r) => `alice@${TENANT}, ${word(r, 'bob')}@${TENANT}` },
+  // delimiters written as quoted-pairs (the parser unquotes them)
+  {
+    p: 'escaped delimiter',
+    f: (r) => `"${escapeDelimiters(word(r, pick(r, LOCALS)))}"@${TENANT}`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `<"${escapeDelimiters(word(r, pick(r, LOCALS)))}"@${TENANT}>`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `NAME_PLACEHOLDER <"${escapeDelimiters(word(r, pick(r, LOCALS)))}"@${TENANT}>`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `"${escapeDelimiters(word(r, `alice@${FOREIGN}`))}"@${TENANT}`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `<"${escapeDelimiters(word(r, `alice${pick(r, SPECIALS)}${FOREIGN}`))}"@${TENANT}>`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `alice@${TENANT}, "${escapeDelimiters(word(r, `bob@${FOREIGN}`))}"@${TENANT}`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `"${escapeDelimiters(word(r, pick(r, ['G', `a@${FOREIGN}`])))}": alice@${TENANT};`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `${escapeDelimiters(word(r, 'G'))}: alice@${TENANT};`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) => `"${escapeDelimiters(word(r, 'x'))}", alice@${TENANT}`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) =>
+      `"${pick(r, ['\\=\\?x', 'x\\?\\=', 'x\\=\\?y', 'x?\\=', '=\\?x', 'x\\=?y'])}"@${TENANT}`,
+  },
+  {
+    p: 'escaped delimiter',
+    f: (r) =>
+      `<"${pick(r, ['\\=\\?x', 'x\\?\\=', 'x\\=\\?y', 'x?\\=', '=\\?x', 'x\\=?y'])}"@${TENANT}>`,
+  },
   // folded
   { p: 'folded', f: (r) => fold(r, `${word(r, `alice@${FOREIGN}`)}@${TENANT}`) },
   { p: 'folded', f: (r) => fold(r, `NAME_PLACEHOLDER <${word(r, 'alice')}@${TENANT}>`) },
@@ -186,6 +235,11 @@ const TEMPLATES = [
   { p: 'control', f: () => `alice@${TENANT}` },
   { p: 'control', f: (r) => `=?utf-8?q?alice <alice@${TENANT}>` },
   { p: 'control', f: () => `a=?b@${TENANT}` },
+  { p: 'control', f: () => `"a\\?b"@${TENANT}` },
+  {
+    p: 'control',
+    f: (r) => `"${escapeDelimiters(word(r, 'NAME_PLACEHOLDER'))}" <alice@${TENANT}>`,
+  },
   { p: 'control', f: (r) => `${word(r, 'NAME_PLACEHOLDER')} <alice@${TENANT}>` },
 ];
 

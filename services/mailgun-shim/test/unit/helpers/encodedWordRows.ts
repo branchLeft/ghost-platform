@@ -10,6 +10,7 @@ export type Position =
   | 'address token'
   | 'group name'
   | 'quoted string'
+  | 'escaped delimiter'
   | 'folded'
   | 'delimiter';
 
@@ -66,6 +67,9 @@ function spellings(text: string): ReadonlyArray<readonly [Encoding, string]> {
     ['mixed case', `=?Utf-8?q?${q.toLowerCase()}?=`],
   ];
 }
+
+/** Each `=` and `?` written as a quoted-pair, so the submitted text holds neither delimiter literally. */
+const escapeDelimiters = (text: string) => text.replace(/[=?]/g, (ch) => `\\${ch}`);
 
 function row(
   id: string,
@@ -127,6 +131,54 @@ export function refusedEncodedWordRows(domain: string): EncodedWordRow[] {
         row(`${label} inside the word`, 'group name', encoding, `${word}: alice@${domain};`)
       );
     }
+  }
+  // The delimiters written as quoted-pairs inside a quoted string: the parser
+  // unquotes them, so the address it binds holds a whole encoded word.
+  for (const text of ['alice', 'x@other.example']) {
+    for (const [encoding, word] of spellings(text)) {
+      const escaped = escapeDelimiters(word);
+      rows.push(
+        row(`bare, ${text}`, 'escaped delimiter', encoding, `"${escaped}"@${domain}`, {
+          envelope: true,
+        }),
+        row(`angle, ${text}`, 'escaped delimiter', encoding, `<"${escaped}"@${domain}>`),
+        row(
+          `with a name, ${text}`,
+          'escaped delimiter',
+          encoding,
+          `NAME_PLACEHOLDER <"${escaped}"@${domain}>`
+        ),
+        row(
+          `second mailbox, ${text}`,
+          'escaped delimiter',
+          encoding,
+          `alice@${domain}, "${escaped}"@${domain}`
+        )
+      );
+    }
+  }
+  for (const [encoding, word] of spellings('G')) {
+    const escaped = escapeDelimiters(word);
+    rows.push(
+      row('quoted group name', 'escaped delimiter', encoding, `"${escaped}": alice@${domain};`),
+      row('bare group name', 'escaped delimiter', encoding, `${escaped}: alice@${domain};`),
+      row('name with no address', 'escaped delimiter', encoding, `"${escaped}", alice@${domain}`)
+    );
+  }
+  // A lone delimiter, opening or closing, with no whole word around it.
+  for (const [id, local] of [
+    ['an escaped opening mark', '\\=\\?alice'],
+    ['an escaped closing mark', 'alice\\?\\='],
+    ['an escaped opening mark after a plain part', 'alice\\=\\?x'],
+    ['an escaped question mark then a literal equals sign', 'alice\\?='],
+    ['a literal question mark then an escaped equals sign', 'alice?\\='],
+    ['a literal equals sign then an escaped question mark', '=\\?alice'],
+    ['an escaped equals sign then a literal question mark', 'alice\\=?x'],
+  ] as const) {
+    rows.push(
+      row(`${id}, bare`, 'escaped delimiter', 'none', `"${local}"@${domain}`, { envelope: true }),
+      row(`${id}, angle`, 'escaped delimiter', 'none', `<"${local}"@${domain}>`)
+    );
   }
   const [qLower, bLower] = [spellings('ali')[0]![1], spellings('ce')[2]![1]];
   rows.push(
@@ -274,6 +326,18 @@ export function acceptedEncodedWordRows(domain: string): AcceptedEncodedWordRow[
       submitted: `${b} <alice@${domain}>`,
       queued: `"${b}" <alice@${domain}>`,
       queuedSmtp: `"\u{00DC}n\u{00EF}code" <alice@${domain}>`,
+    },
+    {
+      id: 'CONTROL: a quoted-pair question mark that is not a delimiter',
+      submitted: `"a\\?b"@${domain}`,
+      queued: `a?b@${domain}`,
+      queuedSmtp: `a?b@${domain}`,
+    },
+    {
+      id: 'CONTROL: an encoded word in the display name, written as quoted-pairs',
+      submitted: `"${escapeDelimiters(q)}" <alice@${domain}>`,
+      queued: `"${q}" <alice@${domain}>`,
+      queuedSmtp: `"NAME_PLACEHOLDER" <alice@${domain}>`,
     },
     {
       id: 'CONTROL: an encoded word in the display name, before a plain part',

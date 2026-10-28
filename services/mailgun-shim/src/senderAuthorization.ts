@@ -118,6 +118,10 @@ function extractMailboxes(headerValue: string | null | undefined): Mailbox[] | n
   const mailboxes: Mailbox[] = [];
   for (const entry of parsed) {
     if (entry.address) {
+      // The address as parsed: a delimiter in it is refused whatever spelling wrote it.
+      if (holdsDelimiter(entry.address)) {
+        return null;
+      }
       mailboxes.push({ name: entry.name ?? '', address: entry.address });
     }
   }
@@ -176,10 +180,21 @@ function layoutOf(entries: ParsedAddress[]): string {
     .join(',');
 }
 
-/** True when `=?` or `?=` sits in an address, in a group name, or in a name with no address. */
+/**
+ * True when `=?` or `?=` is in the text once read as a mailbox would be: quoted-pairs resolved and
+ * quote marks dropped. The parser unquotes a bare quoted local part but leaves an angle address
+ * as written (quotes and backslashes in), so the text is read here, not trusted to be plain.
+ */
+function holdsDelimiter(text: string | undefined): boolean {
+  if (text === undefined) {
+    return false;
+  }
+  const plain = text.replace(/\\([\s\S])/g, '$1').replace(/"/g, '');
+  return plain.includes('=?') || plain.includes('?=');
+}
+
+/** True when `=?` or `?=` sits in an address, in a group name, or in a name with no address, as parsed (quoting and quoted-pairs already removed). */
 function delimiterOutsideDisplayName(entries: ParsedAddress[]): boolean {
-  const holdsDelimiter = (text: string | undefined) =>
-    text !== undefined && (text.includes('=?') || text.includes('?='));
   return entries.some((entry) => {
     if (entry.group) {
       return holdsDelimiter(entry.name) || delimiterOutsideDisplayName(entry.group);
@@ -191,27 +206,29 @@ function delimiterOutsideDisplayName(entries: ParsedAddress[]): boolean {
 /**
  * True when the text holds encoded-word syntax anywhere but in a display
  * name: in an address, in a group name, or in a way that changes how the text
- * splits into mailboxes. Refused, never decoded. See
+ * splits into mailboxes. Refused, never decoded. The delimiters are looked for
+ * in the parse, not in the submitted text, so a quoted-pair spelling
+ * (`\=\?`) is read the way the queued address will be. See
  * senderAuthorization.md#encoded-words.
  */
 export function refusesEncodedWord(text: string): boolean {
-  if (!text.includes('=?') && !text.includes('?=')) {
-    return false;
-  }
-  // Each encoded word read as one opaque atom, the way a MIME reader splits it.
-  let masked = '';
-  let at = 0;
-  for (const [start, end] of encodedWordSpans(text)) {
-    masked += `${text.slice(at, start)}eword`;
-    at = end;
-  }
-  masked += text.slice(at);
   try {
     const asWritten = addressparser(text);
-    return (
-      layoutOf(asWritten) !== layoutOf(addressparser(masked)) ||
-      delimiterOutsideDisplayName(asWritten)
-    );
+    if (delimiterOutsideDisplayName(asWritten)) {
+      return true;
+    }
+    if (!text.includes('=?') && !text.includes('?=')) {
+      return false;
+    }
+    // Each encoded word read as one opaque atom, the way a MIME reader splits it.
+    let masked = '';
+    let at = 0;
+    for (const [start, end] of encodedWordSpans(text)) {
+      masked += `${text.slice(at, start)}eword`;
+      at = end;
+    }
+    masked += text.slice(at);
+    return layoutOf(asWritten) !== layoutOf(addressparser(masked));
   } catch {
     return true;
   }
@@ -334,7 +351,7 @@ export function boundSender(
   for (const mailbox of parsed) {
     const at = mailbox.address.lastIndexOf('@');
     const local = mailbox.address.slice(0, at);
-    if (at < 0 || holdsWhitespaceOrControl(local)) {
+    if (at < 0 || holdsWhitespaceOrControl(local) || holdsDelimiter(local)) {
       return null;
     }
     mailboxes.push({
@@ -343,6 +360,10 @@ export function boundSender(
     });
   }
   const serialised = serialiseMailboxes(mailboxes);
+  // What is queued is checked in the form a reader sees, not only as submitted.
+  if (refusesEncodedWord(serialised)) {
+    return null;
+  }
   const reread = extractMailboxes(serialised);
   const sameMailboxes =
     reread !== null &&

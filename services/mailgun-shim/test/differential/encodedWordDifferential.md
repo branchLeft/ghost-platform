@@ -14,7 +14,9 @@ unit tests carry the pinned rows; this carries the breadth.
 1. Regenerates a corpus from a seed (no corpus is committed). Each value
    places encoded-word text, in several charsets, in Q and B encodings and in
    both cases, in an address token, a group name, a quoted string, a comment,
-   a display name and a folded line, and adds control values with none.
+   a display name and a folded line, writes the delimiters as quoted-pairs
+   inside a quoted local part, group name or name (`"\=\?utf-8\?q\?x\?\="`),
+   and adds control values with none.
 2. Submits every value to the real HTTP router and the real SMTP front door
    (as a header From, and, for values that can be one, as the envelope sender
    of a message with no header From), against a real store.
