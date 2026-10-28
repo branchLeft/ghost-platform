@@ -1,5 +1,6 @@
 export { bindTenant, TenantScope } from './scope.js';
 export { TenantDb, TenantNotRegisteredError, type TenantRegistration } from './session.js';
+export { TenantBindingChangedError } from './binding.js';
 export { InvalidTenantIdError, type TenantId } from '../tenantId.js';
 export {
   InvalidTenantKindError,

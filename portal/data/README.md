@@ -14,14 +14,46 @@ bound returns only A's rows.
 - Every statement then runs in a transaction as the `portal_tenant` role with
   the tenant bound (`portal.tenant_id`). Row-level security on every tenant
   table filters by `public.bound_tenant()`, which raises when nothing is bound.
+- The work cannot keep a different binding. Before the commit, `run` reads the
+  tenant register through the typed query builder (`assertBindingIntact`,
+  `src/tenant/binding.ts`) for any row but the scope's own. Under the tenant
+  role and the bound tenant the register holds at most that one row, so another
+  row means the work rebound the session (`portal.tenant_id` or
+  `portal.organisation_id`, by `set_config` or `SET LOCAL`) or stepped out of
+  the role on a login that sees more. The run is then refused with
+  `TenantBindingChangedError` and the transaction rolls back whole, so nothing
+  the work read or wrote leaves it. A probe that itself fails (the role was left
+  and its privileges went with it, or the transaction was left aborted) is
+  refused the same way, with the failure as the `cause`. The cost is one
+  indexed register read per run. `Tx` stays the full Drizzle transaction:
+  `execute` and `select({ x: sql... })` take raw statements, so narrowing the
+  type would not be a control, and the check is what is proven
+  (`test/bindingRebind.test.ts`, on a real server).
 - All access is Drizzle. The schema (`src/schema.ts`) declares the policies and
   `drizzle/` holds the generated migrations. A schema module is checked by
-  `assertTenantTablesIsolated`: a table with a `tenant_id` column and no row
-  security or no `tenant_isolation` policy is refused.
+  `assertTenantTablesIsolated`: a table with a `tenant_id` column must have row
+  security and a `tenant_isolation` policy that is permissive, `FOR ALL`,
+  explicitly `TO portal_tenant`, whose `USING` and `WITH CHECK` both render
+  (whitespace and quoting aside) to `<schema>.<table>.tenant_id =
+  public.bound_tenant()`. A policy of `true`, another column or function, an
+  `OR true`, a missing `WITH CHECK` or a parameter is refused with
+  `UnisolatedTableError` naming the table. Other policies on a table are not
+  judged here: the provisioning command's live check (M20) pins the deployed
+  set exactly.
 - `TenantDb.scopeForOrganisation` resolves a Zitadel organisation to a scope. It
   binds the organisation (`portal.organisation_id`) instead of a tenant, and a
   second policy lets that binding read the one register row for that
   organisation, nothing else.
+
+What the binding check cannot see, stated plainly: it reads the state the work
+leaves behind. Work that rebinds, reads, and rebinds back before it returns
+passes it. Closing that needs a binding the tenant role cannot set, a
+database-level control in the schema or the provisioning command, which this
+layer does not have; nothing under `portal/apps` can express a raw statement
+through `run` today. The anchor is the register row: a tenant table's foreign
+key to the register (as `health_reading` has) means a rebind to a tenant that
+has data always exposes a register row, and a rebind to a tenant not in the
+register exposes nothing.
 
 ### Policies
 
@@ -30,6 +62,14 @@ bound, so an unbound statement fails instead of returning nothing or
 everything. When only an organisation is bound it returns null: no tenant row
 matches, and the `organisation_lookup` policy exposes just that organisation's
 register row, which is how a session's organisation becomes a bound tenant.
+
+The register's writes are pinned twice (`test/registerWrites.test.ts`). The
+manifest grants `portal_tenant` `SELECT` only, so the test shows the role holds
+no `INSERT`, `UPDATE` or `DELETE` and that each is refused with `permission
+denied`. And with those writes granted for the test and revoked in a `finally`,
+the `tenant_isolation` policy itself refuses a row for another tenant, an
+update that moves a row to another tenant, and a delete of another tenant's
+row removes nothing, so a `WITH CHECK (true)` there cannot go unnoticed.
 
 ### Tenant kind
 
@@ -51,7 +91,9 @@ Exactly three things are not expressed through Drizzle (`DB-2` approval, owner
 ruling): the role switch (`SET LOCAL ROLE`, `enterRole` in `src/db.ts`), the
 binding call (`set_config`, `bind` in `src/db.ts`), and the binding functions
 (`drizzle/0000_binding_functions.sql`, called from the policy predicates in
-`src/schema.ts`). `provision/` holds the operator's role and grant statements,
+`src/schema.ts`). The binding check in `run` is a typed Drizzle query and the
+isolation comparison renders the policy's predicates and compares text, so
+neither adds raw SQL. `provision/` holds the operator's role and grant statements,
 which Drizzle cannot model, and the catalog check that compares a server with
 them.
 

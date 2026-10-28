@@ -39,6 +39,25 @@ export interface Fixture {
   close(): Promise<void>;
 }
 
+/** The deepest message in an error's cause chain: the database's own, under the ORM's wrapper. */
+export function rootMessage(error: unknown): string {
+  let current = error as { message?: string; cause?: unknown };
+  while (typeof current.cause === 'object' && current.cause !== null) {
+    current = current.cause as { message?: string; cause?: unknown };
+  }
+  return current.message ?? String(error);
+}
+
+/** The error a promise rejects with; fails the test if it resolves. */
+export async function rejection(attempt: Promise<unknown>): Promise<unknown> {
+  try {
+    await attempt;
+  } catch (error) {
+    return error;
+  }
+  throw new Error('the call was not refused');
+}
+
 /** The test server's URL for `database`, as `user` when given, with no password in it. */
 export function testUrl(database: string, user?: string): string {
   if (ADMIN_URL === undefined) {
