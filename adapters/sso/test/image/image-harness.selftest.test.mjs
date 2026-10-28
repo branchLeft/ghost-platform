@@ -311,7 +311,11 @@ describe('the port registry', () => {
     const dir = path.join(registry, '29991');
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, 'pid'), '');
-    assert.equal(claimPort(29_991), false, 'an empty pid file is a claim in the middle of being made');
+    assert.equal(
+      claimPort(29_991),
+      false,
+      'an empty pid file is a claim in the middle of being made'
+    );
     fs.rmSync(path.join(dir, 'pid'));
     assert.equal(claimPort(29_991), false, 'a claim with no pid file yet is also being made');
     fs.mkdirSync(path.join(dir, 'pid'));
