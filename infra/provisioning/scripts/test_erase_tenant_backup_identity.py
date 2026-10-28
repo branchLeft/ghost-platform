@@ -169,12 +169,14 @@ class ErasureTests(EraseCase):
         # Shredded, not merely unlinked: another name for the same bytes reads zero.
         self.assertEqual(set(link.read_bytes()), {0})
 
-    def test_a_second_run_finds_nothing_and_says_so(self) -> None:
+    def test_a_second_run_cannot_search_for_strays_so_it_is_red_not_green(self) -> None:
         self.enrol("bravo")
         self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
         before = self.everything()
-        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
-        self.assertIn("nothing to erase", self.stdout)
+        self.assertEqual(self.erase(), eb.EXIT_PROOF_RED, self.stdout)
+        self.assertIn(eb.STRAY_SEARCH_NOT_RUN, self.stderr)
+        self.assertNotIn("proof green", self.stdout)
+        self.assertNotIn("nothing to erase", self.stdout)
         self.assertEqual(self.everything(), before)
 
     def test_an_enrolled_tenant_with_no_spare_yet_is_erased(self) -> None:
@@ -236,15 +238,14 @@ class StrayCopyTests(EraseCase):
         self.plant("restored-from-somewhere.key", self.world.minted[0])
         self.assertEqual(self.remaining("bravo", matchers), ["identity directory entry restored-from-somewhere.key"])
 
-    def test_a_symlink_under_the_tenants_name_is_unlinked_and_never_written_through(self) -> None:
+    def test_a_symlink_under_the_tenants_temp_name_is_unlinked_and_never_written_through(self) -> None:
         self.enrol("bravo")
         target = self.world.outside / "elsewhere.key"
         target.write_bytes(b"not ours to touch")
-        (self.world.identity_dir / "bravo.key").unlink()
-        os.symlink(target, self.world.identity_dir / "bravo.key")
+        os.symlink(target, self.world.identity_dir / ".bravo.key.tmp")
         code = self.erase()
         self.assertEqual(code, eb.EXIT_OK, self.stderr)
-        self.assertFalse(os.path.lexists(self.world.identity_dir / "bravo.key"))
+        self.assertFalse(os.path.lexists(self.world.identity_dir / ".bravo.key.tmp"))
         self.assertEqual(target.read_bytes(), b"not ours to touch")
 
     def test_a_symlink_under_another_name_is_left_alone(self) -> None:
@@ -293,8 +294,13 @@ class FailClosedTests(EraseCase):
         self.store.delete_version_error = shared_objectstorage.ObjectStorageError("denied")
         self.code = self.erase()
         self.assert_red("spare version spares/bravo.key.age")
-        self.assertFalse((self.world.identity_dir / "bravo.key").exists())
         self.assertEqual(self.world.enrolled_in_lists("bravo"), (False, False))
+        # The own file stays, so a run again can still search for strays by its key.
+        self.assertTrue((self.world.identity_dir / "bravo.key").exists())
+        self.store.delete_version_error = None
+        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        self.assertFalse((self.world.identity_dir / "bravo.key").exists())
+        self.assertIn("proof green", self.stdout)
 
     def test_a_failed_identity_destroy_is_red_and_the_spare_is_still_deleted(self) -> None:
         self.enrol("bravo")
@@ -468,6 +474,84 @@ class RerunAfterRedTests(EraseCase):
         second = self.plant("copy-two.txt", b"saved\n" + self.identity_of("bravo"))
         self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
         self.assertFalse(first.exists() or second.exists())
+
+
+class UnlearnableMatcherTests(EraseCase):
+    """The stray search needs the key bytes in the tenant's own identity file.
+    Where they cannot be had, the run refuses (first run) or is red (rerun)."""
+
+    def tree(self) -> dict:
+        """The identity directory without following links, both lists and the spare store."""
+        entries = {}
+        for path in sorted(self.world.identity_dir.iterdir()):
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode):
+                entries[path.name] = ("link", os.readlink(path))
+            elif stat.S_ISREG(info.st_mode):
+                entries[path.name] = ("file", path.read_bytes())
+            else:
+                entries[path.name] = ("other", stat.S_IFMT(info.st_mode))
+        lists = [self.world.read(name) for name in ("tenants_file", "recipients_file")]
+        return {"dir": entries, "lists": lists, "spare": dict(self.store.objects), "old": dict(self.store.old)}
+
+    def make_own_identity_unreadable(self, how: str) -> None:
+        own = self.world.identity_dir / "bravo.key"
+        data = own.read_bytes()
+        if how == "directory":
+            own.unlink()
+            own.mkdir()
+        elif how == "symlink":
+            own.unlink()
+            os.symlink(self.world.outside / "elsewhere.key", own)
+        elif how == "oversize":
+            own.write_bytes(data + b"\n# " + b"x" * et.MAX_CONFIG_BYTES + b"\n")
+        elif how == "no key in it":
+            own.write_bytes(b"# created: nothing useful\n")
+
+    def test_an_unreadable_own_identity_on_a_first_run_refuses_and_destroys_nothing(self) -> None:
+        for how in ("directory", "symlink", "oversize", "no key in it"):
+            with self.subTest(how=how):
+                self.world = fixtures.World(self)
+                self.store = VersionedFakeStore(self.world.events)
+                self.world.store = self.store
+                self.erase_config = str(self.world.root / "etc" / "erase-tenant-backup.env")
+                self.write_erase_config()
+                self.enrol("bravo")
+                self.plant("bravo.key.bak", self.identity_of("bravo"))
+                self.store.old[("spares/bravo.key.age", "v1")] = "version"
+                self.make_own_identity_unreadable(how)
+                before = self.tree()
+                self.assertEqual(self.erase(), eb.EXIT_REFUSED, self.stdout)
+                self.assertIn(eb.UNREADABLE_OWN_IDENTITY, self.stderr)
+                self.assertIn("nothing changed", self.stderr)
+                self.assertNotIn("proof green", self.stdout)
+                self.assertEqual(self.tree(), before)
+
+    def test_a_rerun_with_the_own_identity_already_gone_is_red_even_with_nothing_found_by_name(self) -> None:
+        self.enrol("bravo")
+        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        self.plant("restored-from-somewhere.key", self.world.minted[0])
+        self.assertEqual(self.erase(), eb.EXIT_PROOF_RED, self.stdout)
+        self.assertIn(eb.STRAY_SEARCH_NOT_RUN, self.stderr)
+        self.assertIn("RED", self.stderr)
+        self.assertNotIn("proof green", self.stdout)
+
+    def test_a_rerun_that_finds_and_destroys_a_copy_by_name_is_still_red(self) -> None:
+        self.enrol("bravo")
+        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        leftover = self.plant(".bravo.key.tmp", b"a half-written file")
+        self.store.objects["spares/bravo.key.age"] = b"re-uploaded"
+        self.assertEqual(self.erase(), eb.EXIT_PROOF_RED, self.stdout)
+        self.assertFalse(leftover.exists())
+        self.assertNotIn("spares/bravo.key.age", self.store.objects)
+        self.assertIn(eb.STRAY_SEARCH_NOT_RUN, self.stderr)
+        self.assertNotIn("proof green", self.stdout)
+
+    def test_the_public_key_alone_does_not_make_the_search_complete(self) -> None:
+        public_only = eb.key_matchers(None, "age1abc")
+        self.assertFalse(public_only.empty)
+        self.assertFalse(public_only.can_search_strays)
+        self.assertTrue(eb.key_matchers(b"AGE-SECRET-KEY-1QQQQ\n", None).can_search_strays)
 
 
 class NeverUnwrapTests(EraseCase):

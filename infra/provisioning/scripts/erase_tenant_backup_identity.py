@@ -46,6 +46,16 @@ MAX_VERSION_PAGES = 1000
 
 _PUBLIC_KEY_COMMENT_PREFIX = b"# public key: "
 
+UNREADABLE_OWN_IDENTITY = (
+    "the tenant's own identity file is present but cannot be read as an identity "
+    "(not a regular file, too large, or no key in it), so copies of it cannot be "
+    "searched for; remove or repair it by hand and run again; nothing changed"
+)
+STRAY_SEARCH_NOT_RUN = (
+    "the stray-copy search could not run: the tenant's own identity file is gone, so the key "
+    "is not known and a copy under another name cannot be found"
+)
+
 
 def _say(message: str) -> None:
     print(f"erase_tenant_backup_identity: {message}")
@@ -184,6 +194,12 @@ class KeyMatchers:
     def empty(self) -> bool:
         return not self.secret_lines and not self.public_keys
 
+    @property
+    def can_search_strays(self) -> bool:
+        """The secret-key line is what finds a copy with its comment stripped;
+        the public key alone cannot."""
+        return bool(self.secret_lines)
+
     def holds(self, data: bytes) -> bool:
         if any(line in data for line in self.secret_lines):
             return True
@@ -200,12 +216,26 @@ def key_matchers(identity: bytes | None, recipient: str | None) -> KeyMatchers:
 
 def learn_matchers(tenant: str, paths: et.Paths) -> KeyMatchers:
     """Reads the canonical identity before anything is destroyed, and the
-    tenant's recipient from the recipients file. Neither being readable stops
-    nothing: erasure then matches on file name alone, and says so."""
+    tenant's recipient from the recipients file. A tenant's own identity file
+    that is present but cannot be read, or holds no secret-key line, refuses
+    the run before anything changes: the stray search could not run, and an
+    erasure must not proceed on a search it cannot do. A file that is absent
+    gives matchers without the secret line, which `_erase` ends red."""
+    own = et.identity_path(paths.identity_dir, tenant)
+    identity: bytes | None = None
     try:
-        _, identity = et._read_regular_file(et.identity_path(paths.identity_dir, tenant), what="the identity file")
-    except (et.Refusal, OSError):
-        identity = None
+        os.lstat(own)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise et.Refusal(UNREADABLE_OWN_IDENTITY) from None
+    else:
+        try:
+            _, identity = et._read_regular_file(own, what="the identity file")
+        except (et.Refusal, OSError):
+            raise et.Refusal(UNREADABLE_OWN_IDENTITY) from None
+        if not et._SECRET_KEY_LINE.search(identity):
+            raise et.Refusal(UNREADABLE_OWN_IDENTITY)
     try:
         recipient = br.load_recipients(paths.recipients_file).get(tenant)
     except (br.RecipientError, OSError):
@@ -379,8 +409,8 @@ def destroy_copies(*, tenant: str, paths: et.Paths, store: EraseStore, matchers:
 
     again = scan_identity_dir(paths.identity_dir, tenant, matchers)
     others = [name for name in again.holders if name not in own] + list(again.unchecked)
-    if others:
-        problems.append("the tenant's own identity file is kept while another copy of its key remains or is unjudged")
+    if others or problems:
+        problems.append("the tenant's own identity file is kept while another copy remains, is unjudged or a step failed")
     else:
         _destroy_entries(problems, paths.identity_dir, [name for name in own if name in again.holders])
     _attempt(problems, "syncing the identity directory", functools.partial(et._fsync_directory, paths.identity_dir))
@@ -431,21 +461,24 @@ def _erase(
 
         spare_store = store if store is not None else S3EraseStore(config)
         matchers = learn_matchers(tenant, paths)
-        if matchers.empty:
-            _say("no key material could be read to match on: stray copies are found by file name only")
+        blind = not matchers.can_search_strays
 
-        if not find_remaining(tenant=tenant, paths=paths, store=spare_store, matchers=matchers):
+        problems: list[str] = []
+        remaining = find_remaining(tenant=tenant, paths=paths, store=spare_store, matchers=matchers)
+        if not remaining and not blind:
             _say(f"{tenant}: no copy of its backup identity was present; nothing to erase")
             return EXIT_OK
-
-        progress.began = True
-        problems = destroy_copies(tenant=tenant, paths=paths, store=spare_store, matchers=matchers)
-        remaining = find_remaining(tenant=tenant, paths=paths, store=spare_store, matchers=matchers)
         if remaining:
+            progress.began = True
+            problems = destroy_copies(tenant=tenant, paths=paths, store=spare_store, matchers=matchers)
+            remaining = find_remaining(tenant=tenant, paths=paths, store=spare_store, matchers=matchers)
+        if remaining or blind:
             for line in remaining:
                 _alert(f"{tenant}: {line}")
             for line in problems:
                 _alert(f"{tenant}: {line}")
+            if blind:
+                _alert(f"{tenant}: {STRAY_SEARCH_NOT_RUN}")
             _alert(f"{tenant}: the erasure proof is RED; the tenant's backup identity is not shown to be gone")
             return EXIT_PROOF_RED
         for line in problems:

@@ -66,28 +66,32 @@ before step 5 changes nothing.
    not be any dump copy's.
 3. The tenant's identity is read into memory to learn its secret-key line
    and public key, and the recipient is taken from the recipients file. These
-   are the matchers for stray copies and are never written anywhere. If
-   neither can be read the run says so and finds stray copies by file name
-   only.
-4. The proof is run once before anything is changed. If it finds nothing the
-   run says so and exits 0.
+   are the matchers for stray copies and are never written anywhere. If the
+   own identity file is present but cannot be read as an identity (not a
+   regular file, too large, no key in it) the run refuses with exit 1 before
+   anything changes. If it is absent (a run again after the key was destroyed)
+   the stray search cannot run, and the run ends red (step 6).
+4. The proof is run once before anything is changed. If it finds nothing and
+   the stray search can run, the run says so and exits 0.
 5. The tenant is taken off both lists. Then, attempting every step even if one
    fails: each stray identity-directory entry that holds the tenant's key is
    destroyed; each version and delete marker under the spare prefix is
    deleted; the directory is scanned again; only if that scan shows no other
-   copy remaining and no entry unjudged are the tenant's own identity file and
-   its temp leftover destroyed, the canonical file last. Otherwise the own file
-   is kept and the proof is red, because it is the only source of the key bytes
-   a run again needs to find the strays.
+   copy remaining, no entry unjudged and no earlier step failed are the
+   tenant's own identity file and its temp leftover destroyed, the canonical
+   file last. Otherwise the own file is kept and the proof is red, because it
+   is the only source of the key bytes a run again needs to find the strays.
 6. The proof is run again. Any remaining copy, and any location that could
    not be read, is listed on standard error as `ALERT` and the run exits 3.
+   A run whose stray search could not run (the own identity file was already
+   gone) exits 3 whatever it found, with an `ALERT` saying so.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| 0 | Every location was read back and no copy remains. Also the result of a re-run that finds nothing present. |
-| 1 | Refused before anything changed: not root, bad slug, missing or loose erase configuration, the erase bucket or key id is a dump copy's, the lock is held, the identity directory is not private. An unexpected exception before any change also exits 1. |
+| 0 | Every location was read back, the stray search ran, and no copy remains. |
+| 1 | Refused before anything changed: not root, bad slug, missing or loose erase configuration, the erase bucket or key id is a dump copy's, the lock is held, the identity directory is not private, the tenant's own identity file is present but unreadable. An unexpected exception before any change also exits 1. |
 | 2 | Usage. |
 | 3 | The proof is red: a copy remains, or a location could not be read (an unreadable, oversize or non-regular identity-directory entry, a failed listing, a list file that cannot be parsed). An unexpected exception after changes began also exits 3. Run it again. |
 
@@ -107,7 +111,9 @@ reported.
   tenant's own identity file. That file is destroyed only after every stray
   is gone, so a run again after a red run still has them. A stray written
   into the directory after the own file is destroyed is not found by a later
-  run.
+  run, and a later run says so: it exits 3, because the key is no longer
+  known and the stray search cannot run. The record that the tenant was
+  erased is the first run's green output. Nothing about the key is stored.
 - An entry in the identity directory that cannot be judged (unreadable,
   oversize, not a regular file) keeps the tenant's own identity file in
   place, with the proof red, until it is removed.
