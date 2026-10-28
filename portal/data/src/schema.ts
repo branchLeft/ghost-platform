@@ -13,6 +13,7 @@ import {
   timestamp,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { TENANT_KINDS } from './tenantKind.js';
 
 /**
  * Both roles are created by provisioning, never by a migration, so they are
@@ -23,10 +24,15 @@ export const portalOwner = pgRole('portal_owner').existing();
 
 export const portal = pgSchema('portal');
 
+const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(', ');
+
 /**
  * The tenant register: the platform's tenant id against its Zitadel
- * organisation id. A tenant reads its own row; the owner role bypasses row
- * security by attribute. The policies are explained in the package README.
+ * organisation id and its kind (a real tenant or a demo slot). A tenant reads
+ * its own row and holds no write privilege on it, so it cannot change its own
+ * kind; the owner role bypasses row security by attribute. The kind has no
+ * default: a row that names none is refused, never guessed. The policies are
+ * explained in the package README.
  */
 export const tenantRegister = portal
   .table(
@@ -35,8 +41,13 @@ export const tenantRegister = portal
       tenantId: uuid('tenant_id').primaryKey(),
       zitadelOrgId: text('zitadel_org_id').notNull().unique(),
       createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+      kind: text('kind').notNull(),
     },
     (table) => [
+      check(
+        'tenant_register_kind_known',
+        sql`${table.kind} IN (${sql.raw(sqlList(TENANT_KINDS))})`
+      ),
       pgPolicy('tenant_isolation', {
         as: 'permissive',
         for: 'all',
@@ -205,8 +216,6 @@ export type CommentCheck = (typeof COMMENT_CHECKS)[number];
 
 export const SENSITIVITIES = ['low', 'medium', 'high'] as const;
 export type Sensitivity = (typeof SENSITIVITIES)[number];
-
-const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'`).join(', ');
 
 /**
  * A tenant's choice for one comment check: on or off, and how sensitive. One

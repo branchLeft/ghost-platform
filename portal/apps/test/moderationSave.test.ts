@@ -17,6 +17,33 @@ let fixture: Fixture;
 let app: Running;
 const issuer = new FakeIssuer();
 
+const portalOn = (origin: string, db: TenantDb) =>
+  createTenantPortal({
+    issuer: ISSUER,
+    clientId: CLIENT_PORTAL,
+    projectId: PROJECT_ID,
+    publicOrigin: origin,
+    allowedOrgIds: new Set([ORG_A, ORG_B]),
+    db,
+    secureCookies: false,
+    clock: () => NOW,
+    fetch: issuer.fetch,
+    fetchKeys: async () => jwks,
+    sessionSeconds: 600,
+  });
+
+/** The real tenant data layer, except that the kind read answers whatever it is given. */
+const dbWithKind = (kind: () => Promise<unknown>): TenantDb => {
+  const real = new TenantDb(fixture.tenant);
+  return new Proxy(real, {
+    get(target, prop) {
+      if (prop === 'ownKind') return kind;
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+};
+
 const token = (org: string, subject: string): string =>
   mint({ org, client: CLIENT_PORTAL, role: 'tenant-admin', subject });
 
@@ -64,23 +91,9 @@ const rows = async (tenant: string) =>
 
 beforeAll(async () => {
   fixture = await createFixture();
-  // Tenant A is a real tenant and tenant B is a demo slot.
-  app = await serve((origin) =>
-    createTenantPortal({
-      issuer: ISSUER,
-      clientId: CLIENT_PORTAL,
-      projectId: PROJECT_ID,
-      publicOrigin: origin,
-      allowedOrgIds: new Set([ORG_A, ORG_B]),
-      db: new TenantDb(fixture.tenant),
-      secureCookies: false,
-      clock: () => NOW,
-      fetch: issuer.fetch,
-      fetchKeys: async () => jwks,
-      sessionSeconds: 600,
-      tenantKind: async (scope) => (scope.tenantId === TENANT_A ? 'REAL' : 'DEMO'),
-    })
-  );
+  // Tenant A is registered REAL and tenant B DEMO in the fixture; the portal
+  // reads the kind from the register, as in production.
+  app = await serve((origin) => portalOn(origin, new TenantDb(fixture.tenant)));
 });
 
 afterAll(async () => {
@@ -111,6 +124,37 @@ describe('the save route, before anything is saved', () => {
     const a = await signedIn(ORG_A, 'user-a');
     expect((await save(a, form({}, `&pad=${'x'.repeat(5000)}`))).status).toBe(413);
   });
+});
+
+describe('a kind that was never supplied (control case)', () => {
+  it.each([[undefined], ['real'], ['demo'], [''], [null]])(
+    'refuses the kind %j, and stores nothing for the real tenant',
+    async (value) => {
+      const server = await serve((origin) =>
+        portalOn(
+          origin,
+          dbWithKind(async () => value)
+        )
+      );
+      try {
+        const browser = new Browser(server.origin);
+        expect((await browser.finish(issuer.issue(token(ORG_A, 'user-a-nokind')))).status).toBe(
+          302
+        );
+        expect(await rows(TENANT_A)).toEqual([]);
+        const reply = await browser.request('/moderation/save', {
+          method: 'POST',
+          headers: { origin: server.origin, 'content-type': 'application/x-www-form-urlencoded' },
+          body: form(),
+        });
+        expect(reply.status).toBe(400);
+        expect(await rows(TENANT_A)).toEqual([]);
+        expect(await rows(TENANT_B)).toEqual([]);
+      } finally {
+        await server.close();
+      }
+    }
+  );
 });
 
 describe('saving the comment checks', () => {

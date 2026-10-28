@@ -71,6 +71,20 @@ the `tenant_isolation` policy itself refuses a row for another tenant, an
 update that moves a row to another tenant, and a delete of another tenant's
 row removes nothing, so a `WITH CHECK (true)` there cannot go unnoticed.
 
+### Tenant kind
+
+`portal.tenant_register.kind` says whether a tenant is `REAL` or a `DEMO` slot
+(`TENANT_KINDS`, defined once in `src/tenantKind.ts`). It is the one source of
+the kind: `TenantDb.ownKind(scope)` reads it from the bound tenant's own row.
+The column is `NOT NULL` with no default and a check against the closed list, so
+a row that names no kind, or a wrong-case one, is refused by the database, and
+`OwnerDb.registerTenant` refuses it first (`InvalidTenantKindError`). Only the
+owner role writes it; the tenant role holds `SELECT` on the register and
+nothing else, so a tenant cannot change its own kind. `parseTenantKind` is
+strict: it throws on anything but an exact member and defaults to neither kind.
+Migration `0005_tenant_kind` adds the column; on a register that already holds
+rows it fails rather than guess a kind.
+
 ### Raw SQL
 
 Exactly three things are not expressed through Drizzle (`DB-2` approval, owner

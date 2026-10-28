@@ -78,6 +78,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0002_health_reading',
       'applied migration 0003_versioned_documents',
       'applied migration 0004_moderation_setting',
+      'applied migration 0005_tenant_kind',
       'post-check passed: the server matches the manifest',
       'boundary verified',
       'portal database provisioned',
@@ -85,6 +86,13 @@ describe('the provisioning lifecycle', () => {
     // Nothing deletes, and nothing updates a registration.
     expect(await privilege('portal_owner', 'portal.tenant_register', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.tenant_register', 'UPDATE')).toBe(false);
+    // A tenant cannot set or change its own kind: it holds SELECT on the
+    // register and nothing that writes it. Only the owner role inserts one.
+    expect(await privilege('portal_tenant', 'portal.tenant_register', 'SELECT')).toBe(true);
+    expect(await privilege('portal_tenant', 'portal.tenant_register', 'INSERT')).toBe(false);
+    expect(await privilege('portal_tenant', 'portal.tenant_register', 'UPDATE')).toBe(false);
+    expect(await privilege('portal_tenant', 'portal.tenant_register', 'DELETE')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.tenant_register', 'INSERT')).toBe(true);
     expect(await privilege('portal_owner', 'portal.health_reading', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.health_reading', 'UPDATE')).toBe(true);
     // A published version and an acceptance are never changed or removed.
@@ -153,7 +161,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 6 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 7 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 

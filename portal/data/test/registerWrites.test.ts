@@ -59,7 +59,9 @@ describe('the register is read-only for the tenant role', () => {
   it('refuses an INSERT for the bound tenant itself', async () => {
     const error = await rejection(
       db.run(bindTenant(NEWCOMER), (tx) =>
-        tx.insert(tenantRegister).values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG })
+        tx
+          .insert(tenantRegister)
+          .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
       )
     );
     expect(rootMessage(error)).toMatch(/permission denied for table tenant_register/);
@@ -121,7 +123,9 @@ describe('the register policy, with the writes granted for the test', () => {
     await withRegisterWrites(async () => {
       const error = await rejection(
         db.run(bindTenant(TENANT_A), (tx) =>
-          tx.insert(tenantRegister).values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG })
+          tx
+            .insert(tenantRegister)
+            .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
         )
       );
       expect(rootMessage(error)).toMatch(/row-level security policy for table "tenant_register"/);
@@ -160,7 +164,9 @@ describe('the register policy, with the writes granted for the test', () => {
   it('accepts a row for the bound tenant itself', async () => {
     await withRegisterWrites(async () => {
       await db.run(bindTenant(NEWCOMER), (tx) =>
-        tx.insert(tenantRegister).values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG })
+        tx
+          .insert(tenantRegister)
+          .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
       );
       expect((await registerRows()).map((row) => row.tenant_id)).toContain(NEWCOMER);
     });

@@ -15,7 +15,9 @@ import { documentVersion, healthReading, tenantRegister } from '../schema.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
 export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
+export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 import { parseTenantId } from '../tenantId.js';
+import { parseTenantKind } from '../tenantKind.js';
 import type { TenantRegistration } from '../tenant/session.js';
 
 /**
@@ -39,10 +41,19 @@ export class OwnerDb {
     });
   }
 
+  /**
+   * Registers a tenant with its kind. The kind is required and parsed
+   * strictly before the insert: an absent or unrecognised one is refused with
+   * `InvalidTenantKindError`, never defaulted, and the table refuses it again
+   * if this check is ever bypassed. Only this role can write a kind.
+   */
   async registerTenant(registration: TenantRegistration): Promise<void> {
     const tenantId = parseTenantId(registration.tenantId);
+    const kind = parseTenantKind(registration.kind);
     await this.run(async (tx) => {
-      await tx.insert(tenantRegister).values({ tenantId, zitadelOrgId: registration.zitadelOrgId });
+      await tx
+        .insert(tenantRegister)
+        .values({ tenantId, zitadelOrgId: registration.zitadelOrgId, kind });
     });
   }
 
@@ -52,7 +63,11 @@ export class OwnerDb {
         .select()
         .from(tenantRegister)
         .orderBy(asc(tenantRegister.createdAt), asc(tenantRegister.tenantId));
-      return rows.map((row) => ({ tenantId: row.tenantId, zitadelOrgId: row.zitadelOrgId }));
+      return rows.map((row) => ({
+        tenantId: row.tenantId,
+        zitadelOrgId: row.zitadelOrgId,
+        kind: parseTenantKind(row.kind),
+      }));
     });
   }
 
