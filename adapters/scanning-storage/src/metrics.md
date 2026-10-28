@@ -59,7 +59,7 @@ zero from the first write, so the first increment of a counter is visible to
 | Name | Type | Other labels | Meaning |
 | --- | --- | --- | --- |
 | `scanning_storage_unconfigured_instances` | gauge | | Adapter instances in this process with no verdict source. Above zero means every new upload on that feature is refused. |
-| `scanning_storage_uploads_refused_total` | counter | `reason` = `unconfigured`, `verdict`, `sealed` | Uploads refused at the request. `unconfigured`: no verdict source. `verdict`: a verdict named known material. `sealed`: the same bytes were refused before. A hold later resolved to a refusal is not counted here. |
+| `scanning_storage_uploads_refused_total` | counter | `reason` = `unconfigured`, `verdict`, `sealed`, `video-audio` | Uploads refused at the request. `unconfigured`: no verdict source. `verdict`: a verdict named known material. `sealed`: the same bytes were refused before. `video-audio`: video or audio on a tier that does not accept them (`tier-policy.md`); no hash or verdict was involved. A hold later resolved to a refusal is not counted here. |
 | `scanning_storage_verdicts_total` | counter | `classification` = `csam`, `harmful-abusive-material`, `test`, `no-known-match`, `unavailable`, `other` | Every verdict outcome. A timeout or a thrown error counts as `unavailable`. A classification outside the vocabulary counts as `other`. |
 | `scanning_storage_verdict_errors_total` | counter | `kind` = `timeout`, `error` | Verdict requests that exceeded the budget or threw. A subset of the `unavailable` verdicts. |
 | `scanning_storage_verdict_duration_seconds` | histogram | `le` | Time waiting for a verdict, a timeout included. |

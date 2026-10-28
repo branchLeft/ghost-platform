@@ -10,7 +10,7 @@ const path = require('node:path');
 // both together or a rule quietly stops matching.
 const METRIC_PREFIX = 'scanning_storage_';
 
-const REFUSAL_REASONS = Object.freeze(['unconfigured', 'verdict', 'sealed']);
+const REFUSAL_REASONS = Object.freeze(['unconfigured', 'verdict', 'sealed', 'video-audio']);
 const CLASSIFICATIONS = Object.freeze([
   'csam',
   'harmful-abusive-material',
