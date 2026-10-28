@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { tenantRegister } from '../src/schema.js';
 import { TenantBindingChangedError, TenantDb, bindTenant, type Tx } from '../src/tenant/index.js';
@@ -92,8 +92,8 @@ const ATTEMPTS: Attempt[] = [
 ];
 
 async function notesFor(body: string): Promise<number> {
-  const rows = await fx.admin.query('SELECT 1 FROM portal_test.note WHERE body = $1', [body]);
-  return rows.rowCount ?? 0;
+  const rows = await fx.adminDb.select().from(note).where(eq(note.body, body));
+  return rows.length;
 }
 
 describe('code inside a tenant unit of work cannot leave the bound tenant', () => {

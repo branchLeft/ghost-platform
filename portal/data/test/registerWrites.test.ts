@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, notInArray } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { tenantRegister } from '../src/schema.js';
 import { TenantDb, bindTenant } from '../src/tenant/index.js';
@@ -28,64 +28,64 @@ afterAll(async () => {
   await fx.close();
 });
 
-async function holds(verb: string): Promise<boolean> {
-  const result = await fx.admin.query<{ held: boolean }>(
-    'SELECT has_table_privilege($1, $2, $3) AS held',
-    ['portal_tenant', 'portal.tenant_register', verb]
-  );
-  return result.rows[0]?.held ?? false;
-}
-
-async function registerRows(): Promise<Array<{ tenant_id: string; zitadel_org_id: string }>> {
-  const result = await fx.admin.query<{ tenant_id: string; zitadel_org_id: string }>(
-    'SELECT tenant_id, zitadel_org_id FROM portal.tenant_register ORDER BY zitadel_org_id'
-  );
-  return result.rows;
+async function registerRows(): Promise<Array<{ tenantId: string; zitadelOrgId: string }>> {
+  return fx.adminDb
+    .select({ tenantId: tenantRegister.tenantId, zitadelOrgId: tenantRegister.zitadelOrgId })
+    .from(tenantRegister)
+    .orderBy(tenantRegister.zitadelOrgId);
 }
 
 const SEEDED = [
-  { tenant_id: TENANT_A, zitadel_org_id: ORG_A },
-  { tenant_id: TENANT_B, zitadel_org_id: ORG_B },
+  { tenantId: TENANT_A, zitadelOrgId: ORG_A },
+  { tenantId: TENANT_B, zitadelOrgId: ORG_B },
 ];
 
+/** The tenant role's attempt at each write, made through the bound unit of work. */
+function insertOwnRow(): Promise<unknown> {
+  return db.run(bindTenant(NEWCOMER), (tx) =>
+    tx
+      .insert(tenantRegister)
+      .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
+  );
+}
+
+function updateOwnRow(): Promise<unknown> {
+  return db.run(bindTenant(TENANT_A), (tx) =>
+    tx
+      .update(tenantRegister)
+      .set({ zitadelOrgId: 'taken' })
+      .where(eq(tenantRegister.tenantId, TENANT_A))
+  );
+}
+
+function deleteOwnRow(): Promise<unknown> {
+  return db.run(bindTenant(TENANT_A), (tx) =>
+    tx.delete(tenantRegister).where(eq(tenantRegister.tenantId, TENANT_A))
+  );
+}
+
+async function expectPermissionDenied(attempt: Promise<unknown>): Promise<void> {
+  expect(rootMessage(await rejection(attempt))).toMatch(
+    /permission denied for table tenant_register/
+  );
+}
+
 describe('the register is read-only for the tenant role', () => {
-  it('holds SELECT and nothing that writes', async () => {
-    expect(await holds('SELECT')).toBe(true);
-    expect(await holds('INSERT')).toBe(false);
-    expect(await holds('UPDATE')).toBe(false);
-    expect(await holds('DELETE')).toBe(false);
+  it('reads its own row and no other', async () => {
+    const rows = await db.run(bindTenant(TENANT_A), (tx) => tx.select().from(tenantRegister));
+    expect(rows.map((row) => row.tenantId)).toEqual([TENANT_A]);
   });
 
   it('refuses an INSERT for the bound tenant itself', async () => {
-    const error = await rejection(
-      db.run(bindTenant(NEWCOMER), (tx) =>
-        tx
-          .insert(tenantRegister)
-          .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
-      )
-    );
-    expect(rootMessage(error)).toMatch(/permission denied for table tenant_register/);
+    await expectPermissionDenied(insertOwnRow());
   });
 
   it('refuses an UPDATE of its own row', async () => {
-    const error = await rejection(
-      db.run(bindTenant(TENANT_A), (tx) =>
-        tx
-          .update(tenantRegister)
-          .set({ zitadelOrgId: 'taken' })
-          .where(eq(tenantRegister.tenantId, TENANT_A))
-      )
-    );
-    expect(rootMessage(error)).toMatch(/permission denied for table tenant_register/);
+    await expectPermissionDenied(updateOwnRow());
   });
 
   it('refuses a DELETE of its own row', async () => {
-    const error = await rejection(
-      db.run(bindTenant(TENANT_A), (tx) =>
-        tx.delete(tenantRegister).where(eq(tenantRegister.tenantId, TENANT_A))
-      )
-    );
-    expect(rootMessage(error)).toMatch(/permission denied for table tenant_register/);
+    await expectPermissionDenied(deleteOwnRow());
   });
 
   it('leaves the register as it was seeded', async () => {
@@ -107,14 +107,13 @@ async function withRegisterWrites(work: () => Promise<void>): Promise<void> {
     await fx.admin.query(
       'REVOKE INSERT, UPDATE, DELETE ON portal.tenant_register FROM portal_tenant'
     );
-    await fx.admin.query('DELETE FROM portal.tenant_register WHERE tenant_id NOT IN ($1, $2)', [
-      TENANT_A,
-      TENANT_B,
-    ]);
-    await fx.admin.query(
-      'UPDATE portal.tenant_register SET zitadel_org_id = $2 WHERE tenant_id = $1',
-      [TENANT_A, ORG_A]
-    );
+    await fx.adminDb
+      .delete(tenantRegister)
+      .where(notInArray(tenantRegister.tenantId, [TENANT_A, TENANT_B]));
+    await fx.adminDb
+      .update(tenantRegister)
+      .set({ zitadelOrgId: ORG_A })
+      .where(eq(tenantRegister.tenantId, TENANT_A));
   }
 }
 
@@ -168,14 +167,14 @@ describe('the register policy, with the writes granted for the test', () => {
           .insert(tenantRegister)
           .values({ tenantId: NEWCOMER, zitadelOrgId: NEWCOMER_ORG, kind: 'REAL' })
       );
-      expect((await registerRows()).map((row) => row.tenant_id)).toContain(NEWCOMER);
+      expect((await registerRows()).map((row) => row.tenantId)).toContain(NEWCOMER);
     });
   });
 
   it('leaves the register read-only and as seeded afterwards', async () => {
-    expect(await holds('INSERT')).toBe(false);
-    expect(await holds('UPDATE')).toBe(false);
-    expect(await holds('DELETE')).toBe(false);
+    await expectPermissionDenied(insertOwnRow());
+    await expectPermissionDenied(updateOwnRow());
+    await expectPermissionDenied(deleteOwnRow());
     expect(await registerRows()).toEqual(SEEDED);
   });
 });
