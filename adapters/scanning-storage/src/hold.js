@@ -12,6 +12,8 @@ const {
   sealRefusal,
   releaseBytes,
   sweepReleasing,
+  sweepOrphans,
+  HOLDS_SUFFIX,
 } = require('./quarantine');
 
 // Incidental, like the verdict budget in checks.js: how often a held digest
@@ -31,11 +33,14 @@ const DEFAULT_MAX_RETRY_INTERVAL_MS = 60_000;
 // promote/refuse callback), not on retries that are merely still waiting for
 // a verdict. Past it the hold is stuck: kept, no further promotion attempted, and logged.
 const DEFAULT_MAX_CONSECUTIVE_FAILURES = 8;
-// Sidecar suffix recording which target paths are waiting on a digest, so a
-// restart can tell a still-pending hold apart from a permanently quarantined
-// refusal -- both live at `<quarantinePath>/<digest>`, but only a hold has
-// one of these next to it.
-const HOLDS_SUFFIX = '.holds.json';
+// How old quarantined bytes with no sidecar and no refusal record must be
+// before the sweep removes them. It has to dwarf the write timeout and any
+// pause between a hold's two writes, so no live writer is ever mistaken for
+// a crashed one; see the README's "Orphaned bytes".
+const DEFAULT_ORPHAN_MIN_AGE_MS = 10 * 60_000;
+// How often the sweep runs after start-up. Incidental: a shorter interval
+// only finds an orphan sooner, since the minimum age is what protects writers.
+const DEFAULT_ORPHAN_SWEEP_INTERVAL_MS = 5 * 60_000;
 // Every stuck hold is logged with this prefix, at the moment it sticks and
 // again on every restart that finds it, so a log search or alert has one
 // fixed string to match.
@@ -49,10 +54,14 @@ const writeTimeoutErrors = new WeakSet();
 
 // A budget that is not a finite number in (0, 2147483647] would make
 // setTimeout fire at once or never, so it falls back to the default.
-function resolveWriteTimeoutMs(value) {
+function resolveTimerMs(value, fallback) {
   const usable =
     typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MAX_TIMER_DELAY_MS;
-  return usable ? value : DEFAULT_WRITE_TIMEOUT_MS;
+  return usable ? value : fallback;
+}
+
+function resolveWriteTimeoutMs(value) {
+  return resolveTimerMs(value, DEFAULT_WRITE_TIMEOUT_MS);
 }
 
 // Rejects once `ms` pass with the write still unsettled. The write itself
@@ -138,6 +147,9 @@ class HoldRegistry {
     maxRetryIntervalMs = DEFAULT_MAX_RETRY_INTERVAL_MS,
     maxConsecutiveFailures = DEFAULT_MAX_CONSECUTIVE_FAILURES,
     writeTimeoutMs,
+    orphanMinAgeMs,
+    orphanSweepIntervalMs,
+    now = Date.now,
     logger = console,
   }) {
     // Without an owner, a registry resuming after a restart would pick up
@@ -161,6 +173,15 @@ class HoldRegistry {
     this.maxRetryIntervalMs = maxRetryIntervalMs;
     this.maxConsecutiveFailures = maxConsecutiveFailures;
     this.writeTimeoutMs = resolveWriteTimeoutMs(writeTimeoutMs);
+    // A non-positive or non-numeric age would make the sweep treat a live
+    // writer's bytes as abandoned, so it falls back to the default.
+    this.orphanMinAgeMs = resolveTimerMs(orphanMinAgeMs, DEFAULT_ORPHAN_MIN_AGE_MS);
+    this.orphanSweepIntervalMs = resolveTimerMs(
+      orphanSweepIntervalMs,
+      DEFAULT_ORPHAN_SWEEP_INTERVAL_MS
+    );
+    this.now = now;
+    this.orphanSweepTimer = null;
     this.logger = logger;
     // digest -> { holds: [{targetPath, onAllow, onRefuse}], timer, intervalMs, failures }
     //
@@ -214,6 +235,7 @@ class HoldRegistry {
       const sidecar = readSidecarSync(sidecarPath(this.quarantinePath, digest));
       const targets = (sidecar && sidecar.owners[this.owner]) || [];
       this.#writeOwnTargets(digest, [...targets, targetPath]);
+      await this.#reconfirmBytes(digest, buffer);
       this.logger.error(
         `${STUCK_LOG_PREFIX} for ${digest} (owner ${this.owner}); a new upload of the same bytes stays held and unpromoted`
       );
@@ -221,6 +243,10 @@ class HoldRegistry {
     }
 
     this.#writeOwnTargets(digest, [targetPath]);
+    await this.#reconfirmBytes(digest, buffer);
+    // Another hold() of the same digest may have registered during the
+    // reconfirm; this one joins it rather than replacing its entry.
+    if (this.#joinExisting(digest, { targetPath, onAllow, onRefuse })) return;
     const entry = {
       holds: [{ targetPath, onAllow, onRefuse }],
       timer: null,
@@ -230,6 +256,16 @@ class HoldRegistry {
     entry.sinceMs = Date.now();
     this.entries.set(digest, entry);
     this.#scheduleRetry(digest);
+  }
+
+  // The orphan sweep may have removed bytes this hold found already on disk
+  // and so did not write: it moves them aside before it looks for a sidecar.
+  // Once the sidecar exists no sweep removes them, so a check after the
+  // sidecar write settles it: put the bytes back if they are gone.
+  async #reconfirmBytes(digest, buffer) {
+    if (!(await quarantinedBytesMatch(this.quarantinePath, digest, this.computeDigest))) {
+      await quarantineBytes(this.quarantinePath, digest, buffer);
+    }
   }
 
   // What the metrics read: how many holds wait for a verdict, since when the
@@ -258,6 +294,8 @@ class HoldRegistry {
   // passes. Bytes are not read here; #retry reads them on its first tick.
   resumeFromQuarantine(buildCallbacks) {
     sweepReleasing(this.quarantinePath, this.computeDigest, this.logger);
+    this.#sweepOrphansLogged();
+    this.#startOrphanSweeps();
     let names;
     try {
       names = fsSync.readdirSync(this.quarantinePath);
@@ -318,6 +356,31 @@ class HoldRegistry {
       });
       this.#scheduleRetry(digest);
     }
+  }
+
+  // Never throws: it runs from the adapter's constructor and from a timer,
+  // and a failed sweep must neither stop start-up nor kill the process.
+  #sweepOrphansLogged() {
+    try {
+      sweepOrphans(this.quarantinePath, {
+        minAgeMs: this.orphanMinAgeMs,
+        now: this.now,
+        logger: this.logger,
+      });
+    } catch (err) {
+      this.logger.error('ScanningStorageAdapter: orphan sweep failed', err);
+    }
+  }
+
+  #startOrphanSweeps() {
+    if (this.orphanSweepTimer) return;
+    this.orphanSweepTimer = setInterval(
+      () => this.#sweepOrphansLogged(),
+      this.orphanSweepIntervalMs
+    );
+    // Never keeps a test runner, or a Ghost worker with nothing else to
+    // do, alive on this timer alone.
+    this.orphanSweepTimer.unref();
   }
 
   // A resumed hold has no in-memory start time. The quarantined bytes are
@@ -501,6 +564,8 @@ class HoldRegistry {
     for (const entry of this.entries.values()) {
       if (entry.timer) clearTimeout(entry.timer);
     }
+    clearInterval(this.orphanSweepTimer);
+    this.orphanSweepTimer = null;
   }
 }
 
@@ -514,6 +579,8 @@ module.exports = {
   DEFAULT_RETRY_INTERVAL_MS,
   DEFAULT_MAX_RETRY_INTERVAL_MS,
   DEFAULT_MAX_CONSECUTIVE_FAILURES,
+  DEFAULT_ORPHAN_MIN_AGE_MS,
+  DEFAULT_ORPHAN_SWEEP_INTERVAL_MS,
   HOLDS_SUFFIX,
   STUCK_LOG_PREFIX,
   REQUEST_WRITE_TIMEOUT_LOG_PREFIX,

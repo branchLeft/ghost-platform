@@ -10,6 +10,14 @@ const path = require('node:path');
 // directory, for good: positive verdicts never expire, so nothing that
 // reads this directory may promote, overwrite or delete bytes it names.
 const REFUSED_SUFFIX = '.refused.json';
+// Sidecar suffix recording which target paths are waiting on a digest, so a
+// restart can tell a still-pending hold apart from a permanently quarantined
+// refusal -- both live at `<quarantinePath>/<digest>`, but only a hold has
+// one of these next to it.
+const HOLDS_SUFFIX = '.holds.json';
+// Every orphan the sweep removes is logged with this prefix, so a log search
+// or alert has one fixed string to match.
+const ORPHAN_LOG_PREFIX = 'ScanningStorageAdapter: orphaned quarantine bytes';
 
 function tempNameFor(target) {
   // Leading dot and a trailing .tmp: never a digest, never a sidecar, so no
@@ -119,6 +127,16 @@ function isRefused(quarantinePath, digest) {
   );
 }
 
+// Fails closed like isRefused: only a missing sidecar means "no hold". Only
+// presence is read, so a sidecar nobody can parse still counts as a hold.
+function hasHoldSidecar(quarantinePath, digest) {
+  return (
+    fsSync.statSync(path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`), {
+      throwIfNoEntry: false,
+    }) !== undefined
+  );
+}
+
 // Returns the verdict a refusal was recorded with, or null when the digest
 // was never refused. A record that exists but cannot be parsed is still a
 // refusal: it reads back as one with no classification, which the refusal
@@ -196,8 +214,10 @@ function restoreAside(aside, target) {
 // Removes unrefused bytes, safely against a sealer in another process:
 // move them aside under a unique name, THEN check for a refusal record, and
 // put them back if there is one. Only the aside name is ever unlinked.
-// Returns true when the bytes were removed. `onMovedAside` is a test seam.
-function releaseBytes(quarantinePath, digest, { onMovedAside } = {}) {
+// `keepIfHeld` makes a hold sidecar count like a record, for the orphan
+// sweep, which must never remove bytes a hold is waiting on. Returns true
+// when the bytes were removed. `onMovedAside` is a test seam.
+function releaseBytes(quarantinePath, digest, { onMovedAside, keepIfHeld = false } = {}) {
   const target = path.join(quarantinePath, digest);
   const aside = `${target}${RELEASING_INFIX}${process.pid}.${crypto.randomBytes(6).toString('hex')}`;
   try {
@@ -207,14 +227,15 @@ function releaseBytes(quarantinePath, digest, { onMovedAside } = {}) {
     throw err;
   }
   if (onMovedAside) onMovedAside();
-  let refused;
+  let keep;
   try {
-    refused = isRefused(quarantinePath, digest);
+    keep =
+      isRefused(quarantinePath, digest) || (keepIfHeld && hasHoldSidecar(quarantinePath, digest));
   } catch (err) {
     restoreAside(aside, target);
     throw err;
   }
-  if (refused) {
+  if (keep) {
     restoreAside(aside, target);
     return false;
   }
@@ -260,8 +281,80 @@ function sweepReleasing(quarantinePath, computeDigest, logger) {
   }
 }
 
+// Dotfiles are temp files a live writer may own; asides belong to
+// sweepReleasing; sidecars and records are not bytes.
+function isOrphanCandidateName(name) {
+  return !(
+    name.startsWith('.') ||
+    name.includes(RELEASING_INFIX) ||
+    name.endsWith(HOLDS_SUFFIX) ||
+    name.endsWith(REFUSED_SUFFIX)
+  );
+}
+
+// Milliseconds since a regular file was written; null for anything else
+// (gone since the listing, a directory, a symlink), which is never touched.
+function ageOfRegularFile(file, nowMs) {
+  let stat;
+  try {
+    stat = fsSync.lstatSync(file);
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  return stat.isFile() ? nowMs - stat.mtimeMs : null;
+}
+
+function listEntries(quarantinePath) {
+  try {
+    return fsSync.readdirSync(quarantinePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+// Returns the age of the orphan it removed, or null when it left the file
+// alone: too young, not plain bytes, or a hold or a refusal names it.
+function removeIfOrphan(quarantinePath, name, { nowMs, minAgeMs, onMovedAside }) {
+  const ageMs = ageOfRegularFile(path.join(quarantinePath, name), nowMs);
+  if (ageMs === null || ageMs <= minAgeMs) return null;
+  if (isRefused(quarantinePath, name) || hasHoldSidecar(quarantinePath, name)) return null;
+  return releaseBytes(quarantinePath, name, { keepIfHeld: true, onMovedAside }) ? ageMs : null;
+}
+
+// Bytes with neither a hold sidecar nor a refusal record, older than
+// `minAgeMs`, are what a crash between a hold's two writes leaves behind:
+// nothing records which target path they were for, so they can only be
+// removed. Removal goes through releaseBytes, which checks again after the
+// move aside, so a hold or a refusal that lands meanwhile wins. Every
+// failure on a file is logged and leaves it in place. `now` and
+// `onMovedAside` are test seams. Throws when the directory cannot be
+// listed, and returns how many orphans were removed.
+function sweepOrphans(quarantinePath, { minAgeMs, now = Date.now, logger, onMovedAside }) {
+  const names = listEntries(quarantinePath).filter(isOrphanCandidateName);
+  const nowMs = now();
+  let removed = 0;
+  for (const name of names) {
+    try {
+      const ageMs = removeIfOrphan(quarantinePath, name, { nowMs, minAgeMs, onMovedAside });
+      if (ageMs === null) continue;
+      removed += 1;
+      logger.error(`${ORPHAN_LOG_PREFIX} ${name} (${Math.round(ageMs)} ms old); removed`);
+    } catch (err) {
+      logger.error(
+        `ScanningStorageAdapter: could not sweep orphan candidate ${name}; left in place`,
+        err
+      );
+    }
+  }
+  return removed;
+}
+
 module.exports = {
   REFUSED_SUFFIX,
+  HOLDS_SUFFIX,
+  ORPHAN_LOG_PREFIX,
   quarantineBytes,
   quarantinedBytesMatch,
   writeFileAtomic,
@@ -271,5 +364,6 @@ module.exports = {
   sealRefusal,
   releaseBytes,
   sweepReleasing,
+  sweepOrphans,
   RELEASING_INFIX,
 };

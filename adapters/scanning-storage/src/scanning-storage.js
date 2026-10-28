@@ -300,6 +300,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         maxRetryIntervalMs: config.holdMaxRetryMs,
         maxConsecutiveFailures: config.holdMaxFailures,
         writeTimeoutMs: config.writeTimeoutMs,
+        orphanMinAgeMs: Number(config.holdOrphanMinAgeMs),
+        orphanSweepIntervalMs: Number(config.holdOrphanSweepIntervalMs),
         logger: config.holdLogger,
       });
       // Restart-safety (load-bearing per the design): the quarantine directory is
