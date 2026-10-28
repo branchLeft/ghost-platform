@@ -59,6 +59,24 @@ as `RefusedImage`, making a genuine hang (caught only by this alarm) look
 identical to a clean, immediate refusal. That is exactly the false green
 this test exists to not produce.
 
+## VolumeEmptyingResetTests
+
+Drives `main` through `RealSlotOps` against a scratch tree: `SLOT_DIR`,
+`ETC_DIR`, `LOCK_DIR` and `DOCKER_VOLUME_ROOT` are all patched into one
+temporary directory, and `subprocess.run` is mocked so the only thing a reset
+could shell out to is recorded. Slot 1's data volume is `ghost-demo-30002-data`
+and its content volume is named by the slot's `compose.yml`. Each volume is
+seeded with nested markers and with symlinks to a file and a directory outside
+the tree, and a fake adapters volume holds a marker. The class asserts both
+`_data` directories end empty but still exist, the adapters marker and every
+outside target survive, and every refusal (a symlinked volume directory, a
+symlinked or regular-file `_data`, an ambiguous `compose.yml`) exits nonzero
+with the slot directory and the other volume left as they were. The swap test
+replaces a directory with a symlink between the listing and the open, which is
+the race `O_NOFOLLOW` exists for. The same assertions run in CI, so a change
+that drops the emptying call, the no-follow open or the adapters guard turns
+this class red.
+
 ## RealSlotOpsLoadImageTests
 
 None of this needs root to prove the checks exist and run in the right

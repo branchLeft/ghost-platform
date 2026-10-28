@@ -31,7 +31,10 @@ against it is the exact defect this module exists to not have.
 Per LLD-2 §02: validate that argv is exactly the enumerated shape, take an
 exclusive lock on the named slot so two reconciles cannot interleave, then
 start or stop the one systemd unit that shape names -- or for `reset`,
-stop both of a slot's colour units and wipe the slot's own state. For
+stop both of a slot's colour units and wipe the slot's own state: the slot
+directory, the two env files, and the contents of the slot's Ghost data
+volume and content volume (see "Content volume emptying" below; the
+adapters volume is never touched). For
 every slot/colour/reset invocation it never touches the Docker socket
 (systemctl is the only privileged primitive it uses there -- a docker
 command is root with no gradation, which is the exact erosion enumeration
@@ -109,7 +112,99 @@ re-derive here from the slot literal alone.
 Colour-blind on purpose: `render-core/src/compose.ts`'s `composeDocument`
 mounts this same volume into *both* `ghost-a` and `ghost-b` -- one shared
 SQLite file per slot, not one per colour -- so a colour argument changes
-nothing about which file this opens.
+nothing about which file this opens. `reset` empties this same directory,
+see the next section.
+
+## Content volume emptying
+
+`reset` empties the contents of two Docker volumes, after both colours are
+stopped and inside the per-slot lock, before it empties the slot directory:
+
+- **The data volume**, `_data_directory(slot)`: the SQLite database and local
+  media both colours share.
+- **The content volume**, `ghost-<slug>-content`: the rest of Ghost's content
+  directory.
+
+Without this a reset handed the next lease the last lease's site: either the
+admin plugin could no longer sign in (the site was already set up and the
+admin key was forgotten), or, where it has no `forget`, the next visitor was
+served the previous visitor's site and personal data.
+
+What it never does:
+
+- It never removes a volume. Both are declared `external: true` in the
+  slot's `compose.yml`, so a removed volume breaks the next `docker compose
+  up`. Only what is inside `_data` goes; `_data` itself stays.
+- It never touches the adapters volume (`ghost-<slug>-adapters`). That is
+  read-only platform code, not tenant state. The adapters name is not computed
+  anywhere in this file, and a test pins that a marker in a fake adapters
+  volume survives a reset.
+- It never uses the Docker CLI or socket. The volumes are emptied by direct
+  filesystem access under `DOCKER_VOLUME_ROOT`, the same way
+  `_data_directory` is already read.
+
+### How the content volume is found
+
+The slug in `ghost-<slug>-content` is not derived from the slot. It comes from
+the control plane with each lease, and `handleReconcile` checks only the uid
+against the slot. So the wrapper reads the name from the slot's rendered
+`compose.yml`, the file the broker writes under the slot directory, before
+`reset` empties that directory. This was chosen over pinning a slot-derived
+name in `render-core` because the rendered file already carries the name in a
+form the standard library can read, so no published package changes.
+
+`_content_volume_name` reads only the top-level `volumes:` block and keeps a
+key only if it is exactly `ghost-<slug>-content` with a legal slug (the
+`render-core` slug grammar, mirrored here and guarded by a drift test). The
+`-data` and `-adapters` volumes, a name holding `/` or `..`, an upper-case or
+over-long slug are not candidates. The result is only ever
+`DOCKER_VOLUME_ROOT/<name>/_data`, a direct child of the root.
+
+The file is written by the broker, so it is input to a root process.
+`read_content_volume_name` opens it `O_NOFOLLOW | O_NONBLOCK`, requires a
+regular file of at most 1 MiB, and reads it once. Then:
+
+- No file, a link, a FIFO, an oversize file, unparseable text, or no content
+  key: the content volume is skipped. The slot was never configured, and the
+  wrapper does not guess a name.
+- Two different content-volume keys: `reset` refuses with a nonzero exit
+  before it empties anything. It will not pick one.
+
+The name is read before any wipe, so a refusal wipes nothing.
+
+### How the contents are removed
+
+`remove_volume_contents` walks by file descriptor, never by path. The volume
+directory and `_data` are each opened `O_NOFOLLOW | O_DIRECTORY` relative to
+the one before, then every entry is removed with `unlink` or `rmdir` relative
+to its parent's descriptor. A real directory is opened `O_NOFOLLOW`, must be
+on the same device as `_data` (so a mount point inside is not crossed), is
+emptied, then removed. Anything else, a symlink included, is unlinked as the
+link it is: its target is not followed or touched. A directory swapped for a
+symlink between the listing and the open fails the `O_NOFOLLOW` open and is
+unlinked as a link. A path-based `shutil.rmtree` was rejected because the
+tenant's own container writes into these volumes, so the check-then-use race
+is the case to expect. Nesting deeper than 64 directories is refused rather
+than recursed into.
+
+A missing volume directory or `_data` means the volume was never created and
+is skipped. A volume directory or `_data` that is a symlink or not a
+directory is refused with a nonzero exit and nothing is removed from it. The
+data volume is emptied first: if it is refused, the slot directory and env
+files are left in place, so the reset fails closed and the lease is not
+handed over. A retry still finds `compose.yml`.
+
+### Residual risk
+
+The content volume name comes from a broker-written file, and the slug is not
+fixed per slot, so the wrapper cannot check that the named volume belongs to
+this slot. A compromised broker could write another demo slot's content volume
+into this slot's `compose.yml` and have that emptied by a reset. The broker
+already writes every slot's artefacts, and the demo host holds no paid
+tenants' data. The name can never reach a `-data` volume, an `-adapters`
+volume, or anything outside `DOCKER_VOLUME_ROOT`. The pattern does not require
+a `demo-` prefix: a demo's slug changes every lease, so a prefix would be a
+guess and could skip a wipe it should have made.
 
 ## _open_slot_db_no_follow
 
