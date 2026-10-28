@@ -60,7 +60,13 @@ export type RefusalCode =
   /** The object key is outside the tenant's folder. */
   | 'key-outside-folder'
   /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
-  | 'upload-not-bound';
+  | 'upload-not-bound'
+  /** The storage service did not answer inside the gateway's deadline. Retryable. */
+  | 'upstream-timeout'
+  /** The storage service could not be reached or sent an answer the gateway cannot relay. Retryable. */
+  | 'upstream-unavailable'
+  /** The storage service kept asking the gateway to slow down until the deadline. Retryable. */
+  | 'upstream-throttled';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {
