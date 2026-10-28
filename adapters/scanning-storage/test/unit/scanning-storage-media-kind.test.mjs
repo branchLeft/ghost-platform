@@ -187,6 +187,18 @@ function imageBrandWithHandlerSearchExhausted() {
   ]);
 }
 
+// An eight-byte box whose type bytes are not printable, ahead of the movie
+// box: the top-level walk stops there, so no movie box is found.
+function imageBrandWithUnprintableBoxBeforeMovieBox() {
+  const unprintableBox = Buffer.from([0x00, 0x00, 0x00, 0x08, 0x01, 0x02, 0x03, 0x04]);
+  return Buffer.concat([
+    imageBrandFileType(),
+    unprintableBox,
+    bytes.box('moov', VIDEO_TRACK),
+    bytes.box('mdat', Buffer.alloc(32, 0x5a)),
+  ]);
+}
+
 describe('video and audio on a tier that refuses them', () => {
   describe.each(REFUSING_TIER_CLASSES)('%s', (_tierName, allowVideoAudio) => {
     describe.each(FEATURES)('storage:%s', (feature) => {
@@ -249,6 +261,15 @@ describe('video and audio on a tier that refuses them', () => {
     const { instance, verdictClient } = buildAdapter({ allowVideoAudio: false });
     await expectRefusedAsVideoAudio(
       instance.saveRaw(imageBrandWithHandlerSearchExhausted(), '2026/10/x.avif')
+    );
+    expect(verdictClient.asked).toEqual([]);
+    expect(storedCount(instance)).toBe(0);
+  });
+
+  it('refuses an image-brand video with an unprintable box before its movie box, on the demo tier', async () => {
+    const { instance, verdictClient } = buildAdapter({ allowVideoAudio: false });
+    await expectRefusedAsVideoAudio(
+      instance.saveRaw(imageBrandWithUnprintableBoxBeforeMovieBox(), '2026/10/x.avif')
     );
     expect(verdictClient.asked).toEqual([]);
     expect(storedCount(instance)).toBe(0);

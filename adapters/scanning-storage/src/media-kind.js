@@ -167,6 +167,8 @@ function readIsoBox(buffer, offset) {
   return { type, start: offset, end, headerBytes, truncated: offset + size > buffer.length };
 }
 
+// The top-level boxes, and whether the walk consumed the whole buffer cleanly:
+// every box well-formed, the last one ending exactly at the buffer end.
 function readTopLevelIsoBoxes(buffer) {
   const boxes = [];
   let offset = 0;
@@ -181,7 +183,9 @@ function readTopLevelIsoBoxes(buffer) {
     }
     offset = box.end;
   }
-  return boxes;
+  const last = boxes[boxes.length - 1];
+  const consumed = last !== undefined && !last.truncated && last.end === buffer.length;
+  return { boxes, consumed };
 }
 
 // True when the movie box holds a track whose handler is video or sound. Out
@@ -204,29 +208,29 @@ function hasVideoOrSoundTrack(buffer, movieBox) {
   return true;
 }
 
-function isVideoOrAudioWithFileType(buffer, boxes) {
+function isVideoOrAudioWithFileType(buffer, boxes, consumed) {
   const brand = latin1At(buffer, ISO_BOX_HEADER_BYTES, 4);
   if (brand === null || !IMAGE_BRANDS.has(brand)) {
     return true;
   }
-  // An image brand is the claim of the file, not a fact about its tracks. A
-  // top-level walk that stopped at its box limit before any movie box leaves
-  // the file undecided, so it is refused rather than passed as an image.
+  // An image brand is the claim of the file, not a fact about its tracks. With
+  // no movie box found, only a walk that consumed the whole file cleanly shows
+  // an image; any other stop leaves the file undecided, so it is refused.
   const movieBox = boxes.find((box) => box.type === 'moov');
   if (movieBox === undefined) {
-    return boxes.length >= ISO_MAX_TOP_LEVEL_BOXES;
+    return !consumed;
   }
   return hasVideoOrSoundTrack(buffer, movieBox);
 }
 
 function detectIsoBaseMedia(buffer) {
-  const boxes = readTopLevelIsoBoxes(buffer);
+  const { boxes, consumed } = readTopLevelIsoBoxes(buffer);
   const first = boxes[0];
   if (first === undefined || first.truncated) {
     return null;
   }
   if (first.type === 'ftyp') {
-    return isVideoOrAudioWithFileType(buffer, boxes) ? 'iso-base-media' : null;
+    return isVideoOrAudioWithFileType(buffer, boxes, consumed) ? 'iso-base-media' : null;
   }
   const hasMediaBox = boxes.some((box) => box.type === 'moov' || box.type === 'mdat');
   return LEADING_BOX_TYPES.has(first.type) && hasMediaBox ? 'iso-base-media' : null;
