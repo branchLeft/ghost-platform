@@ -74,6 +74,66 @@ checks, and the envelope sender it queues for a message with no header
 From are all this function's result, in the same normal form as the
 HTTP route.
 
+`boundSender` takes an optional third argument, the header as it was
+written, for a caller whose first argument came out of a MIME decoder. Both
+are checked by the rule under "Encoded words" below.
+
+## Encoded words
+
+A sender is refused when it holds encoded-word syntax
+(`=?charset?q-or-b?text?=`) where a reader would take it for part of an
+address. Refused, never decoded or stripped: the gate refuses "could not
+tell" the same way it refuses "did not belong", and stripping would let two
+readers disagree about what was stripped.
+
+Why. The gate reads the literal text of the value. A reader that decodes
+encoded words can read the composed header as another domain or as none,
+and the queued string is composed into a header later. Readers differ among
+themselves, so the gate cannot pick one of them to agree with.
+
+`refusesEncodedWord(text)` is the one rule. `boundSender` and
+`senderBelongsToTenant` both call it, so the HTTP route, the MAIL FROM gate
+and the SMTP header From inherit it. It refuses when:
+
+- `=?` or `?=` sits in an address (the local part or the domain, bare or in
+  angle brackets), in a group name, or in a name with no address. This covers
+  a whole word, a word cut short, and what is left of a word that a line
+  fold split. The delimiters are looked for in the parse, not in the text as
+  submitted: a quoted local part that writes each `=` and `?` as a
+  quoted-pair (`"\=\?utf-8\?q\?x\?\="`) holds neither delimiter literally, and
+  the parser unquotes it. A bare quoted address is unquoted by the parser; an
+  angle address is left as written, so the check resolves quoted-pairs and
+  drops quote marks itself; and
+- an encoded word changes how the text splits into mailboxes and groups. Each
+  word is replaced by one opaque atom, the way a MIME reader tokenises it,
+  and the text is read again. If the addresses or the layout differ, the text
+  is refused. This catches a word whose text holds a character that ends a
+  token (an angle bracket, a colon, a comma, a quote, a parenthesis).
+
+`boundSender` also applies the delimiter check to each local part it queues
+and to the re-serialised result, so what is queued has been checked in the
+form a reader sees.
+
+An encoded word in a display name is accepted. A mail library writes a
+non-ASCII name as one, and Ghost's own transactional mail reaches the SMTP
+route that way, so refusing it would stop a tenant's mail. The differential
+(`test/differential/encodedWordDifferential.md`) found no disagreement that
+came from a word in a name alone.
+
+Which form each route sees:
+
+- HTTP and MAIL FROM: the value as submitted. A word is literal in it.
+- SMTP header From: `mailparser` has already decoded the header by the time
+  the handler runs, so a word in an address has become plain text and a group
+  name has become a plain name. The handler therefore passes the gate both
+  the decoded text and the header as written (`rawFromHeaderValue`, every
+  From line, unfolded). The written form is what shows a word in an address
+  or a group name. A decoded text that holds a word (an encoded word that
+  decodes to another one) is refused by the first argument.
+
+Domains that hold `=` or `?` and are not encoded words are refused by the
+hostname rule below; a pinned row keeps that so.
+
 ## Domains are compared as hostnames
 
 A domain is compared as a hostname. After trailing dots are stripped,

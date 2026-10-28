@@ -1,13 +1,4 @@
-import { Socket } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  createSmtpFrontDoor,
-  DEFAULT_ALLOWED_SOURCE_CIDRS,
-  type SmtpFrontDoor,
-} from '../../src/smtpFrontDoor.js';
-import { createSqliteStore, type ShimStore } from '../../src/store.js';
-import { createDrainWake } from '../../src/drainWake.js';
-import { createTestLogger } from '../helpers/testLogger.js';
 import {
   FALLBACK_REFUSED,
   acceptedRows,
@@ -15,86 +6,13 @@ import {
   fallbackAcceptedRows,
   refusedRows,
 } from './helpers/boundSenderRows.js';
+import { authPlain, rawSmtpCommands, startHarness, type Harness } from './helpers/smtpHarness.js';
 
 // Its own file, so its own test isolate: every case starts a real front
 // door, and the memory-bound streaming test in smtpFrontDoor.test.ts reads
 // process-wide memory, which these cases would otherwise add to.
 
 const DOMAIN = 'tenant-a.example.com';
-
-interface Harness {
-  store: ShimStore;
-  frontDoor: SmtpFrontDoor;
-  port: number;
-  close(): Promise<void>;
-}
-
-async function startHarness(): Promise<Harness> {
-  const store = createSqliteStore(':memory:');
-  store.registerTenant(DOMAIN, 'key-a', DOMAIN);
-  store.registerTenant(FALLBACK_REFUSED.domain, 'key-l', FALLBACK_REFUSED.domain);
-  const { logger } = createTestLogger();
-  const frontDoor = createSmtpFrontDoor({
-    store,
-    wake: createDrainWake(),
-    log: logger,
-    maxMessageBytes: 1024 * 1024,
-    maxRecipientsPerMessage: 50,
-    maxUnauthenticatedConnectionsPerSource: 20,
-    maxUnauthenticatedConnections: 20,
-    maxUnauthenticatedPerSourceWaitQueueDepth: 50,
-    maxUnauthenticatedPerSourceWaitMs: 2000,
-    authDeadlineMs: 5000,
-    maxConcurrentDataPhases: 20,
-    maxConcurrentDataPhasesPerSubmitter: 5,
-    allowedSourceCidrs: DEFAULT_ALLOWED_SOURCE_CIDRS,
-    submitterMessagesPerMinute: 120,
-  });
-  const port = await frontDoor.listen(0, '127.0.0.1');
-  return {
-    store,
-    frontDoor,
-    port,
-    async close() {
-      await frontDoor.close();
-      store.close();
-    },
-  };
-}
-
-/** A raw protocol script: each line is sent after the previous reply arrives. Returns every final reply line. */
-function rawSmtpCommands(port: number, lines: string[]): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    const socket = new Socket();
-    const responses: string[] = [];
-    let buffer = '';
-    let step = 0;
-
-    socket.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const parts = buffer.split('\r\n');
-      buffer = parts.pop() ?? '';
-      for (const line of parts) {
-        if (line === '') continue;
-        if (/^\d{3}-/.test(line)) continue;
-        responses.push(line);
-        if (step < lines.length) {
-          socket.write(lines[step] + '\r\n');
-          step += 1;
-        } else {
-          socket.end();
-        }
-      }
-    });
-    socket.on('error', reject);
-    socket.on('close', () => resolve(responses));
-    socket.connect(port, '127.0.0.1');
-  });
-}
-
-function authPlain(user: string, key: string): string {
-  return Buffer.from(`\u0000${user}\u0000${key}`).toString('base64');
-}
 
 describe('the SMTP front door queues the bound sender', () => {
   let harness: Harness;
@@ -107,8 +25,15 @@ describe('the SMTP front door queues the bound sender', () => {
     return harness.store.claimForDrain(Date.now() / 1000 + 1, 30, 10);
   }
 
+  async function start(): Promise<void> {
+    harness = await startHarness([
+      [DOMAIN, 'key-a'],
+      [FALLBACK_REFUSED.domain, 'key-l'],
+    ]);
+  }
+
   async function sendHeaderFrom(from: string): Promise<string[]> {
-    harness = await startHarness();
+    await start();
     return rawSmtpCommands(harness.port, [
       'EHLO test',
       `AUTH PLAIN ${authPlain(DOMAIN, 'key-a')}`,
@@ -121,7 +46,7 @@ describe('the SMTP front door queues the bound sender', () => {
   }
 
   async function sendEnvelopeOnly(user: string, key: string, mailFrom: string): Promise<string[]> {
-    harness = await startHarness();
+    await start();
     return rawSmtpCommands(harness.port, [
       'EHLO test',
       `AUTH PLAIN ${authPlain(user, key)}`,

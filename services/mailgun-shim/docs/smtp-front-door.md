@@ -174,6 +174,15 @@ for (MAIL FROM always precedes DATA in the SMTP state machine, and
 `onMailFrom` refuses the whole message before RCPT/DATA can run if that gate
 fails) — never re-derived or re-checked, just trusted.
 
+The gate is handed the header twice: `parsed.from.text`, which `mailparser` has
+already decoded, and the From line as written (`rawFromHeaderValue`). Encoded
+words are refused in an address or a group name
+(see `src/senderAuthorization.md#encoded-words`). The decoded text cannot show
+one: `mailparser` turns a word in an address into plain text and a word in a
+group name into a plain name before this handler sees it, so the check on the
+written header is what holds the route. A refusal is the same 550 as any other
+header From that does not belong.
+
 ### Header injection refusal
 
 The From/Subject/Reply-To check refuses, never strips: the HTTP route
