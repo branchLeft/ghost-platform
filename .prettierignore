@@ -32,3 +32,8 @@ adapters/sso/ghost-core-overlay/derived/
 # byte for byte by scripts/assert-broker-contract-generated.py -- reformatting
 # it would be reported there as drift.
 services/broker/src/generated/
+
+# The rendered demo1 mail-spool Compose file, compared byte for byte with the
+# renderer's output by render-core/test/spool.golden.test.ts. Prettier would
+# re-quote its healthcheck line and the test would fail.
+render-core/test/golden/mail-spool-compose.demo1.yml
