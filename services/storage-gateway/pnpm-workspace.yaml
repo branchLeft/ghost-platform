@@ -2,3 +2,4 @@
 # from its platform binary package without its postinstall.
 allowBuilds:
   esbuild: false
+  better-sqlite3: false

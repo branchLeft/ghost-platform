@@ -7,3 +7,9 @@ overrides:
 # from its platform binary package without its postinstall.
 allowBuilds:
   esbuild: false
+  better-sqlite3: false
+
+# src/auth.ts augments `express-serve-static-core`, which npm hoisted to the
+# top level and pnpm keeps private to @types/express.
+publicHoistPattern:
+  - '@types/express-serve-static-core'
