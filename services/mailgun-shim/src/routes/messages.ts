@@ -45,8 +45,8 @@ export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Log
 
   router.post(
     '/v3/:domain/messages',
-    tenantRateLimiter(60),
     requireTenantForDomain(store),
+    tenantRateLimiter(60),
     asyncHandler(log, async (req: Request, res: Response) => {
       const domain = req.params.domain as string;
 

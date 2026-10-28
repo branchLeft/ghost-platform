@@ -288,14 +288,14 @@ export async function verifyBoundary(
           NO_TENANT_BOUND,
           async (tx) => {
             await asTenant(tx);
-            return tx.select().from(table);
+            return tx.select({ tenantId: table.tenantId }).from(table);
           }
         );
       }
       await expectOutcome(pool, 'tenant read with a tenant bound', 'ok', async (tx) => {
         await asTenant(tx);
         await bind(tx, 'portal.tenant_id', PROBE_TENANT);
-        for (const table of present) await tx.select().from(table);
+        for (const table of present) await tx.select({ tenantId: table.tenantId }).from(table);
       });
     },
     config.tenantPassword
@@ -305,7 +305,7 @@ export async function verifyBoundary(
     async (pool) => {
       await expectOutcome(pool, 'owner login assumes portal_owner', 'ok', async (tx) => {
         await enterRole(tx, 'portal_owner');
-        for (const table of present) await tx.select().from(table);
+        for (const table of present) await tx.select({ tenantId: table.tenantId }).from(table);
       });
       await expectOutcome(pool, 'owner login assumes portal_tenant', PERMISSION_DENIED, (tx) =>
         enterRole(tx, 'portal_tenant')

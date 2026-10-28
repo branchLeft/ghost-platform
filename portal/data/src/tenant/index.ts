@@ -1,6 +1,12 @@
 export { bindTenant, TenantScope } from './scope.js';
-export { TenantDb, type TenantRegistration } from './session.js';
+export { TenantDb, TenantNotRegisteredError, type TenantRegistration } from './session.js';
 export { InvalidTenantIdError, type TenantId } from '../tenantId.js';
+export {
+  InvalidTenantKindError,
+  TENANT_KINDS,
+  parseTenantKind,
+  type TenantKind,
+} from '../tenantKind.js';
 export { assertTenantTablesIsolated, UnisolatedTableError } from '../isolation.js';
 export type { Tx } from '../db.js';
 export type { HealthView } from '../reading.js';

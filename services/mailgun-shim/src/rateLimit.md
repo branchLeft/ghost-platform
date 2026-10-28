@@ -2,9 +2,13 @@
 
 ## tenantRateLimiter
 
-Applied per-route (not globally) so it runs after Express has matched
-`:domain`, letting it key by tenant rather than by IP — a shared Cloud
-Run egress IP shouldn't let one noisy tenant throttle another's sends.
+Applied per-route (not globally), and always after `requireTenantForDomain`,
+so it keys by tenant rather than by IP — a shared Cloud Run egress IP
+shouldn't let one noisy tenant throttle another's sends. Order matters:
+the key is the `:domain` segment of the URL, which the caller chooses. Placed
+before authentication, a stranger could spend a tenant's budget with requests
+that carry no valid key. After authentication, that segment is the
+authenticated tenant, so only that tenant's own requests count against it.
 Falls back to IP only for requests that don't even parse to a domain
 (malformed paths never reach a tenant-specific limit anyway).
 

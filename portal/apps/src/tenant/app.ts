@@ -9,7 +9,7 @@ import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
-import { moderationBody, saveModeration, type TenantKind } from './moderationSettings.js';
+import { moderationBody, saveModeration } from './moderationSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
@@ -29,8 +29,6 @@ export interface TenantPortalOptions {
   readonly sessionSeconds?: number;
   /** Receives one line per swallowed handler error: the step and the error name only. */
   readonly onError?: (line: string) => void;
-  /** The tenant's kind. Absent or unrecognised is a demo; a throw makes the page answer 500 FAILED. */
-  readonly tenantKind?: (scope: TenantScope) => Promise<TenantKind | string>;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
 }
@@ -39,8 +37,10 @@ export interface TenantPortalOptions {
  * The tenant portal. The tenant comes from the signed-in session's
  * organisation and from nothing else: it is resolved once, at sign-in, into a
  * bound scope kept with the session, and the landing page is rendered from that
- * scope with no access to the request. This module imports only the tenant
- * entry point of the data layer.
+ * scope with no access to the request. The tenant's kind (a real tenant or a
+ * demo slot) comes from the same place, its own register row, and is supplied
+ * here from `options.db`, so it is not an option a caller can leave out. This
+ * module imports only the tenant entry point of the data layer.
  */
 export function createTenantPortal(options: TenantPortalOptions) {
   const verifier = createTokenVerifier({
@@ -90,8 +90,10 @@ export function createTenantPortal(options: TenantPortalOptions) {
     pages: {
       ...support.pages,
       '/moderation': async (scope) =>
-        (await moderationBody(scope, options.tenantKind, (bound) =>
-          options.db.moderationSettings(bound)
+        (await moderationBody(
+          scope,
+          (bound) => options.db.ownKind(bound),
+          (bound) => options.db.moderationSettings(bound)
         )) + support.linkFrom('MODERATION'),
       '/documents': async (scope) => {
         const at = now();
@@ -116,7 +118,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       '/moderation/save': async (scope, identity, form) => {
         await saveModeration({
           scope,
-          kindOf: options.tenantKind,
+          kindOf: (bound) => options.db.ownKind(bound),
           store: options.db,
           updatedBy: identity.subject,
           form,

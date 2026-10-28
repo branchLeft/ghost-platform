@@ -800,7 +800,13 @@ async function tableShapes(client: ClientBase, checkpoint: Checkpoint): Promise<
   const present = new Set(relationList(checkpoint));
   const expected = tables
     .filter((t) => present.has(t))
-    .flatMap((t) => TABLE_SHAPES[t]!.lines.map((line) => `${t} ${line}`));
+    .flatMap((t) => {
+      const shape = TABLE_SHAPES[t]!;
+      const later = (shape.added ?? [])
+        .filter((add) => checkpoint.applied.includes(add.since))
+        .flatMap((add) => add.lines);
+      return [...shape.lines, ...later].map((line) => `${t} ${line}`);
+    });
   return { mechanism: 'M21', actual: found.map((r) => r.text), expected };
 }
 

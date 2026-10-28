@@ -34,11 +34,21 @@ import {
   tenantRegister,
 } from '../schema.js';
 import { parseTenantId } from '../tenantId.js';
+import { parseTenantKind, type TenantKind } from '../tenantKind.js';
 import { bindTenant, type TenantScope } from './scope.js';
 
 export interface TenantRegistration {
   tenantId: string;
   zitadelOrgId: string;
+  kind: TenantKind;
+}
+
+/** A bound tenant with no register row: its kind cannot be known. */
+export class TenantNotRegisteredError extends Error {
+  constructor() {
+    super('the bound tenant has no register row');
+    this.name = 'TenantNotRegisteredError';
+  }
 }
 
 /**
@@ -62,11 +72,33 @@ export class TenantDb {
     });
   }
 
-  /** The bound tenant's own register row. */
+  /**
+   * The bound tenant's own register row. A stored kind outside the recognised
+   * list is refused with `InvalidTenantKindError`, never passed on.
+   */
   async ownRegistration(scope: TenantScope): Promise<TenantRegistration | null> {
     const rows = await this.run(scope, (tx) => tx.select().from(tenantRegister));
     const row = rows[0];
-    return row ? { tenantId: row.tenantId, zitadelOrgId: row.zitadelOrgId } : null;
+    return row
+      ? {
+          tenantId: row.tenantId,
+          zitadelOrgId: row.zitadelOrgId,
+          kind: parseTenantKind(row.kind),
+        }
+      : null;
+  }
+
+  /**
+   * The bound tenant's kind, read from its own register row: the one source
+   * of whether it is a real tenant or a demo slot. There is no default. A
+   * scope with no register row, or a stored value outside the recognised
+   * list, throws (`TenantNotRegisteredError`, `InvalidTenantKindError`)
+   * instead of answering as either kind.
+   */
+  async ownKind(scope: TenantScope): Promise<TenantKind> {
+    const own = await this.ownRegistration(scope);
+    if (own === null) throw new TenantNotRegisteredError();
+    return own.kind;
   }
 
   /**

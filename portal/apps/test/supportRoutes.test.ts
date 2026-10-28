@@ -18,6 +18,8 @@ interface BrokenRead {
 type AnsweredMethod =
   | 'scopeForOrganisation'
   | 'ownRegistration'
+  | 'ownKind'
+  | 'moderationSettings'
   | 'ownHealth'
   | 'pendingAcceptances'
   | 'currentDocuments'
@@ -52,8 +54,12 @@ function inMemoryTenantDb(broken: BrokenRead): TenantDb {
     },
     ownRegistration: async (scope) => {
       if (broken.read === 'ownRegistration') throw broken.failure;
-      return { tenantId: scope.tenantId, zitadelOrgId: 'org' };
+      return { tenantId: scope.tenantId, zitadelOrgId: 'org', kind: 'REAL' as const };
     },
+    // The moderation page reads the kind from the register row, as main does.
+    ownKind: async () => 'REAL' as const,
+    // Nothing saved yet: the moderation page renders its defaults.
+    moderationSettings: async () => ({}),
     ownHealth: async (scope) => {
       if (broken.read === 'ownHealth') throw broken.failure;
       return readings.get(scope.tenantId) ?? null;

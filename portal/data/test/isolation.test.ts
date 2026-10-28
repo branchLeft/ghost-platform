@@ -87,10 +87,12 @@ describe('a query with a tenant bound', () => {
     expect(await db.ownRegistration(bindTenant(TENANT_A))).toEqual({
       tenantId: TENANT_A,
       zitadelOrgId: ORG_A,
+      kind: 'REAL',
     });
     expect(await db.ownRegistration(bindTenant(TENANT_B))).toEqual({
       tenantId: TENANT_B,
       zitadelOrgId: ORG_B,
+      kind: 'DEMO',
     });
   });
 
@@ -203,18 +205,19 @@ describe('the owner path', () => {
   it('registers a tenant, once per organisation', async () => {
     const owner = new OwnerDb(fx.owner);
     const id = '44444444-4444-4444-8444-444444444444';
-    await owner.registerTenant({ tenantId: id, zitadelOrgId: 'org-c' });
+    await owner.registerTenant({ tenantId: id, zitadelOrgId: 'org-c', kind: 'DEMO' });
     expect((await owner.listTenants()).map((t) => t.tenantId)).toContain(id);
     const duplicate = await dbMessage(
       owner.registerTenant({
         tenantId: '55555555-5555-4555-8555-555555555555',
         zitadelOrgId: 'org-c',
+        kind: 'DEMO',
       })
     );
     expect(duplicate).toMatch(/duplicate key/);
-    await expect(owner.registerTenant({ tenantId: 'nope', zitadelOrgId: 'org-d' })).rejects.toThrow(
-      'tenant id is not a UUID'
-    );
+    await expect(
+      owner.registerTenant({ tenantId: 'nope', zitadelOrgId: 'org-d', kind: 'DEMO' })
+    ).rejects.toThrow('tenant id is not a UUID');
   });
 
   it('is not reachable from the tenant-facing connection', async () => {
