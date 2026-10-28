@@ -1,4 +1,4 @@
-import { OTHER_DB, OWNER, PROV_DB, TENANT } from './provisionSetup.js';
+import { OTHER_DB, OWNER, PROV_DB, PROVISIONER, TENANT } from './provisionSetup.js';
 
 // One "extra" per mechanism on the design note's closed list, each applied to
 // a correctly provisioned database, and one "missing" per ACL family. Each
@@ -309,6 +309,105 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     ],
     expect: /extra M18: portal_owner owns table portal.health_reading/,
   },
+  {
+    id: 'M28',
+    title: 'a pg_hba rule letting the provisioner login reach another database',
+    apply: [],
+    undo: [],
+    hba: (original) => `host postgres ${PROVISIONER} 192.0.2.0/24 scram-sha-256\n${original}`,
+    expect: new RegExp(
+      `extra M28: pg_hba rule at .*:1 lets ${PROVISIONER} \\(as ${PROVISIONER}\\) reach database postgres`
+    ),
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE on the hostname register given to the provisioner role',
+    apply: [[P, 'GRANT UPDATE ON portal.hostname_register TO portal_provisioner']],
+    undo: [[P, 'REVOKE UPDATE ON portal.hostname_register FROM portal_provisioner']],
+    expect: /extra M06: UPDATE on table portal.hostname_register to portal_provisioner/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the demo state events given to the provisioner role',
+    apply: [[P, 'GRANT DELETE ON portal.demo_state_event TO portal_provisioner']],
+    undo: [[P, 'REVOKE DELETE ON portal.demo_state_event FROM portal_provisioner']],
+    expect: /extra M06: DELETE on table portal.demo_state_event to portal_provisioner/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE on the retirements given to the owner role',
+    apply: [[P, 'GRANT UPDATE ON portal.hostname_retirement TO portal_owner']],
+    undo: [[P, 'REVOKE UPDATE ON portal.hostname_retirement FROM portal_owner']],
+    expect: /extra M06: UPDATE on table portal.hostname_retirement to portal_owner/,
+  },
+  {
+    id: 'M06',
+    title: 'a grant on the hostname register to the tenant role',
+    apply: [[P, 'GRANT SELECT ON portal.hostname_register TO portal_tenant']],
+    undo: [[P, 'REVOKE SELECT ON portal.hostname_register FROM portal_tenant']],
+    expect: /extra M06: SELECT on table portal.hostname_register to portal_tenant/,
+  },
+  {
+    id: 'M01',
+    title: 'the provisioner role allowed to bypass row security',
+    apply: [[PG, 'ALTER ROLE portal_provisioner BYPASSRLS']],
+    undo: [[PG, 'ALTER ROLE portal_provisioner NOBYPASSRLS']],
+    expect: /extra M01: role portal_provisioner: .*bypassrls=true/,
+  },
+  {
+    id: 'M02',
+    title: 'the provisioner login also a member of the owner role',
+    apply: [[PG, `GRANT portal_owner TO ${PROVISIONER}`]],
+    undo: [[PG, `REVOKE portal_owner FROM ${PROVISIONER}`]],
+    expect: new RegExp(`extra M02: ${PROVISIONER} is a member of portal_owner`),
+  },
+  {
+    id: 'M21',
+    title: 'the one hostname per demo constraint dropped from the register',
+    apply: [
+      [P, 'ALTER TABLE portal.hostname_register DROP CONSTRAINT hostname_register_demo_id_unique'],
+    ],
+    undo: [
+      [
+        P,
+        'ALTER TABLE portal.hostname_register ADD CONSTRAINT hostname_register_demo_id_unique UNIQUE (demo_id)',
+      ],
+    ],
+    expect: /missing M21: portal.hostname_register constraint hostname_register_demo_id_unique/,
+  },
+  {
+    id: 'M21',
+    title: 'the label shape check dropped from the register',
+    apply: [
+      [P, 'ALTER TABLE portal.hostname_register DROP CONSTRAINT hostname_register_label_shape'],
+    ],
+    undo: [
+      [
+        P,
+        "ALTER TABLE portal.hostname_register ADD CONSTRAINT hostname_register_label_shape CHECK (label ~ '^[a-z2-7]{20}$')",
+      ],
+    ],
+    expect: /missing M21: portal.hostname_register constraint hostname_register_label_shape/,
+  },
+  {
+    id: 'M21',
+    title: 'a trigger on the demo state events',
+    apply: [
+      [
+        P,
+        'CREATE FUNCTION public.zz_noop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$',
+      ],
+      [
+        P,
+        'CREATE TRIGGER zz_trigger BEFORE INSERT ON portal.demo_state_event FOR EACH ROW EXECUTE FUNCTION public.zz_noop()',
+      ],
+    ],
+    undo: [
+      [P, 'DROP TRIGGER zz_trigger ON portal.demo_state_event'],
+      [P, 'DROP FUNCTION public.zz_noop()'],
+    ],
+    expect: /extra M21: portal.demo_state_event trigger zz_trigger/,
+  },
 ];
 
 /** One per ACL family: a manifest grant taken away. */
@@ -354,5 +453,40 @@ export const MISSING: readonly Tamper[] = [
     apply: [[P, 'REVOKE EXECUTE ON FUNCTION public.bound_tenant() FROM portal_tenant']],
     undo: [[P, 'GRANT EXECUTE ON FUNCTION public.bound_tenant() TO portal_tenant']],
     expect: /missing M09: EXECUTE on function public.bound_tenant\(\) to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: "the provisioner role's INSERT on the hostname register",
+    apply: [[P, 'REVOKE INSERT ON portal.hostname_register FROM portal_provisioner']],
+    undo: [[P, 'GRANT INSERT ON portal.hostname_register TO portal_provisioner']],
+    expect: /missing M06: INSERT on table portal.hostname_register to portal_provisioner/,
+  },
+  {
+    id: 'M06',
+    title: "the owner role's SELECT on the demo state events",
+    apply: [[P, 'REVOKE SELECT ON portal.demo_state_event FROM portal_owner']],
+    undo: [[P, 'GRANT SELECT ON portal.demo_state_event TO portal_owner']],
+    expect: /missing M06: SELECT on table portal.demo_state_event to portal_owner/,
+  },
+  {
+    id: 'M05',
+    title: "the provisioner role's USAGE on schema portal",
+    apply: [[P, 'REVOKE USAGE ON SCHEMA portal FROM portal_provisioner']],
+    undo: [[P, 'GRANT USAGE ON SCHEMA portal TO portal_provisioner']],
+    expect: /missing M05: USAGE on schema portal to portal_provisioner/,
+  },
+  {
+    id: 'M04',
+    title: "the provisioner login's CONNECT",
+    apply: [[PG, `REVOKE CONNECT ON DATABASE ${P} FROM ${PROVISIONER}`]],
+    undo: [[PG, `GRANT CONNECT ON DATABASE ${P} TO ${PROVISIONER}`]],
+    expect: new RegExp(`missing M04: CONNECT on database ${P} to ${PROVISIONER}`),
+  },
+  {
+    id: 'M02',
+    title: "the provisioner login's membership",
+    apply: [[PG, `REVOKE portal_provisioner FROM ${PROVISIONER}`]],
+    undo: [[PG, `GRANT portal_provisioner TO ${PROVISIONER}`]],
+    expect: new RegExp(`missing M02: ${PROVISIONER} is a member of portal_provisioner`),
   },
 ];

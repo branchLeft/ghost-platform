@@ -111,6 +111,21 @@ describe('the provisioning lifecycle', () => {
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'UPDATE')).toBe(true);
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.moderation_setting', 'SELECT')).toBe(false);
+    // The provisioner role appends and reads the register and the events; it
+    // changes and removes nothing, and no other role writes them.
+    for (const table of [
+      'portal.demo_state_event',
+      'portal.hostname_register',
+      'portal.hostname_retirement',
+    ]) {
+      expect(await privilege('portal_provisioner', table, 'INSERT')).toBe(true);
+      expect(await privilege('portal_provisioner', table, 'SELECT')).toBe(true);
+      expect(await privilege('portal_provisioner', table, 'UPDATE')).toBe(false);
+      expect(await privilege('portal_provisioner', table, 'DELETE')).toBe(false);
+      expect(await privilege('portal_owner', table, 'SELECT')).toBe(true);
+      expect(await privilege('portal_owner', table, 'INSERT')).toBe(false);
+      expect(await privilege('portal_tenant', table, 'SELECT')).toBe(false);
+    }
     // A bare login session, with no SET ROLE, holds nothing in the portal schema.
     expect(await privilege(TENANT, 'portal.tenant_register', 'SELECT')).toBe(false);
   });
@@ -218,6 +233,30 @@ describe('the provisioning lifecycle', () => {
       );
     } finally {
       await admin('postgres', `REVOKE portal_owner FROM ${TENANT}`);
+    }
+  });
+
+  it('the boundary smoke test fails when the provisioner login holds the owner role', async () => {
+    expect((await run()).code).toBe(0);
+    await admin('postgres', `GRANT portal_owner TO ${PROVISIONER}`);
+    try {
+      await expect(verifyBoundary(provConfig())).rejects.toThrow(
+        'provisioner login assumes portal_owner: expected 42501, got ok'
+      );
+    } finally {
+      await admin('postgres', `REVOKE portal_owner FROM ${PROVISIONER}`);
+    }
+  });
+
+  it('the boundary smoke test fails when the provisioner role could update the register', async () => {
+    expect((await run()).code).toBe(0);
+    await admin(PROV_DB, 'GRANT UPDATE ON portal.hostname_register TO portal_provisioner');
+    try {
+      await expect(verifyBoundary(provConfig())).rejects.toThrow(
+        'provisioner updates portal.hostname_register: expected 42501, got ok'
+      );
+    } finally {
+      await admin(PROV_DB, 'REVOKE UPDATE ON portal.hostname_register FROM portal_provisioner');
     }
   });
 

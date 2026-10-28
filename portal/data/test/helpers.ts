@@ -121,7 +121,7 @@ export async function createFixture(): Promise<Fixture> {
   await admin.query('GRANT SELECT, INSERT ON portal_test.note TO portal_tenant');
   await admin.query('GRANT SELECT ON portal_test.leaky TO portal_tenant');
   await admin.query('GRANT SELECT ON portal_test.note, portal_test.leaky TO portal_owner');
-  await admin.query(`GRANT portal_tenant, portal_owner TO "${DUAL_LOGIN}"`);
+  await admin.query(`GRANT portal_tenant, portal_owner, portal_provisioner TO "${DUAL_LOGIN}"`);
 
   const adminDb = connect(admin);
   await adminDb.insert(tenantRegister).values([

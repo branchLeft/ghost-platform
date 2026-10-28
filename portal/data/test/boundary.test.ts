@@ -12,13 +12,16 @@ describe('the tenant-facing source', () => {
     expect(files.length).toBeGreaterThan(0);
   });
 
-  it.each(files)('%s never imports the owner path or the migrator', (file) => {
-    const source = readFileSync(join(TENANT_DIR, file), 'utf8');
-    const specifiers = [...source.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1] ?? '');
-    for (const specifier of specifiers) {
-      expect(specifier).not.toMatch(/owner|migrate/);
+  it.each(files)(
+    '%s never imports the owner path, the provisioner path or the migrator',
+    (file) => {
+      const source = readFileSync(join(TENANT_DIR, file), 'utf8');
+      const specifiers = [...source.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1] ?? '');
+      for (const specifier of specifiers) {
+        expect(specifier).not.toMatch(/owner|provisioner|migrate/);
+      }
     }
-  });
+  );
 });
 
 describe('the compile-time guarantee', () => {
