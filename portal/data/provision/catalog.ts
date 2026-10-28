@@ -812,7 +812,15 @@ async function tableShapes(client: ClientBase, checkpoint: Checkpoint): Promise<
       const later = (shape.added ?? [])
         .filter((add) => checkpoint.applied.includes(add.since))
         .flatMap((add) => add.lines);
-      return [...shape.lines, ...later].map((line) => `${t} ${line}`);
+      const revisions = (shape.revised ?? []).filter((rev) =>
+        checkpoint.applied.includes(rev.since)
+      );
+      const kept = shape.lines.filter(
+        (line) => !revisions.some((rev) => line.startsWith(rev.replaces))
+      );
+      return [...kept, ...revisions.flatMap((rev) => rev.lines), ...later].map(
+        (line) => `${t} ${line}`
+      );
     });
   return { mechanism: 'M21', actual: found.map((r) => r.text), expected };
 }

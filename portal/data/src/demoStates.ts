@@ -36,9 +36,10 @@ const EXITS: Record<DemoState, readonly DemoState[]> = {
   CLAIMED: ['PROVISIONING', 'WAITING'],
   PROVISIONING: ['LIVE', 'FAILED'],
   LIVE: ['EXPIRING', 'EXTENDED', 'PROMOTING', 'REBUILDING'],
-  EXTENDED: ['EXPIRING', 'PROMOTING'],
+  EXTENDED: ['EXPIRING', 'PROMOTING', 'REBUILDING'],
   EXPIRING: ['PURGED', 'EXTENDED', 'PROMOTING'],
-  REBUILDING: ['LIVE', 'FAILED'],
+  // Back to the state it came from, or FAILED: which of LIVE and EXTENDED is code's rule.
+  REBUILDING: ['LIVE', 'EXTENDED', 'FAILED'],
   // Back to the state it came from, or on: which of the three is code's rule.
   PROMOTING: ['PROMOTED', 'LIVE', 'EXTENDED', 'EXPIRING'],
   PROMOTED: [],

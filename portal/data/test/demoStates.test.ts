@@ -33,9 +33,9 @@ const DESIGN_EXITS: Record<string, string[]> = {
   CLAIMED: ['PROVISIONING', 'WAITING', 'KILLED', 'FROZEN'],
   PROVISIONING: ['LIVE', 'FAILED', 'KILLED', 'FROZEN'],
   LIVE: ['EXPIRING', 'EXTENDED', 'PROMOTING', 'REBUILDING', 'KILLED', 'FROZEN'],
-  EXTENDED: ['EXPIRING', 'PROMOTING', 'KILLED', 'FROZEN'],
+  EXTENDED: ['EXPIRING', 'PROMOTING', 'REBUILDING', 'KILLED', 'FROZEN'],
   EXPIRING: ['PURGED', 'EXTENDED', 'PROMOTING', 'KILLED', 'FROZEN'],
-  REBUILDING: ['LIVE', 'FAILED', 'KILLED', 'FROZEN'],
+  REBUILDING: ['LIVE', 'EXTENDED', 'FAILED', 'KILLED', 'FROZEN'],
   PROMOTING: ['PROMOTED', 'LIVE', 'EXTENDED', 'EXPIRING', 'KILLED', 'FROZEN'],
   PROMOTED: [],
   FAILED: [],
@@ -129,6 +129,37 @@ describe('assertTransitionAllowed', () => {
     expect(() => assertTransitionAllowed(promoting('EXTENDED'), 'LIVE')).toThrow(
       ForbiddenTransitionError
     );
+  });
+});
+
+describe('a rebuild', () => {
+  const rebuilding = (origin: DemoState) => ({ state: 'REBUILDING' as const, origin });
+
+  it('returns to the state it came from, or fails, or ends by a safety exit', () => {
+    expect(() => assertTransitionAllowed(rebuilding('LIVE'), 'LIVE')).not.toThrow();
+    expect(() => assertTransitionAllowed(rebuilding('EXTENDED'), 'EXTENDED')).not.toThrow();
+    for (const origin of ['LIVE', 'EXTENDED'] as const) {
+      for (const to of ['FAILED', 'KILLED', 'FROZEN'] as const) {
+        expect(() => assertTransitionAllowed(rebuilding(origin), to)).not.toThrow();
+      }
+    }
+  });
+
+  it('never turns an extended demo into a live one, or a live one into an extended one', () => {
+    expect(() => assertTransitionAllowed(rebuilding('EXTENDED'), 'LIVE')).toThrow(
+      'a rebuild returns to EXTENDED'
+    );
+    expect(() => assertTransitionAllowed(rebuilding('LIVE'), 'EXTENDED')).toThrow(
+      ForbiddenTransitionError
+    );
+  });
+
+  it('is open from LIVE and EXTENDED, and from no other state', () => {
+    for (const state of DEMO_STATES) {
+      expect(isAllowedTransition(state, 'REBUILDING')).toBe(
+        state === 'LIVE' || state === 'EXTENDED'
+      );
+    }
   });
 });
 
