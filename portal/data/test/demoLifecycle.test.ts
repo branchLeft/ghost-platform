@@ -56,12 +56,18 @@ const PATH: Record<DemoState, readonly DemoState[]> = {
   PURGED: ['CLAIMED', 'PROVISIONING', 'LIVE', 'EXPIRING', 'PURGED'],
 };
 
+/** The path to an extended demo that is being rebuilt. */
+const EXTENDED_REBUILDING: readonly DemoState[] = [...PATH.EXTENDED, 'REBUILDING'];
+
+/** A move out of these states back into EXTENDED returns to it; it is not an extension. */
+const RETURNS_TO_ORIGIN: readonly DemoState[] = ['PROMOTING', 'REBUILDING'];
+
 /** Moves a new demo along `steps`, using `extend` for the move into EXTENDED from LIVE or EXPIRING. */
 async function walk(steps: readonly DemoState[], demoId = randomUUID()): Promise<string> {
   await provisioner.beginDemo(demoId);
   let state: DemoState = 'VERIFIED';
   for (const step of steps) {
-    if (step === 'EXTENDED' && state !== 'PROMOTING') await provisioner.extend(demoId);
+    if (step === 'EXTENDED' && !RETURNS_TO_ORIGIN.includes(state)) await provisioner.extend(demoId);
     else await provisioner.transition(demoId, step);
     state = step;
   }
@@ -156,9 +162,11 @@ describe('a demo moves through every state', () => {
     expect(await reachedState(promoted)).toBe('PROMOTED');
   });
 
-  it('moves a rebuilding demo back to LIVE, or on to FAILED', async () => {
+  it('moves a rebuilding demo back to the state it came from, or on to FAILED', async () => {
     expect(await reachedState(await walk([...PATH.REBUILDING, 'LIVE']))).toBe('LIVE');
     expect(await reachedState(await walk([...PATH.REBUILDING, 'FAILED']))).toBe('FAILED');
+    expect(await reachedState(await walk([...EXTENDED_REBUILDING, 'EXTENDED']))).toBe('EXTENDED');
+    expect(await reachedState(await walk([...EXTENDED_REBUILDING, 'FAILED']))).toBe('FAILED');
   });
 
   it('takes a promotion that does not complete back to the state it came from', async () => {
@@ -220,29 +228,29 @@ describe('a demo moves through every state', () => {
 describe('every ordered pair of states, through the operation, against the database', () => {
   const pairs = DEMO_STATES.flatMap((from) => DEMO_STATES.map((to) => [from, to] as const));
 
-  /** A demo in `from`; for PROMOTING, one that came from `to`, so a return is the move under test. */
+  /** A demo in `from`; for PROMOTING or REBUILDING, one that came from `to`, so a return is the move under test. */
   async function demoAt(from: DemoState, to: DemoState): Promise<string> {
-    if (from !== 'PROMOTING') return walk(PATH[from]);
-    const origin = to === 'LIVE' || to === 'EXTENDED' || to === 'EXPIRING' ? to : 'LIVE';
-    return walk([...PATH[origin], 'PROMOTING']);
+    if (from === 'PROMOTING') {
+      const origin = to === 'LIVE' || to === 'EXTENDED' || to === 'EXPIRING' ? to : 'LIVE';
+      return walk([...PATH[origin], 'PROMOTING']);
+    }
+    if (from === 'REBUILDING')
+      return walk(to === 'EXTENDED' ? EXTENDED_REBUILDING : PATH.REBUILDING);
+    return walk(PATH[from]);
   }
 
   it.each(pairs)(
     '%s to %s',
     async (from, to) => {
       const demoId = await demoAt(from, to);
+      const isExtension = to === 'EXTENDED' && !RETURNS_TO_ORIGIN.includes(from);
       const move = (): Promise<DemoEventView> =>
-        to === 'EXTENDED' && from !== 'PROMOTING'
-          ? provisioner.extend(demoId)
-          : provisioner.transition(demoId, to);
+        isExtension ? provisioner.extend(demoId) : provisioner.transition(demoId, to);
       if (isAllowedTransition(from, to)) {
         const event = await move();
         expect([event.fromState, event.toState]).toEqual([from, to]);
       } else {
-        const refusal =
-          to === 'EXTENDED' && from !== 'PROMOTING'
-            ? ExtensionRefusedError
-            : ForbiddenTransitionError;
+        const refusal = isExtension ? ExtensionRefusedError : ForbiddenTransitionError;
         await expect(move()).rejects.toThrow(refusal);
         expect(await reachedState(demoId)).toBe(from);
       }
@@ -575,12 +583,147 @@ describe('a rebuild keeps the term', () => {
     expect(returned.leaseEndsAt).toEqual(extended.leaseEndsAt);
     expect(await provisioner.hostname(demoId)).toBe(label);
   });
+});
 
-  it('cannot start from EXTENDED: the transition set has no such exit', async () => {
-    const demoId = await walk(PATH.EXTENDED);
-    await expect(provisioner.transition(demoId, 'REBUILDING')).rejects.toThrow(
+describe('a rebuild of an extended demo', () => {
+  /** A demo that has used its one extension, with a hostname. */
+  async function extendedDemo(): Promise<{ demoId: string; label: string }> {
+    const demoId = await walk(['CLAIMED']);
+    const label = await provisioner.allocateHostname(demoId);
+    await provisioner.transition(demoId, 'PROVISIONING');
+    await provisioner.transition(demoId, 'LIVE');
+    await provisioner.extend(demoId);
+    return { demoId, label };
+  }
+
+  it('returns to EXTENDED with the extended end and issue time unchanged to the microsecond, and no new extension', async () => {
+    const { demoId, label } = await extendedDemo();
+    const extended = (await storedRows(demoId)).at(-1)!;
+    expect(extended.to_state).toBe('EXTENDED');
+    await provisioner.transition(demoId, 'REBUILDING');
+    const returned = await provisioner.transition(demoId, 'EXTENDED');
+    const [rebuilding, back] = (await storedRows(demoId)).slice(-2) as [StoredEvent, StoredEvent];
+    expect([rebuilding.from_state, rebuilding.to_state]).toEqual(['EXTENDED', 'REBUILDING']);
+    expect([back.from_state, back.to_state]).toEqual(['REBUILDING', 'EXTENDED']);
+    for (const row of [rebuilding, back]) {
+      expect(row.lease_ends_at).toBe(extended.lease_ends_at);
+      expect(row.lease_issued_at).toBe(extended.lease_issued_at);
+      expect(row.extension_days).toBe(0);
+    }
+    expect(returned.toState).toBe('EXTENDED');
+    // Seven days plus the one extension of fourteen, from the same issue time as before the rebuild.
+    expect(
+      await secondsBetween(
+        fx.adminDb,
+        demoId,
+        back.sequence,
+        demoStateEvent.leaseIssuedAt,
+        demoStateEvent.leaseEndsAt
+      )
+    ).toBe(21 * 24 * 3600);
+    expect(await provisioner.hostname(demoId)).toBe(label);
+  });
+
+  it('adds no time: an extension after the rebuild is refused and the end has not moved', async () => {
+    const { demoId } = await extendedDemo();
+    const extended = (await storedRows(demoId)).at(-1)!;
+    await provisioner.transition(demoId, 'REBUILDING');
+    await provisioner.transition(demoId, 'EXTENDED');
+    const refused = await provisioner.extend(demoId).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ExtensionRefusedError);
+    expect((refused as ExtensionRefusedError).reason).toBe('state');
+    const after = (await storedRows(demoId)).at(-1)!;
+    expect(after.lease_ends_at).toBe(extended.lease_ends_at);
+    expect(await reachedState(demoId)).toBe('EXTENDED');
+  });
+
+  it('keeps the extended end when the rebuild is started late, on day 20 of 21', async () => {
+    const demoId = randomUUID();
+    const issued = new Date(Date.now() - 20 * 24 * HOUR);
+    const liveEnds = new Date(issued.getTime() + 168 * HOUR);
+    const extendedEnds = new Date(liveEnds.getTime() + 14 * 24 * HOUR);
+    await plant({ demoId, sequence: 1, toState: 'VERIFIED' });
+    await plant({
+      demoId,
+      sequence: 2,
+      previousSequence: 1,
+      fromState: 'VERIFIED',
+      toState: 'CLAIMED',
+    });
+    await plant({
+      demoId,
+      sequence: 3,
+      previousSequence: 2,
+      fromState: 'CLAIMED',
+      toState: 'PROVISIONING',
+      leaseIssuedAt: issued,
+      leaseEndsAt: liveEnds,
+      recordedAt: issued,
+    });
+    await plant({
+      demoId,
+      sequence: 4,
+      previousSequence: 3,
+      fromState: 'PROVISIONING',
+      toState: 'LIVE',
+      leaseIssuedAt: issued,
+      leaseEndsAt: liveEnds,
+    });
+    await plant({
+      demoId,
+      sequence: 5,
+      previousSequence: 4,
+      fromState: 'LIVE',
+      toState: 'EXTENDED',
+      leaseIssuedAt: issued,
+      leaseEndsAt: extendedEnds,
+      extensionDays: 14,
+    });
+    const before = (await storedRows(demoId)).at(-1)!;
+    await provisioner.transition(demoId, 'REBUILDING');
+    const rebuilt = await provisioner.transition(demoId, 'EXTENDED');
+    const after = (await storedRows(demoId)).at(-1)!;
+    expect(after.lease_ends_at).toBe(before.lease_ends_at);
+    expect(after.lease_issued_at).toBe(before.lease_issued_at);
+    const remaining = rebuilt.leaseEndsAt!.getTime() - Date.now();
+    expect(remaining).toBeGreaterThan(0);
+    expect(remaining).toBeLessThan(24 * HOUR + HOUR);
+  });
+
+  it('returns only to EXTENDED, and a live demo cannot return to EXTENDED from a rebuild', async () => {
+    const extendedRebuild = await walk(EXTENDED_REBUILDING);
+    const refused = await provisioner
+      .transition(extendedRebuild, 'LIVE')
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ForbiddenTransitionError);
+    expect((refused as Error).message).toContain('a rebuild returns to EXTENDED');
+    expect(await reachedState(extendedRebuild)).toBe('REBUILDING');
+
+    const liveRebuild = await walk(PATH.REBUILDING);
+    await expect(provisioner.transition(liveRebuild, 'EXTENDED')).rejects.toThrow(
       ForbiddenTransitionError
     );
+    expect(await reachedState(liveRebuild)).toBe('REBUILDING');
+  });
+
+  it.each(['FAILED', 'KILLED', 'FROZEN'] as const)(
+    'lets a rebuild of an extended demo end in %s',
+    async (to) => {
+      const demoId = await walk(EXTENDED_REBUILDING);
+      expect((await provisioner.transition(demoId, to)).toState).toBe(to);
+    }
+  );
+
+  it('leaves expiry final: an expiring or purged demo cannot be rebuilt', async () => {
+    const expiring = await walk(PATH.EXPIRING);
+    await expect(provisioner.transition(expiring, 'REBUILDING')).rejects.toThrow(
+      ForbiddenTransitionError
+    );
+    expect(await reachedState(expiring)).toBe('EXPIRING');
+    const purged = await walk(PATH.PURGED);
+    for (const to of DEMO_STATES) {
+      await expect(provisioner.transition(purged, to)).rejects.toThrow(ForbiddenTransitionError);
+    }
   });
 });
 
@@ -624,6 +767,42 @@ describe('the table itself refuses what the operation would not make', () => {
       });
     }
   );
+
+  it('admits EXTENDED to REBUILDING and back at the table, and still refuses EXPIRING to REBUILDING', async () => {
+    const extended = await walk(PATH.EXTENDED);
+    const held = (await provisioner.currentState(extended))!;
+    const row = (
+      sequence: number,
+      fromState: DemoState,
+      toState: DemoState
+    ): typeof demoStateEvent.$inferInsert => ({
+      demoId: extended,
+      sequence,
+      previousSequence: sequence - 1,
+      fromState,
+      toState,
+      leaseIssuedAt: held.leaseIssuedAt,
+      leaseEndsAt: held.leaseEndsAt,
+    });
+    expect(await refusal(plant(row(held.sequence + 1, 'EXTENDED', 'REBUILDING')))).toBeUndefined();
+    expect(await refusal(plant(row(held.sequence + 2, 'REBUILDING', 'EXTENDED')))).toBeUndefined();
+
+    const expiring = await walk(PATH.EXPIRING);
+    const lapsing = (await provisioner.currentState(expiring))!;
+    expect(
+      await refusal(
+        plant({
+          demoId: expiring,
+          sequence: lapsing.sequence + 1,
+          previousSequence: lapsing.sequence,
+          fromState: 'EXPIRING',
+          toState: 'REBUILDING',
+          leaseIssuedAt: lapsing.leaseIssuedAt,
+          leaseEndsAt: lapsing.leaseEndsAt,
+        })
+      )
+    ).toMatchObject({ code: '23514', constraint: 'demo_state_event_transition_allowed' });
+  });
 
   it('refuses a first row that is not VERIFIED from nothing', async () => {
     const first = (to: string, from: string | null, previous: number | null): Promise<unknown> =>

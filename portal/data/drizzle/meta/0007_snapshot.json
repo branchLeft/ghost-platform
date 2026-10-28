@@ -1,0 +1,616 @@
+{
+  "id": "c8a034af-8443-4889-82cd-c7af5bc89003",
+  "prevId": "47d7de25-6ed6-42c4-9d37-26fea7e75820",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "portal.demo_state_event": {
+      "name": "demo_state_event",
+      "schema": "portal",
+      "columns": {
+        "demo_id": {
+          "name": "demo_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_sequence": {
+          "name": "previous_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "from_state": {
+          "name": "from_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "to_state": {
+          "name": "to_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lease_issued_at": {
+          "name": "lease_issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_ends_at": {
+          "name": "lease_ends_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extension_days": {
+          "name": "extension_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "demo_state_event_continues_previous_fk": {
+          "name": "demo_state_event_continues_previous_fk",
+          "tableFrom": "demo_state_event",
+          "tableTo": "demo_state_event",
+          "schemaTo": "portal",
+          "columnsFrom": ["demo_id", "previous_sequence", "from_state"],
+          "columnsTo": ["demo_id", "sequence", "to_state"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "demo_state_event_demo_id_sequence_pk": {
+          "name": "demo_state_event_demo_id_sequence_pk",
+          "columns": ["demo_id", "sequence"]
+        }
+      },
+      "uniqueConstraints": {
+        "demo_state_event_demo_sequence_state_unique": {
+          "name": "demo_state_event_demo_sequence_state_unique",
+          "nullsNotDistinct": false,
+          "columns": ["demo_id", "sequence", "to_state"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "demo_state_event_transition_allowed": {
+          "name": "demo_state_event_transition_allowed",
+          "value": "(\"portal\".\"demo_state_event\".\"from_state\" IS NULL AND \"portal\".\"demo_state_event\".\"sequence\" = 1 AND \"portal\".\"demo_state_event\".\"to_state\" = 'VERIFIED') OR (\"portal\".\"demo_state_event\".\"from_state\" IS NOT NULL AND ((from_state = 'VERIFIED' AND to_state IN ('CLAIMED', 'WAITING')) OR (from_state = 'WAITING' AND to_state IN ('CLAIMED')) OR (from_state = 'CLAIMED' AND to_state IN ('PROVISIONING', 'WAITING', 'KILLED', 'FROZEN')) OR (from_state = 'PROVISIONING' AND to_state IN ('LIVE', 'FAILED', 'KILLED', 'FROZEN')) OR (from_state = 'LIVE' AND to_state IN ('EXPIRING', 'EXTENDED', 'PROMOTING', 'REBUILDING', 'KILLED', 'FROZEN')) OR (from_state = 'EXTENDED' AND to_state IN ('EXPIRING', 'PROMOTING', 'REBUILDING', 'KILLED', 'FROZEN')) OR (from_state = 'EXPIRING' AND to_state IN ('PURGED', 'EXTENDED', 'PROMOTING', 'KILLED', 'FROZEN')) OR (from_state = 'REBUILDING' AND to_state IN ('LIVE', 'EXTENDED', 'FAILED', 'KILLED', 'FROZEN')) OR (from_state = 'PROMOTING' AND to_state IN ('PROMOTED', 'LIVE', 'EXTENDED', 'EXPIRING', 'KILLED', 'FROZEN'))))"
+        },
+        "demo_state_event_sequence_chain": {
+          "name": "demo_state_event_sequence_chain",
+          "value": "\"portal\".\"demo_state_event\".\"sequence\" >= 1 AND (\"portal\".\"demo_state_event\".\"sequence\" = 1) = (\"portal\".\"demo_state_event\".\"previous_sequence\" IS NULL) AND (\"portal\".\"demo_state_event\".\"previous_sequence\" IS NULL) = (\"portal\".\"demo_state_event\".\"from_state\" IS NULL) AND (\"portal\".\"demo_state_event\".\"previous_sequence\" IS NULL OR \"portal\".\"demo_state_event\".\"previous_sequence\" = \"portal\".\"demo_state_event\".\"sequence\" - 1)"
+        },
+        "demo_state_event_lease_complete": {
+          "name": "demo_state_event_lease_complete",
+          "value": "(\"portal\".\"demo_state_event\".\"lease_issued_at\" IS NULL) = (\"portal\".\"demo_state_event\".\"lease_ends_at\" IS NULL)"
+        },
+        "demo_state_event_lease_finite": {
+          "name": "demo_state_event_lease_finite",
+          "value": "\"portal\".\"demo_state_event\".\"lease_ends_at\" > \"portal\".\"demo_state_event\".\"lease_issued_at\""
+        },
+        "demo_state_event_lease_by_state": {
+          "name": "demo_state_event_lease_by_state",
+          "value": "(\"portal\".\"demo_state_event\".\"to_state\" IN ('VERIFIED', 'WAITING', 'CLAIMED') AND \"portal\".\"demo_state_event\".\"lease_ends_at\" IS NULL) OR (\"portal\".\"demo_state_event\".\"to_state\" IN ('PROVISIONING', 'LIVE', 'EXTENDED', 'EXPIRING', 'REBUILDING', 'PROMOTING', 'PROMOTED', 'PURGED') AND \"portal\".\"demo_state_event\".\"lease_ends_at\" IS NOT NULL) OR \"portal\".\"demo_state_event\".\"to_state\" IN ('FAILED', 'KILLED', 'FROZEN')"
+        },
+        "demo_state_event_term_set": {
+          "name": "demo_state_event_term_set",
+          "value": "\"portal\".\"demo_state_event\".\"to_state\" <> 'PROVISIONING' OR (\"portal\".\"demo_state_event\".\"lease_issued_at\" = \"portal\".\"demo_state_event\".\"recorded_at\" AND \"portal\".\"demo_state_event\".\"lease_ends_at\" = \"portal\".\"demo_state_event\".\"lease_issued_at\" + make_interval(hours => 168))"
+        },
+        "demo_state_event_extension_only_extended": {
+          "name": "demo_state_event_extension_only_extended",
+          "value": "\"portal\".\"demo_state_event\".\"extension_days\" >= 0 AND (\"portal\".\"demo_state_event\".\"extension_days\" = 0 OR \"portal\".\"demo_state_event\".\"to_state\" = 'EXTENDED')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "portal.document_acceptance": {
+      "name": "document_acceptance",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_by": {
+          "name": "accepted_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "document_acceptance_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "document_acceptance_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "document_acceptance",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "document_acceptance_kind_version_document_version_kind_version_fk": {
+          "name": "document_acceptance_kind_version_document_version_kind_version_fk",
+          "tableFrom": "document_acceptance",
+          "tableTo": "document_version",
+          "schemaTo": "portal",
+          "columnsFrom": ["kind", "version"],
+          "columnsTo": ["kind", "version"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "document_acceptance_tenant_id_kind_version_pk": {
+          "name": "document_acceptance_tenant_id_kind_version_pk",
+          "columns": ["tenant_id", "kind", "version"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"document_acceptance\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"document_acceptance\".\"tenant_id\" = public.bound_tenant()"
+        }
+      },
+      "checkConstraints": {
+        "document_acceptance_kind_acceptable": {
+          "name": "document_acceptance_kind_acceptable",
+          "value": "\"portal\".\"document_acceptance\".\"kind\" IN ('terms', 'usage')"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "portal.document_version": {
+      "name": "document_version",
+      "schema": "portal",
+      "columns": {
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entries": {
+          "name": "entries",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "effective_at": {
+          "name": "effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "notice_days": {
+          "name": "notice_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "document_version_kind_version_pk": {
+          "name": "document_version_kind_version_pk",
+          "columns": ["kind", "version"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "document_version_kind_known": {
+          "name": "document_version_kind_known",
+          "value": "\"portal\".\"document_version\".\"kind\" IN ('terms', 'usage', 'subprocessors')"
+        },
+        "document_version_version_positive": {
+          "name": "document_version_version_positive",
+          "value": "\"portal\".\"document_version\".\"version\" >= 1"
+        },
+        "document_version_notice_not_negative": {
+          "name": "document_version_notice_not_negative",
+          "value": "\"portal\".\"document_version\".\"notice_days\" >= 0"
+        },
+        "document_version_notice_elapsed": {
+          "name": "document_version_notice_elapsed",
+          "value": "\"portal\".\"document_version\".\"kind\" <> 'subprocessors' OR \"portal\".\"document_version\".\"effective_at\" >= \"portal\".\"document_version\".\"published_at\" + make_interval(hours => \"portal\".\"document_version\".\"notice_days\" * 24)"
+        },
+        "document_version_subprocessors_noticed": {
+          "name": "document_version_subprocessors_noticed",
+          "value": "\"portal\".\"document_version\".\"kind\" <> 'subprocessors' OR \"portal\".\"document_version\".\"notice_days\" >= 30"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "portal.health_reading": {
+      "name": "health_reading",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "health": {
+          "name": "health",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reported_version": {
+          "name": "reported_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version_match": {
+          "name": "version_match",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mismatch_since": {
+          "name": "mismatch_since",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "health_reading_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "health_reading_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "health_reading",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"health_reading\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"health_reading\".\"tenant_id\" = public.bound_tenant()"
+        }
+      },
+      "checkConstraints": {
+        "health_reading_health_known": {
+          "name": "health_reading_health_known",
+          "value": "\"portal\".\"health_reading\".\"health\" IN ('healthy', 'unhealthy', 'unknown')"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "portal.hostname_register": {
+      "name": "hostname_register",
+      "schema": "portal",
+      "columns": {
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "demo_id": {
+          "name": "demo_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allocated_at": {
+          "name": "allocated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "hostname_register_demo_id_unique": {
+          "name": "hostname_register_demo_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["demo_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "hostname_register_label_shape": {
+          "name": "hostname_register_label_shape",
+          "value": "\"portal\".\"hostname_register\".\"label\" ~ '^[a-z2-7]{20}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "portal.hostname_retirement": {
+      "name": "hostname_retirement",
+      "schema": "portal",
+      "columns": {
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "retired_at": {
+          "name": "retired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "hostname_retirement_label_hostname_register_label_fk": {
+          "name": "hostname_retirement_label_hostname_register_label_fk",
+          "tableFrom": "hostname_retirement",
+          "tableTo": "hostname_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["label"],
+          "columnsTo": ["label"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "portal.moderation_setting": {
+      "name": "moderation_setting",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "check_id": {
+          "name": "check_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sensitivity": {
+          "name": "sensitivity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "moderation_setting_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "moderation_setting_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "moderation_setting",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "moderation_setting_tenant_id_check_id_pk": {
+          "name": "moderation_setting_tenant_id_check_id_pk",
+          "columns": ["tenant_id", "check_id"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"moderation_setting\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"moderation_setting\".\"tenant_id\" = public.bound_tenant()"
+        }
+      },
+      "checkConstraints": {
+        "moderation_setting_check_configurable": {
+          "name": "moderation_setting_check_configurable",
+          "value": "\"portal\".\"moderation_setting\".\"check_id\" IN ('harassment', 'spam', 'sexual_content', 'self_harm', 'off_topic')"
+        },
+        "moderation_setting_sensitivity_known": {
+          "name": "moderation_setting_sensitivity_known",
+          "value": "\"portal\".\"moderation_setting\".\"sensitivity\" IN ('low', 'medium', 'high')"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "portal.tenant_register": {
+      "name": "tenant_register",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "zitadel_org_id": {
+          "name": "zitadel_org_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "tenant_register_zitadel_org_id_unique": {
+          "name": "tenant_register_zitadel_org_id_unique",
+          "nullsNotDistinct": false,
+          "columns": ["zitadel_org_id"]
+        }
+      },
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant()"
+        },
+        "organisation_lookup": {
+          "name": "organisation_lookup",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"tenant_register\".\"zitadel_org_id\" = public.bound_organisation()"
+        }
+      },
+      "checkConstraints": {
+        "tenant_register_kind_known": {
+          "name": "tenant_register_kind_known",
+          "value": "\"portal\".\"tenant_register\".\"kind\" IN ('REAL', 'DEMO')"
+        }
+      },
+      "isRLSEnabled": true
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "portal": "portal"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

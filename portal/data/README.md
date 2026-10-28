@@ -189,8 +189,9 @@ a check pins the allowed pairs, a foreign key makes each row continue the
 demo's real previous row, and the primary key on (demo, sequence) lets only
 one of two simultaneous transitions from a state win (the other gets
 `ConcurrentTransitionError`). Three rules are code's: an extension is
-`extend`'s and never a bare transition, a promotion that does not complete
-returns to the state it came from, and a lease is carried on unchanged.
+`extend`'s and never a bare transition, a promotion or a rebuild that does not
+complete returns to the state it came from, and a lease is carried on
+unchanged.
 
 **The term.** Entering `PROVISIONING` issues a term of exactly seven days
 (`LEASE_DAYS`), starting at that row's own database-clock time: no operation
@@ -201,10 +202,12 @@ end is never null from `PROVISIONING` on. A self-service extension
 days (`EXTENSION_DAYS`) and changes nothing else: the issue time, the hostname
 and every earlier row are as they were, and it appends one row. There is one
 extension per demo; any further time is the owner's, not built here, and the
-tables do not forbid it. A rebuild (`REBUILDING` to `LIVE`) keeps the end it
-had, so a rebuild on day six still ends on day seven. The transition set has
-no `REBUILDING` exit from `EXTENDED`, so a dead extended demo cannot be
-rebuilt as the table stands.
+tables do not forbid it. A rebuild keeps the end it had, so a rebuild on day six
+still ends on day seven. A `LIVE` demo is rebuilt through `REBUILDING` and back
+to `LIVE`; an `EXTENDED` demo (owner ruling, 28 Oct) through `REBUILDING` and
+back to `EXTENDED`, by a bare transition that adds no days and is not a second
+extension, so the extended end is kept and a rebuild never adds time. Expiry
+stays final: an `EXPIRING` demo cannot be rebuilt.
 
 **The register.** `portal.hostname_register` holds every hostname ever
 allocated: the label, an opaque demo id and the allocation time, and nothing a

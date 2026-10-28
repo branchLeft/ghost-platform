@@ -50,6 +50,13 @@
       "when": 1793145191147,
       "tag": "0006_demo_lifecycle_register",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793201847787,
+      "tag": "0007_demo_rebuild_extended",
+      "breakpoints": true
     }
   ]
 }

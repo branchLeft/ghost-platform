@@ -181,26 +181,29 @@ export class HostnameRetiredError extends Error {
 /** Where a demo stands, as far as the transition rules need. */
 export interface DemoPosition {
   state: DemoState;
-  /** The state the latest event was made from; for PROMOTING, the state a failed promotion returns to. */
+  /** The state the latest event was made from; for PROMOTING or REBUILDING, the state it returns to. */
   origin: DemoState | null;
 }
 
 /**
- * Refuses a transition the closed set does not hold. Two rules the set cannot
+ * Refuses a transition the closed set does not hold. Three rules the set cannot
  * state: a move into EXTENDED from LIVE or EXPIRING is `extend`'s, because it
- * moves the term, and a promotion that does not complete returns to the state
- * it came from.
+ * moves the term, and a promotion or a rebuild that does not complete returns
+ * to the state it came from, so an extended demo never comes back as LIVE.
  *
  * @throws ForbiddenTransitionError
  */
 export function assertTransitionAllowed(position: DemoPosition, to: DemoState): void {
   const { state, origin } = position;
   if (!isAllowedTransition(state, to)) throw new ForbiddenTransitionError(state, to);
-  if (to === 'EXTENDED' && state !== 'PROMOTING') {
+  if (to === 'EXTENDED' && state !== 'PROMOTING' && state !== 'REBUILDING') {
     throw new ForbiddenTransitionError(state, to, 'an extension moves the term: use extend');
   }
   if (state === 'PROMOTING' && to !== 'PROMOTED' && to !== origin && !isSafetyExit(to)) {
     throw new ForbiddenTransitionError(state, to, `a promotion returns to ${origin}`);
+  }
+  if (state === 'REBUILDING' && to !== 'FAILED' && to !== origin && !isSafetyExit(to)) {
+    throw new ForbiddenTransitionError(state, to, `a rebuild returns to ${origin}`);
   }
 }
 

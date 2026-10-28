@@ -154,6 +154,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0004_moderation_setting',
       'applied migration 0005_tenant_kind',
       'applied migration 0006_demo_lifecycle_register',
+      'applied migration 0007_demo_rebuild_extended',
       'post-check passed: the server matches the manifest',
       'portal database migrated',
     ]);
@@ -308,6 +309,42 @@ describe('--migrate-only on a real server', () => {
     );
     expect(present!.rows).toEqual([{ is_nullable: 'NO', column_default: null }]);
     expect((await migrate()).code).toBe(0);
+  });
+
+  it('expects the old transition rule at 0006 and the rebuild rule only from 0007', async () => {
+    const all = readMigrations();
+    const rebuildIndex = all.findIndex((m) => m.tag === '0007_demo_rebuild_extended');
+    expect(rebuildIndex).toBeGreaterThan(0);
+    // Held back at 0006: the old constraint text is what the manifest expects.
+    const held = await run({ migrations: all.slice(0, rebuildIndex) });
+    expect(held.err).toEqual([]);
+    expect(held.code).toBe(0);
+    const [old] = await admin(
+      PROV_DB,
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+        WHERE conname = 'demo_state_event_transition_allowed'`
+    );
+    const extendedExits =
+      "(from_state = 'EXTENDED'::text) AND (to_state = ANY (ARRAY['EXPIRING'::text, 'PROMOTING'::text, ";
+    expect(old!.rows[0].def).toContain(`${extendedExits}'KILLED'::text`);
+    expect(old!.rows[0].def).not.toContain(`${extendedExits}'REBUILDING'::text`);
+    const result = await migrate();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('applied migration 0007_demo_rebuild_extended');
+    expect(result.out).toContain('post-check passed: the server matches the manifest');
+    // At 0007 the revised text is expected: the old text left in place is a difference.
+    await admin(
+      PROV_DB,
+      'ALTER TABLE portal.demo_state_event DROP CONSTRAINT demo_state_event_transition_allowed',
+      `ALTER TABLE portal.demo_state_event ADD CONSTRAINT demo_state_event_transition_allowed
+         CHECK (from_state IS NULL AND sequence = 1 AND to_state = 'VERIFIED')`
+    );
+    const drifted = await migrate();
+    expect(drifted.code).toBe(1);
+    expect(drifted.err.join('\n')).toMatch(
+      /M21: portal\.demo_state_event constraint demo_state_event_transition_allowed/
+    );
   });
 
   it('refuses a kind column the manifest does not describe, and a missing one', async () => {

@@ -96,6 +96,7 @@ const DOCUMENTS = '0003_versioned_documents';
 const MODERATION = '0004_moderation_setting';
 const KIND = '0005_tenant_kind';
 const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
+const DEMO_REBUILD = '0007_demo_rebuild_extended';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -358,6 +359,12 @@ export interface TableShape {
    * is applied, and an extra before it, like any other line.
    */
   added?: readonly { since: string; lines: readonly string[] }[];
+  /**
+   * A line a later migration rewrote: once that migration is applied, the line
+   * starting with `replaces` is no longer expected and `lines` are. Before it,
+   * the old text stays expected, so a server held back still verifies.
+   */
+  revised?: readonly { since: string; replaces: string; lines: readonly string[] }[];
 }
 
 const PLAIN = 'generated=- identity=-';
@@ -531,6 +538,23 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'demo_state_event_demo_id_sequence_pk ON portal.demo_state_event USING btree (demo_id, sequence)',
       'index portal.demo_state_event_demo_sequence_state_unique CREATE UNIQUE INDEX ' +
         'demo_state_event_demo_sequence_state_unique ON portal.demo_state_event USING btree (demo_id, sequence, to_state)',
+    ],
+    revised: [
+      {
+        since: DEMO_REBUILD,
+        replaces: 'constraint demo_state_event_transition_allowed CHECK',
+        lines: [
+          "constraint demo_state_event_transition_allowed CHECK ((((from_state IS NULL) AND (sequence = 1) AND (to_state = 'VERIFIED'::text)) OR ((from_state IS NOT NULL) AND (((from_state = 'VERIFIED'::text) AND (to_state = ANY (ARRAY['CLAIMED'::text, 'WAITING'::text])))" +
+            " OR ((from_state = 'WAITING'::text) AND (to_state = 'CLAIMED'::text))" +
+            " OR ((from_state = 'CLAIMED'::text) AND (to_state = ANY (ARRAY['PROVISIONING'::text, 'WAITING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+            " OR ((from_state = 'PROVISIONING'::text) AND (to_state = ANY (ARRAY['LIVE'::text, 'FAILED'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+            " OR ((from_state = 'LIVE'::text) AND (to_state = ANY (ARRAY['EXPIRING'::text, 'EXTENDED'::text, 'PROMOTING'::text, 'REBUILDING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+            " OR ((from_state = 'EXTENDED'::text) AND (to_state = ANY (ARRAY['EXPIRING'::text, 'PROMOTING'::text, 'REBUILDING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+            " OR ((from_state = 'EXPIRING'::text) AND (to_state = ANY (ARRAY['PURGED'::text, 'EXTENDED'::text, 'PROMOTING'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+            " OR ((from_state = 'REBUILDING'::text) AND (to_state = ANY (ARRAY['LIVE'::text, 'EXTENDED'::text, 'FAILED'::text, 'KILLED'::text, 'FROZEN'::text])))" +
+            " OR ((from_state = 'PROMOTING'::text) AND (to_state = ANY (ARRAY['PROMOTED'::text, 'LIVE'::text, 'EXTENDED'::text, 'EXPIRING'::text, 'KILLED'::text, 'FROZEN'::text])))))))",
+        ],
+      },
     ],
   },
   'portal.hostname_register': {
