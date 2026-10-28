@@ -23,6 +23,7 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 portal/*/dist
 portal/*/coverage
+portal/apps/test/.mutants/
 
 # Speckify build output (speckify build writes here by default)
 .speckify/
