@@ -60,7 +60,9 @@ export type RefusalCode =
   /** The object key is outside the tenant's folder. */
   | 'key-outside-folder'
   /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
-  | 'upload-not-bound';
+  | 'upload-not-bound'
+  /** The request body is larger than the tenant's upload ceiling. Nothing was sent upstream. */
+  | 'body-too-large';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {

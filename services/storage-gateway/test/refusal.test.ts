@@ -12,6 +12,7 @@ const CODES: RefusalCode[] = [
   'bucket-not-allowed',
   'key-outside-folder',
   'upload-not-bound',
+  'body-too-large',
 ];
 
 describe('refusal', () => {
@@ -32,5 +33,10 @@ describe('refusal', () => {
     expect(refusalBody(refusal('operation-not-allowed'))).toContain('<Code>AccessDenied</Code>');
     expect(refusalBody(refusal('target-malformed'))).toContain('<Code>InvalidURI</Code>');
     expect(refusalBody(refusal('internal-error'))).toContain('<Code>ServiceUnavailable</Code>');
+  });
+
+  it('answers an oversized body with 413 and the code the SDK reports as too large', () => {
+    expect(refusal('body-too-large').status).toBe(413);
+    expect(refusalBody(refusal('body-too-large'))).toContain('<Code>EntityTooLarge</Code>');
   });
 });

@@ -11,3 +11,4 @@ export {
   type SignatureRefusalReason,
   type SigV4VerifierOptions,
 } from './sigv4-verifier.js';
+export * from './body.js';

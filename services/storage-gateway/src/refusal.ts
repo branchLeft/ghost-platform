@@ -46,6 +46,11 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'Access to this object name is not allowed.',
     status: 403,
   },
+  'body-too-large': {
+    code: 'body-too-large',
+    message: 'The request body is larger than this account allows.',
+    status: 413,
+  },
 };
 
 /** The one refusal for a code. Messages never echo the bucket, key or folder. */
@@ -56,6 +61,12 @@ export function refusal(code: RefusalCode): Refusal {
 /** S3-style error body, so Ghost's SDK reports a clear error instead of a parse failure. */
 export function refusalBody(r: Refusal): string {
   const s3Code =
-    r.status >= 500 ? 'ServiceUnavailable' : r.status === 400 ? 'InvalidURI' : 'AccessDenied';
+    r.code === 'body-too-large'
+      ? 'EntityTooLarge'
+      : r.status >= 500
+        ? 'ServiceUnavailable'
+        : r.status === 400
+          ? 'InvalidURI'
+          : 'AccessDenied';
   return `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${s3Code}</Code><Message>${r.message}</Message></Error>`;
 }
