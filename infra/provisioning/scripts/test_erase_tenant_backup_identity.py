@@ -410,6 +410,66 @@ class SafetyClassSabotageTests(EraseCase):
         self.assertIn("the recipients file still lists the tenant", self.stderr)
 
 
+class RerunAfterRedTests(EraseCase):
+    """A run that ends red must leave what a run again needs to find the strays:
+    the tenant's own identity file is the only source of the key bytes."""
+
+    def skip_destroying(self, stray: str):
+        real = eb.destroy_identity_entry
+
+        def skip(identity_dir: str, name: str) -> None:
+            if name != stray:
+                real(identity_dir, name)
+
+        return mock.patch.object(eb, "destroy_identity_entry", side_effect=skip)
+
+    def test_a_stray_that_survives_a_red_run_is_found_and_destroyed_by_the_next(self) -> None:
+        self.enrol("bravo")
+        stray = self.plant("bravo.key.bak", self.identity_of("bravo"))
+        with self.skip_destroying("bravo.key.bak"):
+            self.assertEqual(self.erase(), eb.EXIT_PROOF_RED, self.stdout)
+        self.assertTrue(stray.exists())
+        self.assertTrue((self.world.identity_dir / "bravo.key").exists())
+        self.assertIn("identity directory entry bravo.key.bak", self.stderr)
+        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        self.assertNotIn("nothing to erase", self.stdout)
+        self.assertIn("proof green", self.stdout)
+        self.assertFalse(stray.exists())
+        self.assertFalse((self.world.identity_dir / "bravo.key").exists())
+
+    def test_the_strays_are_gone_before_the_tenants_own_file_is_destroyed(self) -> None:
+        self.enrol("bravo")
+        self.plant("bravo.key.bak", self.identity_of("bravo"))
+        order: list[str] = []
+        real = eb.destroy_identity_entry
+
+        def record(identity_dir: str, name: str) -> None:
+            order.append(name)
+            real(identity_dir, name)
+
+        with mock.patch.object(eb, "destroy_identity_entry", side_effect=record):
+            self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        self.assertEqual(order, ["bravo.key.bak", "bravo.key"])
+
+    def test_an_entry_that_could_not_be_judged_keeps_the_own_file_until_it_can_be(self) -> None:
+        self.enrol("bravo")
+        huge = self.plant("huge.bin", b"x" * (eb.MAX_ENTRY_BYTES + 1))
+        self.assertEqual(self.erase(), eb.EXIT_PROOF_RED, self.stdout)
+        self.assertTrue((self.world.identity_dir / "bravo.key").exists())
+        huge.unlink()
+        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        self.assertFalse((self.world.identity_dir / "bravo.key").exists())
+
+    def test_a_copy_planted_between_runs_is_found_while_the_own_file_remains(self) -> None:
+        self.enrol("bravo")
+        first = self.plant("bravo.key.bak", self.identity_of("bravo"))
+        with self.skip_destroying("bravo.key.bak"):
+            self.assertEqual(self.erase(), eb.EXIT_PROOF_RED, self.stdout)
+        second = self.plant("copy-two.txt", b"saved\n" + self.identity_of("bravo"))
+        self.assertEqual(self.erase(), eb.EXIT_OK, self.stderr)
+        self.assertFalse(first.exists() or second.exists())
+
+
 class NeverUnwrapTests(EraseCase):
     def test_erasure_runs_with_no_wrapping_key_no_child_process_and_no_spare_read(self) -> None:
         self.enrol("bravo")

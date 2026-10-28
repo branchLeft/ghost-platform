@@ -72,9 +72,13 @@ before step 5 changes nothing.
 4. The proof is run once before anything is changed. If it finds nothing the
    run says so and exits 0.
 5. The tenant is taken off both lists. Then, attempting every step even if one
-   fails: each identity-directory entry that is the tenant's own file or holds
-   its key is destroyed; each version and delete marker under the spare
-   prefix is deleted.
+   fails: each stray identity-directory entry that holds the tenant's key is
+   destroyed; each version and delete marker under the spare prefix is
+   deleted; the directory is scanned again; only if that scan shows no other
+   copy remaining and no entry unjudged are the tenant's own identity file and
+   its temp leftover destroyed, the canonical file last. Otherwise the own file
+   is kept and the proof is red, because it is the only source of the key bytes
+   a run again needs to find the strays.
 6. The proof is run again. Any remaining copy, and any location that could
    not be read, is listed on standard error as `ALERT` and the run exits 3.
 
@@ -99,10 +103,14 @@ reported.
 
 - A copy outside the identity directory (a backup of the host, a copy made
   by hand elsewhere) is out of reach and not looked for.
-- Stray copies are found by the tenant's key bytes. If a first run destroyed
-  the tenant's own identity and the recipient line but could not destroy a
-  stray copy, a later run has no key bytes to match on and finds only the
-  tenant's own names.
+- Stray copies are found by the tenant's key bytes, which are read from the
+  tenant's own identity file. That file is destroyed only after every stray
+  is gone, so a run again after a red run still has them. A stray written
+  into the directory after the own file is destroyed is not found by a later
+  run.
+- An entry in the identity directory that cannot be judged (unreadable,
+  oversize, not a regular file) keeps the tenant's own identity file in
+  place, with the proof red, until it is removed.
 - Zero-filling a file on a journalled or solid-state filesystem is not a
   physical guarantee that the old blocks are gone.
 - The dump ciphertext in the dump copies is left in place by design: it is

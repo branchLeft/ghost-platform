@@ -339,16 +339,33 @@ def _attempt(problems: list[str], what: str, action: Callable[[], object]) -> bo
     return True
 
 
+def own_entry_names(identity_dir: str, tenant: str) -> tuple[str, ...]:
+    """The tenant's own identity files, the temp leftover first and the
+    canonical file last."""
+    return (
+        os.path.basename(et.identity_tmp_path(identity_dir, tenant)),
+        os.path.basename(et.identity_path(identity_dir, tenant)),
+    )
+
+
+def _destroy_entries(problems: list[str], identity_dir: str, names: Sequence[str]) -> None:
+    for name in names:
+        destroy = functools.partial(destroy_identity_entry, identity_dir, name)
+        if _attempt(problems, f"destroying identity directory entry {name}", destroy):
+            _say(f"identity directory entry {name}: destroyed")
+
+
 def destroy_copies(*, tenant: str, paths: et.Paths, store: EraseStore, matchers: KeyMatchers) -> list[str]:
+    """Stray copies are found only by the key bytes in the tenant's own
+    identity file, so that file is destroyed last, and only once a fresh scan
+    shows no other copy remains or is unjudged. Otherwise it is kept, the proof
+    is red, and a run again learns the key from it and finds the strays."""
     problems: list[str] = []
     problems += et.retract_listing(paths, tenant)
 
+    own = own_entry_names(paths.identity_dir, tenant)
     scan = scan_identity_dir(paths.identity_dir, tenant, matchers)
-    for name in scan.holders:
-        destroy = functools.partial(destroy_identity_entry, paths.identity_dir, name)
-        if _attempt(problems, f"destroying identity directory entry {name}", destroy):
-            _say(f"identity directory entry {name}: destroyed")
-    _attempt(problems, "syncing the identity directory", functools.partial(et._fsync_directory, paths.identity_dir))
+    _destroy_entries(problems, paths.identity_dir, [name for name in scan.holders if name not in own])
 
     prefix = spare_prefix(tenant)
     try:
@@ -359,6 +376,14 @@ def destroy_copies(*, tenant: str, paths: et.Paths, store: EraseStore, matchers:
     for version in versions:
         if _attempt(problems, f"deleting {_describe(version)}", functools.partial(store.delete_version, version)):
             _say(f"{_describe(version)}: deleted")
+
+    again = scan_identity_dir(paths.identity_dir, tenant, matchers)
+    others = [name for name in again.holders if name not in own] + list(again.unchecked)
+    if others:
+        problems.append("the tenant's own identity file is kept while another copy of its key remains or is unjudged")
+    else:
+        _destroy_entries(problems, paths.identity_dir, [name for name in own if name in again.holders])
+    _attempt(problems, "syncing the identity directory", functools.partial(et._fsync_directory, paths.identity_dir))
     return problems
 
 
