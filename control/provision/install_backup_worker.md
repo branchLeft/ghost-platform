@@ -79,6 +79,25 @@ moved CA), the nightly run itself fails loudly in the same way.
 The script never starts the service itself. The first run is a deliberate
 operator step, so its output is read rather than assumed.
 
+## Enrolling a tenant
+
+`enrol_tenant_backup.py` (see its companion in `infra/provisioning/scripts/`)
+is the one command that adds a tenant: it mints the tenant's key, edits the
+tenants and recipients files above, and has the first dump taken. This
+installer stages what it needs and nothing more:
+
+- The release must carry `enrol_tenant_backup.py`, `restore_drill.py` (which
+  loads `db/recovery/restore_drained.py`), this installer (the entry point
+  reuses its list checks) and the first-dump unit template.
+- `branchleft-backup-worker-first-dump@.service` is copied into
+  `/etc/systemd/system/` with the other units. It has no `[Install]`
+  section, is never enabled, and nothing here starts it. Only the enrolment
+  starts an instance, as `backup-worker`, so the run lock and metrics files
+  of that first dump belong to the service account, never to root.
+- `/etc/branchleft/enrol-tenant-backup.env` (`root:root` `0600`, see
+  `enrol-tenant-backup.env.example`) is not required by the installer and does
+  not gate the timer. The enrolment refuses to run without it.
+
 ## Release checks
 
 Before changing anything, the script refuses a release that is not a

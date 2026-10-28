@@ -213,6 +213,99 @@ class UnitsMatchTheInstallLayout(unittest.TestCase):
         self.assertEqual(timer["Install"]["WantedBy"], "timers.target")
 
 
+class FirstDumpTemplateMatchesTheNightlyUnit(unittest.TestCase):
+    """The first dump of a new tenant runs as the service account in its own
+    copy of the nightly unit's environment, so the root-run enrolment never
+    creates a run-lock or metrics file the service account would later open."""
+
+    # Every key that decides who runs the dump, with what environment and how
+    # confined; each must read the same as in the nightly unit.
+    SAME_AS_NIGHTLY = (
+        "Type",
+        "User",
+        "Group",
+        "EnvironmentFile",
+        "ExecStartPre",
+        "StateDirectory",
+        "StateDirectoryMode",
+        "UMask",
+        "MemoryMax",
+        "NoNewPrivileges",
+        "ProtectSystem",
+        "ProtectHome",
+        "PrivateTmp",
+        "ProtectKernelTunables",
+        "ProtectKernelModules",
+        "ProtectControlGroups",
+        "RestrictAddressFamilies",
+        "RestrictSUIDSGID",
+        "LockPersonality",
+        "CapabilityBoundingSet",
+    )
+
+    def setUp(self) -> None:
+        self.nightly = _unit(ibw.SERVICE_UNIT)["Service"]
+        self.template_parser = _unit(ibw.FIRST_DUMP_UNIT_TEMPLATE)
+        self.template = self.template_parser["Service"]
+        self.paths = ibw.Paths()
+
+    def _environment(self, name: str) -> dict[str, str]:
+        raw = (HERE / name).read_text()
+        return dict(re.findall(r"^Environment=([A-Z_]+)=(\S+)$", raw, re.M))
+
+    def test_every_key_that_decides_who_runs_it_and_how_is_the_nightly_units(self) -> None:
+        for key in self.SAME_AS_NIGHTLY:
+            self.assertIn(key, self.template, f"the first-dump unit does not set {key}")
+            self.assertEqual(self.template[key], self.nightly[key], key)
+
+    def test_it_runs_the_existing_loop_for_the_instance_only(self) -> None:
+        argv = self.template["ExecStart"].split()
+        self.assertEqual(argv[:2], self.nightly["ExecStart"].split()[:2])
+        self.assertEqual(argv[2:], ["--tenant", "%i"])
+
+    def test_metrics_dir_is_the_nightly_state_directory(self) -> None:
+        self.assertEqual(
+            self._environment(ibw.FIRST_DUMP_UNIT_TEMPLATE)["BACKUP_WORKER_METRICS_DIR"],
+            self._environment(ibw.SERVICE_UNIT)["BACKUP_WORKER_METRICS_DIR"],
+        )
+
+    def test_it_has_its_own_runtime_directory_and_its_lock_lives_in_it(self) -> None:
+        self.assertNotEqual(self.template["RuntimeDirectory"], self.nightly["RuntimeDirectory"])
+        lock = pathlib.PurePosixPath(
+            self._environment(ibw.FIRST_DUMP_UNIT_TEMPLATE)["NIGHTLY_DUMP_LOOP_RUN_LOCK_PATH"]
+        )
+        self.assertEqual(str(lock.parent), "/run/" + self.template["RuntimeDirectory"])
+
+    def test_it_is_never_enabled_or_scheduled(self) -> None:
+        self.assertFalse(self.template_parser.has_section("Install"))
+        self.assertEqual(self.template["CollectMode"], "inactive-or-failed")
+        self.assertEqual(self.template["TimeoutStartSec"], "2h")
+
+    def test_the_installer_copies_the_template_and_never_starts_or_enables_it(self) -> None:
+        self.assertIn(ibw.FIRST_DUMP_UNIT_TEMPLATE, ibw.UNIT_FILES)
+        self.assertNotIn(ibw.FIRST_DUMP_UNIT_TEMPLATE, (ibw.SERVICE_UNIT, ibw.TIMER_UNIT))
+        box = Sandbox()
+        self.addCleanup(box.close)
+        run = FakeRun()
+        ibw.install(box.release(), box.paths, run, owner_uid=os.getuid(), group_gid=lambda: os.getgid(), which=_which_all)
+        self.assertEqual(
+            (box.paths.unit_dir / ibw.FIRST_DUMP_UNIT_TEMPLATE).read_bytes(),
+            (HERE / ibw.FIRST_DUMP_UNIT_TEMPLATE).read_bytes(),
+        )
+        self.assertEqual([call for call in run.calls if "first-dump" in " ".join(call)], [])
+
+    def test_the_release_carries_everything_the_enrolment_imports_or_loads(self) -> None:
+        for rel in (
+            "infra/provisioning/scripts/enrol_tenant_backup.py",
+            "infra/provisioning/scripts/restore_drill.py",
+            "db/recovery/restore_drained.py",
+            "control/provision/install_backup_worker.py",
+            f"control/provision/{ibw.FIRST_DUMP_UNIT_TEMPLATE}",
+        ):
+            self.assertIn(rel, ibw.REQUIRED_RELEASE_FILES)
+            self.assertTrue((REPO_ROOT / rel).is_file(), rel)
+
+
 class CheckRelease(SandboxCase):
     def test_accepts_a_complete_release_owned_by_the_owner(self) -> None:
         ibw.check_release(self.box.release(), self.box.paths, owner_uid=self.uid)

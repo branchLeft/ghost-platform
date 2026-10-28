@@ -1,0 +1,43 @@
+# The first dump of one newly enrolled tenant, run as the backup worker's own
+# service account, never as root. Started only by enrol_tenant_backup.py with
+# `systemctl start --wait branchleft-backup-worker-first-dump@<tenant>.service`;
+# it has no [Install] section and nothing enables or schedules it. It uses its
+# own runtime directory so stopping it cannot remove the nightly run's lock.
+# See install_backup_worker.md and enrol_tenant_backup.md.
+[Unit]
+Description=branchLeft per-tenant backup worker (first dump of %i)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=backup-worker
+Group=backup-worker
+EnvironmentFile=/etc/branchleft/backup-worker.env
+Environment=NIGHTLY_DUMP_LOOP_RUN_LOCK_PATH=/run/branchleft-backup-worker-first-dump/nightly-dump-loop.lock
+Environment=BACKUP_WORKER_METRICS_DIR=/var/lib/branchleft/backup-worker-exporter
+# Re-checks the tenants file at every run; refuses the run, not just the install.
+ExecStartPre=/usr/bin/python3 /opt/branchleft/backup-worker/current/control/provision/install_backup_worker.py --preflight
+ExecStart=/usr/bin/python3 /opt/branchleft/backup-worker/current/infra/provisioning/scripts/nightly_dump_loop.py --tenant %i
+RuntimeDirectory=branchleft-backup-worker-first-dump
+StateDirectory=branchleft/backup-worker-exporter
+StateDirectoryMode=0755
+UMask=0077
+
+# One tenant's dump is bounded at 30 minutes by the transport itself.
+TimeoutStartSec=2h
+# Lets a failed instance be started again by a re-run of the enrolment.
+CollectMode=inactive-or-failed
+MemoryMax=1G
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
