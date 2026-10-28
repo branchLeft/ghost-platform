@@ -305,6 +305,11 @@ class FirstDumpTemplateMatchesTheNightlyUnit(unittest.TestCase):
             self.assertIn(rel, ibw.REQUIRED_RELEASE_FILES)
             self.assertTrue((REPO_ROOT / rel).is_file(), rel)
 
+    def test_the_release_carries_the_erasure_entry_point(self) -> None:
+        rel = "infra/provisioning/scripts/erase_tenant_backup_identity.py"
+        self.assertIn(rel, ibw.REQUIRED_RELEASE_FILES)
+        self.assertTrue((REPO_ROOT / rel).is_file(), rel)
+
 
 class CheckRelease(SandboxCase):
     def test_accepts_a_complete_release_owned_by_the_owner(self) -> None:

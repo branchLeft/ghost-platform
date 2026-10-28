@@ -105,8 +105,9 @@ equals any tenant's recipient is refused.
 
 The spare's credential needs Put, Get, List and Delete (Delete only so a
 failed enrolment can remove its own object). The key that erases a spare at
-tenant erasure is separate and is not built here; erasure does not yet cover
-the spare copy.
+tenant erasure is separate: `erase_tenant_backup_identity.py` deletes the
+spare, every version of it and the identity file, and proves each is gone (see
+`erase_tenant_backup_identity.md`).
 
 ## The first dump and its check
 

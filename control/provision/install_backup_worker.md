@@ -97,6 +97,10 @@ installer stages what it needs and nothing more:
 - `/etc/branchleft/enrol-tenant-backup.env` (`root:root` `0600`, see
   `enrol-tenant-backup.env.example`) is not required by the installer and does
   not gate the timer. The enrolment refuses to run without it.
+- The release also carries `erase_tenant_backup_identity.py`, the other end
+  of the enrolment. Its `/etc/branchleft/erase-tenant-backup.env`
+  (`root:root` `0600`, see `erase-tenant-backup.env.example`) is likewise
+  not required by the installer, and the erasure refuses to run without it.
 
 ## Release checks
 
