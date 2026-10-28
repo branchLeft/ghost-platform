@@ -12,6 +12,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import util from 'node:util';
 import {
   claimPort,
   docker,
@@ -121,6 +122,72 @@ describe('a docker command that fails', () => {
         err.message.includes('stderr: driver failed: port is already allocated') &&
         !err.message.includes('hunter2')
     );
+  });
+
+  // The canary must be absent from every way a reporter or a log line can
+  // print the error: its string, its message, its cause chain, and inspect.
+  function assertNoCanary(err, canary) {
+    const surfaces = {
+      'String(err)': String(err),
+      'err.message': err.message,
+      'err.stderr': String(err.stderr ?? ''),
+      'String(err.cause)': String(err.cause),
+      'err.cause.message': String(err.cause?.message),
+      'util.inspect(err)': util.inspect(err, { depth: 5 }),
+    };
+    for (const [surface, text] of Object.entries(surfaces)) {
+      assert.ok(!text.includes(canary), `${canary} leaked through ${surface}:\n${text}`);
+    }
+  }
+
+  const CANARY = 'canary-hunter2-9f3a';
+  const canaryArgs = ['create', '--name', 'x', '-e', `SELFTEST_SECRET=${CANARY}`, 'img'];
+
+  it('never lets an -e value out through the error, its cause, or util.inspect', () => {
+    let caught;
+    try {
+      docker(...canaryArgs);
+    } catch (err) {
+      caught = err;
+    }
+    assert.ok(caught, 'the stub docker must have failed');
+    assertNoCanary(caught, CANARY);
+    assert.ok(String(caught.cause?.message).includes('SELFTEST_SECRET'), 'the name is kept');
+    assert.equal(caught.cause?.status, 125, 'the cause keeps the exit status');
+  });
+
+  it('never lets an -e value out through a step name wrapped around the error', async () => {
+    await assert.rejects(
+      runStep('start canary container', async () => docker(...canaryArgs), { deadlineMs: 5000 }),
+      (err) => {
+        assertNoCanary(err, CANARY);
+        return true;
+      }
+    );
+  });
+
+  it('redacts an -e value that the docker stderr echoes back', () => {
+    const echoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-echo-'));
+    fs.writeFileSync(
+      path.join(echoDir, 'docker'),
+      ['#!/bin/sh', 'echo "invalid argument: $*" >&2', 'exit 125', ''].join('\n'),
+      { mode: 0o755 }
+    );
+    const saved = process.env.PATH;
+    process.env.PATH = `${echoDir}${path.delimiter}${saved}`;
+    try {
+      assert.throws(
+        () => docker(...canaryArgs),
+        (err) => {
+          assertNoCanary(err, CANARY);
+          assert.match(err.stderr, /invalid argument: create --name x -e SELFTEST_SECRET=/);
+          return true;
+        }
+      );
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(echoDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps an explicit step name', () => {
@@ -238,6 +305,23 @@ describe('the port registry', () => {
     assert.equal(fs.readFileSync(path.join(registry, '29990', 'pid'), 'utf8'), String(process.pid));
     releasePort(29_990);
     assert.equal(fs.existsSync(path.join(registry, '29990')), false);
+  });
+
+  it('treats a claim whose pid is empty or unreadable as being made, until the grace is over', () => {
+    const dir = path.join(registry, '29991');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'pid'), '');
+    assert.equal(claimPort(29_991), false, 'an empty pid file is a claim in the middle of being made');
+    fs.rmSync(path.join(dir, 'pid'));
+    assert.equal(claimPort(29_991), false, 'a claim with no pid file yet is also being made');
+    fs.mkdirSync(path.join(dir, 'pid'));
+    assert.equal(claimPort(29_991), false, 'an unreadable pid is also within the grace');
+    fs.rmSync(path.join(dir, 'pid'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'pid'), '');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(dir, old, old);
+    assert.equal(claimPort(29_991), true, 'an empty pid older than the grace is abandoned');
+    releasePort(29_991);
   });
 
   // A child prints its ports as one JSON line and then waits for stdin to

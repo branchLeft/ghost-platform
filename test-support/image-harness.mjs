@@ -34,18 +34,22 @@ function pidAlive(pid) {
   }
 }
 
-// A claim directory is made before its pid file is written; one younger than
-// this with no readable pid is a claim in the middle of being made.
+// A claim directory is made before its pid file is written, and the file is
+// created empty before the pid lands in it; a claim younger than this whose
+// pid is missing, empty or unreadable is a claim in the middle of being made.
 const CLAIM_GRACE_MS = 30_000;
 
 function claimIsStale(dir) {
-  let pid;
+  let pid = Number.NaN;
   try {
     pid = Number.parseInt(fs.readFileSync(path.join(dir, 'pid'), 'utf8'), 10);
   } catch {
-    return Date.now() - fs.statSync(dir, { throwIfNoEntry: false })?.mtimeMs > CLAIM_GRACE_MS;
+    // no pid file yet, or an unreadable one: judged by age below
   }
-  return !Number.isInteger(pid) || !pidAlive(pid);
+  if (Number.isInteger(pid)) return !pidAlive(pid);
+  const made = fs.statSync(dir, { throwIfNoEntry: false });
+  // A directory that has vanished is no claim at all; the caller retries its mkdir.
+  return made === undefined || Date.now() - made.mtimeMs > CLAIM_GRACE_MS;
 }
 
 // Moving the directory aside is atomic, so of two processes reaping the same
@@ -125,38 +129,74 @@ export async function reservePort() {
 const MAX_STDERR_BYTES = 400;
 const MAX_ARG_CHARS = 120;
 
-// `-e NAME=value` carries configuration (sometimes a throwaway credential),
-// so the pairs are counted and not echoed into CI logs.
-function describeArgv(args) {
-  const shown = [];
-  let envVars = 0;
+// `-e NAME=value` carries configuration (sometimes a throwaway credential).
+// Reads the pairs in `-e NAME=v`, `--env NAME=v`, `--env=NAME=v` and `-eNAME=v`.
+function splitEnv(args) {
+  const rest = [];
+  const envs = [];
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '-e' && /^\w+=/.test(args[i + 1] ?? '')) {
-      envVars += 1;
+    const arg = String(args[i]);
+    const joined = /^(?:--env=|-e)(\w+=.*)$/s.exec(arg);
+    if ((arg === '-e' || arg === '--env') && /^\w+=/.test(String(args[i + 1] ?? ''))) {
+      envs.push(String(args[i + 1]));
       i += 1;
+    } else if (joined) {
+      envs.push(joined[1]);
     } else {
-      shown.push(
-        args[i].length > MAX_ARG_CHARS ? `${args[i].slice(0, MAX_ARG_CHARS)}...` : args[i]
-      );
+      rest.push(arg);
     }
   }
-  if (envVars > 0) shown.push(`(and ${envVars} -e variables, values not shown)`);
+  return { rest, envs };
+}
+
+// The argv with the `-e` pairs counted, not echoed, for the error message.
+function describeArgv(args) {
+  const { rest, envs } = splitEnv(args);
+  const shown = rest.map((a) => (a.length > MAX_ARG_CHARS ? `${a.slice(0, MAX_ARG_CHARS)}...` : a));
+  if (envs.length > 0) shown.push(`(and ${envs.length} -e variables, values not shown)`);
   return shown.join(' ');
 }
 
+// The argv with each `-e` pair kept by name and its value replaced, for the cause.
+function namedArgv(args) {
+  const { rest, envs } = splitEnv(args);
+  const named = envs.map((pair) => `-e ${pair.slice(0, pair.indexOf('='))}=<redacted>`);
+  return [...rest, ...named].join(' ');
+}
+
+// Text from docker can echo the argv back (usage errors do), so every `NAME=value`
+// pair goes, and a bare value of 8 or more characters too.
+function redactEnv(text, envs) {
+  let out = text;
+  for (const pair of envs) {
+    out = out.split(pair).join(`${pair.slice(0, pair.indexOf('='))}=<redacted>`);
+    const value = pair.slice(pair.indexOf('=') + 1);
+    if (value.length >= 8) out = out.split(value).join('<redacted>');
+  }
+  return out;
+}
+
 export class DockerStepError extends Error {
-  constructor(step, args, cause) {
-    const stderr = Buffer.from(String(cause.stderr ?? ''))
+  constructor(step, args, raw) {
+    const { envs } = splitEnv(args);
+    const stderr = Buffer.from(redactEnv(String(raw.stderr ?? ''), envs))
       .subarray(0, MAX_STDERR_BYTES)
       .toString('utf8')
       .trim();
-    const exit = cause.status ?? cause.code ?? 'unknown';
+    const exit = raw.status ?? raw.code ?? 'unknown';
+    // The raw execFileSync error is not kept: its message is the whole command
+    // line, `-e` values included, and reporters print the cause chain. This
+    // copy carries the same facts with the values replaced.
+    const cause = new Error(`Command failed: docker ${namedArgv(args)}\n${stderr}`);
+    cause.status = raw.status ?? null;
+    cause.signal = raw.signal ?? null;
+    if (raw.code) cause.code = raw.code;
     super(`${step} failed (exit ${exit})\nstderr: ${stderr}\nargv: docker ${describeArgv(args)}`, {
       cause,
     });
     this.name = 'DockerStepError';
     this.step = step;
-    this.exitCode = cause.status ?? null;
+    this.exitCode = raw.status ?? null;
     this.stderr = stderr;
   }
 }
