@@ -46,6 +46,16 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'Access to this object name is not allowed.',
     status: 403,
   },
+  'rate-limited': {
+    code: 'rate-limited',
+    message: 'Too many requests. Try again shortly.',
+    status: 503,
+  },
+  'writes-disabled': {
+    code: 'writes-disabled',
+    message: 'Writes are switched off for this account. Try again later.',
+    status: 503,
+  },
   'upstream-timeout': {
     code: 'upstream-timeout',
     message: 'The storage service did not answer in time. Try again.',
@@ -75,7 +85,7 @@ export function refusalBody(r: Refusal): string {
 
 /** The S3 error code the SDK's retry logic reads: SlowDown and RequestTimeout are both retried. */
 function s3CodeFor(r: Refusal): string {
-  if (r.code === 'upstream-throttled') return 'SlowDown';
+  if (r.code === 'rate-limited' || r.code === 'upstream-throttled') return 'SlowDown';
   if (r.code === 'upstream-timeout') return 'RequestTimeout';
   if (r.status >= 500) return 'ServiceUnavailable';
   return r.status === 400 ? 'InvalidURI' : 'AccessDenied';
