@@ -371,6 +371,23 @@ describe('the tenant limits gate', () => {
     expect(limits.check({ keyId: 'a', operation: 'GetObject' })).toEqual({ ok: true });
   });
 
+  it('lets a quota store error out of the gate rather than swallowing it', () => {
+    const limits = createTenantLimits({
+      rate: createTenantRateLimiter({ default: { perSecond: 1, burst: 10 } }),
+      switches: createWriteKillSwitches(),
+      quotas: createQuotaMonitor({
+        usage: {
+          totalFor: () => {
+            throw new Error('usage store down');
+          },
+        },
+        alerts: { quotaCrossed: () => undefined },
+        default: { requests: 5 },
+      }),
+    });
+    expect(() => limits.check({ keyId: 'k', operation: 'GetObject' })).toThrow('usage store down');
+  });
+
   it('raises an alert on crossing a quota and refuses nothing', () => {
     const { limits, alerts, setUsed } = gate();
     setUsed({ requests: 6, billableBytesIn: 0, billableBytesOut: 0 });
@@ -475,6 +492,58 @@ describe('admit with limits', () => {
       refusal: { code: 'internal-error' },
     });
     expect(logged).toHaveLength(1);
+  });
+
+  it('refuses with internal-error when the quota store errors (fails closed)', async () => {
+    const limits = createTenantLimits({
+      rate: createTenantRateLimiter({ default: { perSecond: 100, burst: 100 } }),
+      switches: createWriteKillSwitches(),
+      quotas: createQuotaMonitor({
+        usage: {
+          totalFor: () => {
+            throw new Error('usage store down');
+          },
+        },
+        alerts: { quotaCrossed: () => undefined },
+        default: { requests: 5 },
+      }),
+    });
+    const { deps, logged } = setup(limits);
+    expect(await admit(request('GET', 'a.png'), deps)).toMatchObject({
+      ok: false,
+      refusal: { code: 'internal-error' },
+    });
+    expect(logged).toHaveLength(1);
+  });
+
+  it('carries the retry hint of a rate-limited refusal to the caller', async () => {
+    const limits = createTenantLimits({
+      rate: createTenantRateLimiter({
+        default: { perSecond: 1, burst: 1 },
+        nowMs: () => 1_000_000,
+      }),
+      switches: createWriteKillSwitches(),
+    });
+    const { deps } = setup(limits);
+    await admit(request('GET', 'a.png'), deps);
+    expect(await admit(request('GET', 'a.png'), deps)).toMatchObject({
+      ok: false,
+      refusal: { code: 'rate-limited' },
+      retryAfterMs: 1000,
+    });
+  });
+
+  it('gives no retry hint on a refusal that is not rate-limiting', async () => {
+    const switches = createWriteKillSwitches();
+    switches.setGlobal(true);
+    const limits = createTenantLimits({
+      rate: createTenantRateLimiter({ default: { perSecond: 1, burst: 1 } }),
+      switches,
+    });
+    const { deps } = setup(limits);
+    const result = await admit(request('PUT', 'a.png'), deps);
+    expect(result).toMatchObject({ ok: false, refusal: { code: 'writes-disabled' } });
+    expect(result).not.toHaveProperty('retryAfterMs');
   });
 
   it('admits as before when no limits are given', async () => {

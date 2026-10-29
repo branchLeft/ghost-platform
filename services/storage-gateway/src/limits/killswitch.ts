@@ -31,7 +31,7 @@ function load(path: string): Saved {
   try {
     text = readFileSync(path, 'utf8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { global: false, tenants: [] };
+    if ((err as { code?: unknown }).code === 'ENOENT') return { global: false, tenants: [] };
     throw err;
   }
   // A file that cannot be read in full is not "no switches": opening writes

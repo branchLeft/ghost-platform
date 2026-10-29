@@ -54,7 +54,12 @@ export type AdmitResult =
       readonly route: RoutedRequest;
       readonly tenant: { readonly keyId: string; readonly folder: string; readonly bucket: string };
     }
-  | { readonly ok: false; readonly refusal: Refusal };
+  | {
+      readonly ok: false;
+      readonly refusal: Refusal;
+      /** Present on a rate-limited refusal: milliseconds until a retry can succeed. */
+      readonly retryAfterMs?: number;
+    };
 
 /**
  * Decides whether a request may be forwarded upstream, failing closed. The
@@ -70,7 +75,8 @@ export async function admit(
   const method = request.method;
   const refuse = (
     code: RefusalCode,
-    context: { keyId?: string; folder?: string; operation?: AllowedOperation } = {}
+    context: { keyId?: string; folder?: string; operation?: AllowedOperation } = {},
+    retryAfterMs?: number
   ): AdmitResult => {
     const r = refusal(code);
     deps.logger.refusal({
@@ -82,7 +88,9 @@ export async function admit(
       ...(context.folder === undefined ? {} : { folder: context.folder }),
       ...(context.operation === undefined ? {} : { operation: context.operation }),
     });
-    return { ok: false, refusal: r };
+    return retryAfterMs === undefined
+      ? { ok: false, refusal: r }
+      : { ok: false, refusal: r, retryAfterMs };
   };
 
   let keyId: string;
@@ -136,7 +144,7 @@ export async function admit(
     const context = { keyId, folder, operation: routed.route.operation };
     try {
       const decision = deps.limits.check({ keyId, operation: routed.route.operation });
-      if (!decision.ok) return refuse(decision.refusal.code, context);
+      if (!decision.ok) return refuse(decision.refusal.code, context, decision.retryAfterMs);
     } catch {
       return refuse('internal-error', context);
     }
