@@ -394,7 +394,7 @@ describe('--migrate-only on a real server', () => {
   it('runs as the compiled command and sets no password', async () => {
     const dist = join(import.meta.dirname, '../dist/provision/provisionMain.js');
     if (!existsSync(dist))
-      throw new Error('run `npm run build` first: the compiled command is missing');
+      throw new Error('run `pnpm run build` first: the compiled command is missing');
     await provisionedBeforeDocuments();
     const before = await logins();
     const dir = mkdtempSync(join(tmpdir(), 'portal-migrate-'));

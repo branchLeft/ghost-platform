@@ -48,9 +48,9 @@ migration in `drizzle/meta/`:
 | 2 | `0002_sender_domain` | Adds `tenants.sender_domain`. Generated. |
 
 To change the schema: edit `schema.ts`, run
-`npx drizzle-kit generate --name <what-it-does>` in this package, and commit
-the new SQL and its `meta/` files together. `npx drizzle-kit generate` with no
-changes pending must report nothing to migrate, and `npx drizzle-kit check`
+`pnpm exec drizzle-kit generate --name <what-it-does>` in this package, and commit
+the new SQL and its `meta/` files together. `pnpm exec drizzle-kit generate` with no
+changes pending must report nothing to migrate, and `pnpm exec drizzle-kit check`
 must pass. A migration is an expand (new tables, new nullable or defaulted
 columns) or a contract (removing what nothing reads any more), never both, so
 the previous release keeps working against the new schema.

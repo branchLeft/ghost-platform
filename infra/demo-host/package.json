@@ -2,6 +2,7 @@
   "name": "ghost-platform-demo-host",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "main": "index.ts",
   "description": "Pulumi program for the demo host, demo1, in the demos Hetzner project. See infra/README.md.",
   "scripts": {

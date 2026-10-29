@@ -74,7 +74,7 @@ third-party request of any type is recorded regardless
 unrelated to any widget bundle and not addressable by a config-key pin.
 
 Run it from the repo root: `./widgets/proof/run-proof.sh` (needs Docker and
-`widgets/proof`'s own `npm install` for Playwright -- kept out of the root
+`widgets/proof`'s own `pnpm install` for Playwright -- kept out of the root
 package.json and out of CI deliberately; see `proof/package.json`). Nine
 container boots (one GREEN, seven RED, one GREEN), so it takes several
 minutes.

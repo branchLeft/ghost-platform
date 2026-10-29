@@ -1,5 +1,5 @@
 // Prints the host's mail-spool Compose file, rendered by render-core exactly
-// as the delivery runbook renders it. Needs `npm run build` in render-core.
+// as the delivery runbook renders it. Needs `pnpm run build` in render-core.
 // Usage: node scripts/render-mail-spool-compose.mjs <image@sha256:...> <drainPort> <uid>...
 import { renderMailSpoolStack } from '../render-core/dist/index.js';
 

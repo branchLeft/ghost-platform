@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "The storage gateway's request admission core: the request router, the operation allowlist and the folder guard that keep each tenant inside its own folder of a shared bucket (see ghost-platform-docs/21-storage-decision.md, 'The gateway, in outline').",
   "type": "module",
   "main": "dist/index.js",

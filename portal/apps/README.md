@@ -162,14 +162,14 @@ A pending sign-in rides in a cookie sealed under a key drawn at start, so a rest
 
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity
-verifier first (`npm ci && npm run build` in `portal/data` and
+verifier first (`pnpm install --frozen-lockfile && pnpm run build` in `portal/data` and
 `services/identity`): this package imports their built output.
 
 ## Tests
 
 ```sh
-nvm use && npm ci
-PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres npm run coverage
+nvm use && pnpm install --frozen-lockfile
+PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres pnpm run coverage
 ```
 
 The URL is a superuser on a throwaway cluster, as for `portal/data`.

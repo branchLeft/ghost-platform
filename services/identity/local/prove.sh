@@ -46,4 +46,4 @@ done
 export ZITADEL_URL="http://localhost:${PROOF_ZITADEL_PORT}"
 export ZITADEL_TOKEN_FILE="$PROOF_STATE_DIR/reconciler.pat"
 cd "$service"
-npx vitest run --config vitest.local.config.ts
+pnpm exec vitest run --config vitest.local.config.ts

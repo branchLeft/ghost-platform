@@ -1,0 +1,3 @@
+# Moved from package.json's `overrides`, which pnpm does not read.
+overrides:
+  nodemailer: ^9.1.1

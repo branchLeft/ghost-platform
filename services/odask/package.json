@@ -3,20 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "The on-demand TLS ask endpoint Caddy calls once per new hostname before issuing a certificate -- 200 only for a hostname the descriptor set declares, fail closed otherwise. Reachable only from its own edge (see ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html §02, E1-E5).",
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "pretest:unit": "npm run build",
+    "pretest:unit": "pnpm run build",
     "test:unit": "vitest run",
-    "precoverage": "npm run build",
+    "precoverage": "pnpm run build",
     "coverage": "vitest run --coverage",
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@branchleft/ghost-platform-render-core": "file:../../render-core",
+    "@branchleft/ghost-platform-render-core": "link:../../render-core",
     "express": "^5.2.1"
   },
   "devDependencies": {

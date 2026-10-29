@@ -17,7 +17,7 @@ on:
   push:
     branches: [main]
   # A pull request starts this only when its diff touches something the job
-  # reads: the service, render-core (linked by `file:` and built first) and the
+  # reads: the service, render-core (linked by `link:` and built first) and the
   # demo-host golden files and wrapper the unit tests compare against. Push to
   # main stays unfiltered as the backstop.
   pull_request:
@@ -48,33 +48,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: services/broker/.nvmrc
           registry-url: https://npm.pkg.github.com
           scope: '@branchleft'
-          cache: npm
-          cache-dependency-path: services/broker/package-lock.json
+          cache: pnpm
+          cache-dependency-path: services/broker/pnpm-lock.yaml
 
-      # The service links render-core by a relative file: dependency and
+      # The service links render-core by a relative link: dependency and
       # needs its compiled types.
       - name: Build render-core
         working-directory: render-core
-        run: npm ci && npm run build
+        run: pnpm install --frozen-lockfile && pnpm run build
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Type check
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Build
-        run: npm run build
+        run: pnpm run build
 
       - name: Test
-        run: npm run coverage
+        run: pnpm run coverage

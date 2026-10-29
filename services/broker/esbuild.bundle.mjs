@@ -1,5 +1,5 @@
 // Produces the self-contained ESM artefacts RUNBOOK-broker-deploy.md's
-// install step ships (why a bundle rather than `npm ci` on the host: see
+// install step ships (why a bundle rather than `pnpm install --frozen-lockfile` on the host: see
 // "Runtime: a bundled single file" in that runbook).
 import { build } from 'esbuild';
 

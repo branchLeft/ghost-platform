@@ -490,9 +490,9 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 ## Tests
 
 ```sh
-npm ci && npm run coverage                       # unit, 90% threshold on every metric
+pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci npm run test:image       # real Ghost 6.55.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.55.0 in Docker
 ```
 
 The image test (`test/image/`) drives a real Ghost 6.55.0 container through

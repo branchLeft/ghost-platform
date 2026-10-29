@@ -2,6 +2,7 @@
   "name": "@branchleft/ghost-platform-render-core",
   "version": "0.2.0",
   "license": "SEE LICENSE IN LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "The tenant descriptor: schema, branded validated types and the three cross-field invariants both reconcilers render from.",
   "type": "module",
   "main": "dist/index.js",
@@ -31,7 +32,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "pnpm run build",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage"
   },
