@@ -61,6 +61,8 @@ export type RefusalCode =
   | 'key-outside-folder'
   /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
   | 'upload-not-bound'
+  /** The request body is larger than the tenant's upload ceiling. Nothing was sent upstream. */
+  | 'body-too-large'
   /** The storage service did not answer inside the gateway's deadline. Retryable. */
   | 'upstream-timeout'
   /** The storage service could not be reached or sent an answer the gateway cannot relay. Retryable. */
