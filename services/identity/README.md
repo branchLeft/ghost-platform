@@ -40,7 +40,7 @@ decides them.
 ```
 
 ```bash
-npm run build
+pnpm run build
 ZITADEL_URL=https://<identity hostname> ZITADEL_TOKEN_FILE=/path/to/token \
   node dist/cli.js config.json outputs.json
 ```
@@ -195,7 +195,7 @@ in any cloud.
 
 ## Tests
 
-`npm run test:unit`; `npm run coverage` enforces the thresholds in
+`pnpm run test:unit`; `pnpm run coverage` enforces the thresholds in
 `vitest.config.ts`.
 
 It also starts a small SMTP sink standing in for the mail host (`local/sink.mjs`)

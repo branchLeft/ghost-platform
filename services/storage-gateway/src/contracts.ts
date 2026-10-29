@@ -62,7 +62,13 @@ export type RefusalCode =
   /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
   | 'upload-not-bound'
   /** The request body is larger than the tenant's upload ceiling. Nothing was sent upstream. */
-  | 'body-too-large';
+  | 'body-too-large'
+  /** The storage service did not answer inside the gateway's deadline. Retryable. */
+  | 'upstream-timeout'
+  /** The storage service could not be reached or sent an answer the gateway cannot relay. Retryable. */
+  | 'upstream-unavailable'
+  /** The storage service kept asking the gateway to slow down until the deadline. Retryable. */
+  | 'upstream-throttled';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {

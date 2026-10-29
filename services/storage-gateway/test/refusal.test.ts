@@ -13,6 +13,9 @@ const CODES: RefusalCode[] = [
   'key-outside-folder',
   'upload-not-bound',
   'body-too-large',
+  'upstream-timeout',
+  'upstream-unavailable',
+  'upstream-throttled',
 ];
 
 describe('refusal', () => {
@@ -38,5 +41,15 @@ describe('refusal', () => {
   it('answers an oversized body with 413 and the code the SDK reports as too large', () => {
     expect(refusal('body-too-large').status).toBe(413);
     expect(refusalBody(refusal('body-too-large'))).toContain('<Code>EntityTooLarge</Code>');
+  });
+
+  it('answers the storage service being slow or busy with a status and code the SDK retries', () => {
+    expect(refusal('upstream-timeout').status).toBe(504);
+    expect(refusalBody(refusal('upstream-timeout'))).toContain('<Code>RequestTimeout</Code>');
+    expect(refusal('upstream-throttled').status).toBe(503);
+    expect(refusalBody(refusal('upstream-throttled'))).toContain('<Code>SlowDown</Code>');
+    expect(refusalBody(refusal('upstream-unavailable'))).toContain(
+      '<Code>ServiceUnavailable</Code>'
+    );
   });
 });

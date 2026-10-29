@@ -50,7 +50,7 @@ mutate this guard.
 
 ## Running the live gate
 
-Needs Docker, `csp/proof`'s own `npm install` for Playwright, and render-core built.
+Needs Docker, `csp/proof`'s own `pnpm install` for Playwright, and render-core built.
 
 ```sh
 ./csp/gate/csp-regression-gate.sh [--sabotage=no-policy|no-hashes] [IMAGE]

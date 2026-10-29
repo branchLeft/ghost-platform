@@ -8,7 +8,7 @@ const REFERENCE_VECTORS_PATH = new URL('./fixtures/reference-vectors.json', impo
 
 /**
  * Regenerates the checked-in reference vectors with the installed reference
- * signer. Runs only on request (`npm run vectors:generate`); the normal suite
+ * signer. Runs only on request (`pnpm run vectors:generate`); the normal suite
  * instead re-signs every vector and fails if the file has drifted from what
  * the signer produces.
  */

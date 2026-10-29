@@ -1,5 +1,5 @@
 // Tests for the theme-hash gate, against render-core's real built
-// renderEdgeSiteBlock (run `npm ci && npm run build` in render-core first).
+// renderEdgeSiteBlock (run `pnpm install --frozen-lockfile && pnpm run build` in render-core first).
 // Only node:test -- no package.json here.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';

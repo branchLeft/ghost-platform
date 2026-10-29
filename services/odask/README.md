@@ -35,9 +35,9 @@ ceiling there is.
 ## Testing
 
 ```bash
-npm ci
-npm run typecheck
-npm run coverage   # unit + a real-socket reachability test, threshold 90%
+pnpm install --frozen-lockfile
+pnpm run typecheck
+pnpm run coverage   # unit + a real-socket reachability test, threshold 90%
 ```
 
 The real-socket reachability test (`test/integration/reachability.test.ts`)
@@ -207,7 +207,7 @@ How to reproduce this test's sabotage case (recorded verbatim in the
 delivering PR's body): in `src/server.ts`, change
 `app.listen(config.port, config.bindHost, () => { ... })` to
 `app.listen(config.port, config.bindHost && '::', () => { ... })`, then
-`npm run build` and re-run this file. `config.bindHost` is always a
+`pnpm run build` and re-run this file. `config.bindHost` is always a
 non-empty string (`config.ts` throws otherwise), so the `&&` is a no-op
 in disguise — every request still reads as "bound to `config.bindHost`"
 in a log line or a config dump, while the process actually binds every

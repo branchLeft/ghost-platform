@@ -1,0 +1,4 @@
+# pnpm 11 blocks dependency build scripts unless named here. protobufjs only
+# writes a warning from its postinstall and builds nothing this package reads.
+allowBuilds:
+  protobufjs: false

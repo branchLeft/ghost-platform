@@ -174,10 +174,10 @@ never called.
 
 Run from the repo root, or let the script `cd` there itself.
 `<drain-sidecar-dist-dir>` is `services/drain-sidecar`'s own directory,
-built first (`npm run build` there). The script mounts its `dist/`,
+built first (`pnpm run build` there). The script mounts its `dist/`,
 `node_modules/` and `package.json` into a plain `node:26.5.0-bookworm-slim`
 container rather than building `services/drain-sidecar/Dockerfile` itself,
-because that Dockerfile's own `npm ci` needs a GitHub Packages read token
+because that Dockerfile's own `pnpm install --frozen-lockfile` needs a GitHub Packages read token
 this proof does not assume is available — the sidecar code under test is
 identical either way.
 

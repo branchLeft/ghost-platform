@@ -12,3 +12,4 @@ export {
   type SigV4VerifierOptions,
 } from './sigv4-verifier.js';
 export * from './body.js';
+export * from './upstream.js';

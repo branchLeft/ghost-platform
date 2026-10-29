@@ -58,7 +58,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
-      # reaches `npm ci` without entering a layer or the build history.
+      # reaches `pnpm install` without entering a layer or the build history.
       - name: Build image
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

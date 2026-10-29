@@ -14,7 +14,7 @@ as `@branchleft/ghost-platform-tenant` — called directly with
 excluded; neither renderer receives one, both emit only a reference),
 `render-core/test/runtime.js#uploadLimits()`'s defaults, and
 `/etc/branchleft/blog.env` as the secrets path. Recorded rather than called
-live at test time because `render-core-ci.yml` runs `npm ci` inside
+live at test time because `render-core-ci.yml` runs `pnpm install --frozen-lockfile` inside
 `render-core/` only (`working-directory: render-core`); a live cross-package
 import of `infra/tenant/environment.ts` resolves locally (both packages
 checked out in one worktree) but fails in CI, where `infra/tenant`'s own

@@ -22,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== Building render-core (the proof renders through its built output) =="
-( cd render-core && ${NPM:-npm} ci >/dev/null && ${NPM:-npm} run build >/dev/null )
+( cd render-core && ${PNPM:-pnpm} install --frozen-lockfile >/dev/null && ${PNPM:-pnpm} run build >/dev/null )
 
 echo "== Building images =="
 docker build -q -t csp-proof-ghost:local . >/dev/null

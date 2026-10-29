@@ -14,5 +14,5 @@ runs.
 ## Usage
 
 ```sh
-IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
+IMAGE=ghost-platform:ci pnpm --dir adapters/sso run test:image
 ```

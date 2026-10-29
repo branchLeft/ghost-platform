@@ -51,6 +51,21 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'The request body is larger than this account allows.',
     status: 413,
   },
+  'upstream-timeout': {
+    code: 'upstream-timeout',
+    message: 'The storage service did not answer in time. Try again.',
+    status: 504,
+  },
+  'upstream-unavailable': {
+    code: 'upstream-unavailable',
+    message: 'The storage service is not available. Try again.',
+    status: 503,
+  },
+  'upstream-throttled': {
+    code: 'upstream-throttled',
+    message: 'The storage service is busy. Try again.',
+    status: 503,
+  },
 };
 
 /** The one refusal for a code. Messages never echo the bucket, key or folder. */
@@ -60,13 +75,19 @@ export function refusal(code: RefusalCode): Refusal {
 
 /** S3-style error body, so Ghost's SDK reports a clear error instead of a parse failure. */
 export function refusalBody(r: Refusal): string {
-  const s3Code =
-    r.code === 'body-too-large'
-      ? 'EntityTooLarge'
-      : r.status >= 500
-        ? 'ServiceUnavailable'
-        : r.status === 400
-          ? 'InvalidURI'
-          : 'AccessDenied';
-  return `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${s3Code}</Code><Message>${r.message}</Message></Error>`;
+  return s3ErrorBody(s3CodeFor(r), r.message);
+}
+
+/** The S3 error code the SDK's retry logic reads: SlowDown and RequestTimeout are both retried. */
+function s3CodeFor(r: Refusal): string {
+  if (r.code === 'body-too-large') return 'EntityTooLarge';
+  if (r.code === 'upstream-throttled') return 'SlowDown';
+  if (r.code === 'upstream-timeout') return 'RequestTimeout';
+  if (r.status >= 500) return 'ServiceUnavailable';
+  return r.status === 400 ? 'InvalidURI' : 'AccessDenied';
+}
+
+/** A minimal S3 error document. Both arguments must already be safe to show a tenant. */
+export function s3ErrorBody(s3Code: string, message: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${s3Code}</Code><Message>${message}</Message></Error>`;
 }

@@ -74,9 +74,9 @@ RUN useradd --system --home-dir /var/lib/branchleft-broker --shell /usr/sbin/nol
 # container actually boots (`ENTRYPOINT`, below).
 RUN printf '[Unit]\nDescription=stand-in for the per-colour compose unit\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\nExecStop=/bin/true\n' > /etc/systemd/system/branchleft-compose@.service
 
-# The bundle: built on the host by `npm run bundle` (RUNBOOK-broker-deploy.md
+# The bundle: built on the host by `pnpm run bundle` (RUNBOOK-broker-deploy.md
 # step 4) and copied in exactly as the runbook's rsync step would ship it --
-# this Dockerfile never runs `npm ci`/`npm run bundle` itself, so it never
+# this Dockerfile never runs `pnpm install`/`pnpm run bundle` itself, so it never
 # needs the GitHub Packages token render-core's own registry requires.
 RUN mkdir -p /opt/branchleft/broker/releases/proof
 COPY services/broker/dist/bundle/ /opt/branchleft/broker/releases/proof/

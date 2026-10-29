@@ -52,7 +52,7 @@ function problems(text) {
   }
   if (!/needs:\s*test\b/.test(push)) found.push('push job is not gated on tests');
   if (!jobBlock(text, 'test')) found.push('no test job');
-  if (!/\bnpm run typecheck\b/.test(body) || !/\bnpm run test:unit\b/.test(body)) {
+  if (!/\bpnpm run typecheck\b/.test(body) || !/\bpnpm run test:unit\b/.test(body)) {
     found.push('test job does not type check and run the unit tests');
   }
   const guard = (push.match(/^ {4}if: \|\n((?: {6}.*\n?)+)/m) ?? [])[1] ?? '';
