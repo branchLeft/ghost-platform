@@ -357,7 +357,7 @@ function sanitisedError(status: number, document: string, head: boolean): Upstre
 
 /** Cuts a streamed body that goes quiet, so a stalled read cannot hold the connection forever. */
 function guardIdle(stream: Readable, idleMs: number): Readable {
-  let timer: NodeJS.Timeout | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const arm = (): void => {
     if (timer !== undefined) clearTimeout(timer);
     timer = setTimeout(() => {
@@ -447,7 +447,13 @@ export function createUpstream(options: UpstreamOptions): Upstream {
 
     // The signing key is about to be lent to this request: re-check the tenant
     // fence here as well, so a caller that skipped admission cannot borrow it.
-    if (route.bucket !== tenant.bucket || !route.key.startsWith(`${tenant.folder}/`)) {
+    // A dot or empty segment survives escaping and is collapsed by URL parsing,
+    // which would move the request out of the folder the prefix test just checked.
+    if (
+      route.bucket !== tenant.bucket ||
+      !route.key.startsWith(`${tenant.folder}/`) ||
+      route.key.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')
+    ) {
       return before(refusedAnswer('key-outside-folder', 'AccessDenied'));
     }
     const method = METHOD_OF[route.operation];

@@ -191,7 +191,7 @@ async function readAll(stream: Readable): Promise<string> {
 
 /** Rejects with a clear message instead of hanging the test when the gateway does not answer. */
 async function answerWithin(promise: Promise<UpstreamAnswer>, ms: number): Promise<UpstreamAnswer> {
-  let timer: NodeJS.Timeout | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const never = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms);
   });
@@ -442,6 +442,38 @@ describe('upstream: guards before the key is used', () => {
     });
     expect(answer.refusal?.code).toBe('key-outside-folder');
     expect(double.seen).toHaveLength(0);
+  });
+
+  it.each([
+    ['a dot-dot segment', `${FOLDER}/../other0000/x`],
+    ['a trailing dot-dot segment', `${FOLDER}/a/..`],
+    ['a dot segment', `${FOLDER}/./x`],
+    ['an empty segment', `${FOLDER}//x`],
+    ['a trailing slash', `${FOLDER}/x/`],
+  ])('sends nothing for a key with %s', async (_name, key) => {
+    const double = await startDouble((_, res) => ok200(res));
+    const up = createUpstream(rig().options(double));
+    const get = await prepare(GET);
+    const answer = await up.forward({
+      ...get,
+      route: { ...get.route, key },
+      tenant: TENANT,
+    });
+    expect(answer.refusal?.code).toBe('key-outside-folder');
+    expect(double.seen).toHaveLength(0);
+  });
+
+  it('keeps a percent-encoded dot literal rather than decoding it into a dot segment', async () => {
+    const double = await startDouble((_, res) => ok200(res));
+    const up = createUpstream(rig().options(double));
+    const get = await prepare(GET);
+    const answer = await up.forward({
+      ...get,
+      route: { ...get.route, key: `${FOLDER}/%2e%2e/x` },
+      tenant: TENANT,
+    });
+    expect(answer.status).toBe(200);
+    expect(double.seen[0]?.url).toBe(`/${TENANT.bucket}/${FOLDER}/%252e%252e/x`);
   });
 
   it('sends nothing for another bucket', async () => {
@@ -782,7 +814,7 @@ describe('upstream: the storage service asks the gateway to slow down', () => {
     );
     const get = await prepare(GET);
     const answer = await answerWithin(up.forward({ ...get, tenant: TENANT }), 2000);
-    expect(['upstream-timeout', 'upstream-throttled']).toContain(answer.refusal?.code);
+    expect(answer.refusal?.code).toBe('upstream-timeout');
   });
 });
 
