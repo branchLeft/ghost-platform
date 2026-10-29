@@ -373,6 +373,37 @@ describe('write ledger', () => {
     expect(ledger.sumParts('key-a', 'u')).toBe(300);
   });
 
+  it('commits every write with synchronous = FULL in WAL mode, before it returns', () => {
+    expect(ledger.durability()).toEqual({ synchronous: 'FULL', journalMode: 'wal' });
+  });
+
+  it('drops the part sizes of an upload once it completes or aborts, and keeps them on failure', () => {
+    const recorder = new UsageRecorder({ ledger, meter: new UsageMeter(), now: () => AT });
+    const part = (uploadId: string): Step => ({
+      tenant: TENANT_A,
+      route: route('UploadPart', TENANT_A, 'p.bin', { uploadId, partNumber: 1 }),
+      bodySize: 100,
+      status: 200,
+    });
+    const finish = (operation: AllowedOperation, uploadId: string, status: number): Step => ({
+      tenant: TENANT_A,
+      route: route(operation, TENANT_A, 'p.bin', { uploadId }),
+      bodySize: 10,
+      status,
+    });
+    run(recorder, [part('done'), part('aborted'), part('failed')]);
+    expect(ledger.sumParts('key-a', 'done')).toBe(100);
+
+    run(recorder, [
+      finish('CompleteMultipartUpload', 'done', 200),
+      finish('AbortMultipartUpload', 'aborted', 204),
+      finish('CompleteMultipartUpload', 'failed', 500),
+    ]);
+    expect(ledger.sumParts('key-a', 'done')).toBe(0);
+    expect(ledger.sumParts('key-a', 'aborted')).toBe(0);
+    expect(ledger.sumParts('key-a', 'failed')).toBe(100);
+  });
+
   it('fails the write, so the caller can refuse the request, when the ledger cannot save', () => {
     const recorder = new UsageRecorder({ ledger, meter: new UsageMeter(), now: () => AT });
     ledger.close();
