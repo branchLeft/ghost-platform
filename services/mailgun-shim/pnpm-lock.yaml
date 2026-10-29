@@ -72,7 +72,7 @@ importers:
         version: 10.4.0(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
       nodemailer:
         specifier: ^10.1.0
-        version: 10.1.0
+        version: 10.1.4
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
@@ -1368,8 +1368,8 @@ packages:
     resolution: {integrity: sha512-VijLXbi3UACN69I0JVXJsX4tjACjNoQDgv2gTF6sx2wWEi8tkSg2eX8p5gSIFi8z2+DL3oHmY6OyKce38SDolg==}
     engines: {node: ^18 || ^20 || >= 21}
 
-  nodemailer@10.1.0:
-    resolution: {integrity: sha512-fXW8AulB25aOTuwfRYV6lqHyfz2VM4rr4SGXH03mE7x5znEUpzL5mu6anARUpZN7744Ziwkmr4AxSLPJsBQspg==}
+  nodemailer@10.1.4:
+    resolution: {integrity: sha512-EsMnOR2oRv4LGnWvHgcVYkkQ4O2j8KO4WTw6l+PHR4sOXo8SAgIraxtEnGDmotjbhv0hDsu3IuDIFZm8iXwO4A==}
     engines: {node: '>=20.0.0'}
 
   object-inspect@1.13.4:
@@ -2662,7 +2662,7 @@ snapshots:
       iconv-lite: 0.7.3
       libmime: 5.4.7
       linkify-it: 5.0.2
-      nodemailer: 10.1.0
+      nodemailer: 10.1.4
       punycode.js: 2.3.1
       tlds: 1.261.0
 
@@ -2698,7 +2698,7 @@ snapshots:
 
   node-addon-api@8.9.2: {}
 
-  nodemailer@10.1.0: {}
+  nodemailer@10.1.4: {}
 
   object-inspect@1.13.4: {}
 
@@ -2859,7 +2859,7 @@ snapshots:
   smtp-server@3.19.21:
     dependencies:
       ipv6-normalize: 1.0.1
-      nodemailer: 10.1.0
+      nodemailer: 10.1.4
       punycode.js: 2.3.1
 
   source-map-js@1.2.2: {}
