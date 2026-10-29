@@ -39,6 +39,6 @@ exact attack a prior spike measured.
 ./csp/proof/run-proof.sh
 ```
 
-Needs Docker, and `csp/proof`'s own `npm install` for Playwright (see
+Needs Docker, and `csp/proof`'s own `pnpm install` for Playwright (see
 `csp/proof/package.json`) — kept out of the root `package.json` and out of
 CI deliberately, like `widgets/proof/`.

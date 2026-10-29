@@ -1,0 +1,15 @@
+# Moved from package.json's `overrides`, which pnpm does not read.
+overrides:
+  nodemailer: ^10.1.0
+  deepmerge-ts: ^8.0.2
+
+# pnpm 11 blocks dependency build scripts unless named here. esbuild runs
+# from its platform binary package without its postinstall.
+allowBuilds:
+  esbuild: false
+  better-sqlite3: false
+
+# src/auth.ts augments `express-serve-static-core`, which npm hoisted to the
+# top level and pnpm keeps private to @types/express.
+publicHoistPattern:
+  - '@types/express-serve-static-core'

@@ -15,7 +15,7 @@ change as a normally signed commit instead.
 commit it makes is signed by GitHub itself, the same way a web-UI edit or a
 squash-merge already is, because there is no git identity or key for a CI
 job to hold in the first place. The workflow submits the already-generated
-`package-lock.json` as one `fileChanges` addition, keyed to `expectedHeadOid`
+`pnpm-lock.yaml` as one `fileChanges` addition, keyed to `expectedHeadOid`
 so GitHub itself rejects the write if the branch has moved since checkout.
 After the mutation, the job reads the new commit back
 (`GET /repos/{owner}/{repo}/commits/{sha}`) and refuses to report success
@@ -24,8 +24,8 @@ verifies, not just that the API accepted the write.
 
 This mirrors the same fix already landed for the sibling pnpm-lockfile
 workflow in `ghost-platform-tenant-template` (`generate-pnpm-lockfile.yml`),
-adapted for a single npm `package-lock.json` in a caller-supplied
-`package_dir` rather than a fixed root `pnpm-lock.yaml`. `path` travels as
+adapted for a single `pnpm-lock.yaml` in a caller-supplied `package_dir`
+rather than a fixed root one. `path` travels as
 its own GraphQL variable rather than a literal in the query text, because
 `package_dir` is caller input here in a way the sibling workflow's fixed
 paths never were.

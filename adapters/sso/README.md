@@ -83,9 +83,9 @@ So before returning the account, the adapter asks Ghost's `User` model whether t
 ## Tests
 
 ```sh
-npm ci && npm run coverage                       # unit, 90% threshold on every metric
+pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci npm run test:image       # real Ghost 6.55.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.55.0 in Docker
 ```
 
 The image test (`test/image/`) runs the built image through every case the design measured: a suspended and an active account, no token, a tampered, forged, expired or other-tenant token, a replay, a revoke, a token naming the owner, boot and 200 with a malformed key and with each value missing, and a planted content adapter. It also covers a replay across a Ghost restart, and a token sent to the site root. Every refusal asserts both Ghost's 403 and the adapter's logged reason. `build.yml` runs it on every PR.

@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "Calls Ghost's two existing admin exports (content & settings, post analytics) against a drained colour and hands back one archive plus a manifest, audited as a bulk read of a tenant's data (see ghost-platform-docs/19-try-it-now-design/08-portal.html §08b).",
   "type": "module",
   "main": "dist/cli.js",

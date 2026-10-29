@@ -5,7 +5,7 @@
 // The signing gateway allows only these shapes (see the README, "Storage
 // request contract").
 //
-//   IMAGE=ghost-platform:ci npm --prefix adapters/scanning-storage run test:image
+//   IMAGE=ghost-platform:ci pnpm --dir adapters/scanning-storage run test:image
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';

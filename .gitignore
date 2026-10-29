@@ -17,10 +17,10 @@ __pycache__/
 .coverage.*
 
 
-# This repo tracks package-lock.json (eight of them) and CI runs `npm ci`; a
-# pnpm install here is a mistake, and its lockfile must not get committed.
-pnpm-lock.yaml
-pnpm-workspace.yaml
+# This repo tracks one pnpm-lock.yaml per package and CI runs
+# `pnpm install --frozen-lockfile`; an npm install here is a mistake, and its
+# lockfile must not get committed.
+package-lock.json
 portal/*/dist
 portal/*/coverage
 portal/apps/test/.mutants/

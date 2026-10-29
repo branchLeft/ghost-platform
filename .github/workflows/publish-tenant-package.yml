@@ -3,8 +3,9 @@ name: Publish tenant package
 # Builds and publishes infra/tenant/ as @branchleft/ghost-platform-tenant to
 # GitHub Packages whenever a stable semver tag is pushed. Mirrors
 # branchLeft/components' publish.yml, adapted for this repo's package
-# manager (npm, not pnpm) and for a plain `tsc` build (no bundler -- this is
-# a server-side Pulumi component, not a browser library).
+# manager (also pnpm, one project rather than a workspace) and for a plain
+# `tsc` build (no bundler -- this is a server-side Pulumi component, not a
+# browser library).
 #
 # Deliberately excludes infra-tenant-ci.yml's job from this file and vice
 # versa: that workflow type-checks every push/PR touching this repo and
@@ -40,16 +41,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: infra/tenant/.nvmrc
           registry-url: https://npm.pkg.github.com
           scope: '@branchleft'
-          cache: npm
-          cache-dependency-path: infra/tenant/package-lock.json
+          cache: pnpm
+          cache-dependency-path: infra/tenant/pnpm-lock.yaml
 
-      # `npm publish` takes the version from package.json and ignores the tag,
+      # `pnpm publish --no-git-checks` takes the version from package.json and ignores the tag,
       # so the two can disagree. A tag behind package.json fails closed on the
       # duplicate-version check, but a tag *ahead* of it would quietly publish
       # something other than what the tag names.
@@ -66,11 +70,11 @@ jobs:
       # now takes a dev dependency on `@branchleft/tsconfig`, from the same
       # registry, and GitHub Packages answers 401 to an anonymous read.
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish
-        run: npm publish
+        run: pnpm publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

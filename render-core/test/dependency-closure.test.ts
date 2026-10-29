@@ -5,17 +5,13 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJsonPath = join(here, '..', 'package.json');
-const lockfilePath = join(here, '..', 'package-lock.json');
+const lockfilePath = join(here, '..', 'pnpm-lock.yaml');
 const srcDir = join(here, '..', 'src');
 
 interface PackageJson {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
-}
-
-interface PackageLock {
-  packages?: Record<string, { resolved?: string }>;
 }
 
 function readJson<T>(path: string): T {
@@ -79,12 +75,14 @@ describe('dependency closure — no Pulumi module anywhere in it', () => {
   });
 
   it('the resolved lockfile tree contains no Pulumi package at any depth', () => {
-    const lock = readJson<PackageLock>(lockfilePath);
-    const resolvedPaths = Object.keys(lock.packages ?? {});
-    // Lockfile keys are paths like "node_modules/foo/node_modules/bar" —
-    // this catches a transitive dependency a direct one pulled in, not only
-    // a direct one this package declared itself.
-    expect(namesContainingPulumi(resolvedPaths)).toEqual([]);
+    const lock = readFileSync(lockfilePath, 'utf-8');
+    // Every resolved package is a two-space-indented "name@version:" key
+    // (scoped names quoted) — this catches a transitive dependency a direct
+    // one pulled in, not only a direct one this package declared itself.
+    const keyPattern = /^ {2}'?(@?[^@\s']+)@[^\s']*'?:/gm;
+    const resolvedNames = [...lock.matchAll(keyPattern)].map((match) => match[1]);
+    expect(resolvedNames.length).toBeGreaterThan(0); // control: the matcher finds packages
+    expect(namesContainingPulumi(resolvedNames)).toEqual([]);
   });
 
   it('control case: the specifier classifier flags a bare import and clears a relative one', () => {

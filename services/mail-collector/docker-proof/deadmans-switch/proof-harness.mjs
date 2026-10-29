@@ -1,5 +1,5 @@
 // Drives the real, built createDeadMansSwitch against a real local
-// Healthchecks instance. Run from services/mail-collector/ after `npm run
+// Healthchecks instance. Run from services/mail-collector/ after `pnpm run
 // build`, with the healthchecks container already up. Never run against a
 // production Healthchecks URL. See proof-harness.md#what-this-drives.
 import { createDeadMansSwitch } from '../../dist/heartbeat.js';

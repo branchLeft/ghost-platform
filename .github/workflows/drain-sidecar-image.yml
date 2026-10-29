@@ -71,7 +71,7 @@ jobs:
         run: docker build --tag ghost-platform:ci .
 
       # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
-      # reaches `npm ci` without entering a layer or the build history.
+      # reaches `pnpm install` without entering a layer or the build history.
       - name: Build sidecar image
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

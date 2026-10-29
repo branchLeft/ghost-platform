@@ -66,8 +66,8 @@ test('builds from render-core/ with the run token, never a stored secret', () =>
 });
 
 test('type-checks and tests before the release step', () => {
-  const typecheck = render.indexOf('npm run typecheck');
-  const unit = render.indexOf('npm run test:unit');
+  const typecheck = render.indexOf('pnpm run typecheck');
+  const unit = render.indexOf('pnpm run test:unit');
   const release = render.indexOf('- name: Publish\n');
   assert.ok(typecheck > -1 && unit > -1 && release > -1);
   assert.ok(typecheck < release && unit < release);
