@@ -154,7 +154,7 @@ export async function readBody(
     const wasSpooling = path !== undefined;
     await discard();
     if (aborted()) return fail('aborted');
-    const code = (err as NodeJS.ErrnoException).code;
+    const code = (err as { code?: unknown }).code;
     return fail(
       wasSpooling && typeof code === 'string' && code.startsWith('E') ? 'spool-error' : 'read-error'
     );
