@@ -2,9 +2,9 @@ name: Generate lockfile in CI
 
 # Owner ruling: a package that takes a dependency on a private
 # `@branchleft/*` GitHub Packages package (for example `@branchleft/tsconfig`)
-# cannot get a `package-lock.json` on a workstation whose GitHub Packages
+# cannot get a `pnpm-lock.yaml` on a workstation whose GitHub Packages
 # read token belongs to a suspended machine account -- there is no live
-# token to authenticate the registry read `npm install` needs. This workflow
+# token to authenticate the registry read `pnpm install` needs. This workflow
 # generates the lockfile in CI instead, using the run's own `GITHUB_TOKEN`
 # (scoped `packages: read` for exactly this), and commits the result back to
 # the branch that asked for it. Nobody has to mint a new long-lived token to
@@ -177,7 +177,7 @@ jobs:
       # `persist-credentials: false`: nothing here needs the token in this
       # checkout's git config at all -- the commit itself goes through the
       # GitHub API (`gh api graphql`, its own `GH_TOKEN` env var) rather
-      # than `git push`, so `npm install` never runs with a write-scoped
+      # than `git push`, so `pnpm install` never runs with a write-scoped
       # token sitting in `.git/config` either.
       - name: Checkout target branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -200,6 +200,9 @@ jobs:
             exit 1
           fi
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -210,20 +213,22 @@ jobs:
       # Installs from a copy in $RUNNER_TEMP, never from $PACKAGE_DIR itself
       # or the repo root -- both carry a committed `.npmrc` (every
       # `services/*` and `adapters/*` package does, and so does the repo
-      # root), and npm's project-level config outranks the user-level config
-      # `setup-node` just wrote, in npm's own precedence order. A branch
+      # root), and pnpm's project-level config outranks the user-level config
+      # `setup-node` just wrote, in pnpm's own precedence order. A branch
       # author's `.npmrc` could point `@branchleft:registry` at a foreign
       # host paired with `_authToken=${NODE_AUTH_TOKEN}` and read this run's
       # token straight out of the environment. An isolated directory holding
-      # only `package.json` (and any existing lockfile, so npm can reuse it
-      # as a hint) has no project `.npmrc` to take effect at all.
+      # only `package.json` (and any existing lockfile, so pnpm can reuse it
+      # as a hint, and `pnpm-workspace.yaml` where there is one, because
+      # pnpm reads `overrides` only from there and auth never) has no project
+      # `.npmrc` to take effect at all.
       #
       # `--ignore-scripts`: defence in depth alongside the isolation above,
       # not a substitute for it -- registry metadata alone can't run code,
-      # but nothing here forces that to stay true forever. `--package-lock-
-      # only`: this job's one output is the lockfile, never node_modules on
-      # disk or a build.
-      - name: Generate package-lock.json in an isolated directory
+      # but nothing here forces that to stay true forever. `--lockfile-only`:
+      # this job's one output is the lockfile, never node_modules on disk or
+      # a build.
+      - name: Generate pnpm-lock.yaml in an isolated directory
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
@@ -232,19 +237,22 @@ jobs:
           WORKDIR="$RUNNER_TEMP/lockfile-install"
           mkdir -p "$WORKDIR"
           cp "$PACKAGE_DIR/package.json" "$WORKDIR/package.json"
-          if [ -f "$PACKAGE_DIR/package-lock.json" ]; then
-            cp "$PACKAGE_DIR/package-lock.json" "$WORKDIR/package-lock.json"
+          if [ -f "$PACKAGE_DIR/pnpm-lock.yaml" ]; then
+            cp "$PACKAGE_DIR/pnpm-lock.yaml" "$WORKDIR/pnpm-lock.yaml"
           fi
-          (cd "$WORKDIR" && npm install --package-lock-only --ignore-scripts)
-          cp "$WORKDIR/package-lock.json" "$PACKAGE_DIR/package-lock.json"
+          if [ -f "$PACKAGE_DIR/pnpm-workspace.yaml" ]; then
+            cp "$PACKAGE_DIR/pnpm-workspace.yaml" "$WORKDIR/pnpm-workspace.yaml"
+          fi
+          (cd "$WORKDIR" && pnpm install --lockfile-only --ignore-scripts)
+          cp "$WORKDIR/pnpm-lock.yaml" "$PACKAGE_DIR/pnpm-lock.yaml"
 
-      # `npm install` above only ever touched the isolated directory, so
+      # `pnpm install` above only ever touched the isolated directory, so
       # this checkout should show exactly one line of change: the lockfile
       # this step just copied back in, either modified or newly created.
       # An exact match against both porcelain forms, not a substring test --
-      # a substring would also pass `services/x/package-lock.json.bak` or a
+      # a substring would also pass `services/x/pnpm-lock.yaml.bak` or a
       # rename whose destination happens to contain this path.
-      - name: Refuse any change outside package-lock.json
+      - name: Refuse any change outside pnpm-lock.yaml
         env:
           PACKAGE_DIR: ${{ needs.validate.outputs.package_dir }}
         run: |
@@ -252,10 +260,10 @@ jobs:
           CHANGED="$(git status --porcelain)"
           if [ -n "$CHANGED" ]; then
             OTHER="$(printf '%s\n' "$CHANGED" | grep -v -x -F \
-              -e " M $PACKAGE_DIR/package-lock.json" \
-              -e "?? $PACKAGE_DIR/package-lock.json" || true)"
+              -e " M $PACKAGE_DIR/pnpm-lock.yaml" \
+              -e "?? $PACKAGE_DIR/pnpm-lock.yaml" || true)"
             if [ -n "$OTHER" ]; then
-              echo "::error::npm install changed something other than $PACKAGE_DIR/package-lock.json; refusing to commit any of it:"
+              echo "::error::pnpm install changed something other than $PACKAGE_DIR/pnpm-lock.yaml; refusing to commit any of it:"
               echo "$OTHER"
               exit 1
             fi
@@ -274,7 +282,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          FILE_PATH="$PACKAGE_DIR/package-lock.json"
+          FILE_PATH="$PACKAGE_DIR/pnpm-lock.yaml"
           CHANGE="$(git status --porcelain -- "$FILE_PATH")"
           if [ -z "$CHANGE" ]; then
             echo "no change to $FILE_PATH; nothing to commit"

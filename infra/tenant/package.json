@@ -2,6 +2,7 @@
   "name": "@branchleft/ghost-platform-tenant",
   "version": "7.0.0",
   "license": "SEE LICENSE IN LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -20,7 +21,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "pnpm run build",
     "test:unit": "vitest --run"
   },
   "dependencies": {

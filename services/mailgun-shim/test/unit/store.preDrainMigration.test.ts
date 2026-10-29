@@ -440,7 +440,7 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
   }, 20_000);
 
   it('a second opener caught mid-migration waits for it, then finds nothing left to do', async () => {
-    execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
+    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
     const child = spawn(process.execPath, [holdMigrationOpenPath, dbPath, '1500'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -467,7 +467,7 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
   }, 20_000);
 
   it('concurrency: two real processes opening the same pre-drain database at once both succeed, and the result is a single, correctly migrated table', async () => {
-    execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
+    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
 
     const openScript = `
       import { createSqliteStore } from ${JSON.stringify(storeJsPath)};
@@ -513,7 +513,7 @@ describe('src/server.ts — starts against a pre-drain database and serves /metr
   let dir: string;
 
   beforeAll(() => {
-    execFileSync('npm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
+    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
   });
 
   afterEach(() => {

@@ -58,4 +58,4 @@ different class. To re-pin:
    re-read the replay against the new file too.
 3. Write `<sha256 of /tmp/theme-storage.js>  theme-storage.js` into
    `theme-storage.upstream.sha256`.
-4. Run `npm run coverage` here and the image test (`npm run test:image`).
+4. Run `pnpm run coverage` here and the image test (`pnpm run test:image`).

@@ -5,7 +5,7 @@
 //   node test/differential/encodedWordDifferential.mjs [--seed N] [--size N]
 //        [--concurrency N] [--control] [--json]
 //
-// Needs dist/ built (`npm run build`). Not run by `npm run test:unit`.
+// Needs dist/ built (`pnpm run build`). Not run by `pnpm run test:unit`.
 
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -263,7 +263,7 @@ function buildCorpus(seed, size) {
 
 const distDir = join(projectRoot, 'dist');
 if (!existsSync(join(distDir, 'smtpFrontDoor.js'))) {
-  console.error('dist/ is not built: run `npm run build` in services/mailgun-shim first.');
+  console.error('dist/ is not built: run `pnpm run build` in services/mailgun-shim first.');
   process.exit(2);
 }
 const load = (name) => import(pathToFileURL(join(distDir, name)).href);

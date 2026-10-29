@@ -360,7 +360,7 @@ describe('the compiled command', () => {
     provisionerPassword = 'prov-pw'
   ) {
     if (!existsSync(dist))
-      throw new Error('run `npm run build` first: the compiled command is missing');
+      throw new Error('run `pnpm run build` first: the compiled command is missing');
     const dir = mkdtempSync(join(tmpdir(), 'portal-provision-'));
     const env: Record<string, string> = {};
     for (const [name, content] of Object.entries({

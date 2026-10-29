@@ -95,7 +95,7 @@ on_slot_network() {
     on_host "docker run --rm --network $net -v /work:/work:ro $PROBE_IMAGE $*"
 }
 
-[ -f "$HERE/render-core/dist/index.js" ] || { echo "run 'npm ci && npm run build' in render-core first"; exit 1; }
+[ -f "$HERE/render-core/dist/index.js" ] || { echo "run 'pnpm install --frozen-lockfile && pnpm run build' in render-core first"; exit 1; }
 
 cp "$HERE/scripts/mail-spool-proof/"* "$WORK/"
 node "$HERE/scripts/render-mail-spool-compose.mjs" "$SPOOL_IMAGE" "$DRAIN_PORT" 30001 30002 >"$WORK/compose.yml"

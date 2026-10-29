@@ -951,7 +951,7 @@ def scan(root: Path, mirror: set[tuple[str, str]], allow: list[str]) -> list[Fin
     infos: dict[str, FileInfo] = {}
     for rel in sorted(files):
         p = Path(rel)
-        if SKIP_DIRS & set(p.parts) or p.suffix in SKIP_SUFFIXES or p.name.startswith("package-lock"):
+        if SKIP_DIRS & set(p.parts) or p.suffix in SKIP_SUFFIXES or p.name.startswith(("package-lock", "pnpm-lock")):
             continue
         if rel.startswith(".github/image-mirror/"):
             continue  # the list itself holds digests, not pulls

@@ -124,13 +124,13 @@ test('the commit step builds a large lockfile request without argv/env, and roun
   const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'lockfile-runnertemp-'));
   try {
     writeBase64Shim(shimDir);
-    initRepoWithFile(repoDir, 'services/big/package-lock.json', '{"name":"placeholder"}\n');
+    initRepoWithFile(repoDir, 'services/big/pnpm-lock.yaml', '{"name":"placeholder"}\n');
 
     // 150,000 raw bytes base64-encodes to 200,000 bytes -- comfortably
     // over the 131,072-byte argv/env cap the old `-f content=...` call
     // would have hit, and bigger than any lockfile in this repo today.
     const large = JSON.stringify({ packages: { x: 'y'.repeat(150000) } });
-    fs.writeFileSync(path.join(repoDir, 'services/big/package-lock.json'), large);
+    fs.writeFileSync(path.join(repoDir, 'services/big/pnpm-lock.yaml'), large);
 
     const result = spawnSync('bash', ['-c', script], {
       cwd: repoDir,
@@ -158,7 +158,7 @@ test('the commit step builds a large lockfile request without argv/env, and roun
     const request = JSON.parse(fs.readFileSync(requestFile, 'utf8'));
 
     assert.match(request.query, /createCommitOnBranch/);
-    assert.equal(request.variables.path, 'services/big/package-lock.json');
+    assert.equal(request.variables.path, 'services/big/pnpm-lock.yaml');
 
     const contentB64 = request.variables.content;
     assert.ok(

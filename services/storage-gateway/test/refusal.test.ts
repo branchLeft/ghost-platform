@@ -14,6 +14,9 @@ const CODES: RefusalCode[] = [
   'upload-not-bound',
   'rate-limited',
   'writes-disabled',
+  'upstream-timeout',
+  'upstream-unavailable',
+  'upstream-throttled',
 ];
 
 describe('refusal', () => {
@@ -41,5 +44,15 @@ describe('refusal', () => {
     expect(refusalBody(refusal('rate-limited'))).toContain('<Code>SlowDown</Code>');
     expect(refusal('writes-disabled').status).toBe(503);
     expect(refusalBody(refusal('writes-disabled'))).toContain('<Code>ServiceUnavailable</Code>');
+  });
+
+  it('answers the storage service being slow or busy with a status and code the SDK retries', () => {
+    expect(refusal('upstream-timeout').status).toBe(504);
+    expect(refusalBody(refusal('upstream-timeout'))).toContain('<Code>RequestTimeout</Code>');
+    expect(refusal('upstream-throttled').status).toBe(503);
+    expect(refusalBody(refusal('upstream-throttled'))).toContain('<Code>SlowDown</Code>');
+    expect(refusalBody(refusal('upstream-unavailable'))).toContain(
+      '<Code>ServiceUnavailable</Code>'
+    );
   });
 });

@@ -16,7 +16,7 @@ name: Provisioning scripts CI
 # its only CI coverage with no error and no warning. This file is that
 # coverage, carried forward on its own.
 #
-# No npm install, no Node setup: these scripts have no package.json of their
+# No pnpm install, no Node setup: these scripts have no package.json of their
 # own and no third-party PYTHON dependency -- Python's standard library only.
 # The one external binary is `age` (media_backup_restore.py shells out to
 # it), installed below from a pinned, checksummed release rather than

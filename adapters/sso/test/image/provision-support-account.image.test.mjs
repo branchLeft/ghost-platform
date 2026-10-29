@@ -5,7 +5,7 @@
 // `break-glass.image.test.mjs` already proves the adapter against.
 //
 // Usage:
-//   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
+//   IMAGE=ghost-platform:ci pnpm --dir adapters/sso run test:image
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

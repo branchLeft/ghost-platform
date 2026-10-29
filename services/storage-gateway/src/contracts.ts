@@ -64,7 +64,13 @@ export type RefusalCode =
   /** The tenant is over its request rate. Retryable: the SDK retries a SlowDown. */
   | 'rate-limited'
   /** Writes are switched off for this tenant or for every tenant. Reads still work. */
-  | 'writes-disabled';
+  | 'writes-disabled'
+  /** The storage service did not answer inside the gateway's deadline. Retryable. */
+  | 'upstream-timeout'
+  /** The storage service could not be reached or sent an answer the gateway cannot relay. Retryable. */
+  | 'upstream-unavailable'
+  /** The storage service kept asking the gateway to slow down until the deadline. Retryable. */
+  | 'upstream-throttled';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {

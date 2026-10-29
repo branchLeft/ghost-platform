@@ -5,17 +5,17 @@ This repo follows the [org-wide contribution guide](https://github.com/branchLef
 ## Prerequisites
 
 - Node version pinned in [.nvmrc](.nvmrc) — run `nvm use` before anything else.
-- **npm**, not pnpm. The other branchLeft repos use pnpm; this one does not.
+- **pnpm**, at the version each `package.json` pins in `packageManager`. Installs share one content-addressed store, so a new worktree does not download every dependency again.
 - **Docker.** The image checks are a real `docker build` and two scripts that boot the built image, so Node alone is not enough to run what CI runs.
 
 ## Setup
 
-There are several independent npm projects here, each with its own lockfile. There is no workspace linking them — install whichever you are working on.
+There are several independent pnpm projects here, each with its own lockfile. There is no workspace linking them — install whichever you are working on.
 
 ```bash
 nvm use
-npm ci                      # root: lint/format tooling only
-npm ci --prefix infra/tenant
+pnpm install --frozen-lockfile                      # root: lint/format tooling only
+pnpm --dir infra/tenant install --frozen-lockfile
 ```
 
 ## Checks CI runs on every PR
@@ -29,7 +29,7 @@ docker build -t ghost-platform:local .
 ./scripts/test-storage-guard.sh ghost-platform:local
 
 # infra-tenant-ci.yml  (job: Tenant type check)
-npm ci --prefix infra/tenant && npx --prefix infra/tenant tsc --noEmit
+pnpm --dir infra/tenant install --frozen-lockfile && pnpm --dir infra/tenant exec tsc --noEmit
 
 # infra-provisioning-scripts-ci.yml  (job: Scripts unit tests)
 python3 -m unittest discover -s infra/provisioning/scripts -p 'test_*.py' -v
@@ -46,7 +46,7 @@ pip install pre-commit   # or: brew install pre-commit
 pre-commit install
 ```
 
-`npm ci` at the root runs `pre-commit install` for you outside CI.
+`pnpm install` at the root runs `pre-commit install` for you outside CI.
 
 If a hook fails it usually auto-fixes the issue (Prettier, whitespace) — re-stage and commit again. Lint failures you fix yourself.
 
@@ -62,11 +62,11 @@ Comments state what the code cannot: a constraint, an invariant, a reason a naiv
 
 ## Publishing
 
-Don't run `npm publish` locally. Releases are triggered by pushing a `v*.*.*` tag and handled entirely by [publish-tenant-package.yml](.github/workflows/publish-tenant-package.yml).
+Don't run `pnpm publish` locally. Releases are triggered by pushing a `v*.*.*` tag and handled entirely by [publish-tenant-package.yml](.github/workflows/publish-tenant-package.yml).
 
 ## Generating a lockfile in CI
 
-A package that depends on a private `@branchleft/*` GitHub Packages package needs an authenticated registry read to produce a `package-lock.json` at all — `npm install`/`npm ci` fails closed with no lockfile if the read is unauthenticated. If your own GitHub Packages read access isn't set up, or a package you're working on doesn't have a lockfile yet, [generate-lockfile.yml](.github/workflows/generate-lockfile.yml) generates one in CI, using that run's own `GITHUB_TOKEN`, and pushes it straight to your branch.
+A package that depends on a private `@branchleft/*` GitHub Packages package needs an authenticated registry read to produce a `pnpm-lock.yaml` at all — `pnpm install`/`pnpm install --frozen-lockfile` fails closed with no lockfile if the read is unauthenticated. If your own GitHub Packages read access isn't set up, or a package you're working on doesn't have a lockfile yet, [generate-lockfile.yml](.github/workflows/generate-lockfile.yml) generates one in CI, using that run's own `GITHUB_TOKEN`, and pushes it straight to your branch.
 
 Run it from the Actions tab (**Generate lockfile in CI** → **Run workflow**), or:
 
@@ -79,6 +79,6 @@ gh workflow run generate-lockfile.yml --repo branchLeft/ghost-platform \
 - `branch` must already exist in this repository (not a fork) and must not be `main` or a branch a ruleset currently protects.
 - `package_dir` must be `services/<name>` or `adapters/<name>`, and that directory must already exist on `branch` with a `package.json` and a `.nvmrc`.
 
-It pushes a commit only if `package-lock.json` actually changed, authored as `github-actions[bot]`. **That commit needs the normal review round like any push to the branch** — the ruleset's require-last-push-approval rule means a reviewer has to approve again after it lands, the same as after any other push.
+It pushes a commit only if `pnpm-lock.yaml` actually changed, authored as `github-actions[bot]`. **That commit needs the normal review round like any push to the branch** — the ruleset's require-last-push-approval rule means a reviewer has to approve again after it lands, the same as after any other push.
 
 **A push authenticated with `GITHUB_TOKEN` does not trigger `pull_request`/`synchronize` workflows.** After this workflow pushes the lockfile commit, the PR's required status checks (build, type check, format/lint, docs-lint, standards gates) stay stuck on "Expected — waiting for status to be reported": nothing will ever report them from that push alone. To get them running again, either push an ordinary commit to the branch yourself (from your own account), or close and reopen the PR. Do this before asking anyone to look at the PR — a merge attempt will otherwise just sit blocked on checks that were never going to run.

@@ -305,8 +305,8 @@ Inside an open grant, on the tenant's app host, as a user that can read
 the tenant's root-owned secrets env:
 
 ```sh
-npm ci
-npm run build
+pnpm install --frozen-lockfile
+pnpm run build
 node dist/cli.js \
   --grant-lane consented|incident \
   --grant-reference <where the grant's evidence lives> \
@@ -330,7 +330,7 @@ The retired flags (`--env`, `--tenant-id`, `--image`, `--volume`,
 ## Tests
 
 ```sh
-npm ci && npm run coverage       # unit, 90% threshold on every metric; needs age and age-keygen
+pnpm install --frozen-lockfile && pnpm run coverage       # unit, 90% threshold on every metric; needs age and age-keygen
 docker build -t ghost-platform:local ../..
 ./../../scripts/test-export-bundler.sh ghost-platform:local   # real Ghost in Docker
 ```

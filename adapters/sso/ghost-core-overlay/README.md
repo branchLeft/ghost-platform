@@ -60,13 +60,13 @@ introduced this overlay.
 
 ## How it is tested
 
-- Unit (`npm run coverage` in `adapters/sso/`): `test/unit/global-setup.mjs` takes Ghost's file out of the
+- Unit (`pnpm run coverage` in `adapters/sso/`): `test/unit/global-setup.mjs` takes Ghost's file out of the
   image the root `Dockerfile` names (`docker create` and `docker cp`; or from the path in
   `GHOST_SESSION_FROM_TOKEN_BASELINE`), applies the patch with the same script the build runs, and the tests
   exercise the patched output: the success and the save-error branch with a deferred fake `session.save`. The
   same suite runs the script against a Ghost file that differs and asserts it fails with the right message, and
   asserts this directory commits no JavaScript or licence copy.
-- Image (`npm run test:image`, with `IMAGE` set): the built image's file hashes to the pin.
+- Image (`pnpm run test:image`, with `IMAGE` set): the built image's file hashes to the pin.
 
 ## Re-deriving it on a Ghost upgrade
 
@@ -93,7 +93,7 @@ A Ghost bump arrives as a change to the `FROM` line. If the build then fails wit
    shasum -a 256 /tmp/b/session-from-token.js
    ```
    as `<hash>  session-from-token.js` in `session-from-token.patched.sha256`.
-5. Run the unit suite (`npm run coverage` in `adapters/sso/`), rebuild the image, and run the break-glass image
+5. Run the unit suite (`pnpm run coverage` in `adapters/sso/`), rebuild the image, and run the break-glass image
    test, including the looped concurrent-login subtest.
 
 ## Baseline sources for the unit tests

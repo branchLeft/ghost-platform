@@ -1,6 +1,6 @@
 // Drives the built Ghost image through the real adapter manager, the real
 // session middleware and a real database. Usage:
-//   IMAGE=ghost-platform:ci npm --prefix adapters/sso run test:image
+//   IMAGE=ghost-platform:ci pnpm --dir adapters/sso run test:image
 //
 // Every refusal is asserted twice: Ghost's answer (no Administrator session)
 // and the adapter's own reason in the container log. Ghost swallows adapter

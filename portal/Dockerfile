@@ -7,10 +7,14 @@
 # container gets its own port, hostname, sign-in client and database login.
 #
 # The build context is the repository root, because the applications depend on
-# two sibling packages by `file:` path (portal/data and services/identity) and
-# npm links them rather than copying. The final layout therefore keeps all
+# two sibling packages by `link:` path (portal/data and services/identity) and
+# pnpm links them rather than copying. The final layout therefore keeps all
 # three at their repository paths, built, with development dependencies pruned.
 FROM node:26.5.0-bookworm-slim
+
+# Node 26 ships without corepack, so pnpm is installed at the version the
+# package.json files pin.
+RUN npm install --global pnpm@11.17.0
 
 WORKDIR /app
 
@@ -21,16 +25,16 @@ COPY portal/apps/ portal/apps/
 # `@branchleft/tsconfig` is a build-time dependency hosted on GitHub Packages,
 # which rejects anonymous reads. The token arrives as a BuildKit secret and is
 # written to a userconfig that lives and dies inside this one RUN, so it never
-# becomes part of a layer. `npm ci` fails closed if the secret is absent.
+# becomes part of a layer. `pnpm install` fails closed if the secret is absent.
 # The order matters: each application imports its siblings' built output.
 RUN --mount=type=secret,id=node_auth_token \
     sh -eu -c 'printf "//npm.pkg.github.com/:_authToken=%s\n" "$(cat /run/secrets/node_auth_token)" > /tmp/npmrc; \
       export NPM_CONFIG_USERCONFIG=/tmp/npmrc; \
       for dir in portal/data services/identity portal/apps; do \
-        (cd "$dir" && npm ci && npm run build); \
+        (cd "$dir" && pnpm install --frozen-lockfile && pnpm run build); \
       done; \
       for dir in portal/apps portal/data services/identity; do \
-        (cd "$dir" && npm prune --omit=dev); \
+        (cd "$dir" && pnpm prune --prod); \
       done; \
       rm -f /tmp/npmrc'
 

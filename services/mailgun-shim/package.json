@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.17.0",
   "description": "Mailgun-shaped shim that speaks the three endpoints Ghost's bulk-email path calls, and hands queued mail over on a drain endpoint rather than dialling a delivery host itself (see ghost-platform-docs/19-try-it-now-design/06-mail-delivery.html).",
   "type": "module",
   "main": "dist/server.js",
@@ -38,9 +39,5 @@
     "nodemailer": "^10.1.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "nodemailer": "$nodemailer",
-    "deepmerge-ts": "^8.0.2"
   }
 }

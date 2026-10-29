@@ -1,5 +1,5 @@
 // Drives the built Ghost image through the real adapter manager. Usage:
-//   IMAGE=ghost-platform:ci npm --prefix adapters/scanning-storage run test:image
+//   IMAGE=ghost-platform:ci pnpm --dir adapters/scanning-storage run test:image
 // Why upload-time resize is off, and the bind-mount ownership handling:
 // the README's "Tests" section.
 import { describe, it } from 'node:test';
