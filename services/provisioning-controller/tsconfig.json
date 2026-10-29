@@ -1,0 +1,16 @@
+{
+  // strict-1 alone: a plain Node deterministic-controller package with no
+  // Pulumi resources and no browser target.
+  "extends": "@branchleft/tsconfig/strict-1.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist"
+  },
+  // vitest.config.ts sits outside both source trees; tsconfig.build.json
+  // narrows `include` back to src, so it cannot leak into the build.
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}
