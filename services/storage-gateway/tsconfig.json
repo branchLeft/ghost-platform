@@ -14,5 +14,11 @@
   // they sit at the project root, outside both source trees.
   // tsconfig.build.json narrows `include` back to src, so naming them here
   // cannot leak them into the published build.
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "drizzle.config.ts", "drizzle.usage.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "drizzle.config.ts",
+    "drizzle.usage.config.ts"
+  ]
 }
