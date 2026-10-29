@@ -12,6 +12,9 @@ const CODES: RefusalCode[] = [
   'bucket-not-allowed',
   'key-outside-folder',
   'upload-not-bound',
+  'upstream-timeout',
+  'upstream-unavailable',
+  'upstream-throttled',
 ];
 
 describe('refusal', () => {
@@ -32,5 +35,15 @@ describe('refusal', () => {
     expect(refusalBody(refusal('operation-not-allowed'))).toContain('<Code>AccessDenied</Code>');
     expect(refusalBody(refusal('target-malformed'))).toContain('<Code>InvalidURI</Code>');
     expect(refusalBody(refusal('internal-error'))).toContain('<Code>ServiceUnavailable</Code>');
+  });
+
+  it('answers the storage service being slow or busy with a status and code the SDK retries', () => {
+    expect(refusal('upstream-timeout').status).toBe(504);
+    expect(refusalBody(refusal('upstream-timeout'))).toContain('<Code>RequestTimeout</Code>');
+    expect(refusal('upstream-throttled').status).toBe(503);
+    expect(refusalBody(refusal('upstream-throttled'))).toContain('<Code>SlowDown</Code>');
+    expect(refusalBody(refusal('upstream-unavailable'))).toContain(
+      '<Code>ServiceUnavailable</Code>'
+    );
   });
 });
