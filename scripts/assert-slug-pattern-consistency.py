@@ -43,15 +43,25 @@ CHARSET_LENGTH_PROBES: list[tuple[str, bool]] = [
     ("a" * 27, False),
 ]
 
-# Every stack name an app host already runs under. Checked against the copies
-# that implement a reserved-name refusal (everything except naming.py; see
-# the module docstring).
-#
-# `blog` is not probed, on any copy, including `infra/tenant/naming.ts`
-# itself: it is the live tenant-zero's own slug, not a non-tenant name, and
-# every copy's own comment records that exclusion as deliberate rather than
-# as a gap this probe set failed to find.
-RESERVED_PROBES = ["website", "edge", "db", "monitoring", "nextcloud1"]
+REGISTER = REPO / "registers" / "tenant-names.json"
+
+
+def _register_names(kind: str) -> list[str]:
+    # Read at import: a missing or malformed register stops the gate, which is
+    # the safe direction.
+    with open(REGISTER, encoding="utf-8") as handle:
+        return [e["name"] for e in json.load(handle)["names"] if e["kind"] == kind]
+
+
+# Every infrastructure name in registers/tenant-names.json. Checked against the
+# copies that implement a reserved-name refusal (everything except naming.py;
+# see the module docstring).
+RESERVED_PROBES = _register_names("infrastructure")
+
+# Every tenant name in the register (tenant zero's `blog`). Accepted on every
+# copy: these slugs carry a claimant check elsewhere, so the slug-level rule
+# must not reserve them, or the one tenant that legitimately holds one is refused.
+TENANT_PROBES = _register_names("tenant")
 
 NAMING_TS = REPO / "infra" / "tenant" / "naming.ts"
 
@@ -184,6 +194,18 @@ def find_disagreements(
             if checkers[name](slug):
                 failures.append(f"{name} accepts reserved slug {slug!r}")
 
+    try:
+        ts_tenant = dict(zip(TENANT_PROBES, ts_batch(TENANT_PROBES)))
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        return failures + [f"could not execute infra/tenant/naming.ts via node: {error}"]
+
+    for slug in TENANT_PROBES:
+        if not ts_tenant[slug]:
+            failures.append(f"infra/tenant/naming.ts rejects registered tenant slug {slug!r}")
+        for name, checker in checkers.items():
+            if not checker(slug):
+                failures.append(f"{name} rejects registered tenant slug {slug!r}")
+
     return failures
 
 
@@ -238,6 +260,20 @@ def self_test() -> int:
     failed |= not ok
     print(f"{'PASS' if ok else 'FAIL'}: an unenforced reserved name is caught -> {found!r}")
 
+    # A copy that reserves a tenant name would refuse tenant zero's own slug.
+    def reserves_tenant(slug: str) -> None:
+        _reference_validate(slug)
+        if slug in TENANT_PROBES:
+            raise ValueError(slug)
+
+    reserving = {
+        "tenant-reserving-copy": (lambda: (lambda s: _accepts(reserves_tenant, s)), True),
+    }
+    found = find_disagreements(reserving, ts_stub)
+    ok = any("blog" in f and "tenant-reserving-copy" in f for f in found)
+    failed |= not ok
+    print(f"{'PASS' if ok else 'FAIL'}: a copy that refuses a registered tenant name is caught -> {found!r}")
+
     if failed:
         print("\nThis gate no longer behaves as written. It would report success")
         print("against a copy that has drifted from the other three.")
@@ -275,8 +311,8 @@ def main(argv: list[str]) -> int:
 
     print(
         f"OK: infra/tenant/naming.ts and {len(COPIES)} in-repo copies agree on "
-        f"{len(CHARSET_LENGTH_PROBES)} charset/length probes and {len(RESERVED_PROBES)} "
-        "reserved-name probes."
+        f"{len(CHARSET_LENGTH_PROBES)} charset/length probes, {len(RESERVED_PROBES)} "
+        f"reserved-name probes and {len(TENANT_PROBES)} registered-tenant accept probes."
     )
     return 0
 

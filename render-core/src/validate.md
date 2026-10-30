@@ -117,6 +117,12 @@ on the first violation found rather than collecting every one, because both
 callers reject before any side effect regardless of how many things are
 wrong.
 
+`options.claimantRepo` names the repository the caller runs in. It matters
+for one check only: a tenant name in the register (tenant zero's) is accepted
+for a tenant descriptor only when this equals the repository the register
+records for it, and a demo never gets one. Omitted, a registered tenant name is
+refused (see `naming.md#validateslugavailability-and-the-claimant`).
+
 ## validateTenantStack
 
 `validate()` for a paying tenant's `TenantStackDescriptor`: the same checks

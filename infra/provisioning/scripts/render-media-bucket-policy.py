@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 
@@ -38,17 +39,27 @@ MEDIA_BUCKET_PREFIX = "branchleft-media-"
 # end in a letter or a digit.
 SLUG_PATTERN = re.compile(r"\A[a-z][a-z0-9-]*[a-z0-9]\Z|\A[a-z]\Z")
 
-# Mirrors `RESERVED_STACK_NAMES` in `render-core/src/naming.ts`. Refused here as
-# well as there because this script is the FIRST thing an operator runs for a new
-# tenant -- earlier than the component, earlier than provision-tenant.yml -- and
-# it prints commands that create a real bucket. A slug the rest of the platform
-# will later refuse must not get a bucket made for it first.
-#
-# `blog` is deliberately absent, as it is on the TypeScript side: it is the
-# live tenant-zero's own slug (this file's own test suite uses it as its
-# default, ordinary example throughout), not a non-tenant name, so reserving
-# it would refuse the one tenant that legitimately holds it.
-RESERVED_SLUGS = frozenset({"website", "edge", "db", "monitoring", "nextcloud1", "mail-spool"})
+# The infrastructure names of `registers/tenant-names.json`. Refused here as
+# well as elsewhere because this script is the FIRST thing an operator runs for a
+# new tenant -- earlier than the component, earlier than provision-tenant.yml --
+# and it prints commands that create a real bucket. Infrastructure names only:
+# `blog` is tenant zero's own slug and this script is an idempotent re-run for it.
+# Fails closed when the register cannot be read.
+REGISTER_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "registers", "tenant-names.json"
+)
+
+
+def reserved_slugs(path: str | None = None) -> frozenset[str]:
+    path = REGISTER_PATH if path is None else path
+    try:
+        with open(path, encoding="utf-8") as handle:
+            names = json.load(handle)["names"]
+        return frozenset(e["name"] for e in names if e["kind"] == "infrastructure")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise PolicyInputError(
+            f"cannot check tenant names: {path} is unreadable ({error}); refusing every slug"
+        ) from error
 
 # Ghost needs these two to serve media from a versioned bucket: Hetzner's own
 # note is that allowing `s3:GetObject` on a bucket with versioning enabled
@@ -96,7 +107,7 @@ def media_bucket_name(slug: str) -> str:
         raise PolicyInputError(
             f"tenant slug {slug!r} is {len(slug)} characters; the platform caps it at 26"
         )
-    if slug in RESERVED_SLUGS:
+    if slug in reserved_slugs():
         raise PolicyInputError(
             f"tenant slug {slug!r} is reserved -- an app host already runs a Compose stack of "
             f"that name, and the tenant component refuses it. Refused here too, because this "

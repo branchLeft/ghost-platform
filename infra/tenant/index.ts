@@ -18,6 +18,7 @@ import {
   type TenantStackDescriptor,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
+import { validateTenantNameClaim } from './naming';
 
 /**
  * The secret values this tenant's `/etc/branchleft/<slug>.env` carries. The
@@ -215,6 +216,9 @@ export class GhostTenant extends pulumi.ComponentResource {
           `is reconciled by the broker, never by this component.`
       );
     }
+    // A registered tenant name is taken only from its own repository. Runs
+    // first: a duplicate of tenant zero must not get as far as rendering.
+    validateTenantNameClaim(args.descriptor.slug);
     const descriptor = validateTenantStack(args.descriptor, args.zones);
     const artefacts = render(descriptor, args.zones);
     const slug = descriptor.slug;
@@ -319,6 +323,8 @@ export { MEDIA_BUCKET_PREFIX, mediaBucketName, mediaPublicBaseUrl } from './medi
 export {
   MAX_TENANT_SLUG_LENGTH,
   RESERVED_STACK_NAMES,
+  TENANT_NAMES,
+  TENANT_NAME_REGISTER,
   adaptersVolumeName,
   composeUnitName,
   contentVolumeName,
@@ -328,8 +334,10 @@ export {
   sqlIdentifier,
   stackDirectory,
   stackName,
+  validateTenantNameClaim,
   validateTenantSlug,
 } from './naming';
+export type { RegisteredName } from './naming';
 export {
   DEFAULT_RESOURCE_CAPS,
   DEFAULT_RSS_BUDGET_MIB,

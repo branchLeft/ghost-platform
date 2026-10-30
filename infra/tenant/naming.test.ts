@@ -80,9 +80,14 @@ describe('RESERVED_STACK_NAMES against the shared-infra stack register', () => {
     'db',
   ];
 
+  // The register also holds `mail-spool`, which shared-infra does not run as
+  // a stack of its own, so the snapshot is a subset of it, not equal to it.
   it('has not drifted from the committed shared-infra register snapshot', () => {
+    for (const name of SHARED_INFRA_REGISTER_SNAPSHOT_MINUS_BLOG) {
+      expect(RESERVED_STACK_NAMES).toContain(name);
+    }
     expect(new Set(RESERVED_STACK_NAMES)).toEqual(
-      new Set(SHARED_INFRA_REGISTER_SNAPSHOT_MINUS_BLOG)
+      new Set([...SHARED_INFRA_REGISTER_SNAPSHOT_MINUS_BLOG, 'mail-spool'])
     );
   });
 });

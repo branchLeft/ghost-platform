@@ -25,6 +25,7 @@ on:
     paths:
       - 'services/broker/**'
       - 'render-core/**'
+      - 'registers/**'
       - 'demo-host/provision/**'
       - '.github/workflows/broker-ci.yml'
 

@@ -29,20 +29,37 @@ export const TENANT_DB_PREFIX = 'ghost_';
  */
 export const MAX_TENANT_SLUG_LENGTH = 32 - TENANT_DB_PREFIX.length;
 
+// BEGIN GENERATED FROM registers/tenant-names.json -- edit the register, then run scripts/sync-tenant-name-register.py
+export type RegisteredName =
+  | { readonly name: string; readonly kind: 'infrastructure' }
+  | { readonly name: string; readonly kind: 'tenant'; readonly repo: string };
+
+export const TENANT_NAME_REGISTER: readonly RegisteredName[] = [
+  { name: 'website', kind: 'infrastructure' },
+  { name: 'edge', kind: 'infrastructure' },
+  { name: 'db', kind: 'infrastructure' },
+  { name: 'monitoring', kind: 'infrastructure' },
+  { name: 'nextcloud1', kind: 'infrastructure' },
+  { name: 'mail-spool', kind: 'infrastructure' },
+  { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },
+];
+// END GENERATED FROM registers/tenant-names.json
+
 /**
  * Stack names already in use on an app host by something that is not a
- * tenant: a slug reusing one of these would overwrite that stack's
- * directory, secrets file and systemd unit, and nothing in Docker, systemd
- * or Pulumi would object. `blog` is deliberately absent — see
- * naming.md#reserved_stack_names.
+ * tenant, read from the register's infrastructure entries: a slug reusing
+ * one would overwrite that stack's directory, secrets file and systemd unit.
+ * See naming.md#reserved_stack_names.
  */
-export const RESERVED_STACK_NAMES: readonly string[] = [
-  'website',
-  'edge',
-  'db',
-  'monitoring',
-  'nextcloud1',
-];
+export const RESERVED_STACK_NAMES: readonly string[] = TENANT_NAME_REGISTER.filter(
+  (entry) => entry.kind === 'infrastructure'
+).map((entry) => entry.name);
+
+/** The register's tenant entries: names a tenant may take, each only from its own repo. */
+export const TENANT_NAMES: readonly Extract<RegisteredName, { kind: 'tenant' }>[] =
+  TENANT_NAME_REGISTER.filter(
+    (entry): entry is Extract<RegisteredName, { kind: 'tenant' }> => entry.kind === 'tenant'
+  );
 
 export function validateTenantSlug(slug: string): void {
   if (!TENANT_SLUG_PATTERN.test(slug)) {
@@ -64,6 +81,30 @@ export function validateTenantSlug(slug: string): void {
       `GhostTenant: tenant slug "${slug}" is reserved — an app host already runs a Compose ` +
         `stack of that name, and a tenant using it would overwrite that stack's directory, ` +
         `secrets file and systemd unit. Reserved: ${RESERVED_STACK_NAMES.join(', ')}.`
+    );
+  }
+}
+
+/**
+ * Refuses a registered tenant name unless the apply runs in that name's own
+ * repository. The claimant is the repo Actions reports in `GITHUB_REPOSITORY`,
+ * never something derived from the slug. With the variable unset (a local
+ * run) a registered name is refused: tenant applies run in CI. An
+ * unregistered name passes. See naming.md#validatetenantnameclaim.
+ */
+export function validateTenantNameClaim(
+  slug: string,
+  claimantRepo: string | undefined = process.env['GITHUB_REPOSITORY']
+): void {
+  const entry = TENANT_NAMES.find((candidate) => candidate.name === slug);
+  if (entry === undefined) {
+    return;
+  }
+  if (claimantRepo === undefined || claimantRepo.toLowerCase() !== entry.repo.toLowerCase()) {
+    throw new Error(
+      `GhostTenant: tenant name "${slug}" is registered to ${entry.repo}, and this apply runs in ` +
+        `${claimantRepo === undefined ? 'no repository (GITHUB_REPOSITORY is unset)' : claimantRepo}. ` +
+        `A name is claimed by its own repository only.`
     );
   }
 }

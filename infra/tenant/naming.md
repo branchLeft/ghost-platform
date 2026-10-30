@@ -30,21 +30,38 @@ secrets file and its Compose project — and nothing in Docker, systemd or
 Pulumi would object. The refusal has to be here because this component is
 the only thing that sees the slug before anything is written.
 
-This is a floor, not the full register: it is checked for drift against a
+The list is the `infrastructure` entries of `registers/tenant-names.json` in
+the ghost-platform repository, the single home for every taken name. It is
+generated into this file between the BEGIN/END GENERATED markers by
+`scripts/sync-tenant-name-register.py`; CI runs that script with `--check`.
+Never edit the block by hand. A published package cannot read a repository
+file at run time, so this copy lags the register until the next release.
+
+It is a floor, not the full register: it is checked for drift against a
 snapshot of the shared-infra stack register in `naming.test.ts`, which
 documents how to refresh it when that register changes.
 
-`blog` is deliberately absent despite being a live stack on an app host.
-Unlike every name below, `blog` is not "something that is not a tenant" —
-it is `GhostTenant`'s own tenant-zero slug (`ghost-tenant-blog`'s
-`index.ts` constructs `new GhostTenant('blog', ...)`, and this
-constructor's `validateTenantSlug` call runs on every one of its Pulumi
-previews and applies). Adding it here would not stop a second tenant from
-requesting the same slug — this component has no view of other tenant
-repos to check that against — it would instead make tenant-zero's own
-stack throw at construction time on its next deploy. That is a different
-problem (slug uniqueness across tenants, which is open-ended and not
-visible from here) wearing the same shape as this one.
+`blog` is absent from this list because it is not infrastructure: it is
+`GhostTenant`'s own tenant-zero slug, and reserving it would make
+tenant-zero's own stack throw at construction time on its next deploy. It is
+in the register as a `tenant` entry with its repository instead, and
+`validateTenantNameClaim` below is what stops a second tenant taking it.
+
+## validateTenantNameClaim
+
+A registered `tenant` name is claimed by its own repository only. The
+claimant is the repository GitHub Actions reports in `GITHUB_REPOSITORY`; it
+is never derived from the slug or from anything in the descriptor, because a
+duplicate of tenant zero would copy those. With the variable unset, a local
+run, a registered name is refused rather than allowed: tenant applies run in
+CI, so failing closed costs nothing there. An unregistered name passes.
+
+`GhostTenant` calls it first, before the descriptor is validated or rendered.
+The check duplicates `render-core`'s `validateSlugAvailability` claim rule
+until a render-core release carrying it is adopted, after which this copy is
+to be deleted. The register is written by hand today, not at tenant creation,
+so a hand-created tenant that is not yet in it is not refused; that gap is
+tracked as a follow-up.
 
 ## contentVolumeName
 

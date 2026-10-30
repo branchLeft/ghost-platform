@@ -9,6 +9,12 @@ describe('mediaBucketName', () => {
     expect(MEDIA_BUCKET_PREFIX).toBe('branchleft-media-');
   });
 
+  // Tenant zero's live bucket. `blog` is a registered tenant name, not a
+  // reserved stack name, so this derivation must keep accepting it.
+  it("derives tenant zero's live bucket, branchleft-media-blog", () => {
+    expect(mediaBucketName('blog')).toBe('branchleft-media-blog');
+  });
+
   // The value this same derivation must produce in
   // infra/provisioning/scripts/render-media-bucket-policy.py, which runs
   // before this component sees the tenant. Asserted as a literal on both
