@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  chmod,
   mkdir,
   mkdtemp,
   open,
@@ -13,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RefusalLogEntry } from '../src/admit.js';
 import type { CredentialRecord } from '../src/contracts.js';
 import {
@@ -560,5 +561,71 @@ describe('sweepSpoolDir', () => {
     const file = join(spoolDir, 'plain');
     await writeFile(file, 'x');
     await expect(sweepSpoolDir(file)).rejects.toThrow();
+  });
+
+  it.each([0o770, 0o707, 0o755, 0o744])(
+    'refuses an existing directory with mode %o and removes nothing',
+    async (mode) => {
+      await writeFile(join(spoolDir, STALE), 'x');
+      await chmod(spoolDir, mode);
+      await expect(sweepSpoolDir(spoolDir)).rejects.toThrow();
+      expect(await spoolFiles()).toEqual([STALE]);
+    }
+  );
+
+  it('sweeps an existing owner-only directory', async () => {
+    await writeFile(join(spoolDir, STALE), 'x');
+    await chmod(spoolDir, 0o700);
+    expect(await sweepSpoolDir(spoolDir)).toBe(1);
+    expect(await spoolFiles()).toEqual([]);
+  });
+
+  it('refuses a directory the process user does not own and removes nothing', async () => {
+    await writeFile(join(spoolDir, STALE), 'x');
+    const spy = vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1);
+    try {
+      await expect(sweepSpoolDir(spoolDir)).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await spoolFiles()).toEqual([STALE]);
+  });
+});
+
+describe('receiveBody: a bad ceiling fails closed', () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5, 2 ** 53])(
+    'refuses a ceiling of %s as internal-error before reading any byte',
+    async (ceilingBytes) => {
+      let reads = 0;
+      const source = new Readable({
+        read() {
+          reads += 1;
+          this.push(reads <= 3 ? Buffer.alloc(10) : null);
+        },
+      });
+      const result = await receiveBody(source, options({ ceilingBytes }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.refusal.code).toBe('internal-error');
+        expect(result.refusal.status).toBe(503);
+      }
+      expect(reads).toBe(0);
+      expect(source.destroyed).toBe(true);
+      expect(await spoolFiles()).toEqual([]);
+    }
+  );
+
+  it('logs one request-refused entry for a bad ceiling', async () => {
+    const entries: RefusalLogEntry[] = [];
+    await receiveBody(
+      sourceOf(bytesOf(20)),
+      options({
+        ceilingBytes: Number.NaN,
+        logger: { refusal: (entry) => entries.push(entry) },
+      })
+    );
+    expect(entries).toEqual([
+      { event: 'request-refused', code: 'internal-error', status: 503, method: 'PUT' },
+    ]);
   });
 });

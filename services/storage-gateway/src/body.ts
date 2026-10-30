@@ -65,7 +65,11 @@ async function openSpoolFile(path: string): Promise<SpoolFile> {
 export interface ReceiveBodyOptions {
   /** The most bytes accepted, from {@link resolveBodyCeiling}. */
   readonly ceilingBytes: number;
-  /** Where spool files go. Required: there is no default, so no body lands in a shared temp directory. */
+  /**
+   * Where spool files go. Required: there is no default, so no body lands in a
+   * shared temp directory. One private directory per gateway instance, never
+   * shared between instances or with any other process.
+   */
   readonly spoolDir: string;
   /** Defaults to {@link SPOOL_THRESHOLD_BYTES}. */
   readonly thresholdBytes?: number;
@@ -175,6 +179,13 @@ export async function receiveBody(
     return { ok: false, refusal: r };
   };
 
+  // NaN and Infinity never trip the cap comparisons below, so a bad ceiling
+  // would switch the cap off. It is refused here, before any byte is read.
+  if (!Number.isSafeInteger(opts.ceilingBytes) || opts.ceilingBytes <= 0) {
+    source.destroy();
+    return fail('internal-error');
+  }
+
   const declared = opts.declaredLength;
   if (declared !== undefined && (!Number.isSafeInteger(declared) || declared < 0)) {
     source.destroy();
@@ -266,14 +277,21 @@ export async function receiveBody(
 /**
  * Prepares the spool directory at start and removes what a killed process
  * left behind. It creates the directory (owner only) when absent, refuses a
- * symlink or a non-directory, and deletes only regular files named like our
- * own spool files, without descending. Returns how many it removed.
+ * symlink, a non-directory, or an existing directory that is group- or
+ * world-accessible or owned by another user, and deletes only regular files
+ * named like our own spool files, without descending. Returns how many it removed.
+ * One private spool directory per gateway instance, never shared between
+ * instances or with any other process.
  */
 export async function sweepSpoolDir(spoolDir: string): Promise<number> {
   await mkdir(spoolDir, { recursive: true, mode: 0o700 });
   const info = await lstat(spoolDir);
   if (info.isSymbolicLink() || !info.isDirectory()) {
     throw new Error('the spool directory must be a real directory, not a link');
+  }
+  const foreignOwner = process.getuid !== undefined && info.uid !== process.getuid();
+  if ((info.mode & 0o077) !== 0 || foreignOwner) {
+    throw new Error('the spool directory must be private to this process user');
   }
   let removed = 0;
   for (const entry of await readdir(spoolDir, { withFileTypes: true })) {
