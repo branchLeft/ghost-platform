@@ -4,6 +4,22 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**Each demo slot authenticates to the mail spool as its own credential domain.**
+
+- **Changed output:** a demo's `mail__options__auth__user` and
+  `bulkEmail__mailgun__domain` change from the shared `<demoMailDomain>` to
+  `slot-<uid>.<demoMailDomain>`. `mail__from`, `members_support_address` and DKIM
+  are unchanged. A paying tenant's output is unchanged.
+- New export `credentialDomainOf(identity, zones, uid)`. `tenantEnvironment()`'s
+  descriptor argument must now carry `uid`.
+- **Rollout:** a slot rendered with the new username before its spool row exists
+  gets 401 on every send. Before deploying a package carrying this change to a
+  demo host, register one row per slot with the shim CLI
+  (`register slot-<uid>.<demoMailDomain> --sender-domain <demoMailDomain>`) and
+  write each printed key into that slot's `/etc/branchleft/<slug>.env` as
+  `GHOST_BULK_EMAIL_API_KEY`. Remove the old shared `<demoMailDomain>` row
+  afterwards. See src/mail.md#credential-domain.
+
 **A registered tenant name is taken only by its own repository.**
 
 - **Breaking: `validate()` and `validateTenantStack()` refuse a registered

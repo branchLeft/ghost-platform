@@ -93,7 +93,7 @@ export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
-export { renderSendingAddress, sendingDomainOf } from './mail.js';
+export { credentialDomainOf, renderSendingAddress, sendingDomainOf } from './mail.js';
 export { renderDrainList } from './drain.js';
 export {
   MAIL_SPOOL_BASE_URL,

@@ -104,6 +104,8 @@ before returning. It refuses:
 `environment.ts` points Ghost at the spool from the constants here, so the two
 cannot disagree: the bulk sender's Mailgun base URL is `MAIL_SPOOL_BASE_URL`,
 and a `queue` transport's SMTP host and port are `MAIL_SPOOL_SERVICE` and
-`MAIL_SPOOL_SMTP_PORT`. The SMTP username is the tenant's sending domain and
-the password is the same per-tenant key the bulk path already uses, which is
-how the spool's SMTP front door authenticates a submitter.
+`MAIL_SPOOL_SMTP_PORT`. The SMTP username is the tenant's credential domain
+(its own sending domain, or `slot-<uid>.<demoMailDomain>` for a demo slot; see
+mail.md#credential-domain) and the password is the same per-tenant key the
+bulk path already uses, which is how the spool's SMTP front door authenticates
+a submitter.
