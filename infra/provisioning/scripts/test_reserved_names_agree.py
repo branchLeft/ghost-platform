@@ -4,12 +4,9 @@ registered name.
 
 The copies are the generated blocks in infra/tenant/naming.ts and
 render-core/src/naming.ts, the infrastructure names read by
-app/provision/provision_tenant_volume.py and render-media-bucket-policy.py, and
-the register lookup in the 'Validate inputs' step of
-.github/workflows/provision-tenant.yml. The workflow block is run under
-`bash -e`, not matched as text. A red copy with the jq lookup removed runs
-beside the real block: the test fails if the red copy is not accepted-through,
-which is how this file proves it can see the mechanism missing.
+app/provision/provision_tenant_volume.py and render-media-bucket-policy.py,
+and the register lookup in the 'Validate inputs' step of
+.github/workflows/provision-tenant.yml, run under `bash -e`.
 """
 
 from __future__ import annotations
