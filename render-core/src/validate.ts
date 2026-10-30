@@ -22,6 +22,7 @@ import type { EmailAddress } from './brand.js';
 import type { TenantDescriptor, TenantStackDescriptor } from './descriptor.js';
 import { SECRET_ENV_KEYS } from './environment.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
+import type { SlugClaimant } from './naming.js';
 import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
@@ -1242,9 +1243,22 @@ function checkHostnameGateConsistency(descriptor: TenantStackDescriptor): void {
  * can chain it into `render()`. Throws on the first violation. See
  * validate.md#validate.
  */
-export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): TenantDescriptor {
-  validateFields(descriptor, zones, 'inline');
+export function validate(
+  descriptor: TenantDescriptor,
+  zones: ZoneConfig,
+  options: ValidateOptions = {}
+): TenantDescriptor {
+  validateFields(descriptor, zones, 'inline', options);
   return descriptor;
+}
+
+/**
+ * Who is validating, for the registered-name claim in `validateSlugAvailability`.
+ * `claimantRepo` is the repository the caller runs in; only a tenant-kind
+ * descriptor uses it, and absent means a registered tenant name is refused.
+ */
+export interface ValidateOptions {
+  readonly claimantRepo?: string;
 }
 
 /**
@@ -1255,7 +1269,8 @@ export function validate(descriptor: TenantDescriptor, zones: ZoneConfig): Tenan
  */
 export function validateTenantStack(
   descriptor: TenantStackDescriptor,
-  zones: ZoneConfig
+  zones: ZoneConfig,
+  options: ValidateOptions = {}
 ): TenantStackDescriptor {
   if (typeof descriptor === 'object' && descriptor !== null && 'ownerEmail' in descriptor) {
     throw new FieldValidationError(
@@ -1271,7 +1286,7 @@ export function validateTenantStack(
         'demo carries its owner address inline and is validated by validate().'
     );
   }
-  validateFields(descriptor, zones, 'secret');
+  validateFields(descriptor, zones, 'secret', options);
   return descriptor;
 }
 
@@ -1300,7 +1315,8 @@ type OwnerEmailPlacement = 'inline' | 'secret';
 function validateFields(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
-  owner: OwnerEmailPlacement
+  owner: OwnerEmailPlacement,
+  options: ValidateOptions
 ): void {
   // The caller's own input, checked before anything below trusts it to mean
   // what its fields say — see validateZoneConfig's own doc comment.
@@ -1331,7 +1347,9 @@ function validateFields(
   checkVersion(descriptor);
 
   validateSlug(descriptor.slug);
-  validateSlugAvailability(descriptor.slug);
+  const claimant: SlugClaimant =
+    descriptor.kind === 'demo' ? { kind: 'demo' } : { kind: 'tenant', repo: options.claimantRepo };
+  validateSlugAvailability(descriptor.slug, claimant);
   validateAbsoluteUrl(descriptor.siteUrl);
   validateDigestPinnedRef(descriptor.image);
   if (owner === 'inline') {

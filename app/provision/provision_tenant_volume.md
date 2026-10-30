@@ -60,8 +60,10 @@ than a fix.
 
 ## Slug pattern
 
-Mirrors `infra/tenant/naming.ts`'s slug rules; the reserved names come from
-`render-core/src/naming.ts`:
+Mirrors `infra/tenant/naming.ts`'s slug rules; the reserved names are the
+`infrastructure` entries of `registers/tenant-names.json`, read at call time
+from a copy beside this script or from the repository path, and refused for
+every slug when neither is readable:
 a tenant slugged `website` would collide with the marketing site's stack.
 The trailing character is restricted to a letter or digit for the same
 reason it is there: `infra/tenant/media.ts` turns the same slug into an
@@ -70,11 +72,12 @@ imports the rule across those files, so this copy can drift loose —
 accepting a trailing hyphen, say — without any other test going red;
 `scripts/assert-slug-pattern-consistency.py` is what compares them.
 
-`blog` is deliberately absent, as it is on the TypeScript side: it is the
-live tenant-zero's own slug (this file's own docstring re-runs against it as
-ordinary maintenance), not a non-tenant name, so reserving it would refuse
-the one tenant that legitimately holds it rather than protect against a
-collision.
+`blog` is not refused here, as it is not on the TypeScript side: it is a
+`tenant` entry in the register, tenant zero's own slug (this file's own
+docstring re-runs against it as ordinary maintenance), not infrastructure, so
+reserving it would refuse the one tenant that legitimately holds it. Who may
+take it is the component's claim check, which this script cannot make: it has
+no repository identity.
 
 ## UID register
 

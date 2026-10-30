@@ -64,6 +64,7 @@ export {
   validateOwnerEmailSecret,
   validateTenantStack,
 } from './validate.js';
+export type { ValidateOptions } from './validate.js';
 
 export type { HashId, LeaseId, SlotLeaseRecord, SlotName } from './lease.js';
 export {
@@ -119,6 +120,7 @@ export {
   MAX_TENANT_SLUG_LENGTH,
   RESERVED_STACK_NAMES,
   TENANT_DB_PREFIX,
+  TENANT_NAME_REGISTER,
   adaptersVolumeName,
   composeUnitName,
   contentVolumeName,
@@ -131,6 +133,7 @@ export {
   validateDatabaseIdentity,
   validateSlugAvailability,
 } from './naming.js';
+export type { RegisteredName, SlugClaimant } from './naming.js';
 export { DEFAULT_RSS_BUDGET_MIB, DEFAULT_UPLOAD_CEILING_MIB, uploadLimits } from './runtime.js';
 export type { UploadLimits } from './runtime.js';
 export {

@@ -172,6 +172,15 @@ jobs:
       - name: Control host provisioning script tests
         run: python3 -m unittest discover -s control/provision -p 'test_*.py'
 
+      # registers/tenant-names.json is the only list of taken tenant names. The
+      # two published TypeScript packages carry generated copies of it, and a
+      # register edit that was not regenerated, or a hand edit to a copy, fails
+      # here. The self-test first: a check that no longer sees drift passes all.
+      - name: Tenant name register is in step with its copies
+        run: |
+          python3 scripts/sync-tenant-name-register.py --self-test
+          python3 scripts/sync-tenant-name-register.py --check
+
       # The same tenant-slug rule is written four times here, each read on a
       # different host with no shared import (see the script's docstring), so
       # one copy can drift loose without any other test going red. This is

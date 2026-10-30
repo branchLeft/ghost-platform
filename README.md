@@ -102,11 +102,15 @@ digits and hyphens, and is capped at 26 characters so that `ghost_` plus the
 slug fits MySQL's 32-character account-name limit. It is also the Compose
 project name, the systemd instance name, the directory under
 `/opt/branchleft`, the stem of both files under `/etc/branchleft` and both
-volume names — so `website`, `edge`, `db`, `monitoring` and `nextcloud1` are
-refused outright, and validation happens at construction rather than at
-apply. (`RESERVED_STACK_NAMES` in `infra/tenant/naming.ts` is the source of
-that list, with the trade-off it cannot cover — a live tenant's own slug —
-recorded on the constant itself.)
+volume names — so `website`, `edge`, `db`, `monitoring`, `nextcloud1` and
+`mail-spool` are refused outright, and validation happens at construction
+rather than at apply. The names are in one register,
+`registers/tenant-names.json`: an `infrastructure` name is refused to every
+tenant, and a `tenant` name (tenant zero's `blog`) only to a repository other
+than its own. `GhostTenant` reads the claimant from `GITHUB_REPOSITORY` and,
+unset, refuses a registered tenant name. Copies in the packages are generated
+by `scripts/sync-tenant-name-register.py` and checked in CI; see
+`infra/tenant/naming.md`.
 
 `uid` is required rather than derived: it is host state, allocated against
 what is already claimed on that host, and a value computed from the slug would

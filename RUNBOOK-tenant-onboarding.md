@@ -286,6 +286,12 @@ scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r \
 scp -i ~/.ssh/id_ed25519_hetzner -r \
   app/provision/. root@"$APP1_IPV4":/root/platform-provision/
 
+# b2. The tenant name register, beside that script. provision_tenant_volume.py
+#     reads its list of taken names from this file and, if it is not there,
+#     refuses every slug. The register is the only list: never edit the copy.
+scp -i ~/.ssh/id_ed25519_hetzner \
+  registers/tenant-names.json root@"$APP1_IPV4":/root/platform-provision/
+
 # c. The host-provisioning scripts, from branchLeft/shared-infra. This is what
 #    installs provision_deploy_slot.py and the branchleft-deploy wrapper that
 #    understands --slot; a host provisioned before slot keys existed needs the
@@ -299,6 +305,8 @@ ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
 `app/provision/` and `hetzner/provision/` share `/root/platform-provision` on an
 app host and come from different repositories, so copy both whenever either
 changes; a stale half is a script that runs and disagrees with its neighbour.
+Copy `registers/tenant-names.json` (step b2) whenever the register changes too:
+a stale register on the host is a taken name the host script does not know.
 
 ### 3. Allocate the UID on the app host
 

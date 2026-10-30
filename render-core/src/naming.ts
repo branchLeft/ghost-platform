@@ -19,31 +19,47 @@ export const TENANT_DB_PREFIX = 'ghost_';
  */
 export const MAX_TENANT_SLUG_LENGTH = 32 - TENANT_DB_PREFIX.length;
 
-/**
- * Stack names already in use on an app host by something that is not a
- * tenant — mirrors `infra/tenant/naming.ts#RESERVED_STACK_NAMES` plus the host
- * mail spool's own stack (`spool.ts`). `blog` is deliberately absent (see
- * naming.md). A tenant's Compose project name *is* its directory under `/opt/branchleft`, its
- * `/etc/branchleft/<name>.env` secrets file and its `branchleft-compose@<name>`
- * unit, so a slug matching one of these would overwrite that stack's
- * directory, secrets file and systemd unit.
- */
-export const RESERVED_STACK_NAMES: readonly string[] = [
-  'website',
-  'edge',
-  'db',
-  'monitoring',
-  'nextcloud1',
-  'mail-spool',
+// BEGIN GENERATED FROM registers/tenant-names.json -- edit the register, then run scripts/sync-tenant-name-register.py
+export type RegisteredName =
+  | { readonly name: string; readonly kind: 'infrastructure' }
+  | { readonly name: string; readonly kind: 'tenant'; readonly repo: string };
+
+export const TENANT_NAME_REGISTER: readonly RegisteredName[] = [
+  { name: 'website', kind: 'infrastructure' },
+  { name: 'edge', kind: 'infrastructure' },
+  { name: 'db', kind: 'infrastructure' },
+  { name: 'monitoring', kind: 'infrastructure' },
+  { name: 'nextcloud1', kind: 'infrastructure' },
+  { name: 'mail-spool', kind: 'infrastructure' },
+  { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },
 ];
+// END GENERATED FROM registers/tenant-names.json
 
 /**
- * The availability half of slug validation: not whether the slug is
- * well-formed (`brand.ts#validateSlug` already checked that before a
- * `Slug` reached this module) but whether it names something else already
- * on the host, or is too long for the MySQL account it becomes.
+ * Stack names already in use on an app host by something that is not a
+ * tenant, read from the register's infrastructure entries. A tenant's Compose
+ * project name *is* its directory under `/opt/branchleft`, its
+ * `/etc/branchleft/<name>.env` secrets file and its `branchleft-compose@<name>`
+ * unit, so a slug matching one of these would overwrite that stack's
+ * directory, secrets file and systemd unit. See naming.md.
  */
-export function validateSlugAvailability(slug: Slug): void {
+export const RESERVED_STACK_NAMES: readonly string[] = TENANT_NAME_REGISTER.filter(
+  (entry) => entry.kind === 'infrastructure'
+).map((entry) => entry.name);
+
+/** Who is asking for a slug: the broker for a demo, or a tenant's own repository. */
+export type SlugClaimant =
+  { readonly kind: 'demo' } | { readonly kind: 'tenant'; readonly repo: string | undefined };
+
+/**
+ * The availability half of slug validation: whether the slug names something
+ * already on the host, or is too long for the MySQL account it becomes.
+ * With a `claimant`, a registered tenant name is also refused to a demo, and
+ * to a tenant unless `claimant.repo` is that name's own repository (undefined
+ * refuses). With none, only infrastructure names and length are checked:
+ * `render()` has no caller identity. See naming.md.
+ */
+export function validateSlugAvailability(slug: Slug, claimant?: SlugClaimant): void {
   if (slug.length > MAX_TENANT_SLUG_LENGTH) {
     throw new FieldValidationError(
       'slug',
@@ -57,6 +73,24 @@ export function validateSlugAvailability(slug: Slug): void {
       `slug "${slug}" is reserved — an app host already runs a Compose stack of that name, and a ` +
         `tenant using it would overwrite that stack's directory, secrets file and systemd unit. ` +
         `Reserved: ${RESERVED_STACK_NAMES.join(', ')}.`
+    );
+  }
+  if (claimant === undefined) {
+    return;
+  }
+  const entry = TENANT_NAME_REGISTER.find((candidate) => candidate.name === slug);
+  if (entry === undefined || entry.kind !== 'tenant') {
+    return;
+  }
+  const owns =
+    claimant.kind === 'tenant' &&
+    claimant.repo !== undefined &&
+    claimant.repo.toLowerCase() === entry.repo.toLowerCase();
+  if (!owns) {
+    throw new FieldValidationError(
+      'slug',
+      `slug "${slug}" is registered to ${entry.repo} and cannot be taken by ` +
+        `${claimant.kind === 'demo' ? 'a demo' : 'any other repository'}.`
     );
   }
 }

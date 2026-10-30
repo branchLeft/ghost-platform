@@ -11,9 +11,16 @@ network, no root.
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 import unittest
+from unittest import mock
 
 import provision_tenant_volume as ptv
+
+# Literal, so these tests do not depend on the list under test.
+INFRASTRUCTURE_NAMES = ("website", "edge", "db", "monitoring", "nextcloud1", "mail-spool")
 
 
 class FakeDocker:
@@ -125,15 +132,45 @@ class ValidationTests(unittest.TestCase):
 
     def test_rejects_a_reserved_stack_name(self):
         # `website` already runs under /opt/branchleft/website on app1.
-        for slug in ptv.RESERVED_STACK_NAMES:
+        for slug in INFRASTRUCTURE_NAMES:
             with self.subTest(slug=slug):
                 with self.assertRaises(ptv.ProvisionError):
                     ptv.validate_slug(slug)
 
-    def test_rejects_mail_spool_by_name(self):
-        # The name is literal, so this does not depend on the list under test.
-        with self.assertRaises(ptv.ProvisionError):
-            ptv.validate_slug("mail-spool")
+    def test_accepts_tenant_zero_and_an_unregistered_slug(self):
+        # Controls: the refusal above is the register's infrastructure
+        # entries only, not every registered name.
+        ptv.validate_slug("blog")
+        ptv.validate_slug("demo-1")
+
+    def test_reads_the_register_beside_the_script_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            beside = os.path.join(directory, "tenant-names.json")
+            with open(beside, "w", encoding="utf-8") as handle:
+                json.dump({"version": 1, "names": [{"name": "only-this", "kind": "infrastructure"}]}, handle)
+            with mock.patch.object(ptv, "REGISTER_CANDIDATES", (beside, "/nonexistent/x.json")):
+                self.assertEqual(ptv.reserved_stack_names(), ("only-this",))
+                with self.assertRaises(ptv.ProvisionError):
+                    ptv.validate_slug("only-this")
+                ptv.validate_slug("website")
+
+    def test_fails_closed_when_the_register_is_absent(self):
+        # No register means no list to check against: every slug is refused,
+        # including ones that would otherwise pass, and the error names the file.
+        with mock.patch.object(ptv, "REGISTER_CANDIDATES", ("/nonexistent/tenant-names.json",)):
+            for slug in ("demo-1", "blog"):
+                with self.subTest(slug=slug):
+                    with self.assertRaisesRegex(ptv.ProvisionError, "tenant-names.json"):
+                        ptv.validate_slug(slug)
+
+    def test_fails_closed_when_the_register_is_unreadable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            broken = os.path.join(directory, "tenant-names.json")
+            with open(broken, "w", encoding="utf-8") as handle:
+                handle.write("{not json")
+            with mock.patch.object(ptv, "REGISTER_CANDIDATES", (broken,)):
+                with self.assertRaises(ptv.ProvisionError):
+                    ptv.validate_slug("demo-1")
 
     def test_rejects_a_uid_outside_the_reserved_range(self):
         for uid in (0, 999, ptv.TENANT_UID_MIN - 1, ptv.TENANT_UID_MAX + 1):

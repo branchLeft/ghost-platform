@@ -384,11 +384,18 @@ jobs:
           # `gh repo create` has already made a public repository named
           # ghost-tenant-<slug> -- and on this estate the existence of that
           # repository is itself the disclosure that a tenant is a customer.
-          case "$TENANT" in
-            website | edge | db | monitoring | nextcloud1 | mail-spool)
-              fail "tenant_name is reserved: a host already runs a Compose stack of that name, and a tenant taking it would overwrite that stack's directory, secrets file and systemd unit."
-              ;;
-          esac
+          # The list is registers/tenant-names.json, the single home for every
+          # name that is already taken. Any registered name is refused on this
+          # path, tenant zero's included: it is not provisioned here. A missing
+          # or unreadable register refuses everything rather than nothing.
+          REGISTER="${GITHUB_WORKSPACE:-}/registers/tenant-names.json"
+          [[ -r "$REGISTER" ]] || fail "the tenant name register is missing or unreadable: $REGISTER"
+          jq -e '.names | type == "array"' "$REGISTER" > /dev/null \
+            || fail "the tenant name register is not valid: $REGISTER"
+          KIND="$(jq -er --arg name "$TENANT" '.names[] | select(.name == $name) | .kind' "$REGISTER" || true)"
+          if [[ -n "$KIND" ]]; then
+            fail "tenant_name is already registered: a host or tenant already uses that name, and taking it would overwrite its directory, secrets file and systemd unit."
+          fi
 
           [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
 
