@@ -5,7 +5,7 @@
  * `$` escaped as `$$`. See environment.md#tenant-environment-overview.
  */
 
-import type { Slug } from './brand.js';
+import type { Slug, TenantUid } from './brand.js';
 import type {
   BreakGlassSpec,
   DatabaseSpec,
@@ -16,7 +16,7 @@ import type {
   TenantDescriptor,
   TransportSpec,
 } from './descriptor.js';
-import { renderSendingAddress, sendingDomainOf } from './mail.js';
+import { credentialDomainOf, renderSendingAddress } from './mail.js';
 import { mediaBucketName, mediaPublicBaseUrl, validateMediaBucket } from './media.js';
 import { MAIL_SPOOL_BASE_URL, MAIL_SPOOL_SERVICE, MAIL_SPOOL_SMTP_PORT } from './spool.js';
 import { databaseAndUserName, validateDatabaseIdentity } from './naming.js';
@@ -266,7 +266,8 @@ function mediaEnvironment(
 function transportEnvironment(
   transport: TransportSpec,
   mail: MailSpec,
-  zones: Pick<ZoneConfig, 'demoMailDomain'>
+  zones: Pick<ZoneConfig, 'demoMailDomain'>,
+  uid: TenantUid
 ): Record<string, string | number | boolean> {
   if (transport.kind === 'queue') {
     if (!mail.enabled) {
@@ -277,7 +278,7 @@ function transportEnvironment(
       mail__options__host: MAIL_SPOOL_SERVICE,
       mail__options__port: MAIL_SPOOL_SMTP_PORT,
       mail__options__secure: false,
-      mail__options__auth__user: sendingDomainOf(mail.identity, zones),
+      mail__options__auth__user: credentialDomainOf(mail.identity, zones, uid),
       mail__options__connectionTimeout: MAIL_CONNECTION_TIMEOUT_MILLISECONDS,
       mail__options__greetingTimeout: MAIL_GREETING_TIMEOUT_MILLISECONDS,
       mail__options__socketTimeout: MAIL_SOCKET_TIMEOUT_MILLISECONDS,
@@ -317,14 +318,15 @@ function breakGlassEnvironment(breakGlass: BreakGlassSpec): Record<string, strin
  */
 function bulkMailEnvironment(
   mail: MailSpec,
-  zones: Pick<ZoneConfig, 'demoMailDomain'>
+  zones: Pick<ZoneConfig, 'demoMailDomain'>,
+  uid: TenantUid
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     mail__from: renderSendingAddress(mail.identity, zones),
   };
   if (mail.enabled) {
     env.bulkEmail__mailgun__baseUrl = MAIL_SPOOL_BASE_URL;
-    env.bulkEmail__mailgun__domain = sendingDomainOf(mail.identity, zones);
+    env.bulkEmail__mailgun__domain = credentialDomainOf(mail.identity, zones, uid);
   }
   return env;
 }
@@ -358,6 +360,7 @@ export function tenantEnvironment(
   descriptor: Pick<
     TenantDescriptor,
     | 'slug'
+    | 'uid'
     | 'siteUrl'
     | 'database'
     | 'media'
@@ -375,8 +378,8 @@ export function tenantEnvironment(
     url: descriptor.siteUrl,
     ...databaseEnvironment(descriptor.slug, descriptor.database),
     ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
-    ...transportEnvironment(descriptor.transport, descriptor.mail, zones),
-    ...bulkMailEnvironment(descriptor.mail, zones),
+    ...transportEnvironment(descriptor.transport, descriptor.mail, zones, descriptor.uid),
+    ...bulkMailEnvironment(descriptor.mail, zones, descriptor.uid),
     ...hostLimitsEnvironment(descriptor.limits),
     ...breakGlassEnvironment(descriptor.breakGlass),
 
