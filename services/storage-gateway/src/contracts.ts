@@ -66,7 +66,11 @@ export type RefusalCode =
   /** The storage service could not be reached or sent an answer the gateway cannot relay. Retryable. */
   | 'upstream-unavailable'
   /** The storage service kept asking the gateway to slow down until the deadline. Retryable. */
-  | 'upstream-throttled';
+  | 'upstream-throttled'
+  /** The body is larger than the tenant's upload ceiling. Not retryable as sent. */
+  | 'body-too-large'
+  /** The body ended short of, ran past, or was cut off before its declared length. */
+  | 'body-incomplete';
 
 /** A refusal: always carries a code, a client-safe message and an HTTP status. */
 export interface Refusal {
@@ -120,6 +124,11 @@ export interface CredentialRecord {
    * master secret and the key id, so a reissued id brings the old secret back.
    */
   readonly createdAt: string;
+  /**
+   * The most body bytes one request may carry, in MiB. Absent means the
+   * default (128). A value that is not a positive whole number is refused.
+   */
+  readonly uploadCeilingMib?: number;
 }
 
 /**
