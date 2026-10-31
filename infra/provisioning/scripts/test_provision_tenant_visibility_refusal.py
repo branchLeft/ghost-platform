@@ -226,5 +226,23 @@ class TheDispatchFormOffersNoPrivateOption(unittest.TestCase):
         )
 
 
+PRIVATE_BRANCH = re.compile(r'TENANT_VISIBILITY"\s*==?\s*"private"', re.IGNORECASE)
+
+
+class TheWorkflowBranchesOnPrivateNowhere(unittest.TestCase):
+    def test_no_step_has_a_private_arm_that_could_proceed(self):
+        offenders = [
+            f"line {i}: {line.strip()}"
+            for i, line in enumerate(_read_workflow(), start=1)
+            if PRIVATE_BRANCH.search(line)
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "a step branches on a private visibility; the validation refusal "
+            "is the only private path, so no step may treat private as handled",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -700,41 +700,28 @@ jobs:
           # The reviewer set is a repository variable rather than an identity
           # written into a public workflow file. It is the JSON body's
           # `reviewers` array verbatim, e.g. [{"type":"User","id":1234567}].
-          if [ "$TENANT_VISIBILITY" = "private" ]; then
-            # Environment protection rules are a public-repository feature on
-            # this plan tier, so a private tenant repo cannot carry one and the
-            # API refuses the reviewers. The environment is still created,
-            # because the SCOPING it gives -- secrets readable only by the job
-            # that declares it, never by a run from a branch -- is plan-
-            # independent and is most of the value. Said loudly rather than
-            # discovered: choosing private for a tenant also chooses that their
-            # deploy cannot be gated.
-            gh api --method PUT "repos/${TENANT_REPO}/environments/production" --silent
-            echo "::warning::the tenant repository is private, so its production environment carries no required reviewer -- protection rules are public-repository-only on this plan. Its secrets are still scoped to the deploy job."
-          else
-            if [ -z "$TENANT_ENVIRONMENT_REVIEWERS" ]; then
-              echo "::error::the TENANT_ENVIRONMENT_REVIEWERS repository variable is unset. It is the reviewers array for the tenant's production environment, e.g. [{\"type\":\"User\",\"id\":1234567}]. Refusing to create an environment with no protection rule while the template and doc 14 both state that one gates this tenant's deploy credentials."
-              exit 1
-            fi
-            printf '{"reviewers":%s}' "$TENANT_ENVIRONMENT_REVIEWERS" \
-              | gh api --method PUT "repos/${TENANT_REPO}/environments/production" --input - --silent
-
-            # Read back rather than trusted. A PUT that silently dropped the
-            # reviewers -- a stale id, a user without repository access -- leaves
-            # exactly the state this exists to prevent, and reports success.
-            rules=$(gh api "repos/${TENANT_REPO}/environments/production" \
-              --jq '[.protection_rules[].type] | join(",")') || {
-                echo "::error::could not read back the tenant repository's production environment. Refusing to continue without confirming its protection rule."
-                exit 1
-              }
-            case ",$rules," in
-              *,required_reviewers,*) echo "the tenant repository's production protection rules: $rules" ;;
-              *)
-                echo "::error::the tenant repository's production environment came back with protection rules '$rules' and no required reviewer. Check TENANT_ENVIRONMENT_REVIEWERS names a principal with access to that repository."
-                exit 1
-                ;;
-            esac
+          if [ -z "$TENANT_ENVIRONMENT_REVIEWERS" ]; then
+            echo "::error::the TENANT_ENVIRONMENT_REVIEWERS repository variable is unset. It is the reviewers array for the tenant's production environment, e.g. [{\"type\":\"User\",\"id\":1234567}]. Refusing to create an environment with no protection rule while the template and doc 14 both state that one gates this tenant's deploy credentials."
+            exit 1
           fi
+          printf '{"reviewers":%s}' "$TENANT_ENVIRONMENT_REVIEWERS" \
+            | gh api --method PUT "repos/${TENANT_REPO}/environments/production" --input - --silent
+
+          # Read back rather than trusted. A PUT that silently dropped the
+          # reviewers -- a stale id, a user without repository access -- leaves
+          # exactly the state this exists to prevent, and reports success.
+          rules=$(gh api "repos/${TENANT_REPO}/environments/production" \
+            --jq '[.protection_rules[].type] | join(",")') || {
+              echo "::error::could not read back the tenant repository's production environment. Refusing to continue without confirming its protection rule."
+              exit 1
+            }
+          case ",$rules," in
+            *,required_reviewers,*) echo "the tenant repository's production protection rules: $rules" ;;
+            *)
+              echo "::error::the tenant repository's production environment came back with protection rules '$rules' and no required reviewer. Check TENANT_ENVIRONMENT_REVIEWERS names a principal with access to that repository."
+              exit 1
+              ;;
+          esac
 
           printf '%s' "$PASSPHRASE" \
             | gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$TENANT_REPO" --env production
@@ -766,18 +753,13 @@ jobs:
       # step can write to the repository. Whether the template copy carries
       # rulesets is not established, so this step creates the ruleset either
       # way. The payload is a committed file, not inline YAML, so the test suite
-      # reads the same bytes this step posts. A private tenant gets a warning
-      # and no ruleset: on this plan a repository ruleset needs a public repo.
+      # reads the same bytes this step posts.
       - name: Protect the generated repository's default branch
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           ruleset_file=infra/provisioning/scripts/tenant-default-branch-ruleset.json
-          if [ "$TENANT_VISIBILITY" = "private" ]; then
-            echo "::warning::the tenant repository is private: repository rulesets are not available on a private repository on this plan, so its default branch is NOT protected. Skipping the ruleset; the run does not fail."
-            exit 0
-          fi
           ruleset_name=$(jq -r '.name' "$ruleset_file")
           existing_id=$(gh api "repos/${TENANT_REPO}/rulesets" \
             | jq -r --arg name "$ruleset_name" '[.[] | select(.name == $name) | .id] | first // empty')
