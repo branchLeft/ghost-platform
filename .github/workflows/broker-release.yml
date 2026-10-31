@@ -71,7 +71,10 @@ jobs:
           node-version-file: services/broker/.nvmrc
           registry-url: https://npm.pkg.github.com
           scope: '@branchleft'
-          cache: pnpm
+          # No pnpm cache on a tag run, which signs. An empty `cache` is the
+          # no-cache path, and '' is falsy in an expression, so the cache
+          # name is the right-hand side of the `&&`, not the left.
+          cache: ${{ github.ref_type != 'tag' && 'pnpm' || '' }}
           cache-dependency-path: services/broker/pnpm-lock.yaml
 
       # The service links render-core by a relative link: dependency and
@@ -158,8 +161,8 @@ jobs:
           name: broker-release
           path: broker-release
 
-      # Annotated, GitHub-verified, on main, and the commit that was built.
-      # This runs before anything is signed.
+      # A guard against a mistaken tag, run before anything is signed. It runs
+      # from the tagged commit, so it is not a control: see the runbook section.
       - name: Refuse a tag that is not a proper release tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

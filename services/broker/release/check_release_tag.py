@@ -1,32 +1,13 @@
 #!/usr/bin/env python3
-"""Refuse to release the broker from a tag that is not a proper release tag.
+"""Refuse a broker release tag that is not an annotated, verified tag on main.
 
-broker-release.yml runs this in the release job, before anything is signed or
-published. It fails closed: any input it cannot read, or that is not what it
-expects, is a refusal. It exits 0 only when every rule below holds.
+Fails closed, and guards against mistakes only: it runs from the tagged commit's
+own copy. The rules and the real controls are in RUNBOOK-broker-deploy.md,
+section "Release artifact and how to verify it".
 
-A release tag is:
-  1. named broker-vMAJOR.MINOR.PATCH, nothing more;
-  2. the same version as services/broker/package.json;
-  3. annotated (a tag object), not a lightweight pointer at a commit;
-  4. signed, with a signature GitHub itself reports as verified;
-  5. pointing at a commit that is an ancestor of origin/main;
-  6. pointing at the commit this workflow run is building.
-
-Rule 6 closes the gap between the build job and the release job: a tag moved
-or re-pushed in between no longer names the commit that was built.
-
-What this does not prove is who pushed the tag, only that its signature is one
-GitHub verifies. See "Release artifact and how to verify it" in
-RUNBOOK-broker-deploy.md for how the consumer closes that.
-
-Usage:
-  check_release_tag.py --tag NAME --ref-json FILE --tag-json FILE \\
-      --package-json FILE --expect-sha SHA --repo-dir DIR [--main-ref REF]
-  check_release_tag.py --self-test
-
---ref-json is the GitHub API answer for git/ref/tags/<tag>; --tag-json is the
-answer for git/tags/<sha> (or {} when the ref is not a tag object).
+Usage: check_release_tag.py --tag NAME --ref-json FILE --tag-json FILE \\
+    --package-json FILE --expect-sha SHA --repo-dir DIR [--main-ref REF]
+       check_release_tag.py --self-test
 """
 
 import argparse

@@ -189,14 +189,42 @@ contract: the shared-infra `broker_deploy` role consumes it, and the hand
 build in the Install and Upgrade steps above stays only until that role
 replaces it.
 
-**What a release is.** A signed, annotated tag `broker-vX.Y.Z`, on a commit
-that is on `main`, whose `X.Y.Z` is the `version` in
-`services/broker/package.json`. The workflow refuses any other tag before it
-signs anything (`release/check_release_tag.py`: annotated, signature verified
-by GitHub, on `main`, the commit that was built, version agrees). A tag
-`vX.Y.Z` or `render-core-vX.Y.Z` never starts it. There is no manual trigger.
-A published release is never replaced: a bad one is superseded by a new
-version.
+**What a release is.** A tag `broker-vX.Y.Z` whose `X.Y.Z` is the `version`
+in `services/broker/package.json`, cut as a signed, annotated tag on a commit
+on `main`. A tag `vX.Y.Z` or `render-core-vX.Y.Z` never starts the workflow.
+There is no manual trigger.
+A published release is never replaced; a fix ships as a new version.
+
+**What the tag check is.** Before anything is signed, the release job runs
+`release/check_release_tag.py`. It fails closed, and it refuses a tag that is
+not:
+
+1. named `broker-vMAJOR.MINOR.PATCH`, nothing more;
+2. the same version as `services/broker/package.json`;
+3. annotated (a tag object), not a lightweight pointer at a commit;
+4. signed, with a signature GitHub itself reports as verified;
+5. on a commit that is an ancestor of `origin/main`;
+6. on the commit this run built, so a tag moved or re-pushed between the build
+   job and the release job is refused.
+
+This is a guard against mistakes, not a control. It runs from the tagged
+commit's own copy of the script and the workflow, so a tag on a branch commit
+that edits them passes its own check, and the attestation records
+`refs/tags/<tag>`, not `main`. Nothing the verifier checks proves the tag is
+annotated, on `main`, or the only tag allowed. The controls are the tarball
+sha256 pinned in reviewed shared-infra code, and the consumer's check below
+that the attested commit is on `main`.
+
+**Why the bytes are the same every time.** `release/pack-release.sh` makes the
+tarball deterministic: the same bundle contents give the same bytes whatever
+the file times, the owner, the umask or the order the files were written in.
+That is what lets a reviewed digest in another repo pin a release, and what
+lets a pull request prove the packing without a tag (the workflow packs twice
+and compares). Members are the bundle's contents with no leading directory, so
+they unpack straight into a release directory. GNU tar is required (`--sort`,
+`--mtime`, `--owner`); the script refuses any other tar rather than pack
+differently. Tag runs, which sign, install without the pnpm cache; pull
+requests and branches keep it.
 
 **The three assets**, each fetchable anonymously, no token:
 
@@ -224,23 +252,61 @@ gh attestation verify "broker-bundle-${VERSION}.tar.gz" \
   --signer-workflow branchLeft/ghost-platform/.github/workflows/broker-release.yml \
   --source-ref "refs/tags/${TAG}" \
   --deny-self-hosted-runners \
-  --custom-trusted-root trusted_root.jsonl
+  --custom-trusted-root trusted_root.jsonl \
+  --format json > verified.json
 echo "${PINNED_SHA256}  broker-bundle-${VERSION}.tar.gz" | sha256sum --check --strict
 ```
 
 Both must pass. Change one byte of the tarball and the `gh attestation verify`
 line fails: that is the negative control.
 
+**Check the attested commit is on main.** The verify above proves where the
+bytes came from, not that the commit is on `main`. Read the source commit the
+attestation names from `verified.json` (the certificate's source digest), refuse
+anything that is not a 40-character sha before it goes into a URL, and ask the
+GitHub compare API, anonymously, how that commit relates to `main`. The pass
+condition is `behind` or `identical`. Any other answer (`ahead`, `diverged`),
+an empty answer, a failed request or a malformed commit fails the deploy: it
+exits 1 and nothing is unpacked or installed.
+
+```bash
+SOURCE_COMMIT="$(jq -r '.[0].verificationResult.signature.certificate.sourceRepositoryDigest' verified.json)"
+if ! printf '%s' "${SOURCE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "refusing: the attested source commit '${SOURCE_COMMIT}' is not a 40-hex sha" >&2
+  exit 1
+fi
+STATUS="$(curl -fsS "https://api.github.com/repos/branchLeft/ghost-platform/compare/main...${SOURCE_COMMIT}" | jq -r .status)"
+case "${STATUS}" in
+  behind | identical) ;;
+  *)
+    echo "refusing: ${SOURCE_COMMIT} is not on main (compare status '${STATUS}')" >&2
+    exit 1
+    ;;
+esac
+```
+
+The compare API is unauthenticated, which allows 60 requests per hour per
+address: ample for a deploy.
+
+**Not yet exercised.** Three things here have not been observed and the first
+consumer run proves each: `gh attestation verify --bundle ... --custom-trusted-root`
+working without a logged-in `gh`; `gh attestation trusted-root` working
+without a logged-in `gh`; and the JSON field that carries the source digest
+(`.[0].verificationResult.signature.certificate.sourceRepositoryDigest` above).
+If any one behaves differently, this section changes to match what was
+observed.
+
 **What this does and does not prove.** The attestation proves the tarball was
 built by `broker-release.yml` at `refs/tags/broker-vX.Y.Z` from the commit
-that tag names. It does not prove who pushed the tag. The second factor is
-the pinned digest: reviewed code chooses which release deploys, and the
-attestation proves where those bytes came from. This is the same trust in
-GitHub that branchLeft/workspace#2483 accepted for merge signatures; moving
-to a key of our own later changes only the attest step and the flags above.
-The `release tags` repository ruleset covers `v[0-9]*.[0-9]*.[0-9]*` only, so
-until it also names `broker-v*` a `broker-v*` tag has no deletion or update
-protection; the digest pin is what keeps a moved tag from deploying.
+that tag names. It does not prove who pushed the tag, or that the tag check
+was the one on `main`. The controls are the pinned digest, which makes
+reviewed code choose which release deploys, and the check above that the
+attested commit is on `main`. This is the same trust in GitHub that
+branchLeft/workspace#2483 accepted for merge signatures; moving to a key of
+our own later changes only the attest step and the flags above. The `release
+tags` repository ruleset covers `v[0-9]*.[0-9]*.[0-9]*` only, so until it also
+names `broker-v*` a `broker-v*` tag has no deletion or update protection; the
+digest pin is what keeps a moved tag from deploying.
 
 **Install from the release.** Unpack into a new release directory and swap
 `current` as in Upgrade above; never unpack over `current/`:

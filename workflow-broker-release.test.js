@@ -8,7 +8,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
 
@@ -160,4 +162,245 @@ test('every job sets a timeout', () => {
   for (const job of [build, publish]) {
     assert.match(job, /timeout-minutes: \d+/);
   }
+});
+
+// --- the pnpm cache is off on a tag run -------------------------------------
+
+// In an Actions expression '' is falsy, so `ref_type == 'tag' && '' || 'pnpm'`
+// is 'pnpm' on a tag too. This small evaluator follows the documented rules:
+// `&&` and `||` return an operand, not a boolean, and '' / 0 / false / null are
+// falsy. It handles only what the cache line uses: ==, !=, string literals and
+// the one context value.
+function evaluateExpression(expression, context) {
+  const falsy = (value) => value === '' || value === false || value === 0 || value === null;
+  const atom = (text) => {
+    const t = text.trim();
+    const compare = t.match(/^github\.ref_type\s*(==|!=)\s*'([^']*)'$/);
+    if (compare) {
+      return compare[1] === '=='
+        ? context.ref_type === compare[2]
+        : context.ref_type !== compare[2];
+    }
+    const literal = t.match(/^'([^']*)'$/);
+    assert.ok(literal, `unsupported expression term: ${t}`);
+    return literal[1];
+  };
+  const andChain = (text) => {
+    const operands = text.split('&&').map(atom);
+    return operands.find(falsy) ?? operands[operands.length - 1];
+  };
+  const operands = expression.split('||').map(andChain);
+  return operands.find((value) => !falsy(value)) ?? operands[operands.length - 1];
+}
+
+test('the build job gives a tag run no pnpm cache and every other run the cache', () => {
+  const lines = build.split('\n').filter((line) => /^\s*cache:/.test(line));
+  assert.equal(lines.length, 1, 'one cache line in the build job');
+  assert.equal(
+    lines[0].trim(),
+    "cache: ${{ github.ref_type != 'tag' && 'pnpm' || '' }}",
+    'the exact form: the cache name sits right of the && and an empty string right of the ||'
+  );
+  assert.doesNotMatch(
+    build,
+    /ref_type == 'tag' && '' \|\| 'pnpm'/,
+    'the inverted form gives a tag run the cache'
+  );
+  assert.doesNotMatch(build, /cache: pnpm/, 'no unconditional cache');
+
+  const expression = lines[0].match(/\$\{\{\s*(.*?)\s*\}\}/)[1];
+  assert.equal(
+    evaluateExpression(expression, { ref_type: 'tag' }),
+    '',
+    'a tag run: empty, so no cache'
+  );
+  assert.equal(
+    evaluateExpression(expression, { ref_type: 'branch' }),
+    'pnpm',
+    'a branch run keeps the cache'
+  );
+
+  // The evaluator must tell the two forms apart, or the checks above prove nothing.
+  const inverted = "github.ref_type == 'tag' && '' || 'pnpm'";
+  assert.equal(
+    evaluateExpression(inverted, { ref_type: 'tag' }),
+    'pnpm',
+    'the inverted form caches on a tag'
+  );
+});
+
+// --- the runbook section is the contract the consumer follows ---------------
+
+const RUNBOOK_FILE = path.join(
+  import.meta.dirname,
+  'services',
+  'broker',
+  'RUNBOOK-broker-deploy.md'
+);
+const runbook = fs.readFileSync(RUNBOOK_FILE, 'utf-8');
+
+function runbookSection(title) {
+  const start = runbook.indexOf(`\n## ${title}\n`);
+  assert.ok(start > -1, `runbook has the section "${title}"`);
+  const rest = runbook.slice(start + 1);
+  const next = rest.slice(3).search(/^## /m);
+  return next === -1 ? rest : rest.slice(0, next + 3);
+}
+
+const section = runbookSection('Release artifact and how to verify it');
+
+function bashBlocks(text) {
+  return [...text.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
+}
+
+function ancestorBlock() {
+  const blocks = bashBlocks(section).filter((block) => block.includes('/compare/main...'));
+  assert.equal(blocks.length, 1, 'exactly one fenced block runs the ancestor check');
+  return blocks[0];
+}
+
+const COMPARE_URL = 'https://api.github.com/repos/branchLeft/ghost-platform/compare/main...';
+
+test('the runbook states the published-release rule without history', () => {
+  assert.ok(
+    runbook.includes('A published release is never replaced; a fix ships as a new version.'),
+    'the rule, verbatim'
+  );
+  assert.doesNotMatch(
+    runbook,
+    /supersed/i,
+    'no superseded-decision wording anywhere in the runbook'
+  );
+});
+
+test('the runbook does not claim the tag check proves what it cannot', () => {
+  const flat = section.replace(/\s+/g, ' ');
+  assert.match(flat, /runs from the tagged commit's own copy/);
+  assert.match(flat, /guard against mistakes, not a control/);
+  assert.match(flat, /sha256 pinned in reviewed shared-infra code/);
+  assert.match(flat, /consumer's check below that the attested commit is on `main`/);
+});
+
+test('the ancestor check passes behind or identical and nothing else, and fails the deploy', () => {
+  const block = ancestorBlock();
+  assert.ok(
+    block.includes(`"${COMPARE_URL}\${SOURCE_COMMIT}"`),
+    'the anonymous compare URL, exactly'
+  );
+  assert.doesNotMatch(block, /GH_TOKEN|Authorization|--header|-H /, 'anonymous: no token');
+  assert.ok(
+    block.includes("'^[0-9a-f]{40}$'"),
+    'the 40-hex guard before the commit goes into a URL'
+  );
+
+  const passing = block.match(/case "\$\{STATUS\}" in\n\s*([^)\n]+)\) ;;/);
+  assert.ok(passing, 'the first case arm is the passing one and does nothing');
+  assert.deepEqual(
+    passing[1].split('|').map((word) => word.trim()),
+    ['behind', 'identical'],
+    'exactly behind or identical passes'
+  );
+  assert.match(block, /\n\s*\*\)\n/, 'every other answer reaches the catch-all arm');
+  for (const word of ['ahead', 'diverged']) {
+    assert.ok(!block.includes(word), `${word} is not named in the check, so it cannot pass`);
+  }
+  assert.equal(block.split('exit 1').length - 1, 2, 'the bad sha and the bad status each exit 1');
+});
+
+test('the runbook names the three unobserved items and the ruleset gap', () => {
+  const paragraph = section.match(/\*\*Not yet exercised\.\*\*[\s\S]*?\n\n/);
+  assert.ok(paragraph, 'a "Not yet exercised" paragraph');
+  const text = paragraph[0].replace(/\s+/g, ' ');
+  assert.match(text, /gh attestation verify --bundle \.\.\. --custom-trusted-root/);
+  assert.match(text, /gh attestation trusted-root/);
+  assert.match(text, /JSON field that carries the source digest/);
+  assert.match(section, /broker-v\*/);
+});
+
+// --- the ancestor check, run -----------------------------------------------
+
+const COMMIT = 'a'.repeat(40);
+
+function runAncestorCheck({ sourceCommit = COMMIT, body = '', curlExit = '', omitField = false }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-ancestor-'));
+  try {
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, 'curl'),
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$STUB_ARGS_FILE"\n' +
+        'if [ -n "$STUB_CURL_EXIT" ]; then exit "$STUB_CURL_EXIT"; fi\nprintf \'%s\' "$STUB_BODY"\n',
+      { mode: 0o755 }
+    );
+    const certificate = omitField ? {} : { sourceRepositoryDigest: sourceCommit };
+    fs.writeFileSync(
+      path.join(dir, 'verified.json'),
+      JSON.stringify([{ verificationResult: { signature: { certificate } } }])
+    );
+    fs.writeFileSync(path.join(dir, 'check.sh'), ancestorBlock());
+    const argsFile = path.join(dir, 'curl-args');
+    const result = spawnSync('bash', ['check.sh'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        STUB_ARGS_FILE: argsFile,
+        STUB_BODY: body,
+        STUB_CURL_EXIT: curlExit,
+      },
+    });
+    assert.ok(!result.error, `bash ran: ${result.error}`);
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      curlArgs: fs.existsSync(argsFile) ? fs.readFileSync(argsFile, 'utf-8') : null,
+    };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('the ancestor check passes a commit that is behind or identical to main', () => {
+  for (const status of ['behind', 'identical']) {
+    const run = runAncestorCheck({ body: JSON.stringify({ status }) });
+    assert.equal(run.status, 0, `${status} passes: ${run.stderr}`);
+    assert.ok(
+      run.curlArgs.includes(`${COMPARE_URL}${COMMIT}`),
+      'asked the compare API about the attested commit'
+    );
+  }
+});
+
+test('the ancestor check fails the deploy on anything else', () => {
+  const cases = {
+    ahead: { body: '{"status":"ahead"}' },
+    diverged: { body: '{"status":"diverged"}' },
+    'an empty answer': { body: '' },
+    'a malformed answer': { body: 'not json' },
+    'an answer with no status': { body: '{}' },
+    'a null status': { body: '{"status":null}' },
+    'a failed request': { body: '{"status":"behind"}', curlExit: '22' },
+  };
+  for (const [name, input] of Object.entries(cases)) {
+    const run = runAncestorCheck(input);
+    assert.notEqual(run.status, 0, `${name} fails the deploy`);
+  }
+});
+
+test('a source commit that is not a 40-hex sha is refused before any request', () => {
+  for (const sourceCommit of [
+    'abc123',
+    'A'.repeat(40),
+    `${'a'.repeat(39)}/`,
+    `${'a'.repeat(40)}0`,
+    '../../x',
+    '',
+  ]) {
+    const run = runAncestorCheck({ sourceCommit, body: '{"status":"behind"}' });
+    assert.notEqual(run.status, 0, `${JSON.stringify(sourceCommit)} is refused`);
+    assert.equal(run.curlArgs, null, 'no request was made');
+  }
+  const missing = runAncestorCheck({ omitField: true, body: '{"status":"behind"}' });
+  assert.notEqual(missing.status, 0, 'a missing source digest field is refused');
+  assert.equal(missing.curlArgs, null, 'no request was made');
 });

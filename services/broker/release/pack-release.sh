@@ -1,22 +1,11 @@
 #!/usr/bin/env bash
-# Packs the broker bundle (the output of `pnpm run bundle`: broker.mjs and
-# plugins/*.mjs) into the release tarball and its sha256 file.
+# Packs the broker bundle (`pnpm run bundle` output) into a deterministic
+# release tarball and its sha256 file. Why determinism matters: see
+# RUNBOOK-broker-deploy.md, section "Release artifact and how to verify it".
 #
 # Usage: pack-release.sh <bundle_dir> <version> <out_dir>
-#
-# Writes, into <out_dir>:
-#   broker-bundle-<version>.tar.gz
-#   broker-bundle-<version>.tar.gz.sha256   (sha256sum format, bare file name)
-#
-# The tarball is deterministic: the same bundle contents always give the same
-# bytes, whatever the file times, the owner or the order the files were
-# written in. That is what lets a reviewed digest in another repo pin a
-# release, and what lets a pull request prove the packing without a tag.
-# Members are the bundle's contents with no leading directory, so they unpack
-# straight into a release directory.
-#
-# GNU tar is required (the `--sort`, `--mtime` and `--owner` flags below);
-# the script refuses to run with any other tar rather than pack differently.
+# Writes <out_dir>/broker-bundle-<version>.tar.gz and the same name + .sha256.
+# Needs GNU tar (--sort, --mtime, --owner) and refuses any other tar.
 set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
