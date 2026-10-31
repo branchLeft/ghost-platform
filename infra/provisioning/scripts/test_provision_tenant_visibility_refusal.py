@@ -198,5 +198,33 @@ class TheRefusalPrecedesEveryMutation(unittest.TestCase):
                 )
 
 
+INPUT_KEY_LINE = re.compile(r"^      [A-Za-z_][A-Za-z0-9_]*:")
+
+
+def _visibility_options(lines):
+    """The option values of the `tenant_visibility` dispatch input, as the
+    form would offer them."""
+    start = lines.index("      tenant_visibility:")
+    options = []
+    for line in lines[start + 1 :]:
+        if INPUT_KEY_LINE.match(line):
+            break
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            options.append(stripped[2:].strip().strip("'"))
+    return options
+
+
+class TheDispatchFormOffersNoPrivateOption(unittest.TestCase):
+    def test_the_visibility_choice_offers_public_and_no_private(self):
+        options = _visibility_options(_read_workflow())
+        self.assertIn("public", options)
+        self.assertNotIn(
+            "private",
+            [option.lower() for option in options],
+            "the dispatch form must not offer private: the workflow refuses it",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

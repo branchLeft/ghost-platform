@@ -79,7 +79,6 @@ on:
         options:
           - 'ask the tenant -- this is not an answer'
           - public
-          - private
       tenant_name:
         description: 'Tenant slug: Pulumi stack, Compose project, systemd instance, MySQL database and user. Lowercase, hyphenated, at most 26 characters.'
         required: true
@@ -1094,11 +1093,4 @@ jobs:
             echo "8. Complete and merge the handover pull request."
             echo
             echo "Full sequence, with the exact commands: \`RUNBOOK-tenant-onboarding.md\`."
-            if [ "$TENANT_VISIBILITY" = "private" ]; then
-              echo
-              echo "This repo is private at the tenant's request. On this plan a"
-              echo "private repo can carry no branch ruleset and no environment"
-              echo "protection rule, so its \`production\` environment scopes its"
-              echo "secrets to the deploy job but gates nothing."
-            fi
           } >> "$GITHUB_STEP_SUMMARY"

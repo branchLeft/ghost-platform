@@ -165,10 +165,10 @@ gh variable set TENANT_ENVIRONMENT_REVIEWERS --repo branchLeft/ghost-platform \
 Provisioning refuses to create a public tenant repo's environment while this is
 unset, and reads the environment back afterwards to confirm a
 `required_reviewers` rule actually landed — a PUT naming a principal without
-access to the new repository succeeds and silently produces no rule. For a
-**private** tenant repo it is skipped with a warning: protection rules are a
-public-repository feature on this plan tier, so choosing private for a tenant
-also chooses that their deploy cannot be gated. The environment is still
+access to the new repository succeeds and silently produces no rule. A
+**private** tenant repo would be skipped with a warning, because protection
+rules are a public-repository feature on this plan tier. The workflow refuses a
+private tenant, so a dispatch never reaches that skip. The environment is still
 created, because the scoping it gives — secrets readable only by the job that
 declares it, never by a run from a branch — is plan-independent and is most of
 the value.
