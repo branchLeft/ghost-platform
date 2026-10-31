@@ -113,11 +113,10 @@ class StepPresenceAndOrderingTests(unittest.TestCase):
         self.assertIn(
             'expected="%s"' % ",".join(EXPECTED_RULE_TYPES), run)
 
-    def test_a_private_tenant_is_skipped_with_a_visible_line_and_no_failure(self):
+    def test_the_step_never_branches_on_visibility_so_no_tenant_skips_protection(self):
         run = _run_body(self.body)
-        self.assertIn('"$TENANT_VISIBILITY" = "private"', run)
-        self.assertIn("::warning::", run)
-        self.assertIn("exit 0", run)
+        self.assertNotIn("TENANT_VISIBILITY", run)
+        self.assertNotIn("::warning::", run)
 
 
 class PayloadTests(unittest.TestCase):
@@ -255,11 +254,11 @@ class ReadBackRefusalTests(unittest.TestCase):
         self.assertIn("rulesets/4242", calls)
         self.assertNotIn("--method POST", calls)
 
-    def test_a_private_tenant_skips_with_a_warning_and_no_gh_call(self):
+    def test_a_private_value_never_skips_the_read_back(self):
         result, calls = self._run([], visibility="private")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("::warning::", result.stdout)
-        self.assertEqual(calls, "")
+        self.assertNotEqual(result.returncode, 0,
+                            "a private tenant skipped the default-branch read-back")
+        self.assertIn("::error::", result.stdout)
 
     def _assert_refused(self, rules):
         result, calls = self._run(rules)
