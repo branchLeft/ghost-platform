@@ -181,6 +181,79 @@ Keep at least the previous two releases under `releases/` for a manual
 rollback (`ln -sfn` to the older directory, then restart); nothing here
 automates pruning them.
 
+## Release artifact and how to verify it
+
+`.github/workflows/broker-release.yml` builds the bundle in CI, signs it and
+publishes it as a GitHub Release. This section is the one home of that
+contract: the shared-infra `broker_deploy` role consumes it, and the hand
+build in the Install and Upgrade steps above stays only until that role
+replaces it.
+
+**What a release is.** A signed, annotated tag `broker-vX.Y.Z`, on a commit
+that is on `main`, whose `X.Y.Z` is the `version` in
+`services/broker/package.json`. The workflow refuses any other tag before it
+signs anything (`release/check_release_tag.py`: annotated, signature verified
+by GitHub, on `main`, the commit that was built, version agrees). A tag
+`vX.Y.Z` or `render-core-vX.Y.Z` never starts it. There is no manual trigger.
+A published release is never replaced: a bad one is superseded by a new
+version.
+
+**The three assets**, each fetchable anonymously, no token:
+
+| Asset                                 | What it is                                                                      |
+| ------------------------------------- | ------------------------------------------------------------------------------- |
+| `broker-bundle-X.Y.Z.tar.gz`          | `broker.mjs` and `plugins/*.mjs`, no leading directory, deterministic bytes     |
+| `broker-bundle-X.Y.Z.tar.gz.sha256`   | `sha256sum` output for the tarball                                              |
+| `broker-bundle-X.Y.Z.tar.gz.sigstore.json` | the GitHub artifact attestation (SLSA provenance) for the tarball          |
+
+Unpacked, the tree is what `broker_deploy_bundle_src` already expects.
+
+**Verify, from an empty directory.** Set `VERSION` to the version being
+deployed and `PINNED_SHA256` to the digest recorded for it in reviewed code
+(the role's pin, not the `.sha256` file from the release):
+
+```bash
+TAG="broker-v${VERSION}"
+BASE="https://github.com/branchLeft/ghost-platform/releases/download/${TAG}"
+curl -fsSLO "${BASE}/broker-bundle-${VERSION}.tar.gz"
+curl -fsSLO "${BASE}/broker-bundle-${VERSION}.tar.gz.sigstore.json"
+gh attestation trusted-root > trusted_root.jsonl
+gh attestation verify "broker-bundle-${VERSION}.tar.gz" \
+  --bundle "broker-bundle-${VERSION}.tar.gz.sigstore.json" \
+  --repo branchLeft/ghost-platform \
+  --signer-workflow branchLeft/ghost-platform/.github/workflows/broker-release.yml \
+  --source-ref "refs/tags/${TAG}" \
+  --deny-self-hosted-runners \
+  --custom-trusted-root trusted_root.jsonl
+echo "${PINNED_SHA256}  broker-bundle-${VERSION}.tar.gz" | sha256sum --check --strict
+```
+
+Both must pass. Change one byte of the tarball and the `gh attestation verify`
+line fails: that is the negative control.
+
+**What this does and does not prove.** The attestation proves the tarball was
+built by `broker-release.yml` at `refs/tags/broker-vX.Y.Z` from the commit
+that tag names. It does not prove who pushed the tag. The second factor is
+the pinned digest: reviewed code chooses which release deploys, and the
+attestation proves where those bytes came from. This is the same trust in
+GitHub that branchLeft/workspace#2483 accepted for merge signatures; moving
+to a key of our own later changes only the attest step and the flags above.
+The `release tags` repository ruleset covers `v[0-9]*.[0-9]*.[0-9]*` only, so
+until it also names `broker-v*` a `broker-v*` tag has no deletion or update
+protection; the digest pin is what keeps a moved tag from deploying.
+
+**Install from the release.** Unpack into a new release directory and swap
+`current` as in Upgrade above; never unpack over `current/`:
+
+```bash
+mkdir "broker-release-${VERSION}"
+tar -xzf "broker-bundle-${VERSION}.tar.gz" -C "broker-release-${VERSION}"
+```
+
+**Roll back** by pinning the previous version and its digest in the role and
+running it again. Older releases stay published, so the previous tarball and
+its attestation are still there to verify.
+
 ## Proof
 
 `.github/workflows/broker-systemd-boot-ci.yml` boots a real `systemd`
