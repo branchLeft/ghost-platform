@@ -831,7 +831,8 @@ other provisioning facts live.
 ### 9. Register the tenant at the edge
 
 Add this tenant's site block to the edge site registry in
-`branchLeft/shared-infra`, using the stack's own value:
+`branchLeft/shared-infra` (`sites.ts`), and set its `requestBodyMaxSize` field
+to the stack's own value:
 
 ```bash
 pulumi stack output edgeRequestBodyMaxSize --stack <slug>
@@ -839,6 +840,15 @@ pulumi stack output edgeRequestBodyMaxSize --stack <slug>
 
 It is derived from the same input as the container's `/tmp` ceiling so the two
 cannot disagree. Setting it there by hand to a different number defeats that.
+
+Nothing copies the output into `sites.ts` for you. The change reaches the edge
+through the rendered `hetzner/edge/stack/Caddyfile` in `branchLeft/shared-infra`,
+and `hetzner/edge/stack/**` is a hand-delivered path: render it, copy the stack to
+the edge host, then reload Caddy in place as `hetzner/RUNBOOK-edge.md` describes.
+Do not use `systemctl restart branchleft-compose@edge` for this. The Caddyfile is
+a bind mount whose contents are outside the compose config hash, so that restart
+is a silent no-op for a Caddyfile-only change: it exits 0 and the old
+configuration keeps serving.
 
 ### 10. Merge the handover pull request
 
