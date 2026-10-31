@@ -1,23 +1,13 @@
 #!/usr/bin/env python3
 """Gate for provisioning a private tenant repository.
 
-A private tenant is provisioned only when the owner's register attests both a
-paid GitHub plan and a dedicated Hetzner private-CI runner. This script is the
-only code that reads the register. The provisioning workflow calls it and
-parses nothing itself.
-
-Exit 0: both attestations are the literal JSON true, and the runner label starts
-with the Hetzner private-CI prefix.
-Exit 1: refused. One ::error:: line per missing attestation.
-Exit 2: the register is missing, unreadable, not valid JSON, has a duplicate
-key, or has the wrong version or shape. Fails closed, with its own message.
-
-Both attestations are the owner's spend. No agent procures or attests either,
-and a personal Mac never qualifies as the dedicated runner.
-
-The default register is $GITHUB_WORKSPACE/registers/private-tenant-plan.json,
-or the repository root above this script when GITHUB_WORKSPACE is unset. There
-is no environment switch that skips the gate.
+Refuses unless registers/private-tenant-plan.json attests, as literal JSON true,
+a paid GitHub plan and a dedicated Hetzner runner labelled exactly
+private-ci-hetzner. This script is the only code that reads the register.
+Exit 0 passes. Exit 1 refuses, one ::error:: line per missing attestation.
+Exit 2 fails closed on a register that is missing, unreadable or malformed.
+No environment switch skips the gate. Rationale and owner-only rules:
+registers/private-tenant-plan.md.
 """
 
 import argparse
@@ -26,7 +16,7 @@ import os
 import sys
 
 REGISTER_RELPATH = os.path.join("registers", "private-tenant-plan.json")
-RUNNER_LABEL_PREFIX = "private-ci-hetzner"
+RUNNER_LABEL = "private-ci-hetzner"
 EXPECTED_VERSION = 1
 FIELDS = (
     "version",
@@ -118,11 +108,11 @@ def refusals(data):
             "confirmed a dedicated Hetzner private-CI runner. This is the "
             "owner's spend, and a personal Mac never qualifies."
         )
-    elif not data["dedicated_runner_label"].startswith(RUNNER_LABEL_PREFIX):
+    elif data["dedicated_runner_label"] != RUNNER_LABEL:
         lines.append(
-            "::error::dedicated_runner_label does not start with %s. The "
+            "::error::dedicated_runner_label is not exactly %s. The "
             "attestation names a Hetzner runner, and a personal Mac never "
-            "qualifies." % RUNNER_LABEL_PREFIX
+            "qualifies." % RUNNER_LABEL
         )
     return lines
 

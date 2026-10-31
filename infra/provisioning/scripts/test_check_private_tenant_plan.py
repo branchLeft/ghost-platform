@@ -103,14 +103,14 @@ class ARefusalOnAMissingAttestation(GateCase):
         rc, out = self._gate_on(_register(label="github-hosted"))
         self.assertEqual(rc, 1, out)
         self.assertEqual(len(self._errors(out)), 1, out)
-        self.assertIn("dedicated_runner_label does not start with", out)
+        self.assertIn("dedicated_runner_label is not exactly", out)
         self.assertIn("Mac", out)
         self.assertIn("owner's spend", out)
 
     def test_a_personal_mac_label_refuses(self):
         rc, out = self._gate_on(_register(label="mac-mini-owner"))
         self.assertEqual(rc, 1, out)
-        self.assertIn("dedicated_runner_label does not start with", out)
+        self.assertIn("dedicated_runner_label is not exactly", out)
 
 
 class BothAttestedPasses(GateCase):
@@ -119,9 +119,13 @@ class BothAttestedPasses(GateCase):
         self.assertEqual(rc, 0, out)
         self.assertEqual(self._errors(out), [], out)
 
-    def test_a_longer_hetzner_label_still_passes(self):
-        rc, out = self._gate_on(_register(label="private-ci-hetzner-fsn1"))
-        self.assertEqual(rc, 0, out)
+    def test_a_suffixed_hetzner_label_is_refused(self):
+        for label in ("private-ci-hetzner-mac", "private-ci-hetzner-fsn1"):
+            with self.subTest(label=label):
+                rc, out = self._gate_on(_register(label=label))
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(len(self._errors(out)), 1, out)
+                self.assertIn("dedicated_runner_label", out)
 
 
 class TheAttestationIsLiteralJsonTrue(GateCase):

@@ -16,7 +16,7 @@ is no environment switch that skips the gate.
 
 | Exit | Meaning |
 |---|---|
-| 0 | `paid_plan_confirmed` and `dedicated_runner_confirmed` are the literal JSON `true`, and `dedicated_runner_label` starts with `private-ci-hetzner`. |
+| 0 | `paid_plan_confirmed` and `dedicated_runner_confirmed` are the literal JSON `true`, and `dedicated_runner_label` is exactly `private-ci-hetzner`. |
 | 1 | Refused. One `::error::` line per missing attestation, then a plain trailer saying both are the owner's spend and that a personal Mac never qualifies. |
 | 2 | The register is missing, unreadable, not valid JSON, has a duplicate key, or has the wrong version or shape. Fails closed, with its own `::error::` line. |
 

@@ -1,15 +1,10 @@
 """Tests for the tenant_visibility gate in ../../../.github/workflows/
-provision-tenant.yml. A private tenant passes the gate only when the owner's
-plan register attests both a paid GitHub plan and a dedicated private-CI runner.
-The gate runs in the 'Validate inputs' step, before any step that writes a
-credential or creates a repository, and again in the repository creation step.
-
-The gate is tested by extracting the visibility `case` block from each step's
-`run:` body and executing it under `bash -e`, against a temporary
-GITHUB_WORKSPACE that holds a copy of the real gate script and a fixture
-register. A separate test reads the step order from the workflow file. A
-red-then-green test removes the gate call from an in-memory copy of the workflow
-and shows the refusal depends on it.
+provision-tenant.yml. A private tenant passes only when the owner's plan register
+attests a paid plan and a dedicated runner, via check_private_tenant_plan.py.
+The gate runs in Validate inputs, before any credential or repository step, and
+again at repository creation. Each case block runs under bash -e against a
+temporary workspace with a fixture register. A sabotage test removes the gate
+call in memory and shows the refusal depends on it.
 """
 
 import json

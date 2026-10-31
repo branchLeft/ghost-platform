@@ -1,17 +1,11 @@
 """Parity between public and private tenants, after the plan gate.
 
-Once the gate has passed, a private tenant takes exactly the public path through
-the production environment and the default-branch ruleset. These tests show it
-two ways:
-
-(a) statically, TENANT_VISIBILITY is read only where a choice is made: the job
-    environment binding, the Validate step, the repository creation step and the
-    Summary. No credential or protection step branches on it.
-(b) dynamically, the extracted environment block and the real ruleset step run
-    against a stub gh, once for public and once for private. Both issue the same
-    gh calls in the same order, with the same read-backs. Equivalence is in calls
-    and read-backs, not in bytes of output. A private read-back with no required
-    reviewer, or a short ruleset read-back, fails closed with ::error::.
+Once the gate passes, a private tenant takes the public path. Two proofs:
+(a) statically, TENANT_VISIBILITY is read only in the job binding, Validate,
+    repository creation and Summary. No credential or ruleset step branches on it.
+(b) dynamically, the environment and ruleset steps run against a stub gh for
+    public and for private. Both must issue the same gh calls and read-backs.
+A private read-back without a reviewer, or a short ruleset, fails closed.
 """
 
 from __future__ import annotations

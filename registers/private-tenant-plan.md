@@ -15,7 +15,7 @@ flips each one in a reviewed pull request.
 |---|---|
 | `paid_plan_confirmed` | The organisation holds a paid GitHub plan that gives private repositories environment required reviewers and repository rulesets. On a free plan those features are not available on a private repository. |
 | `dedicated_runner_confirmed` | A dedicated Hetzner virtual machine is running as the CI runner for private repositories, and it carries the label named in `dedicated_runner_label`. |
-| `dedicated_runner_label` | The runner label that the dedicated VM registers under. It must start with `private-ci-hetzner`, so the attestation is pinned to a Hetzner runner. |
+| `dedicated_runner_label` | The runner label that the dedicated VM registers under. It must be exactly `private-ci-hetzner`, so the attestation is pinned to a Hetzner runner. A suffixed label is refused. |
 
 Both attestations are the owner's spend. An agent does not procure either one and
 does not set either flag. The flag is an owner decision recorded in a reviewed
@@ -68,3 +68,4 @@ gate reads the edited copy. Neither control is checked by this file.
   for a private tenant. Until it does, a private tenant's own CI cannot run on the
   dedicated runner even when the gate passes.
 - The gate does not verify the paid plan. The read-backs are the runtime proof.
+- Do not flip either attestation until the tenant template selects the dedicated runner ([branchLeft/ghost-platform-tenant-template#71](https://github.com/branchLeft/ghost-platform-tenant-template/issues/71)). Until then a private tenant's CI would run on GitHub-hosted runners.
