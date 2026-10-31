@@ -165,13 +165,15 @@ gh variable set TENANT_ENVIRONMENT_REVIEWERS --repo branchLeft/ghost-platform \
 Provisioning refuses to create a public tenant repo's environment while this is
 unset, and reads the environment back afterwards to confirm a
 `required_reviewers` rule actually landed — a PUT naming a principal without
-access to the new repository succeeds and silently produces no rule. For a
-**private** tenant repo it is skipped with a warning: protection rules are a
-public-repository feature on this plan tier, so choosing private for a tenant
-also chooses that their deploy cannot be gated. The environment is still
-created, because the scoping it gives — secrets readable only by the job that
-declares it, never by a run from a branch — is plan-independent and is most of
-the value.
+access to the new repository succeeds and silently produces no rule. The same
+reviewer and read-back apply to a **private** tenant repo, but only after the
+owner's plan register, `registers/private-tenant-plan.json`, attests both a paid
+GitHub plan and a dedicated Hetzner private-CI runner. The gate that reads it is
+`infra/provisioning/scripts/check_private_tenant_plan.py`. On a private repo,
+required reviewers and rulesets need that paid plan. A private tenant whose plan
+has lapsed fails the read-back, and the run stops before any state credential is
+written. Both attestations are the owner's spend and change only by a reviewed
+pull request. A personal Mac never qualifies as the dedicated runner.
 
 The endpoint host and the region must name the same location: against Ceph RGW
 the region is part of the SigV4 credential scope, so a mismatch is an opaque 403
