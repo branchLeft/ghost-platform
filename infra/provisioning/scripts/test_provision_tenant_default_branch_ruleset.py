@@ -113,11 +113,8 @@ class StepPresenceAndOrderingTests(unittest.TestCase):
         self.assertIn(
             'expected="%s"' % ",".join(EXPECTED_RULE_TYPES), run)
 
-    def test_a_private_tenant_is_skipped_with_a_visible_line_and_no_failure(self):
-        run = _run_body(self.body)
-        self.assertIn('"$TENANT_VISIBILITY" = "private"', run)
-        self.assertIn("::warning::", run)
-        self.assertIn("exit 0", run)
+    def test_it_has_no_private_branch(self):
+        self.assertNotIn("TENANT_VISIBILITY", _run_body(self.body))
 
 
 class PayloadTests(unittest.TestCase):
@@ -166,6 +163,8 @@ STUB_GH = textwrap.dedent('''\
             jq = args[i + 1]
             i += 2
         elif a == "--input":
+            if args[i + 1] == "-":
+                sys.stdin.read()
             i += 2
         elif a == "--silent":
             i += 1
@@ -180,6 +179,8 @@ STUB_GH = textwrap.dedent('''\
         body = os.environ["STUB_RULESETS"]
     elif "/rules/branches/main" in path:
         body = os.environ["STUB_RULES"]
+    elif path.endswith("/environments/production"):
+        body = os.environ.get("STUB_ENVIRONMENT", "{}")
     else:
         sys.exit(1)
     if jq is not None:
@@ -254,12 +255,6 @@ class ReadBackRefusalTests(unittest.TestCase):
         self.assertIn("--method PUT", calls)
         self.assertIn("rulesets/4242", calls)
         self.assertNotIn("--method POST", calls)
-
-    def test_a_private_tenant_skips_with_a_warning_and_no_gh_call(self):
-        result, calls = self._run([], visibility="private")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("::warning::", result.stdout)
-        self.assertEqual(calls, "")
 
     def _assert_refused(self, rules):
         result, calls = self._run(rules)
