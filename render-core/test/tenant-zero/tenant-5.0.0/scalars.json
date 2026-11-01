@@ -1,0 +1,12 @@
+{
+  "composeUnit": "branchleft-compose@blog.service",
+  "stackDirectory": "/opt/branchleft/blog",
+  "secretsEnvPath": "/etc/branchleft/blog.env",
+  "imageEnvPath": "/etc/branchleft/blog.image.env",
+  "edgeRequestBodyMaxSize": "64MiB",
+  "hostProvisioningCommand": "provision_tenant_volume.py --uid 30001 blog",
+  "mediaBucket": "branchleft-media-blog",
+  "mediaPublicBaseUrl": "https://hel1.your-objectstorage.com/branchleft-media-blog",
+  "databaseName": "ghost_blog",
+  "databaseUser": "ghost_blog"
+}

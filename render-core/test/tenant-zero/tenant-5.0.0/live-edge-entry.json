@@ -1,0 +1,7 @@
+{
+  "displayHostname": "blog.branchleft.co.uk",
+  "admittedHostname": "blog.branchleft.co.uk",
+  "gate": { "kind": "none" },
+  "requestBodyMaxSize": "64MiB",
+  "privateUpstreamPort": 8101
+}
