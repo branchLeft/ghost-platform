@@ -7,7 +7,7 @@ main: index.ts
 # be operated against whichever one was last logged into. The same bucket as
 # every other Hetzner stack, which is also what lets this program read the
 # estate stack's applied edge1 address by StackReference. The bucket is in
-# `hel1`; both the endpoint host and `region` must name it.
+# `fsn1`; both the endpoint host and `region` must name it.
 backend:
-  url: 's3://branchleft-pulumi-state?endpoint=hel1.your-objectstorage.com&s3ForcePathStyle=true&region=hel1'
+  url: 's3://branchleft-pulumi-state-fsn1?endpoint=fsn1.your-objectstorage.com&s3ForcePathStyle=true&region=fsn1'
 description: The demo host, demo1, in the branchLeft demos Hetzner project — the server, its two primary IPs and its firewall. Its own stack and its own token because a project token has full power over its project, and the demo host is the least-trusted machine in the estate. Nothing here installs the broker, the slots or the demo edge; those are delivered over SSH from edge1.
