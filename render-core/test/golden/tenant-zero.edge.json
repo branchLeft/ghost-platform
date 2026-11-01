@@ -1,0 +1,10 @@
+{
+  "displayHostname": "blog.branchleft.co.uk",
+  "admittedHostname": "blog.branchleft.co.uk",
+  "gate": {
+    "kind": "none"
+  },
+  "requestBodyMaxSize": "64MiB",
+  "contentSecurityPolicy": "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'",
+  "contentSecurityPolicyMode": "report-only"
+}
