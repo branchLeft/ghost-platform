@@ -62,6 +62,7 @@ function buildAdapter({
   holdOrphanMinAgeMs,
   holdOrphanSweepIntervalMs,
   overwriteWindowMs,
+  reservationMaxEntries,
 } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
     loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
@@ -84,6 +85,7 @@ function buildAdapter({
     holdOrphanMinAgeMs,
     holdOrphanSweepIntervalMs,
     overwriteWindowMs,
+    reservationMaxEntries,
   });
   return { instance, verdictClient, quarantinePath: resolvedQuarantinePath };
 }
@@ -790,6 +792,100 @@ describe("Ghost's content importer", () => {
       await adapter.save(file, dir);
       expect(adapter.wrapped.files.has(fresh)).toBe(true);
       expect(adapter.wrapped.files.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps refusing a lapsed file on every retry, until it is promised a fresh name', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter();
+      const dir = 'content/images/2019/01';
+      const file = await writeTempFile(CLEAN_BYTES, 'retried.png');
+      await adapter.getUniqueFileName(file, dir);
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      // A retry of the same file is refused too, not stored under a fresh name.
+      await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      expect(adapter.wrapped.files.size).toBe(0);
+      expect(adapter.lapsedReservations.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears a lapse when the file is promised a fresh name, so it is not refused afterwards', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter();
+      const dir = 'content/images/2019/01';
+      const file = await writeTempFile(CLEAN_BYTES, 'cleared.png');
+      await adapter.getUniqueFileName(file, dir);
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      expect(adapter.lapsedReservations.size).toBe(1);
+
+      const fresh = await adapter.getUniqueFileName(file, dir);
+      expect(adapter.lapsedReservations.size).toBe(0);
+      await adapter.save(file, dir);
+      expect(adapter.wrapped.files.has(fresh)).toBe(true);
+      // The promise is spent and no stale lapse is left: a further save of the
+      // file is an ordinary upload under its own new name, not a refusal.
+      await adapter.save(file, dir);
+      expect(adapter.wrapped.files.size).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never forgets a lapse: at the bound, reservations and lapses together refuse a new promise', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter({ reservationMaxEntries: 3 });
+      const dir = 'content/images/2019/01';
+      const files = [];
+      for (const name of ['a.png', 'b.png', 'c.png']) {
+        const file = await writeTempFile(CLEAN_BYTES, name);
+        await adapter.getUniqueFileName(file, dir);
+        files.push(file);
+      }
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      // All three promises have lapsed, and the three lapses fill the bound.
+      const another = await writeTempFile(CLEAN_BYTES, 'd.png');
+      await expect(adapter.getUniqueFileName(another, dir)).rejects.toThrow(
+        /too many upload names/
+      );
+      expect(adapter.reservedNames.size).toBe(0);
+      expect(adapter.lapsedReservations.size).toBe(3);
+      // None of the lapsed files was forgotten: each is still refused.
+      for (const file of files) {
+        await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      }
+      expect(adapter.wrapped.files.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lets a lapsed file be promised afresh at the bound, since that adds nothing to the count', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter({ reservationMaxEntries: 2 });
+      const dir = 'content/images/2019/01';
+      const first = await writeTempFile(CLEAN_BYTES, 'first.png');
+      const second = await writeTempFile(CLEAN_BYTES, 'second.png');
+      await adapter.getUniqueFileName(first, dir);
+      await adapter.getUniqueFileName(second, dir);
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      const other = await writeTempFile(CLEAN_BYTES, 'other.png');
+      await expect(adapter.getUniqueFileName(other, dir)).rejects.toThrow(/too many upload names/);
+
+      const fresh = await adapter.getUniqueFileName(first, dir);
+      await adapter.save(first, dir);
+      expect(adapter.wrapped.files.has(fresh)).toBe(true);
+      await expect(adapter.save(second, dir)).rejects.toThrow(/lapsed after an hour/);
     } finally {
       vi.useRealTimers();
     }
