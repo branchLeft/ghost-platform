@@ -760,7 +760,7 @@ describe("Ghost's content importer", () => {
     expect(adapter.wrapped.files.has(promised)).toBe(true);
   });
 
-  it('forgets a promise after an hour and then names the file afresh', async () => {
+  it('refuses a save whose promised name lapsed after an hour, storing it under no other name', async () => {
     vi.useFakeTimers();
     try {
       const { instance: adapter } = buildAdapter();
@@ -768,9 +768,28 @@ describe("Ghost's content importer", () => {
       const file = await writeTempFile(CLEAN_BYTES, 'late.png');
       const promised = await adapter.getUniqueFileName(file, dir);
       vi.advanceTimersByTime(61 * 60 * 1000);
-      await adapter.save(file, dir);
+      await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      expect(adapter.wrapped.files.size).toBe(0);
       expect(adapter.wrapped.files.has(promised)).toBe(false);
       expect(adapter.reservedNames.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stores a file again once it is promised a fresh name after a lapse', async () => {
+    vi.useFakeTimers();
+    try {
+      const { instance: adapter } = buildAdapter();
+      const dir = 'content/images/2019/01';
+      const file = await writeTempFile(CLEAN_BYTES, 'lapsed-then-retried.png');
+      await adapter.getUniqueFileName(file, dir);
+      vi.advanceTimersByTime(61 * 60 * 1000);
+      await expect(adapter.save(file, dir)).rejects.toThrow(/lapsed after an hour/);
+      const fresh = await adapter.getUniqueFileName(file, dir);
+      await adapter.save(file, dir);
+      expect(adapter.wrapped.files.has(fresh)).toBe(true);
+      expect(adapter.wrapped.files.size).toBe(1);
     } finally {
       vi.useRealTimers();
     }

@@ -165,18 +165,34 @@ function reservationKey(file, targetDir) {
   return `${file.path || ''}\n${targetDir || ''}\n${file.name}`;
 }
 
-function liveReservation(reservations, key, now = Date.now()) {
+// Keys whose promise ran out before its save. A save of one is refused, not
+// renamed: Ghost's importer has already written the promised path into the
+// references. Bounded like the reservation table: past RESERVATION_MAX_ENTRIES
+// the oldest lapse is forgotten (a named limit), and that file is then named
+// afresh, as it was before lapses were remembered.
+function rememberLapsed(lapsed, key) {
+  lapsed.delete(key);
+  if (lapsed.size >= RESERVATION_MAX_ENTRIES) {
+    lapsed.delete(lapsed.keys().next().value);
+  }
+  lapsed.set(key, true);
+}
+
+function liveReservation(reservations, key, now = Date.now(), lapsed = null) {
   for (const [other, entry] of reservations) {
     if (entry.expiresAt <= now) {
       reservations.delete(other);
+      if (lapsed) {
+        rememberLapsed(lapsed, other);
+      }
     }
   }
   return reservations.get(key)?.name;
 }
 
 // The reserved basename, spent, or undefined.
-function takeReservation(reservations, key, now = Date.now()) {
-  const name = liveReservation(reservations, key, now);
+function takeReservation(reservations, key, now = Date.now(), lapsed = null) {
+  const name = liveReservation(reservations, key, now, lapsed);
   reservations.delete(key);
   return name;
 }
@@ -292,6 +308,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.writeTimeoutMs = resolveWriteTimeoutMs(config.writeTimeoutMs);
       this.storedNames = new Map();
       this.reservedNames = new Map();
+      this.lapsedReservations = new Map();
 
       this.hold = new HoldRegistry({
         checks: this.checks,
@@ -381,9 +398,23 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       const key = reservationKey(file, targetDir);
       // `fixed` is a name already promised; without one the name is fresh.
       const promised = () => {
-        const reserved = takeReservation(this.reservedNames, key);
+        const reserved = takeReservation(
+          this.reservedNames,
+          key,
+          Date.now(),
+          this.lapsedReservations
+        );
         if (reserved !== undefined) {
           return { fixed: reserved, remember: true };
+        }
+        // The promise ran out before this save (during the scan, or before it
+        // began). Refused rather than stored under a fresh name: the importer
+        // already wrote the promised path into its references, so a fresh name
+        // would dangle them silently. Spent here, so a new promise can follow.
+        if (this.lapsedReservations.delete(key)) {
+          throw new Error(
+            `ScanningStorageAdapter: the name promised to "${file.name}" lapsed after an hour before it was saved, so nothing was stored under another name; run the import again`
+          );
         }
         if (takeOriginalOf(file, this.storedNames)) {
           return { fixed: file.name, remember: false };
@@ -431,7 +462,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         return unique(usable ? withRandomName(file) : file);
       }
       const key = reservationKey(file, targetDir);
-      const reserved = liveReservation(this.reservedNames, key);
+      const reserved = liveReservation(
+        this.reservedNames,
+        key,
+        Date.now(),
+        this.lapsedReservations
+      );
       if (reserved !== undefined) {
         return unique({ ...file, name: reserved });
       }
@@ -445,6 +481,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         name: path.basename(result),
         expiresAt: Date.now() + RESERVATION_WINDOW_MS,
       });
+      // A fresh promise replaces any earlier lapse of the same file.
+      this.lapsedReservations.delete(key);
       return result;
     }
 
