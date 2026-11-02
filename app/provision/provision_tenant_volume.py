@@ -32,20 +32,17 @@ TENANT_UID_MAX = 30999
 
 # Mirrors `infra/tenant/naming.ts`'s slug rules; nothing imports the rule
 # across those files, so `scripts/assert-slug-pattern-consistency.py`
-# compares them rather than a shared import. The reserved names are taken from
-# `render-core/src/naming.ts`, which also holds the host mail spool's own stack
-# name, `mail-spool`, that `infra/tenant/naming.ts` does not reserve. `blog` is
-# deliberately not reserved -- it is tenant-zero's own live slug. See
-# provision_tenant_volume.md#slug-pattern.
+# compares them rather than a shared import. The reserved names are the
+# infrastructure entries of `registers/tenant-names.json`, read at call time
+# from a copy beside this script (this file is copied to the host by hand) or
+# from the repository path. See provision_tenant_volume.md#slug-pattern.
 SLUG_PATTERN = re.compile(r"\A[a-z]([a-z0-9-]*[a-z0-9])?\Z")
 MAX_SLUG_LENGTH = 26
-RESERVED_STACK_NAMES = (
-    "website",
-    "edge",
-    "db",
-    "monitoring",
-    "nextcloud1",
-    "mail-spool",
+REGISTER_FILE = "tenant-names.json"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REGISTER_CANDIDATES = (
+    os.path.join(_HERE, REGISTER_FILE),
+    os.path.join(_HERE, "..", "..", "registers", REGISTER_FILE),
 )
 
 # The UID register lives in a root-owned 0700 directory, not the tenant's own
@@ -93,6 +90,26 @@ def metrics_volume_name(slug: str) -> str:
     return f"{VOLUME_NAME_PREFIX}{slug}{METRICS_VOLUME_SUFFIX}"
 
 
+def reserved_stack_names(candidates: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """The register's infrastructure names. Fails closed: with no readable
+    register there is no list to check against, so every slug is refused."""
+    paths = REGISTER_CANDIDATES if candidates is None else candidates
+    for path in paths:
+        if os.path.isfile(path):
+            break
+    else:
+        raise ProvisionError(
+            f"cannot check tenant names: {REGISTER_FILE} not found beside this script or in "
+            "the repository's registers/ directory; copy it next to this script"
+        )
+    try:
+        with open(path, encoding="utf-8") as handle:
+            names = json.load(handle)["names"]
+        return tuple(e["name"] for e in names if e["kind"] == "infrastructure")
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ProvisionError(f"cannot read {path}: {error}") from error
+
+
 def validate_slug(slug: str) -> None:
     if not SLUG_PATTERN.match(slug):
         raise ProvisionError(
@@ -103,10 +120,11 @@ def validate_slug(slug: str) -> None:
         raise ProvisionError(
             f"tenant slug {slug!r} is {len(slug)} characters; must be at most {MAX_SLUG_LENGTH}"
         )
-    if slug in RESERVED_STACK_NAMES:
+    reserved = reserved_stack_names()
+    if slug in reserved:
         raise ProvisionError(
             f"tenant slug {slug!r} is reserved for a non-tenant stack on this host "
-            f"({', '.join(RESERVED_STACK_NAMES)})"
+            f"({', '.join(reserved)})"
         )
 
 

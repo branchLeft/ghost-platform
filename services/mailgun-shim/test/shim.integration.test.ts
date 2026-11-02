@@ -1126,3 +1126,95 @@ describe('the SMTP front door and the HTTP Mailgun-shaped route are one queue, n
     }
   });
 });
+
+// A demo slot is registered under its own credential domain, with the shared
+// sender domain held apart in sender_domain. All keys below are test values.
+// See shim.integration.test.md#per-slot-credential-domains.
+describe('per-slot credential domains: one slot key cannot submit as another slot', () => {
+  const SENDER_DOMAIN = 'demo-mail.example.test';
+  const SLOT_A = `slot-30001.${SENDER_DOMAIN}`;
+  const SLOT_B = `slot-30002.${SENDER_DOMAIN}`;
+  const SHARED_KEY = 'test-shared-demo-key';
+  const KEY_A = 'test-slot-a-key';
+  const KEY_B = 'test-slot-b-key';
+
+  let shim: TestShim;
+
+  beforeEach(async () => {
+    shim = await startTestShim({ startSmtpFrontDoor: true });
+  });
+
+  afterEach(async () => {
+    await shim.close();
+  });
+
+  function sendMailgun(key: string, credentialDomain: string, localPart: string) {
+    return createMailgunClient(shim.baseUrl, key).messages.create(credentialDomain, {
+      to: ['member@example.com'],
+      from: `${localPart}@${SENDER_DOMAIN}`,
+      subject: 'Slot mail',
+      html: '<p>hi</p>',
+      text: 'hi',
+      'recipient-variables': '{}',
+    });
+  }
+
+  async function sendSmtp(key: string, credentialDomain: string, localPart: string) {
+    const transport = nodemailer.createTransport({
+      host: '127.0.0.1',
+      port: shim.smtpPort,
+      secure: false,
+      ignoreTLS: true,
+      auth: { user: credentialDomain, pass: key },
+    });
+    try {
+      return await transport.sendMail({
+        from: `${localPart}@${SENDER_DOMAIN}`,
+        to: 'member@example.com',
+        subject: 'Slot mail',
+        text: 'hi',
+      });
+    } finally {
+      transport.close();
+    }
+  }
+
+  it('CONTROL: on one shared credential domain, slot B sends with the key slot A holds', async () => {
+    shim.store.registerTenant(SENDER_DOMAIN, SHARED_KEY, SENDER_DOMAIN);
+
+    // Both slots hold the one key and name the one credential domain: nothing
+    // tells them apart, so each sends as the other's local part and is accepted.
+    expect((await sendMailgun(SHARED_KEY, SENDER_DOMAIN, 'demo-1')).id).toBeTruthy();
+    expect((await sendMailgun(SHARED_KEY, SENDER_DOMAIN, 'demo-2')).id).toBeTruthy();
+    expect((await sendSmtp(SHARED_KEY, SENDER_DOMAIN, 'demo-2')).accepted).toHaveLength(1);
+    expect(shim.store.countUndrainedRecipients()).toBe(3);
+  });
+
+  it("with a row per slot, A's key is refused on B's credential domain on both front doors, and each slot's own key sends", async () => {
+    shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN);
+    shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN);
+
+    await expect(sendMailgun(KEY_A, SLOT_B, 'demo-2')).rejects.toMatchObject({ status: 401 });
+    await expect(sendSmtp(KEY_A, SLOT_B, 'demo-2')).rejects.toMatchObject({ code: 'EAUTH' });
+    expect(shim.store.countUndrainedRecipients()).toBe(0);
+
+    expect((await sendMailgun(KEY_A, SLOT_A, 'demo-1')).id).toBeTruthy();
+    expect((await sendMailgun(KEY_B, SLOT_B, 'demo-2')).id).toBeTruthy();
+    expect((await sendSmtp(KEY_A, SLOT_A, 'demo-1')).accepted).toHaveLength(1);
+    expect((await sendSmtp(KEY_B, SLOT_B, 'demo-2')).accepted).toHaveLength(1);
+    expect(shim.store.countUndrainedRecipients()).toBe(4);
+  });
+
+  it("rotating slot A's row leaves slot B's key valid and retires A's old key", async () => {
+    shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN);
+    shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN);
+
+    shim.store.registerTenant(SLOT_A, 'test-slot-a-rotated-key', SENDER_DOMAIN);
+
+    await expect(sendMailgun(KEY_A, SLOT_A, 'demo-1')).rejects.toMatchObject({ status: 401 });
+    await expect(sendSmtp(KEY_A, SLOT_A, 'demo-1')).rejects.toMatchObject({ code: 'EAUTH' });
+    expect((await sendMailgun(KEY_B, SLOT_B, 'demo-2')).id).toBeTruthy();
+    expect((await sendSmtp(KEY_B, SLOT_B, 'demo-2')).accepted).toHaveLength(1);
+    expect((await sendMailgun('test-slot-a-rotated-key', SLOT_A, 'demo-1')).id).toBeTruthy();
+  });
+});

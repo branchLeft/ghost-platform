@@ -201,7 +201,7 @@ describe("Ghost's mail environment and the spool agree, from one source", () => 
     expect(env.mail__options__secure).toBe(false);
   });
 
-  it("the SMTP credential is the tenant's sending domain and the bulk path's own key, never a literal", () => {
+  it("the SMTP credential is the tenant's credential domain and the bulk path's own key, never a literal", () => {
     const descriptor = validate(demoDescriptor(), TEST_ZONES);
     const env = tenantEnvironment(
       descriptor,

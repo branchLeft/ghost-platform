@@ -21,6 +21,7 @@ on:
     paths:
       - 'render-core/**'
       - 'infra/tenant/naming.ts'
+      - 'registers/**'
       - '.github/workflows/render-core-ci.yml'
 
 # `packages: read` because this package takes a dev dependency on

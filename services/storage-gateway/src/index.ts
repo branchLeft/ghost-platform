@@ -13,3 +13,4 @@ export {
 } from './sigv4-verifier.js';
 export * from './limits/index.js';
 export * from './upstream.js';
+export * from './body.js';

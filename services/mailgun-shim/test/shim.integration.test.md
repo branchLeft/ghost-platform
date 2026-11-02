@@ -44,3 +44,26 @@ toWireMessage does NOT special-case for an already-queued legacy row
 (it only keeps Ghost's own exact `Sender`), so these two tests are a
 genuine proof of the intake drop specifically, not of that narrower
 fallback.
+
+## Per-slot credential domains
+
+render-core renders a demo slot's spool credential as
+`slot-<uid>.<demoMailDomain>` (render-core/src/mail.md#credential-domain),
+while every slot sends from the one `<demoMailDomain>`. The shim already holds
+the two apart: `tenants.domain` is the credential domain both front doors
+authenticate against, and `tenants.sender_domain` is what From is bound to. So
+the proof needs no shim change, only one row per slot with one shared
+`--sender-domain`.
+
+The CONTROL case registers the single shared row a demo host has today and
+shows slot B's send is accepted with the key slot A holds, on the Mailgun route
+and over SMTP. That is what makes the isolation case meaningful: the same
+harness, the same sends, and only the row layout differs. The isolation case
+then asserts A's key gets 401 on B's credential domain on the Mailgun route and
+an EAUTH refusal on SMTP AUTH, queues nothing, and that each slot's own key
+still sends. The rotation case replaces slot A's row and shows B's key is
+untouched.
+
+Not proven here, and not claimed: that a slot's From local part is bound to the
+slot. The shim binds From to the sender domain only; that needs a schema change
+and is filed separately. All keys are test values.

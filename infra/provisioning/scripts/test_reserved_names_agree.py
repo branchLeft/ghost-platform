@@ -1,15 +1,18 @@
-"""Tests that the three copies of the reserved tenant-name list agree with
-render-core's source list, RESERVED_STACK_NAMES in render-core/src/naming.ts.
+"""Tests that every copy of the reserved tenant-name list agrees with the
+register, registers/tenant-names.json, and that the workflow refuses a
+registered name.
 
-The copies are RESERVED_STACK_NAMES in app/provision/provision_tenant_volume.py,
-RESERVED_SLUGS in render-media-bucket-policy.py, and the `case` block of the
-'Validate inputs' step in .github/workflows/provision-tenant.yml. The workflow
-block is run under `bash -e`, not matched as text.
+The copies are the generated blocks in infra/tenant/naming.ts and
+render-core/src/naming.ts, the infrastructure names read by
+app/provision/provision_tenant_volume.py and render-media-bucket-policy.py,
+and the register lookup in the 'Validate inputs' step of
+.github/workflows/provision-tenant.yml, run under `bash -e`.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import pathlib
 import re
@@ -17,23 +20,25 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterable
 from types import ModuleType
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent
+REGISTER = REPO_ROOT / "registers" / "tenant-names.json"
+SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync-tenant-name-register.py"
+INFRA_TENANT_NAMING = REPO_ROOT / "infra" / "tenant" / "naming.ts"
 RENDER_CORE_NAMING = REPO_ROOT / "render-core" / "src" / "naming.ts"
 APP_COPY = REPO_ROOT / "app" / "provision" / "provision_tenant_volume.py"
 BUCKET_COPY = SCRIPTS_DIR / "render-media-bucket-policy.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "provision-tenant.yml"
 
 VALIDATE_STEP = "Validate inputs"
-RENDER_CORE_DECLARATION = "RESERVED_STACK_NAMES: readonly string[] = ["
-SINGLE_QUOTED_NAME = re.compile(r"'([^']+)'")
 STEP_LINE = re.compile(r"^      - name: (.+)$")
 JOB_KEY_LINE = re.compile(r"^  [A-Za-z_][A-Za-z0-9_-]*:")
-CASE_OPENING = 'case "$TENANT" in'
+BLOCK_OPENING = 'REGISTER="${GITHUB_WORKSPACE:-}/registers/tenant-names.json"'
+LOOKUP_PREFIX = "KIND="
 FAIL_PRELUDE = 'fail() { echo "::error::$1"; exit 1; }\n'
+GENERATED_ENTRY = re.compile(r"\{ name: '([^']+)', kind: '([a-z]+)'")
 
 
 def _read_text(path: pathlib.Path) -> str:
@@ -51,20 +56,9 @@ def _load_module(name: str, path: pathlib.Path) -> ModuleType:
     return module
 
 
-def parse_render_core_names(render_core_ts: str) -> list[str]:
-    start = render_core_ts.find(RENDER_CORE_DECLARATION)
-    if start == -1:
-        raise AssertionError(f"{RENDER_CORE_DECLARATION!r} not found in naming.ts")
-    body_start = start + len(RENDER_CORE_DECLARATION)
-    body_end = render_core_ts.find("]", body_start)
-    if body_end == -1:
-        raise AssertionError("RESERVED_STACK_NAMES has no closing ] in naming.ts")
-    return SINGLE_QUOTED_NAME.findall(render_core_ts[body_start:body_end])
-
-
-def _validate_step_body(workflow_yaml: str) -> list[str]:
-    lines = workflow_yaml.splitlines()
-    return _run_body(_step_lines(lines, VALIDATE_STEP))
+def register_names(kind: str | None = None) -> list[str]:
+    data = json.loads(_read_text(REGISTER))
+    return [e["name"] for e in data["names"] if kind is None or e["kind"] == kind]
 
 
 def _step_lines(lines: list[str], name: str) -> list[str]:
@@ -104,89 +98,42 @@ def _run_body(step: list[str]) -> list[str]:
     return body
 
 
-def _case_opening_index(body: list[str]) -> int:
+def workflow_register_block(workflow_yaml: str) -> list[str]:
+    """The register check, from the REGISTER assignment through the `fi`
+    that closes the refusal."""
+    body = _run_body(_step_lines(workflow_yaml.splitlines(), VALIDATE_STEP))
+    start = None
     for i, line in enumerate(body):
-        if line.strip() == CASE_OPENING:
-            return i
-    raise AssertionError(f"no {CASE_OPENING!r} line in the validation step")
-
-
-def parse_workflow_names(workflow_yaml: str) -> list[str]:
-    body = _validate_step_body(workflow_yaml)
-    opening = _case_opening_index(body)
-    if opening + 1 >= len(body):
-        raise AssertionError("the tenant case block has no pattern line")
-    pattern = body[opening + 1].strip()
-    if not pattern.endswith(")"):
-        raise AssertionError(
-            f"the tenant case pattern must sit on one line ending in ')': {pattern!r}"
-        )
-    return [name.strip() for name in pattern[:-1].split("|")]
-
-
-def workflow_case_block(workflow_yaml: str) -> list[str]:
-    """The tenant `case` block, from its opening line through its `esac`."""
-    body = _validate_step_body(workflow_yaml)
-    start = _case_opening_index(body)
+        if line.strip() == BLOCK_OPENING:
+            start = i
+            break
+    if start is None:
+        raise AssertionError(f"no {BLOCK_OPENING!r} line in the validation step")
     for j in range(start + 1, len(body)):
-        if body[j].strip() == "esac":
+        if body[j] == "fi":
             return body[start : j + 1]
-    raise AssertionError("the tenant case block has no closing esac")
+    raise AssertionError("the register check has no closing fi")
 
 
-def compare_reserved_names(
-    render_core_ts: str,
-    app_copy: Iterable[str],
-    bucket_copy: Iterable[str],
-    workflow_yaml: str,
-) -> list[str]:
-    expected = set(parse_render_core_names(render_core_ts))
-    sources = (
-        ("app copy", set(app_copy)),
-        ("bucket-policy copy", set(bucket_copy)),
-        ("workflow case block", set(parse_workflow_names(workflow_yaml))),
-    )
-    problems = []
-    for source, names in sources:
-        line = _difference_line(source, names, expected)
-        if line is not None:
-            problems.append(line)
-    return problems
+def red_copy(block: list[str]) -> list[str]:
+    """The block with the jq lookup of the name removed."""
+    kept = [line for line in block if not line.startswith(LOOKUP_PREFIX)]
+    if len(kept) == len(block):
+        raise AssertionError("the block has no lookup line to remove")
+    return kept
 
 
-def _difference_line(source: str, names: set[str], expected: set[str]) -> str | None:
-    missing = sorted(expected - names)
-    extra = sorted(names - expected)
-    if not missing and not extra:
-        return None
-    clauses = []
-    if missing:
-        clauses.append(f"missing {', '.join(missing)}")
-    if extra:
-        clauses.append(f"extra {', '.join(extra)}")
-    return f"{source} differs from render-core: {'; '.join(clauses)}"
-
-
-def _app_copy_names() -> tuple[str, ...]:
-    module = _load_module("reserved_names_app_copy", APP_COPY)
-    return tuple(module.RESERVED_STACK_NAMES)
-
-
-def _bucket_copy_names() -> frozenset[str]:
-    scripts = str(SCRIPTS_DIR)
-    if scripts not in sys.path:
-        sys.path.insert(0, scripts)
-    module = _load_module("reserved_names_bucket_copy", BUCKET_COPY)
-    return frozenset(module.RESERVED_SLUGS)
-
-
-def _run_workflow_block(tenant: str) -> tuple[int, str]:
-    """Run the workflow's tenant case block with TENANT set. Returns
-    (returncode, combined output)."""
-    block = workflow_case_block(_read_text(WORKFLOW))
+def _run_block(
+    block: list[str], tenant: str, workspace: str | None
+) -> tuple[int, str]:
+    """Run a register-check block with TENANT set and GITHUB_WORKSPACE pointing
+    at `workspace` (unset when None). Returns (returncode, combined output)."""
     script = FAIL_PRELUDE + "\n".join(block) + "\n"
     env = dict(os.environ)
     env["TENANT"] = tenant
+    env.pop("GITHUB_WORKSPACE", None)
+    if workspace is not None:
+        env["GITHUB_WORKSPACE"] = workspace
     with tempfile.TemporaryDirectory(prefix="reserved-names-") as directory:
         path = os.path.join(directory, "check.sh")
         with open(path, "w", encoding="utf-8") as fh:
@@ -201,87 +148,162 @@ def _run_workflow_block(tenant: str) -> tuple[int, str]:
     return proc.returncode, proc.stdout + proc.stderr
 
 
-class RenderCoreListIsRead(unittest.TestCase):
-    def test_render_core_list_is_read(self) -> None:
-        # A control: the parser must find the real list, or every test
+def _real_block() -> list[str]:
+    return workflow_register_block(_read_text(WORKFLOW))
+
+
+def generated_names(naming_ts: str) -> list[tuple[str, str]]:
+    start = naming_ts.find("// BEGIN GENERATED FROM registers/tenant-names.json")
+    end = naming_ts.find("// END GENERATED FROM registers/tenant-names.json")
+    if start == -1 or end == -1 or end < start:
+        raise AssertionError("generated block markers missing in naming.ts")
+    return GENERATED_ENTRY.findall(naming_ts[start:end])
+
+
+def _app_copy_names() -> tuple[str, ...]:
+    module = _load_module("reserved_names_app_copy", APP_COPY)
+    return tuple(module.reserved_stack_names())
+
+
+def _bucket_copy_names() -> frozenset[str]:
+    scripts = str(SCRIPTS_DIR)
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    module = _load_module("reserved_names_bucket_copy", BUCKET_COPY)
+    return frozenset(module.reserved_slugs())
+
+
+class RegisterIsRead(unittest.TestCase):
+    def test_register_is_read(self) -> None:
+        # A control: the parser must find the real register, or every test
         # below passes against an empty set.
-        names = parse_render_core_names(_read_text(RENDER_CORE_NAMING))
-        self.assertEqual(len(names), 6, names)
-        self.assertIn("mail-spool", names)
-        self.assertNotIn("blog", names)
+        names = register_names()
+        self.assertGreaterEqual(len(names), 7, names)
+        self.assertIn("mail-spool", register_names("infrastructure"))
+        self.assertEqual(register_names("tenant"), ["blog"])
 
 
-class EveryCopyAgreesWithRenderCore(unittest.TestCase):
-    def test_app_provision_copy_matches_render_core(self) -> None:
-        expected = set(parse_render_core_names(_read_text(RENDER_CORE_NAMING)))
+class EveryCopyAgreesWithTheRegister(unittest.TestCase):
+    def _expected_generated(self) -> list[tuple[str, str]]:
+        data = json.loads(_read_text(REGISTER))
+        return [(e["name"], e["kind"]) for e in data["names"]]
+
+    def test_infra_tenant_generated_block_matches(self) -> None:
+        self.assertEqual(
+            generated_names(_read_text(INFRA_TENANT_NAMING)), self._expected_generated()
+        )
+
+    def test_render_core_generated_block_matches(self) -> None:
+        self.assertEqual(
+            generated_names(_read_text(RENDER_CORE_NAMING)), self._expected_generated()
+        )
+
+    def test_app_provision_names_match(self) -> None:
         self.assertEqual(
             set(_app_copy_names()),
-            expected,
-            "app/provision RESERVED_STACK_NAMES differs from render-core",
+            set(register_names("infrastructure")),
+            "app/provision reserved names differ from the register",
         )
 
-    def test_media_bucket_policy_copy_matches_render_core(self) -> None:
-        expected = set(parse_render_core_names(_read_text(RENDER_CORE_NAMING)))
+    def test_media_bucket_policy_names_match(self) -> None:
         self.assertEqual(
             set(_bucket_copy_names()),
-            expected,
-            "render-media-bucket-policy RESERVED_SLUGS differs from render-core",
+            set(register_names("infrastructure")),
+            "render-media-bucket-policy reserved names differ from the register",
         )
 
-    def test_workflow_case_block_matches_render_core(self) -> None:
-        expected = set(parse_render_core_names(_read_text(RENDER_CORE_NAMING)))
-        self.assertEqual(
-            set(parse_workflow_names(_read_text(WORKFLOW))),
-            expected,
-            "the provision-tenant.yml case block differs from render-core",
+    def test_sync_script_check_passes(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SYNC_SCRIPT), "--check"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
 
-class WorkflowCaseBlockBehaviour(unittest.TestCase):
-    def test_workflow_case_block_refuses_each_name_and_accepts_blog(self) -> None:
-        names = parse_render_core_names(_read_text(RENDER_CORE_NAMING))
-        for name in names:
+class WorkflowRegisterBlockBehaviour(unittest.TestCase):
+    def test_refuses_every_registered_name(self) -> None:
+        # Tenant zero included: it is not provisioned through this workflow.
+        for name in register_names():
             with self.subTest(tenant=name):
-                rc, out = _run_workflow_block(name)
+                rc, out = _run_block(_real_block(), name, str(REPO_ROOT))
                 self.assertNotEqual(rc, 0, out)
-                self.assertIn("tenant_name is reserved", out)
-        for name in ("blog", "demo-1"):
+                self.assertIn("tenant_name is already registered", out)
+
+    def test_accepts_an_unregistered_name(self) -> None:
+        # The control case: the refusal is the lookup, not a blanket failure.
+        for name in ("demo-1", "acme-news"):
             with self.subTest(tenant=name):
-                rc, out = _run_workflow_block(name)
+                rc, out = _run_block(_real_block(), name, str(REPO_ROOT))
                 self.assertEqual(rc, 0, out)
+
+    def test_refuses_when_the_workspace_is_unset(self) -> None:
+        rc, out = _run_block(_real_block(), "demo-1", None)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("missing or unreadable", out)
+
+    def test_refuses_when_the_register_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="reserved-names-ws-") as workspace:
+            rc, out = _run_block(_real_block(), "demo-1", workspace)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("missing or unreadable", out)
+
+    def test_refuses_when_the_register_is_not_valid(self) -> None:
+        # A malformed register must refuse, not read as "nothing registered".
+        for text in ("not json", '{"names": "website"}', '{"version": 1}'):
+            with self.subTest(register=text):
+                with tempfile.TemporaryDirectory(prefix="reserved-names-ws-") as workspace:
+                    registers = pathlib.Path(workspace) / "registers"
+                    registers.mkdir()
+                    (registers / "tenant-names.json").write_text(text, encoding="utf-8")
+                    rc, out = _run_block(_real_block(), "website", workspace)
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("not valid", out)
+
+
+class RedCopyIsSeen(unittest.TestCase):
+    """Red beside green: with the jq lookup removed, a registered name gets
+    through. The real block (green, above) refuses it; this is the same test
+    pointed at the broken mechanism, and it must be seen to fail."""
+
+    def test_red_copy_lets_a_registered_name_through(self) -> None:
+        broken = red_copy(_real_block())
+        self.assertNotEqual(broken, _real_block())
+        for name in register_names():
+            with self.subTest(tenant=name):
+                rc, out = _run_block(broken, name, str(REPO_ROOT))
+                self.assertEqual(rc, 0, "the red copy should accept: " + out)
+
+    def test_real_block_refuses_what_the_red_copy_accepts(self) -> None:
+        for name in register_names("infrastructure"):
+            with self.subTest(tenant=name):
+                red_rc, _ = _run_block(red_copy(_real_block()), name, str(REPO_ROOT))
+                green_rc, out = _run_block(_real_block(), name, str(REPO_ROOT))
+                self.assertEqual(red_rc, 0)
+                self.assertNotEqual(green_rc, 0, out)
 
 
 class DriftIsCaught(unittest.TestCase):
-    def test_drift_in_the_workflow_block_is_caught(self) -> None:
-        # A control: removing a name from the workflow copy must be reported.
-        render_core = _read_text(RENDER_CORE_NAMING)
-        workflow = _read_text(WORKFLOW)
-        drifted = workflow.replace(" | mail-spool)", ")")
-        self.assertNotEqual(drifted, workflow, "the drift edit did not change the text")
-        problems = compare_reserved_names(
-            render_core, _app_copy_names(), _bucket_copy_names(), drifted
+    def test_a_hand_edit_to_a_generated_block_is_reported(self) -> None:
+        # A control: the sync script's own self-test proves its check sees drift.
+        proc = subprocess.run(
+            [sys.executable, str(SYNC_SCRIPT), "--self-test"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        self.assertTrue(problems)
-        self.assertTrue(
-            any(
-                "mail-spool" in line and "workflow case block" in line
-                for line in problems
-            ),
-            problems,
-        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
-    def test_drift_in_render_core_is_caught(self) -> None:
-        # A control: a name render-core adds that no copy has must be reported.
-        render_core = _read_text(RENDER_CORE_NAMING)
-        drifted = render_core.replace("  'website',", "  'website',\n  'extra-stack',")
-        self.assertNotEqual(
-            drifted, render_core, "the drift edit did not change the text"
+    def test_a_missing_name_in_a_copy_is_reported(self) -> None:
+        text = _read_text(RENDER_CORE_NAMING)
+        drifted = text.replace(
+            "  { name: 'mail-spool', kind: 'infrastructure' },\n", ""
         )
-        problems = compare_reserved_names(
-            drifted, _app_copy_names(), _bucket_copy_names(), _read_text(WORKFLOW)
-        )
-        self.assertTrue(problems)
-        self.assertTrue(any("extra-stack" in line for line in problems), problems)
+        self.assertNotEqual(drifted, text, "the drift edit did not change the text")
+        data = json.loads(_read_text(REGISTER))
+        expected = [(e["name"], e["kind"]) for e in data["names"]]
+        self.assertNotEqual(generated_names(drifted), expected)
 
 
 if __name__ == "__main__":

@@ -109,6 +109,10 @@
 # Speckify config: the contract check's source and the publish target of the broker API package.
 /speckify.yaml                                   @branchLeft/branchleft-admin
 
+# Private-tenant plan register: the owner's attestation that the paid plan and
+# the dedicated private-CI runner exist. Only the owner changes it.
+/registers/private-tenant-plan.*                 @branchLeft/branchleft-admin
+
 # branchLeft/standards templates/codeowners, synced whole (SYNC-1: these six
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything

@@ -665,6 +665,20 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(broker.renderer.calls).toHaveLength(0);
   });
 
+  // A demo can never take a name the tenant-name register holds: `blog` is
+  // tenant zero's, and a demo descriptor under it would land on its stack.
+  it('refuses a demo descriptor slugged with a registered tenant name', async () => {
+    broker = await startTestBroker();
+    const res = await broker.signedFetch('POST', '/reconcile', {
+      slot: '0',
+      descriptor: demoDescriptor({ slug: 'blog' as never }),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('registered to');
+    expect(broker.renderer.calls).toHaveLength(0);
+    expect(broker.adminApi.calls).toHaveLength(0);
+  });
+
   // --- Item 1: a descriptor whose ports or uid disagree with the slot's
   // own allocation is refused before the renderer or the Admin API ever
   // see it. ---

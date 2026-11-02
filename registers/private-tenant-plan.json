@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paid_plan_confirmed": false,
+  "dedicated_runner_confirmed": false,
+  "dedicated_runner_label": "private-ci-hetzner"
+}
