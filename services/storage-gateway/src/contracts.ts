@@ -61,6 +61,10 @@ export type RefusalCode =
   | 'key-outside-folder'
   /** The upload id was not issued to this tenant for this object, or is unknown to the gateway. */
   | 'upload-not-bound'
+  /** The tenant is over its request rate. Retryable: the SDK retries a SlowDown. */
+  | 'rate-limited'
+  /** Writes are switched off for this tenant or for every tenant. Reads still work. */
+  | 'writes-disabled'
   /** The storage service did not answer inside the gateway's deadline. Retryable. */
   | 'upstream-timeout'
   /** The storage service could not be reached or sent an answer the gateway cannot relay. Retryable. */
