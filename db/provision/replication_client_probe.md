@@ -94,21 +94,37 @@ flush and no global lock of its own.
 
 ## Results, linux/amd64
 
-`mysqld  Ver 8.0.46 for Linux on x86_64`, the pinned digest. Local runs are
-on a Mac under amd64 emulation, which `snapshot_probe.md` already shows is
-not a fair stand-in for control 2's 100 ms limit; the native x86_64 CI job
-is the reference for control 2's timing.
+`mysqld  Ver 8.0.46 for Linux on x86_64`, the pinned digest. The native
+x86_64 CI job is the reference. A Mac under amd64 emulation is not a fair
+stand-in for control 2's 100 ms limit (`snapshot_probe.md`): one local run
+saw 236.6 ms with other work on the machine, and another could not open the
+snapshot inside the 0.6 s hold bound. Native, the same control saw 5.2 ms.
 
 | Control | Measured, correct ordering                                                                                  | Sabotaged (red)                                                                                      |
 | ------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | 1       | 4 of 4 rounds clean: 14 tables match, no key lost or duplicated, 94 to 108 blog rows replayed past each dump; lock wait 3 to 13 ms, hold 151 to 394 ms | before the lock: 4 of 4 rounds red, replica SQL thread stopped on error 1062 (duplicate); after the unlock: 4 of 4 rounds red, 5 to 8 blog rows lost each; with `BACKUP_ADMIN` held: red on the privilege check |
-| 2       | CI is the reference (see below)                                                                              | CI is the reference (see below)                                                                      |
+| 2       | native CI: `other`'s worst statement 5.2 ms over 468 (limit 100 ms, baseline 1.8 ms) while 26 snapshots ran; no `GLOBAL` or `COMMIT` lock over 3616 samples; blog writer wait inside 1.8 s | old path (local): 9099.5 ms, and `GLOBAL/SHARED` and `COMMIT/SHARED` granted                          |
 | 3       | error 1142 on `other`, 1227 on FTWRL and on `LOCK INSTANCE FOR BACKUP`, `SHOW MASTER STATUS` allowed, `REPLICATION CLIENT` the only global privilege | `LOCK INSTANCE FOR BACKUP` accepted (error 0) and `BACKUP_ADMIN` listed                              |
 
 On the correct ordering `SHOW MASTER STATUS` under the table lock gave
 coordinates that, replayed into a fresh replica under continuing writes to
 the blog and to another schema, lost nothing and duplicated nothing, on every
 round. The account never held `BACKUP_ADMIN` or `RELOAD`.
+
+## The move account's grant list
+
+What the proof ran with, and so what the account-creation step should grant:
+
+- `SELECT, LOCK TABLES, SHOW VIEW, TRIGGER` on the blog's schema;
+- `REPLICATION CLIENT` on `*.*` (it exists only at global scope).
+
+No `BACKUP_ADMIN`, no `RELOAD`, no `EVENT`, and no `SELECT` on
+`performance_schema.log_status`: that table is read only by the default
+`coordinates="log_status"`, which needs `BACKUP_ADMIN` and so is not what
+this account runs. The caller of the move's snapshot must pass
+`coordinates="master_status"`. On db1 the account also needs `REQUIRE SSL`
+and a specific host part, as `require_secure_transport` is on
+(`snapshot_probe.md`, findings).
 
 ## Not in scope
 

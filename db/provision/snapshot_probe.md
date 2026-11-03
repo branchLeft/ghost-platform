@@ -28,7 +28,9 @@ on `blog.*`, `BACKUP_ADMIN` on `*.*`, and `SELECT` on the single table
 `performance_schema.log_status` (see the grant finding below). It never has
 `RELOAD`. It has no `EVENT`: no run uses `--events` and no schema has an
 event, so nothing needed it. **The runbook's grant list should not include
-`EVENT`.** Every password is generated at run time with
+`EVENT`.** That list is for the account this proof ran with; the grant list
+for the real move account, which replaces `BACKUP_ADMIN` with
+`REPLICATION CLIENT`, is in `replication_client_probe.md`. Every password is generated at run time with
 `openssl rand`, held in a mode-700 temporary directory and removed on
 exit; none is in a repo file, argv or output.
 
