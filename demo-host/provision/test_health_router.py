@@ -602,7 +602,7 @@ class ContractTests(unittest.TestCase):
         server = hr.make_server("2", port=0)
         self.addCleanup(server.server_close)
         self.assertEqual(server.server_address[0], "127.0.0.1")
-        self.assertEqual(hr.slot_health_port("2"), 9102)
+        self.assertEqual(hr.slot_health_port("2"), 10102)
 
     def test_unknown_slot_is_refused(self):
         with self.assertRaises(ValueError):

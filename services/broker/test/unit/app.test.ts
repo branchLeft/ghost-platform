@@ -687,7 +687,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     // slot "0"'s own port `a` is 9300 (see fixtures.ts); 4101 is a
     // different slot's port entirely -- exactly F7's attack shape.
     const bad = demoDescriptor({
-      ports: { a: 4101 as never, b: 9301 as never, health: 9100 as never },
+      ports: { a: 4101 as never, b: 9301 as never, health: 10100 as never },
     });
     const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
     expect(res.status).toBe(400);
