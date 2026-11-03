@@ -18,13 +18,14 @@ const BOOT_TIMEOUT_MS = 120_000;
  * way the edge would reach it: the tenant's own host name and https.
  */
 export class GhostContainer {
-  static start() {
-    return runStep('start Ghost container', () => GhostContainer.#start(), {
+  /** `extraEnv` is added to (and wins over) the container's fixed environment. */
+  static start(extraEnv = {}) {
+    return runStep('start Ghost container', () => GhostContainer.#start(extraEnv), {
       deadlineMs: BOOT_TIMEOUT_MS + 60_000,
     });
   }
 
-  static async #start() {
+  static async #start(extraEnv) {
     const port = await reservePort();
     const name = `export-reimport-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const env = {
@@ -43,6 +44,7 @@ export class GhostContainer {
       storage__files__adapter: 'ScanningStorageAdapter',
       storage__files__wraps: 'LocalFilesStorage',
       storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+      ...extraEnv,
     };
     const envArgs = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
     const image = process.env.IMAGE;

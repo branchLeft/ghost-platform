@@ -69,6 +69,7 @@ services:
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
       hostSettings__limits__limitSocialWeb__disabled: true
+      hostSettings__limits__limitStripeConnect__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
@@ -154,6 +155,7 @@ services:
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
       hostSettings__limits__limitSocialWeb__disabled: true
+      hostSettings__limits__limitStripeConnect__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864

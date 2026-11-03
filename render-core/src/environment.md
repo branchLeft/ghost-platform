@@ -138,6 +138,21 @@ is absent. It is unconditional, unlike the member and staff caps, which
 render only when set. `settings.ts` also turns `social_web` off, because a
 lock does not undo what an existing tenant already has.
 
+## Stripe connect limit
+
+`hostSettings__limits__limitStripeConnect__disabled` is `true` for a demo
+(`kind === 'demo'`) and absent for every other kind, so a paying tenant keeps
+Ghost's standard Stripe behaviour. Paid tiers stay visible on a demo; only
+connecting a real Stripe account is refused.
+
+On its own the key guards one write path (Ghost's Connect-token edit). The
+Ghost image's settings-model overlay
+(`adapters/stripe-connect-limit/ghost-core-overlay`) reads the same key and
+refuses every write path, direct key `PUT`s and the content importer included.
+The overlay is inert without the key, and the key is only partial protection
+without the overlay, so the image carrying the overlay must be live before a
+render carrying the key (see the changelog's rollout note).
+
 ## Scanner metrics export
 
 Every paying tenant's object-storage branch renders two more keys per

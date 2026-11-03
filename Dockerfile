@@ -54,6 +54,19 @@ RUN apk add --no-cache patch \
     && apk del patch \
     && rm -rf /tmp/session-from-token-overlay
 
+# Ghost-core overlay (adapters/stripe-connect-limit/ghost-core-overlay/README.md):
+# one file, one change, so a demo slot cannot store a Stripe key by any route.
+# Inert unless the host limit limitStripeConnect is set, so this one image
+# still serves every tenant. Built like the layer above: the build fails if
+# a Ghost version bump moved the patched lines, or the result differs from
+# the pinned hash. `patch` is installed, used and removed in this one layer.
+COPY adapters/ghost-core-overlay/apply-patch.sh adapters/stripe-connect-limit/ghost-core-overlay/stripe-connect-limit.patch adapters/stripe-connect-limit/ghost-core-overlay/stripe-connect-limit.patched.sha256 /tmp/stripe-connect-limit-overlay/
+RUN apk add --no-cache patch \
+    && /tmp/stripe-connect-limit-overlay/apply-patch.sh /var/lib/ghost/current/core/server/models settings.js /tmp/stripe-connect-limit-overlay/stripe-connect-limit.patch /tmp/stripe-connect-limit-overlay/stripe-connect-limit.patched.sha256 \
+    && chown node:node /var/lib/ghost/current/core/server/models/settings.js \
+    && apk del patch \
+    && rm -rf /tmp/stripe-connect-limit-overlay
+
 # The scanning storage decorator (adapters/scanning-storage/README.md). It
 # goes into Ghost's own storage adapters directory, alongside the built-in
 # LocalImagesStorage/LocalMediaStorage/LocalFilesStorage/S3Storage it wraps
