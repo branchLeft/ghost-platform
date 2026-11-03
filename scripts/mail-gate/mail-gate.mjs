@@ -67,12 +67,14 @@ async function drainUntil(port, token, done, deadline) {
  * Runs the gate. Never throws: a setup failure is a failed check, so the
  * caller always gets { passed, durationMs, checks }.
  * `transactionalHost` is where the candidate's SMTP transport points; the
- * default is the slot's spool. The control case points it elsewhere.
+ * default is the slot's spool. `bulkBaseUrl` is where its newsletter (bulk)
+ * transport points. The control cases point either one elsewhere.
  */
 export async function runMailGate({
   image,
   spoolImage = PINNED_SPOOL,
   transactionalHost = 'mail-spool',
+  bulkBaseUrl = 'http://mail-spool:8080/v3',
   deadlineMs = DRAIN_DEADLINE_MS,
 }) {
   const started = Date.now();
@@ -148,7 +150,7 @@ export async function runMailGate({
         mail__options__ignoreTLS: 'true',
         mail__options__auth__user: SLOT_DOMAIN,
         mail__options__auth__pass: key,
-        bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080/v3',
+        bulkEmail__mailgun__baseUrl: bulkBaseUrl,
         bulkEmail__mailgun__domain: SLOT_DOMAIN,
         bulkEmail__mailgun__apiKey: key,
       },

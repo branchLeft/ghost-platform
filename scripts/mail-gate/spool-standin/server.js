@@ -41,8 +41,9 @@ function enqueue(domain, from, to, subject, text, recipientVariables = {}) {
 function parseMultipart(body, contentType = '') {
   // indexOf, not a regex: the header is client-controlled and a regex here is polynomial.
   const at = contentType.indexOf('boundary=');
-  if (at < 0) return [];
+  if (at < 0) return null;
   const boundary = contentType.slice(at + 'boundary='.length);
+  if (!boundary) return null;
   const fields = [];
   for (const part of body.split(`--${boundary}`)) {
     const cut = part.indexOf('\r\n\r\n');
@@ -67,8 +68,18 @@ function messagesRoute(req, res, domain) {
   });
   req.on('end', () => {
     const fields = parseMultipart(body, req.headers['content-type']);
+    const bad = (message) => {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ message }));
+    };
+    if (!fields) return bad('multipart body has no boundary');
     const get = (n) => fields.find(([k]) => k === n)?.[1] ?? '';
-    const vars = JSON.parse(get('recipient-variables') || '{}');
+    let vars;
+    try {
+      vars = JSON.parse(get('recipient-variables') || '{}');
+    } catch {
+      return bad('recipient-variables is not JSON');
+    }
     const tos = fields.filter(([k]) => k === 'to').map(([, v]) => v);
     for (const to of tos) {
       enqueue(domain, get('from'), to, get('subject'), get('text'), vars);
@@ -112,7 +123,17 @@ const drainServer = http.createServer((req, res) => {
       body += c;
     });
     req.on('end', () => {
-      for (const { id, drainCount } of JSON.parse(body).acks) {
+      let acks;
+      try {
+        acks = JSON.parse(body).acks;
+      } catch {
+        acks = null;
+      }
+      if (!Array.isArray(acks)) {
+        res.writeHead(400);
+        return res.end('{"message":"acks is not a JSON list"}');
+      }
+      for (const { id, drainCount } of acks) {
         const i = queue.findIndex((r) => r.id === id && r.drainCount === drainCount);
         if (i >= 0) queue.splice(i, 1);
       }
