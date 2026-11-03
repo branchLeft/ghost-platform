@@ -176,17 +176,37 @@ replacement leaves the old thumbnail in place. The write goes through
 `save()` stores every new upload as `<stem>-<22 random base32 characters>.<ext>`
 (110 bits from `crypto.randomBytes`), so a URL cannot be derived from a
 neighbouring one. The stem is cut to keep the stored name within 240 bytes.
-Two small tables, per adapter instance, make Ghost's own flows still find what
-they wrote. Neither survives a restart, and each is bounded and expires.
+Three small tables, per adapter instance, make Ghost's own flows still find
+what they wrote. None survives a restart. The first expires and drops its
+oldest entry when full; the other two are bounded together and a lapse is
+never dropped.
 
 | Table | Remembers | Why | Window | Bound |
 | --- | --- | --- | --- | --- |
 | stored names (`storedNames`) | the basename each upload was stored under | Ghost saves an image's original as `<stored basename>_o<ext>` and looks for exactly that; an upload named so keeps that name, once | 60 s | 1000, oldest dropped |
-| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000, then `getUniqueFileName()` throws |
+| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` throws |
+| lapsed promises (`lapsedReservations`) | the key of a promise that ran out before its `save()` | the importer has already written the promised path into its references, so a later `save()` of that file is refused rather than stored under another name | until the file is promised a fresh name | counted with the promised names; never evicted |
+
+A promise that lapses moves from the promised table to the lapse table, so the
+two together never exceed the bound. A `save()` of a lapsed file throws, every
+time, and stores nothing. The lapse is cleared only when `getUniqueFileName()`
+promises that same file a fresh name, which is how an import is run again.
+When the two tables together reach the bound, `getUniqueFileName()` refuses
+every new file (a file that already lapsed is still let through, since it
+swaps its lapse for the new promise); lapses are never dropped to make room,
+because a forgotten lapse would let that file store under a fresh name and
+leave the importer's references dangling. Room returns as promises are saved
+and as lapsed files are promised afresh; a table filled by lapses of files
+that never come back is emptied only by a restart.
+
+Known gap: the lapse table is in memory. A restart forgets it, so a file whose
+promise lapsed before the restart, and is saved after it, is stored under a
+fresh component and the importer's references to the promised path dangle.
+The restart-surviving fix is not made here.
 
 An upload whose own name ends `_o` and follows no remembered name is an
 ordinary upload and gets its own component. A refused upload leaves no entry
-in either table. When a verdict source is missing, nothing is promised. An
+in any table. When a verdict source is missing, nothing is promised. An
 original that arrives after its window, after a restart, or after eviction is
 stored under a fresh component: Ghost then falls back to the processed image.
 

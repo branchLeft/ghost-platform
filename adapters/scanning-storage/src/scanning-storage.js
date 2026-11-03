@@ -165,18 +165,32 @@ function reservationKey(file, targetDir) {
   return `${file.path || ''}\n${targetDir || ''}\n${file.name}`;
 }
 
-function liveReservation(reservations, key, now = Date.now()) {
+// Keys whose promise ran out before its save. A save of one is refused, not
+// renamed, and stays refused until getUniqueFileName() promises that file a
+// fresh name: Ghost's importer has already written the promised path into the
+// references. A lapse is never evicted, because a forgotten lapse would let
+// that file store under a fresh name and dangle those references silently.
+// So the bound is on reservations and lapses together (see
+// getUniqueFileName()), which refuses new promises when it is reached.
+function rememberLapsed(lapsed, key) {
+  lapsed.set(key, true);
+}
+
+function liveReservation(reservations, key, now = Date.now(), lapsed = null) {
   for (const [other, entry] of reservations) {
     if (entry.expiresAt <= now) {
       reservations.delete(other);
+      if (lapsed) {
+        rememberLapsed(lapsed, other);
+      }
     }
   }
   return reservations.get(key)?.name;
 }
 
 // The reserved basename, spent, or undefined.
-function takeReservation(reservations, key, now = Date.now()) {
-  const name = liveReservation(reservations, key, now);
+function takeReservation(reservations, key, now = Date.now(), lapsed = null) {
+  const name = liveReservation(reservations, key, now, lapsed);
   reservations.delete(key);
   return name;
 }
@@ -292,6 +306,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.writeTimeoutMs = resolveWriteTimeoutMs(config.writeTimeoutMs);
       this.storedNames = new Map();
       this.reservedNames = new Map();
+      this.lapsedReservations = new Map();
+      // Bounds reservations and lapses together; only a test sets it.
+      this.reservationMaxEntries =
+        Number(config.reservationMaxEntries) > 0
+          ? Number(config.reservationMaxEntries)
+          : RESERVATION_MAX_ENTRIES;
 
       this.hold = new HoldRegistry({
         checks: this.checks,
@@ -381,9 +401,24 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       const key = reservationKey(file, targetDir);
       // `fixed` is a name already promised; without one the name is fresh.
       const promised = () => {
-        const reserved = takeReservation(this.reservedNames, key);
+        const reserved = takeReservation(
+          this.reservedNames,
+          key,
+          Date.now(),
+          this.lapsedReservations
+        );
         if (reserved !== undefined) {
           return { fixed: reserved, remember: true };
+        }
+        // The promise ran out before this save (during the scan, or before it
+        // began). Refused rather than stored under a fresh name: the importer
+        // already wrote the promised path into its references, so a fresh name
+        // would dangle them silently. Kept, so a retry is refused too, until
+        // getUniqueFileName() promises this file a fresh name.
+        if (this.lapsedReservations.has(key)) {
+          throw new Error(
+            `ScanningStorageAdapter: the name promised to "${file.name}" lapsed after an hour before it was saved, so nothing was stored under another name; run the import again`
+          );
         }
         if (takeOriginalOf(file, this.storedNames)) {
           return { fixed: file.name, remember: false };
@@ -431,11 +466,21 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         return unique(usable ? withRandomName(file) : file);
       }
       const key = reservationKey(file, targetDir);
-      const reserved = liveReservation(this.reservedNames, key);
+      const reserved = liveReservation(
+        this.reservedNames,
+        key,
+        Date.now(),
+        this.lapsedReservations
+      );
       if (reserved !== undefined) {
         return unique({ ...file, name: reserved });
       }
-      if (this.reservedNames.size >= RESERVATION_MAX_ENTRIES) {
+      // A file that already lapsed swaps its lapse for the new promise, so it
+      // adds nothing to the count and is let through even when the bound is hit.
+      if (
+        !this.lapsedReservations.has(key) &&
+        this.reservedNames.size + this.lapsedReservations.size >= this.reservationMaxEntries
+      ) {
         throw new Error(
           'ScanningStorageAdapter: too many upload names are reserved and not yet saved; retry later'
         );
@@ -445,6 +490,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         name: path.basename(result),
         expiresAt: Date.now() + RESERVATION_WINDOW_MS,
       });
+      // A fresh promise replaces any earlier lapse of the same file.
+      this.lapsedReservations.delete(key);
       return result;
     }
 
