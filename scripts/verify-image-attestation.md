@@ -30,6 +30,18 @@ itself requires. The run-side node is to test it on a host with no `GH_TOKEN`.
   self-hosted runners are denied.
 - A missing argument, an unknown option or any `gh` failure is a non-zero exit.
 
+## Wrong-identity check
+
+`scripts/prove-wrong-identity-rejected.sh` runs after the real verifies pass on
+the same image. It requires a wrong signer (the signer with `.sabotage`
+appended) to be refused through both paths, and refused for the identity. A
+refusal counts only when gh prints one of `no matching CertificateIdentity`,
+`Subject Alternative Name` or `Policy verification failed`. Those are the
+messages sigstore-go, the verifier gh uses, prints for a mismatch. A network,
+TUF or registry fault also exits non-zero, and must fail the check rather than
+pass as a rejection. Those markers were read from the local gh 2.97 binary, not
+from a live failing attestation.
+
 ## Identities
 
 | Image | Signer workflow |

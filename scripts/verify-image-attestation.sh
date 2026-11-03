@@ -1,24 +1,10 @@
 #!/bin/sh
-# Verifies that a container image was built and attested by the expected
-# workflow of this repository, on `main`. This is the one home of the verify
-# command: the publish workflows call it through
-# .github/actions/attest-and-verify-image, and the host-side check that decides
-# whether to run an image reuses it as it is.
+# Verifies that an image was attested by the expected workflow of this repo, on
+# refs/heads/main. Fail closed: exit 0 only when gh verified an attestation for
+# exactly that digest, signer and ref. Usage, identities and rationale:
+# scripts/verify-image-attestation.md.
 #
-# It is fail closed. A reference that is not digest-qualified, a missing or
-# surplus argument, an identity that is not shaped like this repository's
-# workflow, or any `gh` failure is a non-zero exit. Exit 0 means gh verified
-# an attestation for exactly that digest, signed by exactly that workflow file,
-# run from refs/heads/main on a GitHub-hosted runner.
-#
-# Usage:
-#   ./scripts/verify-image-attestation.sh <registry/name@sha256:64hex> \
-#       <owner/repo> <owner/repo/.github/workflows/file.yml> [--bundle-from-oci]
-#
-# VERIFY_PLAIN_ERRORS=1 prints each refusal as plain text rather than as a
-# ::error:: workflow annotation. The publish workflow sets it for a retried
-# attempt and for the wrong-identity check, where a refusal is expected or will
-# be retried, so only a final failure paints the run red.
+# VERIFY_PLAIN_ERRORS=1 prints refusals as plain text, not ::error:: annotations.
 set -eu
 
 if [ "${VERIFY_PLAIN_ERRORS:-0}" = 1 ]; then ERR="error: "; else ERR="::error::"; fi

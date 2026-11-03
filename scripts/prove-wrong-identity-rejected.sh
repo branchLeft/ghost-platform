@@ -1,14 +1,7 @@
 #!/bin/sh
-# Proves that a wrong signer workflow is refused by the verify check, through
-# both paths (the GitHub API, and the registry's own bundle), and refused for
-# the right reason. The publish action runs it after the real-identity verifies
-# have passed. The shell test runs it against a stub gh.
-#
-# A refusal counts only when gh names the identity or the Subject Alternative
-# Name it could not match. A network, TUF or registry fault also exits non-zero,
-# and must fail this check rather than pass as a rejection. The markers are the
-# messages sigstore-go, the verifier gh uses, prints for a certificate identity
-# that does not match.
+# Proves a wrong signer workflow is refused for its identity, through both
+# verify paths. A network or TUF fault is not a refusal. Why: see the wrong
+# identity section of scripts/verify-image-attestation.md.
 #
 # Usage:
 #   ./scripts/prove-wrong-identity-rejected.sh <registry/name@sha256:64hex> \

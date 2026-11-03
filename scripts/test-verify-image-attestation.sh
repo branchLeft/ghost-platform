@@ -1,13 +1,7 @@
 #!/bin/sh
-# Proves scripts/verify-image-attestation.sh refuses what it exists to refuse.
-# A stub `gh` stands in for the real one, so this needs no network and no
-# attestation. The stub emulates the part of `gh attestation verify` that
-# matters: it needs --repo, accepts an attestation only when --signer-workflow
-# (if given) equals the identity the image was signed with, and only when
-# --source-ref (if given) is refs/heads/main. Like the real gh, it accepts
-# anything in the repository when a flag is left off, so a script that quietly
-# drops --signer-workflow is accepted by the stub and the wrong-signer case
-# goes red.
+# Proves the verify and wrong-identity scripts refuse what they should, against
+# a stub gh on PATH, so no network or attestation is needed. The stub and its
+# cases are described in scripts/test-verify-image-attestation.md.
 #
 # Usage:
 #   ./scripts/test-verify-image-attestation.sh

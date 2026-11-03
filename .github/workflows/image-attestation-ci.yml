@@ -1,19 +1,9 @@
 name: Image attestation CI
 
-# Proves the check that decides whether a published image was built by the
-# expected workflow. scripts/test-verify-image-attestation.sh runs the verify
-# script against a stub gh and shows it refuses a tag-form reference, a wrong
-# signer, a missing argument and a failing gh. It also runs the wrong-identity
-# check (scripts/prove-wrong-identity-rejected.sh) against the stub: a refusal
-# must name the identity, and a network or TUF fault or an acceptance must fail.
-# The workflow lint pins the literal identity each image workflow passes to its
-# own file path, keeps the signing permissions on the publishing job, and checks
-# every action is pinned.
-#
-# What this cannot show is a real attestation: that is created and verified,
-# with a wrong identity then required to be refused, by the publish workflows
-# on every push to `main` (registry-push.yml and portal-apps-image.yml, through
-# .github/actions/attest-and-verify-image).
+# Proves the attestation verify and wrong-identity checks against a stub gh,
+# and lints the image workflows and the attest action. A real attestation is
+# only created and verified by the publish workflows on main; see
+# scripts/verify-image-attestation.md.
 
 on:
   push:
