@@ -12,8 +12,13 @@ timeout.
   10000 ms (ghost-platform#485).
 - The built Ghost image, booted with those values, sends a sign-up magic link
   to a listener that accepts and never greets. The reader's request ends with
-  a status of 400 or more within 15 s (`BOUND_MS`), and the listener saw Ghost
+  status 500 within 15 s (`BOUND_MS`), the status Ghost's mailer gives a send
+  failure (an `EmailError` with `statusCode` 500), and the listener saw Ghost
   dial in.
+- The negative control boots a second Ghost with the three timeout keys
+  omitted, against the same listener. Its reader's request is still open at
+  `BOUND_MS`, and the listener saw that Ghost dial in. The check stops 2 s
+  after `BOUND_MS`, so the run does not wait for nodemailer's 30 s default.
 
 ## Why a listener, not `docker pause`
 
@@ -23,10 +28,11 @@ gives Ghost the same observation. This runs in CI with no spool stack.
 
 ## Sabotage
 
-With the three keys removed from the golden, the first assertion fails by name:
-`the golden renders mail__options__connectionTimeout`. Without them, nodemailer
-keeps its 30 s greeting default, and the reader's-request assertion fails with
-an elapsed time past 15 s.
+The negative control runs in CI on every build, so the keys' effect is shown
+each time, not by a manual step. Without the keys, nodemailer keeps its 30 s
+greeting default, so the untimed Ghost's request is still open at `BOUND_MS`.
+Removing the keys from the golden also fails the positive test's first
+assertion by name: `the golden renders mail__options__connectionTimeout`.
 
 ## Not proven here
 

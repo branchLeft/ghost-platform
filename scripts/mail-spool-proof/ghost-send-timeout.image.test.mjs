@@ -2,7 +2,8 @@
 // greets, which is what a frozen spool looks like to Ghost. The mail timeouts
 // are the ones render-core renders, read from its demo golden. Ghost's own
 // reader send (a sign-up magic link) must end in failure inside BOUND_MS.
-// Rationale: ghost-send-timeout.md.
+// The negative control boots Ghost with the timeouts omitted: that request
+// must still be open at BOUND_MS. Rationale: ghost-send-timeout.md.
 //
 // Usage:
 //   IMAGE=ghost-platform:ci node --test scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs
@@ -14,7 +15,13 @@ import http from 'node:http';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { docker, pollHttp200, reservePort, runStep } from '../../test-support/image-harness.mjs';
+import {
+  docker,
+  pollHttp200,
+  reservePort,
+  runStep,
+  sleep,
+} from '../../test-support/image-harness.mjs';
 
 const IMAGE = process.env.IMAGE;
 if (!IMAGE) {
@@ -25,6 +32,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GOLDEN = path.resolve(HERE, '../../render-core/test/golden/demo.compose.yml');
 const SITE_URL = 'https://tenant.example.test';
 const BOUND_MS = 15_000;
+// The negative control stops this long after BOUND_MS, not at nodemailer's 30 s.
+const NEGATIVE_MARGIN_MS = 2_000;
 const CLIENT_DEADLINE_MS = 60_000;
 const BOOT_TIMEOUT_MS = 90_000;
 const LABEL = 'branchleft.agent=ghost-send-timeout-image-test';
@@ -64,13 +73,13 @@ function startHungListener() {
 }
 
 class GhostContainer {
-  static async start(smtpPort) {
-    return runStep('start Ghost container', () => GhostContainer.#start(smtpPort), {
+  static async start(smtpPort, withTimeouts = true) {
+    return runStep('start Ghost container', () => GhostContainer.#start(smtpPort, withTimeouts), {
       deadlineMs: BOOT_TIMEOUT_MS + 60_000,
     });
   }
 
-  static async #start(smtpPort) {
+  static async #start(smtpPort, withTimeouts) {
     const port = await reservePort();
     const name = `ghost-send-timeout-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     const env = {
@@ -93,7 +102,7 @@ class GhostContainer {
       mail__options__host: 'host.docker.internal',
       mail__options__port: String(smtpPort),
       mail__options__secure: 'false',
-      ...(await renderedMailTimeouts()),
+      ...(withTimeouts ? await renderedMailTimeouts() : {}),
     };
     const envArgs = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
     docker(
@@ -180,16 +189,24 @@ class GhostContainer {
 describe('Ghost send against a listener that never greets', () => {
   let listener;
   let ghost;
+  let untimed;
   let timeouts;
 
   before(async () => {
     timeouts = await renderedMailTimeouts();
     listener = await startHungListener();
-    ghost = await GhostContainer.start(listener.port);
+    const boots = await Promise.allSettled([
+      GhostContainer.start(listener.port, true),
+      GhostContainer.start(listener.port, false),
+    ]);
+    [ghost, untimed] = boots.map((boot) => boot.value);
+    const failed = boots.find((boot) => boot.status === 'rejected');
+    if (failed) throw failed.reason;
   });
 
   after(() => {
     ghost?.stop();
+    untimed?.stop();
     listener?.close();
   });
 
@@ -212,7 +229,39 @@ describe('Ghost send against a listener that never greets', () => {
     );
     const elapsed = Date.now() - started;
     assert.ok(elapsed <= BOUND_MS, `the reader's request took ${elapsed} ms, past ${BOUND_MS} ms`);
-    assert.ok(res.status >= 400, `Ghost's send did not fail: status ${res.status}`);
+    assert.equal(res.status, 500, `Ghost's failed send answered ${res.status}, not 500`);
     assert.ok(listener.held.length >= 1, 'Ghost never dialled the listener');
+  });
+
+  it('without the timeouts the same request is still open at the bound', async (t) => {
+    const email = `reader-${crypto.randomBytes(3).toString('hex')}@example.test`;
+    const heldBefore = listener.held.length;
+    const controller = new AbortController();
+    const started = Date.now();
+    const finished = untimed
+      .request(
+        'POST',
+        '/members/api/send-magic-link/',
+        { email, emailType: 'signup', redirect: `${SITE_URL}/` },
+        {},
+        controller.signal
+      )
+      .then(
+        () => Date.now() - started,
+        () => Date.now() - started
+      );
+    const stopAt = sleep(BOUND_MS + NEGATIVE_MARGIN_MS).then(() => null);
+    const elapsed = await Promise.race([finished, stopAt]);
+    controller.abort();
+    t.diagnostic(
+      elapsed === null
+        ? `still open at ${Date.now() - started} ms, bound ${BOUND_MS} ms`
+        : `finished in ${elapsed} ms, bound ${BOUND_MS} ms`
+    );
+    assert.ok(
+      elapsed === null || elapsed > BOUND_MS,
+      `without the timeouts the request finished in ${elapsed} ms, inside ${BOUND_MS} ms`
+    );
+    assert.ok(listener.held.length > heldBefore, 'the untimed Ghost never dialled the listener');
   });
 });
