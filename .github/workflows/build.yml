@@ -79,3 +79,11 @@ jobs:
         run: node --test test/image/*.test.mjs
         env:
           IMAGE: ghost-platform:ci
+
+      # Real Ghost sends a reader's magic link to a listener that never
+      # greets, a frozen spool as Ghost sees it. The request must fail inside
+      # the bound. Needs no install -- Node built-ins only.
+      - name: Ghost send against a frozen mail spool
+        run: node --test scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs
+        env:
+          IMAGE: ghost-platform:ci
