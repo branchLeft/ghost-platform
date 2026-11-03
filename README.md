@@ -142,9 +142,11 @@ actually serves.
 ### Published images are signed
 
 Every push to `main` publishes `ghcr.io/branchleft/ghost-tenant`
-(`registry-push.yml`) and `ghcr.io/branchleft/portal-apps`
-(`portal-apps-image.yml`) and signs the pushed digest with a keyless GitHub
-artifact attestation (SLSA build provenance, Sigstore public-good). The
+(`registry-push.yml`). `ghcr.io/branchleft/portal-apps` (`portal-apps-image.yml`)
+is published by a push to `main` that changes `portal/` or `services/identity/`,
+or by a manual dispatch. Each push that publishes signs the pushed digest with a
+keyless GitHub artifact attestation (SLSA build provenance, Sigstore
+public-good). The
 signing step, and the check that it verifies and that a wrong identity is
 rejected, is `.github/actions/attest-and-verify-image`. To verify an image
 yourself, name it by digest:

@@ -17,7 +17,8 @@ Exit 0 means verified. Any other exit means do not trust the image.
 
 Without `--bundle-from-oci` the attestation is fetched through the GitHub API,
 which needs `GH_TOKEN`. With it, the signed bundle is read from the image's own
-registry entry, so no GitHub token is needed beyond what `gh` itself requires.
+registry entry. Unverified: that this needs no GitHub token beyond what `gh`
+itself requires. The run-side node is to test it on a host with no `GH_TOKEN`.
 
 ## Why it is strict
 

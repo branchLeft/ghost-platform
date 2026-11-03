@@ -26,6 +26,13 @@ quietly dropped `--signer-workflow` would therefore be accepted by the stub.
   refused before `gh`.
 - d: a missing or surplus argument is refused before `gh`.
 - e: `gh` failing is a non-zero exit.
+- f: the wrong-identity check, `scripts/prove-wrong-identity-rejected.sh`,
+  passes when gh refuses the wrong signer by its identity, through both the
+  API and the bundle path, with no `::error::` annotation. It fails when the
+  refusal is a network or Sigstore TUF fault (f2, f3), and when gh accepts the
+  wrong signer (f4).
+- g: `VERIFY_PLAIN_ERRORS=1` prints a refusal as plain text; without it the
+  refusal is a `::error::` annotation.
 
 ## Showing it red
 

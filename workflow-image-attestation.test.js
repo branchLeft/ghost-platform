@@ -76,6 +76,9 @@ for (const name of IMAGE_WORKFLOWS) {
 }
 
 const action = uncommented(ACTION);
+const apiAt = action.indexOf('Verify the attestation through the GitHub API');
+const ociAt = action.indexOf('Verify the attestation from the registry');
+const sabotageAt = action.indexOf('Prove a wrong identity is rejected');
 
 test('the action attests the digest with the registry copy stored and nothing else granted', () => {
   assert.match(action, /uses: actions\/attest-build-provenance@[0-9a-f]{40} # v\d+\.\d+\.\d+/);
@@ -86,26 +89,51 @@ test('the action attests the digest with the registry copy stored and nothing el
   assert.doesNotMatch(action, /artifact-metadata/);
 });
 
-test('the action verifies twice with the real identity, then requires a wrong one to fail', () => {
-  const api = action.indexOf('Verify the attestation through the GitHub API');
-  const oci = action.indexOf('Verify the attestation from the registry');
-  const sabotage = action.indexOf('Prove a wrong identity is rejected');
+test('the action verifies twice with the real identity, then requires a wrong one to be refused', () => {
   const attest = action.indexOf('actions/attest-build-provenance@');
-  assert.ok(attest > -1 && api > attest && oci > api && sabotage > oci);
-  const sabotageStep = action.slice(sabotage);
-  assert.match(sabotageStep, /wrong="\$\{SIGNER_WORKFLOW\}\.sabotage"/);
-  assert.equal(
-    (sabotageStep.match(/if "\$GITHUB_WORKSPACE\/scripts\/verify-image-attestation\.sh"/g) ?? [])
-      .length,
-    2
+  assert.ok(attest > -1 && apiAt > attest && ociAt > apiAt && sabotageAt > ociAt);
+  const sabotageStep = action.slice(sabotageAt);
+  assert.match(
+    sabotageStep,
+    /"\$GITHUB_WORKSPACE\/scripts\/prove-wrong-identity-rejected\.sh" "\$IMAGE@\$DIGEST" "\$REPO" "\$SIGNER_WORKFLOW"/,
+    'the wrong-identity check is the script, called with the real identity'
   );
-  assert.match(sabotageStep, /--bundle-from-oci/);
-  assert.equal(
-    (sabotageStep.match(/exit 1/g) ?? []).length,
-    2,
-    'accepting a wrong identity fails the job'
-  );
+  assert.doesNotMatch(sabotageStep, /\.sabotage/, 'the wrong identity is built in the script');
   assert.doesNotMatch(action, /\|\| true|continue-on-error/, 'no failure is swallowed');
+});
+
+test('each real-identity verify retries five times, with waits totalling about two minutes', () => {
+  const apiStep = action.slice(apiAt, ociAt);
+  const ociStep = action.slice(ociAt, sabotageAt);
+  for (const step of [apiStep, ociStep]) {
+    assert.match(step, /for attempt in 1 2 3 4 5; do/, 'five attempts');
+    assert.match(
+      step,
+      /pause=\$\(\(attempt \* 12\)\)/,
+      'the wait grows each attempt: 12, 24, 36, 48 seconds'
+    );
+    assert.match(step, /VERIFY_PLAIN_ERRORS="\$plain"/, 'earlier attempts are plain text');
+    assert.match(step, /echo "Verify .*attempt \$attempt of 5"/, 'each attempt is logged');
+    assert.match(step, /::error::[^\n]*in 5 attempts"\n {8}exit 1/, 'the last failure is red');
+  }
+  assert.match(ociStep, /--bundle-from-oci/);
+});
+
+test('the wrong-identity script refuses by identity through both paths and never by a fault', () => {
+  const script = read('scripts/prove-wrong-identity-rejected.sh');
+  assert.match(script, /WRONG="\$3\.sabotage"/, 'the wrong identity is the signer with .sabotage');
+  assert.match(script, /VERIFY_PLAIN_ERRORS=1/, 'the expected refusal is plain text');
+  assert.match(
+    script,
+    /"\$VERIFY" "\$IMAGE_REF" "\$REPO" "\$WRONG" \$2/,
+    'the second path adds --bundle-from-oci'
+  );
+  assert.match(script, /--bundle-from-oci/);
+  assert.match(
+    script,
+    /no matching CertificateIdentity\|Subject Alternative Name\|Policy verification failed/
+  );
+  assert.match(script, /accepted \$1: the verify check is vacuous/, 'an acceptance fails the job');
 });
 
 test('the action reads inputs through env, never into the script text', () => {

@@ -29,6 +29,18 @@ printf -- '--call-end--\n' >> "$GH_LOG"
 if [ "${STUB_MODE:-}" = "fail" ]; then
   exit 1
 fi
+# Faults that are not a rejection: a network failure, and a Sigstore TUF fetch.
+if [ "${STUB_MODE:-}" = "network" ]; then
+  echo 'Get "https://api.github.com/repos/branchLeft/ghost-platform/attestations/sha256:aaaa": dial tcp: lookup api.github.com: no such host' >&2
+  exit 1
+fi
+if [ "${STUB_MODE:-}" = "tuf" ]; then
+  echo "Sigstore verification failed: failed to fetch the TUF root: connection reset by peer" >&2
+  exit 1
+fi
+if [ "${STUB_MODE:-}" = "accept" ]; then
+  exit 0
+fi
 repo=""
 signer=""
 ref=""
@@ -41,7 +53,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ -n "$repo" ] || exit 1
-if [ -n "$signer" ] && [ "$signer" != "$STUB_SIGNED_BY" ]; then exit 1; fi
+if [ -n "$signer" ] && [ "$signer" != "$STUB_SIGNED_BY" ]; then
+  echo "Error: Policy verification failed: no matching CertificateIdentity found, last error: Subject Alternative Name must match regex" >&2
+  exit 1
+fi
 if [ -n "$ref" ] && [ "$ref" != "refs/heads/main" ]; then exit 1; fi
 exit 0
 STUB
@@ -112,6 +127,46 @@ STUB_MODE=fail
 export STUB_MODE
 run_case "e. gh failing is a non-zero exit" nonzero 1 "$GOOD_REF" "$REPO" "$SIGNER"
 unset STUB_MODE
+
+# (f) the wrong-identity check. It passes only when gh refuses the wrong signer
+# for its identity, through both paths, and a fault or an acceptance fails it.
+PROVE="$HERE/prove-wrong-identity-rejected.sh"
+run_prove() {
+  name="$1"; want="$2"
+  : > "$GH_LOG"
+  "$PROVE" "$GOOD_REF" "$REPO" "$SIGNER" > "$WORK/out" 2>&1
+  code=$?
+  ok=1
+  if [ "$want" = "zero" ] && [ "$code" -ne 0 ]; then ok=0; fi
+  if [ "$want" = "nonzero" ] && [ "$code" -eq 0 ]; then ok=0; fi
+  if [ "$want" = "zero" ] && grep -q '::error::' "$WORK/out"; then ok=0; fi
+  if [ "$ok" -eq 1 ]; then pass "$name"; else fail "$name (exit $code, wanted $want)"; sed 's/^/        /' "$WORK/out"; fi
+}
+run_prove "f. a wrong signer is refused for its identity through both paths, with no annotation" zero
+STUB_MODE=network
+export STUB_MODE
+run_prove "f2. a network failure is not a rejection, and fails the check" nonzero
+STUB_MODE=tuf
+run_prove "f3. a Sigstore TUF failure is not a rejection, and fails the check" nonzero
+STUB_MODE=accept
+run_prove "f4. a wrong signer that gh accepts fails the check" nonzero
+unset STUB_MODE
+
+# (g) VERIFY_PLAIN_ERRORS=1 prints a refusal as plain text. Without it the refusal is an annotation.
+: > "$GH_LOG"
+code=0
+VERIFY_PLAIN_ERRORS=1 "$SCRIPT" "ghcr.io/branchleft/ghost-tenant:latest" "$REPO" "$SIGNER" > "$WORK/out" 2>&1 || code=$?
+if [ "$code" -ne 0 ] && grep -q '^error: refusing' "$WORK/out" && ! grep -q '::error::' "$WORK/out"; then
+  pass "g. VERIFY_PLAIN_ERRORS=1 prints a plain refusal with no annotation"
+else
+  fail "g. VERIFY_PLAIN_ERRORS=1 prints a plain refusal with no annotation"; sed 's/^/        /' "$WORK/out"
+fi
+"$SCRIPT" "ghcr.io/branchleft/ghost-tenant:latest" "$REPO" "$SIGNER" > "$WORK/out" 2>&1
+if grep -q '^::error::refusing' "$WORK/out"; then
+  pass "g2. without VERIFY_PLAIN_ERRORS the refusal is a ::error:: annotation"
+else
+  fail "g2. without VERIFY_PLAIN_ERRORS the refusal is a ::error:: annotation"; sed 's/^/        /' "$WORK/out"
+fi
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed"
