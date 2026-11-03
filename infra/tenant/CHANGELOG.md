@@ -4,6 +4,22 @@ All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
 ## Unreleased
 
+- **Breaking, ships as 8.0.0: the tenant stack holds no secret value.** The
+  `secrets` argument and the `GhostTenantSecrets` type are removed, and so is
+  the `secretsEnvFile` output, which was a Pulumi secret recorded in stack
+  state. A caller that still passes `secrets` is refused at construction.
+  `assertSecretCoverage` and `fillSecretsTemplate` leave the component too;
+  their logic now lives in `app/provision/render_tenant_secrets.py`, which
+  fills the secrets file on the host, mode 0600, from values given on stdin.
+- New plain outputs `secretsEnvTemplate` (the render core's `secrets.env`,
+  key names with empty values) and `secretKeys` (the names, in template
+  order). `secretsEnvPath` is unchanged. A tenant program drops its
+  `requireSecret` reads and its `secrets` argument; see
+  `index.md#secrets-on-the-host`.
+- `secrets-absent.test.ts` fails if a secret value, a Pulumi secret marker or
+  an unlisted output key reappears. `owner-email.test.ts` is retired: its
+  sentinel search for the owner address is that test, and the address shape
+  check is the host script's.
 - **Breaking: `GhostTenant` refuses a registered tenant name unless it runs in
   that name's own repository.** The new `validateTenantNameClaim(slug,
   claimantRepo?)` compares `GITHUB_REPOSITORY` with the repository recorded

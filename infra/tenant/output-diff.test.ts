@@ -7,7 +7,7 @@ import {
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { GhostTenant as GhostTenantClass } from './index';
 import { composePaths, diff, envFilePaths, flatten, type DiffEntry } from './test/diff';
-import { TEST_ZONES, tenantZeroEquivalent, tenantZeroSecrets } from './test/fixtures';
+import { TEST_ZONES, tenantZeroEquivalent } from './test/fixtures';
 import { installMocks, unwrap } from './test/harness';
 
 /**
@@ -30,6 +30,7 @@ const DECISIONS = new Set([
   'single-renderer',
   'render-core-artefact',
   'owner-address-secret',
+  'secrets-host-render',
 ]);
 
 interface ReviewedEntry extends DiffEntry {
@@ -63,7 +64,6 @@ async function afterPaths(): Promise<Map<string, unknown>> {
   const tenant = new GhostTenant('zero', {
     descriptor: tenantZeroEquivalent(),
     zones: TEST_ZONES,
-    secrets: tenantZeroSecrets(),
   });
   const outputs = {
     stackName: tenant.stackName,
@@ -85,7 +85,7 @@ async function afterPaths(): Promise<Map<string, unknown>> {
   };
   return new Map<string, unknown>([
     ...colourA(composePaths(tenant.composeFile)),
-    ...envFilePaths(await unwrap(tenant.secretsEnvFile), 'secrets'),
+    ...envFilePaths(tenant.secretsEnvTemplate, 'secrets'),
     ...flatten(await unwrap(tenant.identity), 'identity'),
     ...flatten(outputs, 'output'),
   ]);
@@ -143,7 +143,6 @@ describe('the reviewed output diff against tenant 4.0.0', () => {
     const tenant = new GhostTenant('colours', {
       descriptor: tenantZeroEquivalent(),
       zones: TEST_ZONES,
-      secrets: tenantZeroSecrets(),
     });
     const paths = composePaths(tenant.composeFile);
     const colour = (name: string) =>

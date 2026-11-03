@@ -34,13 +34,6 @@ const TARGETS: PromotionTargets = {
   mailEstateCeiling: 10000,
 } as unknown as PromotionTargets;
 
-const SECRETS = {
-  databasePassword: 'PLACEHOLDER_DB_PASSWORD',
-  s3AccessKeyId: 'PLACEHOLDER_S3_KEY_ID',
-  s3SecretAccessKey: 'PLACEHOLDER_S3_SECRET',
-  bulkEmailApiKey: 'PLACEHOLDER_BULK_KEY',
-};
-
 let GhostTenant: typeof GhostTenantClass;
 
 beforeAll(async () => {
@@ -57,9 +50,9 @@ function artefacts(descriptor: TenantDescriptor): Map<string, string> {
 describe('the falsifying test against the rewired component', () => {
   const demo = validate(demoDescriptor(), TEST_ZONES);
   const promoted = transform(demo, TEST_ZONES, TARGETS);
-  // A promotion moves the demo's inline owner address to the secret path.
-  const { ownerEmail, ...promotedStack } = promoted;
-  const secrets = { ...SECRETS, ownerEmail };
+  // A promotion moves the demo's inline owner address to the secrets file,
+  // which the host fills: the component never receives it.
+  const { ownerEmail: _ownerEmail, ...promotedStack } = promoted;
 
   it('transform() moves only the attributable fields', () => {
     expect(() => assertAttributablePromotionDiff(demo, promoted)).not.toThrow();
@@ -69,7 +62,6 @@ describe('the falsifying test against the rewired component', () => {
     const tenant = new GhostTenant('promoted', {
       descriptor: promotedStack,
       zones: TEST_ZONES,
-      secrets,
     });
     const expected = artefacts(promoted);
     expect(tenant.composeFile).toBe(expected.get('compose.yml'));
@@ -82,7 +74,6 @@ describe('the falsifying test against the rewired component', () => {
     const tenant = new GhostTenant('placement', {
       descriptor: promotedStack,
       zones: TEST_ZONES,
-      secrets,
     });
     const demoIdentity = JSON.parse(artefacts(demo).get('identity.json') as string) as Record<
       string,

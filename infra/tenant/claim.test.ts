@@ -11,7 +11,7 @@ import {
   validateTenantNameClaim,
   validateTenantSlug,
 } from './naming';
-import { TEST_ZONES, tenantZeroEquivalent, tenantZeroSecrets } from './test/fixtures';
+import { TEST_ZONES, tenantZeroEquivalent } from './test/fixtures';
 import { installMocks } from './test/harness';
 
 const TENANT_ZERO_REPO = 'branchLeft/ghost-tenant-blog';
@@ -44,7 +44,6 @@ function buildBlog(name: string): GhostTenantClass {
   return new GhostTenant(name, {
     descriptor: descriptorNamedBlog(),
     zones: TEST_ZONES,
-    secrets: tenantZeroSecrets(),
   });
 }
 
@@ -129,7 +128,6 @@ describe('GhostTenant and the tenant-name claim', () => {
         new GhostTenant('unregistered', {
           descriptor: tenantZeroEquivalent(),
           zones: TEST_ZONES,
-          secrets: tenantZeroSecrets(),
         })
     ).not.toThrow();
   });
