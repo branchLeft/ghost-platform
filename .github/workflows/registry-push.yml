@@ -50,8 +50,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Promotion gate: the push below needs this job, so an image whose mail does
+  # not complete a real send through its own spool is never pushed to GHCR.
+  # Refs workspace#1268 (the mail gate); scripts/mail-gate/mail-gate.mjs.
+  mail-gate:
+    name: Mail gate (candidate sends through its own spool)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Read-only: this job pulls the pinned spool image and pushes nothing.
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GHCR to pull the pinned spool
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the candidate image
+        run: docker build --tag ghost-platform:candidate .
+
+      - name: Mail gate
+        run: node scripts/mail-gate/mail-gate.mjs ghost-platform:candidate
+
   push:
     name: Build and push tenant image
+    needs: mail-gate
     runs-on: ubuntu-latest
     # Observed 1.43-2.23min over the last 20 successful runs (p95 2.03min).
     timeout-minutes: 15
