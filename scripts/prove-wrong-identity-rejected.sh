@@ -18,8 +18,17 @@ VERIFY="$HERE/verify-image-attestation.sh"
 IMAGE_REF="$1"
 REPO="$2"
 WRONG="$3.sabotage"
+WRONG_RE="$(printf '%s' "$WRONG" | sed 's/[.*^$+?(){}|]/\\&/g')"
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
+
+# The live wording, from run 41728033706: gh prints "verifying with issuer" once
+# it checks the attestation, then the verify script names the identity. A token,
+# Sigstore or network fault prints that last line too, so it alone is not enough.
+live_refusal() {
+  grep -Fq 'verifying with issuer' "$OUT" &&
+    grep -Eq "no valid attestation for .* from ${WRONG_RE}( on |\$)" "$OUT"
+}
 
 # $1 is a label, $2 is the extra flag or an empty string.
 prove_refused() {
@@ -29,7 +38,8 @@ prove_refused() {
     echo "::error::a wrong signer workflow ($WRONG) was accepted $1: the verify check is vacuous"
     exit 1
   fi
-  if ! grep -Eq 'no matching CertificateIdentity|Subject Alternative Name|Policy verification failed' "$OUT"; then
+  if ! grep -Eq 'no matching CertificateIdentity|Subject Alternative Name|Policy verification failed' "$OUT" \
+    && ! live_refusal; then
     echo "::error::a wrong signer workflow ($WRONG) was refused $1, but gh did not name the identity. Its output:"
     sed 's/^/    /' "$OUT"
     exit 1
