@@ -53,8 +53,9 @@ jobs:
   push:
     name: Build and push tenant image
     runs-on: ubuntu-latest
-    # Observed 1.43-2.23min over the last 20 successful runs (p95 2.03min).
-    timeout-minutes: 15
+    # Observed 1.43-2.23min over the last 20 successful runs (p95 2.03min),
+    # plus the mail gate: two Ghost boots beside a spool.
+    timeout-minutes: 25
 
     # Job-level, not workflow-level: scoped here means it exists only for the
     # one job in the one workflow that ever needs it, on the one trigger
@@ -107,6 +108,20 @@ jobs:
 
       - name: Storage guard regression test (blocked vs. permitted configs)
         run: ./scripts/test-storage-guard.sh "$IMAGE:$IMAGE_TAG"
+
+      # Same Node the mail gate's own CI job runs, not whatever the runner ships.
+      - name: Setup Node for the mail gate
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+
+      # Mail gate, on the exact image the push below sends: the candidate must
+      # complete a real magic-link send and a newsletter send through the
+      # pinned spool (pulled with the login above), or the run stops here and
+      # nothing reaches GHCR. No `if:` and no `continue-on-error`, so it cannot
+      # be skipped or waved through; workflow-mail-gate.test.js pins both.
+      - name: Mail gate (the image sends through its own spool)
+        run: node scripts/mail-gate/mail-gate.mjs "$IMAGE:$IMAGE_TAG"
 
       # `--all-tags` pushes every locally-tagged reference for this
       # repository (`docker push --help`: "Push all tags of an image to the
