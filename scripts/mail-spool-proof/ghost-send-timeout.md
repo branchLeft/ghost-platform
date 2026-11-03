@@ -10,11 +10,17 @@ timeout.
 - The timeouts render from `render-core/src/environment.ts` into the demo
   golden: `connectionTimeout` 5000, `greetingTimeout` 5000, `socketTimeout`
   10000 ms (ghost-platform#485).
+- The request reaches the mailer. The members API rejects a magic-link POST
+  with 400 unless it carries the integrity token from
+  `GET /members/api/integrity-token` (`verifyRequestIntegrity`, on by default),
+  so the test fetches one first. The listener logs every accepted connection
+  with its time, and the test fails if Ghost never dialled it.
 - The built Ghost image, booted with those values, sends a sign-up magic link
   to a listener that accepts and never greets. The reader's request ends with
   status 500 within 15 s (`BOUND_MS`), the status Ghost's mailer gives a send
-  failure (an `EmailError` with `statusCode` 500), and the listener saw Ghost
-  dial in.
+  failure (`createMailError` in `ghost-mailer.js`: an `EmailError` with
+  `statusCode` 500), and not before the 5 s greeting timeout, so the timeout
+  is what ended it.
 - The negative control boots a second Ghost with the three timeout keys
   omitted, against the same listener. Its reader's request is still open at
   `BOUND_MS`, and the listener saw that Ghost dial in. The check stops 2 s

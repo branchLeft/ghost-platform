@@ -51,11 +51,14 @@ async function renderedMailTimeouts() {
   return timeouts;
 }
 
-// Accepts every connection and never writes a byte.
+// Accepts every connection and never writes a byte. `accepted` is the evidence
+// that Ghost's mailer dialled it: one line per connection, with the time.
 function startHungListener() {
   const held = [];
+  const accepted = [];
   const server = net.createServer((socket) => {
     held.push(socket);
+    accepted.push({ at: Date.now(), from: `${socket.remoteAddress}:${socket.remotePort}` });
     socket.on('error', () => {});
   });
   return new Promise((resolve) => {
@@ -63,6 +66,7 @@ function startHungListener() {
       resolve({
         port: server.address().port,
         held,
+        accepted,
         close: () => {
           for (const socket of held) socket.destroy();
           server.close();
@@ -186,6 +190,42 @@ class GhostContainer {
   }
 }
 
+// The members API refuses a magic-link POST without the integrity token the
+// theme fetches first (verifyRequestIntegrity, router-controller's 400).
+// Returns the POST as a function so the token fetch stays outside the timing.
+async function prepareMagicLink(container, signal) {
+  const tokenRes = await container.request(
+    'GET',
+    '/members/api/integrity-token/',
+    undefined,
+    {},
+    signal
+  );
+  assert.equal(
+    tokenRes.status,
+    200,
+    `integrity token answered ${tokenRes.status}: ${tokenRes.text}`
+  );
+  const email = `reader-${crypto.randomBytes(3).toString('hex')}@example.test`;
+  return () =>
+    container.request(
+      'POST',
+      '/members/api/send-magic-link/',
+      { email, emailType: 'signup', integrityToken: tokenRes.text, redirect: `${SITE_URL}/` },
+      {},
+      signal
+    );
+}
+
+function connectionEvidence(listener, before, startedAt) {
+  const seen = listener.accepted.slice(before);
+  return seen.length === 0
+    ? 'listener accepted no connection'
+    : `listener accepted ${seen.length} connection(s): ${seen
+        .map((c) => `${c.from} at +${c.at - startedAt} ms`)
+        .join(', ')}`;
+}
+
 describe('Ghost send against a listener that never greets', () => {
   let listener;
   let ghost;
@@ -217,51 +257,57 @@ describe('Ghost send against a listener that never greets', () => {
     assert.ok(connectAndGreet <= BOUND_MS, `connection + greeting is ${connectAndGreet} ms`);
   });
 
-  it("a reader's magic-link request ends in failure within the bound", async () => {
-    const email = `reader-${crypto.randomBytes(3).toString('hex')}@example.test`;
+  it("a reader's magic-link request ends in failure within the bound", async (t) => {
+    const send = await prepareMagicLink(ghost, AbortSignal.timeout(CLIENT_DEADLINE_MS));
+    const before = listener.accepted.length;
     const started = Date.now();
-    const res = await ghost.request(
-      'POST',
-      '/members/api/send-magic-link/',
-      { email, emailType: 'signup', redirect: `${SITE_URL}/` },
-      {},
-      AbortSignal.timeout(CLIENT_DEADLINE_MS)
-    );
+    const res = await send();
     const elapsed = Date.now() - started;
+    const evidence = connectionEvidence(listener, before, started);
+    t.diagnostic(
+      `with timeouts: status ${res.status} in ${elapsed} ms, bound ${BOUND_MS} ms; ${evidence}; body ${res.text}`
+    );
+    assert.ok(
+      listener.accepted.length > before,
+      `Ghost never dialled the listener: ${res.status} ${res.text}`
+    );
+    // ghost-mailer.js createMailError: a failed send is a 500 EmailError.
+    assert.equal(res.status, 500, `Ghost's failed send answered ${res.status}: ${res.text}`);
     assert.ok(elapsed <= BOUND_MS, `the reader's request took ${elapsed} ms, past ${BOUND_MS} ms`);
-    assert.equal(res.status, 500, `Ghost's failed send answered ${res.status}, not 500`);
-    assert.ok(listener.held.length >= 1, 'Ghost never dialled the listener');
+    const greeting = Number(timeouts.mail__options__greetingTimeout);
+    assert.ok(
+      elapsed >= greeting - 500,
+      `ended in ${elapsed} ms, before the ${greeting} ms greeting timeout`
+    );
   });
 
   it('without the timeouts the same request is still open at the bound', async (t) => {
-    const email = `reader-${crypto.randomBytes(3).toString('hex')}@example.test`;
-    const heldBefore = listener.held.length;
     const controller = new AbortController();
+    const send = await prepareMagicLink(untimed, controller.signal);
+    const before = listener.accepted.length;
     const started = Date.now();
-    const finished = untimed
-      .request(
-        'POST',
-        '/members/api/send-magic-link/',
-        { email, emailType: 'signup', redirect: `${SITE_URL}/` },
-        {},
-        controller.signal
-      )
-      .then(
-        () => Date.now() - started,
-        () => Date.now() - started
-      );
+    const finished = send().then(
+      (res) => ({ status: res.status, text: res.text, elapsed: Date.now() - started }),
+      (err) => ({ status: `error ${err.name}`, text: '', elapsed: Date.now() - started })
+    );
     const stopAt = sleep(BOUND_MS + NEGATIVE_MARGIN_MS).then(() => null);
-    const elapsed = await Promise.race([finished, stopAt]);
+    const outcome = await Promise.race([finished, stopAt]);
+    const waited = Date.now() - started;
+    const evidence = connectionEvidence(listener, before, started);
     controller.abort();
     t.diagnostic(
-      elapsed === null
-        ? `still open at ${Date.now() - started} ms, bound ${BOUND_MS} ms`
-        : `finished in ${elapsed} ms, bound ${BOUND_MS} ms`
+      outcome === null
+        ? `without timeouts: still open at ${waited} ms, bound ${BOUND_MS} ms; ${evidence}`
+        : `without timeouts: status ${outcome.status} in ${outcome.elapsed} ms, bound ${BOUND_MS} ms; ${evidence}; body ${outcome.text}`
     );
     assert.ok(
-      elapsed === null || elapsed > BOUND_MS,
-      `without the timeouts the request finished in ${elapsed} ms, inside ${BOUND_MS} ms`
+      listener.accepted.length > before,
+      `the untimed Ghost never dialled the listener: ${evidence}`
     );
-    assert.ok(listener.held.length > heldBefore, 'the untimed Ghost never dialled the listener');
+    assert.equal(
+      outcome,
+      null,
+      `without the timeouts the request finished in ${outcome?.elapsed} ms (${outcome?.status}), inside ${BOUND_MS + NEGATIVE_MARGIN_MS} ms`
+    );
   });
 });
