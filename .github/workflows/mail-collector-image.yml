@@ -25,11 +25,13 @@ on:
     branches: [main]
     paths:
       - services/mail-collector/**
+      - deadmans-switch/**
       - .github/workflows/mail-collector-image.yml
   pull_request:
     branches: [main]
     paths:
       - services/mail-collector/**
+      - deadmans-switch/**
       - .github/workflows/mail-collector-image.yml
   workflow_dispatch:
 
@@ -65,7 +67,16 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@branchleft'
           cache: pnpm
-          cache-dependency-path: services/mail-collector/pnpm-lock.yaml
+          cache-dependency-path: |
+            services/mail-collector/pnpm-lock.yaml
+            deadmans-switch/pnpm-lock.yaml
+
+      # The collector links the shared dead-man's switch package, which
+      # installs its own dependencies: pnpm does not install a link target's.
+      - name: Install the shared dead-man's switch package
+        run: pnpm --dir ../../deadmans-switch install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -104,8 +115,9 @@ jobs:
         run: |
           docker build \
             --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --file Dockerfile \
             --tag mail-collector:ci \
-            .
+            ../..
 
   push:
     name: Build and push mail-collector image
@@ -152,8 +164,9 @@ jobs:
         run: |
           docker build \
             --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --file Dockerfile \
             --tag "$IMAGE:$IMAGE_TAG" \
-            .
+            ../..
 
       - name: Push
         run: docker push "$IMAGE:$IMAGE_TAG"

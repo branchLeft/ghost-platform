@@ -7,7 +7,10 @@ import { createSubmittedTracker, type SubmittedTracker } from '../../src/dedupe.
 import { createDrainClient, type DrainAck, type DrainClient } from '../../src/drainClient.js';
 import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createHealthState } from '../../src/health.js';
-import { createDeadMansSwitch, type DeadMansSwitch } from '../../src/heartbeat.js';
+import {
+  createDeadMansSwitch,
+  type DeadMansSwitch,
+} from '@branchleft/ghost-platform-deadmans-switch';
 import { createThrottle, type Throttle } from '../../src/throttle.js';
 import { createLogger } from '../../src/log.js';
 import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';

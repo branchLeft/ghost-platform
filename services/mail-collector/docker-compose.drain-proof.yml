@@ -150,7 +150,10 @@ services:
 
   collector:
     build:
-      context: .
+      # The repository root, because the collector's image carries the shared
+      # dead-man's switch package beside it (see services/mail-collector/Dockerfile).
+      context: ../..
+      dockerfile: services/mail-collector/Dockerfile
       secrets:
         - node_auth_token
     networks:
