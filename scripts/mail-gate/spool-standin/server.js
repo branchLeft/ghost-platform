@@ -38,8 +38,11 @@ function enqueue(domain, from, to, subject, text, recipientVariables = {}) {
   nextId += 1;
 }
 
-function parseMultipart(body, contentType) {
-  const boundary = /boundary=(.+)$/.exec(contentType)[1];
+function parseMultipart(body, contentType = '') {
+  // indexOf, not a regex: the header is client-controlled and a regex here is polynomial.
+  const at = contentType.indexOf('boundary=');
+  if (at < 0) return [];
+  const boundary = contentType.slice(at + 'boundary='.length);
   const fields = [];
   for (const part of body.split(`--${boundary}`)) {
     const cut = part.indexOf('\r\n\r\n');
