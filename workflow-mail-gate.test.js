@@ -80,6 +80,7 @@ test('the push job keeps the one packages: write grant, job-level', () => {
 test('the gate has its own PR job: it builds both images and runs the gate test', () => {
   const ci = uncommented('mail-gate-ci.yml');
   assert.match(ci, /^  pull_request:$/m);
+  assert.match(ci, /^  push:$/m, 'push to main is the backstop');
   for (const p of ['scripts/mail-gate/**', '.github/workflows/registry-push.yml']) {
     assert.ok(ci.includes(`- '${p}'`), `the PR job is path-triggered on ${p}`);
   }

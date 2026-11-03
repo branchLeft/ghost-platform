@@ -1,7 +1,7 @@
 name: Mail gate CI
 
-# Proves the mail gate (scripts/mail-gate/) on every pull request that touches
-# it: the green case (a correct image sends a magic link and a newsletter
+# Proves the mail gate (scripts/mail-gate/) on every pull request, and push to
+# main, that touches it: the green case (a correct image sends a magic link and a newsletter
 # through its spool and passes), and two red controls (a misrouted
 # transactional host, then a misrouted newsletter base URL, each of which the
 # gate must refuse). registry-push.yml runs the gate itself on `main`; this
@@ -12,6 +12,15 @@ name: Mail gate CI
 # requests no token and no secret, and pushes nothing.
 
 on:
+  # Push to main is the backstop for a change that lands another way.
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/mail-gate/**'
+      - 'test-support/image-harness.mjs'
+      - 'adapters/scanning-storage/test/helpers/docker-ghost.mjs'
+      - '.github/workflows/registry-push.yml'
+      - '.github/workflows/mail-gate-ci.yml'
   pull_request:
     branches: [main]
     paths:
