@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
-# Step-0 proof for the blog move's snapshot (option (c)): a consistent dump
-# plus its binary-log coordinates, taking locks on one schema's tables only
-# and never FLUSH TABLES WITH READ LOCK. Source and replica are throwaway
-# containers of db1's pinned MySQL digest (read from db/RUNBOOK-db.md, never
-# copied) with db/stack/conf.d/branchleft.cnf. The snapshot is taken by the
-# real db/provision/bounded_snapshot.py; snapshot_probe.py holds the six
-# controls and their verdicts. Containers, the network and every generated
-# password are removed on exit. LOCAL CONTAINERS ONLY: nothing here reaches
-# db1 or any host.
-#
-#   PROOF_CONTROLS="1 3"   run only those controls (default: 1 2 3 4 5 6)
-#   SABOTAGE=<name>        break one mechanism and expect that control red:
-#                          coordinates-after-write (1), old-path (2 and 3),
-#                          reload-grant (4), no-timeout (5)
-#   PROOF_PLATFORM=...     default linux/amd64, the hosts' architecture
-#
-# Exit 0: ALL PASSED. Exit 1: a sabotage run went red as it should. Exit 2:
-# a sabotage run stayed green, so the control cannot see that failure. Exit 3:
-# OPTION (c) UNAVAILABLE, a control from 1 to 5 failed un-sabotaged. Needs
-# Docker and about 3 GB of memory. Scenarios and expected output:
-# snapshot_probe.md.
+# Step-0 proof for the blog move's snapshot (option (c)). Local throwaway
+# containers only; nothing here reaches db1 or any host. Usage, controls,
+# sabotage names, exit codes: db/provision/snapshot_probe.md.
 set -euo pipefail
+
+# Refuse an ambient Docker target before any container is started.
+[ -z "${DOCKER_HOST:-}" ] || {
+    echo "REFUSED: DOCKER_HOST is set; this proof runs only in the local Docker context" >&2
+    exit 5
+}
+DOCKER_CONTEXT="$(docker context show 2>/dev/null || true)"
+case "$DOCKER_CONTEXT" in
+    default | desktop-linux) ;;
+    *)
+        echo "REFUSED: Docker context '$DOCKER_CONTEXT' is not the local default or desktop-linux context" >&2
+        exit 5
+        ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"

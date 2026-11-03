@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """The six step-0 controls for the blog move's snapshot (option (c)), run
-against throwaway containers of db1's pinned MySQL digest. The snapshot is
-taken by the real `bounded_snapshot.take_bounded_snapshot`, its `mysql` and
-`mysqldump` clients turned into `docker exec` into a container, so the
-clients are the digest's own and no second copy of the technique exists.
-
-`prove-snapshot-locking.sh` starts the containers and calls `run`. The
-verdict functions are pure and are what `test_snapshot_probe.py` and
-`--self-test` drive, each against a sabotage fixture that must fail and a
-healthy one that must pass. Local containers only: nothing here reaches a
-host. See snapshot_probe.md.
+against local throwaway containers of the pinned MySQL digest. Design,
+controls and exit codes: db/provision/snapshot_probe.md. The verdict
+functions are pure; test_snapshot_probe.py drives them without Docker.
+Nothing here reaches a host.
 """
 
 from __future__ import annotations
@@ -49,7 +43,9 @@ REPLICATION_USER = "repl"
 BLOG = "blog"
 OTHER = "other"
 
-# The module's production per-tenant dump arguments (dial_in_transport.py).
+# Modelled on dump_tenant.py's per-tenant dump. Two differences: this adds
+# --no-tablespaces, and leaves out --source-data=2 because take_snapshot writes
+# the coordinates comment itself. dump_nightly.py passes no --source-data=2.
 DUMP_ARGS = (
     "--single-transaction",
     "--routines",
@@ -67,6 +63,7 @@ SABOTAGE_TARGETS = {
     "old-path": (2, 3),
     "reload-grant": (4,),
     "no-timeout": (5,),
+    "no-deadline": (5,),
 }
 
 EXIT_PASSED = 0
@@ -185,6 +182,17 @@ def bounded_wait_verdict(
     if problems:
         return Verdict(False, "; ".join(problems))
     return Verdict(True, f"worst queued writer wait {_ms(worst)} within the module's {_ms(timeout)} bound and the body's {_ms(ceiling)} ceiling")
+
+
+def client_deadline_verdict(first_abort: str | None, deadline: float) -> Verdict:
+    """Control 5, two blocked tables. The first abort must be the client's
+    own deadline. The server's per-table bound fires later, after the first
+    table is granted and the second wait starts."""
+    if first_abort is None:
+        return Verdict(False, "no attempt was aborted: the two-table wait never reached a bound")
+    if f"not granted within {deadline}s" not in first_abort:
+        return Verdict(False, f"the first abort was {first_abort!r}, not the {deadline}s client deadline")
+    return Verdict(True, f"the client deadline fired first: {first_abort!r}")
 
 
 def retry_verdict(aborted_attempts: int, attempts: int, finished_after_commit: bool) -> Verdict:
@@ -1051,18 +1059,24 @@ def control_5(ctx: Ctx) -> ControlResult:
     """The lock wait is bounded and the retry succeeds once the transaction ends."""
     sabotage = ctx.sabotaged("no-timeout")
     numbers = []
+    limits = bs.Limits()
+    if sabotage:
+        limits = bs.Limits(lock_wait_timeout_seconds=31536000, wait_deadline_seconds=120.0, hold_bound_seconds=120.0)
+        numbers.append("sabotage: no lock timeout (a year, the server's default) and no client deadline")
 
     # A. The server's own bound, observed directly: LOCK TABLES under an open
-    # blog write transaction, with the lock_wait_timeout the module sets.
+    # blog write transaction, with the lock_wait_timeout the limits set (a
+    # year under no-timeout, so A goes red as well as B).
     holder = ctx.source.session(database=BLOG)
     holder.run("START TRANSACTION; INSERT INTO posts (title, slug, status, author_id) VALUES ('open-a', 'open-a', 'draft', 1);")
     release = threading.Thread(target=lambda: holder.run("DO SLEEP(3); COMMIT;"), daemon=True)
     release.start()
     direct = ctx.source.session(user=MOVER, password=ctx.passwords.mover)
-    direct.run(f"SET SESSION lock_wait_timeout = {bs.LOCK_WAIT_TIMEOUT_SECONDS};")
+    direct.run(f"SET SESSION lock_wait_timeout = {limits.lock_wait_timeout_seconds};")
+    began_direct = time.monotonic()
     try:
         direct.run(bs.lock_tables_sql([(BLOG, "posts")]))
-        direct_errno, direct_seconds = 0, 0.0
+        direct_errno, direct_seconds = 0, time.monotonic() - began_direct
     except SessionEnded as ended:
         direct_errno, direct_seconds = parse_errno(ended.stderr), ended.elapsed
     release.join(timeout=30)
@@ -1073,10 +1087,6 @@ def control_5(ctx: Ctx) -> ControlResult:
 
     # B. The module under a 10 s open transaction, with a blog writer queued
     # behind every lock request it makes.
-    limits = bs.Limits()
-    if sabotage:
-        limits = bs.Limits(lock_wait_timeout_seconds=31536000, wait_deadline_seconds=120.0, hold_bound_seconds=120.0)
-        numbers.append("sabotage: no lock timeout (a year, the server's default) and no client deadline")
     # LOCK TABLES takes its table locks one at a time in name order, so which
     # writer queues depends on where its table falls: members is granted
     # before the wait on posts, settings is not yet requested. One writer on
@@ -1115,10 +1125,15 @@ def control_5(ctx: Ctx) -> ControlResult:
     waits = [wait for found in per_writer.values() for wait in found]
     wait_verdict = bounded_wait_verdict(waits, MODULE_WAIT_BOUND_SECONDS, BODY_WAIT_CEILING_SECONDS)
     retry = retry_verdict(report.aborted_attempts, report.attempts, bool(committed) and finished >= committed[0] - 0.05)
-    failures = [v.reason for v in (wait_verdict, retry) if not v.passed]
+    deadline_verdict, deadline_numbers = client_deadline_case(ctx)
+    failures = [v.reason for v in (wait_verdict, retry, deadline_verdict) if not v.passed]
     if not direct_ok:
         failures.append(f"the direct LOCK TABLES gave error {direct_errno} after {direct_seconds:.2f} s, not 1205 at about {bs.LOCK_WAIT_TIMEOUT_SECONDS} s")
-    verdict = Verdict(False, "; ".join(failures)) if failures else Verdict(True, f"{wait_verdict.reason}; {retry.reason}")
+    verdict = (
+        Verdict(False, "; ".join(failures))
+        if failures
+        else Verdict(True, f"{wait_verdict.reason}; {retry.reason}; {deadline_verdict.reason}")
+    )
     numbers += [
         f"module: {report.aborted_attempts} abort(s) then success at attempt {report.attempts}, "
         f"{finished - opened:.1f} s after the transaction opened; aborts at "
@@ -1128,7 +1143,62 @@ def control_5(ctx: Ctx) -> ControlResult:
         f"{writers['transaction'].deadlocks} multi-table transactions rolled back as deadlock victims (error 1213)",
         "FINDING: " + deadlock_observation(ctx),
     ]
+    numbers += deadline_numbers
     return ControlResult(5, "bounded lock wait", verdict, numbers)
+
+
+def client_deadline_case(ctx: Ctx) -> tuple[Verdict, list[str]]:
+    """Control 5, part C. Two blocked tables: LOCK TABLES is granted on
+    `members` after 0.5 s and then waits on `posts`. The server gives each
+    wait 1 s, so the client's 1.2 s deadline is the bound that fires first."""
+    posts_hold = ctx.source.session(database=BLOG)
+    posts_hold.run("START TRANSACTION; INSERT INTO posts (title, slug, status, author_id) VALUES ('open-c2', 'open-c2', 'draft', 1);")
+    release_posts = threading.Thread(target=lambda: posts_hold.run("DO SLEEP(10); COMMIT;"), daemon=True)
+    release_posts.start()
+    members_hold = ctx.source.session(database=BLOG)
+    members_hold.run("START TRANSACTION; " + blog_members_statement("open-c2", 1))
+    limits = bs.Limits(wait_deadline_seconds=120.0) if ctx.sabotaged("no-deadline") else bs.Limits()
+    messages: list[str] = []
+    outcome: dict[str, object] = {}
+
+    def snapshot() -> None:
+        try:
+            outcome["report"], _ = take_snapshot(ctx, "deadline.sql", limits=limits, log=messages.append)
+        except Exception as exc:  # recorded as a failed verdict below, never raised
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=snapshot, daemon=True)
+    worker.start()
+    pending_sql = (
+        "SELECT COUNT(*) FROM performance_schema.metadata_locks ml JOIN performance_schema.threads t "
+        f"ON t.THREAD_ID = ml.OWNER_THREAD_ID WHERE t.PROCESSLIST_USER = '{MOVER}' "
+        "AND ml.LOCK_STATUS = 'PENDING' AND ml.OBJECT_NAME = 'members';"
+    )
+    pending = False
+    for _ in range(100):
+        if ctx.source.query(pending_sql)[0][0] != "0":
+            pending = True
+            break
+        time.sleep(0.05)
+    time.sleep(0.5)
+    members_hold.run("COMMIT;")
+    worker.join(timeout=60)
+    release_posts.join(timeout=30)
+    posts_hold.close()
+    members_hold.close()
+    if not pending:
+        return Verdict(False, "the module's LOCK TABLES never queued on members: the two-table case was not set up"), []
+    if "error" in outcome:
+        return Verdict(False, f"no consistent snapshot in the two-table case: {outcome['error']}"), []
+    report = outcome["report"]
+    if not isinstance(report, bs.SnapshotReport):
+        return Verdict(False, "the two-table case returned no report"), []
+    first = next((message for message in messages if "aborted" in message), None)
+    verdict = client_deadline_verdict(first, limits.wait_deadline_seconds)
+    numbers = [
+        f"two blocked tables: first abort {first!r}; {len(messages)} abort(s) in all, then attempt {report.attempts} succeeded"
+    ]
+    return verdict, numbers
 
 
 def deadlock_observation(ctx: Ctx) -> str:

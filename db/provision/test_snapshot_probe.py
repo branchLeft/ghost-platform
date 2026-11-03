@@ -12,6 +12,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tempfile
 import unittest
 
 import bounded_snapshot as bs
@@ -22,6 +23,64 @@ _RUNBOOK = (_REPO_ROOT / "db" / "RUNBOOK-db.md").read_text(encoding="utf-8")
 _PROMOTION_PROOF = (_REPO_ROOT / "db" / "provision" / "prove-promotion-gate.sh").read_text(encoding="utf-8")
 _PROOF_SCRIPT_PATH = _REPO_ROOT / "db" / "provision" / "prove-snapshot-locking.sh"
 _PROOF_SCRIPT = _PROOF_SCRIPT_PATH.read_text(encoding="utf-8")
+# Stands in for docker: logs every call, reports one context, fails the rest.
+_FAKE_DOCKER = """#!/bin/sh
+echo "$*" >> "$FAKE_DOCKER_LOG"
+if [ "$1" = context ]; then echo "$FAKE_DOCKER_CONTEXT"; fi
+exit 1
+"""
+
+
+class ClientDeadlineTests(unittest.TestCase):
+    def test_the_server_bound_firing_first_fails_the_two_table_case(self) -> None:
+        first = "bounded_snapshot: attempt 1/5 aborted: server gave up the lock wait after 1s"
+        self.assertFalse(sp.client_deadline_verdict(first, 1.2).passed)
+
+    def test_the_client_deadline_firing_first_passes_the_two_table_case(self) -> None:
+        first = "bounded_snapshot: attempt 1/5 aborted: lock not granted within 1.2s"
+        self.assertTrue(sp.client_deadline_verdict(first, 1.2).passed)
+
+    def test_no_abort_at_all_is_never_a_pass(self) -> None:
+        self.assertFalse(sp.client_deadline_verdict(None, 1.2).passed)
+
+
+class ProofScriptRefusalTests(unittest.TestCase):
+    def _run(self, *, docker_host: str | None, context: str) -> tuple[subprocess.CompletedProcess, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = pathlib.Path(tmp) / "docker"
+            fake.write_text(_FAKE_DOCKER, encoding="utf-8")
+            fake.chmod(0o755)
+            log = pathlib.Path(tmp) / "calls.log"
+            env = {key: value for key, value in os.environ.items() if key != "DOCKER_HOST"}
+            env.update(
+                PATH=f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}",
+                FAKE_DOCKER_LOG=str(log),
+                FAKE_DOCKER_CONTEXT=context,
+            )
+            if docker_host is not None:
+                env["DOCKER_HOST"] = docker_host
+            result = subprocess.run(
+                ["bash", str(_PROOF_SCRIPT_PATH)], env=env, capture_output=True, text=True, check=False, timeout=120
+            )
+            calls = log.read_text(encoding="utf-8") if log.exists() else ""
+            return result, calls
+
+    def test_an_ambient_docker_host_is_refused_before_any_docker_call(self) -> None:
+        result, calls = self._run(docker_host="tcp://192.0.2.10:2376", context="desktop-linux")
+        self.assertEqual(result.returncode, 5, result.stderr)
+        self.assertIn("DOCKER_HOST", result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_a_non_local_docker_context_is_refused_before_any_container(self) -> None:
+        result, calls = self._run(docker_host=None, context="remote-prod")
+        self.assertEqual(result.returncode, 5, result.stderr)
+        self.assertIn("remote-prod", result.stderr)
+        self.assertEqual(calls.strip(), "context show")
+
+    def test_the_local_desktop_context_is_not_refused(self) -> None:
+        result, calls = self._run(docker_host=None, context="desktop-linux")
+        self.assertNotEqual(result.returncode, 5, result.stderr)
+        self.assertIn("network create", calls)
 
 
 class SabotageFixturesTests(unittest.TestCase):
@@ -218,7 +277,10 @@ class DigestAndBoundsTests(unittest.TestCase):
         for forbidden in ("ssh ", "ansible", "hcloud", "pulumi", "scp ", "rsync"):
             self.assertNotIn(forbidden, _PROOF_SCRIPT)
         self.assertNotIn("docker -H", _PROOF_SCRIPT)
-        self.assertNotIn("DOCKER_HOST", _PROOF_SCRIPT)
+        # The script refuses DOCKER_HOST; it never sets or exports it.
+        self.assertIn('[ -z "${DOCKER_HOST:-}" ] || {', _PROOF_SCRIPT)
+        self.assertNotIn("DOCKER_HOST=", _PROOF_SCRIPT)
+        self.assertNotIn("export DOCKER_HOST", _PROOF_SCRIPT)
 
     def test_the_shipped_wait_is_stricter_than_the_bodys_two_seconds(self) -> None:
         # The ticket body says 2 s; the module's LOCK_WAIT_TIMEOUT_SECONDS is 1

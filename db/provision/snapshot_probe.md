@@ -40,6 +40,9 @@ python3 db/provision/snapshot_probe.py --self-test
 ```
 
 Needs Docker and about 3 GB of memory. The first run pulls the amd64 image.
+`PROOF_PLATFORM` defaults to `linux/amd64`, the hosts' architecture. The
+script refuses a set `DOCKER_HOST` or a Docker context other than `default`
+or `desktop-linux` (exit 5) before it starts any container.
 
 | Exit | Meaning                                                                         |
 | ---- | ------------------------------------------------------------------------------- |
@@ -48,12 +51,19 @@ Needs Docker and about 3 GB of memory. The first run pulls the amd64 image.
 | 2    | a sabotage run stayed green: the control cannot see that failure                |
 | 3    | `OPTION (c) UNAVAILABLE`: a control from 1 to 5 failed with nothing sabotaged   |
 | 4    | the control 6 finding could not be recorded                                     |
+| 5    | refused before any container: `DOCKER_HOST` is set, or the Docker context is not `default` or `desktop-linux` |
 
 Exit 3 is a stop: option (c) is not available on that version, and the
 owner is told before any fallback is built.
 
 `SABOTAGE` names: `coordinates-after-write` (control 1), `old-path`
-(controls 2 and 3), `reload-grant` (control 4), `no-timeout` (control 5).
+(controls 2 and 3), `reload-grant` (control 4), `no-timeout` (control 5,
+parts A and B), `no-deadline` (control 5, part C).
+
+The refusal in `prove-snapshot-locking.sh` (exit 5) is unit-tested in
+`test_snapshot_probe.py` against a fake `docker` on `PATH`: a set
+`DOCKER_HOST` is refused before any docker call, and a non-local context
+before any container. The fixture needs no Docker.
 
 ## The six controls
 
@@ -87,14 +97,23 @@ and a healthy one that must pass, with no Docker.
    `FLUSH TABLES WITH READ LOCK` gets error 1227, the clone plugin is absent
    from `information_schema.PLUGINS`, and `BACKUP_ADMIN` is its only global
    privilege. _Sabotage:_ grant `RELOAD`, and the flush is accepted.
-5. **Bounded wait.** A blog write transaction is held open 10 s. Directly,
-   `LOCK TABLES` under the module's `lock_wait_timeout` gives error 1205 at
-   about 1 s. Through the module, the attempt aborts, backs off and
-   retries; the snapshot succeeds only after the transaction ends. Blog
-   writers (one on each of `posts`, `members`, `settings`, and a Ghost-like
-   multi-table transaction) never wait past the bound below. _Sabotage:_ no
-   timeout (a year, the server's default, and no client deadline), and a
-   `members` writer waits the full 10 s.
+5. **Bounded wait.** Three parts.
+   _A, direct:_ a blog write transaction is held open 3 s. `LOCK TABLES`
+   under the module's `lock_wait_timeout` gives error 1205 at about 1 s.
+   _B, through the module:_ a blog write transaction is held open 10 s.
+   The attempt aborts, backs off and retries; the snapshot succeeds only
+   after the transaction ends. Blog writers (one each on `posts`,
+   `members`, `settings`, and a Ghost-like multi-table transaction) never
+   wait past the bound below.
+   _C, two blocked tables:_ `LOCK TABLES` is granted on `members` after
+   0.5 s and then waits on `posts`. The server gives each wait 1 s, so the
+   client's 1.2 s deadline fires first, and the retry succeeds once `posts`
+   is released. The first abort must name the deadline.
+   _Sabotage:_ `no-timeout` (a year as the lock timeout, and no client
+   deadline) turns A red, because the direct wait runs to the 3 s release,
+   and B red, because a `members` writer waits the full 10 s. `no-deadline`
+   (no client deadline) turns C red: the server's 1205 on `posts` fires
+   first, at about 1.5 s.
 6. **DDL behaviour, a finding and not a gate.** See below.
 
 ### The wait bound: 1 s in the code, 2 s in the design
@@ -135,16 +154,18 @@ reason option (c) is unavailable.
   The proof counts these (a Ghost-like transaction writer sees some during
   controls 1 and 5) and reproduces one deterministically. The shipped
   module has the same property on the nightly path.
-- **DDL under `LOCK INSTANCE FOR BACKUP` (control 6).** Held by the move
-  account with no DDL running, DML on every schema stalls at worst a few tens
-  of milliseconds, which is noise: it blocks no reads and no writes. An
-  `ALTER TABLE` on the other schema waits for the whole of the hold. DML on
-  the table being altered, on that schema's other tables and on the blog
-  does **not** queue behind the waiting `ALTER`. So holding the instance
-  lock for the whole dump costs other tenants only DDL and account
-  management waiting, not DML. The shipped module deliberately does not take
-  the instance lock (`bounded_snapshot.md#what-is-not-locked`), and this
-  proof makes no decision about the move path.
+- **DDL under `LOCK INSTANCE FOR BACKUP` (control 6).** Measured: held by
+  the move account with no DDL running, DML on every schema stalls at worst
+  a few tens of milliseconds, which is noise: it blocks no reads and no
+  writes. Measured: one `ALTER TABLE` on the other schema, issued during the
+  hold, waits for the rest of it. DML on the table being altered, on that
+  schema's other tables and on the blog does **not** queue behind that
+  waiting `ALTER`. Not measured: a DDL already running when the instance
+  lock is requested. This proof did not try that case, so nothing here says
+  how it behaves. Account management was not measured either. The shipped
+  module deliberately does not take the instance lock
+  (`bounded_snapshot.md#what-is-not-locked`), and this proof makes no
+  decision about the move path.
 - **The old path's stall comes from `FLUSH TABLES`, before the global lock.**
   `mysqldump --source-data=2` issues a plain `FLUSH TABLES` first; it waits
   for the long reader, and everything queues behind it. The global lock is
