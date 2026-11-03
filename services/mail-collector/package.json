@@ -8,13 +8,15 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
-    "test:unit": "vitest run",
-    "coverage": "vitest run --coverage",
+    "build:shared": "pnpm --dir ../../deadmans-switch run build",
+    "typecheck": "pnpm run build:shared && tsc --noEmit",
+    "build": "pnpm run build:shared && tsc -p tsconfig.build.json",
+    "test:unit": "pnpm run build:shared && pnpm --dir ../../deadmans-switch run test:unit && vitest run",
+    "coverage": "pnpm run build:shared && vitest run --coverage",
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@branchleft/ghost-platform-deadmans-switch": "link:../../deadmans-switch",
     "express": "^5.2.1",
     "nodemailer": "^9.1.1"
   },

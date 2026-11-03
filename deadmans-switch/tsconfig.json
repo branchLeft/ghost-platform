@@ -1,0 +1,17 @@
+{
+  // strict-1 alone, the same base services/mail-collector uses: no stack
+  // preset fits a plain Node module with no browser target.
+  "extends": "@branchleft/tsconfig/strict-1.json",
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noUncheckedIndexedAccess": true,
+    "outDir": "dist"
+  },
+  // vitest.config.ts sits at the project root, outside both source trees.
+  // tsconfig.build.json narrows `include` back to src, so naming it here
+  // cannot leak it into the built package.
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}

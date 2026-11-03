@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDeadMansSwitch } from '../../src/heartbeat.js';
-import { createLogger } from '../../src/log.js';
 
 function silentLogger() {
-  return createLogger(() => {});
+  return { warn() {} };
 }
 
 const oneTarget = () => ['tenant-a'];
@@ -58,8 +57,7 @@ describe('createDeadMansSwitch', () => {
   it('logs a failed ping but does not throw', async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error('network down'));
     const warnings: unknown[] = [];
-    const log = createLogger(() => {});
-    log.warn = (event, fields) => warnings.push({ event, fields });
+    const log = { warn: (event: string, fields?: object) => warnings.push({ event, fields }) };
     const switch_ = createDeadMansSwitch({
       url: 'https://heartbeat.example/ping',
       log,
@@ -74,8 +72,7 @@ describe('createDeadMansSwitch', () => {
   it('logs a rejected (non-ok) response', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 503 });
     const warnings: unknown[] = [];
-    const log = createLogger(() => {});
-    log.warn = (event, fields) => warnings.push({ event, fields });
+    const log = { warn: (event: string, fields?: object) => warnings.push({ event, fields }) };
     const switch_ = createDeadMansSwitch({
       url: 'https://heartbeat.example/ping',
       log,
@@ -90,8 +87,7 @@ describe('createDeadMansSwitch', () => {
   it('shouldPing() returning false suppresses the fetch for that call, and logs it', () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     const warnings: unknown[] = [];
-    const log = createLogger(() => {});
-    log.warn = (event, fields) => warnings.push({ event, fields });
+    const log = { warn: (event: string, fields?: object) => warnings.push({ event, fields }) };
     const switch_ = createDeadMansSwitch({
       url: 'https://heartbeat.example/ping',
       log,

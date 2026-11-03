@@ -1,8 +1,14 @@
-import type { Logger } from './log.js';
+/**
+ * The one logging method the switch uses. A service's own Logger satisfies it
+ * structurally, so this shared module depends on no service's log.
+ */
+export interface SwitchLogger {
+  warn(event: string, fields?: { [key: string]: unknown }): void;
+}
 
 export interface DeadMansSwitchOptions {
   url: string;
-  log: Logger;
+  log: SwitchLogger;
   fetchImpl?: typeof fetch;
   /**
    * Checked only once every currently-expected target has reported a
@@ -32,7 +38,7 @@ export interface DeadMansSwitch {
    * Call once per target, once per completed poll cycle -- an empty poll
    * counts as success. Never call it for an errored or wedged cycle:
    * omitting the call is exactly what silences the switch for that target.
-   * See ../README.md#heartbeat-oncyclecomplete.
+   * See services/mail-collector/README.md#heartbeat-oncyclecomplete.
    */
   onCycleComplete(targetId: string): void;
 }
@@ -43,7 +49,7 @@ export interface DeadMansSwitch {
  * wedged or failing target withholds every subsequent ping (LLD-8 §10b).
  * Fire-and-forget: `onCycleComplete()` never returns a promise the caller
  * could accidentally await.
- * See ../README.md#heartbeat-createdeadmansswitch.
+ * See services/mail-collector/README.md#heartbeat-createdeadmansswitch.
  */
 export function createDeadMansSwitch(opts: DeadMansSwitchOptions): DeadMansSwitch {
   const doFetch = opts.fetchImpl ?? fetch;

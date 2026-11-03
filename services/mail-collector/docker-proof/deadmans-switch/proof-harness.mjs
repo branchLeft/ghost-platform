@@ -1,13 +1,20 @@
-// Drives the real, built createDeadMansSwitch against a real local
+// Drives the real, built createDeadMansSwitch (from the shared
+// @branchleft/ghost-platform-deadmans-switch package) against a real local
 // Healthchecks instance. Run from services/mail-collector/ after `pnpm run
 // build`, with the healthchecks container already up. Never run against a
 // production Healthchecks URL. See proof-harness.md#what-this-drives.
-import { createDeadMansSwitch } from '../../dist/heartbeat.js';
+//
+// Every status is asserted, so a wrong state exits non-zero rather than
+// printing a line for a human to read.
+import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 
 const BASE = process.env.PROOF_SITE_ROOT ?? 'http://localhost:8095';
 const API_KEY = requireEnv('PROOF_API_KEY');
 const IDLE_CODE = requireEnv('PROOF_IDLE_CHECK_CODE');
 const STOPPED_CODE = requireEnv('PROOF_STOPPED_CHECK_CODE');
+
+// The one drain target this proof's collector stands in for.
+const TARGET = 'proof-worker';
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -32,68 +39,85 @@ async function checkStatus(code) {
   return body.status;
 }
 
-const silentLog = { info() {}, warn() {} };
+function record(label, actual, expected) {
+  return { label, actual, expected, ok: actual === expected };
+}
+
+const silentLog = { warn() {} };
+
+function switchFor(code) {
+  return createDeadMansSwitch({
+    url: `${BASE}/ping/${code}`,
+    log: silentLog,
+    getExpectedTargetIds: () => [TARGET],
+  });
+}
 
 async function idleAndRestartScenario() {
   const results = [];
-  const switch_ = createDeadMansSwitch({
-    url: `${BASE}/ping/${IDLE_CODE}`,
-    log: silentLog,
-  });
+  const switch_ = switchFor(IDLE_CODE);
 
   // CONTROL CASE: an idle worker -- only ever completing empty cycles,
-  // never draining anything -- pings once per "poll cycle" (here, one
-  // per 500ms tick) for well over three of the check's 3-second periods.
-  // It must stay "up" throughout.
+  // never draining anything -- completes one cycle per 500ms tick for well
+  // over three of the check's 3-second periods. It must stay "up" throughout.
   for (let i = 0; i < 22; i += 1) {
-    switch_.onCycleComplete();
+    switch_.onCycleComplete(TARGET);
     await sleep(500);
   }
   await sleep(500); // let the last ping land
-  results.push(['idle for >3 periods', await checkStatus(IDLE_CODE)]);
+  results.push(record('idle for >3 periods', await checkStatus(IDLE_CODE), 'up'));
 
-  // RESTART CASE: simulate a supervisor restart -- one missed tick
-  // (standing in for the crash-and-restart window), well inside the
-  // 3s timeout + 3s grace = 6s before this check would go down, then
-  // pinging resumes. Must never reach "down".
+  // RESTART CASE: a supervisor restart -- one missed window (the crash),
+  // well inside the 3s timeout + 3s grace, then the cycle resumes. Must
+  // never reach "down".
   await sleep(2000); // "crashed" -- nothing calls onCycleComplete()
-  switch_.onCycleComplete(); // "restarted" -- the supervisor brought it back
+  switch_.onCycleComplete(TARGET); // "restarted" -- the supervisor brought it back
   await sleep(500);
-  results.push(['killed once, restarted inside the grace window', await checkStatus(IDLE_CODE)]);
+  results.push(
+    record('killed once, restarted inside the grace window', await checkStatus(IDLE_CODE), 'up')
+  );
 
   return results;
 }
 
 async function stoppedScenario() {
-  const switch_ = createDeadMansSwitch({
-    url: `${BASE}/ping/${STOPPED_CODE}`,
-    log: silentLog,
-  });
+  const switch_ = switchFor(STOPPED_CODE);
   const results = [];
 
-  switch_.onCycleComplete();
+  switch_.onCycleComplete(TARGET);
   await sleep(300);
-  results.push(['just pinged', await checkStatus(STOPPED_CODE)]);
+  results.push(record('just pinged', await checkStatus(STOPPED_CODE), 'up'));
 
   // STOPPED CASE: the worker is stopped and prevented from restarting --
   // nothing calls onCycleComplete() ever again. timeout=3s, grace=3s:
   // "up" until ~3s after the last ping, "grace" (Late) until ~6s, "down"
   // after that.
   await sleep(3500);
-  results.push([
-    '~3.8s after last ping (past timeout, inside grace)',
-    await checkStatus(STOPPED_CODE),
-  ]);
+  results.push(
+    record(
+      '~3.8s after last ping (past timeout, inside grace)',
+      await checkStatus(STOPPED_CODE),
+      'grace'
+    )
+  );
 
   await sleep(3000);
-  results.push(['~6.8s after last ping (past timeout+grace)', await checkStatus(STOPPED_CODE)]);
+  results.push(
+    record('~6.8s after last ping (past timeout+grace)', await checkStatus(STOPPED_CODE), 'down')
+  );
 
   return results;
 }
 
-const idleResults = await idleAndRestartScenario();
-const stoppedResults = await stoppedScenario();
+const results = [...(await idleAndRestartScenario()), ...(await stoppedScenario())];
 
-for (const [label, status] of [...idleResults, ...stoppedResults]) {
-  console.log(`${label}: ${status}`);
+for (const r of results) {
+  console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.label}: ${r.actual} (expected ${r.expected})`);
 }
+
+const failed = results.filter((r) => !r.ok);
+if (failed.length > 0) {
+  console.error(`${failed.length} of ${results.length} dead-man's-switch checks failed`);
+  process.exit(1);
+}
+console.log(`all ${results.length} dead-man's-switch checks passed`);

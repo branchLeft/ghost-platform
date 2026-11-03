@@ -1,0 +1,4 @@
+# Read by BuildKit in place of the root .dockerignore when services/mail-collector/Dockerfile is used: the context is the repository root, and only the two packages the collector needs belong in it.
+*
+!deadmans-switch
+!services/mail-collector

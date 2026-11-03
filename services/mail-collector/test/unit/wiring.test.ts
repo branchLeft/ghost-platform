@@ -8,7 +8,7 @@ import { createDeliveryClient } from '../../src/deliveryClient.js';
 import { createDrainClient } from '../../src/drainClient.js';
 import { DescriptorTargetStore } from '../../src/descriptorTargets.js';
 import { createHealthState } from '../../src/health.js';
-import { createDeadMansSwitch } from '../../src/heartbeat.js';
+import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import { createLogger } from '../../src/log.js';
 import { createThrottle } from '../../src/throttle.js';
 import { FakeShimServer } from '../helpers/fakeShimServer.js';
