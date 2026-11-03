@@ -22,4 +22,4 @@ createServer((req, res) => {
   const healthy = req.url === '/healthz' && colour !== undefined && !existsSync(`/drain/${colour}`);
   res.writeHead(healthy ? 200 : 503);
   res.end();
-}).listen(9100, '127.0.0.1');
+}).listen(10100, '127.0.0.1');

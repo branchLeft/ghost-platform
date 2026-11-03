@@ -8,10 +8,10 @@ import { slotUid, slotPort, slotHealthPort } from '../../src/slotPorts.js';
 import { writeLeaseAndHash } from '../../src/leaseStore.js';
 
 // The test harness's own fixed allocation (`testBroker.ts`): uidBase 30001,
-// appPortBase 9300, healthPortBase 9100.
+// appPortBase 9300, healthPortBase 10100.
 const UID_BASE = 30001;
 const APP_PORT_BASE = 9300;
-const HEALTH_PORT_BASE = 9100;
+const HEALTH_PORT_BASE = 10100;
 
 /**
  * The recycle contract's whole point is that a previous visitor's hash and

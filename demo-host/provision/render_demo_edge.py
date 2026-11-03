@@ -38,7 +38,10 @@ DEMO_EDGE_ADDR = "127.0.0.1"
 # overrides `BROKER_APP_PORT_BASE`/`BROKER_HEALTH_PORT_BASE`, whatever
 # regenerates this file must be told the same override.
 APP_PORT_BASE = 9300
-HEALTH_PORT_BASE = 9100
+# Above 9999, not in the 9100-9999 block Prometheus's registry gives exporters:
+# node_exporter (9100) runs on every host, so a slot health port there collides
+# with it the moment demo1 is monitored. slot-ports.golden.json pins this.
+HEALTH_PORT_BASE = 10100
 
 # LLD-4 §U3b, load-bearing: "Set it to 2s, and treat that number as
 # load-bearing rather than a tuning detail: it is the whole distance
