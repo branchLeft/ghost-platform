@@ -55,6 +55,11 @@ decision.
   is never a descriptor field a tenant repository commits; it reaches the
   host only in the secrets file (index.md#the-owner-address). The secrets
   file gains `GHOST_OWNER_EMAIL`. 4.0.0 took no owner address at all.
+- **`secrets-host-render`**: the component no longer fills the secrets file
+  (ws#1799). Its `secretsEnvTemplate` output is the render core's template,
+  key names with empty values, and the host fills it
+  (index.md#secrets-on-the-host). Every `secrets.<KEY>` value therefore reads
+  empty after, where 4.0.0's golden recorded placeholders.
 
 ## The slug
 

@@ -68,33 +68,18 @@ pnpm add @branchleft/ghost-platform-tenant
 ```ts
 import { GhostTenant } from '@branchleft/ghost-platform-tenant';
 
-const config = new pulumi.Config();
-
-const tenant = new GhostTenant('example-news', {
-  slug: 'example-news',
-  siteUrl: 'https://news.example.org',
-  uid: 30001,
-  appHostPrivateIp: '10.20.1.100',
-  hostPort: 2369,
-  database: {
-    host: '10.20.1.20',
-    password: config.requireSecret('databasePassword'),
-  },
-  // The bucket and the public base URL are not here: they are derived from
-  // the slug, so no stack holds a value that could name another tenant's
-  // bucket. This tenant's media is `branchleft-media-example-news`, served
-  // from `https://hel1.your-objectstorage.com/branchleft-media-example-news`.
-  media: {
-    endpoint: 'https://hel1.your-objectstorage.com',
-    region: 'hel1',
-    accessKeyId: config.requireSecret('mediaAccessKeyId'),
-    secretAccessKey: config.requireSecret('mediaSecretAccessKey'),
-  },
-});
+// `descriptor` is the render core's `TenantStackDescriptor`, committed in the
+// tenant's own repository, and `zones` its `ZoneConfig`. Neither carries a
+// secret, and nor does the component: the credentials are not stack config,
+// stack state or a stack output.
+const tenant = new GhostTenant('example-news', { descriptor, zones });
 
 export const composeFile = tenant.composeFile;
-export const secretsEnvFile = tenant.secretsEnvFile;
-export const provisionVolumes = tenant.hostProvisioningCommand;
+export const provisionScript = tenant.provisionScript;
+// Key names with empty values. The app host fills the file, mode 0600, with
+// app/provision/render_tenant_secrets.py.
+export const secretsEnvTemplate = tenant.secretsEnvTemplate;
+export const secretKeys = tenant.secretKeys;
 ```
 
 `slug` must start with a lowercase letter and contain only lowercase letters,

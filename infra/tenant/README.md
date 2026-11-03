@@ -21,7 +21,7 @@ renders:
 | Output | Goes to |
 |---|---|
 | `composeFile` | `/opt/branchleft/<slug>/compose.yml` on the app host |
-| `secretsEnvFile` (a Pulumi secret) | `/etc/branchleft/<slug>.env`, root-owned `0600` |
+| `secretsEnvTemplate`, `secretKeys` (key names only) | filled on the host into `/etc/branchleft/<slug>.env`, root-owned `0600` |
 | `provisionScript` | run as root on the app host, before the unit is enabled |
 | `imageEnvFile` | `/etc/branchleft/<slug>.image.env`, today written by `branchleft-deploy` |
 | `edgeSiteBlock` | the tenant's site block in the edge's site registry |
@@ -69,13 +69,13 @@ Each fails loudly rather than silently when it has not been done:
    is a claim its own subject can delete. The register is cross-checked against
    the volumes Docker holds, and a volume with no register entry is a refusal
    rather than a free UID.
-3. **The secrets file.** Written by an operator from `secretsEnvFile`. No
-   automated path may write it; `branchleft-deploy` writes only
-   `/etc/branchleft/<slug>.image.env`. Since 7.0.0 it also carries the
-   owner's email address as `GHOST_OWNER_EMAIL`, the only place that address
-   reaches the host: a tenant program passes it as `secrets.ownerEmail` from
-   `config.requireSecret`, never as a descriptor field. See
-   `index.md#the-owner-address`.
+3. **The secrets file.** Rendered on the host by
+   `app/provision/render_tenant_secrets.py` from the `secretsEnvTemplate`
+   output and values given on its stdin. Since 8.0.0 the tenant stack holds
+   no secret value and the component takes no `secrets` argument.
+   `branchleft-deploy` writes only `/etc/branchleft/<slug>.image.env`. The
+   file also carries the owner's email address as `GHOST_OWNER_EMAIL`. See
+   `index.md#secrets-on-the-host`.
 
 ## The runtime posture
 
