@@ -9,11 +9,11 @@ set -euo pipefail
     echo "REFUSED: DOCKER_HOST is set; this proof runs only in the local Docker context" >&2
     exit 5
 }
-DOCKER_CONTEXT="$(docker context show 2>/dev/null || true)"
-case "$DOCKER_CONTEXT" in
+ACTIVE_CONTEXT="$(docker context show 2>/dev/null || true)"
+case "$ACTIVE_CONTEXT" in
     default | desktop-linux) ;;
     *)
-        echo "REFUSED: Docker context '$DOCKER_CONTEXT' is not the local default or desktop-linux context" >&2
+        echo "REFUSED: Docker context '$ACTIVE_CONTEXT' is not the local default or desktop-linux context" >&2
         exit 5
         ;;
 esac
@@ -52,7 +52,7 @@ fail() {
 
 # Throwaway passwords, generated now, held only in this mode-700 directory and
 # in the containers, removed with them. Never in a repo file, argv or output.
-for name in root mover repl; do
+for name in root mover repl nobackup; do
     openssl rand -hex 16 >"$WORK/$name.pw"
     chmod 600 "$WORK/$name.pw"
 done

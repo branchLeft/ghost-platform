@@ -39,13 +39,16 @@ MODULE_WAIT_BOUND_SECONDS = round(bs.WAIT_DEADLINE_SECONDS + bs.HOLD_BOUND_SECON
 MEASUREMENT_MARGIN_SECONDS = 0.25
 
 MOVER = "mover"
+# The same grants as the move account but without BACKUP_ADMIN: seed reads
+# log_status as it, to record what BACKUP_ADMIN is needed for.
+NOBACKUP = "nobackup"
 REPLICATION_USER = "repl"
 BLOG = "blog"
 OTHER = "other"
 
-# Modelled on dump_tenant.py's per-tenant dump. Two differences: this adds
-# --no-tablespaces, and leaves out --source-data=2 because take_snapshot writes
-# the coordinates comment itself. dump_nightly.py passes no --source-data=2.
+# Copied from RemoteMysqldumpTransport.dump_args in
+# infra/provisioning/scripts/dial_in_transport.py, the real per-tenant path.
+# test_snapshot_probe.py asserts the two stay equal.
 DUMP_ARGS = (
     "--single-transaction",
     "--routines",
@@ -71,6 +74,10 @@ EXIT_RED = 1
 EXIT_SABOTAGE_NOT_DETECTED = 2
 EXIT_OPTION_C_UNAVAILABLE = 3
 EXIT_FINDING_NOT_RECORDED = 4
+# Refused before any container, as prove-snapshot-locking.sh refuses (exit 5).
+EXIT_REFUSED = 5
+LOCAL_DOCKER_CONTEXTS = ("default", "desktop-linux")
+CONTAINER_PREFIX = "snapshot-proof-"
 
 
 # --------------------------------------------------------------------------
@@ -612,10 +619,11 @@ class Writer(threading.Thread):
                 try:
                     self._session.run(self._statement(self.tag, sequence))
                 except SessionEnded as ended:
-                    # A write transaction that is the victim of a metadata
-                    # deadlock with a pending LOCK TABLES gets error 1213
-                    # and is rolled back; an application retries it. Counted
-                    # and reported, and the writer carries on.
+                    # A write that is the victim of a metadata deadlock with a
+                    # pending LOCK TABLES is rolled back with error 1213. The
+                    # write fails with 1213 unless the application retries
+                    # it; nothing here shows Ghost does. Counted and reported,
+                    # and the writer carries on.
                     if parse_errno(ended.stderr) != 1213:
                         raise
                     self.deadlocks += 1
@@ -700,10 +708,11 @@ class Passwords:
     root: str
     mover: str
     repl: str
+    nobackup: str
 
     @classmethod
     def read(cls, workdir: pathlib.Path) -> "Passwords":
-        return cls(*(((workdir / f"{name}.pw").read_text().strip()) for name in ("root", "mover", "repl")))
+        return cls(*(((workdir / f"{name}.pw").read_text().strip()) for name in ("root", "mover", "repl", "nobackup")))
 
 
 @dataclasses.dataclass
@@ -714,6 +723,7 @@ class Ctx:
     passwords: Passwords
     sabotage: str | None
     notes: dict[str, int] = dataclasses.field(default_factory=dict)
+    texts: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def say(self, text: str) -> None:
         print(text, flush=True)
@@ -821,8 +831,10 @@ def seed(ctx: Ctx) -> None:
         blog_ddl()
         + other_ddl()
         + f"CREATE USER '{MOVER}'@'localhost' IDENTIFIED BY '{ctx.passwords.mover}';\n"
-        + f"GRANT SELECT, LOCK TABLES, SHOW VIEW, TRIGGER, EVENT ON {BLOG}.* TO '{MOVER}'@'localhost';\n"
+        + f"GRANT SELECT, LOCK TABLES, SHOW VIEW, TRIGGER ON {BLOG}.* TO '{MOVER}'@'localhost';\n"
         + f"GRANT BACKUP_ADMIN ON *.* TO '{MOVER}'@'localhost';\n"
+        + f"CREATE USER '{NOBACKUP}'@'localhost' IDENTIFIED BY '{ctx.passwords.nobackup}';\n"
+        + f"GRANT SELECT, LOCK TABLES ON {BLOG}.* TO '{NOBACKUP}'@'localhost';\n"
         + f"CREATE USER '{REPLICATION_USER}'@'%' IDENTIFIED BY '{ctx.passwords.repl}' REQUIRE SSL;\n"
         + f"GRANT REPLICATION SLAVE ON *.* TO '{REPLICATION_USER}'@'%';\n"
     )
@@ -835,6 +847,19 @@ def seed(ctx: Ctx) -> None:
     )
     ctx.notes["log_status_errno_without_table_grant"] = parse_errno(ungranted.stderr)
     ctx.source.run(f"GRANT SELECT ON performance_schema.log_status TO '{MOVER}'@'localhost';")
+    # The BACKUP_ADMIN step: the same account minus BACKUP_ADMIN, with its
+    # own log_status SELECT, reads log_status. The exact error (or success)
+    # is recorded, not gated.
+    ctx.source.run(f"GRANT SELECT ON performance_schema.log_status TO '{NOBACKUP}'@'localhost';")
+    without_backup = ctx.source.run(
+        "SELECT LOCAL FROM performance_schema.log_status;",
+        user=NOBACKUP,
+        password=ctx.passwords.nobackup,
+        check=False,
+    )
+    ctx.notes["log_status_errno_without_backup_admin"] = parse_errno(without_backup.stderr)
+    error_lines = [line for line in without_backup.stderr.splitlines() if line.startswith("ERROR")]
+    ctx.texts["log_status_without_backup_admin"] = error_lines[0] if error_lines else "read succeeded, no error"
 
 
 def _check_writers(*writers: Writer) -> list[tuple[float, float]]:
@@ -1051,6 +1076,8 @@ def control_4(ctx: Ctx) -> ControlResult:
         f"clone plugin rows in information_schema.PLUGINS: {len(plugins)}; global privileges: {sorted(privileges)}",
         f"FINDING: with the ticket body's grant list alone (SELECT on {BLOG}.* plus BACKUP_ADMIN), reading performance_schema.log_status "
         f"gives error {ctx.notes.get('log_status_errno_without_table_grant')}; the proof also grants SELECT on that one table",
+        f"without BACKUP_ADMIN (SELECT and LOCK TABLES on {BLOG}.*, SELECT on log_status), reading log_status gives: "
+        f"{ctx.texts.get('log_status_without_backup_admin', 'not recorded')}",
     ]
     return ControlResult(4, "scoped grants", verdict, numbers)
 
@@ -1299,7 +1326,35 @@ def control_6(ctx: Ctx) -> ControlResult:
 CONTROLS: Mapping[int, Callable[[Ctx], ControlResult]] = {1: control_1, 2: control_2, 3: control_3, 4: control_4, 5: control_5, 6: control_6}
 
 
+def refusal(names: Sequence[str], docker_host: str | None, context: Callable[[], str]) -> str | None:
+    """Why `run` must not start, or None. `context` is asked last, so the
+    other two refusals never make a docker call."""
+    if docker_host:
+        return "DOCKER_HOST is set; this proof runs only in the local Docker context"
+    unprefixed = [name for name in names if not name.startswith(CONTAINER_PREFIX)]
+    if unprefixed:
+        return f"container names {unprefixed} lack the {CONTAINER_PREFIX!r} prefix, so they are not this proof's own"
+    name = context()
+    if name not in LOCAL_DOCKER_CONTEXTS:
+        return f"Docker context {name!r} is not the local default or desktop-linux context"
+    return None
+
+
+def docker_context() -> str:
+    """`docker context show`'s output, or '' when docker cannot say. The exit
+    code is not read, as the shell wrapper's `|| true` does not read it."""
+    try:
+        result = subprocess.run(["docker", "context", "show"], capture_output=True, text=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
 def run(args: argparse.Namespace) -> int:
+    reason = refusal([args.source, args.replica], os.environ.get("DOCKER_HOST"), docker_context)
+    if reason is not None:
+        print(f"REFUSED: {reason}", file=sys.stderr)
+        return EXIT_REFUSED
     workdir = pathlib.Path(args.workdir)
     ctx = Ctx(
         source=Server(args.source, (workdir / "root.pw").read_text().strip()),

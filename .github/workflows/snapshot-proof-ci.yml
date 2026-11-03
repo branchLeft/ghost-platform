@@ -1,0 +1,72 @@
+name: Snapshot proof (native x86_64)
+
+# The full un-sabotaged snapshot-locking proof, run on a native x86_64 runner.
+# db1 is x86_64; the Mac runs this proof under amd64 emulation, so this is the
+# run that matches the hosts. Path-filtered to the proof and what it loads.
+# The unit tests for the same code run in repo-tooling-ci.yml on every push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'db/provision/snapshot_probe*'
+      - 'db/provision/prove-snapshot-locking.sh'
+      - 'db/provision/bounded_snapshot.py'
+      - 'db/provision/extract_tenant_binlog.py'
+      - 'db/RUNBOOK-db.md'
+      - 'db/stack/conf.d/branchleft.cnf'
+      - '.github/workflows/snapshot-proof-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'db/provision/snapshot_probe*'
+      - 'db/provision/prove-snapshot-locking.sh'
+      - 'db/provision/bounded_snapshot.py'
+      - 'db/provision/extract_tenant_binlog.py'
+      - 'db/RUNBOOK-db.md'
+      - 'db/stack/conf.d/branchleft.cnf'
+      - '.github/workflows/snapshot-proof-ci.yml'
+
+# Read-only. No secrets are used: the proof runs on local throwaway containers.
+permissions:
+  contents: read
+
+jobs:
+  snapshot-proof:
+    name: Snapshot locking proof, native x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Confirm the runner is x86_64
+        run: |
+          arch="$(uname -m)"
+          echo "runner architecture: $arch"
+          test "$arch" = x86_64
+
+      # The one digest db/RUNBOOK-db.md pins, pulled by digest before the proof
+      # starts, so a pull failure is visible here rather than inside the proof.
+      - name: Pull the pinned mysql digest
+        run: |
+          pins="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/RUNBOOK-db.md must pin exactly one mysql:8.0 digest, found: $pins" >&2
+            exit 1
+          fi
+          docker pull "$pins"
+
+      # The proof exits 0 only when controls 1 to 5 pass and control 6 is
+      # recorded. Each control's measured values and its PASS or FAIL line are
+      # in this log, including control 2's worst and baseline statements.
+      - name: Run the proof, un-sabotaged
+        run: db/provision/prove-snapshot-locking.sh

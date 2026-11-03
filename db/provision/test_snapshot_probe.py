@@ -8,10 +8,13 @@ itself is hand-run: prove-snapshot-locking.sh, snapshot_probe.md."""
 
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import os
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -23,6 +26,19 @@ _RUNBOOK = (_REPO_ROOT / "db" / "RUNBOOK-db.md").read_text(encoding="utf-8")
 _PROMOTION_PROOF = (_REPO_ROOT / "db" / "provision" / "prove-promotion-gate.sh").read_text(encoding="utf-8")
 _PROOF_SCRIPT_PATH = _REPO_ROOT / "db" / "provision" / "prove-snapshot-locking.sh"
 _PROOF_SCRIPT = _PROOF_SCRIPT_PATH.read_text(encoding="utf-8")
+_DIAL_IN_TRANSPORT = _REPO_ROOT / "infra" / "provisioning" / "scripts" / "dial_in_transport.py"
+
+
+def _dial_in_transport():
+    """The real per-tenant channel's module, by path, as its own tests load it."""
+    spec = importlib.util.spec_from_file_location("dial_in_transport", _DIAL_IN_TRANSPORT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _docker_must_not_be_asked() -> str:
+    raise AssertionError("docker was asked for its context")
 # Stands in for docker: logs every call, reports one context, fails the rest.
 _FAKE_DOCKER = """#!/bin/sh
 echo "$*" >> "$FAKE_DOCKER_LOG"
@@ -315,6 +331,95 @@ class PasswordHandlingTests(unittest.TestCase):
         self.assertNotIn("mover-secret", " ".join(seen["inner"]))
         self.assertNotIn("env", seen["kwargs"])
         self.assertNotIn("pass_fds", seen["kwargs"])
+
+
+class DumpArgsTests(unittest.TestCase):
+    def test_the_proof_dump_args_are_the_real_per_tenant_dump_args(self) -> None:
+        # Both sides are read live, so a change to either one turns this red.
+        transport = _dial_in_transport().RemoteMysqldumpTransport(host="host", user="user", ssl_ca="ca.pem")
+        self.assertEqual(list(sp.DUMP_ARGS), transport.dump_args(sp.BLOG))
+
+
+class RunRefusalTests(unittest.TestCase):
+    def test_an_ambient_docker_host_is_refused_without_asking_docker(self) -> None:
+        reason = sp.refusal(["snapshot-proof-source-1", "snapshot-proof-replica-1"], "tcp://192.0.2.10:2376", _docker_must_not_be_asked)
+        self.assertIsNotNone(reason)
+        self.assertIn("DOCKER_HOST", reason)
+
+    def test_a_container_without_the_proof_prefix_is_refused_without_asking_docker(self) -> None:
+        reason = sp.refusal(["prod-source", "snapshot-proof-replica-1"], None, _docker_must_not_be_asked)
+        self.assertIsNotNone(reason)
+        self.assertIn("prod-source", reason)
+
+    def test_a_non_local_context_is_refused(self) -> None:
+        for context in ("remote-prod", ""):
+            reason = sp.refusal(["snapshot-proof-source-1", "snapshot-proof-replica-1"], None, lambda context=context: context)
+            self.assertIsNotNone(reason, context)
+
+    def test_the_local_contexts_and_prefixed_names_are_not_refused(self) -> None:
+        for context in sp.LOCAL_DOCKER_CONTEXTS:
+            self.assertIsNone(sp.refusal(["snapshot-proof-source-1", "snapshot-proof-replica-1"], None, lambda context=context: context))
+
+
+class PythonRunRefusalTests(unittest.TestCase):
+    """`snapshot_probe.py run` itself, against a fake docker on PATH. Without
+    the refusal the run would go on to read a password file that is absent
+    here and exit 1, so exit 5 is what proves the refusal happens first."""
+
+    def _run(self, *, source: str, replica: str, context: str, docker_host: str | None = None) -> tuple[subprocess.CompletedProcess, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = pathlib.Path(tmp) / "docker"
+            fake.write_text(_FAKE_DOCKER, encoding="utf-8")
+            fake.chmod(0o755)
+            log = pathlib.Path(tmp) / "calls.log"
+            env = {key: value for key, value in os.environ.items() if key != "DOCKER_HOST"}
+            env.update(
+                PATH=f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}",
+                FAKE_DOCKER_LOG=str(log),
+                FAKE_DOCKER_CONTEXT=context,
+            )
+            if docker_host is not None:
+                env["DOCKER_HOST"] = docker_host
+            command = [sys.executable, str(pathlib.Path(sp.__file__)), "run", "--source", source, "--replica", replica, "--workdir", tmp]
+            result = subprocess.run(command, env=env, capture_output=True, text=True, check=False, timeout=120)
+            calls = log.read_text(encoding="utf-8") if log.exists() else ""
+            return result, calls
+
+    def test_a_container_without_the_proof_prefix_is_refused_before_docker(self) -> None:
+        result, calls = self._run(source="prod-source", replica="snapshot-proof-replica-1", context="desktop-linux")
+        self.assertEqual(result.returncode, sp.EXIT_REFUSED, result.stderr)
+        self.assertIn("snapshot-proof-", result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_a_remote_context_is_refused_after_only_the_context_check(self) -> None:
+        result, calls = self._run(source="snapshot-proof-source-1", replica="snapshot-proof-replica-1", context="remote-prod")
+        self.assertEqual(result.returncode, sp.EXIT_REFUSED, result.stderr)
+        self.assertIn("remote-prod", result.stderr)
+        self.assertEqual(calls.strip(), "context show")
+
+    def test_an_ambient_docker_host_is_refused_before_docker(self) -> None:
+        result, calls = self._run(
+            source="snapshot-proof-source-1", replica="snapshot-proof-replica-1", context="desktop-linux", docker_host="tcp://192.0.2.10:2376"
+        )
+        self.assertEqual(result.returncode, sp.EXIT_REFUSED, result.stderr)
+        self.assertIn("DOCKER_HOST", result.stderr)
+        self.assertEqual(calls, "")
+
+    def test_the_local_context_with_proof_names_is_not_refused(self) -> None:
+        result, calls = self._run(source="snapshot-proof-source-1", replica="snapshot-proof-replica-1", context="desktop-linux")
+        self.assertNotEqual(result.returncode, sp.EXIT_REFUSED, result.stderr)
+        self.assertEqual(calls.strip(), "context show")
+
+
+class ShellAndGrantHygieneTests(unittest.TestCase):
+    def test_the_shell_variable_does_not_shadow_docker_context(self) -> None:
+        self.assertNotIn("DOCKER_CONTEXT", _PROOF_SCRIPT)
+        self.assertIn("ACTIVE_CONTEXT", _PROOF_SCRIPT)
+
+    def test_the_move_account_is_not_granted_event(self) -> None:
+        # No run uses --events and no schema has an event: the grant is unused.
+        self.assertNotRegex(inspect.getsource(sp.seed), r"\bEVENT\b")
+        self.assertIn("SELECT, LOCK TABLES, SHOW VIEW, TRIGGER ON", inspect.getsource(sp.seed))
 
 
 class SelfTestCliTests(unittest.TestCase):

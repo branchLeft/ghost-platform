@@ -23,10 +23,12 @@ foreign keys, a trigger and a view, enough rows to dump; `other` stands in
 for another tenant. The controls depend on table count and in-flight
 transactions, not on column fidelity.
 
-The move account is created with `SELECT, LOCK TABLES, SHOW VIEW, TRIGGER,
-EVENT` on `blog.*`, `BACKUP_ADMIN` on `*.*`, and `SELECT` on the single
-table `performance_schema.log_status` (see the grant finding below). It
-never has `RELOAD`. Every password is generated at run time with
+The move account is created with `SELECT, LOCK TABLES, SHOW VIEW, TRIGGER`
+on `blog.*`, `BACKUP_ADMIN` on `*.*`, and `SELECT` on the single table
+`performance_schema.log_status` (see the grant finding below). It never has
+`RELOAD`. It has no `EVENT`: no run uses `--events` and no schema has an
+event, so nothing needed it. **The runbook's grant list should not include
+`EVENT`.** Every password is generated at run time with
 `openssl rand`, held in a mode-700 temporary directory and removed on
 exit; none is in a repo file, argv or output.
 
@@ -42,7 +44,10 @@ python3 db/provision/snapshot_probe.py --self-test
 Needs Docker and about 3 GB of memory. The first run pulls the amd64 image.
 `PROOF_PLATFORM` defaults to `linux/amd64`, the hosts' architecture. The
 script refuses a set `DOCKER_HOST` or a Docker context other than `default`
-or `desktop-linux` (exit 5) before it starts any container.
+or `desktop-linux` (exit 5) before it starts any container. So does
+`snapshot_probe.py run` when run directly: it also refuses container names
+without the `snapshot-proof-` prefix, so it cannot be pointed at a
+container that is not this proof's own.
 
 | Exit | Meaning                                                                         |
 | ---- | ------------------------------------------------------------------------------- |
@@ -63,7 +68,18 @@ parts A and B), `no-deadline` (control 5, part C).
 The refusal in `prove-snapshot-locking.sh` (exit 5) is unit-tested in
 `test_snapshot_probe.py` against a fake `docker` on `PATH`: a set
 `DOCKER_HOST` is refused before any docker call, and a non-local context
-before any container. The fixture needs no Docker.
+before any container. The refusal in `snapshot_probe.py run` is tested the
+same way, plus the name prefix. The fixture needs no Docker.
+
+## CI
+
+`.github/workflows/snapshot-proof-ci.yml` runs the full un-sabotaged proof
+on a native `ubuntu-latest` runner, which is x86_64 as db1 is, so the
+Mac's amd64 emulation is out of the picture. It runs when the proof's
+files change, pulls the pinned digest by its digest, and prints each
+control's measured values in its log. It fails on any control failure
+(exit 3 or 4). It has `contents: read` only and no secrets. The unit
+tests still run in `repo-tooling-ci.yml` on every push.
 
 ## The six controls
 
@@ -142,13 +158,26 @@ reason option (c) is unavailable.
   and engine positions and no tenant data. Control 4 records the error with the
   design's grant list, and asserts that `BACKUP_ADMIN` is still the only
   global privilege.
+- **BACKUP_ADMIN is needed to read `log_status`.** The same account without
+  `BACKUP_ADMIN` (`SELECT` and `LOCK TABLES` on `blog.*`, `SELECT` on
+  `log_status`) gets `ERROR 1227 (42000): Access denied; you need (at least
+  one of) the BACKUP_ADMIN privilege(s) for this operation`. Control 4
+  records it on every run, so the coordinate read needs `BACKUP_ADMIN`.
+  `BACKUP_ADMIN` also lets the account take `LOCK INSTANCE FOR BACKUP`,
+  which blocks DDL on every schema while it is held; control 6 measured one
+  `ALTER` on the other schema waiting about 4 s. A weaker alternative for the
+  owner to weigh: `REPLICATION CLIENT` with `SHOW MASTER STATUS`, which
+  gives a position consistent while the blog tables are locked. That
+  alternative is not measured here. The production grant list is the
+  owner's to decide; this proof does not change it.
 - **LOCK TABLES can roll back an in-flight write transaction.** Measured, the
   server takes the table locks one at a time in name order: while the request
   waits on `posts`, a `members` writer queues (its table is already held) and
   a `settings` writer does not (not yet requested).
   A write transaction that has touched a table the request waits for, and
   then writes one it already holds, deadlocks with it, and the server picks
-  the write as the victim: error 1213, rolled back, retryable. The design's
+  the write as the victim: error 1213, rolled back. The write fails with
+  1213 unless the application retries it; nothing here shows Ghost does. The design's
   "writes queue behind it" is true for writers whose first table is held;
   for a multi-table transaction already underway it is a rollback instead.
   The proof counts these (a Ghost-like transaction writer sees some during
