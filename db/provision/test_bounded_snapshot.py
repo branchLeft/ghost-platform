@@ -130,6 +130,70 @@ class SuccessTests(_Fixture):
         self.assertEqual((match.group("log_file"), match.group("position")), ("mysql-bin.000007", "1234"))
 
 
+class MasterStatusTests(_Fixture):
+    def snapshot_master(self):
+        dump, report = bs.take_bounded_snapshot(
+            factory=self.factory,
+            schemas=["ghost_blog"],
+            dump_args=["--single-transaction", "--databases", "ghost_blog"],
+            limits=FAST,
+            sleep=self.sleeps.append,
+            coordinates=bs.COORDINATES_MASTER_STATUS,
+        )
+        self.addCleanup(self._reap, dump.process)
+        return dump, report
+
+    def test_reads_the_position_with_show_master_status_under_the_lock(self) -> None:
+        _, report = self.snapshot_master()
+        self.assertEqual((report.log_file, report.log_position), ("mysql-bin.000009", 4321))
+        statements = self.fakes.statements()
+        lock = next(i for i, s in enumerate(statements) if s.startswith("LOCK TABLES"))
+        unlock = statements.index("UNLOCK TABLES")
+        self.assertIn("SHOW MASTER STATUS", statements[lock:unlock])
+
+    def test_never_touches_log_status(self) -> None:
+        self.snapshot_master()
+        self.assertFalse([s for s in self.fakes.statements() if "log_status" in s])
+
+    def test_the_default_still_reads_log_status(self) -> None:
+        self.snapshot()
+        self.assertFalse([s for s in self.fakes.statements() if "MASTER STATUS" in s])
+
+    def test_the_position_is_read_before_the_dump_starts_and_the_unlock(self) -> None:
+        self.snapshot_master()
+        events = self.fakes.events()
+        position_read = next(e["t"] for e in events if e.get("sql") == "SHOW MASTER STATUS")
+        dump_start = next(e["t"] for e in events if e["kind"] == "start" and e["binary"] == "mysqldump")
+        unlock = next(e["t"] for e in events if e.get("sql") == "UNLOCK TABLES")
+        self.assertLess(position_read, dump_start)
+        self.assertLess(dump_start, unlock)
+
+    def test_a_gtid_set_over_several_lines_does_not_disturb_the_position(self) -> None:
+        self.fakes.configure(master_status=["mysql-bin.000009\t4321\t\t\tuuid:1-5,", "uuid2:1-9"])
+        _, report = self.snapshot_master()
+        self.assertEqual((report.log_file, report.log_position), ("mysql-bin.000009", 4321))
+
+    def test_a_server_without_a_binary_log_is_refused(self) -> None:
+        self.fakes.configure(master_status=[])
+        self.assertIn("log_bin", str(self.snapshot_error_master()))
+
+    def test_an_unreadable_row_is_refused(self) -> None:
+        self.fakes.configure(master_status=["garbled"])
+        self.assertIn("no binary-log position", str(self.snapshot_error_master()))
+
+    def snapshot_error_master(self) -> bs.SnapshotError:
+        with self.assertRaises(bs.SnapshotError) as ctx:
+            self.snapshot_master()
+        return ctx.exception
+
+    def test_an_unknown_source_is_refused_before_anything_runs(self) -> None:
+        with self.assertRaises(ValueError):
+            bs.take_bounded_snapshot(
+                factory=self.factory, schemas=["ghost_blog"], dump_args=[], limits=FAST, coordinates="gtid"
+            )
+        self.assertEqual(self.fakes.events(), [])
+
+
 class WaitBoundTests(_Fixture):
     def test_a_server_lock_timeout_is_retried_after_a_back_off(self) -> None:
         self.fakes.configure(lock=["timeout", "ok"])

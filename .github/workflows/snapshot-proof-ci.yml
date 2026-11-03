@@ -10,7 +10,9 @@ on:
     branches: [main]
     paths:
       - 'db/provision/snapshot_probe*'
+      - 'db/provision/replication_client_probe*'
       - 'db/provision/prove-snapshot-locking.sh'
+      - 'db/provision/prove-replication-client.sh'
       - 'db/provision/bounded_snapshot.py'
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
@@ -20,7 +22,9 @@ on:
     branches: [main]
     paths:
       - 'db/provision/snapshot_probe*'
+      - 'db/provision/replication_client_probe*'
       - 'db/provision/prove-snapshot-locking.sh'
+      - 'db/provision/prove-replication-client.sh'
       - 'db/provision/bounded_snapshot.py'
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
@@ -70,3 +74,33 @@ jobs:
       # in this log, including control 2's worst and baseline statements.
       - name: Run the proof, un-sabotaged
         run: db/provision/prove-snapshot-locking.sh
+
+      # Whether REPLICATION CLIENT alone gives coordinates consistent with the
+      # snapshot. Exits 0 only when all three controls pass; exit 3 means
+      # BACKUP_ADMIN is needed after all. The log has each control's PASS or
+      # FAIL line and each round's coordinates.
+      - name: Run the REPLICATION CLIENT proof, un-sabotaged
+        run: db/provision/prove-replication-client.sh
+
+      # Each red case must exit 1: the control sees the failure. Exit 2 means
+      # it stayed green, so the control could not have failed.
+      - name: Red case, coordinates read before the lock
+        run: |
+          rc=0
+          SABOTAGE=coordinates-before-lock db/provision/prove-replication-client.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, coordinates read after the unlock
+        run: |
+          rc=0
+          SABOTAGE=coordinates-after-unlock db/provision/prove-replication-client.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, BACKUP_ADMIN held as well
+        run: |
+          rc=0
+          SABOTAGE=backup-admin-grant db/provision/prove-replication-client.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1

@@ -92,6 +92,9 @@ for line in sys.stdin:
                 time.sleep(30)
         elif statement.startswith("SELECT LOCAL FROM performance_schema.log_status"):
             print(config.get("log_status", json.dumps({"binary_log_file": "mysql-bin.000007", "binary_log_position": 1234})))
+        elif statement == "SHOW MASTER STATUS":
+            for row in config.get("master_status", ["mysql-bin.000009\t4321\t\t\t"]):
+                print(row)
         elif statement == "UNLOCK TABLES":
             if config.get("unlock") == "hang":
                 time.sleep(30)

@@ -23,6 +23,17 @@ cd "$REPO_ROOT"
 
 PLATFORM="${PROOF_PLATFORM:-linux/amd64}"
 
+# The probe to run: this proof's own, or the REPLICATION CLIENT one that
+# prove-replication-client.sh selects. Both take the same arguments.
+PROBE="${PROOF_PROBE:-snapshot_probe.py}"
+case "$PROBE" in
+    snapshot_probe.py | replication_client_probe.py) ;;
+    *)
+        echo "REFUSED: PROOF_PROBE must be snapshot_probe.py or replication_client_probe.py, not '$PROBE'" >&2
+        exit 5
+        ;;
+esac
+
 # The one pinned digest db1 runs. A re-pin in the runbook re-points this proof.
 PINS="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
 [ "$(printf '%s\n' "$PINS" | wc -l | tr -d ' ')" = "1" ] || {
@@ -52,7 +63,7 @@ fail() {
 
 # Throwaway passwords, generated now, held only in this mode-700 directory and
 # in the containers, removed with them. Never in a repo file, argv or output.
-for name in root mover repl nobackup; do
+for name in root mover repl nobackup coord; do
     openssl rand -hex 16 >"$WORK/$name.pw"
     chmod 600 "$WORK/$name.pw"
 done
@@ -90,8 +101,8 @@ echo "  source mysqld --version:  $(docker exec "$SRC" mysqld --version)"
 echo "  replica mysqld --version: $(docker exec "$REP" mysqld --version)"
 
 set +e
-python3 db/provision/snapshot_probe.py run --source "$SRC" --replica "$REP" --workdir "$WORK" \
-    --controls "${PROOF_CONTROLS:-1 2 3 4 5 6}" ${SABOTAGE:+--sabotage "$SABOTAGE"}
+python3 "db/provision/$PROBE" run --source "$SRC" --replica "$REP" --workdir "$WORK" \
+    ${PROOF_CONTROLS:+--controls "$PROOF_CONTROLS"} ${SABOTAGE:+--sabotage "$SABOTAGE"}
 rc=$?
 set -e
 exit "$rc"
