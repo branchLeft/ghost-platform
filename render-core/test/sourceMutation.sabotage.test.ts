@@ -228,3 +228,77 @@ describe('QUEUE-MAIL-TIMEOUTS — source-mutation sabotage', () => {
     expect(() => assertQueueMailTimeouts(realEnv)).not.toThrow();
   });
 });
+
+describe('DEMO-STRIPE-LIMIT — source-mutation sabotage', () => {
+  const KEY = 'hostSettings__limits__limitStripeConnect__disabled';
+
+  it('deleting the Stripe limit line from environment.ts leaves a demo without it; the real module renders it', async () => {
+    const descriptor = validate(demoDescriptor(), TEST_ZONES);
+
+    // RED: delete the one line that spreads the demo-only key into the env.
+    const sabotaged = await importSabotaged<{ tenantEnvironment: typeof TenantEnvironmentFn }>(
+      'environment.ts',
+      (source) => {
+        const target = '    ...hostStripeEnvironment(descriptor.kind),\n';
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in environment.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, '');
+      }
+    );
+    const sabotagedEnv = sabotaged.tenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(sabotagedEnv).not.toHaveProperty(KEY);
+
+    // GREEN: the real, unmutated module renders it for the demo.
+    const { tenantEnvironment: realTenantEnvironment } = await import('../src/environment.js');
+    const realEnv = realTenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(realEnv[KEY]).toBe(true);
+  });
+
+  it('dropping the demo-only condition puts the key on a paying tenant; the real module keeps it off', async () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+
+    // RED: make the condition always true, so a paying tenant is limited too.
+    const sabotaged = await importSabotaged<{ tenantEnvironment: typeof TenantEnvironmentFn }>(
+      'environment.ts',
+      (source) => {
+        const target = "return kind === 'demo' ? {";
+        if (!source.includes(target)) {
+          throw new Error(
+            'sabotage target string not found in environment.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(target, 'return true ? {');
+      }
+    );
+    const sabotagedEnv = sabotaged.tenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(sabotagedEnv[KEY]).toBe(true);
+
+    // GREEN: the real, unmutated module renders nothing for a paying tenant.
+    const { tenantEnvironment: realTenantEnvironment } = await import('../src/environment.js');
+    const realEnv = realTenantEnvironment(
+      descriptor,
+      uploadLimits(),
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES
+    );
+    expect(realEnv).not.toHaveProperty(KEY);
+  });
+});

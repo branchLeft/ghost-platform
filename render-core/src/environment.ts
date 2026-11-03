@@ -14,6 +14,7 @@ import type {
   MediaSpec,
   SafetySpec,
   TenantDescriptor,
+  TenantKind,
   TransportSpec,
 } from './descriptor.js';
 import { credentialDomainOf, renderSendingAddress } from './mail.js';
@@ -352,6 +353,17 @@ function hostLimitsEnvironment(limits: LimitsSpec): Record<string, string | numb
 }
 
 /**
+ * A demo may not connect a real Stripe account; a paying tenant keeps Ghost's
+ * standard Stripe behaviour. The key is Ghost's own `limitStripeConnect`
+ * switch, and the image's settings-model overlay
+ * (`adapters/stripe-connect-limit/ghost-core-overlay`) is what makes it refuse
+ * every write path. See environment.md#stripe-connect-limit.
+ */
+function hostStripeEnvironment(kind: TenantKind): Record<string, boolean> {
+  return kind === 'demo' ? { hostSettings__limits__limitStripeConnect__disabled: true } : {};
+}
+
+/**
  * The `environment:` block of the rendered Compose service, for every kind.
  * `secretsFilePath` only appears inside a `${…:?}` reference's own failure
  * message — see `naming.ts#secretsEnvPath` for the value a caller supplies.
@@ -361,6 +373,7 @@ export function tenantEnvironment(
     TenantDescriptor,
     | 'slug'
     | 'uid'
+    | 'kind'
     | 'siteUrl'
     | 'database'
     | 'media'
@@ -392,6 +405,7 @@ export function tenantEnvironment(
     // `hostLimitsEnvironment`. `settings.ts` sets `social_web` off as well,
     // because the lock does not remove what an existing tenant already has.
     hostSettings__limits__limitSocialWeb__disabled: true,
+    ...hostStripeEnvironment(descriptor.kind),
 
     theme__uploadLimits__compressedBytes: limits.themeCompressedBytes,
     theme__uploadLimits__entryUncompressedBytes: limits.themeEntryUncompressedBytes,

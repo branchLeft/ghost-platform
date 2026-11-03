@@ -88,3 +88,12 @@ jobs:
         run: node --test scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs
         env:
           IMAGE: ghost-platform:ci
+
+      # A demo slot cannot store a Stripe key by any route (Connect token,
+      # direct key, content import), and a paired Ghost without the limit is
+      # not refused for its reason. The demo's environment is read from
+      # render-core's demo golden. Needs no install -- Node built-ins only.
+      - name: Stripe connect refusal against the built image
+        run: node --test adapters/stripe-connect-limit/test/image/*.test.mjs
+        env:
+          IMAGE: ghost-platform:ci

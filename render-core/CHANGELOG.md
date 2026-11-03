@@ -4,6 +4,19 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**A demo slot cannot connect a real Stripe account.**
+
+- **Changed output:** a demo's `environment:` gains
+  `hostSettings__limits__limitStripeConnect__disabled: true`, in both colours.
+  A paying tenant's output, and tenant zero's, are unchanged.
+  `tenantEnvironment()`'s descriptor argument must now carry `kind`.
+- **Rollout:** the key is only partial protection without the Ghost image's
+  Stripe overlay, and the overlay is inert without the key. Promote the
+  rebuilt Ghost image to the demo host first; only then publish this release
+  and roll the broker onto it. Never render the key onto an image that lacks
+  the overlay. Existing slots pick the key up when re-rendered and recreated.
+  See src/environment.md#stripe-connect-limit.
+
 **Each demo slot authenticates to the mail spool as its own credential domain.**
 
 - **Changed output:** a demo's `mail__options__auth__user` and
