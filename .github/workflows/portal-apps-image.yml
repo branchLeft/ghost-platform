@@ -93,9 +93,13 @@ jobs:
       (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     timeout-minutes: 20
 
+    # `id-token: write` and `attestations: write` let the run sign the pushed
+    # digest with a keyless GitHub artifact attestation (the attest step below).
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
 
     outputs:
       image: ${{ steps.digest.outputs.image }}
@@ -142,7 +146,22 @@ jobs:
             echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
             exit 1
           fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      # Signs the digest with a keyless GitHub artifact attestation, then
+      # verifies it with the identity below and checks that a wrong identity is
+      # rejected. The identity is a literal on purpose: read from this run's
+      # own `github.workflow_ref` it would agree with itself and prove nothing.
+      # The same value, with the source ref `refs/heads/main`, is what a host
+      # passes to scripts/verify-image-attestation.sh.
+      - name: Attest and verify the pushed image
+        uses: ./.github/actions/attest-and-verify-image
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ steps.digest.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/portal-apps-image.yml
+          repo: branchLeft/ghost-platform
 
       - name: Write outcome to job summary
         if: always()

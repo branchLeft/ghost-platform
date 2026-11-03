@@ -1,0 +1,111 @@
+name: Attest and verify an image
+description: >
+  Signs a pushed container image with a GitHub artifact attestation (SLSA build
+  provenance, keyless, bound to the calling workflow's identity), then proves
+  the attestation: it must verify with the expected identity, and must be
+  rejected with a wrong one. The single home of the attest-then-verify step for
+  every image this repository publishes.
+
+# The caller must already have checked out the repository (the verify script is
+# read from the workspace) and logged in to the registry, and its job needs
+# `id-token: write`, `attestations: write` and `packages: write`.
+#
+# Keyless: the signing certificate is minted from the run's own OIDC token and
+# logged in Sigstore's public-good instance. No key, secret or paid service.
+#
+# The expected identity is passed in as a literal by each calling workflow. It
+# is never derived from `github.workflow_ref` here, because an identity read
+# from the run being checked would make the check agree with itself.
+
+inputs:
+  image:
+    description: Image name without a tag, in lower case (for example ghcr.io/branchleft/ghost-tenant).
+    required: true
+  digest:
+    description: The pushed manifest digest, sha256:<64 hex>.
+    required: true
+  signer-workflow:
+    description: The workflow expected to have signed it, owner/repo/.github/workflows/file.yml.
+    required: true
+  repo:
+    description: The repository that owns that workflow, owner/repo.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+      run: |
+        if ! printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+          echo "::error::digest is not sha256:<64 hex>: '$DIGEST'"
+          exit 1
+        fi
+        if ! printf '%s' "$IMAGE" | grep -Eq '^[a-z0-9][a-z0-9.-]*(:[0-9]+)?/[a-z0-9][a-z0-9._/-]*$'; then
+          echo "::error::image must be a lower-case name with no tag or digest: '$IMAGE'"
+          exit 1
+        fi
+
+    - name: Attest the image
+      id: attest
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-name: ${{ inputs.image }}
+        subject-digest: ${{ inputs.digest }}
+        # The signed bundle is stored beside the image in the registry, so a
+        # host can verify with `--bundle-from-oci` and no GitHub API token.
+        push-to-registry: true
+        # Storage records need `artifact-metadata: write`, which nothing here uses.
+        create-storage-record: false
+
+    # The same script a host will run, through the GitHub API first.
+    - name: Verify the attestation through the GitHub API
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+        REPO: ${{ inputs.repo }}
+        SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+      run: |
+        "$GITHUB_WORKSPACE/scripts/verify-image-attestation.sh" "$IMAGE@$DIGEST" "$REPO" "$SIGNER_WORKFLOW"
+
+    # And again from the registry's own copy of the bundle.
+    - name: Verify the attestation from the registry
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+        REPO: ${{ inputs.repo }}
+        SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+      run: |
+        "$GITHUB_WORKSPACE/scripts/verify-image-attestation.sh" "$IMAGE@$DIGEST" "$REPO" "$SIGNER_WORKFLOW" --bundle-from-oci
+
+    # Sabotage control, run on every publish. The two steps above just
+    # accepted this exact image with the right identity, so a rejection here is
+    # down to the identity and not to a registry or network fault. If a wrong
+    # identity is accepted, the verify command proves nothing, and this step
+    # fails the job.
+    - name: Prove a wrong identity is rejected
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        IMAGE: ${{ inputs.image }}
+        DIGEST: ${{ inputs.digest }}
+        REPO: ${{ inputs.repo }}
+        SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+      run: |
+        wrong="${SIGNER_WORKFLOW}.sabotage"
+        if "$GITHUB_WORKSPACE/scripts/verify-image-attestation.sh" "$IMAGE@$DIGEST" "$REPO" "$wrong"; then
+          echo "::error::a wrong signer workflow ($wrong) was accepted through the GitHub API: the verify check is vacuous"
+          exit 1
+        fi
+        if "$GITHUB_WORKSPACE/scripts/verify-image-attestation.sh" "$IMAGE@$DIGEST" "$REPO" "$wrong" --bundle-from-oci; then
+          echo "::error::a wrong signer workflow ($wrong) was accepted from the registry bundle: the verify check is vacuous"
+          exit 1
+        fi
+        echo "A wrong signer workflow was rejected, as required."

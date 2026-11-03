@@ -1,0 +1,57 @@
+name: Image attestation CI
+
+# Proves the check that decides whether a published image was built by the
+# expected workflow. scripts/test-verify-image-attestation.sh runs the verify
+# script against a stub gh and shows it refuses a tag-form reference, a wrong
+# signer, a missing argument and a failing gh. The workflow lint pins the
+# literal identity each image workflow passes to its own file path, keeps the
+# signing permissions on the publishing job, and checks every action is pinned.
+#
+# What this cannot show is a real attestation: that is created and verified,
+# with a wrong identity then required to fail, by the publish workflows on
+# every push to `main` (registry-push.yml and portal-apps-image.yml, through
+# .github/actions/attest-and-verify-image).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/verify-image-attestation.sh
+      - scripts/test-verify-image-attestation.sh
+      - workflow-image-attestation.test.js
+      - .github/actions/attest-and-verify-image/**
+      - .github/workflows/registry-push.yml
+      - .github/workflows/portal-apps-image.yml
+      - .github/workflows/image-attestation-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/verify-image-attestation.sh
+      - scripts/test-verify-image-attestation.sh
+      - workflow-image-attestation.test.js
+      - .github/actions/attest-and-verify-image/**
+      - .github/workflows/registry-push.yml
+      - .github/workflows/portal-apps-image.yml
+      - .github/workflows/image-attestation-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify-script:
+    name: verify script and workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the verify script test
+        run: ./scripts/test-verify-image-attestation.sh
+
+      # Plain node:test, no dependency to install.
+      - name: Lint the image workflows and the attest action
+        run: node --test workflow-image-attestation.test.js
