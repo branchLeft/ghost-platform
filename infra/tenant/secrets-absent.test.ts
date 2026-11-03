@@ -115,14 +115,19 @@ describe('the tenant component exposes no secret value', () => {
  * same code, and must be reported.
  */
 describe('control: the check fails when a secret reappears', () => {
+  type LeakKind = 'secret-field' | 'plain-field' | 'recorded-output' | 'extra-key';
+
+  /** Arguments for the leaking control stand-in: which way it leaks. */
+  interface LeakingStandInArgs {
+    readonly how: LeakKind;
+  }
+
   class LeakingStandIn extends pulumi.ComponentResource {
     public readonly secretsEnvFile: pulumi.Output<string>;
     public readonly plain: string;
 
-    constructor(
-      name: string,
-      how: 'secret-field' | 'plain-field' | 'recorded-output' | 'extra-key'
-    ) {
+    constructor(name: string, args: LeakingStandInArgs) {
+      const { how } = args;
       super('ghostPlatform:tenant:LeakingStandIn', name, {}, undefined);
       const filled = `GHOST_DB_PASSWORD=${SENTINELS.databasePassword}\n`;
       this.secretsEnvFile = pulumi.secret(how === 'secret-field' ? filled : 'GHOST_DB_PASSWORD=\n');
@@ -148,22 +153,24 @@ describe('control: the check fails when a secret reappears', () => {
     ['an output key off the allowlist', 'extra-key', /extra is not on the allowlist/],
   ] as const)('reports %s', async (_label, how, expected) => {
     const name = `leak-${how}`;
-    const exposed = await gatherExposures(name, () => new LeakingStandIn(name, how));
+    const exposed = await gatherExposures(name, () => new LeakingStandIn(name, { how }));
     const problems = findLeaks(exposed, SENTINEL_VALUES, ['secretsEnvTemplate']);
     expect(problems.join('\n')).toMatch(expected);
   });
 
   it('reports nothing for a stand-in that leaks nothing', async () => {
     const name = 'leak-none';
+    /** Arguments for the clean control stand-in: none. */
+    type CleanArgs = Record<string, never>;
     // A secret-marked field with no sentinel is still a secret, so the clean
     // control has to avoid the marker entirely.
     class Clean extends pulumi.ComponentResource {
-      constructor() {
+      constructor(_args: CleanArgs) {
         super('ghostPlatform:tenant:Clean', name, {}, undefined);
         this.registerOutputs({ secretsEnvTemplate: 'GHOST_DB_PASSWORD=\n' });
       }
     }
-    const exposed = await gatherExposures(name, () => new Clean());
+    const exposed = await gatherExposures(name, () => new Clean({}));
     expect(findLeaks(exposed, SENTINEL_VALUES, ['secretsEnvTemplate'])).toEqual([]);
   });
 });
