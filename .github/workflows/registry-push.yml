@@ -59,9 +59,15 @@ jobs:
     # Job-level, not workflow-level: scoped here means it exists only for the
     # one job in the one workflow that ever needs it, on the one trigger
     # (push to `main`) that ever fires it.
+    #
+    # `id-token: write` lets the run mint its keyless signing certificate and
+    # `attestations: write` lets it store the attestation. They are what bind
+    # the pushed image to this workflow's identity (see the attest step below).
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
 
     env:
       IMAGE: ghcr.io/branchleft/ghost-tenant
@@ -109,15 +115,48 @@ jobs:
       - name: Push to GHCR
         run: docker push "$IMAGE" --all-tags
 
+      # The digest is read from the image store after the push, never
+      # assembled from a tag. Both tags share it, so one attestation covers
+      # `latest` and the SHA tag. A missing or malformed digest fails the job.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      # Signs the digest with a keyless GitHub artifact attestation, then
+      # verifies it with the identity below and checks that a wrong identity is
+      # rejected. The identity is a literal on purpose: read from this run's
+      # own `github.workflow_ref` it would agree with itself and prove nothing.
+      # The same value, with the source ref `refs/heads/main`, is what a host
+      # passes to scripts/verify-image-attestation.sh.
+      - name: Attest and verify the pushed image
+        uses: ./.github/actions/attest-and-verify-image
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ steps.digest.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/registry-push.yml
+          repo: branchLeft/ghost-platform
+
       - name: Write outcome to job summary
         if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
         run: |
           {
             echo '## Tenant image push'
             echo
             echo "Commit: \`$IMAGE_TAG\`"
             echo "Image: \`$IMAGE:$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
             echo 'Also tagged `latest`.'
+            echo "The attest and verify step above signs this digest; check it with \`scripts/verify-image-attestation.sh\`."
             echo
             echo 'Provision a tenant with the GHCR reference, digest-pinned:'
             echo '`docker buildx imagetools inspect '"$IMAGE:$IMAGE_TAG"'`'

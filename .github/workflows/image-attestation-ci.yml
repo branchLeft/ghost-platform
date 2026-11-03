@@ -1,0 +1,52 @@
+name: Image attestation CI
+
+# Proves the attestation verify and wrong-identity checks against a stub gh,
+# and lints the image workflows and the attest action. A real attestation is
+# only created and verified by the publish workflows on main; see
+# scripts/verify-image-attestation.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/verify-image-attestation.sh
+      - scripts/prove-wrong-identity-rejected.sh
+      - scripts/test-verify-image-attestation.sh
+      - workflow-image-attestation.test.js
+      - .github/actions/attest-and-verify-image/**
+      - .github/workflows/registry-push.yml
+      - .github/workflows/portal-apps-image.yml
+      - .github/workflows/image-attestation-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/verify-image-attestation.sh
+      - scripts/prove-wrong-identity-rejected.sh
+      - scripts/test-verify-image-attestation.sh
+      - workflow-image-attestation.test.js
+      - .github/actions/attest-and-verify-image/**
+      - .github/workflows/registry-push.yml
+      - .github/workflows/portal-apps-image.yml
+      - .github/workflows/image-attestation-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  verify-script:
+    name: verify script and workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the verify script test
+        run: ./scripts/test-verify-image-attestation.sh
+
+      # Plain node:test, no dependency to install.
+      - name: Lint the image workflows and the attest action
+        run: node --test workflow-image-attestation.test.js

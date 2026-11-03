@@ -139,6 +139,30 @@ HTTP-200 response rather than a TCP connect: Ghost holds the port open
 while it runs migrations, so a connect check passes long before the site
 actually serves.
 
+### Published images are signed
+
+Every push to `main` publishes `ghcr.io/branchleft/ghost-tenant`
+(`registry-push.yml`). `ghcr.io/branchleft/portal-apps` (`portal-apps-image.yml`)
+is published by a push to `main` that changes `portal/` or `services/identity/`,
+or by a manual dispatch. Each push that publishes signs the pushed digest with a
+keyless GitHub artifact attestation (SLSA build provenance, Sigstore
+public-good). The
+signing step, and the check that it verifies and that a wrong identity is
+rejected, is `.github/actions/attest-and-verify-image`. To verify an image
+yourself, name it by digest:
+
+```sh
+./scripts/verify-image-attestation.sh ghcr.io/branchleft/ghost-tenant@sha256:<64 hex> \
+  branchLeft/ghost-platform \
+  branchLeft/ghost-platform/.github/workflows/registry-push.yml
+```
+
+The signer workflow is `registry-push.yml` for `ghost-tenant` and
+`portal-apps-image.yml` for `portal-apps`; the source ref is always
+`refs/heads/main`. Exit 0 means verified. Add `--bundle-from-oci` to read the
+signed bundle from the registry instead of the GitHub API. `scripts/verify-image-attestation.md`
+has the detail.
+
 ## Environment variables
 
 > The table below is the image's own reference. What a tenant actually receives
