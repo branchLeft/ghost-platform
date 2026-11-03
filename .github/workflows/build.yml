@@ -25,7 +25,7 @@ jobs:
     name: docker build
     runs-on: ubuntu-latest
     # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min)
-    # before the break-glass image test, which adds about a minute locally.
+    # before the break-glass image test, which adds about 31 s.
     timeout-minutes: 20
 
     steps:
@@ -77,5 +77,14 @@ jobs:
       - name: Export re-import against the built image
         working-directory: services/export-bundler
         run: node --test test/image/*.test.mjs
+        env:
+          IMAGE: ghost-platform:ci
+
+      # Real Ghost sends a reader's magic link to a listener that never
+      # greets, a frozen spool as Ghost sees it. The request must fail inside
+      # the bound. A second Ghost without the timeouts must still be open at
+      # the bound (negative control). Needs no install -- Node built-ins only.
+      - name: Ghost send against a frozen mail spool
+        run: node --test scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs
         env:
           IMAGE: ghost-platform:ci
