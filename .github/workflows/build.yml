@@ -25,7 +25,7 @@ jobs:
     name: docker build
     runs-on: ubuntu-latest
     # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min)
-    # before the break-glass image test, which adds about a minute locally.
+    # before the break-glass image test, which adds about 31 s.
     timeout-minutes: 20
 
     steps:

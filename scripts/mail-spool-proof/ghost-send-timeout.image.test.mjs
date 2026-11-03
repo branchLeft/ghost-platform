@@ -273,6 +273,10 @@ describe('Ghost send against a listener that never greets', () => {
     );
     // ghost-mailer.js createMailError: a failed send is a 500 EmailError.
     assert.equal(res.status, 500, `Ghost's failed send answered ${res.status}: ${res.text}`);
+    assert.ok(
+      res.text.includes('Greeting never received') || res.text.includes('ETIMEDOUT'),
+      `Ghost's 500 is not the greeting timeout: ${res.text}`
+    );
     assert.ok(elapsed <= BOUND_MS, `the reader's request took ${elapsed} ms, past ${BOUND_MS} ms`);
     const greeting = Number(timeouts.mail__options__greetingTimeout);
     assert.ok(
