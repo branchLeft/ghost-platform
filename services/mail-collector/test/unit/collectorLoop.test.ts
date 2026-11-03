@@ -632,12 +632,14 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       deliveryClient.close();
     });
 
-    it('SABOTAGE -- gating the ping on "something was drained" starves the idle case: RED, then the real wiring: GREEN', async () => {
-      // This reproduces the issue's own named sabotage: a heartbeat wired
-      // to fire only when a cycle actually drained a message, rather than
-      // on every completed cycle. Against a genuinely idle host this is
-      // indistinguishable from a wedged loop -- the switch would go
-      // Late then Down for a worker that is doing exactly what it should.
+    it('SABOTAGE CONTROL -- removing the empty-cycle onCycleComplete() call from collectorLoop.ts fails this test at the GREEN assertion', async () => {
+      // The control for collectorLoop.ts's empty-cycle onCycleComplete()
+      // call, which pings the switch for an idle host. With that call
+      // removed, an idle runtime never reaches the switch, so `pings`
+      // stays at zero and the final vi.waitFor below fails. The failing
+      // assertion is that final one, not any stub earlier in this test.
+      // Against a genuinely idle host a missing ping looks like a wedged
+      // loop: the switch would go Late then Down for a healthy worker.
       const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
       const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
       const deliveryClient = createDeliveryClient({
@@ -653,41 +655,10 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       const log = createLogger(() => {});
 
       const pings = vi.fn();
-      // The sabotaged wiring: nothing enqueued on shimA at any point in
-      // this test, so a correct implementation calling onCycleComplete()
-      // on every empty cycle pings repeatedly; the sabotage below only
-      // calls it from inside a branch this test never reaches.
-      const sabotagedHeartbeat: DeadMansSwitch = {
-        onCycleComplete: () => {
-          // Naive bug: this only runs when SOMETHING was drained. This
-          // test's loop only ever sees empty drains, so this line never
-          // fires at all -- the RED half of the sabotage.
-          if (false as boolean) {
-            pings();
-          }
-        },
-      };
-
-      const redRuntime = createCollectorRuntime({
-        store,
-        drainClient,
-        deliveryClient,
-        throttle,
-        dedupe,
-        health,
-        heartbeat: sabotagedHeartbeat,
-        log,
-        descriptorRefreshMs: 50,
-        drainRetryBackoffMs: 50,
-        emptyPollBackoffMs: 20,
-      });
-      redRuntime.start();
-      await new Promise((r) => setTimeout(r, 150)); // several empty cycles complete
-      expect(pings).not.toHaveBeenCalled(); // RED: the idle worker never pinged
-      await redRuntime.stop();
-
-      // The real wiring, same idle scenario: onCycleComplete() fires on
-      // every completed cycle regardless of what it drained.
+      // The real wiring, same idle scenario: nothing is enqueued on shimA,
+      // so every cycle is empty and onCycleComplete() must still fire on
+      // each one. Removing that call from collectorLoop.ts leaves `pings`
+      // at zero and this test fails.
       const realHeartbeat = createDeadMansSwitch({
         url: 'https://heartbeat.example/ping',
         log,
