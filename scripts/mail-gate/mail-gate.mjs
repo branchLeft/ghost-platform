@@ -22,6 +22,9 @@ export const PINNED_SPOOL =
 export const SLOT_DOMAIN = 'gate-slot0.example.com';
 export const HARNESS_ADDRESS = 'harness@example.com';
 const DRAIN_DEADLINE_MS = 120_000;
+// Messages the spool must release before the gate can pass: the welcome mail,
+// the magic link, then the newsletter, which is released last.
+export const MESSAGES_BEFORE_PASS = 3;
 
 // The entrypoint refuses to boot Ghost unless every storage feature goes
 // through the scanning decorator. The gate uses the local stand-ins the image
@@ -41,18 +44,27 @@ function storageEnv() {
   return env;
 }
 
-// Logs are dumped into a job log on failure, so the secrets this run minted
-// (the spool key, the drain token) and any Authorization header value are
-// replaced first.
+// Logs are dumped into a job log on failure, which is public, so every form a
+// secret can take there is replaced: the value in any case and its base64, an
+// SMTP AUTH PLAIN payload, cookies, a magic-link token, and an Authorization
+// value in any scheme, including inside an escaped JSON string.
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export function redact(text, secrets = []) {
   let out = text;
   for (const secret of secrets) {
-    if (secret) out = out.split(secret).join('[redacted]');
+    if (!secret) continue;
+    out = out.replace(new RegExp(escapeRegExp(secret), 'gi'), '[redacted]');
+    out = out.split(Buffer.from(secret).toString('base64')).join('[redacted]');
   }
-  return out.replace(
-    /(authorization\W{1,4})(?:(?:bearer|basic)\s+)?[A-Za-z0-9+/=._~-]+/gi,
-    '$1[redacted]'
-  );
+  return out
+    .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
+    .replace(/(\bcookie["']?\s*[:=]\s*["']?)[^\r\n"']+/gi, '$1[redacted]')
+    .replace(/([?&]token=)[^&\s"'<>]+/gi, '$1[redacted]')
+    .replace(
+      /(authorization\W{1,8}(?:(?:bearer|basic|ghost)\s+)?)[A-Za-z0-9+/=._~-]+/gi,
+      '$1[redacted]'
+    );
 }
 
 const tail = (text, lines = 200) => text.split('\n').slice(-lines).join('\n');
@@ -79,15 +91,12 @@ async function drainUntil(port, token, done, deadline) {
 }
 
 /**
- * Runs the gate. Never throws: a setup failure is a failed check, so the
- * caller always gets { passed, durationMs, checks }, plus `logs` ({ ghost,
- * spool }: the last 200 lines of each container's log, redacted) when a check
- * failed, so the cause is observable.
- * `transactionalHost` is where the candidate's SMTP transport points; the
- * default is the slot's spool. `bulkBaseUrl` is where its newsletter (bulk)
- * transport points. The control cases point either one elsewhere.
- * `siteUrl` is the address Ghost is told it lives at; the default is the
- * slot's own domain, as on a real slot.
+ * Runs the gate. Never throws: a setup failure is a failed check, so the caller
+ * always gets { passed, durationMs, checks }, plus `logs` ({ ghost, spool }: the
+ * last 200 lines of each container's log, redacted) when a check failed.
+ * `transactionalHost` is the candidate's SMTP target (default: the spool);
+ * `bulkBaseUrl` is its newsletter target. The controls point either elsewhere.
+ * `siteUrl` is the address Ghost is told it lives at (default: the slot domain).
  */
 export async function runMailGate({
   image,

@@ -1,15 +1,12 @@
 // A local stand-in for the mail spool (the mailgun-shim image), for running the
-// mail gate where the pinned image cannot be pulled (the PR job, which is
-// credential-free; registry-push runs the pinned digest). It keeps the same env
-// contract and the same three surfaces the gate and Ghost use: an SMTP listener
-// with AUTH, a Mailgun-shaped POST /v3/:domain/messages, and a token-guarded
-// drain with ack. It is NOT the spool, and the real shim stays the authority.
-// It mirrors one of the shim's controls, because a stand-in that checks only
-// the key passes sends the shim refuses: a credential may only send
-// as its own registered sender domain. The Mailgun route answers 400 as
-// services/mailgun-shim/src/routes/messages.ts does; SMTP MAIL FROM answers 553
-// as smtpFrontDoor.ts does. It compares domains only (case-insensitive, no
-// trailing dot); the shim's address parsing is not copied. Node built-ins only.
+// mail gate where the pinned image cannot be pulled (the credential-free PR job;
+// registry-push runs the pinned digest). It keeps the shim's env contract and its
+// three surfaces: SMTP with AUTH, a Mailgun-shaped POST, and a token-guarded
+// drain. It is NOT the spool; the real shim stays the authority. It mirrors one
+// control, since a key-only check passes sends the shim refuses: a credential may
+// send only as its own sender domain (Mailgun 400 as messages.ts, SMTP MAIL FROM
+// 553 as smtpFrontDoor.ts). Domains only, case-insensitive, no trailing dot; the
+// shim's address parsing is not copied. Node built-ins only.
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
