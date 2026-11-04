@@ -681,6 +681,45 @@ describe('login', () => {
     expect((await login('wrong', { source })).status).toBe(429);
   });
 
+  it('a valid login, and a wrong passphrase, never charge the malformed ceiling', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 });
+    let charged = 0;
+    h = await start({
+      malformedCeiling: {
+        ...inner,
+        attempt: (source, nowMs) => {
+          charged += 1;
+          return inner.attempt(source, nowMs);
+        },
+      },
+    });
+    const source = '203.0.113.2';
+    expect((await login(PASSPHRASE, { source })).status).toBe(303);
+    expect((await login('wrong', { source })).status).toBe(401);
+    expect(charged).toBe(0);
+    // The control: a malformed request is the one thing that charges it.
+    expect((await login('', { source })).status).toBe(400);
+    expect(charged).toBe(1);
+  });
+
+  it('a valid login still succeeds from a source the full malformed table cannot admit', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      malformedCeiling: createAttemptCeiling({ limit: 5, windowMs: 60_000, maxSources: 2 }),
+    });
+    // Two other sources fill the malformed table to its limit.
+    expect((await login('', { source: '203.0.113.3' })).status).toBe(400);
+    expect((await login('', { source: '203.0.113.4' })).status).toBe(400);
+    // A third source's malformed request is refused for want of a table entry.
+    const third = '203.0.113.5';
+    expect((await login('', { source: third })).status).toBe(429);
+    // Its valid login is not a malformed request: it succeeds.
+    const valid = await login(PASSPHRASE, { source: third });
+    expect(valid.status).toBe(303);
+    expect(valid.headers['set-cookie']).toBeDefined();
+  });
+
   it('ten wrong passphrases still lock the eleventh', async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     h = await start({
