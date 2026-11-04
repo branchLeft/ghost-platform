@@ -18,11 +18,11 @@ HERE = pathlib.Path(__file__).parent
 # (name, old text, new text) -- each edits demo_go_live.py only.
 SABOTAGES = [
     ("drop the stand-in refusal (a stand-in-loaded broker opens)",
-     '            elif names:\n                reasons.append(f"slot {slot}: {why}: {\', \'.join(sorted(names))}")\n',
+     '            elif names:\n                reasons.append(f"slot {slot}: {why}: {\', \'.join(_clean(n) for n in sorted(names))}")\n',
      ""),
     ("stop at the first offending slot (only its stand-ins are named)",
-     '            elif names:\n                reasons.append(f"slot {slot}: {why}: {\', \'.join(sorted(names))}")\n',
-     '            elif names:\n                raise GoLiveRefused(f"slot {slot}: {why}: {\', \'.join(sorted(names))}")\n'),
+     '            elif names:\n                reasons.append(f"slot {slot}: {why}: {\', \'.join(_clean(n) for n in sorted(names))}")\n',
+     '            elif names:\n                raise GoLiveRefused(f"slot {slot}: {why}: {\', \'.join(_clean(n) for n in sorted(names))}")\n'),
     ("ignore interim modules",
      '(("notReal", "test stand-in loaded"), ("interim", "interim module loaded"))',
      '(("notReal", "test stand-in loaded"),)'),
