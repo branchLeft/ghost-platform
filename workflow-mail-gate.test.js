@@ -89,6 +89,12 @@ test('the gate has its own PR job: it builds both images and runs the gate test'
   assert.match(ci, /docker build --tag ghost-platform:ci \./);
   assert.match(ci, /docker build --tag spool-standin:ci scripts\/mail-gate\/spool-standin/);
   assert.match(ci, /node --test scripts\/mail-gate\/mail-gate\.test\.mjs/);
+  // The no-Docker proof that the stand-in refuses what the real shim refuses
+  // run before the Docker steps so a drifted stand-in fails fast.
+  assert.match(
+    ci,
+    /node --test scripts\/mail-gate\/spool-standin\/standin\.test\.mjs scripts\/mail-gate\/mail-gate-logs\.test\.mjs/
+  );
   assert.match(ci, /MAIL_GATE_SPOOL_IMAGE: spool-standin:ci/);
   assert.doesNotMatch(ci, BYPASS, 'the gate CI job cannot be skipped or waved through');
 });

@@ -10,7 +10,6 @@ import { docker, pollHttp200, reservePort, sleep } from '../../test-support/imag
 import {
   GhostContainer,
   LABEL,
-  SITE_URL,
   createNetwork,
   dockerOk,
   removeNetwork,
@@ -42,6 +41,22 @@ function storageEnv() {
   return env;
 }
 
+// Logs are dumped into a job log on failure, so the secrets this run minted
+// (the spool key, the drain token) and any Authorization header value are
+// replaced first.
+export function redact(text, secrets = []) {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret) out = out.split(secret).join('[redacted]');
+  }
+  return out.replace(
+    /(authorization\W{1,4})(?:(?:bearer|basic)\s+)?[A-Za-z0-9+/=._~-]+/gi,
+    '$1[redacted]'
+  );
+}
+
+const tail = (text, lines = 200) => text.split('\n').slice(-lines).join('\n');
+
 async function drainUntil(port, token, done, deadline) {
   const seen = [];
   const auth = { authorization: `Bearer ${token}` };
@@ -65,10 +80,14 @@ async function drainUntil(port, token, done, deadline) {
 
 /**
  * Runs the gate. Never throws: a setup failure is a failed check, so the
- * caller always gets { passed, durationMs, checks }.
+ * caller always gets { passed, durationMs, checks }, plus `logs` ({ ghost,
+ * spool }: the last 200 lines of each container's log, redacted) when a check
+ * failed, so the cause is observable.
  * `transactionalHost` is where the candidate's SMTP transport points; the
  * default is the slot's spool. `bulkBaseUrl` is where its newsletter (bulk)
  * transport points. The control cases point either one elsewhere.
+ * `siteUrl` is the address Ghost is told it lives at; the default is the
+ * slot's own domain, as on a real slot.
  */
 export async function runMailGate({
   image,
@@ -76,6 +95,7 @@ export async function runMailGate({
   transactionalHost = 'mail-spool',
   bulkBaseUrl = 'http://mail-spool:8080/v3',
   deadlineMs = DRAIN_DEADLINE_MS,
+  siteUrl = `http://${SLOT_DOMAIN}`,
 }) {
   const started = Date.now();
   const checks = [];
@@ -85,6 +105,8 @@ export async function runMailGate({
   const token = crypto.randomBytes(24).toString('hex');
   const marker = `gate-${crypto.randomBytes(6).toString('hex')}`;
   let ghost = null;
+  let key = '';
+  let logs;
   try {
     const drainPort = await reservePort();
     createNetwork(net);
@@ -125,7 +147,7 @@ export async function runMailGate({
     check('the spool started and answers on its drain port', spoolUp.ok, spoolUp.detail);
     if (!spoolUp.ok) throw new Error('spool did not start');
 
-    const key = docker(
+    key = docker(
       'exec',
       spool,
       'node',
@@ -154,7 +176,7 @@ export async function runMailGate({
         bulkEmail__mailgun__domain: SLOT_DOMAIN,
         bulkEmail__mailgun__apiKey: key,
       },
-      { network: net }
+      { network: net, siteUrl }
     );
     check('the candidate Ghost answers 200 on its own health path', ghost.booted, ghost.bootDetail);
     if (!ghost.booted) throw new Error('candidate Ghost did not boot');
@@ -174,7 +196,7 @@ export async function runMailGate({
     const integrityToken = await (await fetch(`${ghost.base}/members/api/integrity-token`)).text();
     const magic = await fetch(`${ghost.base}/members/api/send-magic-link/`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: SITE_URL },
+      headers: { 'content-type': 'application/json', origin: ghost.siteUrl },
       body: JSON.stringify({ email: HARNESS_ADDRESS, emailType: 'signin', integrityToken }),
     });
     const magicBody = (await magic.text()).slice(0, 200);
@@ -235,6 +257,15 @@ export async function runMailGate({
   } catch (err) {
     check('the gate ran to completion', false, err.message);
   } finally {
+    // Read before the containers are removed. A passing run prints nothing extra.
+    if (checks.some((c) => !c.ok)) {
+      const secrets = [token, key, key && Buffer.from(`api:${key}`).toString('base64')];
+      const spoolLog = dockerOk('logs', spool);
+      logs = {
+        ghost: ghost ? redact(tail(ghost.logs()), secrets) : '',
+        spool: redact(tail(`${spoolLog.stdout}${spoolLog.stderr}`), secrets),
+      };
+    }
     if (ghost) ghost.stop();
     dockerOk('rm', '-f', '-v', spool);
     removeNetwork(net);
@@ -243,6 +274,7 @@ export async function runMailGate({
     passed: checks.length > 0 && checks.every((c) => c.ok),
     durationMs: Date.now() - started,
     checks,
+    ...(logs ? { logs } : {}),
   };
 }
 
@@ -261,5 +293,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(
     `mail gate ${result.passed ? 'passed' : 'FAILED'} in ${(result.durationMs / 1000).toFixed(1)}s`
   );
+  if (result.logs) {
+    console.error(`--- Ghost log (last 200 lines, redacted) ---\n${result.logs.ghost}`);
+    console.error(`--- spool log (last 200 lines, redacted) ---\n${result.logs.spool}`);
+  }
   process.exit(result.passed ? 0 : 1);
 }

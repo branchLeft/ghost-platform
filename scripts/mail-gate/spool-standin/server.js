@@ -1,8 +1,15 @@
 // A local stand-in for the mail spool (the mailgun-shim image), for running the
-// mail gate where the pinned image cannot be pulled. It keeps the same env
+// mail gate where the pinned image cannot be pulled (the PR job, which is
+// credential-free; registry-push runs the pinned digest). It keeps the same env
 // contract and the same three surfaces the gate and Ghost use: an SMTP listener
 // with AUTH, a Mailgun-shaped POST /v3/:domain/messages, and a token-guarded
-// drain with ack. It is NOT the spool: CI runs the pinned digest. Node built-ins only.
+// drain with ack. It is NOT the spool, and the real shim stays the authority.
+// It mirrors one of the shim's controls, because a stand-in that checks only
+// the key passes sends the shim refuses: a credential may only send
+// as its own registered sender domain. The Mailgun route answers 400 as
+// services/mailgun-shim/src/routes/messages.ts does; SMTP MAIL FROM answers 553
+// as smtpFrontDoor.ts does. It compares domains only (case-insensitive, no
+// trailing dot); the shim's address parsing is not copied. Node built-ins only.
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
@@ -12,13 +19,33 @@ const DRAIN_TOKEN = process.env.SHIM_DRAIN_TOKEN;
 const queue = [];
 let nextId = 1;
 
-const keys = () => {
+// { domain: { key, senderDomain } }, written by cli.js register.
+const registry = () => {
   try {
     return JSON.parse(fs.readFileSync(KEYS, 'utf8'));
   } catch {
     return {};
   }
 };
+const keyOf = (domain) => registry()[domain]?.key;
+
+const normalizeDomain = (d) => d.trim().toLowerCase().replace(/\.+$/, '');
+
+// Every mailbox in a From header: the <...> parts, else the comma-separated bare addresses.
+function mailboxes(from) {
+  const angled = [...from.matchAll(/<([^>]*)>/g)].map((m) => m[1]);
+  return angled.length > 0 ? angled : from.split(',').map((a) => a.trim());
+}
+
+// True only when the address (or every From mailbox) is in the credential's sender domain.
+function inSenderDomain(addresses, domain) {
+  const senderDomain = registry()[domain]?.senderDomain;
+  if (!senderDomain || addresses.length === 0) return false;
+  return addresses.every((a) => {
+    const at = a.lastIndexOf('@');
+    return at > 0 && normalizeDomain(a.slice(at + 1)) === normalizeDomain(senderDomain);
+  });
+}
 
 function enqueue(domain, from, to, subject, text, recipientVariables = {}) {
   queue.push({
@@ -57,7 +84,7 @@ function parseMultipart(body, contentType = '') {
 function messagesRoute(req, res, domain) {
   const auth = (req.headers.authorization || '').replace(/^Basic /, '');
   const [user, key] = Buffer.from(auth, 'base64').toString().split(':');
-  if (user !== 'api' || keys()[domain] !== key) {
+  if (user !== 'api' || keyOf(domain) !== key) {
     res.writeHead(401, { 'content-type': 'application/json' });
     return res.end('{"message":"Forbidden"}');
   }
@@ -74,6 +101,9 @@ function messagesRoute(req, res, domain) {
     };
     if (!fields) return bad('multipart body has no boundary');
     const get = (n) => fields.find(([k]) => k === n)?.[1] ?? '';
+    if (!inSenderDomain(mailboxes(get('from')), domain)) {
+      return bad(`'from' address must belong to the domain ${registry()[domain]?.senderDomain}`);
+    }
     let vars;
     try {
       vars = JSON.parse(get('recipient-variables') || '{}');
@@ -180,7 +210,7 @@ function smtpSession(socket) {
         }
         const user = authStep.user;
         authStep = null;
-        if (keys()[user] === decoded) {
+        if (keyOf(user) === decoded) {
           authed = user;
           say('235 ok');
         } else say('535 bad credentials');
@@ -191,7 +221,7 @@ function smtpSession(socket) {
         say('250-standin\r\n250 AUTH PLAIN LOGIN');
       else if (cmd.startsWith('AUTH PLAIN ')) {
         const [, user, pass] = Buffer.from(line.slice(11), 'base64').toString('utf8').split('\0');
-        if (keys()[user] === pass) {
+        if (keyOf(user) === pass) {
           authed = user;
           say('235 ok');
         } else say('535 bad credentials');
@@ -202,7 +232,10 @@ function smtpSession(socket) {
         say('530 authenticate first');
       else if (cmd.startsWith('MAIL FROM')) {
         from = /<([^>]*)>/.exec(line)?.[1] ?? '';
-        say('250 ok');
+        if (!inSenderDomain([from], authed)) {
+          say('553 5.7.1 Sender address rejected: domain not authorised for this account');
+          from = '';
+        } else say('250 ok');
       } else if (cmd.startsWith('RCPT TO')) {
         rcpt.push(/<([^>]*)>/.exec(line)?.[1] ?? '');
         say('250 ok');

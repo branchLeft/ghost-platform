@@ -13,12 +13,19 @@ const SPOOL = process.env.MAIL_GATE_SPOOL_IMAGE || PINNED_SPOOL;
 const TIMEOUT = 360_000;
 const RED_DEADLINE_MS = 45_000;
 
-// One evidence line per check, so a job log shows what each case did.
-function report(label, result) {
+// One evidence line per check, so a job log shows what each case did. The
+// green case failing also prints the Ghost and spool logs (redacted): that is
+// the run whose cause someone has to read. The red controls fail by design and
+// print nothing extra.
+function report(label, result, { showLogs = false } = {}) {
   for (const c of result.checks) {
-    console.log(`${label}: ${c.ok ? 'PASS' : 'FAIL'}: ${c.name}`);
+    console.log(`${label}: ${c.ok ? 'PASS' : 'FAIL'}: ${c.name}${c.ok ? '' : ` (${c.detail})`}`);
   }
   console.log(`${label}: gate ${result.passed ? 'passed' : 'FAILED'}`);
+  if (showLogs && result.logs) {
+    console.log(`${label}: --- Ghost log (last 200 lines, redacted) ---\n${result.logs.ghost}`);
+    console.log(`${label}: --- spool log (last 200 lines, redacted) ---\n${result.logs.spool}`);
+  }
 }
 
 const find = (result, part) => result.checks.find((c) => c.name.includes(part));
@@ -28,7 +35,7 @@ test(
   { timeout: TIMEOUT },
   async () => {
     const result = await runMailGate({ image: IMAGE, spoolImage: SPOOL });
-    report('green', result);
+    report('green', result, { showLogs: true });
     assert.equal(result.passed, true, JSON.stringify(result.checks, null, 2));
     assert.ok(result.durationMs > 0, 'the gate reports how long it took');
     console.log(`mail gate duration: ${(result.durationMs / 1000).toFixed(1)}s`);
