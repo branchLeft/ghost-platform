@@ -664,4 +664,29 @@ describe('the migrator login is held to the manifest', () => {
     expect(await logins()).toEqual(verifiers);
     expect((await migrate()).code).toBe(0);
   });
+
+  // The routine path has no password for these logins, so it probes with a wrong
+  // one: an admitting rule reaches the check and fails it (28P01), a refusal does not.
+  it.each([TENANT, OWNER, PROVISIONER])(
+    'refuses, from the routine path, a pg_hba rule that admits %s to another database',
+    async (login) => {
+      await provisioned();
+      await admin('postgres', `CREATE DATABASE ${OTHER_DB}`);
+      const verifiers = await logins();
+      const rule = (original: string): string =>
+        original.replace(
+          'local all all reject',
+          `host ${OTHER_DB} ${login} all scram-sha-256\nlocal all all reject`
+        );
+      await withHba(rule, true, async () => {
+        const routine = await migrate();
+        expect(routine.code).toBe(1);
+        expect(routine.err.join('\n')).toContain(
+          `extra M28: login ${login} was not refused by pg_hba at database ${OTHER_DB} (got 28P01)`
+        );
+      });
+      expect(await logins()).toEqual(verifiers);
+      expect((await migrate()).code).toBe(0);
+    }
+  );
 });

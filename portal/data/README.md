@@ -358,9 +358,9 @@ node dist/provision/provisionMain.js --migrate-only
 Reads `PORTAL_MIGRATOR_URL_FILE` (and the optional name variables) and no other
 file: not the administrator URL, which it never opens (and so a deployment of
 the routine path need not hold a superuser credential), and no password file.
-It connects to the portal database alone, as the migrator, and refuses
-unless it is connected as the migrator and the migrator is no superuser. It
-runs steps 1 and 4 only: the check, then one transaction that applies the
+It logs in successfully to the portal database alone, as the migrator, and
+refuses unless it is connected as the migrator and the migrator is no
+superuser. It runs steps 1 and 4 only: the check, then one transaction that applies the
 pending migrations with their manifest grants and checks the full manifest
 before commit. It creates no role and no database and sets no password, so
 the logins' stored verifiers are byte for byte unchanged. It refuses with
@@ -385,9 +385,10 @@ says so: after the transaction's final check it prints one
   or `pg_read_all_settings`) and `pg_file_settings` (a value written to a file or
   by `ALTER SYSTEM`, applied at the next reload).
 - **M28**: the loaded pg_hba rules and the files they came from
-  (`pg_hba_file_rules`, `pg_stat_file`). Instead the migrator logs in to every
-  other database with its own password and requires each to refuse it
-  (`28000`).
+  (`pg_hba_file_rules`, `pg_stat_file`). Instead every portal login logs in to
+  every other database, the migrator with its own password and the others with
+  a wrong one, and requires each to be refused (`28000`). A rule that admits a
+  login shows as `28P01`, or as a success.
 
 The migrator is not given membership of `pg_read_all_settings` or a grant on
 `pg_authid`, `pg_file_settings` or `pg_stat_file` to close these: the server

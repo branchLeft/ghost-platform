@@ -1001,17 +1001,16 @@ export class MigrateRefused extends Error {
   }
 }
 
+/** A wrong password for the probe, sent for a login this run holds no secret for. */
+const PROBE_PASSWORD = 'not-the-login-password';
+
 /**
  * Applies the pending migrations, with their manifest grants and the whole
- * manifest check, to a portal database that is already provisioned. It connects
- * as the migrator, the portal database's owner, and holds nothing stronger: no
- * administrator URL and no superuser. It creates no role and no database and
- * sets no password: it refuses, naming what is absent, when a role or the
- * initialised database is missing. It needs no login password but the
- * migrator's own, so it does not smoke-test the other logins. The loaded
- * pg_hba rules are a superuser's to read, so it observes them the one way a
- * login can: it logs in to every other database as itself and requires each
- * to refuse it.
+ * check, to a provisioned portal database, as its migrator: no administrator
+ * URL, no superuser. It creates no role or database and sets no password, and
+ * refuses, naming what is absent. The loaded pg_hba rules are observed the one
+ * way a login can: each portal login logs in to every other database and must
+ * be refused there (SQLSTATE 28000).
  */
 export async function migratePortal(
   config: ProvisionConfig,
@@ -1072,9 +1071,15 @@ export async function migratePortal(
           'SELECT datname FROM pg_database WHERE datallowconn AND datname <> $1 ORDER BY 1',
           [config.database]
         );
+        // Every login is held to the full provision's rule: refused everywhere but
+        // the portal database. A pg_hba refusal ends an attempt before the password
+        // is checked (28000); a rule that admits the login fails the check (28P01).
         const probed = await probeOtherDatabases(
           (others.rows as { datname: string }[]).map((r) => r.datname),
-          [{ name: names.migratorLogin, password: config.migratorPassword }],
+          LOGINS.map((p) => ({
+            name: names[p],
+            password: p === 'migratorLogin' ? config.migratorPassword : PROBE_PASSWORD,
+          })),
           attempt
         );
         return {
