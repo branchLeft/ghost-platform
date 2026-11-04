@@ -35,12 +35,18 @@ itself requires. The run-side node is to test it on a host with no `GH_TOKEN`.
 `scripts/prove-wrong-identity-rejected.sh` runs after the real verifies pass on
 the same image. It requires a wrong signer (the signer with `.sabotage`
 appended) to be refused through both paths, and refused for the identity. A
-refusal counts only when gh prints one of `no matching CertificateIdentity`,
-`Subject Alternative Name` or `Policy verification failed`. Those are the
-messages sigstore-go, the verifier gh uses, prints for a mismatch. A network,
-TUF or registry fault also exits non-zero, and must fail the check rather than
-pass as a rejection. Those markers were read from the local gh 2.97 binary, not
-from a live failing attestation.
+refusal counts when gh prints one of `no matching CertificateIdentity`,
+`Subject Alternative Name` or `Policy verification failed`, or the live wording
+below. The first three were read from the local gh 2.97 binary, not from a live
+run.
+
+The live wording comes from a live failing run on `main`,
+[run 41728033706](https://github.com/branchLeft/ghost-platform/actions/runs/41728033706).
+gh printed `Error: verifying with issuer "sigstore.dev"`, then the verify script
+printed `no valid attestation for <image> from <wrong signer> on refs/heads/main`.
+The verify script prints that last line for every gh failure, so it counts only
+with the verifying line before it. A token, Sigstore or network fault prints the
+last line too, and must fail the check rather than pass as a rejection.
 
 ## Identities
 

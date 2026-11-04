@@ -162,6 +162,55 @@ else
   fail "g2. without VERIFY_PLAIN_ERRORS the refusal is a ::error:: annotation"; sed 's/^/        /' "$WORK/out"
 fi
 
+# (h) The live wording, from run 41728033706. gh prints "verifying with issuer"
+# and then the verify script prints the line naming the identity. A token,
+# Sigstore or network fault prints that last line too, so it alone is not a
+# refusal. A fake verify script prints each text exactly, beside a copy of the
+# prove script.
+FAKE="$WORK/fake"
+mkdir "$FAKE"
+cp "$PROVE" "$FAKE/prove-wrong-identity-rejected.sh"
+cat > "$FAKE/verify-image-attestation.sh" <<'FAKE_VERIFY'
+#!/bin/sh
+cat "$FAKE_TEXT"
+exit 1
+FAKE_VERIFY
+chmod +x "$FAKE/verify-image-attestation.sh"
+FAKE_TEXT="$WORK/text"
+export FAKE_TEXT
+LIVE_GH='Error: verifying with issuer "sigstore.dev"'
+LIVE_LINE="error: no valid attestation for $GOOD_REF from $SIGNER.sabotage on refs/heads/main"
+NETWORK='error: Get "https://api.github.com/repos/branchLeft/ghost-platform/attestations/sha256:aaaa": dial tcp: i/o timeout'
+
+# run_text <name> <expected: zero|nonzero>: the text in $FAKE_TEXT is the verify output.
+run_text() {
+  name="$1"; want="$2"
+  "$FAKE/prove-wrong-identity-rejected.sh" "$GOOD_REF" "$REPO" "$SIGNER" > "$WORK/out" 2>&1
+  code=$?
+  ok=1
+  if [ "$want" = "zero" ] && [ "$code" -ne 0 ]; then ok=0; fi
+  if [ "$want" = "nonzero" ] && [ "$code" -eq 0 ]; then ok=0; fi
+  if [ "$want" = "zero" ] && grep -q '::error::' "$WORK/out"; then ok=0; fi
+  if [ "$ok" -eq 1 ]; then pass "$name"; else fail "$name (exit $code, wanted $want)"; sed 's/^/        /' "$WORK/out"; fi
+}
+
+printf '%s\n' "$LIVE_GH" "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h. (a) the live wording naming the wrong identity is a refusal" zero
+printf '%s\n' "$LIVE_GH" "error: no valid attestation for $GOOD_REF from $REPO/.github/workflows/portal-apps-image.yml.sabotage on refs/heads/main" > "$FAKE_TEXT"
+run_text "h2. (b) the same wording naming a different identity is not a refusal" nonzero
+printf '%s\n' "$LIVE_GH" "error: no valid attestation for $GOOD_REF from $SIGNER on refs/heads/main" > "$FAKE_TEXT"
+run_text "h3. (b2) the same wording naming the real signer is not a refusal" nonzero
+printf '%s\n' "$NETWORK" > "$FAKE_TEXT"
+run_text "h4. (c) a network error is not a refusal" nonzero
+printf '%s\n' "$NETWORK" "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h5. (c2) a network error followed by the verify line is not a refusal" nonzero
+printf '%s\n' 'error creating Sigstore verifier: no valid Sigstore verifiers could be initialized' "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h6. (c3) a Sigstore verifier that cannot start is not a refusal" nonzero
+printf '%s\n' 'Error: the provided token was denied access to the requested resource' "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h7. (c4) a denied token followed by the verify line is not a refusal" nonzero
+printf '%s\n' 'Error: Policy verification failed: no matching CertificateIdentity found' > "$FAKE_TEXT"
+run_text "h8. (d) the old markers alone are still a refusal" zero
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed"
   exit 1

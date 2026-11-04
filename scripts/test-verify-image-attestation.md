@@ -33,6 +33,12 @@ quietly dropped `--signer-workflow` would therefore be accepted by the stub.
   wrong signer (f4).
 - g: `VERIFY_PLAIN_ERRORS=1` prints a refusal as plain text; without it the
   refusal is a `::error::` annotation.
+- h: the live wording from run 41728033706 is a refusal for the wrong identity
+  (h). The same wording naming another identity, or the real signer, is not
+  (h2, h3). A network error, a Sigstore verifier that cannot start, or a denied
+  token, each followed by the verify line, is not (h4 to h7). The old markers
+  alone still are (h8). Case h uses a fake verify script that prints each text
+  exactly, so the wrong-identity check is tested against those texts directly.
 
 ## Showing it red
 
