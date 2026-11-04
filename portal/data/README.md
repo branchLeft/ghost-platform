@@ -252,7 +252,7 @@ PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres pnpm run co
 
 The URL must be a superuser on a throwaway cluster started with
 `test/pg_hba.ci.conf` as its `hba_file` (it names each test login, the
-provisioner's included) (writable by the server's user, since
+provisioner's and the migrator's included) (writable by the server's user, since
 the pg_hba tests rewrite and restore it), because the provisioning command
 refuses any rule that lets a portal login reach another database. CI runs the
 suite on PostgreSQL 14 and 17. The suite creates and drops its own databases.
@@ -277,21 +277,41 @@ the variable itself is refused.
 | `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
 | `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
 | `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII) |
+| `PORTAL_MIGRATOR_PASSWORD_FILE` | password for the migrator login (printable ASCII) |
+| `PORTAL_MIGRATOR_URL_FILE`    | `--migrate-only` only: the migrator login's connection URL, password included |
 | `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
 | `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
 | `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
 | `PORTAL_PROVISIONER_LOGIN`    | optional, default `portal_provisioner_login`          |
+| `PORTAL_MIGRATOR_LOGIN`       | optional, default `portal_migrator_login`             |
 
-The three logins must differ and their passwords come from three files. A full
-run needs all three password files: the manifest is closed, so a run without
-the provisioner's is refused rather than provisioning two of three.
+The four logins must differ and their passwords come from four files. A full
+run needs all four password files: the manifest is closed, so a run without
+one is refused rather than provisioning three of four.
 
 The command creates what is absent, checks everything, and repairs nothing.
-`provision/manifest.ts` is the closed manifest: the three roles and three logins
+`provision/manifest.ts` is the closed manifest: the three roles and four logins
 with their exact attributes (all `NOINHERIT`; the apps always `SET LOCAL
-ROLE`), one membership per login, and every grant, each justified by a call
-site. No role may `DELETE`, the owner role may not `UPDATE` the tenant register,
-and the provisioner role may not `UPDATE` anything.
+ROLE`), one membership per login but the migrator's, and every grant, each
+justified by a call site. No role may `DELETE`, the owner role may not
+`UPDATE` the tenant register, and the provisioner role may not `UPDATE`
+anything.
+
+**The migrator login** is the fourth login. It is no superuser and holds no
+`BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`, is a member of no role,
+and is admitted to the portal database alone. It owns the portal database,
+the `drizzle` and `portal` schemas, and every table, sequence and function the
+migrations make (before PostgreSQL 15 it also owns schema `public`, which the
+command hands to it once, when it creates the database; from 15 `public`
+belongs to `pg_database_owner`, which is the migrator while it owns the
+database). An owner can create the objects the migrations make and grant on them,
+which is all the migrations and the manifest's grants need, so the command runs
+as it for everything after the roles and the database exist. The administrator
+URL (a superuser) creates the roles and the database and is not used again. A
+database already provisioned under the administrator's ownership is refused
+(`extra M18: database ... is owned by postgres`): the command repairs nothing,
+and converting one (reassigning ownership and re-making its grants) is a step
+for the administrator.
 
 1. **Check, before any write.** The whole privilege state of the server is
    compared with the manifest through the closed list of mechanisms
@@ -306,18 +326,21 @@ and the provisioner role may not `UPDATE` anything.
    absent role or database this run creates, refuses: exit 1, one line per
    difference on stderr, nothing written.
 2. Absent roles and logins are created; existing logins get the new password
-   (sent as a SCRAM verifier). The database is created if absent.
-3. Each login tries every other database and must be refused by pg_hba
-   (`28000`). This runs after step 2, so a refusal here names what the run
-   had already done (logins created or passwords rotated, an empty database
-   created) instead of saying nothing changed.
-4. In the portal database, one transaction: the check again, the ORM's
-   pending migrations (drizzle's own loop, replayed on this transaction), the
-   grants on what they created, and the check against the full manifest
-   before commit.
+   (sent as a SCRAM verifier). The database is created if absent, owned by
+   the migrator.
+3. Each login, the migrator's included, tries every other database and must be
+   refused by pg_hba (`28000`). This runs after step 2, so a refusal here names
+   what the run had already done (logins created or passwords rotated, an
+   empty database created) instead of saying nothing changed.
+4. In the portal database, as the migrator, one transaction: the check again,
+   the ORM's pending migrations (drizzle's own loop, replayed on this
+   transaction), the grants on what they created, and the check against the
+   full manifest before commit. The transaction refuses on a connection that
+   is a superuser or is not the migrator.
 5. A smoke test connects as each login (`42501` permission denied, `28000` no
    tenant bound; the provisioner login may read what it writes and may neither
-   update nor delete it).
+   update nor delete it; the migrator assumes no portal role and creates no
+   role).
 
 Concurrent runs are serialised by an advisory lock. PostgreSQL scopes advisory
 locks to one database, so the session lock held on the maintenance database
@@ -332,19 +355,45 @@ interleave there.
 node dist/provision/provisionMain.js --migrate-only
 ```
 
-Reads `PORTAL_ADMIN_URL_FILE` (and the optional name variables) and no
-password file. It runs steps 1 and 4 only: the check, then one transaction
-that applies the pending migrations with their manifest grants and checks the
-full manifest before commit. It creates no role and no database and sets no
-password, so the logins' stored verifiers are byte for byte unchanged. It
-refuses with `migrate refused: role ... is absent` or `migrate refused:
-database ... is absent, not provisioned` when the full provision has not run.
-A server last provisioned before `portal_provisioner` existed is such a case:
-`--migrate-only` refuses naming the missing role and login, and the full run
-(with the provisioner's password file) comes first, then `--migrate-only` for
-later migrations.
-It skips steps 3 and 5, which need the login passwords. Run again with
-nothing pending, it applies nothing and prints `no pending migrations`.
+Reads `PORTAL_MIGRATOR_URL_FILE` (and the optional name variables) and no other
+file: not the administrator URL, which it never opens (and so a deployment of
+the routine path need not hold a superuser credential), and no password file.
+It connects to the portal database alone, as the migrator, and refuses
+unless it is connected as the migrator and the migrator is no superuser. It
+runs steps 1 and 4 only: the check, then one transaction that applies the
+pending migrations with their manifest grants and checks the full manifest
+before commit. It creates no role and no database and sets no password, so
+the logins' stored verifiers are byte for byte unchanged. It refuses with
+`migrate refused: role ... is absent` or `migrate refused: database ... is
+created-empty, not provisioned` when the full provision has not run, and with
+`migrate refused: cannot connect ... as <migrator>` when the migrator or the
+database does not exist. A server last provisioned before `portal_provisioner`
+or the migrator existed is such a case: `--migrate-only` refuses, and the full
+run (with every password file) comes first, then `--migrate-only` for later
+migrations. It skips step 5, which needs the other logins' passwords. Run again
+with nothing pending, it applies nothing and prints `no pending migrations`.
+
+**What the routine path does not observe.** A superuser reads catalogs the
+migrator cannot, so from the migrator's vantage the check is narrower, and it
+says so: after the transaction's final check it prints one
+`not observed as <migrator>, M..` line for each mechanism it could not see.
+
+- **M01**: whether a login holds a password and the shape of its verifier
+  (`pg_authid` is superuser only, and `pg_roles` masks every password). All
+  the other attributes are checked.
+- **M27**: `shared_preload_libraries` and `session_preload_libraries` (superuser
+  or `pg_read_all_settings`) and `pg_file_settings` (a value written to a file or
+  by `ALTER SYSTEM`, applied at the next reload).
+- **M28**: the loaded pg_hba rules and the files they came from
+  (`pg_hba_file_rules`, `pg_stat_file`). Instead the migrator logs in to every
+  other database with its own password and requires each to refuse it
+  (`28000`).
+
+The migrator is not given membership of `pg_read_all_settings` or a grant on
+`pg_authid`, `pg_file_settings` or `pg_stat_file` to close these: the server
+configuration can hold a replication connection string with a password, and an
+application login should not read it. The full provision runs as the
+administrator and observes all of M01, M27 and M28 before it writes anything.
 
 A re-run changes nothing but the passwords. A refusal is a security event: the
 per-difference fix is a manual step for the administrator, never this command.

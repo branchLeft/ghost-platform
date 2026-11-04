@@ -4,14 +4,15 @@
 // never repairs. A migration that adds an object needs an entry here, or the
 // migration-sync test fails before the migration can reach a server.
 
-/** The six principals, by the part each plays. */
+/** The seven principals, by the part each plays. */
 export type Principal =
   | 'tenantRole'
   | 'ownerRole'
   | 'provisionerRole'
   | 'tenantLogin'
   | 'ownerLogin'
-  | 'provisionerLogin';
+  | 'provisionerLogin'
+  | 'migratorLogin';
 export type Grantee = Principal | 'PUBLIC';
 
 export const TENANT_ROLE = 'portal_tenant';
@@ -25,12 +26,14 @@ export interface Names {
   tenantLogin: string;
   ownerLogin: string;
   provisionerLogin: string;
+  migratorLogin: string;
 }
 
 export function principalNames(
   tenantLogin: string,
   ownerLogin: string,
-  provisionerLogin: string
+  provisionerLogin: string,
+  migratorLogin: string
 ): Names {
   return {
     tenantRole: TENANT_ROLE,
@@ -39,6 +42,7 @@ export function principalNames(
     tenantLogin,
     ownerLogin,
     provisionerLogin,
+    migratorLogin,
   };
 }
 
@@ -57,9 +61,17 @@ export const ROLE_ATTRIBUTES: Record<Principal, RoleAttributes> = {
   tenantLogin: { canLogin: true, bypassRls: false },
   ownerLogin: { canLogin: true, bypassRls: false },
   provisionerLogin: { canLogin: true, bypassRls: false },
+  // Owns the portal database and everything the migrations create, and applies
+  // them. A login like the others: no superuser, no BYPASSRLS, no CREATEROLE,
+  // no CREATEDB, no REPLICATION, and a member of no role. The database's
+  // privileges below it are its own as owner; nothing else on the server is.
+  migratorLogin: { canLogin: true, bypassRls: false },
 };
 
-/** Each login is a member of exactly one role (M02). */
+/**
+ * Each login but the migrator is a member of exactly one role (M02). The
+ * migrator is a member of none: its reach is itself.
+ */
 export const MEMBERSHIPS: readonly (readonly [Principal, Principal])[] = [
   ['tenantLogin', 'tenantRole'],
   ['ownerLogin', 'ownerRole'],
@@ -76,8 +88,8 @@ export interface Grant {
 /**
  * One object the manifest manages. `since` is the migration that creates it,
  * or `init` for what the command itself sets up on a new database. `grants`
- * is the whole ACL beyond the owner's own entries. `ownedBy` is
- * `administrator` (the superuser that owns the database) unless stated.
+ * is the whole ACL beyond the owner's own entries. `ownedBy` is `migrator`
+ * (the non-superuser login that owns the database) unless stated.
  */
 export interface ManifestObject {
   kind: ObjectKind;
@@ -85,7 +97,7 @@ export interface ManifestObject {
   identity: string;
   since: string;
   grants: readonly Grant[];
-  ownedBy?: 'administrator' | 'pg_database_owner' | 'bootstrap';
+  ownedBy?: 'migrator' | 'pg_database_owner' | 'bootstrap';
 }
 
 export const INIT = 'init';
@@ -101,15 +113,17 @@ const DEMO_REBUILD = '0007_demo_rebuild_extended';
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
  * rule per server version. Before PostgreSQL 15 it is owned by the bootstrap
- * superuser and PUBLIC holds CREATE, which the command revokes; from 15 it is
- * owned by `pg_database_owner` and PUBLIC holds USAGE alone.
+ * superuser and PUBLIC holds CREATE; the command hands it to the migrator once,
+ * when it initialises the database, and revokes PUBLIC's CREATE. From 15 it is
+ * owned by `pg_database_owner`, the migrator while the migrator owns the
+ * database, and PUBLIC holds USAGE alone.
  */
 export function publicSchema(major: number): ManifestObject {
   return {
     kind: 'schema',
     identity: 'public',
     since: INIT,
-    ownedBy: major >= 15 ? 'pg_database_owner' : 'bootstrap',
+    ownedBy: major >= 15 ? 'pg_database_owner' : 'migrator',
     grants: [
       { grantee: 'PUBLIC', privileges: ['USAGE'] },
       // The policies call public.bound_*() as the invoking role.
@@ -132,7 +146,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
       ],
     },
     publicSchema(major),
-    // The migration history, administrator only.
+    // The migration history, the migrator only.
     { kind: 'schema', identity: 'drizzle', since: FIRST, grants: [] },
     { kind: 'table', identity: 'drizzle.__drizzle_migrations', since: FIRST, grants: [] },
     {

@@ -21,6 +21,7 @@ import { scramVerifier } from '../provision/scram.js';
 const TENANT_PW = 'tenant-secret-9f2c41';
 const OWNER_PW = 'owner-secret-77ab03';
 const PROVISIONER_PW = 'provisioner-secret-5d19e8';
+const MIGRATOR_PW = 'migrator-secret-3b8e72';
 const ADMIN_PW = 'admin-secret-c0ffee';
 
 function files(entries: Record<string, string>): { dir: string; env: Record<string, string> } {
@@ -39,10 +40,11 @@ const GOOD = {
   PORTAL_TENANT_PASSWORD_FILE: `${TENANT_PW}\n`,
   PORTAL_OWNER_PASSWORD_FILE: `${OWNER_PW}\n`,
   PORTAL_PROVISIONER_PASSWORD_FILE: `${PROVISIONER_PW}\n`,
+  PORTAL_MIGRATOR_PASSWORD_FILE: `${MIGRATOR_PW}\n`,
 };
 
 describe('loadConfig', () => {
-  it('reads the connection and the three passwords from files, trimming one newline', () => {
+  it('reads the connection and the four passwords from files, trimming one newline', () => {
     const { dir, env } = files(GOOD);
     const config = loadConfig(env, []);
     rmSync(dir, { recursive: true });
@@ -50,6 +52,8 @@ describe('loadConfig', () => {
     expect(config.tenantPassword).toBe(TENANT_PW);
     expect(config.ownerPassword).toBe(OWNER_PW);
     expect(config.provisionerPassword).toBe(PROVISIONER_PW);
+    expect(config.migratorPassword).toBe(MIGRATOR_PW);
+    expect(config.migratorLogin).toBe('portal_migrator_login');
     expect(config.database).toBe('portal');
     expect(config.tenantLogin).toBe('portal_tenant_login');
     expect(config.ownerLogin).toBe('portal_owner_login');
@@ -65,6 +69,7 @@ describe('loadConfig', () => {
         PORTAL_TENANT_LOGIN: 't2',
         PORTAL_OWNER_LOGIN: 'o2',
         PORTAL_PROVISIONER_LOGIN: 'p3',
+        PORTAL_MIGRATOR_LOGIN: 'm4',
       },
       []
     );
@@ -74,7 +79,8 @@ describe('loadConfig', () => {
       config.tenantLogin,
       config.ownerLogin,
       config.provisionerLogin,
-    ]).toEqual(['p2', 't2', 'o2', 'p3']);
+      config.migratorLogin,
+    ]).toEqual(['p2', 't2', 'o2', 'p3', 'm4']);
   });
 
   it.each([
@@ -82,6 +88,7 @@ describe('loadConfig', () => {
     'PORTAL_TENANT_PASSWORD_FILE',
     'PORTAL_OWNER_PASSWORD_FILE',
     'PORTAL_PROVISIONER_PASSWORD_FILE',
+    'PORTAL_MIGRATOR_PASSWORD_FILE',
   ])('refuses with a clear error when %s is missing', (name) => {
     const { dir, env } = files(GOOD);
     delete env[name];
@@ -122,6 +129,8 @@ describe('loadConfig', () => {
     'PORTAL_TENANT_PASSWORD',
     'PORTAL_OWNER_PASSWORD',
     'PORTAL_PROVISIONER_PASSWORD',
+    'PORTAL_MIGRATOR_PASSWORD',
+    'PORTAL_MIGRATOR_URL',
   ])('refuses a secret placed in %s itself', (name) => {
     const { dir, env } = files(GOOD);
     let message = '';
@@ -241,7 +250,7 @@ describe('login passwords never reach the SQL text', () => {
   it('sends a verifier, not the password, when it creates or rotates a login', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login', 'c_login');
+    const names = principalNames('a_login', 'b_login', 'c_login', 'm_login');
     await createPrincipal(fake, names, 'tenantLogin', nasty);
     await rotatePassword(fake, 'b_login', nasty);
     expect(seen.length).toBe(2);
@@ -256,7 +265,7 @@ describe('login passwords never reach the SQL text', () => {
   it('creates a role with no password, the owner role alone with BYPASSRLS, and the provisioner without', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login', 'c_login');
+    const names = principalNames('a_login', 'b_login', 'c_login', 'm_login');
     await createPrincipal(fake, names, 'tenantRole');
     await createPrincipal(fake, names, 'ownerRole');
     await createPrincipal(fake, names, 'provisionerRole');
@@ -370,6 +379,7 @@ describe('loadConfig names', () => {
     ['PORTAL_TENANT_LOGIN', 'Upper'],
     ['PORTAL_OWNER_LOGIN', 'x; drop'],
     ['PORTAL_PROVISIONER_LOGIN', 'Mixed'],
+    ['PORTAL_MIGRATOR_LOGIN', 'Mixed'],
   ])('refuses %s=%s before anything touches a server', (name, value) => {
     const { dir, env } = files(GOOD);
     expect(() => loadConfig({ ...env, [name]: value }, [])).toThrow(
@@ -382,6 +392,9 @@ describe('loadConfig names', () => {
     ['PORTAL_TENANT_LOGIN', 'PORTAL_OWNER_LOGIN'],
     ['PORTAL_OWNER_LOGIN', 'PORTAL_PROVISIONER_LOGIN'],
     ['PORTAL_TENANT_LOGIN', 'PORTAL_PROVISIONER_LOGIN'],
+    ['PORTAL_TENANT_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
+    ['PORTAL_OWNER_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
+    ['PORTAL_PROVISIONER_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
   ])('refuses one login for two roles: %s and %s', (first, second) => {
     const { dir, env } = files(GOOD);
     expect(() => loadConfig({ ...env, [first]: 'same', [second]: 'same' }, [])).toThrow(
@@ -398,7 +411,7 @@ describe('loadConfig names', () => {
 });
 
 describe('the statements the command writes', () => {
-  const names = principalNames('t_login', 'o_login', 'v_login');
+  const names = principalNames('t_login', 'o_login', 'v_login', 'm_login');
 
   it('revokes PUBLIC from a new database and grants CONNECT to the three logins', () => {
     const database = manifest(17, 'portal').find((o) => o.kind === 'database')!;
@@ -454,5 +467,109 @@ describe('the statements the command writes', () => {
     const error = new ProvisionRefused(['extra M06: a', 'missing M04: b']);
     expect(error.message).toBe('refused: 2 difference(s) from the manifest; nothing was changed');
     expect(error.lines).toEqual(['extra M06: a', 'missing M04: b']);
+  });
+});
+
+describe('loadConfig for --migrate-only', () => {
+  const MIGRATOR_URL = `postgres://portal_migrator_login:${MIGRATOR_PW}@db.invalid:5432/portal`;
+  const MIGRATE = { PORTAL_MIGRATOR_URL_FILE: `${MIGRATOR_URL}\n` };
+
+  it('reads the migrator URL alone: no administrator file and no password file', () => {
+    const { dir, env } = files(MIGRATE);
+    const config = loadConfig(env, [], undefined, true);
+    rmSync(dir, { recursive: true });
+    expect(config.migratorUrl).toBe(MIGRATOR_URL);
+    expect(config.migratorPassword).toBe(MIGRATOR_PW);
+    expect(config.migratorLogin).toBe('portal_migrator_login');
+    expect(config.adminUrl).toBe('');
+    expect([config.tenantPassword, config.ownerPassword, config.provisionerPassword]).toEqual([
+      '',
+      '',
+      '',
+    ]);
+  });
+
+  it('never opens a file but the migrator URL', () => {
+    const opened: string[] = [];
+    const read = (path: string): string => {
+      opened.push(path);
+      if (path !== 'migrator-url') throw new Error(`read a file it should not: ${path}`);
+      return MIGRATOR_URL;
+    };
+    const config = loadConfig(
+      {
+        PORTAL_MIGRATOR_URL_FILE: 'migrator-url',
+        PORTAL_ADMIN_URL_FILE: 'admin',
+        PORTAL_TENANT_PASSWORD_FILE: 'tenant',
+      },
+      [],
+      read,
+      true
+    );
+    expect(opened).toEqual(['migrator-url']);
+    expect(config.adminUrl).toBe('');
+  });
+
+  it('fails closed, saying so, when only the administrator file is given', () => {
+    const { dir, env } = files({ PORTAL_ADMIN_URL_FILE: GOOD.PORTAL_ADMIN_URL_FILE });
+    expect(() => loadConfig(env, [], undefined, true)).toThrow(
+      /PORTAL_MIGRATOR_URL_FILE must name a file.*does not read PORTAL_ADMIN_URL_FILE/
+    );
+    rmSync(dir, { recursive: true });
+  });
+
+  it('refuses a URL that is not the migrator login, or carries no password', () => {
+    const other = files({
+      PORTAL_MIGRATOR_URL_FILE: `postgres://postgres:${ADMIN_PW}@db.invalid/portal`,
+    });
+    let message = '';
+    try {
+      loadConfig(other.env, [], undefined, true);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    rmSync(other.dir, { recursive: true });
+    expect(message).toMatch(/must name the migrator login portal_migrator_login/);
+    expect(message).not.toContain(ADMIN_PW);
+    const bare = files({
+      PORTAL_MIGRATOR_URL_FILE: 'postgres://portal_migrator_login@db.invalid/p',
+    });
+    expect(() => loadConfig(bare.env, [], undefined, true)).toThrow(/carries no password/);
+    rmSync(bare.dir, { recursive: true });
+    const junk = files({ PORTAL_MIGRATOR_URL_FILE: `nope ${MIGRATOR_PW}` });
+    expect(() => loadConfig(junk.env, [], undefined, true)).toThrow(
+      /does not hold a connection URL/
+    );
+    rmSync(junk.dir, { recursive: true });
+  });
+
+  it('removes the migrator password and URL from any message', () => {
+    const config: Partial<ProvisionConfig> = {
+      migratorUrl: 'postgres://m:p%40ss@host/portal',
+      migratorPassword: 'p@ss',
+    };
+    const out = redact('x p@ss y p%40ss z postgres://m:p%40ss@host/portal', config);
+    expect(out).not.toContain('p@ss');
+    expect(out).not.toContain('p%40ss');
+  });
+});
+
+describe('the migrator login', () => {
+  it('is created with the login attributes and no role to inherit', async () => {
+    const seen: string[] = [];
+    const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
+    const names = principalNames('a_login', 'b_login', 'c_login', 'm_login');
+    await createPrincipal(fake, names, 'migratorLogin', MIGRATOR_PW);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(
+      /^CREATE ROLE "m_login" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'SCRAM-SHA-256\$4096:/
+    );
+    expect(seen[0]).not.toContain(MIGRATOR_PW);
+  });
+
+  it('is granted no role and no CONNECT: the database is its own', () => {
+    const names = principalNames('t_login', 'o_login', 'v_login', 'm_login');
+    const all = manifest(14, 'portal').flatMap((o) => grantStatements(o, names, 14));
+    expect(all.filter((s) => s.includes('"m_login"'))).toEqual([]);
   });
 });
