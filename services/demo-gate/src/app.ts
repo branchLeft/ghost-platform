@@ -31,6 +31,15 @@ export interface GateDeps {
    */
   readonly broadCeiling: AttemptCeiling;
   /**
+   * Per source, keyed narrow like `ceiling`, and charged only on a request
+   * already known to be malformed (a 400 path in `login()`). A well-formed
+   * attempt never reads or writes it, so a flood of malformed requests can
+   * make further malformed requests from that source 429 but can never refuse
+   * or charge a valid login. Malformed requests are otherwise free; this
+   * bucket is what bounds them.
+   */
+  readonly malformedCeiling: AttemptCeiling;
+  /**
    * Caps derivations in flight at once, across every source together --
    * the per-source ceilings above bound one source's rate, not how many
    * distinct sources can be mid-derivation at the same time.
@@ -160,6 +169,20 @@ async function verify(deps: GateDeps, req: IncomingMessage, res: ServerResponse)
   }
 }
 
+/**
+ * Answers a malformed login with 400, charged to the malformed bucket for its
+ * source. Once that bucket is spent the answer is 429 instead, so a flood of
+ * malformed POSTs is bounded while the login ceilings are never touched.
+ */
+function refuseMalformed(deps: GateDeps, res: ServerResponse, source: string): void {
+  const verdict = deps.malformedCeiling.attempt(source, deps.nowMs());
+  if (verdict.allowed) return send(res, 400);
+  return send(res, 429, passphrasePage('/', 'DEMO_GATE_TOO_MANY_ATTEMPTS'), {
+    ...PAGE_HEADERS,
+    'Retry-After': String(verdict.retryAfterSeconds),
+  });
+}
+
 async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const source = deps.sources.resolve(req.socket.remoteAddress, req.headers['x-forwarded-for']);
   const broadSource = deps.sources.resolveBroad(
@@ -176,12 +199,12 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
     contentType.split(';')[0]?.trim().toLowerCase() === 'application/x-www-form-urlencoded'
       ? await readBody(req)
       : null;
-  if (body === null) return send(res, 400);
+  if (body === null) return refuseMalformed(deps, res, source);
   const form = new URLSearchParams(body);
   const passphrase = form.get('passphrase') ?? '';
   const returnPath = safeReturnPath(form.get('r'));
   if (passphrase.length === 0 || passphrase.length > MAX_PASSPHRASE_LENGTH) {
-    return send(res, 400);
+    return refuseMalformed(deps, res, source);
   }
 
   const attemptedAt = deps.nowMs();
