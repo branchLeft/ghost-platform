@@ -311,6 +311,7 @@ URL (a superuser) creates the roles and the database and is not used again. A
 database already provisioned under the administrator's ownership is refused
 (`extra M18: database ... is owned by postgres`): the command repairs nothing,
 and converting one (reassigning ownership and re-making its grants) is a step
+for the administrator.
 
 **Handle the migrator's password and URL as a full-data credential.** It owns its
 tables but they have `ENABLE` and not `FORCE ROW LEVEL SECURITY`, so as owner it
@@ -318,7 +319,6 @@ bypasses the row-level policies and can `DELETE` any row. It holds less than the
 administrator does, but its secret (`PORTAL_MIGRATOR_PASSWORD_FILE`,
 `PORTAL_MIGRATOR_URL_FILE`) gets the same custody as one: not in a job log, not
 in a long-lived runner, removed after the run.
-for the administrator.
 
 1. **Check, before any write.** The whole privilege state of the server is
    compared with the manifest through the closed list of mechanisms
