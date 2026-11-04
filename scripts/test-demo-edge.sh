@@ -72,8 +72,8 @@ chmod 0644 "$WORK/leases/0.json"
 sed "s/demo-host.example.test/$HOST/; s/k7m-vale-bright.demo-domain.example.test/$HOST/" \
     "$HERE/render-core/test/golden/demo.edge.json" > "$WORK/edge.json"
 # Proof-only global options: a local CA and no trust-store install.
-python3 "$HERE/demo-host/provision/render_demo_site.py" --slot 0 --edge-json "$WORK/edge.json" \
-    --gate-env-out "$WORK/gate.env" \
+python3 "$HERE/demo-host/provision/render_demo_site.py" --base "${HOST#*.}" --site 0="$WORK/edge.json" \
+    --tls 'tls internal' --gate-env-out "$WORK/gate.env" \
     | sed 's/^\tadmin off$/\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\tauto_https disable_redirects/' \
     > "$WORK/Caddyfile"
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "narrow-import" ]; then
