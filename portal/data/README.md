@@ -313,6 +313,13 @@ database already provisioned under the administrator's ownership is refused
 and converting one (reassigning ownership and re-making its grants) is a step
 for the administrator.
 
+**Handle the migrator's password and URL as a full-data credential.** It owns its
+tables but they have `ENABLE` and not `FORCE ROW LEVEL SECURITY`, so as owner it
+bypasses the row-level policies and can `DELETE` any row. It holds less than the
+administrator does, but its secret (`PORTAL_MIGRATOR_PASSWORD_FILE`,
+`PORTAL_MIGRATOR_URL_FILE`) gets the same custody as one: not in a job log, not
+in a long-lived runner, removed after the run.
+
 1. **Check, before any write.** The whole privilege state of the server is
    compared with the manifest through the closed list of mechanisms
    (`MECHANISMS`, M01 to M29, in `provision/catalog.ts`): role attributes and
@@ -388,7 +395,11 @@ says so: after the transaction's final check it prints one
   (`pg_hba_file_rules`, `pg_stat_file`). Instead every portal login logs in to
   every other database, the migrator with its own password and the others with
   a wrong one, and requires each to be refused (`28000`). A rule that admits a
-  login shows as `28P01`, or as a success.
+  login by a password method (scram, md5, password) shows as `28P01`, and a rule
+  that trusts it shows as a success. A rule that admits a login by another method
+  (cert, ldap, pam, radius, ident, peer, gss) also fails with `28000`, so it looks
+  like a refusal and this probe cannot see it; the full provision's static check
+  of the loaded rules covers every method.
 
 The migrator is not given membership of `pg_read_all_settings` or a grant on
 `pg_authid`, `pg_file_settings` or `pg_stat_file` to close these: the server
