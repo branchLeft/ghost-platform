@@ -102,7 +102,11 @@ and a healthy one that must pass, with no Docker.
    statement stays under 100 ms. _Sabotage:_ the old path, `RELOAD` plus
    `mysqldump --source-data=2`. Its plain `FLUSH TABLES` waits for the long
    reader and every writer to that table queues behind it for about 10 s,
-   which proves the probe can see a stall.
+   which proves the probe can see a stall. The limit is fixed at 100 ms. Each attempt also reads a
+   baseline (the same statement with no snapshot running); an attempt over the limit whose baseline is
+   above 25 ms was run on a stalled runner, so it is rerun, up to three attempts in all, and each
+   attempt is printed. An attempt over the limit on a clean baseline fails at once, and so does a
+   run where every attempt was over.
 3. **No global metadata lock.** A sampler reads
    `performance_schema.metadata_locks` for the move account's threads as fast
    as one session can, across repeated snapshots. No `GLOBAL` or `COMMIT`

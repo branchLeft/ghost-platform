@@ -136,6 +136,70 @@ class SabotageFixturesTests(unittest.TestCase):
         self.assertFalse(verdict.passed)
 
 
+
+class ControlTwoAttemptTests(unittest.TestCase):
+    """Control 2 reruns a measurement a stalled runner contaminated, and only that."""
+
+    CLEAN = 0.002
+    NOISY = 0.0764  # the failed run's own baseline, measured before any snapshot ran
+    SLOW = 0.124
+
+    def run_control(self, attempts, sabotage=None):
+        runs = [
+            sp.LongReaderRun([(0.0, latency) for latency in latencies], (0.0, 1.0), baseline, 1)
+            for baseline, latencies in attempts
+        ]
+        calls = []
+
+        def scenario(_ctx):
+            calls.append(1)
+            return runs[len(calls) - 1]
+
+        ctx = sp.Ctx(None, None, pathlib.Path("."), None, sabotage)
+        original = sp.long_reader_scenario
+        sp.long_reader_scenario = scenario
+        try:
+            result = sp.control_2(ctx)
+        finally:
+            sp.long_reader_scenario = original
+        return result, len(calls)
+
+    def test_a_contaminated_attempt_is_rerun_and_a_clean_one_passes(self) -> None:
+        result, calls = self.run_control([(self.NOISY, [self.SLOW]), (self.CLEAN, [0.004])])
+        self.assertTrue(result.verdict.passed, result.verdict.reason)
+        self.assertEqual(2, calls)
+        text = " ".join(result.numbers)
+        self.assertIn("attempt 1", text)
+        self.assertIn("attempt 2", text)
+
+    def test_two_reruns_at_most_then_it_fails_when_every_attempt_exceeds(self) -> None:
+        result, calls = self.run_control([(self.NOISY, [self.SLOW])] * 3 + [(self.CLEAN, [0.004])])
+        self.assertFalse(result.verdict.passed)
+        self.assertEqual(3, calls)
+        self.assertIn("every attempt", result.verdict.reason)
+
+    def test_a_clean_baseline_that_exceeds_the_limit_fails_at_once(self) -> None:
+        result, calls = self.run_control([(self.CLEAN, [self.SLOW]), (self.CLEAN, [0.004])])
+        self.assertFalse(result.verdict.passed)
+        self.assertEqual(1, calls)
+
+    def test_the_old_path_sabotage_is_still_red_on_a_clean_baseline(self) -> None:
+        result, calls = self.run_control([(self.CLEAN, [9.1])], sabotage="old-path")
+        self.assertFalse(result.verdict.passed)
+        self.assertEqual(1, calls)
+
+    def test_the_old_path_sabotage_is_still_red_on_a_noisy_runner(self) -> None:
+        result, calls = self.run_control([(self.NOISY, [9.1])] * 3, sabotage="old-path")
+        self.assertFalse(result.verdict.passed)
+
+    def test_a_first_attempt_that_passes_is_not_rerun(self) -> None:
+        result, calls = self.run_control([(self.NOISY, [0.004]), (self.CLEAN, [0.004])])
+        self.assertTrue(result.verdict.passed)
+        self.assertEqual(1, calls)
+
+    def test_the_limit_is_unchanged(self) -> None:
+        self.assertEqual(0.100, sp.WRITER_LIMIT_SECONDS)
+
 class VerdictEdgeTests(unittest.TestCase):
     def test_a_blind_probe_is_never_a_pass(self) -> None:
         self.assertFalse(sp.writer_stall_verdict([], 0.1).passed)

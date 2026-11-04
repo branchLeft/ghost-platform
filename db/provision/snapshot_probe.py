@@ -30,6 +30,11 @@ import extract_tenant_binlog  # noqa: E402
 
 # Control 2: the other schema's worst statement must stay under this.
 WRITER_LIMIT_SECONDS = 0.100
+# A baseline (the statement with no snapshot running) above this means the runner itself was
+# stalled, so the attempt says nothing about the snapshot path. Measured: 1.3 to 2.6 ms on clean
+# runs, 76.4 ms on the run that failed.
+WRITER_NOISE_BASELINE_SECONDS = 0.025
+WRITER_MAX_ATTEMPTS = 3
 # Control 5: the ticket body's ceiling for a queued writer's wait, and the
 # module's own (wait deadline plus hold bound). Both are asserted.
 BODY_WAIT_CEILING_SECONDS = 2.0
@@ -1002,15 +1007,39 @@ def long_reader_scenario(ctx: Ctx) -> LongReaderRun:
 
 
 def control_2(ctx: Ctx) -> ControlResult:
-    """Another schema's writes are not blocked."""
-    run = long_reader_scenario(ctx)
-    latencies = latencies_between(run.other_samples, *run.window)
-    verdict = writer_stall_verdict(latencies, WRITER_LIMIT_SECONDS)
-    numbers = [
-        f"a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
-        f"{run.snapshots} {'old-path dump' if ctx.sabotaged('old-path') else 'snapshot(s)'} ran",
-        f"baseline worst `other` statement before it: {_ms(run.baseline_worst)}",
-    ]
+    """Another schema's writes are not blocked.
+
+    One worst-of-N sample against a hard limit fails on a stalled runner, so a measurement
+    whose own baseline (the same statement with no snapshot running) is above
+    WRITER_NOISE_BASELINE_SECONDS is treated as contaminated and rerun, up to
+    WRITER_MAX_ATTEMPTS attempts in all. An attempt that passes passes the control. An attempt
+    over the limit with a clean baseline fails it at once: the snapshot path is the suspect, and
+    a rerun would only hide it. It also fails when every attempt was contaminated and over.
+    Every attempt is printed."""
+    numbers: list[str] = []
+    verdict = Verdict(False, "control 2 made no attempt")
+    old_path = ctx.sabotaged("old-path")
+    for attempt in range(1, WRITER_MAX_ATTEMPTS + 1):
+        run = long_reader_scenario(ctx)
+        latencies = latencies_between(run.other_samples, *run.window)
+        verdict = writer_stall_verdict(latencies, WRITER_LIMIT_SECONDS)
+        contaminated = run.baseline_worst > WRITER_NOISE_BASELINE_SECONDS
+        numbers.append(
+            f"attempt {attempt}: a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
+            f"{run.snapshots} {'old-path dump' if old_path else 'snapshot(s)'} ran; baseline worst `other` statement "
+            f"before it {_ms(run.baseline_worst)} ({'contaminated' if contaminated else 'clean'}); "
+            f"{'passed' if verdict.passed else 'over the limit'}"
+        )
+        if verdict.passed or not contaminated:
+            break
+        if attempt < WRITER_MAX_ATTEMPTS:
+            numbers.append(f"attempt {attempt} had a contaminated baseline: rerunning")
+    else:
+        verdict = Verdict(
+            False,
+            f"every attempt ({WRITER_MAX_ATTEMPTS}) exceeded the {_ms(WRITER_LIMIT_SECONDS)} limit on a "
+            f"contaminated baseline; the last: {verdict.reason}",
+        )
     return ControlResult(2, "another schema's writes are not blocked", verdict, numbers)
 
 
