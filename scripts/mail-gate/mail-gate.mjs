@@ -47,7 +47,8 @@ function storageEnv() {
 // Logs are dumped into a job log on failure, which is public, so every form a
 // secret can take there is replaced: the value in any case and its base64, an
 // SMTP AUTH PLAIN payload, cookies, a magic-link token, and an Authorization
-// value in any scheme, including inside an escaped JSON string.
+// value, bare or after its Bearer, Basic or Ghost scheme, including inside an
+// escaped JSON string.
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function redact(text, secrets = []) {
