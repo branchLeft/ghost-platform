@@ -210,6 +210,12 @@ printf '%s\n' 'Error: the provided token was denied access to the requested reso
 run_text "h7. (c4) a denied token followed by the verify line is not a refusal" nonzero
 printf '%s\n' 'Error: Policy verification failed: no matching CertificateIdentity found' > "$FAKE_TEXT"
 run_text "h8. (d) the old markers alone are still a refusal" zero
+printf '%s\n' "$LIVE_GH" "$NETWORK" "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h9. (e) the live issuer line, a network fault and the verify line is not a refusal" nonzero
+printf '%s\n' "$LIVE_GH" 'error: Sigstore verification failed: failed to fetch the TUF root: connection reset by peer' "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h10. (e2) the live issuer line, a Sigstore fault and the verify line is not a refusal" nonzero
+printf '%s\n' "$LIVE_GH" 'Error: the provided token was denied access to the requested resource' "$LIVE_LINE" > "$FAKE_TEXT"
+run_text "h11. (e3) the live issuer line, a token fault and the verify line is not a refusal" nonzero
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed"

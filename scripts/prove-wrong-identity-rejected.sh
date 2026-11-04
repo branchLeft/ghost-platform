@@ -26,7 +26,10 @@ trap 'rm -f "$OUT"' EXIT
 # it checks the attestation, then the verify script names the identity. A token,
 # Sigstore or network fault prints that last line too, so it alone is not enough.
 live_refusal() {
-  grep -Fq 'verifying with issuer' "$OUT" &&
+  # A token, Sigstore or network fault anywhere in the output means the identity
+  # was never judged, so the live wording beside it proves nothing.
+  ! grep -Eiq 'dial tcp|i/o timeout|no such host|connection (reset|refused)|TUF|Sigstore verif|no valid Sigstore|token|denied|unauthorized|forbidden' "$OUT" &&
+    grep -Fq 'verifying with issuer' "$OUT" &&
     grep -Eq "no valid attestation for .* from ${WRONG_RE}( on |\$)" "$OUT"
 }
 
