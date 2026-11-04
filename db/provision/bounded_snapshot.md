@@ -108,10 +108,20 @@ pins the relationship between them.
   loudly. A table created in the dumped schema between the lock and the
   end of the dump is the residual case.
 
+## Where the position is read
+
+`take_bounded_snapshot(coordinates=…)` names it. `"log_status"`, the default
+and what both nightly paths use, reads `performance_schema.log_status`
+(`BACKUP_ADMIN` and `SELECT` on that table). `"master_status"` runs
+`SHOW MASTER STATUS` instead, which needs only `REPLICATION CLIENT`; its
+proof is `replication_client_probe.md`. Either is read under the same lock,
+at the same step, and nothing else about the technique changes.
+
 ## Grants
 
 `SELECT`, `LOCK TABLES`, `SHOW VIEW` and `TRIGGER` on what is dumped, and
-`BACKUP_ADMIN` for `performance_schema.log_status`. `RELOAD` is no longer
+`BACKUP_ADMIN` for `performance_schema.log_status` (or `REPLICATION CLIENT`
+alone, with `coordinates="master_status"`). `RELOAD` is no longer
 needed, so neither backup account can take a global read lock at all.
 `PROCESS` is not needed on the per-tenant path, which passes
 `--no-tablespaces`. Changing the grants on db1 is a hand-delivered step;
