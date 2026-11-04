@@ -1,12 +1,11 @@
 """Tests that every copy of the reserved tenant-name list agrees with the
 register, registers/tenant-names.json, and that the workflow refuses a
-registered name.
-
-The copies are the generated blocks in infra/tenant/naming.ts and
-render-core/src/naming.ts, the infrastructure names read by
+registered name. The copies: the generated blocks in infra/tenant/naming.ts
+and render-core/src/naming.ts, the infrastructure names read by
 app/provision/provision_tenant_volume.py and render-media-bucket-policy.py,
 and the register lookup in the 'Validate inputs' step of
-.github/workflows/provision-tenant.yml, run under `bash -e`.
+.github/workflows/provision-tenant.yml, run under `bash -e`. A red copy of
+that block with the jq lookup removed runs beside the real one (RedCopyIsSeen).
 """
 
 from __future__ import annotations
@@ -304,6 +303,17 @@ class DriftIsCaught(unittest.TestCase):
         data = json.loads(_read_text(REGISTER))
         expected = [(e["name"], e["kind"]) for e in data["names"]]
         self.assertNotEqual(generated_names(drifted), expected)
+
+
+class ModuleDocstring(unittest.TestCase):
+    """The module docstring points at the red-copy proof and stays under the CMT-3
+    line limit (it warns at 10 lines and fails at 11)."""
+
+    def test_it_names_the_red_copy_proof(self) -> None:
+        self.assertIn("red copy", (__doc__ or "").lower())
+
+    def test_it_is_within_the_cmt3_limit(self) -> None:
+        self.assertLessEqual(len((__doc__ or "").splitlines()), 10)
 
 
 if __name__ == "__main__":
