@@ -37,3 +37,10 @@ be absent, proving nothing was partly applied).
 
 Read from the line the patch adds, so there is one home for it. Replacing the placeholder is an edit to the
 patch and its pin only.
+
+## Which failure arm C reads
+
+The container log can hold more than one "Content import was unsuccessful". Arm C counts the failures
+already logged before its import starts and reads the section of the next one, up to the failure after it
+(`import-log.mjs`, tested without Docker by `import-log.test.mjs`). It does not read from the last
+failure in the log to the end, so a later unrelated failure or a long log cannot change what it reads.

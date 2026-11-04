@@ -8,6 +8,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { importFailureSection } from './import-log.mjs';
 import { GhostAdmin } from '../../../../services/export-bundler/test/image/ghost-admin.mjs';
 import {
   GhostContainer,
@@ -160,7 +161,7 @@ async function runImport({ container, admin }, markerSlug, { withStripeKey }) {
   }
   await until('the import job to log its failure', () => countFailures(container) > failuresBefore);
   const log = containerLog(container);
-  return log.slice(log.lastIndexOf(IMPORT_FAILED));
+  return importFailureSection(log, IMPORT_FAILED, failuresBefore);
 }
 
 describe(
