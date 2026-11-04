@@ -420,6 +420,41 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         for tenant in TENANTS:
             extract_tenant_binlog.find_resume_point(io.StringIO(plaintext), tenant_database=f"ghost_{tenant}")
 
+    def _make_non_innodb_tables(self) -> None:
+        self.container.root_ok(
+            "CREATE TABLE ghost_alpha.legacy_myisam (id INT) ENGINE=MyISAM;"
+            "CREATE TABLE ghost_bravo.legacy_memory (id INT) ENGINE=MEMORY;"
+            "CREATE VIEW ghost_charlie.a_view AS SELECT id FROM ghost_charlie.users;"
+        )
+        self.addCleanup(
+            self.container.root,
+            "DROP TABLE IF EXISTS ghost_alpha.legacy_myisam, ghost_bravo.legacy_memory;"
+            "DROP VIEW IF EXISTS ghost_charlie.a_view;",
+        )
+
+    def _non_innodb_rows(self, schemas) -> set[str]:
+        out = self.container.root_ok(bounded_snapshot.non_innodb_tables_sql(schemas))
+        return {line for line in out.splitlines() if line}
+
+    def test_the_non_innodb_query_names_exactly_the_user_tables_that_are_not_innodb(self) -> None:
+        # The fake client ignores WHERE, so only a real server proves the predicate and the scope.
+        self._make_non_innodb_tables()
+        nightly = self._non_innodb_rows(None)
+        self.assertEqual(
+            {"MyISAM\tghost_alpha\tlegacy_myisam", "MEMORY\tghost_bravo\tlegacy_memory"}, nightly
+        )
+        self.assertEqual(set(), {row for row in nightly if "\tmysql\t" in row})
+        self.assertEqual(set(), {row for row in nightly if "\tperformance_schema\t" in row})
+        self.assertEqual({"MyISAM\tghost_alpha\tlegacy_myisam"}, self._non_innodb_rows(["ghost_alpha"]))
+        # A view and an all-InnoDB schema are not listed.
+        self.assertEqual(set(), self._non_innodb_rows(["ghost_charlie"]))
+
+    def test_a_non_innodb_table_in_a_user_schema_refuses_db1s_nightly_dump(self) -> None:
+        self._make_non_innodb_tables()
+        with self.assertRaisesRegex(dump_nightly.DumpError, "not InnoDB.*ghost_alpha.legacy_myisam"):
+            self._db1_dump()
+        self.assertEqual(self._flushes_by_backup_accounts(), [])
+
     def test_db1s_nightly_dump_retries_past_an_open_transaction(self) -> None:
         with _writers(self.container) as (writers, window):
             self._hold_open_transaction("ghost_charlie", 3.5)

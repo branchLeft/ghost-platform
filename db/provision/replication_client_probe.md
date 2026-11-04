@@ -124,7 +124,7 @@ No `BACKUP_ADMIN`, no `RELOAD`, no `EVENT`, and no `SELECT` on
 this account runs. The caller of the move's snapshot must pass
 `coordinates="master_status"`. On db1 the account also needs `REQUIRE SSL`
 and a specific host part, as `require_secure_transport` is on
-(`db/stack/conf.d/branchleft.cnf` line 13, and `db/RUNBOOK-db.md` lines 308 to 311).
+(`db/stack/conf.d/branchleft.cnf`, and the `require_secure_transport` check in `db/RUNBOOK-db.md`).
 
 ## Not in scope
 

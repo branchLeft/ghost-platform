@@ -315,30 +315,30 @@ def _quote_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
+def _scope_sql(schemas: Sequence[str] | None) -> str:
+    """The one scope clause both table queries use: the named schemas', or every
+    user schema's when `schemas` is None."""
+    if schemas is None:
+        return "TABLE_SCHEMA NOT IN (" + ", ".join(_quote_string(s) for s in SYSTEM_SCHEMAS) + ")"
+    return "TABLE_SCHEMA IN (" + ", ".join(_quote_string(s) for s in schemas) + ")"
+
+
 def list_tables_sql(schemas: Sequence[str] | None) -> str:
     """Every base table to lock: the named schemas', or every user
     schema's when `schemas` is None."""
-    if schemas is None:
-        scope = "TABLE_SCHEMA NOT IN (" + ", ".join(_quote_string(s) for s in SYSTEM_SCHEMAS) + ")"
-    else:
-        scope = "TABLE_SCHEMA IN (" + ", ".join(_quote_string(s) for s in schemas) + ")"
     return (
         "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES "
-        f"WHERE TABLE_TYPE = 'BASE TABLE' AND {scope} ORDER BY TABLE_SCHEMA, TABLE_NAME;"
+        f"WHERE TABLE_TYPE = 'BASE TABLE' AND {_scope_sql(schemas)} ORDER BY TABLE_SCHEMA, TABLE_NAME;"
     )
 
 
 def non_innodb_tables_sql(schemas: Sequence[str] | None) -> str:
-    """Base tables in scope whose engine is not InnoDB. A snapshot is
+    """Base tables in scope whose engine is not InnoDB, or is not reported. A snapshot is
     consistent only for InnoDB: a MyISAM table is read after the unlock, and
     its rows are then also replayed from the binary log."""
-    if schemas is None:
-        scope = "TABLE_SCHEMA NOT IN (" + ", ".join(_quote_string(s) for s in SYSTEM_SCHEMAS) + ")"
-    else:
-        scope = "TABLE_SCHEMA IN (" + ", ".join(_quote_string(s) for s in schemas) + ")"
     return (
         "SELECT ENGINE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES "
-        f"WHERE TABLE_TYPE = 'BASE TABLE' AND ENGINE <> 'InnoDB' AND {scope} "
+        f"WHERE TABLE_TYPE = 'BASE TABLE' AND (ENGINE IS NULL OR ENGINE <> 'InnoDB') AND {_scope_sql(schemas)} "
         "ORDER BY TABLE_SCHEMA, TABLE_NAME;"
     )
 

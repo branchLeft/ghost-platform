@@ -303,6 +303,16 @@ class SetupFailureTests(_Fixture):
         self.assertIn("1045", str(error))
         self.assertEqual(len(self.fakes.starts("mysql")), 1)
 
+    def test_the_non_innodb_query_also_catches_a_null_engine(self) -> None:
+        self.assertIn("ENGINE IS NULL OR ENGINE <> 'InnoDB'", bs.non_innodb_tables_sql(["ghost_blog"]))
+
+    def test_both_queries_share_one_scope_clause(self) -> None:
+        for schemas in (None, ["ghost_blog"], ["it's"]):
+            with self.subTest(schemas=schemas):
+                scope = bs._scope_sql(schemas)
+                self.assertIn(scope, bs.list_tables_sql(schemas))
+                self.assertIn(scope, bs.non_innodb_tables_sql(schemas))
+
     def test_no_tables_is_refused(self) -> None:
         self.fakes.configure(tables=[])
         error = self.snapshot_error()
