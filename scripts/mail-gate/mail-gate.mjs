@@ -136,6 +136,13 @@ export async function runMailGate({
       'SHIM_DB_PATH=/data/spool.sqlite',
       '-e',
       `SHIM_DRAIN_TOKEN=${token}`,
+      // The shim releases mail at 50 messages an hour by default, so each message after
+      // the first waits 72 s. The gate needs three released (the owner's welcome mail,
+      // the magic link, the newsletter), which takes about 144 s and misses the drain
+      // deadline. Nothing is delivered from the spool during the gate, so a fast release
+      // only shortens the wait; the gate runs it at 3600 an hour.
+      '-e',
+      'SHIM_MESSAGES_PER_HOUR=3600',
       '-p',
       `127.0.0.1:${drainPort}:8081`,
       spoolImage
