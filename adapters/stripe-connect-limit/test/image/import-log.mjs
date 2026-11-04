@@ -14,3 +14,20 @@ export function importFailureSection(log, marker, failuresBefore) {
   const next = log.indexOf(marker, from);
   return log.slice(start, next === -1 ? undefined : next);
 }
+
+// Reads the text again until two reads in a row agree, so a reason written in a
+// later write than its marker is in the text. Gives up after `maxMs` and
+// returns the latest read.
+export async function readUntilStable(
+  read,
+  { intervalMs = 300, maxMs = 10_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}
+) {
+  let previous = read();
+  for (let waited = 0; waited < maxMs; waited += intervalMs) {
+    await sleep(intervalMs);
+    const current = read();
+    if (current === previous) return current;
+    previous = current;
+  }
+  return previous;
+}
