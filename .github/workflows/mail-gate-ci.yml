@@ -49,6 +49,9 @@ jobs:
         with:
           node-version-file: adapters/sso/.nvmrc
 
+      - name: Stand-in and log redactor (no Docker)
+        run: node --test scripts/mail-gate/spool-standin/standin.test.mjs scripts/mail-gate/mail-gate-logs.test.mjs scripts/mail-gate/mail-gate-throttle.test.mjs
+
       - name: Build the candidate image
         run: docker build --tag ghost-platform:ci .
 
