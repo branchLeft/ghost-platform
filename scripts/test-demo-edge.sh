@@ -38,11 +38,12 @@ fail() { echo "  FAIL  $1"; FAILURES=$((FAILURES + 1)); }
 expect() {
     if [ "$3" = "$2" ]; then pass "$1 ($3)"; else fail "$1: expected $2, got $3"; fi
 }
-# probe <method> <path> [cookie|-] [form-body] -> status, headers JSON, body (3 lines)
-probe() {
+# probe_host <name> <method> <path> [cookie|-] [form-body] -> status, headers JSON, body (3 lines)
+probe_host() {
     docker run --rm --network "container:$SIM" -v "$PROOF:/proof:ro" -v "$WORK/root.crt:/ca/root.crt:ro" \
-        -e PROBE_CA_FILE=/ca/root.crt "$NODE_IMAGE" node /proof/probe.mjs "$HOST" "$@"
+        -e PROBE_CA_FILE=/ca/root.crt "$NODE_IMAGE" node /proof/probe.mjs "$@"
 }
+probe() { probe_host "$HOST" "$@"; }
 status() { probe "$@" | sed -n 1p; }
 body() { probe "$@" | sed -n '3,$p'; }
 header() { name="$1"; shift; probe "$@" | sed -n 2p | node -e "
@@ -72,13 +73,13 @@ chmod 0644 "$WORK/leases/0.json"
 sed "s/demo-host.example.test/$HOST/; s/k7m-vale-bright.demo-domain.example.test/$HOST/" \
     "$HERE/render-core/test/golden/demo.edge.json" > "$WORK/edge.json"
 # Proof-only global options: a local CA and no trust-store install.
-python3 "$HERE/demo-host/provision/render_demo_site.py" --slot 0 --edge-json "$WORK/edge.json" \
-    --gate-env-out "$WORK/gate.env" \
+python3 "$HERE/demo-host/provision/render_demo_site.py" --base "${HOST#*.}" --site 0="$WORK/edge.json" \
+    --tls 'tls internal' --gate-env-out "$WORK/gate.env" \
     | sed 's/^\tadmin off$/\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\tauto_https disable_redirects/' \
     > "$WORK/Caddyfile"
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "narrow-import" ]; then
     # Sabotage: restore the narrow matcher the review broke (one literal path).
-    sed 's|^\t\t\t\tpath .*$|\t\t\t\tpath /ghost/api/admin/members/upload/|; s|^\t\t\t\tpath_regexp .*$|\t\t\t\tpath /ghost/api/admin/members/upload/|' \
+    sed 's|^\t\t\t\t\tpath .*$|\t\t\t\t\tpath /ghost/api/admin/members/upload/|; s|^\t\t\t\t\tpath_regexp .*$|\t\t\t\t\tpath /ghost/api/admin/members/upload/|' \
         "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
     mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
     echo "  SABOTAGE: members-import matcher narrowed to one literal path"
@@ -86,9 +87,16 @@ fi
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "exempt-ghost" ]; then
     # Sabotage: exempt /ghost/* from forward_auth. The "every path is gated"
     # probes must go red (see test-demo-edge.md).
-    sed 's|^\thandle {$|\thandle /ghost/* {\n\t\treverse_proxy 127.0.0.1:9300\n\t}\n\thandle {|' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    sed 's|^\t\thandle {$|\t\thandle /ghost/* {\n\t\t\treverse_proxy 127.0.0.1:9300\n\t\t}\n\t\thandle {|' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
     mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
     echo "  SABOTAGE: /ghost/* exempted from forward_auth"
+fi
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-abort" ]; then
+    # Sabotage: remove the wildcard's closing `handle { abort }`. The
+    # unmatched-name probe must go red (see test-demo-edge.md).
+    sed '/^\thandle {$/{N;N;/\n\t\tabort\n/d;}' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: the unmatched-name abort removed"
 fi
 echo "  rendered $(wc -l < "$WORK/Caddyfile") lines for $HOST"
 
@@ -180,6 +188,17 @@ for _ in $(seq 1 15); do
     sleep 1
 done
 expect "and back to colour a when b drains (the check tells the colours apart)" yes "$BACK"
+
+echo "--- 6. a name under the wildcard that is no slot's gets no site ---"
+# The same address and the same wildcard certificate, a different name: the
+# connection is closed with no status line and so no body. The slot's own
+# name answering (401 with no cookie) is the control that Caddy is up.
+UNMATCHED="unmatched.${HOST#*.}"
+expect "the slot's own name answers" 401 "$(probe_host "$HOST" GET / | sed -n 1p)"
+UNMATCHED_REPLY="$(probe_host "$UNMATCHED" GET /)"
+expect "an unmatched name gets no status" 0 "$(echo "$UNMATCHED_REPLY" | sed -n 1p)"
+expect "an unmatched name's connection is closed after the handshake" "Error: socket hang up" \
+    "$(echo "$UNMATCHED_REPLY" | sed -n 3p)"
 
 if [ "$FAILURES" -ne 0 ]; then
     echo "$FAILURES check(s) failed"
