@@ -27,7 +27,6 @@ SYNC_TAIL = [
     "/.standardsignore",
     "/.standards.mode",
     "/.docs-lint*",
-    "/tools/floors.tsv",
     "/.standards-db-tooling",
     "/.github/",
 ]
@@ -226,7 +225,8 @@ class TheOwnerOnlyRegisterIsCodeOwned(unittest.TestCase):
         self.assertEqual(len(matches), 1, matches)
         self.assertEqual(matches[0].split()[1:], [OWNER])
 
-    def test_the_sync_tail_block_is_still_the_last_six_lines(self):
+    def test_the_sync_tail_block_is_still_the_last_five_lines(self):
+        """The SYNC-1 tail is the five template lines, last in CODEOWNERS, in order."""
         content = [line for line in self._lines() if line and not line.startswith("#")]
         tail = [line.split()[0] for line in content[-len(SYNC_TAIL):]]
         self.assertEqual(tail, SYNC_TAIL)
