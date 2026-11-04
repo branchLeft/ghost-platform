@@ -63,6 +63,36 @@ step; nothing here runs from CI (`services/broker/**`'s
 `.claude/delivery-paths.json` row is `not_merge_delivered`/`version_pin`,
 because no publish path exists yet either -- see "Delivery path" below).
 
+**Reach demo1 first.** Every `ssh` and `rsync` below uses `${DEMO1_IPV4}` and
+`${DEMO1_SSH_USER}`; set them once per terminal, each in its own paste. demo1
+is in the `branchLeft demos` Hetzner project, so the hcloud context must be that
+project's. List the contexts, then read the name of that project's context:
+
+```bash
+hcloud context list
+```
+
+```bash
+read -r HCLOUD_CONTEXT
+```
+
+```bash
+hcloud context use "${HCLOUD_CONTEXT}"
+```
+
+```bash
+DEMO1_IPV4=$(hcloud server ip demo1)
+```
+
+The login name is the `User` the old `demo1` alias carried in your
+`~/.ssh/config`; read it:
+
+```bash
+read -r DEMO1_SSH_USER
+```
+
+The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge.md`.
+
 1. **Pin Node.** On demo1 -- `dpkg`'s architecture name and nodejs.org's own
    tarball name disagree (`amd64` vs. `x64`), and the tarball is verified
    against Node's own published checksums before it is ever extracted:
@@ -108,10 +138,10 @@ because no publish path exists yet either -- see "Delivery path" below).
    cd services/broker
    pnpm install --frozen-lockfile
    pnpm run bundle
-   ssh demo1 'sudo mkdir -p /opt/branchleft/broker/releases'
+   ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" 'sudo mkdir -p /opt/branchleft/broker/releases'
    RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
-   rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
-   ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current"
+   rsync -a --chown=root:root -e 'ssh -i ~/.ssh/id_ed25519_hetzner' dist/bundle/ "${DEMO1_SSH_USER}@${DEMO1_IPV4}:/tmp/broker-release-${RELEASE}/"
+   ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current"
    ```
 
    `rsync -a` preserves the workstation's own uid/mode bits, so the `mv`
@@ -169,9 +199,9 @@ sees half-written files:
 ```bash
 cd services/broker && pnpm install --frozen-lockfile && pnpm run bundle
 RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
-rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
-ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current && sudo systemctl restart branchleft-broker.service"
-ssh demo1 'curl -s http://127.0.0.1:8090/status/0'
+rsync -a --chown=root:root -e 'ssh -i ~/.ssh/id_ed25519_hetzner' dist/bundle/ "${DEMO1_SSH_USER}@${DEMO1_IPV4}:/tmp/broker-release-${RELEASE}/"
+ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current && sudo systemctl restart branchleft-broker.service"
+ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" 'curl -s http://127.0.0.1:8090/status/0'
 ```
 
 `Restart=on-failure` (the unit file) does not cover this step -- a restart

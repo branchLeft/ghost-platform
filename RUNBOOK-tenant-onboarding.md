@@ -131,8 +131,24 @@ the estate rather than per-tenant answers, which is why they are variables and
 not ten more fields on a dispatch form — `workflow_dispatch` also caps inputs at
 ten.
 
+**Select the hcloud project first.** The lookups below ask hcloud, so its active context
+must be the one for the project that holds the server. Which of your contexts that is
+is not recorded here. List them, read the name, then select it, each as its own paste:
+
 ```bash
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+hcloud context list
+```
+
+```bash
+read -r HCLOUD_CONTEXT
+```
+
+```bash
+hcloud context use "${HCLOUD_CONTEXT}"
+```
+
+```bash
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 gh variable set PLATFORM_DB_PRIVATE_IP     --repo branchLeft/ghost-platform --body "$DB1_PRIVATE_IP"
 gh variable set PLATFORM_MEDIA_ENDPOINT    --repo branchLeft/ghost-platform --body 'https://hel1.your-objectstorage.com'
 gh variable set PLATFORM_MEDIA_REGION      --repo branchLeft/ghost-platform --body 'hel1'
@@ -272,8 +288,8 @@ goes through `edge1`. An earlier draft of this runbook invoked all of them from
 one invented path.
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 
@@ -329,7 +345,7 @@ Pick the host port the same way, distinct per tenant on that host.
 ### 4. Dispatch the provisioning workflow
 
 ```bash
-APP1_PRIVATE_IP=$(hcloud server describe app1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+APP1_PRIVATE_IP=$(hcloud server describe app1 -o format='{{(index .PrivateNet 0).IP}}')
 APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f tenant_visibility=public \
@@ -363,8 +379,8 @@ tenant's stack.
 `db1` has no public address, so this goes through `edge1`:
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'MYSQL_PWD=<mysql root password> python3 /opt/branchleft/db/provision/provision_tenant_db.py <slug>'
@@ -714,7 +730,7 @@ The salt is not in the escrow ciphertext: it is in the tenant repository's
 `PULUMI_ENCRYPTION_SALT` environment secret, which is write-only. A tenant
 stack with no secret config needs it only for that repository's own deploy
 job. If you need it and no longer have it, read it out of the stack's checkpoint —
-`pulumi stack export --stack <slug> | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployment"]["secrets_providers"]["state"]["salt"])'`.
+`pulumi stack export --stack <slug> | jq -r '.deployment.secrets_providers.state.salt'`.
 
 ### 8. Provision the host side, in this order
 
