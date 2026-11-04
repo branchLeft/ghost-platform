@@ -129,6 +129,14 @@ the suite red, then the real copy green. `scripts/test-demo-edge.sh` repeats
 two against a real Caddy (`DEMO_EDGE_PROOF_SABOTAGE=exempt-ghost` and
 `=narrow-import`); its `=drop-abort` removes the closing `handle { abort }`.
 
+## Real Caddy
+
+`test_demo_edge_wildcard.py` runs the rendered text through `caddy validate`
+and `caddy adapt` in the image built from `services/demo-edge/Dockerfile` and
+requires the wildcard to be the only certificate subject (see
+`test_demo_edge_wildcard.md`). It runs in `repo-tooling-ci` on every pull
+request and fails, rather than skips, there when Docker is missing.
+
 ## Installing
 
 `--out` writes unchecked. Only `demo_go_live.py` (PR #385) may place the live
