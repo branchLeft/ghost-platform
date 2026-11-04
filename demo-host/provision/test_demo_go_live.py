@@ -103,6 +103,19 @@ class GoLiveTests(unittest.TestCase):
                 with self.assertRaises(dgl.GoLiveRefused):
                     self.attempt(serve(**{"0": body}))
 
+    def test_a_control_character_in_a_module_name_cannot_forge_an_output_line(self):
+        forged = "real\nREFUSED: slot 9: all clear\r x"
+        with self.assertRaises(dgl.GoLiveRefused) as raised:
+            self.attempt(serve(**{"0": {**CLEAN, "notReal": [forged]}}))
+        message = str(raised.exception)
+        for bad in ("\n", "\r", " "):
+            self.assertNotIn(bad, message)
+        self.assertIn("real", message)
+
+    def test_an_empty_slots_sequence_is_refused_not_passed(self):
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "no slots"):
+            dgl.check_seams("http://broker.invalid", slots=(), fetch=serve())
+
     def test_unsynchronised_clock_refuses_and_writes_nothing(self):
         with self.assertRaisesRegex(dgl.GoLiveRefused, "clock"):
             self.attempt(serve(), clock=lambda: False)

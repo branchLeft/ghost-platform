@@ -47,6 +47,12 @@ def clock_is_synchronised() -> bool:
         return False
     return result.returncode == 0 and result.stdout.strip() == "yes"
 
+def _clean(name: str) -> str:
+    """A broker-supplied name made safe to echo: every character that is not
+    printable (newline, carriage return, other control and line-separator
+    characters) is written as a \\xNN escape, so a name cannot start a line."""
+    return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in name)
+
 
 def check_seams(
     broker_url: str,
@@ -60,6 +66,8 @@ def check_seams(
     every stand-in."""
     fetch = fetch or fetch_status
     reasons: list[str] = []
+    if not slots:
+        raise GoLiveRefused("no slots to check, so nothing was verified")
     for slot in slots:
         try:
             status = fetch(broker_url, slot)
@@ -74,7 +82,7 @@ def check_seams(
             if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
                 reasons.append(f"slot {slot}: broker status carries no usable {key} list")
             elif names:
-                reasons.append(f"slot {slot}: {why}: {', '.join(sorted(names))}")
+                reasons.append(f"slot {slot}: {why}: {', '.join(_clean(n) for n in sorted(names))}")
     if reasons:
         raise GoLiveRefused("; ".join(reasons))
 
