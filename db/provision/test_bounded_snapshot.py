@@ -181,6 +181,14 @@ class MasterStatusTests(_Fixture):
         self.fakes.configure(master_status=["garbled"])
         self.assertIn("no binary-log position", str(self.snapshot_error_master()))
 
+    def test_a_server_that_no_longer_has_show_master_status_fails_closed(self) -> None:
+        # MySQL 8.4 replaces the statement with SHOW BINARY LOG STATUS: an
+        # upgraded server must refuse, not dump without coordinates.
+        self.fakes.configure(master_status_error=True)
+        error = self.snapshot_error_master()
+        self.assertIn("coordinator session ended", str(error))
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
+
     def snapshot_error_master(self) -> bs.SnapshotError:
         with self.assertRaises(bs.SnapshotError) as ctx:
             self.snapshot_master()
@@ -299,6 +307,14 @@ class SetupFailureTests(_Fixture):
         self.fakes.configure(tables=[])
         error = self.snapshot_error()
         self.assertIn("no base tables", str(error))
+
+    def test_a_table_that_is_not_innodb_is_refused_before_anything_is_locked(self) -> None:
+        self.fakes.configure(non_innodb=[["MyISAM", "ghost_blog", "legacy"]])
+        error = self.snapshot_error()
+        self.assertIn("not InnoDB", str(error))
+        self.assertIn("ghost_blog.legacy", str(error))
+        self.assertFalse([s for s in self.fakes.statements() if s.startswith("LOCK TABLES")])
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
 
     def test_a_server_without_a_binary_log_is_refused(self) -> None:
         self.fakes.configure(log_status='{"binary_log_file": "", "binary_log_position": 0}')

@@ -74,6 +74,9 @@ for line in sys.stdin:
             listed += 1
             for schema, table in tables:
                 print(f"{schema}\t{table}")
+        elif statement.startswith("SELECT ENGINE, TABLE_SCHEMA"):
+            for engine, schema, table in config.get("non_innodb", []):
+                print(f"{engine}\t{schema}\t{table}")
         elif statement.startswith("LOCK TABLES"):
             with open(COUNTER, "a", encoding="utf-8") as handle:
                 handle.write("x")
@@ -93,6 +96,9 @@ for line in sys.stdin:
         elif statement.startswith("SELECT LOCAL FROM performance_schema.log_status"):
             print(config.get("log_status", json.dumps({"binary_log_file": "mysql-bin.000007", "binary_log_position": 1234})))
         elif statement == "SHOW MASTER STATUS":
+            if config.get("master_status_error"):
+                eprint("ERROR 1064 (42000) at line 1: You have an error in your SQL syntax near 'MASTER STATUS'")
+                sys.exit(1)
             for row in config.get("master_status", ["mysql-bin.000009\t4321\t\t\t"]):
                 print(row)
         elif statement == "UNLOCK TABLES":
