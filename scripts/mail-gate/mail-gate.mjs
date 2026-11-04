@@ -63,15 +63,33 @@ export function redact(text, secrets = []) {
     const unpadded = encoded.replace(/=+$/, '');
     if (unpadded && unpadded !== encoded) out = out.split(unpadded).join('[redacted]');
   }
-  return out
-    .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
-    .replace(/(\bcookie(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[^\r\n"'\\]+/gi, '$1[redacted]')
-    .replace(/((?:[?&;]|%3F|%26)token(?:=|%3D))(?:(?!%26)[^&\s"'<>])+/gi, '$1[redacted]')
-    .replace(
-      /(authorization\W{1,8}(?:[A-Za-z][A-Za-z0-9_-]*\s+)?)[A-Za-z0-9+/=._~-]+/gi,
-      '$1[redacted]'
-    )
-    .replace(/(\b(?:set-cookie|cookie|authorization)\\?["']\s*,\s*\\?["'])[^"'\\]+/gi, '$1[redacted]');
+  return (
+    out
+      // SMTP AUTH PLAIN: the payload on the same line, or on a line after the command (the server challenge may sit between).
+      .replace(/(\bauth\s+plain[ \t]+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
+      .replace(
+        /(\bauth\s+plain[ \t]*\r?\n(?:[^\r\n]*\r?\n)?(?:[^\r\n]*?[ :])?)[A-Za-z0-9+/=]{8,}/gi,
+        '$1[redacted]'
+      )
+      // A cookie header that is an array (Node's own form for set-cookie): every element.
+      .replace(/(\b(?:set-)?cookie(?:\\?["'])?\s*(?:=>|[:=])\s*)\[[^\]]*\]/gi, '$1[redacted]')
+      .replace(/(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*(?:\\?["'])?)[^\r\n"'\\]+/gi, '$1[redacted]')
+      // A magic-link token after ?, &, ;, # or the percent-encoding (once or twice) of ? and &.
+      .replace(
+        /((?:[?&;#]|%(?:25)?3F|%(?:25)?26)token(?:=|%(?:25)?3D))(?:(?!%(?:25)?26)[^&\s"'<>])+/gi,
+        '$1[redacted]'
+      )
+      // A token as a JSON key, also inside an escaped JSON string.
+      .replace(/(\\?["']token\\?["']\s*:\s*\\?["'])[^"'\\]+/gi, '$1[redacted]')
+      // An Authorization value after any scheme word, or none: the whole value, to the end of
+      // the line or the closing quote, so a bare value is never read as a scheme.
+      .replace(/(authorization\W{1,8})[^\r\n"'\\]+/gi, '$1[redacted]')
+      // A header written as two elements of Node's rawHeaders array.
+      .replace(
+        /(\b(?:set-cookie|cookie|authorization)\\?["']\s*,\s*\\?["'])[^"'\\]+/gi,
+        '$1[redacted]'
+      )
+  );
 }
 
 const tail = (text, lines = 200) => text.split('\n').slice(-lines).join('\n');

@@ -94,7 +94,10 @@ test('an Authorization header with any other scheme is replaced', () => {
 });
 
 test('a magic-link token after an HTML-escaped ampersand is replaced', () => {
-  const out = redact('href="https://gate.example.test/?action=signin&amp;token=amp-t0ken-FAKE"', []);
+  const out = redact(
+    'href="https://gate.example.test/?action=signin&amp;token=amp-t0ken-FAKE"',
+    []
+  );
   assert.equal(out.includes('amp-t0ken-FAKE'), false, out);
   assert.ok(out.includes('action=signin'), out);
 });
@@ -124,4 +127,58 @@ test('headers in the rawHeaders array form are replaced', () => {
   assert.equal(out.includes('raw-c00kie-FAKE'), false, out);
   assert.equal(out.includes('raw-t0ken-FAKE'), false, out);
   assert.ok(out.includes('x.example.test'), out);
+});
+
+// The bare form: a value with no scheme word, followed by more text. It must not be read as a
+// scheme, which would show the value and hide the next word.
+test('a bare Authorization value is replaced and the text after it is kept', () => {
+  const out = redact('Authorization: key-0123456789abcdefFAKE\r\nHost: x.example.test', []);
+  assert.equal(out.includes('key-0123456789abcdefFAKE'), false, out);
+  assert.ok(out.includes('Host: x.example.test'), out);
+  const inline = redact('authorization: deadbeefcafeFAKE status=401', []);
+  assert.equal(inline.includes('deadbeefcafeFAKE'), false, inline);
+});
+
+test('Set-Cookie as a JSON array or an inspected array is replaced, every element', () => {
+  const json = redact(
+    '{"set-cookie":["sess-one=c00kie-ONE-FAKE; Path=/","sess-two=c00kie-TWO-FAKE"]}',
+    []
+  );
+  assert.equal(json.includes('c00kie-ONE-FAKE'), false, json);
+  assert.equal(json.includes('c00kie-TWO-FAKE'), false, json);
+  const inspected = redact("{ 'set-cookie': [ 'sess=c00kie-INSP-FAKE; Path=/' ] }", []);
+  assert.equal(inspected.includes('c00kie-INSP-FAKE'), false, inspected);
+});
+
+test('a util.inspect Map entry for a cookie is replaced', () => {
+  const out = redact("Map(1) { 'cookie' => 'sess=c00kie-MAP-FAKE' }", []);
+  assert.equal(out.includes('c00kie-MAP-FAKE'), false, out);
+});
+
+test('a token in a fragment, a double-encoded link or a JSON key is replaced', () => {
+  for (const text of [
+    'https://x.example.test/#token=frag-t0ken-FAKE',
+    'https://x.example.test/go?u=https%253A%252F%252Fx.example.test%252F%253Ftoken%253Ddbl-t0ken-FAKE',
+    '{"token":"json-t0ken-FAKE","other":1}',
+    '{"log":"{\\"token\\":\\"esc-json-t0ken-FAKE\\"}"}',
+  ]) {
+    const out = redact(text, []);
+    assert.equal(/frag-t0ken|dbl-t0ken|json-t0ken|esc-json-t0ken/.test(out), false, out);
+  }
+});
+
+test('an AUTH PLAIN payload on the line after the command is replaced', () => {
+  const payload = b64(`\u0000harness@example.com\u0000plain-pass-FAKE`);
+  const out = redact(`C: AUTH PLAIN\r\nS: 334 \r\nC: ${payload}\r\nS: 235 ok`, []);
+  assert.equal(out.includes(payload), false, out);
+  assert.ok(out.includes('S: 235 ok'), out);
+});
+
+test('the base64 of a secret needing two padding characters, unpadded, is replaced', () => {
+  const secret = 'two-pad-key-0123456789abcdef-FA'; // 31 bytes: base64 ends in ==
+  const padded = b64(secret);
+  assert.ok(padded.endsWith('=='), 'the fixture must need two padding characters');
+  const stripped = padded.replace(/=+$/, '');
+  const out = redact(`seen ${stripped} here`, [secret]);
+  assert.equal(out.includes(stripped), false, out);
 });
