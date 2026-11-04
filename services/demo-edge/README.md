@@ -7,7 +7,7 @@ no slot name reaches a certificate transparency log. The Caddyfile is
 rendered by `demo-host/provision/render_demo_site.py`; see
 `demo-host/provision/render_demo_site.md`.
 
-**Status:** not published, and nothing delivers it to a host. The only thing
+The image is not published, and nothing delivers it to a host. The only thing
 that builds it is `demo-host/provision/test_demo_edge_wildcard.py`, in the
 `repo-tooling-ci` unit-test step: it checks the module is registered and that
 the rendered Caddyfile manages only the wildcard name.
