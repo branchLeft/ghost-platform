@@ -37,6 +37,11 @@ const handler = createGateHandler({
     windowMs: config.ceilingWindowMs,
     maxSources: config.ceilingBroadMaxSources,
   }),
+  malformedCeiling: createAttemptCeiling({
+    limit: config.ceilingMalformedLimit,
+    windowMs: config.ceilingWindowMs,
+    maxSources: config.ceilingBroadMaxSources,
+  }),
   derivationGate: createDerivationGate(config.argon2MaxConcurrent, config.argon2MaxQueued),
   sources: createSourceResolver(config.trustedProxies),
   cookieTtlSeconds: config.cookieTtlSeconds,

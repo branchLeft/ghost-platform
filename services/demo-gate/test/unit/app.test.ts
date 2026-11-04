@@ -89,6 +89,7 @@ async function start(over: Partial<GateDeps> = {}): Promise<Harness> {
     signingKey: KEY,
     ceiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
     broadCeiling: createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 }),
+    malformedCeiling: createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 }),
     derivationGate: createDerivationGate(4, 64),
     sources: createSourceResolver(parseTrustedProxies('127.0.0.1')),
     cookieTtlSeconds: 3600,
@@ -620,6 +621,64 @@ describe('login', () => {
     expect(valid.status).toBe(303);
     expect(valid.headers['set-cookie']).toBeDefined();
     expect(calls).toBe(1);
+  });
+
+  it('a malformed flood is bounded and never locks a valid login', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createDerivationGate(4, 64);
+    let calls = 0;
+    const countingGate: DerivationGate = {
+      run: (fn) => {
+        calls += 1;
+        return inner.run(fn);
+      },
+    };
+    h = await start({
+      derivationGate: countingGate,
+      ceiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+      broadCeiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+      malformedCeiling: createAttemptCeiling({ limit: 5, windowMs: 60_000, maxSources: 100 }),
+    });
+    const source = '203.0.113.1';
+    const malformedKinds: Array<() => Promise<Reply>> = [
+      () => login(PASSPHRASE, { source, contentType: 'application/json' }),
+      () => login('', { source }),
+      () => login('x'.repeat(257), { source }),
+      () =>
+        send(
+          'POST',
+          '/__gate/login',
+          {
+            host: HOST,
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-forwarded-for': source,
+          },
+          `passphrase=${'x'.repeat(4096)}`
+        ),
+    ];
+    // Twenty malformed POSTs from one source: five passes over the four
+    // kinds. The first five are answered 400, the rest refused with 429.
+    const flood = [0, 1, 2, 3, 4].flatMap(() => malformedKinds);
+    for (const [index, sendMalformed] of flood.entries()) {
+      const reply = await sendMalformed();
+      if (index < 5) {
+        expect(reply.status).toBe(400);
+      } else {
+        expect(reply.status).toBe(429);
+        expect(reply.headers['retry-after']).toBeDefined();
+      }
+    }
+    // The same source's valid login is admitted, and derives exactly once.
+    const valid = await login(PASSPHRASE, { source });
+    expect(valid.status).toBe(303);
+    expect(valid.headers['set-cookie']).toBeDefined();
+    expect(calls).toBe(1);
+    // The valid login is itself one charge on the main ceiling (limit 10),
+    // so nine wrong passphrases are admitted and the tenth is refused.
+    for (let i = 0; i < 9; i++) {
+      expect((await login('wrong', { source })).status).toBe(401);
+    }
+    expect((await login('wrong', { source })).status).toBe(429);
   });
 
   it('ten wrong passphrases still lock the eleventh', async () => {
