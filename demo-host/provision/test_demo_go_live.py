@@ -56,6 +56,38 @@ class GoLiveTests(unittest.TestCase):
                     self.attempt(serve(**{slot: {**CLEAN, "notReal": ["drainSource"]}}))
                 self.assertFalse(self.dest.exists())
 
+    def test_every_stand_in_on_every_slot_is_named_in_one_refusal(self):
+        with self.assertRaises(dgl.GoLiveRefused) as caught:
+            self.attempt(serve(**{
+                "0": {**CLEAN, "notReal": ["noop-admin-api"]},
+                "4": {**CLEAN, "notReal": ["noop-drain-source"]},
+            }))
+        message = str(caught.exception)
+        for needle in ("slot 0:", "noop-admin-api", "slot 4:", "noop-drain-source"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, message)
+        self.assertFalse(self.dest.exists())
+
+    def test_a_stand_in_and_an_unreadable_slot_are_both_named(self):
+        with self.assertRaises(dgl.GoLiveRefused) as caught:
+            self.attempt(serve(**{
+                "0": {**CLEAN, "notReal": ["noop-admin-api"]},
+                "5": OSError("down"),
+            }))
+        message = str(caught.exception)
+        self.assertIn("noop-admin-api", message)
+        self.assertIn("slot 5:", message)
+        self.assertFalse(self.dest.exists())
+
+    def test_an_aggregate_refusal_leaves_a_previous_file_untouched(self):
+        self.dest.write_text("old\n", encoding="utf-8")
+        with self.assertRaises(dgl.GoLiveRefused):
+            self.attempt(serve(**{
+                "0": {**CLEAN, "notReal": ["noop-admin-api"]},
+                "4": {**CLEAN, "notReal": ["noop-drain-source"]},
+            }))
+        self.assertEqual(self.dest.read_text(encoding="utf-8"), "old\n")
+
     def test_an_interim_module_refuses(self):
         with self.assertRaises(dgl.GoLiveRefused):
             self.attempt(serve(**{"3": {**CLEAN, "interim": ["adminApi"]}}))
@@ -181,7 +213,7 @@ class FetchStatusTests(unittest.TestCase):
         broker = self.start(bodies)
         with self.assertRaisesRegex(dgl.GoLiveRefused, "noop-admin-api"):
             dgl.check_seams(broker.url)
-        self.assertEqual(broker.requested[-1], "/status/5")
+        self.assertEqual(broker.requested, [f"/status/{slot}" for slot in dgl.SLOT_NAMES])
 
     def test_go_live_end_to_end_control_clean_broker_passes(self):
         broker = self.start(clean_bodies())
