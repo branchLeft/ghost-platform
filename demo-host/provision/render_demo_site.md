@@ -137,6 +137,12 @@ requires the wildcard to be the only certificate subject (see
 `test_demo_edge_wildcard.md`). It runs in `repo-tooling-ci` on every pull
 request and fails, rather than skips, there when Docker is missing.
 
+`test_demo_edge_tier2.py` goes further: it runs the same rendered Caddyfile in
+a real Caddy against a local ACME CA, with a test-only DNS provider in place of
+the Hetzner module, and requires the CA to have seen one order, for the
+wildcard, and none for a slot name (see `test_demo_edge_tier2.md`). It has the
+same CI rule.
+
 ## Installing
 
 `--out` writes unchecked. Only `demo_go_live.py` (PR #385) may place the live
