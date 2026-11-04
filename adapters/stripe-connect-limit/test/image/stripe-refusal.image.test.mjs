@@ -8,7 +8,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import { importFailureSection } from './import-log.mjs';
+import { importFailureSection, readUntilStable } from './import-log.mjs';
 import { GhostAdmin } from '../../../../services/export-bundler/test/image/ghost-admin.mjs';
 import {
   GhostContainer,
@@ -160,7 +160,8 @@ async function runImport({ container, admin }, markerSlug, { withStripeKey }) {
     return '';
   }
   await until('the import job to log its failure', () => countFailures(container) > failuresBefore);
-  const log = containerLog(container);
+  // The marker can be logged before its reason lines: read until the log is still.
+  const log = await readUntilStable(() => containerLog(container));
   return importFailureSection(log, IMPORT_FAILED, failuresBefore);
 }
 
