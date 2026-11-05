@@ -45,10 +45,12 @@ function storageEnv() {
 }
 
 // Logs are dumped into a job log on failure, which is public, so every form a
-// secret can take there is replaced: the value in any case and its base64, an
-// SMTP AUTH PLAIN payload, cookies, a magic-link token, and an Authorization
-// value, bare or after its Bearer, Basic or Ghost scheme, including inside an
-// escaped JSON string.
+// secret can take there is replaced: the value in any case, its base64 with and
+// without padding, an SMTP AUTH PLAIN payload, cookies (also inside an escaped
+// JSON string), a magic-link token (after `?`, `&`, an HTML-escaped `&amp;` or
+// percent-encoded inside another URL), an Authorization value after any scheme
+// word, bare or inside an escaped JSON string, and a header written as two
+// elements of Node's rawHeaders array.
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function redact(text, secrets = []) {
@@ -56,16 +58,20 @@ export function redact(text, secrets = []) {
   for (const secret of secrets) {
     if (!secret) continue;
     out = out.replace(new RegExp(escapeRegExp(secret), 'gi'), '[redacted]');
-    out = out.split(Buffer.from(secret).toString('base64')).join('[redacted]');
+    const encoded = Buffer.from(secret).toString('base64');
+    out = out.split(encoded).join('[redacted]');
+    const unpadded = encoded.replace(/=+$/, '');
+    if (unpadded && unpadded !== encoded) out = out.split(unpadded).join('[redacted]');
   }
   return out
     .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
-    .replace(/(\bcookie["']?\s*[:=]\s*["']?)[^\r\n"']+/gi, '$1[redacted]')
-    .replace(/([?&]token=)[^&\s"'<>]+/gi, '$1[redacted]')
+    .replace(/(\bcookie(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[^\r\n"'\\]+/gi, '$1[redacted]')
+    .replace(/((?:[?&;]|%3F|%26)token(?:=|%3D))(?:(?!%26)[^&\s"'<>])+/gi, '$1[redacted]')
     .replace(
-      /(authorization\W{1,8}(?:(?:bearer|basic|ghost)\s+)?)[A-Za-z0-9+/=._~-]+/gi,
+      /(authorization\W{1,8}(?:[A-Za-z][A-Za-z0-9_-]*\s+)?)[A-Za-z0-9+/=._~-]+/gi,
       '$1[redacted]'
-    );
+    )
+    .replace(/(\b(?:set-cookie|cookie|authorization)\\?["']\s*,\s*\\?["'])[^"'\\]+/gi, '$1[redacted]');
 }
 
 const tail = (text, lines = 200) => text.split('\n').slice(-lines).join('\n');

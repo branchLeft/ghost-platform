@@ -80,3 +80,48 @@ test('an Authorization: Ghost token is replaced', () => {
   assert.equal(out.includes(jwt), false, out);
   assert.equal(out.includes('eyJ'), false, out);
 });
+
+// Shapes no emitter prints today; each is a secret in a form the first
+// redactor did not cover. Every value is an obvious fake.
+test('a cookie inside an escaped JSON string is replaced', () => {
+  const out = redact('{"log":"{\\"cookie\\":\\"ghost-admin.session=esc-c00kie-FAKE\\"}"}', []);
+  assert.equal(out.includes('esc-c00kie-FAKE'), false, out);
+});
+
+test('an Authorization header with any other scheme is replaced', () => {
+  const out = redact('Authorization: Token t0ken-scheme-FAKE-123', []);
+  assert.equal(out.includes('t0ken-scheme-FAKE-123'), false, out);
+});
+
+test('a magic-link token after an HTML-escaped ampersand is replaced', () => {
+  const out = redact('href="https://gate.example.test/?action=signin&amp;token=amp-t0ken-FAKE"', []);
+  assert.equal(out.includes('amp-t0ken-FAKE'), false, out);
+  assert.ok(out.includes('action=signin'), out);
+});
+
+test('a magic link percent-encoded inside another URL is replaced', () => {
+  const out = redact(
+    'https://redirect.example.test/go?u=https%3A%2F%2Fgate.example.test%2F%3Faction%3Dsignin%26token%3Dpct-t0ken-FAKE&x=1',
+    []
+  );
+  assert.equal(out.includes('pct-t0ken-FAKE'), false, out);
+});
+
+test('the base64 of a secret with its padding stripped is replaced', () => {
+  const secret = 'pad-key-0123456789abcdef-FAKE';
+  const padded = b64(secret);
+  assert.ok(padded.endsWith('='), 'the fixture must need padding');
+  const stripped = padded.replace(/=+$/, '');
+  const out = redact(`seen ${stripped} here`, [secret]);
+  assert.equal(out.includes(stripped), false, out);
+});
+
+test('headers in the rawHeaders array form are replaced', () => {
+  const out = redact(
+    "rawHeaders: [ 'Host', 'x.example.test', 'Cookie', 'ghost-admin.session=raw-c00kie-FAKE', 'Authorization', 'Token raw-t0ken-FAKE' ]",
+    []
+  );
+  assert.equal(out.includes('raw-c00kie-FAKE'), false, out);
+  assert.equal(out.includes('raw-t0ken-FAKE'), false, out);
+  assert.ok(out.includes('x.example.test'), out);
+});
