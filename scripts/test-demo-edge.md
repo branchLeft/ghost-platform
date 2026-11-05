@@ -35,6 +35,8 @@ with `sed` before Caddy loads it.
   trailing slash); with no cookie it is 401. The controls stay open: an image,
   a PDF, a `.jsx`, `/ghost/assets/app.js` and a `.js` outside the upload
   prefixes. `nosniff` is on a served response and on the refusal (ws#3078)
+- the 503 the edge answers when both colours are drained carries `nosniff`
+  too
 - draining the serving colour moves traffic to the other with no reload, and
   back again, so the check tells the colours apart
 - a name under the wildcard that is no slot's, sent to the same address, gets
@@ -50,15 +52,16 @@ with `sed` before Caddy loads it.
 `forward_auth` in the rendered file; `=narrow-import` narrows the members-import
 matcher to one literal path; `=drop-abort` removes the wildcard's closing
 `handle { abort }`; `=drop-upload-guard` makes the uploaded-file refusals
-answer 200 instead of 403 (the script exits 2 if the edit matches nothing). Each
-must make the script exit non-zero.
+answer 200 instead of 403; `=drop-error-nosniff` removes the site's
+error-response header block, so the 503 carries no nosniff (the script exits 2
+if the edit matches nothing). Each must make the script exit non-zero.
 
 The edits are `sed` patterns anchored on the rendered file's indentation: the
 slot's gated catch-all is the two-tab `handle {` (the one-tab `handle {` is the
 closing abort), and the members-import matchers sit five tabs deep. A change to
 the rendered nesting makes a pattern match nothing; the sabotage then leaves
 the script green, and the workflow step that expects red fails. The workflow
-runs `exempt-ghost`, `narrow-import` and `drop-upload-guard`; `drop-abort` is for local use until a
+runs `exempt-ghost`, `narrow-import` and `drop-upload-guard`; `drop-abort` and `drop-error-nosniff` are for local use until a
 workflow step is added.
 
 ## Local use

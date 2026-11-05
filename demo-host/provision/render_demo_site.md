@@ -92,7 +92,10 @@ render_demo_site.py --base BASE --site 0=EDGE0.json --site 1=EDGE1.json \
   depend on the policy mode: it holds while the policy is report-only.
 - **`nosniff` on every response** (`X-Content-Type-Options`, deferred `>`
   form), so an extension the refusal does not list, served as `text/plain`,
-  is not sniffed into script.
+  is not sniffed into script. The slot's `header` block does not reach an
+  error response (a colour's 503 with no healthy upstream), so the site has
+  its own `handle_errors` block with the same header. It sits at the site
+  level: Caddy refuses it inside the imported colour snippet.
 - **`noindex` on every response**, set with the deferred `>` form so the
   gate's own copy of the header is replaced rather than doubled (the live
   proof caught the doubled value).
