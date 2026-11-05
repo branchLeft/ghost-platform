@@ -41,6 +41,11 @@ stdin) and one dump session (`mysqldump`), both as the backup account.
 2. Coordinator: list the base tables to lock from
    `information_schema.TABLES`: one tenant's schema, or every schema except
    `mysql`, `sys`, `performance_schema` and `information_schema`.
+   If any of them is not an InnoDB table (for example MyISAM) the module
+   refuses with a fatal error before it locks anything: such a table is
+   read after the unlock and its rows are also replayed from the binary
+   log, so no consistent snapshot exists. This applies to both coordinate
+   sources, so it also covers the default path.
 3. Coordinator: `LOCK TABLES … READ` on exactly those tables. This takes
    no flush. A long-running read does not block it, because a read lock
    and a running read are compatible. It waits only for write

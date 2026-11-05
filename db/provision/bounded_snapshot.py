@@ -328,6 +328,21 @@ def list_tables_sql(schemas: Sequence[str] | None) -> str:
     )
 
 
+def non_innodb_tables_sql(schemas: Sequence[str] | None) -> str:
+    """Base tables in scope whose engine is not InnoDB. A snapshot is
+    consistent only for InnoDB: a MyISAM table is read after the unlock, and
+    its rows are then also replayed from the binary log."""
+    if schemas is None:
+        scope = "TABLE_SCHEMA NOT IN (" + ", ".join(_quote_string(s) for s in SYSTEM_SCHEMAS) + ")"
+    else:
+        scope = "TABLE_SCHEMA IN (" + ", ".join(_quote_string(s) for s in schemas) + ")"
+    return (
+        "SELECT ENGINE, TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES "
+        f"WHERE TABLE_TYPE = 'BASE TABLE' AND ENGINE <> 'InnoDB' AND {scope} "
+        "ORDER BY TABLE_SCHEMA, TABLE_NAME;"
+    )
+
+
 def lock_tables_sql(tables: Sequence[tuple[str, str]]) -> str:
     return "LOCK TABLES " + ", ".join(
         f"{_quote_identifier(schema)}.{_quote_identifier(table)} READ" for schema, table in tables
@@ -446,6 +461,13 @@ def _attempt(
         tables = _parse_tables(coordinator.ask(list_tables_sql(schemas), setup_deadline))
         if not tables:
             raise _Fatal(f"no base tables to lock in {list(schemas) if schemas is not None else 'any user schema'}")
+
+        foreign = [
+            f"{line.split(chr(9))[1]}.{line.split(chr(9))[2]} ({line.split(chr(9))[0]})"
+            for line in coordinator.ask(non_innodb_tables_sql(schemas), setup_deadline)
+        ]
+        if foreign:
+            raise _Fatal("tables not InnoDB, so no consistent snapshot: " + ", ".join(foreign))
 
         requested = clock()
         try:
