@@ -82,6 +82,17 @@ render_demo_site.py --base BASE --site 0=EDGE0.json --site 1=EDGE1.json \
   `^/ghost/api/(v<digits>|canary)?/admin/members/upload/?$`. Both over-refuse
   rather than under-refuse. An earlier narrow single-path matcher was bypassed
   by four spellings; the live proof now sends each.
+- **An uploaded file a browser would run is refused.** A request (any method)
+  for a path under `/content/files/`, `/content/images/` or `/content/media/` whose name
+  ends `.js .mjs .cjs .html .htm .shtml .xhtml .xht .xml .xsl .xslt .css .svg
+  .svgz .kml .gpx` answers 403, after the gate (a visitor with no cookie still gets
+  401). Ghost serves what a tenant uploads from the tenant's own origin, so the
+  strict policy's `script-src 'self'` lets an uploaded `.js` run from a post's
+  HTML card. See "Why uploaded active content is refused" below. It does not
+  depend on the policy mode: it holds while the policy is report-only.
+- **`nosniff` on every response** (`X-Content-Type-Options`, deferred `>`
+  form), so an extension the refusal does not list, served as `text/plain`,
+  is not sniffed into script.
 - **`noindex` on every response**, set with the deferred `>` form so the
   gate's own copy of the header is replaced rather than doubled (the live
   proof caught the doubled value).
@@ -126,8 +137,9 @@ The real descriptor-to-JSON step is render-core's; this reads its output.
 
 `sabotage_render_demo_site.py` breaks each gate in a scratch copy and requires
 the suite red, then the real copy green. `scripts/test-demo-edge.sh` repeats
-two against a real Caddy (`DEMO_EDGE_PROOF_SABOTAGE=exempt-ghost` and
-`=narrow-import`); its `=drop-abort` removes the closing `handle { abort }`.
+three against a real Caddy (`DEMO_EDGE_PROOF_SABOTAGE=exempt-ghost`,
+`=narrow-import` and `=drop-upload-guard`); its `=drop-abort` removes the
+closing `handle { abort }`.
 
 ## Real Caddy
 
@@ -175,3 +187,42 @@ The version list is Ghost's and can grow, so any `v<digits>` or `canary`
 prefix is refused, and the two matchers in `render_demo_site.py` overlap on purpose. Caddy's `path` matcher cleans and unescapes and is
 case-insensitive; a `*` spans any segment(s), so an unknown version prefix is
 still caught (it only ever over-refuses a POST, the safe direction).
+
+## Why uploaded active content is refused
+
+(ws#3078.) The strict content policy is `script-src 'self'` plus the theme's
+inline-script hashes. `'self'` is the tenant's own origin, and Ghost serves
+every file a tenant uploads from that origin, under `/content/files/`,
+`/content/images/` and `/content/media/`. So a tenant who uploads `x.js` and
+puts `<script src="/content/files/.../x.js">` in a post's HTML card runs
+script on the shared demo domain even with the policy enforcing. Measured, not
+read: Ghost 6.55.0 (the platform image's digest) accepted `.js .html .css .svg
+.xml` through its files endpoint and served each from the tenant origin with
+its own active type and no `nosniff`; a headless Chromium behind the enforcing
+policy blocked the inline attack and ran the uploaded script
+(`csp/gate/csp-regression-gate.sh --sabotage=no-upload-guard`).
+
+- **Refuse, do not serve as a download.** `Content-Disposition: attachment`
+  with `nosniff` and the script type kept was tried the same way, and the
+  script still ran: a `<script src>` is a subresource load, which ignores the
+  disposition. Only a refusal or a changed `Content-Type` stops it, and a
+  refusal is the smaller thing to get right. The cost: an SVG image uploaded
+  in a demo slot does not display. Putting SVG back needs a per-response
+  sandbox policy and a `Content-Type` rewrite; that is a separate story.
+- **Two overlapping matchers, as for the members import.** A nested `route`
+  makes the prefix and the extension an AND (two `path` lines in one named
+  matcher are an OR, measured on Caddy 2.11.4, and a `*` in the middle of a
+  glob does not span `/`): the glob matcher cleans `.`, `..`, `//` and
+  escapes and ignores case. A `path_regexp` over the path as received covers
+  any depth, any case and a trailing slash.
+- **Every method, and no policy-mode condition.** Nothing legitimate PUTs or
+  DELETEs a file here, and the refusal holds while the policy is report-only.
+- **Demo wildcard only.** No customer-domain site renders this; customer
+  domains keep their own behaviour.
+- **Latent today on a demo as rendered.** render-core renders no verdict
+  source for a demo, and the scanning storage adapter then refuses every new
+  upload with a 503. The hole opens the moment a verdict source is wired, which
+  is why the refusal ships now. The live proof sets the adapter's test-only
+  `verdictSource=in-process-fake`; render-core is unchanged.
+- **`--print-upload-guard`** prints just this block so the Chromium proof
+  imports the rule instead of copying it.

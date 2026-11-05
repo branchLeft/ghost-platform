@@ -98,6 +98,14 @@ if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-abort" ]; then
     mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
     echo "  SABOTAGE: the unmatched-name abort removed"
 fi
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-upload-guard" ]; then
+    # Sabotage: the uploaded-file refusals answer 200 instead of 403, so a
+    # tenant's uploaded script is served. The upload probes must go red.
+    sed 's|^\(.*respond @activeUpload.* \)403$|\1200|' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    if cmp -s "$WORK/Caddyfile" "$WORK/Caddyfile.sab"; then echo "sabotage matched nothing" >&2; exit 2; fi
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: the uploaded-file refusals removed"
+fi
 echo "  rendered $(wc -l < "$WORK/Caddyfile") lines for $HOST"
 
 echo "--- starting the colours, the gate and Caddy (one network namespace, as on the host) ---"
@@ -170,6 +178,38 @@ expect "GET /ghost/api/admin/members/upload/ with the cookie" 200 \
     "$(status GET /ghost/api/admin/members/upload/ "$COOKIE")"
 expect "POST to another admin path with the cookie is not refused by the edge" 200 \
     "$(status POST /ghost/api/admin/session "$COOKIE")"
+
+echo "--- 4b. an uploaded file a browser would run is refused, whatever the spelling ---"
+# Ghost serves what a tenant uploads from the tenant's own origin, where
+# `script-src 'self'` lets a .js run. The stand-in colours answer 200
+# to every path, so a 403 here is the edge's and a 200 is the edge letting it by.
+expect "GET an uploaded script with no cookie (the gate answers before the refusal)" 401 \
+    "$(status GET /content/files/2026/11/x.js)"
+for path in /content/files/x.js /content/files/2026/11/x.js /content/images/2026/11/x.js \
+    /content/media/2026/11/x.js /content/files/2026/11/x.mjs /content/files/2026/11/x.cjs \
+    /content/files/2026/11/x.html /content/files/2026/11/x.htm /content/files/2026/11/x.xhtml \
+    /content/files/2026/11/x.css /content/files/2026/11/x.svg /content/images/2026/11/x.svg \
+    /content/files/2026/11/x.svgz /content/files/2026/11/x.xml /content/files/2026/11/x.xsl \
+    /content/files/2026/11/x.kml /content/files/2026/11/x.gpx /content/images/2026/11/x.gpx \
+    /content/files/2026/11/x.JS /content/files/2026/11/x.Js /content/files/2026/11/X.HTML \
+    /content/FILES/2026/11/x.js /content/Images/2026/11/x.svg "/content/files/2026/11/x.js?a=1" \
+    /content/files/2026/11/x%2ejs /content/files/2026/11/%78.js /content/files/2026/11/./x.js \
+    /content/files/2026/./11/x.js //content/files//2026/11/x.js /content/files/2026/11/../11/x.js \
+    /content/./files/x.js /content/files/x.js/; do
+    expect "GET $path with the cookie" 403 "$(status GET "$path" "$COOKIE")"
+done
+for method in POST PUT DELETE; do
+    expect "$method an uploaded-script path with the cookie (every method is refused)" 403 \
+        "$(status $method /content/files/2026/11/x.js "$COOKIE")"
+done
+# The controls: what the guard must leave alone.
+for path in /content/images/2026/11/a.png /content/images/size/w600/2026/11/a.webp \
+    /content/files/2026/11/report.pdf /content/media/2026/11/clip.mp4 /content/files/2026/11/x.jsx \
+    /ghost/assets/app.js /assets/built/main.css /x.js /content/other/x.js; do
+    expect "GET $path with the cookie is not refused by the edge" 200 "$(status GET "$path" "$COOKIE")"
+done
+expect "nosniff on a served response" nosniff "$(header x-content-type-options GET / "$COOKIE")"
+expect "nosniff on the refusal" nosniff "$(header x-content-type-options GET /content/files/2026/11/x.js "$COOKIE")"
 
 echo "--- 5. per-colour health: draining the serving colour moves traffic, no reload ---"
 expect "colour a serves first" "colour-a GET /" "$(body GET / "$COOKIE")"

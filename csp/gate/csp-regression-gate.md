@@ -25,9 +25,17 @@ choice). CLI: `GHOST_ORIGIN=... CSP_DERIVE_PATHS=/,/p/ node csp/gate/theme-hash-
 
 `judgeRegression` is the verdict on `csp/proof/capture-csp.mjs` output: injected
 script did not run, Portal's email field rendered, exactly one violation and it
-is the inline-script attack. `csp-regression-gate.sh` runs it live (Docker,
-Chromium via `csp/proof`). `--sabotage=no-policy` and `--sabotage=no-hashes`
-serve the policy broken and must exit non-zero. It prints `GATE_TIMING`
+is the inline-script attack, and a script the tenant uploaded did not run
+because the edge refused it (403). The last is workspace#3078: `script-src
+'self'` allows an uploaded `.js`, so the policy alone cannot stop it.
+`csp-regression-gate.sh` runs it live (Docker, Chromium via `csp/proof`):
+it uploads `x.js` through Ghost's files endpoint (the storage adapter's
+test-only `verdictSource=in-process-fake`; a demo renders none, and uploads
+are then refused with a 503), plants a post whose HTML card loads it
+(`csp/proof/upload-attack.mjs`), and puts the edge's own upload refusal in
+front of Ghost, taken from `render_demo_site.py --print-upload-guard`.
+`--sabotage=no-policy`, `--sabotage=no-hashes` and `--sabotage=no-upload-guard`
+serve the policy or the refusal broken and must exit non-zero. It prints `GATE_TIMING`
 seconds for LLD-4's release-timing claim (measured on a workstation, not the
 demo host).
 
@@ -53,7 +61,7 @@ mutate this guard.
 Needs Docker, `csp/proof`'s own `pnpm install` for Playwright, and render-core built.
 
 ```sh
-./csp/gate/csp-regression-gate.sh [--sabotage=no-policy|no-hashes] [IMAGE]
+./csp/gate/csp-regression-gate.sh [--sabotage=no-policy|no-hashes|no-upload-guard] [IMAGE]
 ```
 
 IMAGE is a built platform image; omitted, one is built from the repo root.
@@ -62,3 +70,6 @@ IMAGE is a built platform image; omitted, one is built from the repo root.
 - `no-policy`: no Content-Security-Policy header, so the injected script runs.
 - `no-hashes`: `script-src 'self'` enforced with no hash allowance, so Ghost's
   own inline blocks are blocked as well as the attack.
+- `no-upload-guard`: the policy stays enforcing and the edge's upload refusal is
+  gone. The inline attack is still blocked and the uploaded script runs: this
+  is the reproduction of the bypass, kept as a standing check.

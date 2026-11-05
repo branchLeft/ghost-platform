@@ -221,6 +221,116 @@ class MembersUploadTests(unittest.TestCase):
         self.assertNotIn("method HEAD", text)
 
 
+class UploadGuardTests(unittest.TestCase):
+    """A file a tenant uploads is served from the tenant's own origin,
+    where `script-src 'self'` allows it to run. The edge refuses the ones a
+    browser would run; the live proof is csp/gate (Chromium) and
+    scripts/test-demo-edge.sh (real Caddy)."""
+
+    # Written out here, not read from the module: a test that takes its list
+    # from the code under test passes when an entry is dropped from it.
+    PREFIXES = ("/content/files/", "/content/images/", "/content/media/")
+    EXTENSIONS = (
+        "js", "mjs", "cjs", "html", "htm", "shtml", "xhtml", "xht", "xml", "xsl", "xslt", "css", "svg", "svgz",
+        "kml", "gpx",
+    )
+
+    def setUp(self) -> None:
+        self.text = two_slots()
+        self.pattern = re.compile(rds.UPLOAD_ACTIVE_PATH_REGEXP[len("(?i)"):], re.IGNORECASE)
+
+    def test_the_guard_sits_after_forward_auth_and_before_the_upstream(self):
+        for slot in ("0", "1"):
+            with self.subTest(slot=slot):
+                catch_all = "\n".join(slot_section(self.text, slot)).split("\t\thandle {\n", 1)[1]
+                forward_auth = catch_all.index("forward_auth")
+                upstream = catch_all.index(f"import slot{slot}-upstream")
+                for directive in ("respond @activeUploadByPath 403", "respond @activeUploadByPattern 403"):
+                    self.assertIn(directive, catch_all)
+                    self.assertLess(forward_auth, catch_all.index(directive))
+                    self.assertLess(catch_all.index(directive), upstream)
+
+    def test_the_guard_in_the_site_is_the_guard_the_proof_imports(self):
+        guard = [line.strip() for line in rds.render_upload_guard()]
+        for slot in ("0", "1"):
+            section = [line.strip() for line in slot_section(self.text, slot)]
+            start = section.index(guard[0])
+            self.assertEqual(section[start:start + len(guard)], guard)
+
+    def test_every_prefix_and_extension_is_covered_by_the_glob_matchers(self):
+        tokens = "\n".join(rds.render_upload_guard()).split()
+        for prefix in self.PREFIXES:
+            self.assertIn(f"{prefix}*", tokens)
+        for extension in self.EXTENSIONS:
+            self.assertIn(f"*.{extension}", tokens)
+
+    def test_the_prefix_and_the_extension_are_separate_matchers(self):
+        # Two `path` lines in one named matcher are an OR in Caddy (measured on
+        # 2.11.4): the whole of /content/ would be refused, or every .js.
+        guard = "\n".join(rds.render_upload_guard()) + "\n"
+        path_lines = [line.strip() for line in guard.splitlines() if line.strip().startswith("path ")]
+        self.assertEqual(len(path_lines), 2)
+        prefix_line = next(line for line in path_lines if "/content/" in line)
+        extension_line = next(line for line in path_lines if "*.js" in line)
+        self.assertNotIn("*.", prefix_line)
+        self.assertNotIn("/content/", extension_line)
+
+    def test_the_pattern_matches_every_prefix_extension_case_and_depth(self):
+        for prefix in self.PREFIXES:
+            for extension in self.EXTENSIONS:
+                for path in (
+                    f"{prefix}x.{extension}",
+                    f"{prefix}2026/11/x.{extension}",
+                    f"{prefix}2026/11/X.{extension.upper()}",
+                    f"{prefix}2026/11/x-abc123.{extension}",
+                    f"/{prefix}x.{extension}",
+                    f"{prefix}a//b/x.{extension}",
+                    f"{prefix}x.{extension}/",
+                ):
+                    with self.subTest(path=path):
+                        self.assertIsNotNone(self.pattern.match(path))
+
+    def test_the_pattern_leaves_other_paths_alone(self):
+        for path in (
+            "/content/images/a.png", "/content/images/2026/11/a.webp", "/content/files/report.pdf",
+            "/content/media/clip.mp4", "/content/files/x.jsx", "/content/files/js", "/content/files/x.js.png",
+            "/ghost/assets/app.js", "/assets/built/main.css", "/x.js", "/content/other/x.js", "/content/x.js",
+            "/members/api/member/", "/ghost/api/admin/files/upload/",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(self.pattern.match(path))
+
+    def test_every_method_is_refused(self):
+        self.assertNotIn("method", "\n".join(rds.render_upload_guard()))
+
+    def test_each_matcher_is_followed_by_a_403(self):
+        guard = "\n".join(rds.render_upload_guard())
+        self.assertEqual(guard.count("respond @"), 2)
+        self.assertIn("respond @activeUploadByPath 403", guard)
+        self.assertIn("respond @activeUploadByPattern 403", guard)
+
+    def test_nosniff_is_on_every_slot(self):
+        for slot in ("0", "1"):
+            self.assertIn('>X-Content-Type-Options "nosniff"', "\n".join(slot_section(self.text, slot)))
+
+    def test_it_is_independent_of_the_policy_mode(self):
+        for mode in ("enforcing", "report-only"):
+            with self.subTest(mode=mode):
+                self.assertIn("respond @activeUploadByPath 403", block(contentSecurityPolicyMode=mode))
+
+    def test_the_guard_adds_no_handler(self):
+        for slot in ("0", "1"):
+            handles = [line.strip() for line in slot_section(self.text, slot) if line.strip().startswith("handle")]
+            self.assertEqual(handles, ["handle /__gate/login {", "handle {"])
+
+    def test_the_print_flag_prints_the_guard_alone(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = rds.main(["--print-upload-guard"])
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue(), "\n".join(rds.render_upload_guard()) + "\n")
+
+
 class HeaderTests(unittest.TestCase):
     def test_noindex_on_the_site(self):
         self.assertIn('>X-Robots-Tag "noindex, nofollow"', block())

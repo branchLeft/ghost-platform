@@ -6,4 +6,6 @@
 FROM caddy:2-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b
 
 COPY csp/proof/Caddyfile /etc/caddy/Caddyfile
+# Empty by default; csp-regression-gate.sh mounts the real guard over it.
+RUN : > /etc/caddy/upload-guard.caddy
 COPY widgets/dist/ /srv/bl-assets/

@@ -8,7 +8,7 @@ SABOTAGE=""
 IMAGE=""
 for arg in "$@"; do
     case "$arg" in
-        --sabotage=no-policy | --sabotage=no-hashes) SABOTAGE="${arg#--sabotage=}" ;;
+        --sabotage=no-policy | --sabotage=no-hashes | --sabotage=no-upload-guard) SABOTAGE="${arg#--sabotage=}" ;;
         --sabotage=*) echo "unknown sabotage: $arg" >&2; exit 2 ;;
         *) IMAGE="$arg" ;;
     esac
@@ -23,11 +23,24 @@ ORIGIN_NAME="csp-gate-origin-$$"
 HOST_PORT="${CSP_GATE_PORT:-4311}"
 ORIGIN="http://localhost:${HOST_PORT}"
 
+GUARD_DIR="$(mktemp -d)"
 cleanup() {
     docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
+    rm -rf "${GUARD_DIR:?}"
 }
 trap cleanup EXIT
+
+# The uploaded-file refusal the demo edge ships, printed by the renderer
+# itself so this check runs that rule and not a copy of it. The sabotage mounts
+# an empty file instead: the policy stays enforcing and the guard is gone.
+GUARD_FILE="$GUARD_DIR/upload-guard.caddy"
+if [ "$SABOTAGE" = "no-upload-guard" ]; then
+    : > "$GUARD_FILE"
+else
+    python3 demo-host/provision/render_demo_site.py --print-upload-guard > "$GUARD_FILE"
+fi
+chmod 0644 "$GUARD_FILE"
 
 if [ -z "$IMAGE" ]; then
     IMAGE="csp-gate-ghost:local"
@@ -63,6 +76,9 @@ docker run -d --name "$GHOST_NAME" --network "$NET" \
     -e storage__files__adapter=ScanningStorageAdapter \
     -e storage__files__wraps=LocalFilesStorage \
     -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__images__verdictSource=in-process-fake \
+    -e storage__media__verdictSource=in-process-fake \
+    -e storage__files__verdictSource=in-process-fake \
     -e logging__transports='["stdout"]' \
     -e portal__url="$ORIGIN/bl-assets/portal.min.js" \
     -e sodoSearch__url="$ORIGIN/bl-assets/sodo-search.min.js" \
@@ -73,6 +89,7 @@ wait_for "Ghost" 90 docker exec "$GHOST_NAME" wget -q -O /dev/null http://127.0.
 start_origin() { # header name, header value
     docker rm -f "$ORIGIN_NAME" >/dev/null 2>&1 || true
     docker run -d --name "$ORIGIN_NAME" --network "$NET" -p "${HOST_PORT}:8080" \
+        -v "$GUARD_FILE:/etc/caddy/upload-guard.caddy:ro" \
         -e "GHOST_UPSTREAM=${GHOST_NAME}:2368" \
         -e "CSP_HEADER_NAME=$1" -e "CSP_HEADER_VALUE=$2" \
         csp-gate-origin:local >/dev/null
@@ -92,6 +109,8 @@ GOOD_VALUE="$(printf '%s' "$RENDERED" | cut -f2)"
 UNAVAILABLE_VALUE="$(printf '%s' '{"kind":"unavailable"}' | node csp/proof/render-header.mjs | cut -f2)"
 
 PROOF_ORIGIN="$ORIGIN" PROOF_SESSION_COOKIE="$SESSION_COOKIE" node csp/proof/inject-attack.mjs >/dev/null
+# The uploaded-script attack: an uploaded x.js, and a post that loads it.
+eval "$(PROOF_ORIGIN="$ORIGIN" PROOF_SESSION_COOKIE="$SESSION_COOKIE" node csp/proof/upload-attack.mjs)"
 
 # The gate's own time starts here: policy applied, browser driven, verdict.
 GATE_START="$(date +%s)"
@@ -100,7 +119,9 @@ case "$SABOTAGE" in
     no-hashes) start_origin "Content-Security-Policy" "$UNAVAILABLE_VALUE" ;;
     *) start_origin "Content-Security-Policy" "$GOOD_VALUE" ;;
 esac
-RUN_JSON="$(PROOF_ORIGIN="$ORIGIN" PROOF_LABEL="gate${SABOTAGE:+-$SABOTAGE}" node csp/proof/capture-csp.mjs)"
+RUN_JSON="$(PROOF_ORIGIN="$ORIGIN" PROOF_LABEL="gate${SABOTAGE:+-$SABOTAGE}" \
+    PROOF_UPLOAD_POST_PATH="$UPLOAD_POST_PATH" PROOF_UPLOAD_SCRIPT_PATH="$UPLOAD_SCRIPT_PATH" \
+    node csp/proof/capture-csp.mjs)"
 echo "$RUN_JSON"
 set +e
 printf '%s' "$RUN_JSON" | node csp/gate/csp-regression-gate.mjs

@@ -23,8 +23,16 @@
 		header Cache-Control "public, max-age=31536000, immutable"
 	}
 
+	# The uploaded-file refusal is not written here: it is the
+	# output of `render_demo_site.py --print-upload-guard`, mounted over this
+	# file by csp-regression-gate.sh, so the check runs the rule the demo edge
+	# ships and not a copy. The image carries an empty file, which is what
+	# run-proof.sh (no uploads) and `--sabotage=no-upload-guard` get.
 	handle {
 		header {$CSP_HEADER_NAME} "{$CSP_HEADER_VALUE}"
-		reverse_proxy {$GHOST_UPSTREAM:ghost:2368}
+		route {
+			import /etc/caddy/upload-guard.caddy
+			reverse_proxy {$GHOST_UPSTREAM:ghost:2368}
+		}
 	}
 }
