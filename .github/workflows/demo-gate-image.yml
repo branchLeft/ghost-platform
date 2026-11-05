@@ -94,3 +94,13 @@ jobs:
             echo "::error::the members-import probes stayed green with only the literal path refused"
             exit 1
           fi
+
+      # And the uploaded-file refusal (ws#3078): with it answering 200, a
+      # tenant's uploaded script is served from the shared domain, where
+      # `script-src 'self'` lets it run. The upload probes must go red.
+      - name: Sabotage - drop the upload guard, proof must go red
+        run: |
+          if DEMO_EDGE_PROOF_SABOTAGE=drop-upload-guard ./scripts/test-demo-edge.sh demo-gate:ci; then
+            echo "::error::the uploaded-script probes stayed green with the upload guard dropped"
+            exit 1
+          fi

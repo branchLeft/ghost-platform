@@ -16,10 +16,32 @@ const rowB = {
   portalSignInForm: 'rendered',
   emailFields: 1,
   cspViolations: [ATTACK],
+  uploadedScriptRan: false,
+  uploadedScriptStatus: 403,
 };
 
 test('row B (strict policy + hashes) passes', () => {
   assert.deepEqual(judgeRegression(rowB), []);
+});
+
+// workspace#3078: `script-src 'self'` lets a tenant's uploaded .js run, so the
+// policy being enforcing is not enough; the edge must refuse the file.
+test('red when the uploaded script ran (policy enforcing, edge guard gone)', () => {
+  const f = judgeRegression({ ...rowB, uploadedScriptRan: true, uploadedScriptStatus: 200 });
+  assert.deepEqual(f, ['the uploaded script ran']);
+});
+
+test('red when the uploaded-script attack was not exercised', () => {
+  const f = judgeRegression({ ...rowB, uploadedScriptRan: null, uploadedScriptStatus: null });
+  assert.deepEqual(f, ['the uploaded-script attack was not exercised']);
+});
+
+test('red when the script did not run but the edge did not refuse it (a 404 plants nothing)', () => {
+  for (const status of [200, 404, null]) {
+    const f = judgeRegression({ ...rowB, uploadedScriptRan: false, uploadedScriptStatus: status });
+    assert.equal(f.length, 1, `status ${status}`);
+    assert.match(f[0], /not refused by the edge/);
+  }
 });
 
 test('row A (no policy): red because the injected script ran', () => {
