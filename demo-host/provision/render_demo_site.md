@@ -85,7 +85,7 @@ render_demo_site.py --base BASE --site 0=EDGE0.json --site 1=EDGE1.json \
 - **An uploaded file a browser would run is refused.** A request (any method)
   for a path under `/content/files/`, `/content/images/` or `/content/media/` whose name
   ends `.js .mjs .cjs .html .htm .shtml .xhtml .xht .xml .xsl .xslt .css .svg
-  .svgz` answers 403, after the gate (a visitor with no cookie still gets
+  .svgz .kml .gpx` answers 403, after the gate (a visitor with no cookie still gets
   401). Ghost serves what a tenant uploads from the tenant's own origin, so the
   strict policy's `script-src 'self'` lets an uploaded `.js` run from a post's
   HTML card. See "Why uploaded active content is refused" below. It does not

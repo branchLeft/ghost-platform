@@ -95,7 +95,7 @@ jobs:
             exit 1
           fi
 
-      # And the uploaded-file refusal (ws#3078): with it answering 200, a
+      # And the uploaded-file refusal: with it answering 200, a
       # tenant's uploaded script is served from the shared domain, where
       # `script-src 'self'` lets it run. The upload probes must go red.
       - name: Sabotage - drop the upload guard, proof must go red

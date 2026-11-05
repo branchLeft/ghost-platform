@@ -61,7 +61,7 @@ async function main() {
   const injectedScriptRan = await page.evaluate(() => Boolean(window.__injectedRan));
   const cspViolations = await page.evaluate(() => window.__cspViolations ?? []);
 
-  // The uploaded-script attack (upload-attack.mjs, workspace#3078): a post
+  // The uploaded-script attack (upload-attack.mjs): a post
   // whose HTML card loads a tenant-uploaded .js. Observed on its own page, so
   // its violations never mix with the home page's, which the gate judges as
   // exactly one. null means the run did not exercise it.

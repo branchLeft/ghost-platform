@@ -59,6 +59,7 @@ ACTIVE_CONTENT_EXTENSIONS = (
     "xml", "xsl", "xslt",
     "css",
     "svg", "svgz",
+    "kml", "gpx",
 )
 # Matched against the path as received: any depth below a prefix, any case,
 # any run of slashes. The glob matcher in render_upload_guard covers what

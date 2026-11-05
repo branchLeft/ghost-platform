@@ -181,7 +181,7 @@ expect "POST to another admin path with the cookie is not refused by the edge" 2
 
 echo "--- 4b. an uploaded file a browser would run is refused, whatever the spelling ---"
 # Ghost serves what a tenant uploads from the tenant's own origin, where
-# `script-src 'self'` lets a .js run (ws#3078). The stand-in colours answer 200
+# `script-src 'self'` lets a .js run. The stand-in colours answer 200
 # to every path, so a 403 here is the edge's and a 200 is the edge letting it by.
 expect "GET an uploaded script with no cookie (the gate answers before the refusal)" 401 \
     "$(status GET /content/files/2026/11/x.js)"
@@ -190,6 +190,7 @@ for path in /content/files/x.js /content/files/2026/11/x.js /content/images/2026
     /content/files/2026/11/x.html /content/files/2026/11/x.htm /content/files/2026/11/x.xhtml \
     /content/files/2026/11/x.css /content/files/2026/11/x.svg /content/images/2026/11/x.svg \
     /content/files/2026/11/x.svgz /content/files/2026/11/x.xml /content/files/2026/11/x.xsl \
+    /content/files/2026/11/x.kml /content/files/2026/11/x.gpx /content/images/2026/11/x.gpx \
     /content/files/2026/11/x.JS /content/files/2026/11/x.Js /content/files/2026/11/X.HTML \
     /content/FILES/2026/11/x.js /content/Images/2026/11/x.svg "/content/files/2026/11/x.js?a=1" \
     /content/files/2026/11/x%2ejs /content/files/2026/11/%78.js /content/files/2026/11/./x.js \

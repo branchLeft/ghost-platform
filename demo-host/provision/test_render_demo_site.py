@@ -222,7 +222,7 @@ class MembersUploadTests(unittest.TestCase):
 
 
 class UploadGuardTests(unittest.TestCase):
-    """ws#3078: a file a tenant uploads is served from the tenant's own origin,
+    """A file a tenant uploads is served from the tenant's own origin,
     where `script-src 'self'` allows it to run. The edge refuses the ones a
     browser would run; the live proof is csp/gate (Chromium) and
     scripts/test-demo-edge.sh (real Caddy)."""
@@ -232,6 +232,7 @@ class UploadGuardTests(unittest.TestCase):
     PREFIXES = ("/content/files/", "/content/images/", "/content/media/")
     EXTENSIONS = (
         "js", "mjs", "cjs", "html", "htm", "shtml", "xhtml", "xht", "xml", "xsl", "xslt", "css", "svg", "svgz",
+        "kml", "gpx",
     )
 
     def setUp(self) -> None:

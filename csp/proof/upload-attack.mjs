@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The uploaded-script attack (branchLeft/workspace#3078): a tenant uploads a
+// The uploaded-script attack: a tenant uploads a
 // .js file through Ghost's own files endpoint, which Ghost then serves from
 // the tenant's own origin, and plants a post whose HTML card loads it with
 // `<script src>`. The strict policy's `script-src 'self'` allows that, so

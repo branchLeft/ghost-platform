@@ -36,7 +36,7 @@ export function judgeRegression(run) {
         (violations.length > 1 ? " (Ghost's own inline blocks are blocked too)" : '')
     );
   }
-  // The uploaded-script attack (workspace#3078): `script-src 'self'` allows a
+  // The uploaded-script attack: `script-src 'self'` allows a
   // .js the tenant uploaded, so the policy alone cannot stop it; the edge
   // refuses the file (403). Both must hold: the script did not run, and the
   // edge, not a missing file, is why (a 404 means the attack was not planted).

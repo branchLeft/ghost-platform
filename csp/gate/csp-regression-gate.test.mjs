@@ -24,7 +24,7 @@ test('row B (strict policy + hashes) passes', () => {
   assert.deepEqual(judgeRegression(rowB), []);
 });
 
-// workspace#3078: `script-src 'self'` lets a tenant's uploaded .js run, so the
+// `script-src 'self'` lets a tenant's uploaded .js run, so the
 // policy being enforcing is not enough; the edge must refuse the file.
 test('red when the uploaded script ran (policy enforcing, edge guard gone)', () => {
   const f = judgeRegression({ ...rowB, uploadedScriptRan: true, uploadedScriptStatus: 200 });
