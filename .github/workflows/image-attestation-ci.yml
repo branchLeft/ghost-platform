@@ -16,6 +16,7 @@ on:
       - .github/actions/attest-and-verify-image/**
       - .github/workflows/registry-push.yml
       - .github/workflows/portal-apps-image.yml
+      - .github/workflows/demo-edge-image.yml
       - .github/workflows/image-attestation-ci.yml
   pull_request:
     branches: [main]
@@ -27,6 +28,7 @@ on:
       - .github/actions/attest-and-verify-image/**
       - .github/workflows/registry-push.yml
       - .github/workflows/portal-apps-image.yml
+      - .github/workflows/demo-edge-image.yml
       - .github/workflows/image-attestation-ci.yml
 
 permissions:

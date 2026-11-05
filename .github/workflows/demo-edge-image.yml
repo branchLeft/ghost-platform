@@ -1,0 +1,286 @@
+name: Demo edge image
+
+# Builds services/demo-edge (Caddy with the Hetzner DNS-01 module compiled in)
+# for linux/amd64, holds the built binary to the pins in its Dockerfile, and on
+# push to `main` (or a manual dispatch from `main`) publishes it to
+# ghcr.io/branchleft/demo-edge tagged with the git SHA, signs the pushed digest
+# with a GitHub build-provenance attestation, and prints
+# `ghcr.io/branchleft/demo-edge@sha256:...` in the job summary. That
+# digest-qualified reference is the only thing a consumer may pin; a tag can be
+# re-pointed, a digest cannot. There is deliberately no `latest` tag.
+#
+# Same route as drain-sidecar-image.yml: the `build` job proves the image and
+# saves it, the `push` job loads that exact image, checks its ID, then tags and
+# pushes it. Nothing is rebuilt, so the proof covers the pushed bytes. The push
+# is one linux/amd64 manifest (no multi-platform index, no buildkit
+# attestation), so the digest survives `docker save | docker load` unchanged.
+# GHCR authenticates with the workflow's own GITHUB_TOKEN.
+#
+# GHCR creates a package private on its first push and no workflow can change
+# that. `anonymous-pull` pulls the pushed digest with no credential and fails
+# red while the package is still private, so "publicly pullable" is never
+# reported on an unchecked claim.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/demo-edge/**
+      - scripts/demo-edge-pins.mjs
+      - test-support/publish-job-checks.mjs
+      - workflow-demo-edge-image.test.js
+      - .github/workflows/demo-edge-image.yml
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - services/demo-edge/**
+      - scripts/demo-edge-pins.mjs
+      - test-support/publish-job-checks.mjs
+      - workflow-demo-edge-image.test.js
+      - .github/workflows/demo-edge-image.yml
+
+# Read-only at the top. Only the push job asks for a write scope, for itself.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: docker build + pins proof (demo-edge)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    outputs:
+      image-id: ${{ steps.proven.outputs.image-id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Both base images are multi-platform indexes, so the platform is named
+      # here and never left to the runner's architecture.
+      - name: Build image (linux/amd64)
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --tag demo-edge:ci \
+            services/demo-edge
+
+      - name: Check the image is linux/amd64
+        run: |
+          platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' demo-edge:ci)"
+          if [ "$platform" != 'linux/amd64' ]; then
+            echo "::error::demo-edge:ci is '$platform', not linux/amd64"
+            exit 1
+          fi
+
+      # The built binary against the Dockerfile's pins: Caddy version, the
+      # Hetzner module and its version, architecture.
+      - name: Hold the built binary to the Dockerfile pins
+        run: node scripts/demo-edge-pins.mjs demo-edge:ci
+
+      # Sabotage control, run on every build. A copy of the Dockerfile with the
+      # module version bumped must fail the same check against the same binary,
+      # and fail for the pin, not for a docker fault. If it passes, the check
+      # above proves nothing and this step fails the job.
+      - name: Prove a drifted pin is refused
+        run: |
+          sed -E 's#(caddy-dns/hetzner/v2@v)[0-9]+\.[0-9]+\.[0-9]+#\199.99.99#' \
+            services/demo-edge/Dockerfile > "$RUNNER_TEMP/Dockerfile.drifted"
+          if cmp -s services/demo-edge/Dockerfile "$RUNNER_TEMP/Dockerfile.drifted"; then
+            echo "::error::the drifted copy is identical to the Dockerfile; the sabotage edit did not apply"
+            exit 1
+          fi
+          if output="$(node scripts/demo-edge-pins.mjs demo-edge:ci "$RUNNER_TEMP/Dockerfile.drifted" 2>&1)"; then
+            echo "::error::a Dockerfile with a drifted module pin was accepted: the pins check is vacuous"
+            exit 1
+          fi
+          printf '%s\n' "$output" | sed 's/^::error:://'
+          if ! printf '%s' "$output" | grep -q 'binary has dns.providers.hetzner'; then
+            echo "::error::the drifted pin was refused, but not for the module version"
+            exit 1
+          fi
+
+      - name: Workflow shape and pins checker tests
+        run: node --test workflow-demo-edge-image.test.js
+
+      # Only reached when everything above passed. The image ID is read after
+      # the proof, from the tag the proof ran, and travels with the saved
+      # tarball so the push job can refuse anything else.
+      - name: Save the proven image
+        id: proven
+        run: |
+          docker save --output demo-edge.tar demo-edge:ci
+          echo "image-id=$(docker image inspect --format '{{.Id}}' demo-edge:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proven image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo-edge-image
+          path: demo-edge.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the proven demo-edge image
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 20
+
+    # `id-token: write` and `attestations: write` let the run sign the pushed
+    # digest with a keyless GitHub artifact attestation (the attest step below).
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    # One publish at a time, none cancelled half-way.
+    concurrency:
+      group: demo-edge-image-push
+      cancel-in-progress: false
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/demo-edge
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the proven image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: demo-edge-image
+
+      # The loaded image must be exactly the one the proof ran against.
+      - name: Load the proven image and check its ID
+        env:
+          PROVEN_ID: ${{ needs.build.outputs.image-id }}
+        run: |
+          docker load --input demo-edge.tar
+          loaded="$(docker image inspect --format '{{.Id}}' demo-edge:ci)"
+          if [ -z "$PROVEN_ID" ] || [ "$loaded" != "$PROVEN_ID" ]; then
+            echo "::error::loaded image '$loaded' is not the proven image '$PROVEN_ID'"
+            exit 1
+          fi
+          docker tag demo-edge:ci "$IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      # Signs the digest with a keyless GitHub artifact attestation, then
+      # verifies it with the identity below and checks that a wrong identity is
+      # rejected. The identity is a literal on purpose: read from this run's
+      # own `github.workflow_ref` it would agree with itself and prove nothing.
+      # The same value, with the source ref `refs/heads/main`, is what a host
+      # passes to scripts/verify-image-attestation.sh.
+      - name: Attest and verify the pushed image
+        uses: ./.github/actions/attest-and-verify-image
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ steps.digest.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/demo-edge-image.yml
+          repo: branchLeft/ghost-platform
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## demo-edge image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+            echo
+            echo 'Set demo1_build_caddy_image to the value above, in its own change, once anonymous-pull is green.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  anonymous-pull:
+    name: Pull the published demo-edge image with no credential
+    runs-on: ubuntu-latest
+    needs: push
+    # Same main-only guard as the push job it follows.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 10
+
+    # Read-only and no login: the pull below must succeed as a stranger would.
+    permissions:
+      contents: read
+
+    env:
+      PINNED_IMAGE: ${{ needs.push.outputs.image }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # GHCR creates the package private. Until its owner sets it to Public the
+      # pull is denied and this job is red by design.
+      - name: Pull the digest anonymously
+        run: |
+          if ! docker pull --platform linux/amd64 "$PINNED_IMAGE"; then
+            echo "::error::anonymous pull of $PINNED_IMAGE was refused: the demo-edge package is still private. The owner sets it to Public in the package settings on GitHub; no workflow can."
+            exit 1
+          fi
+          platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$PINNED_IMAGE")"
+          if [ "$platform" != 'linux/amd64' ]; then
+            echo "::error::pulled image is '$platform', not linux/amd64"
+            exit 1
+          fi
+
+      # The same check as the build job, now against the bytes a stranger gets.
+      - name: Hold the pulled binary to the Dockerfile pins
+        run: node scripts/demo-edge-pins.mjs "$PINNED_IMAGE"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo '## demo-edge anonymous pull'
+            echo
+            echo "Pulled \`${PINNED_IMAGE:-NO DIGEST}\` with no credential: $JOB_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"

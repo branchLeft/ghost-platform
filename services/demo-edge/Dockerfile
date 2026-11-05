@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Caddy 2.11.4 with the Hetzner DNS module compiled in, for the demo edge's
-# wildcard certificate (DNS-01). Nothing builds, publishes or runs it yet;
-# see README.md beside this file.
+# wildcard certificate (DNS-01). .github/workflows/demo-edge-image.yml builds
+# and publishes it; see README.md beside this file.
 
 # Both base images are pinned by digest so a re-pointed tag cannot change
 # what is built. Re-read the digests when the Caddy tag is bumped.

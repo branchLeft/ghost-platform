@@ -54,5 +54,6 @@ last line too, and must fail the check rather than pass as a rejection.
 | --- | --- |
 | `ghcr.io/branchleft/ghost-tenant` | `branchLeft/ghost-platform/.github/workflows/registry-push.yml` |
 | `ghcr.io/branchleft/portal-apps` | `branchLeft/ghost-platform/.github/workflows/portal-apps-image.yml` |
+| `ghcr.io/branchleft/demo-edge` | `branchLeft/ghost-platform/.github/workflows/demo-edge-image.yml` |
 
 The test for this script is `scripts/test-verify-image-attestation.sh`.

@@ -18,7 +18,7 @@ const uncommented = (file) => read(file).replace(/^[ \t]*#.*$/gm, '');
 const REPO = 'branchLeft/ghost-platform';
 const ACTION = '.github/actions/attest-and-verify-image/action.yml';
 const VERIFY = 'scripts/verify-image-attestation.sh';
-const IMAGE_WORKFLOWS = ['registry-push.yml', 'portal-apps-image.yml'];
+const IMAGE_WORKFLOWS = ['registry-push.yml', 'portal-apps-image.yml', 'demo-edge-image.yml'];
 
 // The text of one job: from its `  name:` line to the next job or the end.
 // Searched after `jobs:` because a trigger can share a job's name (`push:`).
