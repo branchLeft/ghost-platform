@@ -281,6 +281,20 @@ def _render_slot_handles(base: str, sites: Sequence[tuple[str, Mapping[str, Any]
     return lines
 
 
+def render_error_headers() -> list[str]:
+    """The site-level `handle_errors` block. A colour snippet's 503 (no healthy
+    upstream) is an error Caddy writes past the slot's own `header` block, so
+    the nosniff set there never reaches it. This block sits at the site level:
+    Caddy refuses `handle_errors` nested inside an imported snippet."""
+    return [
+        "\thandle_errors {",
+        "\t\theader {",
+        '\t\t\t>X-Content-Type-Options "nosniff"',
+        "\t\t}",
+        "\t}",
+    ]
+
+
 def render_caddyfile(
     base: str,
     sites: Sequence[tuple[str, Mapping[str, Any]]],
@@ -290,7 +304,8 @@ def render_caddyfile(
     """The whole demo Caddyfile: global options and every slot's upstream
     snippet (render_demo_edge) once, then one `*.<base>` site whose
     host-matched handle carries each occupied slot's gated block. A name that
-    matches no slot is aborted, so the wildcard answers nothing else.
+    matches no slot is aborted, so the wildcard answers nothing else. The
+    site's error responses carry nosniff too (`render_error_headers`).
 
     Raises InvalidBaseDomain, InvalidTlsSource, InvalidDnsDirective,
     HostOutsideWildcard, or InvalidEdgeBlock for a bad slot, host or edge."""
@@ -300,6 +315,7 @@ def render_caddyfile(
         f"*.{base} {{",
         *tls_lines,
         *_render_slot_handles(base, sites),
+        *render_error_headers(),
         "\thandle {",
         "\t\tabort",
         "\t}",

@@ -106,6 +106,14 @@ if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-upload-guard" ]; then
     mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
     echo "  SABOTAGE: the uploaded-file refusals removed"
 fi
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-error-nosniff" ]; then
+    # Sabotage: remove the site's error-response header block, so a 503 from a
+    # colour with no healthy upstream carries no nosniff. The 5b checks must go red.
+    sed '/^\thandle_errors {$/,/^\t}$/d' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    if cmp -s "$WORK/Caddyfile" "$WORK/Caddyfile.sab"; then echo "sabotage matched nothing" >&2; exit 2; fi
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: the error-response nosniff removed"
+fi
 echo "  rendered $(wc -l < "$WORK/Caddyfile") lines for $HOST"
 
 echo "--- starting the colours, the gate and Caddy (one network namespace, as on the host) ---"
@@ -228,6 +236,17 @@ for _ in $(seq 1 15); do
     sleep 1
 done
 expect "and back to colour a when b drains (the check tells the colours apart)" yes "$BACK"
+
+echo "--- 5b. both colours drained: the 503 from the edge carries nosniff too ---"
+touch "$WORK/drain/a" "$WORK/drain/b"
+DOWN=no
+for _ in $(seq 1 15); do
+    if [ "$(status GET / "$COOKIE")" = "503" ]; then DOWN=yes; break; fi
+    sleep 1
+done
+expect "both colours drained answer 503" yes "$DOWN"
+expect "nosniff on the 503" nosniff "$(header x-content-type-options GET / "$COOKIE")"
+rm -f "$WORK/drain/a" "$WORK/drain/b"
 
 echo "--- 6. a name under the wildcard that is no slot's gets no site ---"
 # The same address and the same wildcard certificate, a different name: the

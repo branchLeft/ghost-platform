@@ -74,7 +74,7 @@ class GateTests(unittest.TestCase):
         # abort; inside each slot only two exist: the gate's own login, and
         # the catch-all that begins with forward_auth. No path matcher can
         # sit in front of the catch-all, so /ghost/* cannot be exempted.
-        site_handles = [line.strip() for line in text.splitlines() if line.startswith("\thandle")]
+        site_handles = [line.strip() for line in text.splitlines() if line.startswith("\thandle ")]
         self.assertEqual(site_handles, ["handle @slot0 {", "handle @slot1 {", "handle {"])
         for slot in ("0", "1"):
             section = slot_section(text, slot)
@@ -151,7 +151,7 @@ class WildcardSiteTests(unittest.TestCase):
         text = two_slots()
         self.assertTrue(text.endswith("\thandle {\n\t\tabort\n\t}\n}\n"))
         self.assertEqual(text.count("abort"), 1)
-        site_handles = [line.strip() for line in text.splitlines() if line.startswith("\thandle")]
+        site_handles = [line.strip() for line in text.splitlines() if line.startswith("\thandle ")]
         self.assertEqual(site_handles[-1], "handle {")
         self.assertTrue(all(handle.startswith("handle @slot") for handle in site_handles[:-1]))
 
@@ -334,6 +334,13 @@ class UploadGuardTests(unittest.TestCase):
 class HeaderTests(unittest.TestCase):
     def test_noindex_on_the_site(self):
         self.assertIn('>X-Robots-Tag "noindex, nofollow"', block())
+
+    def test_nosniff_on_the_error_response_at_the_site_level(self):
+        text = two_slots()
+        self.assertEqual(text.count("handle_errors {"), 1)
+        self.assertIn('\thandle_errors {\n\t\theader {\n\t\t\t>X-Content-Type-Options "nosniff"\n\t\t}\n\t}\n', text)
+        self.assertLess(text.index("\t@slot1 host"), text.index("\thandle_errors {"))
+        self.assertLess(text.index("\thandle_errors {"), text.index("\thandle {\n\t\tabort"))
 
     def test_report_only_policy_uses_the_report_only_header(self):
         text = block()
