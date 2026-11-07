@@ -136,6 +136,38 @@ describe('the admin interface', () => {
       });
     });
 
+    it('mints with a ceiling, answers it, and stores it', () => {
+      const response = admin.handle(
+        signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', {
+          ...BODY,
+          uploadCeilingMib: 5,
+        })
+      );
+      expect(response.status).toBe(201);
+      expect(json(response).uploadCeilingMib).toBe(5);
+      expect(store.get('GWFIRST0000000000000000000')?.uploadCeilingMib).toBe(5);
+    });
+
+    it('answers and stores no ceiling when the mint names none', () => {
+      const response = mint();
+      expect(response.status).toBe(201);
+      expect(json(response)).not.toHaveProperty('uploadCeilingMib');
+      expect(store.get('GWFIRST0000000000000000000')).not.toHaveProperty('uploadCeilingMib');
+    });
+
+    it('refuses a present ceiling that is not a positive whole number of MiB, storing nothing', () => {
+      for (const bad of ['5', 0, -1, 1.5, null, 2 ** 53]) {
+        const response = admin.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', {
+            ...BODY,
+            uploadCeilingMib: bad,
+          })
+        );
+        expect(response.status, `ceiling ${JSON.stringify(bad)}`).toBe(400);
+      }
+      expect(store.listByFolder(BODY.folder)).toEqual([]);
+    });
+
     it('never returns a secret twice: no state or disable answer carries it', () => {
       const minted = json(mint());
       const secret = minted.secret as string;

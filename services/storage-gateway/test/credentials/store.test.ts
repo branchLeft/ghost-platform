@@ -235,6 +235,72 @@ describe('SqliteCredentialStore', () => {
     }
   });
 
+  it('returns a stored upload ceiling on get, lookup and listByFolder', async () => {
+    store.insert({ ...NEW, uploadCeilingMib: 5 });
+    expect(store.get(KEY)).toEqual({
+      ...NEW,
+      state: 'active',
+      disabledAt: null,
+      uploadCeilingMib: 5,
+    });
+    expect(await store.lookup(KEY)).toMatchObject({ uploadCeilingMib: 5 });
+    expect(store.listByFolder(NEW.folder)).toEqual([
+      { ...NEW, state: 'active', disabledAt: null, uploadCeilingMib: 5 },
+    ]);
+  });
+
+  it('omits uploadCeilingMib, rather than carrying null, when no ceiling was stored', async () => {
+    store.insert(NEW);
+    expect(store.get(KEY)).not.toHaveProperty('uploadCeilingMib');
+    expect(await store.lookup(KEY)).not.toHaveProperty('uploadCeilingMib');
+    expect(store.listByFolder(NEW.folder)[0]).not.toHaveProperty('uploadCeilingMib');
+  });
+
+  it('a database at the 0002 schema keeps its row without a ceiling and stores a new ceiling', () => {
+    const upgradeDir = mkdtempSync(join(tmpdir(), 'gw-upgrade-'));
+    try {
+      const copiedFolder = join(upgradeDir, 'drizzle');
+      cpSync(MIGRATIONS_FOLDER, copiedFolder, { recursive: true });
+      const journalPath = join(copiedFolder, 'meta', '_journal.json');
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8')) as {
+        entries: { idx: number }[];
+      };
+      journal.entries = journal.entries.filter((entry) => entry.idx <= 2);
+      writeFileSync(journalPath, JSON.stringify(journal));
+
+      const legacyPath = join(upgradeDir, 'legacy.sqlite');
+      SqliteCredentialStore.open(legacyPath, copiedFolder).close();
+      const raw = new Database(legacyPath);
+      const columns = raw.pragma('table_info(credentials)') as { name: string }[];
+      expect(columns.map((column) => column.name)).not.toContain('upload_ceiling_mib');
+      raw
+        .prepare(
+          'INSERT INTO credentials (key_id, folder, bucket, state, created_at) VALUES (?, ?, ?, ?, ?)'
+        )
+        .run(KEY, NEW.folder, NEW.bucket, 'active', NEW.createdAt);
+      raw.close();
+
+      const upgraded = SqliteCredentialStore.open(legacyPath, MIGRATIONS_FOLDER);
+      try {
+        const existing = upgraded.get(KEY);
+        expect(existing).toEqual({ ...NEW, state: 'active', disabledAt: null });
+        expect(existing).not.toHaveProperty('uploadCeilingMib');
+        const OTHER_KEY = 'GWCCCCCCCCCCCCCCCCCCCCCCCC';
+        upgraded.insert({
+          ...NEW,
+          keyId: OTHER_KEY,
+          folder: 'f2f2f2f2f2f2f2f2f2f2',
+          uploadCeilingMib: 5,
+        });
+        expect(upgraded.get(OTHER_KEY)?.uploadCeilingMib).toBe(5);
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      rmSync(upgradeDir, { recursive: true, force: true });
+    }
+  });
+
   describe('rollback guard', () => {
     const OTHER = { ...NEW, keyId: 'GWBBBBBBBBBBBBBBBBBBBBBBBB', folder: 'f1f1f1f1f1f1f1f1f1f1' };
 

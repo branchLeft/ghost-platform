@@ -1,0 +1,1 @@
+ALTER TABLE `credentials` ADD `upload_ceiling_mib` integer CONSTRAINT `credentials_upload_ceiling_valid` CHECK(`upload_ceiling_mib` IS NULL OR (typeof(`upload_ceiling_mib`) = 'integer' AND `upload_ceiling_mib` > 0));

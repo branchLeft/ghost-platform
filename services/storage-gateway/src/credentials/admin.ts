@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { resolveBodyCeiling } from '../body.js';
+import type { CredentialRecord } from '../contracts.js';
 import { authenticateAdmin, type AdminAuthDeps, type AdminCaller } from './adminAuth.js';
 import { deriveTenantSecret } from './derive.js';
 import type { MasterSecret } from './masterSecret.js';
@@ -101,6 +103,9 @@ function describe(credential: StoredCredential): object {
     bucket: credential.bucket,
     state: credential.state,
     createdAt: credential.createdAt,
+    ...(credential.uploadCeilingMib === undefined
+      ? {}
+      : { uploadCeilingMib: credential.uploadCeilingMib }),
   };
 }
 
@@ -122,7 +127,19 @@ function route(method: string, path: string): Routed {
   return undefined;
 }
 
-function parseMintBody(rawBody: Buffer): { folder: string; bucket: string } | undefined {
+interface MintBody {
+  readonly folder: string;
+  readonly bucket: string;
+  /** Present only when the request named one. */
+  readonly uploadCeilingMib?: number;
+}
+
+/**
+ * Reads a mint request. An absent ceiling stays absent. A present one must be a
+ * number the body stage would accept: the body stage's own rule decides, so a
+ * value minted here is never one the upload path would refuse.
+ */
+function parseMintBody(rawBody: Buffer): MintBody | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody.toString('utf8'));
@@ -130,10 +147,21 @@ function parseMintBody(rawBody: Buffer): { folder: string; bucket: string } | un
     return undefined;
   }
   if (typeof parsed !== 'object' || parsed === null) return undefined;
-  const { folder, bucket } = parsed as Record<string, unknown>;
+  const { folder, bucket, uploadCeilingMib } = parsed as Record<string, unknown>;
   if (typeof folder !== 'string' || !FOLDER_PATTERN.test(folder)) return undefined;
   if (typeof bucket !== 'string' || !BUCKET_PATTERN.test(bucket)) return undefined;
-  return { folder, bucket };
+  if (uploadCeilingMib === undefined) return { folder, bucket };
+  if (typeof uploadCeilingMib !== 'number') return undefined;
+  // Only the ceiling is read from this record; the others satisfy its type.
+  const candidate: CredentialRecord = {
+    folder,
+    bucket,
+    state: 'active',
+    createdAt: '',
+    uploadCeilingMib,
+  };
+  if (!resolveBodyCeiling(candidate).ok) return undefined;
+  return { folder, bucket, uploadCeilingMib };
 }
 
 /**
@@ -172,6 +200,7 @@ export function createAdminInterface(deps: AdminDeps) {
       folder: body.folder,
       bucket: body.bucket,
       createdAt: at,
+      uploadCeilingMib: body.uploadCeilingMib,
     });
     if (!inserted.ok) {
       return inserted.reason === 'key-id-taken'
