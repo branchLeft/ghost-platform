@@ -1,12 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
 import { verifyPassphrase, type Argon2idHash } from './argon2id.js';
-import type { AttemptCeiling } from './ceiling.js';
+import type { AttemptCeiling } from 'ghost-platform-request-guard/dist/index.js';
 import { readGateCookies, setCookieHeader, signCookie, verifyCookie } from './cookie.js';
 import { DerivationGateFullError, type DerivationGate } from './derivationGate.js';
 import { LOGIN_PATH, passphrasePage, safeReturnPath } from './page.js';
 import type { CurrentLease, GatedHost } from './slots.js';
-import type { SourceResolver } from './source.js';
+import type { SourceResolver } from 'ghost-platform-request-guard/dist/index.js';
 import type { TrafficCounterStore } from './trafficCounter.js';
 
 export const VERIFY_PATH = '/__gate/verify';
@@ -213,7 +213,7 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
   // narrow table just because the /48 tier was going to refuse it anyway
   // -- checking without charging first is what stops that. Only once both
   // agree to admit is the attempt actually recorded, on both together.
-  // See ../README.md#peek-and-the-reclaim-sweep.
+  // See ../../request-guard/README.md#peek-and-the-reclaim-sweep.
   const narrowPeek = deps.ceiling.peek(source, attemptedAt);
   const broadPeek = deps.broadCeiling.peek(broadSource, attemptedAt);
   if (!narrowPeek.allowed || !broadPeek.allowed) {

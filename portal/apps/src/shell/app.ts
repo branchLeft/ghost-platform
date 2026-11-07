@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TokenVerifier } from 'ghost-platform-identity/dist/index.js';
+import { createClientLimit, type ClientLimitOptions } from './clientLimit.js';
 import { cookieName, parseCookies, setCookie } from './cookies.js';
 import { escapeHtml, renderPage, STYLESHEET, type NavItem } from './html.js';
 import { authorizeUrl, expiryOf, exchangeCode, newPkce, type OidcClient } from './oidc.js';
@@ -71,6 +72,14 @@ export interface ShellOptions<S> extends OidcClient {
   readonly onError?: (line: string) => void;
   /** False only for local development over plain HTTP. */
   readonly secureCookies?: boolean;
+  /**
+   * A per-client limit on `GET /login` and the callback, keyed on the client
+   * address the trusted proxies vouch for and answered `429` with
+   * `retry-after`. Absent, nothing is limited: behind the edge the socket peer
+   * is the edge itself, so without a list of proxies to believe every visitor
+   * would share one bucket.
+   */
+  readonly clientLimit?: ClientLimitOptions;
 }
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
@@ -100,6 +109,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   // held here: an unauthenticated start must not use up capacity.
   const logins = new PendingLoginSealer();
   const spent = new SpentLogins(clock);
+  const clientLimit =
+    options.clientLimit === undefined ? undefined : createClientLimit(options.clientLimit);
 
   function report(step: 'bind' | 'landing' | 'action' | 'handler', error: unknown): void {
     if (options.onError === undefined) return;
@@ -289,6 +300,20 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
     if (!route) return text(response, 404, 'NOT_FOUND');
     if (route.method !== method) return text(response, 405, 'METHOD_NOT_ALLOWED');
+    // Counted before anything else is done for the request: no cookie is
+    // opened, no token endpoint is called and no cookie is set for a client
+    // that is over its limit.
+    if (clientLimit !== undefined && (path === '/login' || path === callbackPath)) {
+      const verdict =
+        path === '/login'
+          ? clientLimit.login(request, clock() * 1000)
+          : clientLimit.callback(request, clock() * 1000);
+      if (!verdict.allowed) {
+        return text(response, 429, 'RATE_LIMITED', {
+          'retry-after': String(verdict.retryAfterSeconds),
+        });
+      }
+    }
     try {
       await route.run();
     } catch (error) {

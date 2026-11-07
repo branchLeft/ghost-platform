@@ -1,7 +1,11 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SOURCE = fileURLToPath(new URL('../src/tenant/supportSmtpMailer.ts', import.meta.url));
+const SOURCE_ROOT = fileURLToPath(new URL('../src/', import.meta.url));
+
+/** The module sabotaged when a caller names none. */
+const DEFAULT_SOURCE = 'tenant/supportSmtpMailer.ts';
 
 /**
  * Where mutants are written: under portal/apps, so a bare `nodemailer` import
@@ -15,24 +19,31 @@ export function clearMutants(): void {
 }
 
 /**
- * Loads a copy of the real mailer module with one exact piece of text
- * replaced. The target must occur exactly once, so a mutation that changes
- * nothing, or something else, throws instead of passing quietly. The copy's
- * relative imports are pointed back at `src/tenant`.
+ * Loads a copy of a real module with one exact piece of text replaced. The
+ * target must occur exactly once, so a mutation that changes nothing, or
+ * something else, throws instead of passing quietly. `source` is the module's
+ * path under `src/` (the SMTP mailer when omitted). The copy's relative
+ * imports are pointed back at the module's own directory under `src/` before
+ * the target is looked for, so a target or a replacement may name one of
+ * them: `../../src/<directory>/<file>` for a real module, or `./<name>.js` for
+ * another mutant written by an earlier call.
  */
 export async function importSabotaged<T>(
   name: string,
   target: string,
-  replacement: string
+  replacement: string,
+  source: string = DEFAULT_SOURCE
 ): Promise<T> {
-  const original = readFileSync(SOURCE, 'utf8');
-  const occurrences = original.split(target).length - 1;
+  const original = readFileSync(`${SOURCE_ROOT}${source}`, 'utf8');
+  const pointed = original.replace(
+    /from '\.\/([^']+)'/g,
+    (_match, file: string) => `from '../../src/${dirname(source)}/${file}'`
+  );
+  const occurrences = pointed.split(target).length - 1;
   if (occurrences !== 1) {
     throw new Error(`sabotage target must occur exactly once, found ${occurrences}`);
   }
-  const mutated = original
-    .replace(target, replacement)
-    .replace(/from '\.\/([^']+)'/g, "from '../../src/tenant/$1'");
+  const mutated = pointed.replace(target, () => replacement);
   mkdirSync(MUTANT_DIR, { recursive: true });
   const file = `${MUTANT_DIR}${name}.ts`;
   writeFileSync(file, mutated);

@@ -1,0 +1,60 @@
+name: Request guard CI
+
+# Type-checks and unit-tests the shared request guard (services/request-guard/):
+# the per-key attempt ceiling and the trusted-proxy source resolver. The demo
+# gate, the tenant portal and the owner console each link it and build it
+# first, so their own workflows run their tests against its built output.
+
+on:
+  push:
+    branches: [main]
+  # A pull request starts this only when its diff touches something the job
+  # reads: the package. Push to main stays unfiltered as the backstop.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/request-guard/**'
+      - '.github/workflows/request-guard-ci.yml'
+
+# `packages: read` because this package takes a dev dependency on
+# `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401
+# to an anonymous request even for a public package.
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    name: Request guard type check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/request-guard
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/request-guard/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: pnpm
+          cache-dependency-path: services/request-guard/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Type check
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run coverage

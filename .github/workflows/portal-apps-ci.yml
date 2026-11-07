@@ -6,9 +6,9 @@ name: Portal applications CI
 # PostgreSQL, because the tenant boundary is the database's row-level policies
 # together with the scope bound at sign-in. The data layer's provisioning
 # command builds that database and checks pg_hba too, so the server runs with
-# the data layer's test pg_hba.conf mounted. The two packages it consumes, the
-# data layer and the identity verifier, are built first, as the applications
-# import their built output. A missing PORTAL_TEST_DATABASE_URL fails the
+# the data layer's test pg_hba.conf mounted. The three packages it consumes, the
+# data layer, the identity verifier and the request guard, are built first, as
+# the applications import their built output. A missing PORTAL_TEST_DATABASE_URL fails the
 # suite rather than skipping it.
 
 on:
@@ -17,14 +17,17 @@ on:
     paths:
       - 'portal/**'
       - 'services/identity/**'
+      - 'services/request-guard/**'
       - '.github/workflows/portal-apps-ci.yml'
   # Same set as the push filter above: the applications, the data layer they
-  # build first (both under portal/) and the identity verifier.
+  # build first (both under portal/), the identity verifier and the request
+  # guard.
   pull_request:
     branches: [main]
     paths:
       - 'portal/**'
       - 'services/identity/**'
+      - 'services/request-guard/**'
       - '.github/workflows/portal-apps-ci.yml'
 
 # `packages: read` because these packages take a dev dependency on
@@ -80,6 +83,7 @@ jobs:
             portal/apps/pnpm-lock.yaml
             portal/data/pnpm-lock.yaml
             services/identity/pnpm-lock.yaml
+            services/request-guard/pnpm-lock.yaml
 
       - name: Build the data layer
         working-directory: portal/data
@@ -87,6 +91,10 @@ jobs:
 
       - name: Build the identity verifier
         working-directory: services/identity
+        run: pnpm install --frozen-lockfile && pnpm run build
+
+      - name: Build the request guard
+        working-directory: services/request-guard
         run: pnpm install --frozen-lockfile && pnpm run build
 
       - name: Install dependencies

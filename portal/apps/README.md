@@ -148,6 +148,7 @@ Each application reads its own variables; secrets are read from files.
 ```text
 PORTAL_ISSUER_URL, PORTAL_PUBLIC_ORIGIN, PORTAL_OUTPUTS_FILE, PORTAL_DATABASE_URL_FILE
 CONSOLE_ISSUER_URL, CONSOLE_PUBLIC_ORIGIN, CONSOLE_OUTPUTS_FILE, CONSOLE_DATABASE_URL_FILE
+PORTAL_TRUSTED_PROXIES, CONSOLE_TRUSTED_PROXIES   optional: switch on the sign-in limit (below)
 ```
 
 `*_OUTPUTS_FILE` is the identity reconciler's `outputs.json`. The portal's
@@ -163,7 +164,44 @@ A pending sign-in rides in a cookie sealed under a key drawn at start, so a rest
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity
 verifier first (`pnpm install --frozen-lockfile && pnpm run build` in `portal/data` and
-`services/identity`): this package imports their built output.
+`services/identity` and `services/request-guard`): this package imports their
+built output.
+
+## Limiting sign-in per client
+
+`GET /login` and the sign-in callback are the two routes a visitor with no
+session can reach. Each application can limit them per client: 30 requests per
+client per route per 60 seconds, then `429` with a `retry-after` header and the
+body `RATE_LIMITED`. The count is made before a cookie is opened, the token
+endpoint is called or a cookie is set. The two routes are counted separately,
+so a flood of one cannot use up the other's allowance, and no other route is
+counted.
+
+The limiter is **off unless** `PORTAL_TRUSTED_PROXIES` (the tenant portal) or
+`CONSOLE_TRUSTED_PROXIES` (the owner console) is set. Behind the edge the socket
+peer is the edge itself, so without a list of proxies to believe every visitor
+would share one bucket and the limit would lock everyone out. The value is a
+comma-separated list of addresses and CIDR ranges: the address the edge connects
+from. A malformed value, or one with no address in it, stops the process at
+start. Set it to the edge's address only: a listed peer's `X-Forwarded-For` is
+believed, and only its rightmost entry, which is the address the edge itself
+saw. The contract is the one `services/demo-gate` documents, and the resolver is
+the shared `services/request-guard`.
+
+A client is its IPv6 /64, or its IPv4 address. A trusted peer that sends no
+usable `X-Forwarded-For` is metered as one pooled client, so a broken edge
+fails towards limited, not open. Each ceiling remembers 10,000 clients; when
+full it forgets the oldest and admits the new one, so a flood of addresses can
+restart another client's count but never refuses a visitor for lack of room.
+
+### Accepted: the sealing key is per process
+
+The pending sign-in cookie is sealed under a key drawn when the process starts.
+A deploy or restart therefore drops every pending sign-in (the visitor sees a
+`400` and starts again), and several instances behind one address would not
+accept each other's cookie. This is accepted: there is one process per
+application, and a restart costs a ten-minute pending sign-in at worst. It is a
+line to revisit if the portal ever runs more than one process or restarts often.
 
 ## Tests
 
