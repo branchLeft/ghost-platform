@@ -1,0 +1,139 @@
+name: Snapshot proof diagnostic (temporary)
+
+# TEMPORARY. Finds the cause of the control 2 flake in snapshot-proof-ci.yml and
+# then proves the fix. It runs only on pushes to the one fix branch, only when
+# the head commit message carries a marker, and is deleted before the branch
+# merges. Every job is its own fresh runner, so a count of jobs with a stall is
+# a count of independent trials, not of correlated repeats on one machine.
+#
+#   [diag-stage1]  V0 as shipped (instrumented), V1 no snapshots, V2 the
+#                  coordinate read replaced by a constant. 10 runners each.
+#   [diag-stage2]  the variants the decision rule calls for, by editing
+#                  stage2's matrix first: V3 coordinates by SHOW MASTER STATUS,
+#                  V4 datadir on tmpfs (diagnostic only, fsync removed), V5
+#                  datadir on the runner's local /mnt disk, V6 a plain
+#                  mysqldump loop with none of the module's locks.
+#   [diag-soak]    the real un-sabotaged proofs on 20 runners, on the fix head.
+#
+# Read a stage with: gh run view <run id> --log | grep -E "control 2 report|slow #"
+
+on:
+  push:
+    branches: ['fix/3128-control-2-flake']
+
+# Read-only. No secrets: the proofs run on local throwaway containers.
+permissions:
+  contents: read
+
+jobs:
+  stage1:
+    if: ${{ contains(github.event.head_commit.message, '[diag-stage1]') }}
+    name: ${{ matrix.variant }} runner ${{ matrix.runner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [v0, v1, v2]
+        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Pull the pinned mysql digest
+        run: docker pull "$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+
+      - name: Control 2, variant ${{ matrix.variant }}
+        env:
+          VARIANT: ${{ matrix.variant }}
+          TRIAL: ${{ matrix.runner }}
+          PROOF_CONTROLS: '2'
+        run: |
+          echo "DIAG variant=$VARIANT runner=$TRIAL image=$ImageVersion"
+          case "$VARIANT" in
+            v0) db/provision/prove-snapshot-locking.sh ;;
+            v1) PROBE_DIAG=no-snapshot db/provision/prove-snapshot-locking.sh ;;
+            v2) PROBE_DIAG=const-coordinate db/provision/prove-snapshot-locking.sh ;;
+            *) echo "unknown variant $VARIANT" >&2; exit 64 ;;
+          esac
+
+  stage2:
+    if: ${{ contains(github.event.head_commit.message, '[diag-stage2]') }}
+    name: ${{ matrix.variant }} runner ${{ matrix.runner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [v3, v4, v5, v6]
+        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Pull the pinned mysql digest
+        run: docker pull "$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+
+      - name: Control 2, variant ${{ matrix.variant }}
+        env:
+          VARIANT: ${{ matrix.variant }}
+          TRIAL: ${{ matrix.runner }}
+          PROOF_CONTROLS: '2'
+        run: |
+          echo "DIAG variant=$VARIANT runner=$TRIAL image=$ImageVersion"
+          df -h /dev/shm /mnt
+          case "$VARIANT" in
+            v3) db/provision/prove-replication-client.sh ;;
+            v4) PROOF_DATA_ROOT=/dev/shm/proof db/provision/prove-snapshot-locking.sh ;;
+            v5)
+              sudo mkdir -p /mnt/proof
+              sudo chown "$(id -u):$(id -g)" /mnt/proof
+              PROOF_DATA_ROOT=/mnt/proof db/provision/prove-snapshot-locking.sh
+              ;;
+            v6) PROBE_DIAG=plain-dump db/provision/prove-snapshot-locking.sh ;;
+            *) echo "unknown variant $VARIANT" >&2; exit 64 ;;
+          esac
+
+  soak:
+    if: ${{ contains(github.event.head_commit.message, '[diag-soak]') }}
+    name: soak runner ${{ matrix.runner }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Pull the pinned mysql digest
+        run: docker pull "$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+
+      # Each prints ALL PASSED once, so 20 green jobs show 40 of them in the log.
+      - name: The full proof, un-sabotaged
+        run: db/provision/prove-snapshot-locking.sh
+
+      - name: The REPLICATION CLIENT proof, un-sabotaged
+        run: db/provision/prove-replication-client.sh

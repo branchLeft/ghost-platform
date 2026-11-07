@@ -14,6 +14,7 @@ import tempfile
 import unittest
 
 import replication_client_probe as rcp
+import snapshot_probe as sp
 
 _PROVISION = pathlib.Path(__file__).resolve().parent
 _CI = (_PROVISION.parents[1] / ".github" / "workflows" / "snapshot-proof-ci.yml").read_text(encoding="utf-8")
@@ -102,6 +103,9 @@ class SabotageTableTests(unittest.TestCase):
         self.assertEqual(rcp.SABOTAGE_TARGETS["coordinates-before-lock"], (1,))
         self.assertEqual(rcp.SABOTAGE_TARGETS["coordinates-after-unlock"], (1,))
 
+    def test_a_lock_held_on_the_other_tenant_targets_the_stall_control(self) -> None:
+        self.assertEqual(rcp.SABOTAGE_TARGETS["other-lock"], (2,))
+
     def test_every_target_is_a_control_that_exists(self) -> None:
         for name, targets in rcp.SABOTAGE_TARGETS.items():
             self.assertTrue(set(targets) <= set(rcp.CONTROLS), name)
@@ -153,7 +157,58 @@ class WrapperTests(unittest.TestCase):
         self.assertNotIn("network create", calls)
 
 
+def _steps() -> list[str]:
+    """Each step of the workflow as text, from its `- name:` line."""
+    return _CI.split("\n      - name: ")[1:]
+
+
+def _red_steps(sabotage: str, script: str) -> list[str]:
+    return [step for step in _steps() if f"SABOTAGE={sabotage} db/provision/{script}" in step]
+
+
 class CiTests(unittest.TestCase):
+    def test_every_sabotage_that_targets_control_2_has_a_red_step_in_both_probes(self) -> None:
+        # The old-path case existed in both probes and no step ran it: the
+        # run said nothing about control 2 being able to fail. This is the
+        # test that would have caught it.
+        probes = (
+            ("prove-snapshot-locking.sh", sp.SABOTAGE_TARGETS),
+            ("prove-replication-client.sh", rcp.SABOTAGE_TARGETS),
+        )
+        for script, targets in probes:
+            for name, controls in targets.items():
+                if 2 not in controls:
+                    continue
+                steps = _red_steps(name, script)
+                self.assertEqual(len(steps), 1, f"{script} SABOTAGE={name} needs exactly one red step, found {len(steps)}")
+                self.assertIn('test "$rc" = 1', steps[0], f"{script} SABOTAGE={name} must require exit code 1")
+                self.assertIn("RED control 2,", steps[0], f"{script} SABOTAGE={name} must require the log to name control 2")
+
+    def test_the_other_lock_red_steps_require_the_mechanism_in_the_log(self) -> None:
+        for script in ("prove-snapshot-locking.sh", "prove-replication-client.sh"):
+            (step,) = _red_steps("other-lock", script)
+            self.assertIn("held lock on other.posts (injected hold, 500 ms)", step)
+
+    def test_the_old_path_snapshot_probe_step_requires_both_controls_it_targets(self) -> None:
+        (step,) = _red_steps("old-path", "prove-snapshot-locking.sh")
+        self.assertEqual(sp.SABOTAGE_TARGETS["old-path"], (2, 3))
+        self.assertIn("RED control 2,", step)
+        self.assertIn("RED control 3,", step)
+
+    def test_every_red_step_still_runs_when_an_earlier_step_failed(self) -> None:
+        red = [step for step in _steps() if "SABOTAGE=" in step]
+        self.assertGreaterEqual(len(red), 3 + 3)
+        for step in red:
+            self.assertIn("if: ${{ !cancelled() }}", step, step.splitlines()[0])
+
+    def test_a_red_step_shows_its_log_before_it_judges_it(self) -> None:
+        for step in (step for step in _steps() if "SABOTAGE=" in step):
+            self.assertLess(step.index('cat "$log"'), step.index('test "$rc" = 1'), step.splitlines()[0])
+
+    def test_the_job_timeout_is_sized_for_the_red_steps(self) -> None:
+        self.assertIn("timeout-minutes: 45", _CI)
+        self.assertNotIn("matrix", _CI)
+
     def test_the_native_job_runs_the_replication_client_proof_un_sabotaged(self) -> None:
         self.assertIn("db/provision/prove-replication-client.sh", _CI)
 

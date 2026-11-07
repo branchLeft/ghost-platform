@@ -40,6 +40,7 @@ exit; none is in a repo file, argv or output.
 db/provision/prove-snapshot-locking.sh
 PROOF_CONTROLS="2 5" db/provision/prove-snapshot-locking.sh
 SABOTAGE=old-path db/provision/prove-snapshot-locking.sh
+SABOTAGE=other-lock db/provision/prove-snapshot-locking.sh
 python3 db/provision/snapshot_probe.py --self-test
 ```
 
@@ -64,8 +65,8 @@ Exit 3 is a stop: option (c) is not available on that version, and the
 owner is told before any fallback is built.
 
 `SABOTAGE` names: `coordinates-after-write` (control 1), `old-path`
-(controls 2 and 3), `reload-grant` (control 4), `no-timeout` (control 5,
-parts A and B), `no-deadline` (control 5, part C).
+(controls 2 and 3), `other-lock` (control 2), `reload-grant` (control 4),
+`no-timeout` (control 5, parts A and B), `no-deadline` (control 5, part C).
 
 The refusal in `prove-snapshot-locking.sh` (exit 5) is unit-tested in
 `test_snapshot_probe.py` against a fake `docker` on `PATH`: a set
@@ -80,8 +81,13 @@ on a native `ubuntu-latest` runner, which is x86_64 as db1 is, so the
 Mac's amd64 emulation is out of the picture. It runs when the proof's
 files change, pulls the pinned digest by its digest, and prints each
 control's measured values in its log. It fails on any control failure
-(exit 3 or 4). It has `contents: read` only and no secrets. The unit
-tests still run in `repo-tooling-ci.yml` on every push.
+(exit 3 or 4). It then runs the red cases for both probes, among them
+`old-path` and `other-lock` for control 2, each requiring exit code 1 and the
+control's `RED control 2,` line in its log (exit 2 means the control stayed
+green under the sabotage), and each running even when an earlier step failed.
+`test_replication_client_probe.py` fails if a sabotage that targets control 2
+in either probe has no such step. It has `contents: read` only and no
+secrets. The unit tests still run in `repo-tooling-ci.yml` on every push.
 
 ## The six controls
 
@@ -99,10 +105,49 @@ and a healthy one that must pass, with no Docker.
    coordinates are read after it. The replica misses those writes.
 2. **Another schema is not blocked.** A `SELECT SLEEP(10)` holds
    `other.posts` while the module snapshots `blog`; `other`'s writer's worst
-   statement stays under 100 ms. _Sabotage:_ the old path, `RELOAD` plus
-   `mysqldump --source-data=2`. Its plain `FLUSH TABLES` waits for the long
-   reader and every writer to that table queues behind it for about 10 s,
-   which proves the probe can see a stall.
+   statement stays under 100 ms (`WRITER_LIMIT_SECONDS`, one client-side
+   maximum; the report below never moves it). _Sabotage:_ the old path,
+   `RELOAD` plus `mysqldump --source-data=2`. Its plain `FLUSH TABLES` waits
+   for the long reader and every writer to that table queues behind it for
+   about 10 s, which proves the probe can see a stall. And `other-lock`: a
+   real `LOCK TABLES other.posts READ` held for 500 ms in its own session,
+   3 s into the window, which must go red naming the control and the
+   mechanism (`control 2: ... mechanism: held lock on other.posts (injected
+   hold, 500 ms)`). The un-sabotaged run is its green: the same scenario with
+   the lock never taken. Both probes run this one scenario
+   (`long_reader_scenario`; the REPLICATION CLIENT probe passes its own
+   snapshot and old-path dump), judged by one function
+   (`writer_stall_verdict`).
+
+   **The stall report.** Beside the maximum, control 2 prints where its
+   slowest statements spent their time, so a red names a mechanism. Before
+   the window the source's statement-history consumer
+   (`events_statements_history_long`, sized by one `mysqld` flag on the
+   source only, `--performance-schema-events-statements-history-long-size`) is
+   enabled and emptied, as root. After the window and after every writer has
+   stopped it is read once, as root, so nothing is added to the timed region.
+   Each `other` INSERT is matched to its server record by its unique SQL
+   text. The server clock is related to the client's by the median over the
+   fast samples (under 10 ms) of client send minus server start, and the
+   `SELECT SLEEP(10)` event's own span is the window on the server's clock
+   (and the fallback offset). Each slow statement (every one over the limit,
+   and the three slowest) is split into pre-server (the excess over the
+   usual send-to-start transit), in-server (the statement's own timer, which
+   includes metadata-lock waits and the commit) and post-server, with the
+   number of the snapshot running at its acknowledgement, the events of
+   other sessions that overlapped it (by SQL text: coordinate read, `LOCK` or
+   `UNLOCK TABLES`, snapshot open, other dump statement, `FLUSH`), the
+   nearest coordinate read's end relative to the acknowledgement, and
+   whether a snapshot statement ended within 10 ms of it ("released by").
+   A statement with no server record is printed as unattributed, never
+   skipped. The mechanism named in a red is one of `held lock on other.posts
+   (injected hold, N ms)`, `coordinate read`, `snapshot lock phase`,
+   `in-server, no snapshot overlap` (no snapshot statement ended as the
+   statement was acknowledged; overlap alone is not blame, a snapshot is
+   running much of the time), `pre- or post-server (client side)` (under
+   half the time inside the server) and `unattributed`. The in-server worst
+   and p50 are over the other schema's writer statements inside the long
+   reader's span, on the server's own timer.
 3. **No global metadata lock.** A sampler reads
    `performance_schema.metadata_locks` for the move account's threads as fast
    as one session can, across repeated snapshots. No `GLOBAL` or `COMMIT`

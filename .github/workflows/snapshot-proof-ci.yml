@@ -83,24 +83,93 @@ jobs:
         run: db/provision/prove-replication-client.sh
 
       # Each red case must exit 1: the control sees the failure. Exit 2 means
-      # it stayed green, so the control could not have failed.
+      # it stayed green, so the control could not have failed. The probe's log
+      # is printed before it is judged, and it must name the control that went
+      # red (and, for a lock held on the other schema, the mechanism), so a red
+      # for another reason is not taken for this one. Every red case runs even
+      # when an earlier step failed: a flaky green step must not leave the run
+      # saying nothing about whether the controls can fail. Each costs about one
+      # to one and a half minutes, which the job's timeout is sized for.
       - name: Red case, coordinates read before the lock
+        if: ${{ !cancelled() }}
         run: |
           rc=0
-          SABOTAGE=coordinates-before-lock db/provision/prove-replication-client.sh || rc=$?
+          log="$RUNNER_TEMP/red-coordinates-before-lock.log"
+          SABOTAGE=coordinates-before-lock db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
 
       - name: Red case, coordinates read after the unlock
+        if: ${{ !cancelled() }}
         run: |
           rc=0
-          SABOTAGE=coordinates-after-unlock db/provision/prove-replication-client.sh || rc=$?
+          log="$RUNNER_TEMP/red-coordinates-after-unlock.log"
+          SABOTAGE=coordinates-after-unlock db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
 
       - name: Red case, BACKUP_ADMIN held as well
+        if: ${{ !cancelled() }}
         run: |
           rc=0
-          SABOTAGE=backup-admin-grant db/provision/prove-replication-client.sh || rc=$?
+          log="$RUNNER_TEMP/red-backup-admin-grant.log"
+          SABOTAGE=backup-admin-grant db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
+
+      # Control 2, the retired path: its FLUSH TABLES waits for the long reader
+      # and the other schema's writes queue behind it for about ten seconds.
+      # Controls 2 and 3 both go red under it in the snapshot probe.
+      - name: Red case, the old path stalls the other schema (snapshot probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-old-path-snapshot.log"
+          SABOTAGE=old-path db/provision/prove-snapshot-locking.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log"
+          grep -F 'RED control 3,' "$log"
+
+      - name: Red case, the old path stalls the other tenant (REPLICATION CLIENT probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-old-path-replication.log"
+          SABOTAGE=old-path db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log"
+
+      # Control 2, a real lock: LOCK TABLES other.posts READ held for 500 ms in a
+      # separate session, mid-window. The red line names the control and the
+      # mechanism. The un-sabotaged steps above are the green: the same
+      # scenario, the lock never taken.
+      - name: Red case, a lock held on the other schema (snapshot probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-other-lock-snapshot.log"
+          SABOTAGE=other-lock db/provision/prove-snapshot-locking.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log"
+          grep -F 'held lock on other.posts (injected hold, 500 ms)' "$log"
+
+      - name: Red case, a lock held on the other tenant (REPLICATION CLIENT probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-other-lock-replication.log"
+          SABOTAGE=other-lock db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log"
+          grep -F 'held lock on other.posts (injected hold, 500 ms)' "$log"

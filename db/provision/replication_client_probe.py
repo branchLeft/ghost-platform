@@ -18,7 +18,6 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -48,6 +47,7 @@ SABOTAGE_TARGETS = {
     "backup-admin-grant": (1, 3),
     "reload-grant": (3,),
     "old-path": (2,),
+    "other-lock": (2,),
 }
 # Sabotages that work by granting the account one more global privilege.
 GRANT_SABOTAGES = {"backup-admin-grant": "BACKUP_ADMIN", "reload-grant": "RELOAD"}
@@ -382,62 +382,27 @@ def control_1(run: Run) -> sp.ControlResult:
     return sp.ControlResult(1, "coordinates consistent with the snapshot", summary, lines)
 
 
+def old_path_sequence(run: Run) -> None:
+    """The retired path as this account runs it: RELOAD granted, the dump, and
+    RELOAD taken back whatever happens."""
+    run.source.run(f"GRANT RELOAD ON *.* TO '{COORD}'@'localhost';")
+    try:
+        old_path_dump(run)
+    finally:
+        run.source.run(f"REVOKE RELOAD ON *.* FROM '{COORD}'@'localhost';", check=False)
+
+
 def other_tenant_phase(run: Run) -> tuple[Verdict, list[str]]:
     """A SELECT SLEEP(10) holds `other.posts` while the blog is snapshotted
-    over and over; `other`'s writer's worst statement stays under the limit."""
-    ctx = run.ctx
-    old_path = run.sabotaged("old-path")
-    writer = sp.Writer(ctx.source, sp.OTHER, sp.other_posts_statement)
-    reader = ctx.source.session(database=sp.OTHER)
-    snapshots = 0
-    writer.start()
-    try:
-        time.sleep(2.5)
-        baseline = sp.worst_of(writer.samples[2:])
-        done = threading.Event()
-        errors: list[sp.ProofError] = []
-
-        def hold_reader() -> None:
-            try:
-                reader.run("SELECT SLEEP(10) FROM posts LIMIT 1;")
-            except sp.ProofError as exc:
-                errors.append(exc)
-            finally:
-                done.set()
-
-        threading.Thread(target=hold_reader, daemon=True).start()
-        for _ in range(100):
-            if ctx.source.query("SELECT COUNT(*) FROM performance_schema.processlist WHERE INFO LIKE 'SELECT SLEEP(10)%';")[0][0] != "0":
-                break
-            time.sleep(0.1)
-        else:
-            raise sp.ProofError("the long reader never started")
-        began = time.monotonic()
-        if old_path:
-            ctx.source.run(f"GRANT RELOAD ON *.* TO '{COORD}'@'localhost';")
-            old_path_dump(run)
-            snapshots = 1
-        else:
-            while not done.is_set():
-                take_snapshot(run, "under-reader.sql")
-                snapshots += 1
-                time.sleep(0.2)
-        done.wait(timeout=60)
-        if errors:
-            raise errors[0]
-        ended = time.monotonic()
-    finally:
-        if old_path:
-            ctx.source.run(f"REVOKE RELOAD ON *.* FROM '{COORD}'@'localhost';", check=False)
-        reader.close()
-        samples = writer.finish()
-    latencies = sp.latencies_between(samples, began, ended)
-    verdict = sp.writer_stall_verdict(latencies, sp.WRITER_LIMIT_SECONDS)
-    line = (
-        f"a SELECT SLEEP(10) held other.posts for {ended - began:.1f} s while {snapshots} "
-        f"{'old-path dump' if old_path else 'snapshot(s)'} ran; baseline worst `other` statement {sp._ms(baseline)}; {verdict.reason}"
+    over and over; `other`'s writer's worst statement stays under the limit.
+    The scenario, the verdict and the report are snapshot_probe's own, written
+    once: this account supplies only its own snapshot (SHOW MASTER STATUS
+    coordinates, `take_snapshot` above) and its own old-path dump."""
+    scenario = sp.long_reader_scenario(
+        run.ctx,
+        sp.ScenarioActions(snapshot=lambda: take_snapshot(run, "under-reader.sql"), old_path=lambda: old_path_sequence(run)),
     )
-    return verdict, [line]
+    return sp.control_2_outcome(scenario, old_path=run.sabotaged("old-path"))
 
 
 def lock_phase(run: Run) -> tuple[Verdict, list[str]]:

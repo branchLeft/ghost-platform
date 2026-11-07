@@ -70,11 +70,30 @@ done
 MYSQL_ROOT_PASSWORD="$(cat "$WORK/root.pw")"
 export MYSQL_ROOT_PASSWORD
 
+# Diagnostic only (temporary): keep both datadirs on tmpfs (/dev/shm) or on the
+# runner's local disk (/mnt) instead of the container's own filesystem.
+DATA_ROOT="${PROOF_DATA_ROOT:-}"
+case "$DATA_ROOT" in
+    "" | /dev/shm/* | /mnt/*) ;;
+    *)
+        echo "REFUSED: PROOF_DATA_ROOT must be under /dev/shm or /mnt, not '$DATA_ROOT'" >&2
+        exit 5
+        ;;
+esac
+
 # Name, then mysqld flags. The config is mounted unchanged; only the bind
 # address (db1's private address) is overridden on the command line.
 start_server() {
+    # The image declares /var/lib/mysql a volume, so naming it alone is the
+    # default; with a data root it is a directory there instead.
+    local datadir=/var/lib/mysql
+    if [ -n "$DATA_ROOT" ]; then
+        mkdir -p "$DATA_ROOT/$RUN/$1"
+        datadir="$DATA_ROOT/$RUN/$1:/var/lib/mysql"
+    fi
     docker run -d --platform "$PLATFORM" --name "$1" --network "$NET" -e MYSQL_ROOT_PASSWORD \
         -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:/etc/mysql/conf.d/branchleft.cnf:ro" \
+        -v "$datadir" \
         "$IMAGE" --bind-address=0.0.0.0 "${@:2}" >/dev/null
 }
 
@@ -92,8 +111,12 @@ wait_ready() {
 }
 
 echo "== setup: $IMAGE on $PLATFORM"
+echo "  datadir: ${DATA_ROOT:-the container filesystem}"
 docker network create "$NET" >/dev/null
-start_server "$SRC"
+# Control 2 reads the source's statement history after its window; this sizes
+# that history so a window's statements are all still in it. Source only: the
+# replica and db1's branchleft.cnf are untouched.
+start_server "$SRC" --performance-schema-events-statements-history-long-size=100000
 start_server "$REP" --server-id=2 --replicate-wild-do-table='blog.%'
 wait_ready "$SRC"
 wait_ready "$REP"
