@@ -41,6 +41,7 @@ export async function startRig(create: CreateShell, options: RigOptions = {}): P
       projectId: PROJECT_ID,
       redirectUri: `${origin}${CALLBACK_PATH}`,
       publicOrigin: origin,
+      cookiePrefix: 'portal',
       verifier: createTokenVerifier({
         issuer: ISSUER,
         clientId: CLIENT_PORTAL,
