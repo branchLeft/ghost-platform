@@ -55,10 +55,21 @@ set to anything but its constant, or that publishes the mail API port, because
 each leaves `/drain` on the listener the tenant networks reach. The shim
 itself refuses to start with `SHIM_DRAIN_PORT` equal to `PORT`.
 
-The drain listener still binds every interface inside the container, so it is
-reachable on a tenant network's address for the spool, behind the drain token
-alone. Binding it to the drain network's own address needs a fixed subnet for
-that network, which is a host-level choice not made here.
+The drain listener binds one address, never every interface: `SHIM_DRAIN_HOST`,
+which is rendered as `MAIL_SPOOL_DRAIN_ADDRESS` (`10.231.200.2`), the spool's
+fixed address on the drain network. The shim refuses to start with
+`SHIM_DRAIN_PORT` set and no host, and refuses a hostname or a wildcard. So the
+drain listener is not reachable on a tenant network's address for the spool at
+all, whatever the drain token. It cannot bind loopback: Docker forwards the
+published port to the container's address on the one non-internal network, so
+the listener must bind that network's address, which is why that address is
+fixed (see the next section).
+
+Rollout order matters. A shim image from before this change ignores
+`SHIM_DRAIN_HOST` and still listens on every interface, so rendering the host
+for it breaks nothing and fixes nothing; a shim image from after it, run from a
+file with no host, refuses to start. The rendered file and the image digest
+therefore move together, in one gated apply.
 
 ## The drain network
 
@@ -73,6 +84,17 @@ is `branchleft-mail-spool-drain`, and it is constrained three ways:
 - IP masquerade is off, so a packet the spool sends towards the gateway
   leaves with a container address nothing outside the host routes back to.
 - no tenant's Ghost is on it.
+- it has one fixed pool: subnet `MAIL_SPOOL_DRAIN_SUBNET` (`10.231.200.0/29`),
+  gateway `MAIL_SPOOL_DRAIN_GATEWAY` (`.1`), and the spool pinned to
+  `MAIL_SPOOL_DRAIN_ADDRESS` (`.2`) by `ipv4_address`. The range is outside
+  Docker's default pools (172.16/12, 192.168/16) and the estate's 10.20.1.0/24.
+  The mail gate's own network (`scripts/mail-gate`) uses a different subnet on
+  purpose.
+
+The service's `networks` is therefore a map, not a list. A tenant network's
+entry is `aliases: [mail-spool]`, the name Ghost already resolves (Compose adds
+it anyway); the emitter cannot write an empty mapping, so an entry needs a
+value.
 
 On an app host, which has no equivalent of demo1's egress policy, the
 "no route off the host" property for this one network rests on a host rule
@@ -90,9 +112,15 @@ before returning. It refuses:
 - a missing `networks` list (Compose would join the default network, which
   has egress);
 - the drain network without its fixed bridge name or with masquerade on;
+- the drain network without exactly the fixed ipam pool above;
 - any port other than the one loopback drain port, and any `expose`;
 - `/drain` on the listener the tenant networks reach: a missing or altered
   `PORT` or `SHIM_DRAIN_PORT`, or the mail API port published;
+- a drain port with no `SHIM_DRAIN_HOST`; a wildcard host (`0.0.0.0`, `::`, any
+  all-zero spelling); any host other than `MAIL_SPOOL_DRAIN_ADDRESS` (an exact
+  match, so no copy of the shim's own address classifier is needed); and a
+  service `ipv4_address` on the drain network that is missing or differs from
+  `SHIM_DRAIN_HOST`;
 - the drain token as anything but a `${VAR:?...}` reference;
 - an ephemeral queue, an overridden SMTP bind, an image not pinned by digest,
   any mount but the spool's own data volume;
