@@ -160,6 +160,17 @@ need not appear in the URL file. Plain HTTP is accepted only for a loopback orig
 
 A pending sign-in rides in a cookie sealed under a key drawn at start, so a restart drops every pending sign-in and several instances cannot accept each other's cookie.
 
+Both applications build their database pool in `src/shell/pool.ts`
+(`createPortalPool`), and nowhere else. It bounds every wait: 5000 ms to connect
+or to wait for a free client, and a server-side `statement_timeout` and
+`idle_in_transaction_session_timeout` of 10000 ms each. `query_timeout` is not
+used: it rejects without cancelling the statement, and the client then fails on
+reuse. A server that ends a session makes its client emit `error`, and an
+unhandled one would end the process and sign everyone out, so each client is
+given an `error` listener as it connects (the pool's own listener does not hear
+a checked-out client). The line is `portal.error` with step `pool`, the error
+name and the SQLSTATE, never the message.
+
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity
 verifier first (`pnpm install --frozen-lockfile && pnpm run build` in `portal/data` and
