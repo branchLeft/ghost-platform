@@ -22,13 +22,13 @@ export interface NewCredential {
   readonly folder: string;
   readonly bucket: string;
   readonly createdAt: string;
-  /** The tenant's upload ceiling in MiB; absent stores NULL, which reads as absent. The caller validates it. */
+  /** The tenant's upload ceiling in MiB; absent stores NULL, which the upload path refuses. The caller validates it; mint requires it. */
   readonly uploadCeilingMib?: number;
 }
 
 /**
  * Maps a row to the stored record. A NULL ceiling is left out of the record,
- * never carried as `null`: absent means the default.
+ * never carried as `null`. An absent ceiling is refused by the upload path.
  */
 function toStored(row: typeof credentials.$inferSelect): StoredCredential {
   const { uploadCeilingMib, ...rest } = row;

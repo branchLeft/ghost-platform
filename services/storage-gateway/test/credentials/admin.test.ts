@@ -25,7 +25,7 @@ import { SqliteCredentialStore } from '../../src/credentials/store.js';
 const MASTER = MasterSecret.fromBytes(Buffer.alloc(32, 0x42));
 const START_MS = 1_800_000_000_000;
 const NOW_MS = START_MS + 60_000;
-const BODY = { folder: 'opaquefolder00000001', bucket: 'shard-one' };
+const BODY = { folder: 'opaquefolder00000001', bucket: 'shard-one', uploadCeilingMib: 5 };
 const DISABLED_AT = '2026-01-01T00:00:00.000Z';
 const entries: AdminLogEntry[] = [];
 const logger: AdminLogger = {
@@ -132,6 +132,7 @@ describe('the admin interface', () => {
         bucket: BODY.bucket,
         state: 'active',
         createdAt: new Date(NOW_MS).toISOString(),
+        uploadCeilingMib: 5,
         secret: deriveTenantSecret(MASTER, 'GWFIRST0000000000000000000'),
       });
     });
@@ -148,11 +149,29 @@ describe('the admin interface', () => {
       expect(store.get('GWFIRST0000000000000000000')?.uploadCeilingMib).toBe(5);
     });
 
-    it('answers and stores no ceiling when the mint names none', () => {
-      const response = mint();
-      expect(response.status).toBe(201);
-      expect(json(response)).not.toHaveProperty('uploadCeilingMib');
-      expect(store.get('GWFIRST0000000000000000000')).not.toHaveProperty('uploadCeilingMib');
+    it('refuses a mint that names no ceiling, storing nothing', () => {
+      const response = admin.handle(
+        signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', {
+          folder: BODY.folder,
+          bucket: BODY.bucket,
+        })
+      );
+      expect(response.status).toBe(400);
+      expect(response.body).not.toContain('secret');
+      expect(store.listByFolder(BODY.folder)).toEqual([]);
+    });
+
+    it('refuses a ceiling above the maximum, and mints exactly the maximum', () => {
+      const send = (uploadCeilingMib: number) =>
+        admin.handle(
+          signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', {
+            ...BODY,
+            uploadCeilingMib,
+          })
+        );
+      expect(send(5 * 1024 + 1).status).toBe(400);
+      expect(store.listByFolder(BODY.folder)).toEqual([]);
+      expect(send(5 * 1024).status).toBe(201);
     });
 
     it('refuses a present ceiling that is not a positive whole number of MiB, storing nothing', () => {
@@ -852,6 +871,7 @@ describe('the admin interface', () => {
           bucket: BODY.bucket,
           state: 'active',
           createdAt: AT,
+          uploadCeilingMib: BODY.uploadCeilingMib,
           secret: deriveTenantSecret(MASTER, FIRST_KEY),
         });
         expect(written()).toEqual([lostLine('mint')]);
@@ -866,6 +886,7 @@ describe('the admin interface', () => {
           bucket: BODY.bucket,
           state: 'disabled',
           createdAt: AT,
+          uploadCeilingMib: BODY.uploadCeilingMib,
         });
         expect(written()).toEqual([lostLine('mint'), lostLine('disable')]);
 

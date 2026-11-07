@@ -70,8 +70,8 @@ describe('a per-tenant upload ceiling, enforced by the body stage', () => {
   let admin: ReturnType<typeof createAdminInterface>;
 
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'gw-tenant-cap-'));
-    spoolDir = await mkdtemp(join(tmpdir(), 'gw-tenant-cap-spool-'));
+    dir = await mkdtemp(join(tmpdir(), 'gw-upload-ceiling-'));
+    spoolDir = await mkdtemp(join(tmpdir(), 'gw-upload-ceiling-spool-'));
     path = join(dir, 'credentials.sqlite');
     store = SqliteCredentialStore.open(path);
     const auth: AdminAuthDeps = {
@@ -138,11 +138,51 @@ describe('a per-tenant upload ceiling, enforced by the body stage', () => {
     expect(await admitUpload(tenantA, MIB + 1)).toBe('body-too-large');
   });
 
-  it('applies the 128 MiB default to a tenant minted without a ceiling', async () => {
-    const tenant = keyIdOf(mint(FOLDER_A, undefined));
+  it('refuses an upload from a credential stored with no ceiling, never reading it as a default', async () => {
+    const inserted = store.insert({
+      keyId: 'GWNOCEILING0000000000000001',
+      folder: FOLDER_A,
+      bucket: BUCKET,
+      createdAt: new Date(NOW_MS).toISOString(),
+    });
+    expect(inserted.ok).toBe(true);
 
-    expect(await admitUpload(tenant, 128 * MIB + 1)).toBe('body-too-large');
-    expect(await admitUpload(tenant, 128 * MIB)).toBe('accepted');
+    expect(await admitUpload('GWNOCEILING0000000000000001', 1)).toBe('internal-error');
+  });
+
+  it('refuses an upload once a minted credential has its ceiling cleared to NULL', async () => {
+    const tenant = keyIdOf(mint(FOLDER_A, '1'));
+    const raw = new Database(path);
+    try {
+      raw.prepare('UPDATE credentials SET upload_ceiling_mib = NULL WHERE key_id = ?').run(tenant);
+    } finally {
+      raw.close();
+    }
+
+    expect(await admitUpload(tenant, 1)).toBe('internal-error');
+  });
+
+  it('refuses a mint that names no ceiling, and stores nothing', () => {
+    const response = mint(FOLDER_A, undefined);
+
+    expect(response.status).toBe(400);
+    expect(response.body).not.toContain('secret');
+    expect(store.listByFolder(FOLDER_A)).toEqual([]);
+  });
+
+  it('refuses a mint whose ceiling is above the maximum, and stores nothing', () => {
+    const above = mint(FOLDER_A, String(5 * 1024 + 1));
+
+    expect(above.status).toBe(400);
+    expect(above.body).not.toContain('secret');
+    expect(store.listByFolder(FOLDER_A)).toEqual([]);
+  });
+
+  it('mints a ceiling of exactly the maximum', () => {
+    const at = mint(FOLDER_A, String(5 * 1024));
+
+    expect(at.status).toBe(201);
+    expect(store.listByFolder(FOLDER_A)[0]?.uploadCeilingMib).toBe(5 * 1024);
   });
 
   it('refuses a mint whose ceiling is not a positive whole number of MiB, and stores nothing', () => {

@@ -22,6 +22,14 @@ export interface AdminResponse {
   readonly body: string;
 }
 
+/**
+ * The most a mint may set as a tenant's upload ceiling, in MiB (5 GiB). It is
+ * a sanity bound against a typo or an unbounded value, not a tier value: the
+ * per-tier ceilings are the owner's and the provisioning controller passes
+ * them on each mint.
+ */
+export const MAX_UPLOAD_CEILING_MIB = 5 * 1024;
+
 export type AdminOperation = 'mint' | 'disable' | 'disable-folder' | 'state';
 
 /**
@@ -130,14 +138,15 @@ function route(method: string, path: string): Routed {
 interface MintBody {
   readonly folder: string;
   readonly bucket: string;
-  /** Present only when the request named one. */
-  readonly uploadCeilingMib?: number;
+  readonly uploadCeilingMib: number;
 }
 
 /**
- * Reads a mint request. An absent ceiling stays absent. A present one must be a
- * number the body stage would accept: the body stage's own rule decides, so a
- * value minted here is never one the upload path would refuse.
+ * Reads a mint request. The ceiling is mandatory: a request without one is
+ * refused, because the upload path holds no default and would refuse every
+ * upload from the credential. A present one must be a number the body stage
+ * would accept (the body stage's own rule decides) and no more than
+ * {@link MAX_UPLOAD_CEILING_MIB}.
  */
 function parseMintBody(rawBody: Buffer): MintBody | undefined {
   let parsed: unknown;
@@ -150,8 +159,8 @@ function parseMintBody(rawBody: Buffer): MintBody | undefined {
   const { folder, bucket, uploadCeilingMib } = parsed as Record<string, unknown>;
   if (typeof folder !== 'string' || !FOLDER_PATTERN.test(folder)) return undefined;
   if (typeof bucket !== 'string' || !BUCKET_PATTERN.test(bucket)) return undefined;
-  if (uploadCeilingMib === undefined) return { folder, bucket };
   if (typeof uploadCeilingMib !== 'number') return undefined;
+  if (uploadCeilingMib > MAX_UPLOAD_CEILING_MIB) return undefined;
   // Only the ceiling is read from this record; the others satisfy its type.
   const candidate: CredentialRecord = {
     folder,
@@ -193,7 +202,7 @@ export function createAdminInterface(deps: AdminDeps) {
   function mint(caller: AdminCaller, rawBody: Buffer): AdminResponse {
     const body = parseMintBody(rawBody);
     if (body === undefined)
-      return respond(400, { error: 'body must name a valid folder and bucket' });
+      return respond(400, { error: 'body must name a valid folder, bucket and upload ceiling' });
     const at = new Date(deps.auth.nowMs()).toISOString();
     const inserted = deps.store.insert({
       keyId: mintKeyId(),

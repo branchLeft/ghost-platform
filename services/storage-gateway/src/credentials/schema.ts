@@ -18,7 +18,9 @@ export const credentials = sqliteTable(
     state: text('state', { enum: ['active', 'disabled', 'revoked'] }).notNull(),
     createdAt: text('created_at').notNull(),
     disabledAt: text('disabled_at'),
-    // The tenant's upload ceiling in MiB. NULL means absent: the default applies.
+    // The tenant's upload ceiling in MiB. Mint requires it and the upload path
+    // refuses NULL. The column stays nullable: SQLite cannot add a NOT NULL
+    // column without a default, and a default would be a guessed limit.
     uploadCeilingMib: integer('upload_ceiling_mib'),
   },
   (table) => [
