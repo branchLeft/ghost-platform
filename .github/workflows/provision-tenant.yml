@@ -341,6 +341,11 @@ jobs:
       - name: Validate inputs
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Read-only: it may answer GET /tenant-names/{name} and nothing else.
+          # An environment secret in tenant-provisioning, like the others the
+          # scoping guard requires; never a repository secret.
+          CONTROL_PLANE_NAME_LOOKUP_URL: ${{ vars.CONTROL_PLANE_NAME_LOOKUP_URL }}
+          CONTROL_PLANE_NAME_LOOKUP_TOKEN: ${{ secrets.CONTROL_PLANE_NAME_LOOKUP_TOKEN }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
 
@@ -395,6 +400,15 @@ jobs:
           if [[ -n "$KIND" ]]; then
             fail "tenant_name is already registered: a host or tenant already uses that name, and taking it would overwrite its directory, secrets file and systemd unit."
           fi
+
+          # Customer tenant names are deliberately not in that register, which is
+          # public: they live in the control plane's database. So the register
+          # above answers for tenant zero and the infrastructure names only, and this asks the
+          # control plane about everything else, with one read-only lookup of this
+          # one name. It fails closed: an unset credential, an unreachable control
+          # plane or any answer but a plain true/false refuses the run, here,
+          # before a repository exists. See tenant-name-lookup.md.
+          node infra/provisioning/scripts/tenant-name-lookup.js || exit 1
 
           [[ "$SITE_URL" =~ ^https:// ]] || fail "site_url must be https"
 

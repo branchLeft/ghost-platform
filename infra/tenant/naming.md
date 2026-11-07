@@ -59,9 +59,12 @@ CI, so failing closed costs nothing there. An unregistered name passes.
 `GhostTenant` calls it first, before the descriptor is validated or rendered.
 The check duplicates `render-core`'s `validateSlugAvailability` claim rule
 until a render-core release carrying it is adopted, after which this copy is
-to be deleted. The register is written by hand today, not at tenant creation,
-so a hand-created tenant that is not yet in it is not refused; that gap is
-tracked as a follow-up.
+to be deleted. The register holds tenant zero and the infrastructure names only.
+Customer tenant names are deliberately absent, because the register is public and
+this package is published; whether one is taken is asked of the control plane at
+provision time (`infra/provisioning/scripts/tenant-name-lookup.md`), which this
+package cannot do. `scripts/assert-register-holds-no-customer-names.js` fails CI
+if a customer name reaches the register or this package's sources.
 
 ## contentVolumeName
 

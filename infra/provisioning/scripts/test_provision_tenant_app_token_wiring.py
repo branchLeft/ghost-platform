@@ -40,6 +40,11 @@ class NoPersonalTokenTests(unittest.TestCase):
             "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
+            # Not a GitHub credential: a read-only bearer for the control
+            # plane's name lookup (GET /tenant-names/{name}). It can write to
+            # no repository, and the test below still forbids binding any
+            # secret to a GH_TOKEN-style variable.
+            "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
         }
         used = set(re.findall(r"\$\{\{\s*secrets\.([A-Za-z0-9_]+)", gate._read_workflow()))
         self.assertEqual(used - allowed, set(),
