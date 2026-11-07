@@ -46,7 +46,6 @@ class CheckTests(unittest.TestCase):
                 "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                 "TENANT_STATE_S3_ACCESS_KEY_ID",
                 "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
             ],
             repository_names=["HETZNER_S3_ACCESS_KEY_ID", "HETZNER_S3_SECRET_ACCESS_KEY"],
         )
@@ -63,9 +62,7 @@ class CheckTests(unittest.TestCase):
             environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY", "TENANT_STATE_S3_ACCESS_KEY_ID"],
             repository_names=[],
         )
-        self.assertEqual(
-            missing, {"TENANT_STATE_S3_SECRET_ACCESS_KEY", "CONTROL_PLANE_NAME_LOOKUP_TOKEN"}
-        )
+        self.assertEqual(missing, {"TENANT_STATE_S3_SECRET_ACCESS_KEY"})
         self.assertFalse(shadowed)
 
     def test_shadowed_even_though_present_in_the_environment(self):
@@ -76,7 +73,6 @@ class CheckTests(unittest.TestCase):
                 "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                 "TENANT_STATE_S3_ACCESS_KEY_ID",
                 "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
             ],
             repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
         )
@@ -92,12 +88,7 @@ class CheckTests(unittest.TestCase):
             repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
         )
         self.assertEqual(
-            missing,
-            {
-                "TENANT_STATE_S3_ACCESS_KEY_ID",
-                "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
-            },
+            missing, {"TENANT_STATE_S3_ACCESS_KEY_ID", "TENANT_STATE_S3_SECRET_ACCESS_KEY"}
         )
         self.assertEqual(shadowed, {"TENANT_STATE_S3_ACCESS_KEY_ID"})
 
@@ -107,7 +98,6 @@ class CheckTests(unittest.TestCase):
                 "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                 "TENANT_STATE_S3_ACCESS_KEY_ID",
                 "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
             ],
             repository_names=["SOME_OTHER_SECRET", "HCLOUD_TOKEN_ESTATE"],
         )
@@ -140,7 +130,6 @@ class MainTests(unittest.TestCase):
                     "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                     "TENANT_STATE_S3_ACCESS_KEY_ID",
                     "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                    "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
                 ],
             )
             repo_file = self._write(
@@ -174,7 +163,6 @@ class MainTests(unittest.TestCase):
                     "TENANT_PROVISIONING_APP_PRIVATE_KEY",
                     "TENANT_STATE_S3_ACCESS_KEY_ID",
                     "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                    "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
                 ],
             )
             repo_file = self._write(directory, "repo.txt", ["TENANT_STATE_S3_ACCESS_KEY_ID"])
@@ -269,7 +257,6 @@ jobs:
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
-      CONTROL_PLANE_NAME_LOOKUP_TOKEN: ${{ secrets.CONTROL_PLANE_NAME_LOOKUP_TOKEN }}
     steps:
       - name: Mint
         env:

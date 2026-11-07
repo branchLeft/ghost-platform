@@ -222,42 +222,6 @@ The refusal is not the first thing you see. The job carries
 `waiting`, you approve a deployment, and *then* it refuses — a shut gate costs
 an approval to discover.
 
-**The run also needs the name lookup's two settings.** "Validate inputs" asks the
-control plane whether the tenant name is taken
-(`infra/provisioning/scripts/tenant-name-lookup.md`) and refuses the dispatch,
-exit 2, if either is missing. Check them first; set whichever is absent.
-
-```bash
-gh variable list --repo branchLeft/ghost-platform
-gh secret list --repo branchLeft/ghost-platform --env tenant-provisioning
-```
-
-`CONTROL_PLANE_NAME_LOOKUP_URL` must appear in the first list, and
-`CONTROL_PLANE_NAME_LOOKUP_TOKEN` in the second. The token is an environment
-secret on `tenant-provisioning`, never a repository secret. To set the URL, type
-its https origin after the first command, then run the second:
-
-```bash
-read -r CONTROL_PLANE_NAME_LOOKUP_URL
-```
-
-```bash
-gh variable set CONTROL_PLANE_NAME_LOOKUP_URL \
-  --repo branchLeft/ghost-platform --body "$CONTROL_PLANE_NAME_LOOKUP_URL"
-```
-
-To set the token, `gh` prompts for the value itself:
-
-```bash
-gh secret set CONTROL_PLANE_NAME_LOOKUP_TOKEN \
-  --repo branchLeft/ghost-platform --env tenant-provisioning
-```
-
-Until the control plane serves the lookup, every dispatch is refused whatever
-these hold; that is the intended posture.
-
-Then open the gate:
-
 ```bash
 gh variable set TENANT_PROVISIONING_FLOW_HETZNERISED \
   --repo branchLeft/ghost-platform --body true

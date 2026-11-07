@@ -85,6 +85,24 @@ strict: it throws on anything but an exact member and defaults to neither kind.
 Migration `0005_tenant_kind` adds the column; on a register that already holds
 rows it fails rather than guess a kind.
 
+### Tenant name
+
+`portal.tenant_register.tenant_name` holds the name a customer signed up under,
+which is also the slug of their repository, database and stack. Customer names
+live here and in no repository (the public name register keeps tenant zero and
+the infrastructure names only). The control plane refuses a taken name when it
+accepts the sign-up: `OwnerDb.registerTenant` normalises a given name the way
+the slug is (`normaliseTenantName` in `src/tenantName.ts`: trimmed, lowercased,
+then the provisioning workflow's 3-26 character slug rule) and a second tenant
+under the same normalised name is refused with `TenantNameTakenError`, which
+carries no name. The refusal rests on the table: a `UNIQUE` constraint
+(`tenant_register_tenant_name_unique`) and a shape `CHECK`
+(`tenant_register_tenant_name_shape`), so two sign-ups racing for one name cannot
+both win and a statement that skips the code is refused too. The column is
+nullable because a demo slot has no customer name; a null never collides. There
+is no lookup endpoint and no key: nothing outside the owner role can ask whether a
+name is taken. Migration `0008_tenant_name` adds the column.
+
 ### Raw SQL
 
 Exactly three things are not expressed through Drizzle (`DB-2` approval, owner

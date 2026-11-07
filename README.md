@@ -96,9 +96,10 @@ than its own. `GhostTenant` reads the claimant from `GITHUB_REPOSITORY` and,
 unset, refuses a registered tenant name. Copies in the packages are generated
 by `scripts/sync-tenant-name-register.py` and checked in CI; see
 `infra/tenant/naming.md`. Customer tenant names are deliberately not in the
-register, which is public: `provision-tenant.yml` asks the control plane whether a
-name is taken (`infra/provisioning/scripts/tenant-name-lookup.md`), and CI fails if
-a customer name reaches the register or a published package
+register, which is public: the control plane refuses a taken name when it accepts
+the sign-up (`portal/data/README.md`), `provision-tenant.yml` stops when the
+tenant's own repository already exists, and CI fails if a customer name reaches
+the register or a published package
 (`scripts/assert-register-holds-no-customer-names.js`).
 
 `uid` is required rather than derived: it is host state, allocated against

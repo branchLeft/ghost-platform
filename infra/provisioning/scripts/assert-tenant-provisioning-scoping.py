@@ -32,7 +32,6 @@ REQUIRED_SECRETS = frozenset(
         "TENANT_PROVISIONING_APP_PRIVATE_KEY",
         "TENANT_STATE_S3_ACCESS_KEY_ID",
         "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-        "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
     }
 )
 
@@ -120,7 +119,6 @@ def _self_test() -> None:
             "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-            "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
         ],
         repository_names=["HETZNER_S3_ACCESS_KEY_ID", "HETZNER_S3_SECRET_ACCESS_KEY"],
     )
@@ -142,7 +140,6 @@ def _self_test() -> None:
             "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-            "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
         ],
         repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
     )
@@ -156,7 +153,6 @@ def _self_test() -> None:
             "TENANT_PROVISIONING_APP_PRIVATE_KEY",
             "TENANT_STATE_S3_ACCESS_KEY_ID",
             "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-            "CONTROL_PLANE_NAME_LOOKUP_TOKEN",
         ],
         repository_names=["SOME_OTHER_SECRET"],
     )

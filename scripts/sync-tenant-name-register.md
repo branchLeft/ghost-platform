@@ -34,8 +34,9 @@ Exit 2 is a usage error or an unreadable or invalid register.
 
 The register is written by hand and holds tenant zero and the infrastructure
 names only. Customer tenant names are deliberately absent: they live in the
-control plane, and `provision-tenant.yml` asks it
-(`infra/provisioning/scripts/tenant-name-lookup.md`).
+control plane, which refuses a taken name when it accepts the sign-up
+(`portal/data/README.md`), and `provision-tenant.yml` stops when the tenant's own
+repository already exists.
 `scripts/assert-register-holds-no-customer-names.js` fails CI if one is entered.
 A package already released carries the copy it was released with until the next
 release.
