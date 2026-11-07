@@ -254,12 +254,25 @@ function bashBlocks(text) {
 }
 
 function ancestorBlock() {
-  const blocks = bashBlocks(section).filter((block) => block.includes('/compare/main...'));
+  const blocks = bashBlocks(section).filter((block) => block.includes('/compare/'));
   assert.equal(blocks.length, 1, 'exactly one fenced block runs the ancestor check');
   return blocks[0];
 }
 
-const COMPARE_URL = 'https://api.github.com/repos/branchLeft/ghost-platform/compare/main...';
+// The first fenced block: the attestation verify and the digest check.
+function verifyBlock() {
+  const blocks = bashBlocks(section).filter((block) => block.includes('gh attestation verify'));
+  assert.equal(blocks.length, 1, 'exactly one fenced block runs the attestation verify');
+  return blocks[0];
+}
+
+// `refs/heads/main` names the branch. A bare `main` is resolved by GitHub as a
+// tag first, and a tag named `main` is pushable (the `release tags` ruleset
+// covers only `v[0-9]*.[0-9]*.[0-9]*`), so the bare form could be answered
+// about the wrong ref.
+const COMPARE_URL =
+  'https://api.github.com/repos/branchLeft/ghost-platform/compare/refs/heads/main...';
+const SHA_GUARD = '[[ "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]';
 
 test('the runbook states the published-release rule without history', () => {
   assert.ok(
@@ -289,9 +302,10 @@ test('the ancestor check passes behind or identical and nothing else, and fails 
   );
   assert.doesNotMatch(block, /GH_TOKEN|Authorization|--header|-H /, 'anonymous: no token');
   assert.ok(
-    block.includes("'^[0-9a-f]{40}$'"),
-    'the 40-hex guard before the commit goes into a URL'
+    block.includes(SHA_GUARD),
+    'the whole-string 40-hex guard before the commit goes into a URL'
   );
+  assert.doesNotMatch(block, /grep -Eq/, 'a line-matching grep is not the guard');
 
   const passing = block.match(/case "\$\{STATUS\}" in\n\s*([^)\n]+)\) ;;/);
   assert.ok(passing, 'the first case arm is the passing one and does nothing');
@@ -307,14 +321,70 @@ test('the ancestor check passes behind or identical and nothing else, and fails 
   assert.equal(block.split('exit 1').length - 1, 2, 'the bad sha and the bad status each exit 1');
 });
 
-test('the runbook names the three unobserved items and the ruleset gap', () => {
+test('no ancestor check anywhere in the runbook asks about a bare main', () => {
+  assert.doesNotMatch(runbook, /compare\/main\.\.\./, 'a bare main can resolve to a tag');
+  assert.ok(runbook.includes(`${COMPARE_URL}\${SOURCE_COMMIT}`), 'the refs/heads/main form');
+});
+
+test('the runbook names the four unobserved items and the ruleset gap', () => {
   const paragraph = section.match(/\*\*Not yet exercised\.\*\*[\s\S]*?\n\n/);
   assert.ok(paragraph, 'a "Not yet exercised" paragraph');
   const text = paragraph[0].replace(/\s+/g, ' ');
+  assert.match(text, /^\*\*Not yet exercised\.\*\* Four things/);
   assert.match(text, /gh attestation verify --bundle \.\.\. --custom-trusted-root/);
   assert.match(text, /gh attestation trusted-root/);
   assert.match(text, /JSON field that carries the source digest/);
+  assert.match(text, /`GITHUB_SHA` on an annotated-tag push is the commit and not the tag object/);
+  assert.match(text, /fails closed/);
+  assert.match(text, /first live tag/);
   assert.match(section, /broker-v\*/);
+});
+
+// --- what the attestation is said to prove ----------------------------------
+
+const releaseRaw = fs.readFileSync(path.join(WORKFLOWS, 'broker-release.yml'), 'utf-8');
+const flatten = (text) => text.replace(/^[ \t]*#[ \t]?/gm, '').replace(/\s+/g, ' ');
+
+test('the attestation is described as showing the run and the tag commit, not a clean build', () => {
+  const header = flatten(releaseRaw.slice(0, releaseRaw.indexOf('\non:')));
+  const flat = section.replace(/\s+/g, ' ');
+  for (const [where, text] of [
+    ['the runbook', flat],
+    ['the workflow header', header],
+  ]) {
+    assert.match(text, /commit the tag named when the run started/, `${where}: which commit`);
+    assert.match(text, /which workflow run produced the bytes/, `${where}: which run`);
+    assert.match(text, /does not show the bytes are a clean build/, `${where}: the limit`);
+  }
+  assert.doesNotMatch(
+    flat,
+    /built by `broker-release\.yml` at `refs\/tags\/broker-vX\.Y\.Z` from the commit that tag names/,
+    'the runbook no longer says the bytes were built from the tag commit'
+  );
+  assert.doesNotMatch(
+    header,
+    /this workflow, at this tag, from this commit/,
+    'the header no longer says the bytes were built from the tag commit'
+  );
+});
+
+test('the workflow says next to --expect-sha that GITHUB_SHA on an annotated tag is unexercised', () => {
+  const lines = releaseRaw.split('\n');
+  const python = lines.findIndex((line) => line.includes('python3 -I services/broker/release/'));
+  assert.ok(python > -1, 'the tag check invocation');
+  assert.ok(
+    lines.slice(python, python + 8).some((line) => line.includes('--expect-sha "${GITHUB_SHA}"')),
+    '--expect-sha "${GITHUB_SHA}" is part of that invocation'
+  );
+  const comment = [];
+  for (let i = python - 1; i >= 0 && /^\s*#/.test(lines[i]); i--) comment.unshift(lines[i]);
+  const text = flatten(comment.join('\n'));
+  assert.match(text, /unexercised/i);
+  assert.match(text, /GITHUB_SHA/);
+  assert.match(text, /annotated-tag push/);
+  assert.match(text, /commit and not the tag object/);
+  assert.match(text, /fails closed/);
+  assert.match(text, /first live tag/);
 });
 
 // --- the ancestor check, run -----------------------------------------------
@@ -395,12 +465,84 @@ test('a source commit that is not a 40-hex sha is refused before any request', (
     `${'a'.repeat(40)}0`,
     '../../x',
     '',
+    // jq -r prints a newline for the escaped one: the first line is a valid
+    // sha, so a line-matching grep would let the whole value through.
+    `${'a'.repeat(40)}\nzz`,
+    `zz\n${'a'.repeat(40)}`,
   ]) {
     const run = runAncestorCheck({ sourceCommit, body: '{"status":"behind"}' });
     assert.notEqual(run.status, 0, `${JSON.stringify(sourceCommit)} is refused`);
-    assert.equal(run.curlArgs, null, 'no request was made');
+    assert.equal(run.curlArgs, null, `${JSON.stringify(sourceCommit)}: no request was made`);
   }
   const missing = runAncestorCheck({ omitField: true, body: '{"status":"behind"}' });
   assert.notEqual(missing.status, 0, 'a missing source digest field is refused');
   assert.equal(missing.curlArgs, null, 'no request was made');
+});
+
+test('the ancestor check asks about refs/heads/main, never a bare main', () => {
+  const run = runAncestorCheck({ body: '{"status":"behind"}' });
+  assert.equal(run.status, 0, run.stderr);
+  const url = run.curlArgs.split('\n').find((arg) => arg.startsWith('https://'));
+  assert.equal(url, `${COMPARE_URL}${COMMIT}`);
+  assert.doesNotMatch(url, /compare\/main\.\.\./);
+});
+
+// --- fail fast: a failed step stops the block --------------------------------
+
+test('both verify blocks start with set -euo pipefail', () => {
+  for (const [name, block] of [
+    ['the attestation verify block', verifyBlock()],
+    ['the ancestor check block', ancestorBlock()],
+  ]) {
+    assert.ok(block.startsWith('set -euo pipefail\n'), `${name} starts with set -euo pipefail`);
+  }
+});
+
+// Runs the attestation verify block with stub curl, gh and sha256sum on PATH.
+// The stub sha256sum leaves a marker file, so a run that reached the digest
+// check is visible whatever the exit status says.
+function runVerifyBlock({ attestExit = '' }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-verify-'));
+  try {
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    const stub = (name, body) =>
+      fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    stub('curl', 'exit 0');
+    stub(
+      'gh',
+      'if [ "$2" = "verify" ] && [ -n "$STUB_ATTEST_EXIT" ]; then exit "$STUB_ATTEST_EXIT"; fi\n' +
+        'if [ "$2" = "verify" ]; then printf \'[]\'; fi\nexit 0'
+    );
+    stub('sha256sum', 'cat > /dev/null\n: > "$STUB_MARKER_FILE"\nexit 0');
+    fs.writeFileSync(path.join(dir, 'verify.sh'), verifyBlock());
+    const marker = path.join(dir, 'digest-checked');
+    const result = spawnSync('bash', ['verify.sh'], {
+      cwd: dir,
+      encoding: 'utf-8',
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        VERSION: '1.2.3',
+        PINNED_SHA256: 'b'.repeat(64),
+        STUB_ATTEST_EXIT: attestExit,
+        STUB_MARKER_FILE: marker,
+      },
+    });
+    assert.ok(!result.error, `bash ran: ${result.error}`);
+    return { status: result.status, stderr: result.stderr, digestChecked: fs.existsSync(marker) };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('the verify block reaches the digest check when the attestation verifies', () => {
+  const run = runVerifyBlock({});
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(run.digestChecked, 'the digest check ran (the control for the next test)');
+});
+
+test('a failed attestation verify stops the block before the digest check', () => {
+  const run = runVerifyBlock({ attestExit: '1' });
+  assert.notEqual(run.status, 0, 'the block fails');
+  assert.ok(!run.digestChecked, 'the digest check did not run after the failed verify');
 });
