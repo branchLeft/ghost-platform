@@ -40,7 +40,7 @@ To refresh the snapshot, list the organisation and update `repos` and `takenOn`:
 
 ## Fonts the themes carry themselves
 
-Nine themes carry their own font files under `assets/fonts/` (Lora, PT Serif, Raleway, Open Sans, Libre Baskerville, Mona Sans, Manrope, Mulish, Inter, JetBrains Mono). The theme's own MIT licence does not cover them. They are kept exactly as the theme ships them (no subsetting, no conversion, no renaming) and the manifest records them:
+Ten themes carry their own font files under `assets/fonts/`, Source (from the base image) among them (Lora, PT Serif, Raleway, Open Sans, Libre Baskerville, Mona Sans, Manrope, Mulish, Inter, JetBrains Mono, EB Garamond). The theme's own MIT licence does not cover them. They are kept exactly as the theme ships them (no subsetting, no conversion, no renaming) and the manifest records them:
 
 - `embeddedFontFamilies` has one record per family: the SIL OFL 1.1 text (`licences/<family>/OFL.txt`, fetched with `curl` from the font's upstream repository at the pinned commit, named in `licence.sourcePath`, never typed by hand), its copyright line, its sha256, and the Reserved Font Names the licence declares (`reservedFontNames`, empty when none).
 - Each theme's `embeddedFonts` lists every font file by path and sha256. `verify.mjs` fails a font file (any `.woff`, `.woff2`, `.ttf`, `.otf`, `.eot` or `.ttc`, anywhere in a theme, base-image themes included) that the manifest does not list, a listed file that is missing, and a file whose bytes differ from the pin. For a family with a Reserved Font Name the failure says so: a modified file may not ship under that name.

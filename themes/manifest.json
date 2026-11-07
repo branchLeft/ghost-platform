@@ -70,7 +70,44 @@
         }
       ],
       "version": "1.7.1",
-      "treeSha256": "66af1d2b363b208f8498adcf5234341a08c70aae694b51155f2bdb76af50b075"
+      "treeSha256": "66af1d2b363b208f8498adcf5234341a08c70aae694b51155f2bdb76af50b075",
+      "embeddedFonts": [
+        {
+          "family": "EB Garamond",
+          "files": [
+            {
+              "path": "assets/fonts/eb-garamond-italic.woff2",
+              "sha256": "44fc2ae5a72906911cf361474a2088fa76c6baa551eaa3966d74569d5aaf14a9"
+            },
+            {
+              "path": "assets/fonts/eb-garamond-roman.woff2",
+              "sha256": "c8257a68a40bf9d6e6a4878a4626d706525d98afd37d663afe5d9c5c0a9864c3"
+            }
+          ]
+        },
+        {
+          "family": "Inter",
+          "files": [
+            {
+              "path": "assets/fonts/inter-roman.woff2",
+              "sha256": "39e72c0794c12f2dbb14a0f61ca946b535f795b1478fcf795bd26e5cb52ded34"
+            }
+          ]
+        },
+        {
+          "family": "JetBrains Mono",
+          "files": [
+            {
+              "path": "assets/fonts/jetbrains-mono-italic.woff2",
+              "sha256": "0ebb2b01edc321e721f33b111854c82284779362d6850dbbcd599c23fb9ed2f0"
+            },
+            {
+              "path": "assets/fonts/jetbrains-mono-roman.woff2",
+              "sha256": "ed2ec545b5633fcbd0fc385b8357b75ef4eada115e4e5cf2097e89a31e6ff1a8"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "london",
@@ -1540,6 +1577,21 @@
     }
   ],
   "embeddedFontFamilies": [
+    {
+      "family": "EB Garamond",
+      "dir": "eb-garamond",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/ebgaramond/OFL.txt",
+        "copyright": "Copyright 2017 The EB Garamond Project Authors (https://github.com/octaviopardo/EBGaramond12)",
+        "sha256": "0985066662eb755ed3683ae5482a81a9195b49ce3f7e165cc2388b3dbece7dd7"
+      },
+      "reservedFontNames": [],
+      "modification": "none"
+    },
     {
       "family": "Inter",
       "dir": "inter",
