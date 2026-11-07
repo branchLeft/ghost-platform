@@ -74,6 +74,13 @@ test('three installs carry the token: both built packages and the applications',
   assert.equal(withToken.length, 3);
 });
 
+test('the checkout does not keep its credential in the repository config', () => {
+  const { steps } = parts(uncommented(real));
+  const checkout = steps.find((step) => /^name: Checkout$/m.test(step));
+  assert.ok(checkout, 'the job checks out the repository');
+  assert.match(checkout, /^ {8}with:\n {10}persist-credentials: false$/m);
+});
+
 test('the workflow asks for no write scope', () => {
   const permissions = uncommented(real).match(/^permissions:\n((?:[ \t]+.*\n)+)/m);
   assert.ok(permissions, 'the workflow declares its permissions');
