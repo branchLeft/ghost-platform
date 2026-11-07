@@ -49,6 +49,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     projectId: options.projectId,
     redirectUri: `${options.publicOrigin}${CALLBACK_PATH}`,
     publicOrigin: options.publicOrigin,
+    cookiePrefix: 'console',
     verifier,
     secureCookies: options.secureCookies,
     title: 'OWNER_CONSOLE',

@@ -63,6 +63,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     projectId: options.projectId,
     redirectUri: `${options.publicOrigin}${CALLBACK_PATH}`,
     publicOrigin: options.publicOrigin,
+    cookiePrefix: 'portal',
     verifier,
     secureCookies: options.secureCookies,
     title: 'TENANT_PORTAL',

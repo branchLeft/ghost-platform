@@ -14,9 +14,6 @@ const TOKEN_EXCHANGE_TIMEOUT_MS = 5000;
 
 const MAX_FORM_BYTES = 4096;
 
-const SESSION_COOKIE = 'portal_session';
-const LOGIN_COOKIE = 'portal_login';
-
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'content-security-policy':
     "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -35,6 +32,14 @@ export interface ShellOptions<S> extends OidcClient {
   readonly verifier: TokenVerifier;
   /** The public origin, for example `https://portal.example`. Sign-in returns here. */
   readonly publicOrigin: string;
+  /**
+   * Names this application's cookies, `<prefix>_session` and `<prefix>_login`.
+   * Required, with no default: browsers do not isolate cookies by port, so on
+   * loopback development two applications share one jar and would replace each
+   * other's session if they shared names. The `__Host-` prefix protects only
+   * production, so every application takes its own.
+   */
+  readonly cookiePrefix: string;
   readonly title: string;
   readonly nav: readonly NavItem[];
   readonly signOutLabel: string;
@@ -94,8 +99,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   const fetchImpl = options.fetch ?? fetch;
   const secure = options.secureCookies ?? true;
   const sessionSeconds = options.sessionSeconds ?? DEFAULT_SESSION_SECONDS;
-  const sessionName = cookieName(SESSION_COOKIE, secure);
-  const loginName = cookieName(LOGIN_COOKIE, secure);
+  const sessionName = cookieName(`${options.cookiePrefix}_session`, secure);
+  const loginName = cookieName(`${options.cookiePrefix}_login`, secure);
   const sessions = new ExpiringStore<SessionRecord<S>>(clock);
   // A pending sign-in travels in the browser's cookie, sealed, and is never
   // held here: an unauthenticated start must not use up capacity.
