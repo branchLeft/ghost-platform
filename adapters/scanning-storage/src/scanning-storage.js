@@ -13,6 +13,7 @@ const {
   buildVideoAudioRefusedError,
 } = require('./refusal-error');
 const { detectVideoAudioFamily } = require('./media-kind');
+const { stampImageContentType } = require('./content-type');
 const { HOLD_OR_FLAG_NOT_IMPLEMENTED } = require('./policy');
 const {
   HoldRegistry,
@@ -276,6 +277,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
 
       const WrappedClass = loadWrappedAdapterClass(wraps);
       this.wrapped = new WrappedClass(wrappedConfig);
+      // content-type.md: without this an S3 object written by saveRaw is
+      // stored as application/octet-stream. Silent if it stops working, so
+      // the S3 tier says so at boot.
+      if (!stampImageContentType(this.wrapped) && wraps === 'S3Storage') {
+        this.logger.error(
+          `ScanningStorageAdapter: CONTENT_TYPE_STAMP_UNAVAILABLE wraps=${wraps}: the wrapped adapter exposes no S3 client, so objects written by saveRaw are stored without an image content type`
+        );
+      }
       this.storagePath = this.wrapped.storagePath;
       // Ghost's content importer reads this to name imported files, so it must
       // match the wrapped adapter.
