@@ -18,6 +18,7 @@ on:
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
       - .github/workflows/image-attestation-ci.yml
+      - .github/workflows/provision-tenant.yml
   pull_request:
     branches: [main]
     paths:
@@ -30,6 +31,7 @@ on:
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
       - .github/workflows/image-attestation-ci.yml
+      - .github/workflows/provision-tenant.yml
 
 permissions:
   contents: read

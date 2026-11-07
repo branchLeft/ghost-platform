@@ -57,3 +57,21 @@ last line too, and must fail the check rather than pass as a rejection.
 | `ghcr.io/branchleft/demo-edge` | `branchLeft/ghost-platform/.github/workflows/demo-edge-image.yml` |
 
 The test for this script is `scripts/test-verify-image-attestation.sh`.
+
+## Run side
+
+Two places verify the same attestation before anything runs an image:
+
+- **Admission, this repository.** `.github/workflows/provision-tenant.yml` runs
+  this script on the tenant image before any tenant repository is generated. It
+  refuses any image name other than `ghcr.io/branchleft/ghost-tenant`, and it
+  uses the workflow's own token, never the provisioning App token.
+- **Host, shared-infra.** `branchleft-deploy` (`hetzner/provision/branchleft_deploy.py`
+  in branchLeft/shared-infra) runs a copy of this script, always with
+  `--bundle-from-oci`, before it writes a pin or restarts a stack. It refuses
+  any image it cannot verify. The host copy is held byte for byte to this file,
+  so this repository stays the one home of the verify logic.
+
+The host is the enforcement point. A tenant repository controls its own workflow
+and so cannot be trusted to verify on its own. A holder of a tenant's slot key
+can call the host directly, and the host still refuses an unsigned image.

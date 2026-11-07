@@ -128,6 +128,9 @@ jobs:
 
     permissions:
       contents: read
+      # Read-only: the admission step below asks GitHub for the image's
+      # attestation through `gh`, which needs this scope to read it.
+      attestations: read
 
     # Two runs at once would race on the same tenant bucket and the same
     # repository name. Never cancel one in flight -- a half-provisioned tenant
@@ -546,6 +549,27 @@ jobs:
       # and `rsa_mgf1_md` default differently across OpenSSL versions, so an
       # encrypt that works and a decrypt written from memory can disagree -- at
       # the one moment the value is needed.
+      # Admission: the tenant image must carry this repository's own build
+      # attestation, not only a well-formed digest. It runs before any
+      # repository is generated, so a bad image provisions nothing. The
+      # workflow's own token, never the provisioning App token above: this step
+      # reads attestations and must not hold a credential that can create
+      # repositories. The host verifies the same attestation again at deploy
+      # time (shared-infra, branchleft-deploy), so this gate is not the only one.
+      # The signer is a literal, as the image workflow's own check is, and the
+      # name is refused unless it is the tenant image.
+      - name: Verify the tenant image attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fail() { echo "::error::$1"; exit 1; }
+          [[ "$IMAGE_REF" == ghcr.io/branchleft/ghost-tenant@sha256:* ]] \
+            || fail "IMAGE_REF must name ghcr.io/branchleft/ghost-tenant by digest. This flow admits only the tenant image."
+          "$GITHUB_WORKSPACE/scripts/verify-image-attestation.sh" \
+            "$IMAGE_REF" \
+            branchLeft/ghost-platform \
+            branchLeft/ghost-platform/.github/workflows/registry-push.yml
+
       - name: Prove the passphrase escrow works on this runner
         run: |
           set -euo pipefail

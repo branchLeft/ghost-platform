@@ -183,3 +183,60 @@ test('the CI workflow is read-only', () => {
   assert.match(text, /permissions:\n {2}contents: read\n/);
   assert.doesNotMatch(text, /write|id-token|attestations|secrets\./);
 });
+
+// Admission of the tenant image in provision-tenant.yml. The step must run
+// before any repository, stack config or handover is written, must read with
+// the workflow's own token (never the provisioning App token), and must admit
+// only the tenant image under a literal signer.
+const PROVISION = '.github/workflows/provision-tenant.yml';
+const VERIFY_STEP = 'Verify the tenant image attestation';
+
+// The text of one step: from its `- name:` line to the next step or the end.
+function stepBlock(text, name) {
+  const start = text.indexOf(`- name: ${name}\n`);
+  assert.ok(start > -1, `workflow has the step ${name}`);
+  const next = text.indexOf('\n      - name:', start + 1);
+  return next === -1 ? text.slice(start) : text.slice(start, next);
+}
+
+test('provision-tenant verifies the tenant image before any repository, config or handover is written', () => {
+  const text = uncommented(PROVISION);
+  const verify = text.indexOf(`- name: ${VERIFY_STEP}\n`);
+  assert.ok(verify > -1, 'the admission step exists');
+  for (const later of [
+    '- name: Generate the tenant repo from the template',
+    '- name: Initialise the tenant stack and write its non-secret config',
+    'pulumi config set imageRef',
+    '- name: Open the handover pull request',
+  ]) {
+    assert.ok(text.indexOf(later) > verify, `${later} comes after the admission step`);
+  }
+});
+
+test('the admission step reads with the workflow token, never the provisioning App token', () => {
+  const step = stepBlock(uncommented(PROVISION), VERIFY_STEP);
+  assert.match(step, /GH_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.doesNotMatch(step, /app-token/);
+});
+
+test('the admission step admits only the tenant image, under a literal signer, through the shared verifier', () => {
+  const step = stepBlock(uncommented(PROVISION), VERIFY_STEP);
+  assert.match(step, /\[\[ "\$IMAGE_REF" == ghcr\.io\/branchleft\/ghost-tenant@sha256:\* \]\]/);
+  assert.match(step, /scripts\/verify-image-attestation\.sh/);
+  assert.match(
+    step,
+    /branchLeft\/ghost-platform \\\n\s+branchLeft\/ghost-platform\/\.github\/workflows\/registry-push\.yml/
+  );
+  assert.doesNotMatch(step, /workflow_ref|job_workflow_ref/, 'no signer read from the run');
+});
+
+test('provision-tenant grants read only at the job level', () => {
+  const job = jobBlock(uncommented(PROVISION), 'provision');
+  assert.doesNotMatch(job, /: write/);
+  assert.match(job, /attestations: read/);
+});
+
+test('image-attestation-ci runs on changes to the provision admission step', () => {
+  const text = uncommented('.github/workflows/image-attestation-ci.yml');
+  assert.equal(text.split('- .github/workflows/provision-tenant.yml').length - 1, 2);
+});
