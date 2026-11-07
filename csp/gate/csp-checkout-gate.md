@@ -89,7 +89,7 @@ enforcing. Ghost's Stripe client is pointed at the fake with
   checkout; a site that embeds Stripe Elements would need `api.stripe.com` in
   `connect-src` and must be re-measured.
 
-The live proof of those needs Rob's own Stripe TEST-mode account (free, no
+The live proof of those needs the owner's own Stripe TEST-mode account (free, no
 charge) with a Stripe CLI listener, and the mail programme being live. Neither
 is needed to run this gate.
 
