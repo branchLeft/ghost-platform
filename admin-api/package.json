@@ -1,0 +1,30 @@
+{
+  "name": "@branchleft/ghost-platform-admin-api",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../LICENSE",
+  "packageManager": "pnpm@11.17.0",
+  "description": "The one home of Ghost Admin API access in this repo: the key check, the short-lived token recipe, and a read-only client with a thin CLI. No dependencies.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  }
+}

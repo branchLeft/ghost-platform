@@ -6,21 +6,20 @@
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isAdminApiKey } from '@branchleft/ghost-platform-admin-api';
 import { removeFileIfPresent, writeFileAtomic } from '../atomicFile.js';
+
+// The key's shape has one home, `admin-api/`; re-exported so every broker
+// importer keeps reading it from here.
+export { isAdminApiKey };
 
 const KEY_FILE = 'ghost-admin-key';
 const SLOT_PATTERN = /^[A-Za-z0-9-]{1,32}$/;
-// Ghost's Admin API key: a 24-hex-digit id, a colon, a 64-hex-digit secret.
-const KEY_PATTERN = /^[0-9a-f]{24}:[0-9a-f]{64}$/;
 
 export interface AdminKeyStore {
   read(slot: string): Promise<string | null>;
   write(slot: string, key: string): Promise<void>;
   remove(slot: string): Promise<void>;
-}
-
-export function isAdminApiKey(value: string): boolean {
-  return KEY_PATTERN.test(value);
 }
 
 function slotDir(baseDir: string, slot: string): string {

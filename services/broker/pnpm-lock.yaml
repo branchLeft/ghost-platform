@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@branchleft/ghost-platform-admin-api':
+        specifier: link:../../admin-api
+        version: link:../../admin-api
       '@branchleft/ghost-platform-render-core':
         specifier: link:../../render-core
         version: link:../../render-core

@@ -17,7 +17,8 @@ on:
   push:
     branches: [main]
   # A pull request starts this only when its diff touches something the job
-  # reads: the service, render-core (linked by `link:` and built first) and the
+  # reads: the service, render-core (linked by `link:` and built first),
+  # admin-api (linked by `link:`, plain JavaScript, bundled as it is) and the
   # demo-host golden files and wrapper the unit tests compare against. Push to
   # main stays unfiltered as the backstop.
   pull_request:
@@ -25,6 +26,7 @@ on:
     paths:
       - 'services/broker/**'
       - 'render-core/**'
+      - 'admin-api/**'
       - 'registers/**'
       - 'demo-host/provision/**'
       - '.github/workflows/broker-ci.yml'

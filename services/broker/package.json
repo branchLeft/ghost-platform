@@ -16,6 +16,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@branchleft/ghost-platform-admin-api": "link:../../admin-api",
     "@branchleft/ghost-platform-render-core": "link:../../render-core",
     "zod": "^4.6.5"
   },
