@@ -38,3 +38,13 @@ is defined: an empty or non-numeric value, or one equal to `PORT`, stops
 startup instead of falling back to the combined listener, because the
 combined listener is the one that serves `/drain` to every tenant network. Left
 undefined, the shim serves both on `PORT`, which mx1's shim still relies on.
+
+`SHIM_DRAIN_HOST` is the one address the drain listener binds. It is required
+whenever `SHIM_DRAIN_PORT` is set and has no default, so leaving it out can
+never reproduce a listener on every interface: an unset or empty value, a
+hostname, or any wildcard spelling (`0.0.0.0`, `::`, `::0`, the all-zeros and
+IPv4-mapped forms) stops startup. Loopback inside the container is not an
+option, because the host's published port is forwarded to the container's
+address on the one network that is not internal; the deployment gives the
+spool a fixed address on that network and passes it here. With no
+`SHIM_DRAIN_PORT` the variable is not read.
