@@ -97,3 +97,15 @@ jobs:
         run: node --test adapters/stripe-connect-limit/test/image/*.test.mjs
         env:
           IMAGE: ghost-platform:ci
+
+      # Every bundled theme, activated in a real Ghost from the built image:
+      # it lists exactly the manifest's themes, each renders with no outside
+      # origin, its stylesheets and scripts answer, and the platform fonts are
+      # served from this origin with the pinned bytes. The pins and the
+      # origin scan already ran inside the image build (themes/verify.mjs); this
+      # is the same result observed at runtime. Needs no install -- Node
+      # built-ins only.
+      - name: Bundled themes and fonts against the built image
+        run: node --test themes/image/themes.image.test.mjs
+        env:
+          IMAGE: ghost-platform:ci

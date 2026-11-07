@@ -1,5 +1,8 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const SOURCE_ROOT = fileURLToPath(new URL('../src/', import.meta.url));
 
 /** A module a test breaks on purpose: its file, and the `src` folder its relative imports point back into. */
 export interface Target {
@@ -29,26 +32,34 @@ export function clearMutants(): void {
 }
 
 /**
- * Loads a copy of a real module (the mailer unless `where` says otherwise)
- * with one exact piece of text replaced. The target must occur exactly once,
- * so a mutation that changes nothing, or something else, throws instead of
- * passing quietly. The copy's relative imports are pointed back at the
- * module's own `src` folder.
+ * Loads a copy of a real module with one exact piece of text replaced. The
+ * target must occur exactly once, so a mutation that changes nothing, or
+ * something else, throws instead of passing quietly. `where` is the module:
+ * a `Target`, or its path under `src/` (e.g. `shell/clientLimit.ts`); the SMTP
+ * mailer when omitted. The copy's relative imports are pointed back at the
+ * module's own directory under `src/` before the target is looked for, so a
+ * target or a replacement may name one of them: `../../src/<directory>/<file>`
+ * for a real module, or `./<name>.js` for another mutant written by an earlier
+ * call.
  */
 export async function importSabotaged<T>(
   name: string,
   target: string,
   replacement: string,
-  where: Target = MAILER
+  where: string | Target = MAILER
 ): Promise<T> {
-  const original = readFileSync(where.file, 'utf8');
-  const occurrences = original.split(target).length - 1;
+  const source: Target =
+    typeof where === 'string' ? { file: `${SOURCE_ROOT}${where}`, folder: dirname(where) } : where;
+  const original = readFileSync(source.file, 'utf8');
+  const pointed = original.replace(
+    /from '\.\/([^']+)'/g,
+    (_match, file: string) => `from '../../src/${source.folder}/${file}'`
+  );
+  const occurrences = pointed.split(target).length - 1;
   if (occurrences !== 1) {
     throw new Error(`sabotage target must occur exactly once, found ${occurrences}`);
   }
-  const mutated = original
-    .replace(target, replacement)
-    .replace(/from '\.\/([^']+)'/g, `from '../../src/${where.folder}/$1'`);
+  const mutated = pointed.replace(target, () => replacement);
   mkdirSync(MUTANT_DIR, { recursive: true });
   const file = `${MUTANT_DIR}${name}.ts`;
   writeFileSync(file, mutated);

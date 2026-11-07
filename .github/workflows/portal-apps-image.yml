@@ -29,12 +29,14 @@ on:
     paths:
       - portal/**
       - services/identity/**
+      - services/request-guard/**
       - .github/workflows/portal-apps-image.yml
   pull_request:
     branches: [main]
     paths:
       - portal/**
       - services/identity/**
+      - services/request-guard/**
       - .github/workflows/portal-apps-image.yml
   workflow_dispatch:
 

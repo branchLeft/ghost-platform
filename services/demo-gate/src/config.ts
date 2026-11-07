@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { BlockList } from 'node:net';
 import { MIN_KEY_BYTES } from './cookie.js';
-import { isLoopbackHost, parseTrustedProxies } from './source.js';
+import { isLoopbackHost, parseTrustedProxies } from 'ghost-platform-request-guard/dist/index.js';
 
 export interface GateConfig {
   readonly port: number;

@@ -203,3 +203,91 @@ describe('constant-time clean-up', () => {
     expect(steps).toBeLessThan(3);
   });
 });
+
+describe('overflow policy', () => {
+  it('refuses a new source by default, and when asked to explicitly', () => {
+    for (const extra of [{}, { onFull: 'refuse' as const }]) {
+      const ceiling = createAttemptCeiling({ limit: 5, windowMs: WINDOW, maxSources: 2, ...extra });
+      ceiling.attempt('a', 0);
+      ceiling.attempt('b', 1);
+      expect(ceiling.attempt('c', 2)).toEqual({ allowed: false, retryAfterSeconds: 60 });
+      expect(ceiling.size(2)).toBe(2);
+    }
+  });
+
+  describe('evict-oldest', () => {
+    const build = (maxSources: number, limit = 1) =>
+      createAttemptCeiling({ limit, windowMs: WINDOW, maxSources, onFull: 'evict-oldest' });
+
+    it('admits a new source into a full table and forgets only the oldest', () => {
+      const ceiling = build(2);
+      expect(ceiling.attempt('a', 0).allowed).toBe(true);
+      expect(ceiling.attempt('b', 1).allowed).toBe(true);
+      expect(ceiling.attempt('c', 2).allowed).toBe(true);
+      // "b" was kept: its count survived, so its one attempt is still spent.
+      expect(ceiling.attempt('b', 3).allowed).toBe(false);
+      // "a" was forgotten: it starts again with a fresh count.
+      expect(ceiling.attempt('a', 4).allowed).toBe(true);
+    });
+
+    it('never holds more than maxSources, however many sources arrive', () => {
+      const maxSources = 5;
+      const ceiling = build(maxSources);
+      for (let i = 0; i < 100; i++) {
+        expect(ceiling.attempt(`source-${i}`, i).allowed).toBe(true);
+        expect(ceiling.size(i)).toBeLessThanOrEqual(maxSources);
+      }
+      expect(ceiling.size(99)).toBe(maxSources);
+    });
+
+    it('still limits a source that is in the table', () => {
+      const ceiling = build(2, 2);
+      ceiling.attempt('a', 0);
+      ceiling.attempt('a', 1);
+      expect(ceiling.attempt('a', 2)).toEqual({ allowed: false, retryAfterSeconds: 60 });
+    });
+
+    it('does not evict to answer a peek, and a full table peeks as allowed', () => {
+      const ceiling = build(2);
+      ceiling.attempt('a', 0);
+      ceiling.attempt('b', 1);
+      expect(ceiling.peek('c', 2)).toEqual({ allowed: true });
+      expect(ceiling.size(2)).toBe(2);
+      // "a" is still in the table with its attempt spent: nothing was evicted.
+      expect(ceiling.attempt('a', 3).allowed).toBe(false);
+    });
+
+    it('prefers reclaiming expired windows to evicting a live one', () => {
+      const ceiling = build(2);
+      ceiling.attempt('a', 0);
+      ceiling.attempt('b', 10);
+      expect(ceiling.attempt('c', WINDOW + 5).allowed).toBe(true);
+      // "b" is live and was not evicted to make room: only expired "a" went.
+      expect(ceiling.attempt('b', WINDOW + 6).allowed).toBe(false);
+    });
+
+    it('keeps the table in start-time order across evictions, so a sweep still reaches every expired entry', () => {
+      const ceiling = build(3);
+      ceiling.attempt('a', 0);
+      ceiling.attempt('b', 10);
+      ceiling.attempt('c', 20);
+      ceiling.attempt('d', 30); // evicts "a"
+      ceiling.attempt('e', 40); // evicts "b"
+      // Table is c, d, e. "c" has expired and "d", "e" have not.
+      expect(ceiling.size(WINDOW + 25)).toBe(2);
+      // All three have expired; an out-of-order table would stop early.
+      expect(ceiling.size(WINDOW + 45)).toBe(0);
+    });
+  });
+});
+
+describe('size', () => {
+  it('reclaims expired windows before counting', () => {
+    const ceiling = createAttemptCeiling({ limit: 5, windowMs: WINDOW, maxSources: 10 });
+    ceiling.attempt('a', 0);
+    ceiling.attempt('b', 10);
+    expect(ceiling.size(5)).toBe(2);
+    expect(ceiling.size(WINDOW + 5)).toBe(1);
+    expect(ceiling.size(WINDOW + 10)).toBe(0);
+  });
+});

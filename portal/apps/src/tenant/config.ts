@@ -1,7 +1,9 @@
+import type { BlockList } from 'node:net';
 import {
   parseOrigin,
   parseOutputs,
   parsePort,
+  parseTrustedProxyList,
   readText,
   requireEnv,
   type FileReader,
@@ -16,6 +18,8 @@ export interface TenantPortalConfig {
   readonly allowedOrgIds: ReadonlySet<string>;
   readonly databaseUrl: string;
   readonly port: number;
+  /** Set by `PORTAL_TRUSTED_PROXIES`; absent, sign-in is not rate limited. */
+  readonly trustedProxies?: BlockList;
 }
 
 /**
@@ -29,6 +33,7 @@ export function loadTenantConfig(
 ): TenantPortalConfig {
   const outputs = parseOutputs(read(requireEnv(env, 'PORTAL_OUTPUTS_FILE')));
   const origin = parseOrigin(env['PORTAL_PUBLIC_ORIGIN']);
+  const trustedProxies = parseTrustedProxyList(env, 'PORTAL_TRUSTED_PROXIES');
   return {
     issuer: requireEnv(env, 'PORTAL_ISSUER_URL'),
     clientId: outputs.clientIds.portal,
@@ -38,5 +43,6 @@ export function loadTenantConfig(
     allowedOrgIds: new Set(outputs.tenantOrgIds),
     databaseUrl: read(requireEnv(env, 'PORTAL_DATABASE_URL_FILE')).trim(),
     port: parsePort(env['PORT'], 8080),
+    ...(trustedProxies === undefined ? {} : { trustedProxies }),
   };
 }

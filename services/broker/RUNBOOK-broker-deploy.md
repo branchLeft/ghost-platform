@@ -271,6 +271,7 @@ deployed and `PINNED_SHA256` to the digest recorded for it in reviewed code
 (the role's pin, not the `.sha256` file from the release):
 
 ```bash
+set -euo pipefail
 TAG="broker-v${VERSION}"
 BASE="https://github.com/branchLeft/ghost-platform/releases/download/${TAG}"
 curl -fsSLO "${BASE}/broker-bundle-${VERSION}.tar.gz"
@@ -293,19 +294,23 @@ line fails: that is the negative control.
 **Check the attested commit is on main.** The verify above proves where the
 bytes came from, not that the commit is on `main`. Read the source commit the
 attestation names from `verified.json` (the certificate's source digest), refuse
-anything that is not a 40-character sha before it goes into a URL, and ask the
-GitHub compare API, anonymously, how that commit relates to `main`. The pass
-condition is `behind` or `identical`. Any other answer (`ahead`, `diverged`),
-an empty answer, a failed request or a malformed commit fails the deploy: it
-exits 1 and nothing is unpacked or installed.
+anything that is not a 40-character sha before it goes into a URL (the whole
+value must match, so a value with a second line is refused), and ask the
+GitHub compare API, anonymously, how that commit relates to `main`. The branch
+is named in full, `refs/heads/main`, because a bare `main` can resolve to a tag
+of that name and the `release tags` ruleset does not stop one being pushed. The
+pass condition is `behind` or `identical`. Any other answer (`ahead`,
+`diverged`), an empty answer, a failed request or a malformed commit fails the
+deploy: it exits 1 and nothing is unpacked or installed.
 
 ```bash
+set -euo pipefail
 SOURCE_COMMIT="$(jq -r '.[0].verificationResult.signature.certificate.sourceRepositoryDigest' verified.json)"
-if ! printf '%s' "${SOURCE_COMMIT}" | grep -Eq '^[0-9a-f]{40}$'; then
+if ! [[ "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "refusing: the attested source commit '${SOURCE_COMMIT}' is not a 40-hex sha" >&2
   exit 1
 fi
-STATUS="$(curl -fsS "https://api.github.com/repos/branchLeft/ghost-platform/compare/main...${SOURCE_COMMIT}" | jq -r .status)"
+STATUS="$(curl -fsS "https://api.github.com/repos/branchLeft/ghost-platform/compare/refs/heads/main...${SOURCE_COMMIT}" | jq -r .status)"
 case "${STATUS}" in
   behind | identical) ;;
   *)
@@ -318,17 +323,22 @@ esac
 The compare API is unauthenticated, which allows 60 requests per hour per
 address: ample for a deploy.
 
-**Not yet exercised.** Three things here have not been observed and the first
-consumer run proves each: `gh attestation verify --bundle ... --custom-trusted-root`
+**Not yet exercised.** Four things here have not been observed and the first
+consumer run proves three of them: `gh attestation verify --bundle ... --custom-trusted-root`
 working without a logged-in `gh`; `gh attestation trusted-root` working
 without a logged-in `gh`; and the JSON field that carries the source digest
 (`.[0].verificationResult.signature.certificate.sourceRepositoryDigest` above).
-If any one behaves differently, this section changes to match what was
-observed.
+The fourth is that `GITHUB_SHA` on an annotated-tag push is the commit and not
+the tag object, which the release workflow passes to the tag check as the commit
+being built. If it is the tag object the check fails closed: it refuses every
+release and signs nothing, so nothing unsafe ships. The first live tag shows
+which it is. If any one behaves differently, this section changes to match what
+was observed.
 
-**What this does and does not prove.** The attestation proves the tarball was
-built by `broker-release.yml` at `refs/tags/broker-vX.Y.Z` from the commit
-that tag names. It does not prove who pushed the tag, or that the tag check
+**What this does and does not prove.** The attestation shows the commit the
+tag named when the run started, and which workflow run produced the bytes
+(`broker-release.yml` at `refs/tags/broker-vX.Y.Z`). It does not show the bytes
+are a clean build of that commit, who pushed the tag, or that the tag check
 was the one on `main`. The controls are the pinned digest, which makes
 reviewed code choose which release deploys, and the check above that the
 attested commit is on `main`. This is the same trust in GitHub that

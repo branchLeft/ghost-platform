@@ -11,6 +11,9 @@ importers:
       '@branchleft/ghost-platform-render-core':
         specifier: link:../../render-core
         version: link:../../render-core
+      ghost-platform-request-guard:
+        specifier: link:../request-guard
+        version: link:../request-guard
     devDependencies:
       '@branchleft/tsconfig':
         specifier: ^0.3.1
