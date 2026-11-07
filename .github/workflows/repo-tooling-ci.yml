@@ -96,6 +96,13 @@ jobs:
       - name: CSP script-hash derivation tests
         run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
 
+      # The bundled themes and fonts (themes/README.md): the outside-origin
+      # scanner, the licence manifest and the bundle verifier, each with its red
+      # cases. The fetch itself needs the network and runs in the image build.
+      # Only node:test and node built-ins, no install.
+      - name: Bundled themes and fonts tests
+        run: node --test themes/*.test.mjs
+
       # The CSP gates' verdict logic. Needs render-core built, so build it
       # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
       # Docker and Chromium and stays out of CI, like csp/proof/.
