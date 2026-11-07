@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import Database from 'better-sqlite3';
+import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { receiveBody, resolveBodyCeiling } from '../src/body.js';
 import {
@@ -18,6 +20,7 @@ import {
   type AdminAuthDeps,
 } from '../src/credentials/adminAuth.js';
 import { MasterSecret } from '../src/credentials/masterSecret.js';
+import { credentials } from '../src/credentials/schema.js';
 import { SqliteCredentialStore } from '../src/credentials/store.js';
 
 // Each tenant gets its own ceiling from its credential; the body stage must
@@ -154,7 +157,11 @@ describe('a per-tenant upload ceiling, enforced by the body stage', () => {
     const tenant = keyIdOf(mint(FOLDER_A, '1'));
     const raw = new Database(path);
     try {
-      raw.prepare('UPDATE credentials SET upload_ceiling_mib = NULL WHERE key_id = ?').run(tenant);
+      drizzle(raw)
+        .update(credentials)
+        .set({ uploadCeilingMib: null })
+        .where(eq(credentials.keyId, tenant))
+        .run();
     } finally {
       raw.close();
     }
@@ -201,11 +208,14 @@ describe('a per-tenant upload ceiling, enforced by the body stage', () => {
     const raw = new Database(path);
     try {
       raw.pragma('ignore_check_constraints = ON');
-      const update = raw.prepare('UPDATE credentials SET upload_ceiling_mib = ? WHERE key_id = ?');
+      const db = drizzle(raw);
       // 'five' is text the integer column keeps as text; numeric text such as '5'
       // is converted to the integer 5 by the column's affinity, so it is not a bad value.
       for (const planted of [Infinity, 0, -1, 1.5, 'five']) {
-        update.run(planted, tenant);
+        db.update(credentials)
+          .set({ uploadCeilingMib: planted as number })
+          .where(eq(credentials.keyId, tenant))
+          .run();
         expect(await admitUpload(tenant, 1), `planted ${String(planted)}`).toBe(
           'credential-invalid'
         );
@@ -219,9 +229,15 @@ describe('a per-tenant upload ceiling, enforced by the body stage', () => {
     const tenant = keyIdOf(mint(FOLDER_A, '1'));
     const raw = new Database(path);
     try {
-      const update = raw.prepare('UPDATE credentials SET upload_ceiling_mib = ? WHERE key_id = ?');
-      expect(() => update.run(0, tenant)).toThrow(/CHECK/);
-      expect(() => update.run(1.5, tenant)).toThrow(/CHECK/);
+      const db = drizzle(raw);
+      const write = (planted: number) =>
+        db
+          .update(credentials)
+          .set({ uploadCeilingMib: planted })
+          .where(eq(credentials.keyId, tenant))
+          .run();
+      expect(() => write(0)).toThrow(/CHECK/);
+      expect(() => write(1.5)).toThrow(/CHECK/);
     } finally {
       raw.close();
     }

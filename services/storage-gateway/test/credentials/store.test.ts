@@ -273,11 +273,18 @@ describe('SqliteCredentialStore', () => {
       const raw = new Database(legacyPath);
       const columns = raw.pragma('table_info(credentials)') as { name: string }[];
       expect(columns.map((column) => column.name)).not.toContain('upload_ceiling_mib');
-      raw
-        .prepare(
-          'INSERT INTO credentials (key_id, folder, bucket, state, created_at) VALUES (?, ?, ?, ?, ?)'
-        )
-        .run(KEY, NEW.folder, NEW.bucket, 'active', NEW.createdAt);
+      // The 0002 table has no upload ceiling column, so the row is written
+      // through the legacy table, which declares only the columns it has.
+      drizzle(raw)
+        .insert(legacyCredentials)
+        .values({
+          keyId: KEY,
+          folder: NEW.folder,
+          bucket: NEW.bucket,
+          state: 'active',
+          createdAt: NEW.createdAt,
+        })
+        .run();
       raw.close();
 
       const upgraded = SqliteCredentialStore.open(legacyPath, MIGRATIONS_FOLDER);
