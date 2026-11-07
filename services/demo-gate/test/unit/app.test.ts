@@ -19,7 +19,6 @@ import {
   type GateDeps,
 } from '../../src/app.js';
 import { hashPassphrase, parseArgon2idHash, type Argon2idHash } from '../../src/argon2id.js';
-import { createAttemptCeiling } from '../../src/ceiling.js';
 import { COOKIE_NAME, signCookie } from '../../src/cookie.js';
 import {
   createDerivationGate,
@@ -32,7 +31,11 @@ import {
   type CurrentLease,
   type GatedHost,
 } from '../../src/slots.js';
-import { createSourceResolver, parseTrustedProxies } from '../../src/source.js';
+import {
+  createAttemptCeiling,
+  createSourceResolver,
+  parseTrustedProxies,
+} from 'ghost-platform-request-guard/dist/index.js';
 
 const FAST = { memoryKiB: 8192, passes: 1, parallelism: 1 };
 const KEY = Buffer.alloc(32, 3);

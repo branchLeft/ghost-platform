@@ -4,11 +4,18 @@
  * only failures would let an attacker learn which guess was right from
  * whether the counter moved.
  *
- * The table is bounded. When it is full of live windows a new source is
- * refused rather than admitted uncounted, so a flood of addresses can make
- * the gate unavailable but never unmetered.
+ * The table is bounded. What happens to a new source when it is full of
+ * live windows is the `onFull` policy. `'refuse'` (the default) turns the new
+ * source away rather than admit it uncounted, so a flood of addresses can make
+ * the service unavailable but never unmetered. `'evict-oldest'` forgets the
+ * source whose window began first and admits the new one, for a caller that
+ * must never lock a real visitor out: a flood of addresses can then restart
+ * the oldest source's count, but the table never grows past `maxSources`.
  */
 type Verdict = { allowed: true } | { allowed: false; retryAfterSeconds: number };
+
+/** What a full table does with a source it holds no window for. */
+export type OverflowPolicy = 'refuse' | 'evict-oldest';
 
 export interface AttemptCeiling {
   /** Records an attempt and says whether it may proceed; `retryAfterSeconds` when refused. */
@@ -28,16 +35,25 @@ export interface AttemptCeiling {
    * exact window `attempt` incremented is still the one live now.
    */
   refund(key: string): void;
+  /**
+   * How many sources currently hold a window, after reclaiming the expired
+   * ones. For a caller that reports the table's size; it records nothing.
+   */
+  size(nowMs: number): number;
 }
 
 export interface CeilingOptions {
   readonly limit: number;
   readonly windowMs: number;
+  /** At least 1: the most sources the table holds at once. */
   readonly maxSources: number;
+  /** What a full table does with a new source; `'refuse'` when omitted. */
+  readonly onFull?: OverflowPolicy;
 }
 
 export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
   const windows = new Map<string, { start: number; count: number }>();
+  const onFull: OverflowPolicy = options.onFull ?? 'refuse';
 
   // Bounded per call: `attempt` keeps `windows` in ascending start-time
   // order (see its own insertion below), so once iteration reaches a live
@@ -69,7 +85,7 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
         // The table might just be full of dead windows; reclaim them before
         // refusing a source that would otherwise fit.
         sweep(nowMs);
-        if (windows.size >= options.maxSources) {
+        if (windows.size >= options.maxSources && onFull === 'refuse') {
           return { allowed: false, retryAfterSeconds: Math.ceil(options.windowMs / 1000) };
         }
       }
@@ -97,6 +113,14 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
         // `sweep`'s early exit above stop before it reaches genuinely
         // expired entries that come later in that broken order.
         windows.delete(key);
+        // Only `'evict-oldest'` can get here with the table still full, and
+        // every entry in it is then live (`decide` swept the dead prefix), so
+        // the first key is the one whose window began first: `windows` is in
+        // ascending start order. Only `attempt` evicts; `peek` never does.
+        if (windows.size >= options.maxSources) {
+          const oldest = windows.keys().next();
+          if (!oldest.done) windows.delete(oldest.value);
+        }
         windows.set(key, { start: nowMs, count: 1 });
       }
       return { allowed: true };
@@ -107,6 +131,10 @@ export function createAttemptCeiling(options: CeilingOptions): AttemptCeiling {
     refund(key) {
       const entry = windows.get(key);
       if (entry && entry.count > 0) entry.count -= 1;
+    },
+    size(nowMs) {
+      sweep(nowMs);
+      return windows.size;
     },
   };
 }

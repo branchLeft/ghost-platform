@@ -133,7 +133,8 @@ actually serves.
 
 Every push to `main` publishes `ghcr.io/branchleft/ghost-tenant`
 (`registry-push.yml`). `ghcr.io/branchleft/portal-apps` (`portal-apps-image.yml`)
-is published by a push to `main` that changes `portal/` or `services/identity/`,
+is published by a push to `main` that changes `portal/`, `services/identity/` or
+`services/request-guard/`,
 or by a manual dispatch. Each push that publishes signs the pushed digest with a
 keyless GitHub artifact attestation (SLSA build provenance, Sigstore
 public-good). The
