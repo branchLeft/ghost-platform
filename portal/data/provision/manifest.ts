@@ -109,6 +109,7 @@ const MODERATION = '0004_moderation_setting';
 const KIND = '0005_tenant_kind';
 const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
 const DEMO_REBUILD = '0007_demo_rebuild_extended';
+const TENANT_NAME = '0008_tenant_name';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -418,6 +419,18 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
           `column kind text notnull=true ${PLAIN}`,
           "constraint tenant_register_kind_known CHECK ((kind = ANY (ARRAY['REAL'::text, " +
             "'DEMO'::text])))",
+        ],
+      },
+      // The customer's sign-up name: nullable (a demo has none), unique, and a slug.
+      {
+        since: TENANT_NAME,
+        lines: [
+          `column tenant_name text notnull=false ${PLAIN}`,
+          'constraint tenant_register_tenant_name_unique UNIQUE (tenant_name)',
+          'constraint tenant_register_tenant_name_shape CHECK ((tenant_name ~ ' +
+            "'^[a-z][a-z0-9-]{1,24}[a-z0-9]$'::text))",
+          'index portal.tenant_register_tenant_name_unique CREATE UNIQUE INDEX ' +
+            'tenant_register_tenant_name_unique ON portal.tenant_register USING btree (tenant_name)',
         ],
       },
     ],

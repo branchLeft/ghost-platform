@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { createServer } from 'node:net';
+import { connect, createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
@@ -68,6 +68,32 @@ function start(env: Record<string, string>): Running {
   return { child, output: () => ({ stdout, stderr }), dir };
 }
 
+/** An IPv4 address of this machine that is not loopback: a stand-in for the tenant-network address. */
+function nonLoopbackIPv4(): string | undefined {
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const a of addresses ?? []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address;
+    }
+  }
+  return undefined;
+}
+
+/** Resolves with the error code of a refused connection, or 'connected' if the port answered. */
+function connectOutcome(host: string, port: number): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = connect({ host, port });
+    socket.setTimeout(5000, () => {
+      socket.destroy();
+      resolve('timeout');
+    });
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve('connected');
+    });
+    socket.on('error', (e: Error & { code?: string }) => resolve(e.code ?? 'error'));
+  });
+}
+
 async function stop({ child, dir }: Running): Promise<void> {
   const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()));
   if (child.exitCode === null) child.kill('SIGTERM');
@@ -105,6 +131,7 @@ describe('src/server.ts — the drain handover is bound to its own port', () => 
     const running = start({
       PORT: String(port),
       SHIM_DRAIN_PORT: String(drainPort),
+      SHIM_DRAIN_HOST: '127.0.0.1',
       // An empty queue holds GET /drain open for the full hold.
       SHIM_DRAIN_HOLD_MS: '200',
       SMTP_LISTEN_PORT: String(await findFreePort()),
@@ -132,6 +159,63 @@ describe('src/server.ts — the drain handover is bound to its own port', () => 
       await stop(running);
     }
   });
+
+  it('binds the drain listener to SHIM_DRAIN_HOST alone: another address of the machine is refused', async () => {
+    const other = nonLoopbackIPv4();
+    if (other === undefined) {
+      // A runner with no second address cannot show the refusal. In CI that
+      // must fail loudly rather than skip, or the control quietly stops running.
+      if (process.env.CI) throw new Error('no non-loopback IPv4 address on this runner');
+      console.warn('skipped: no non-loopback IPv4 address on this machine');
+      return;
+    }
+    const port = await findFreePort();
+    const drainPort = await findFreePort();
+    const running = start({
+      PORT: String(port),
+      SHIM_DRAIN_PORT: String(drainPort),
+      SHIM_DRAIN_HOST: '127.0.0.1',
+      SMTP_LISTEN_PORT: String(await findFreePort()),
+    });
+    try {
+      await untilListening(running, ['listening', 'drain_listening']);
+      expect(await connectOutcome('127.0.0.1', drainPort)).toBe('connected');
+      expect(await connectOutcome(other, drainPort)).toBe('ECONNREFUSED');
+      expect(running.output().stdout).toContain('"host":"127.0.0.1"');
+    } finally {
+      await stop(running);
+    }
+  });
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['0.0.0.0', '0.0.0.0'],
+    ['::', '::'],
+    ['a hostname', 'localhost'],
+  ])(
+    'with SHIM_DRAIN_PORT set and SHIM_DRAIN_HOST %s, the process exits non-zero and never listens',
+    async (_label, host) => {
+      const drainPort = await findFreePort();
+      const running = start({
+        PORT: String(await findFreePort()),
+        SHIM_DRAIN_PORT: String(drainPort),
+        ...(host === undefined ? {} : { SHIM_DRAIN_HOST: host }),
+        SMTP_LISTEN_PORT: String(await findFreePort()),
+      });
+      try {
+        const code = await new Promise<number | null>((resolve) =>
+          running.child.on('exit', (c) => resolve(c))
+        );
+        expect(code).not.toBe(0);
+        const { stdout, stderr } = running.output();
+        expect(stderr).toMatch(/SHIM_DRAIN_HOST/);
+        expect(stdout).not.toContain('drain_listening');
+      } finally {
+        await stop(running);
+      }
+    }
+  );
 
   it('with SHIM_DRAIN_PORT equal to PORT, the process exits non-zero and never listens', async () => {
     const port = await findFreePort();

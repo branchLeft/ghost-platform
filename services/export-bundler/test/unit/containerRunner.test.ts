@@ -1,9 +1,15 @@
+import { EventEmitter } from 'node:events';
+import { writeFileSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CleanupRegistry } from '../../src/cleanup.js';
+import { writeFakeDocker } from '../helpers/fakeDocker.js';
 import {
+  assertDockerEngineAtLeast28,
+  DockerEngineTooOldError,
+  startup,
   buildDockerRunArgs,
   buildDockerStopArgs,
   buildDockerInspectEnvArgs,
@@ -14,48 +20,6 @@ import {
   type TenantColourTemplate,
   type TenantColourSpec,
 } from '../../src/containerRunner.js';
-
-/**
- * A stand-in for the real `docker` binary, written fresh per test with its
- * output paths baked into the script text rather than read from the
- * environment -- run()'s own `{ env: { PATH } }` deliberately replaces the
- * ambient environment for this child (see containerRunner.ts's comment),
- * so a fixture that needed an env var to know where to log would break
- * for the same reason it is safe. Mirrors
- * services/broker/test/helpers/fakeWrapper.mjs's role, adapted for a
- * child that gets no env at all.
- */
-async function writeFakeDocker(
-  dir: string,
-  opts: { fail?: boolean; argvLogPath?: string; envProbeLogPath?: string; envProbeVar?: string }
-): Promise<string> {
-  const scriptPath = join(dir, 'fake-docker.sh');
-  const lines = ['#!/bin/sh'];
-  if (opts.fail) {
-    lines.push('echo "fake docker: forced failure" >&2', 'exit 1');
-  } else {
-    if (opts.argvLogPath) {
-      lines.push(
-        `printf '[' >> '${opts.argvLogPath}'`,
-        'first=1',
-        'for arg in "$@"; do',
-        `  if [ "$first" = 1 ]; then first=0; else printf ',' >> '${opts.argvLogPath}'; fi`,
-        `  printf '"%s"' "$arg" >> '${opts.argvLogPath}'`,
-        'done',
-        `printf ']\\n' >> '${opts.argvLogPath}'`
-      );
-    }
-    if (opts.envProbeLogPath && opts.envProbeVar) {
-      lines.push(
-        `if [ -n "$${opts.envProbeVar}" ]; then echo present > '${opts.envProbeLogPath}'; else echo absent > '${opts.envProbeLogPath}'; fi`
-      );
-    }
-    lines.push('exit 0');
-  }
-  await writeFile(scriptPath, lines.join('\n') + '\n');
-  await chmod(scriptPath, 0o755);
-  return scriptPath;
-}
 
 describe('buildDockerRunArgs', () => {
   const spec: TenantColourSpec = {
@@ -414,5 +378,123 @@ describe('createDockerContainerRunner', () => {
     } finally {
       process.env.PATH = saved;
     }
+  });
+});
+
+describe('assertDockerEngineAtLeast28', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'export-bundler-engine-gate-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads the engine version with docker version --format {{.Server.Version}}, and nothing else', async () => {
+    const argvLog = join(dir, 'argv.log');
+    const fake = await writeFakeDocker(dir, { argvLogPath: argvLog, versionOutput: '29.9.2' });
+    await expect(assertDockerEngineAtLeast28(fake, new CleanupRegistry())).resolves.toBe('29.9.2');
+    expect((await readFile(argvLog, 'utf8')).trim().split('\n')).toEqual([
+      '["version","--format","{{.Server.Version}}"]',
+    ]);
+  });
+
+  it.each(['28.0.0', '29.9.2', '100.0.1', '28.0', '28.1.0-rc.1', '29.0.0+dfsg'])(
+    'accepts engine %s',
+    async (version) => {
+      const fake = await writeFakeDocker(dir, { versionOutput: version });
+      await expect(assertDockerEngineAtLeast28(fake, new CleanupRegistry())).resolves.toBe(version);
+    }
+  );
+
+  it.each(['27.9.9', '27.5.1', '20.10.24', '1.0.0'])(
+    'refuses engine %s, naming the version seen and the floor',
+    async (version) => {
+      const fake = await writeFakeDocker(dir, { versionOutput: version });
+      const err = await assertDockerEngineAtLeast28(fake, new CleanupRegistry()).catch(
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(DockerEngineTooOldError);
+      expect((err as Error).message).toContain(version);
+      expect((err as Error).message).toContain('28');
+    }
+  );
+
+  it.each(['', 'not a version', 'v29.0.0', '29', '29.x.1', '29.0.0\n28.0.0', '<no value>'])(
+    'fails closed on output that is not a version: %j',
+    async (output) => {
+      const fake = await writeFakeDocker(dir, { versionOutput: output });
+      await expect(assertDockerEngineAtLeast28(fake, new CleanupRegistry())).rejects.toThrow(
+        DockerEngineTooOldError
+      );
+    }
+  );
+
+  it('fails closed when docker exits non-zero', async () => {
+    const fake = await writeFakeDocker(dir, { fail: true });
+    await expect(assertDockerEngineAtLeast28(fake, new CleanupRegistry())).rejects.toThrow(
+      DockerEngineTooOldError
+    );
+  });
+
+  it('fails closed when the docker binary is missing', async () => {
+    await expect(
+      assertDockerEngineAtLeast28(join(dir, 'no-such-docker'), new CleanupRegistry())
+    ).rejects.toThrow(DockerEngineTooOldError);
+  });
+});
+
+describe('startup', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'export-bundler-startup-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('installs the signal handlers before it checks the engine', async () => {
+    // The fake reports a 29 engine only if the handlers were already installed
+    // when `docker version` ran, and a 1.0.0 engine (refused) if not.
+    const marker = join(dir, 'handlers-installed');
+    const fake = join(dir, 'fake-docker.sh');
+    await writeFile(
+      fake,
+      ['#!/bin/sh', `if [ -f '${marker}' ]; then echo 29.9.2; else echo 1.0.0; fi`, 'exit 0'].join(
+        '\n'
+      ) + '\n'
+    );
+    await chmod(fake, 0o755);
+    const target = new EventEmitter();
+    const on = target.on.bind(target);
+    target.on = ((signal: string, handler: () => void) => {
+      writeFileSync(marker, 'x');
+      return on(signal, handler);
+    }) as typeof target.on;
+
+    const uninstall = await startup({
+      dockerCommand: fake,
+      registry: new CleanupRegistry(),
+      signalTarget: target as never,
+    });
+
+    expect(target.listenerCount('SIGINT')).toBe(1);
+    expect(target.listenerCount('SIGTERM')).toBe(1);
+    uninstall();
+    expect(target.listenerCount('SIGINT')).toBe(0);
+  });
+
+  it('leaves no signal handler behind when the engine is refused', async () => {
+    const fake = await writeFakeDocker(dir, { versionOutput: '27.5.1' });
+    const target = new EventEmitter();
+    await expect(
+      startup({
+        dockerCommand: fake,
+        registry: new CleanupRegistry(),
+        signalTarget: target as never,
+      })
+    ).rejects.toThrow(DockerEngineTooOldError);
+    expect(target.listenerCount('SIGINT')).toBe(0);
+    expect(target.listenerCount('SIGTERM')).toBe(0);
   });
 });

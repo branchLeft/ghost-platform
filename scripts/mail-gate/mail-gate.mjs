@@ -19,6 +19,13 @@ import {
 // The pinned digest the demo host's spool runs (scripts/test-demo-mail-spool.sh).
 export const PINNED_SPOOL =
   'ghcr.io/branchleft/mailgun-shim@sha256:c32a32e93025aeb2b397b5dbf8e8b17e59256f56e3e881ffc49c71f6b8965571';
+// The gate's own drain network and the spool's address on it. The spool's drain
+// listener binds that one address (SHIM_DRAIN_HOST), as production's does.
+// Separate from production's subnet (render-core's MAIL_SPOOL_DRAIN_SUBNET) on
+// purpose, so a gate never shares an address range with a production host. A fixed
+// subnet means two gates cannot run on one Docker daemon at once.
+export const GATE_SUBNET = '10.231.202.0/29';
+export const GATE_SPOOL_ADDRESS = '10.231.202.2';
 export const SLOT_DOMAIN = 'gate-slot0.example.com';
 export const HARNESS_ADDRESS = 'harness@example.com';
 const DRAIN_DEADLINE_MS = 120_000;
@@ -119,7 +126,7 @@ export async function runMailGate({
   let logs;
   try {
     const drainPort = await reservePort();
-    createNetwork(net);
+    createNetwork(net, GATE_SUBNET);
     docker(
       'run',
       '-d',
@@ -129,6 +136,8 @@ export async function runMailGate({
       LABEL,
       '--network',
       net,
+      '--ip',
+      GATE_SPOOL_ADDRESS,
       '--network-alias',
       'mail-spool',
       '--user',
@@ -140,6 +149,8 @@ export async function runMailGate({
       'PORT=8080',
       '-e',
       'SHIM_DRAIN_PORT=8081',
+      '-e',
+      `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,
       '-e',
       'SMTP_LISTEN_PORT=2525',
       '-e',

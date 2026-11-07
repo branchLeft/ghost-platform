@@ -35,8 +35,10 @@ export function uniqueName(prefix) {
   return `${prefix}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-export function createNetwork(name) {
-  docker('network', 'create', '--label', LABEL, name);
+// `subnet` (CIDR, optional) gives the network a fixed address range, for a
+// container that must be started with `--ip`.
+export function createNetwork(name, subnet) {
+  docker('network', 'create', '--label', LABEL, ...(subnet ? ['--subnet', subnet] : []), name);
 }
 
 export function removeNetwork(name) {

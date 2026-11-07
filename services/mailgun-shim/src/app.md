@@ -28,5 +28,6 @@ token a caller holds, because the route is absent, not refused.
 
 The drain listener: the drain handover plus the unauthenticated health check
 and metrics endpoint, and no Mailgun-shaped route. `server.ts` runs this on
-`SHIM_DRAIN_PORT` and `createMailApp` on `PORT` when `SHIM_DRAIN_PORT` is set.
+`SHIM_DRAIN_PORT`, bound to the `SHIM_DRAIN_HOST` address only, and
+`createMailApp` on `PORT` when `SHIM_DRAIN_PORT` is set.
 `createApp`, both together on one app, is what runs when it is not.

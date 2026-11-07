@@ -95,7 +95,12 @@ tenant, and a `tenant` name (tenant zero's `blog`) only to a repository other
 than its own. `GhostTenant` reads the claimant from `GITHUB_REPOSITORY` and,
 unset, refuses a registered tenant name. Copies in the packages are generated
 by `scripts/sync-tenant-name-register.py` and checked in CI; see
-`infra/tenant/naming.md`.
+`infra/tenant/naming.md`. Customer tenant names are deliberately not in the
+register, which is public: the control plane refuses a taken name when it accepts
+the sign-up (`portal/data/README.md`), `provision-tenant.yml` stops when the
+tenant's own repository already exists, and CI fails if a customer name reaches
+the register or a published package
+(`scripts/assert-register-holds-no-customer-names.js`).
 
 `uid` is required rather than derived: it is host state, allocated against
 what is already claimed on that host, and a value computed from the slug would

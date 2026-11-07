@@ -6,13 +6,25 @@
 // control, since a key-only check passes sends the shim refuses: a credential may
 // send only as its own sender domain (Mailgun 400 as messages.ts, SMTP MAIL FROM
 // 553 as smtpFrontDoor.ts). Domains only, case-insensitive, no trailing dot; the
-// shim's address parsing is not copied. Node built-ins only.
+// shim's address parsing is not copied. The drain listener mirrors the shim's
+// bind contract: it binds SHIM_DRAIN_HOST alone, and the stand-in refuses to
+// start when SHIM_DRAIN_PORT is set with no host, never falling back to every
+// interface. (The shim also refuses a hostname or a wildcard; that classifier is
+// not copied, render-core's posture check owns the rendered value.) Node built-ins only.
 const fs = require('node:fs');
 const http = require('node:http');
 const net = require('node:net');
 
 const KEYS = process.env.SHIM_KEYS_PATH || '/data/keys.json';
 const DRAIN_TOKEN = process.env.SHIM_DRAIN_TOKEN;
+const DRAIN_PORT = process.env.SHIM_DRAIN_PORT;
+const DRAIN_HOST = process.env.SHIM_DRAIN_HOST;
+if (DRAIN_PORT && !DRAIN_HOST) {
+  process.stderr.write(
+    'SHIM_DRAIN_HOST is required when SHIM_DRAIN_PORT is set: the drain listener binds one address, never every interface\n'
+  );
+  process.exit(1);
+}
 const queue = [];
 let nextId = 1;
 
@@ -254,5 +266,6 @@ function smtpSession(socket) {
 }
 
 httpServer.listen(Number(process.env.PORT || 8080));
-drainServer.listen(Number(process.env.SHIM_DRAIN_PORT || 8081));
+// With no drain port the legacy default stays, on loopback only.
+drainServer.listen(Number(DRAIN_PORT || 8081), DRAIN_HOST || '127.0.0.1');
 net.createServer(smtpSession).listen(Number(process.env.SMTP_LISTEN_PORT || 2525));
