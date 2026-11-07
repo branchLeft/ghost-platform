@@ -29,6 +29,15 @@ on:
       - services/drain-sidecar/**
       - scripts/test-drain-sidecar.sh
       - Dockerfile
+      - docker-entrypoint.branchleft.sh
+      - adapters/sso/src/**
+      - adapters/sso/ghost-core-overlay/**
+      - adapters/ghost-core-overlay/**
+      - adapters/stripe-connect-limit/ghost-core-overlay/**
+      - adapters/scanning-storage/src/**
+      - adapters/scanning-storage/ghost-core-overlay/**
+      - services/export-bundler/ghost-adapter/**
+      - vendor/kalotyp/**
       - .github/workflows/drain-sidecar-image.yml
   workflow_dispatch:
   pull_request:
@@ -37,6 +46,15 @@ on:
       - services/drain-sidecar/**
       - scripts/test-drain-sidecar.sh
       - Dockerfile
+      - docker-entrypoint.branchleft.sh
+      - adapters/sso/src/**
+      - adapters/sso/ghost-core-overlay/**
+      - adapters/ghost-core-overlay/**
+      - adapters/stripe-connect-limit/ghost-core-overlay/**
+      - adapters/scanning-storage/src/**
+      - adapters/scanning-storage/ghost-core-overlay/**
+      - services/export-bundler/ghost-adapter/**
+      - vendor/kalotyp/**
       - .github/workflows/drain-sidecar-image.yml
 
 # `packages: read` because the image's build stage installs

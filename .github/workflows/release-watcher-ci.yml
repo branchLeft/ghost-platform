@@ -9,11 +9,15 @@ on:
     branches: [main]
     paths:
       - services/release-watcher/**
+      - Dockerfile
+      - .github/workflows/release-watcher-run.yml
       - .github/workflows/release-watcher-ci.yml
   pull_request:
     branches: [main]
     paths:
       - services/release-watcher/**
+      - Dockerfile
+      - .github/workflows/release-watcher-run.yml
       - .github/workflows/release-watcher-ci.yml
 
 permissions:

@@ -13,14 +13,16 @@ on:
   push:
     branches: [main]
   # A pull request starts this only when its diff touches something the job
-  # reads: the package, and infra/tenant/naming.ts, which a unit test parses to
-  # check the reserved-name lists agree. Push to main stays unfiltered as the
-  # backstop.
+  # reads: the package, infra/tenant/naming.ts, which a unit test parses to
+  # check the reserved-name lists agree, and scripts/test-demo-mail-spool.sh,
+  # whose spool image default another test reads. Push to main stays unfiltered
+  # as the backstop.
   pull_request:
     branches: [main]
     paths:
       - 'render-core/**'
       - 'infra/tenant/naming.ts'
+      - 'scripts/test-demo-mail-spool.sh'
       - 'registers/**'
       - '.github/workflows/render-core-ci.yml'
 

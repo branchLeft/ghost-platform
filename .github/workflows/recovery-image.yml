@@ -31,6 +31,7 @@ on:
       - db/recovery/**
       - db/provision/install_host_prereqs.py
       - db/RUNBOOK-db.md
+      - .python-version
       - .github/workflows/recovery-image.yml
   pull_request:
     branches: [main]
@@ -38,6 +39,7 @@ on:
       - db/recovery/**
       - db/provision/install_host_prereqs.py
       - db/RUNBOOK-db.md
+      - .python-version
       - .github/workflows/recovery-image.yml
   schedule:
     # Weekly, independent of whether anything in this repo changed -- see

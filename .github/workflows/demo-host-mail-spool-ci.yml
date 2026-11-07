@@ -9,6 +9,8 @@ on:
     branches: [main]
     paths:
       - render-core/src/spool.ts
+      - render-core/.nvmrc
+      - render-core/pnpm-lock.yaml
       - demo-host/provision/branchleft_demo_egress.sh
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
@@ -18,6 +20,8 @@ on:
     branches: [main]
     paths:
       - render-core/src/spool.ts
+      - render-core/.nvmrc
+      - render-core/pnpm-lock.yaml
       - demo-host/provision/branchleft_demo_egress.sh
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs

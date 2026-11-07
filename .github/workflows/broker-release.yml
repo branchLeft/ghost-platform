@@ -35,6 +35,7 @@ on:
     paths:
       - 'services/broker/**'
       - 'render-core/**'
+      - 'demo-host/provision/*.golden.json'
       - '.github/workflows/broker-release.yml'
 
 # `packages: read` because the broker takes a dev dependency on

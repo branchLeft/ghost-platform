@@ -22,6 +22,7 @@ on:
     paths:
       - .github/image-mirror/images.json
       - scripts/mirror-images.py
+      - .python-version
       - .github/workflows/image-mirror.yml
   workflow_dispatch:
 

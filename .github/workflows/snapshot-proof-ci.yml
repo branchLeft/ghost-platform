@@ -17,6 +17,7 @@ on:
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
       - 'db/stack/conf.d/branchleft.cnf'
+      - '.python-version'
       - '.github/workflows/snapshot-proof-ci.yml'
   pull_request:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
       - 'db/stack/conf.d/branchleft.cnf'
+      - '.python-version'
       - '.github/workflows/snapshot-proof-ci.yml'
 
 # Read-only. No secrets are used: the proof runs on local throwaway containers.

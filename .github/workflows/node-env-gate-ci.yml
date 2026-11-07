@@ -15,6 +15,14 @@ on:
     paths:
       - Dockerfile
       - docker-entrypoint.branchleft.sh
+      - adapters/sso/src/**
+      - adapters/sso/ghost-core-overlay/**
+      - adapters/ghost-core-overlay/**
+      - adapters/stripe-connect-limit/ghost-core-overlay/**
+      - adapters/scanning-storage/src/**
+      - adapters/scanning-storage/ghost-core-overlay/**
+      - services/export-bundler/ghost-adapter/**
+      - vendor/kalotyp/**
       - scripts/test-node-env-gate.sh
       - .github/workflows/node-env-gate-ci.yml
   pull_request:
@@ -22,6 +30,14 @@ on:
     paths:
       - Dockerfile
       - docker-entrypoint.branchleft.sh
+      - adapters/sso/src/**
+      - adapters/sso/ghost-core-overlay/**
+      - adapters/ghost-core-overlay/**
+      - adapters/stripe-connect-limit/ghost-core-overlay/**
+      - adapters/scanning-storage/src/**
+      - adapters/scanning-storage/ghost-core-overlay/**
+      - services/export-bundler/ghost-adapter/**
+      - vendor/kalotyp/**
       - scripts/test-node-env-gate.sh
       - .github/workflows/node-env-gate-ci.yml
 

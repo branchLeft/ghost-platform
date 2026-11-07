@@ -10,11 +10,13 @@ on:
     branches: [main]
     paths:
       - services/major-watcher/**
+      - .github/workflows/major-watcher-run.yml
       - .github/workflows/major-watcher-ci.yml
   pull_request:
     branches: [main]
     paths:
       - services/major-watcher/**
+      - .github/workflows/major-watcher-run.yml
       - .github/workflows/major-watcher-ci.yml
 
 # `packages: read` because this service takes a dev dependency on
