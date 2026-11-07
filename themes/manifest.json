@@ -1,0 +1,863 @@
+{
+  "schema": 1,
+  "ghost": "6.55.0",
+  "themes": [
+    {
+      "name": "casper",
+      "source": "base-image",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/casper.js", "assets/js/lib/photoswipe-ui-default.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        },
+        {
+          "files": ["assets/js/lib/photoswipe.min.js"],
+          "hosts": ["photoswipe.com"],
+          "kind": "comment",
+          "reason": "The PhotoSwipe project page named in a comment or licence banner; not a request"
+        },
+        {
+          "files": ["assets/js/lib/photoswipe-ui-default.min.js"],
+          "hosts": ["photoswipe.com"],
+          "kind": "comment",
+          "reason": "The PhotoSwipe project page named in a comment or licence banner; not a request"
+        }
+      ],
+      "version": "5.12.1",
+      "treeSha256": "a3241eac551cd9fb014ca4201774033c9dd602f31eed225980f7e1c01ee33b6c"
+    },
+    {
+      "name": "source",
+      "source": "base-image",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/source.js", "assets/js/lib/photoswipe-ui-default.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        },
+        {
+          "files": ["assets/js/lib/photoswipe.min.js"],
+          "hosts": ["photoswipe.com"],
+          "kind": "comment",
+          "reason": "The PhotoSwipe project page named in a comment or licence banner; not a request"
+        },
+        {
+          "files": ["assets/js/lib/photoswipe-ui-default.min.js"],
+          "hosts": ["photoswipe.com"],
+          "kind": "comment",
+          "reason": "The PhotoSwipe project page named in a comment or licence banner; not a request"
+        },
+        {
+          "files": ["default.hbs"],
+          "hosts": ["gomakethings.com"],
+          "kind": "comment",
+          "reason": "A tutorial URL crediting the colour-contrast script named in a comment or licence banner; not a request"
+        }
+      ],
+      "version": "1.7.1",
+      "treeSha256": "66af1d2b363b208f8498adcf5234341a08c70aae694b51155f2bdb76af50b075"
+    },
+    {
+      "name": "london",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/London",
+      "commit": "69f4f3a99270c05d2d6532c78f88345e83ca58e0",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "3f2c776261d9ad15b366ba2d1c12b03473040138c27e511e435c5abe8f37671a"
+    },
+    {
+      "name": "ruby",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Ruby",
+      "commit": "79a27aeb38f6eb7bb2514a45c22f53c26172ed7a",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "afdc0cbbd3315bcfe2496fb0b5972e6bb7e7435d9daeaa3a3fcbbba4a4220f76"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "2ff127c5a1caac7ea21044b7995133d24af39366ae807e3d81aa5e77ca86d3f8"
+    },
+    {
+      "name": "edition",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Edition",
+      "commit": "984e80326bc9ffdd1966c5a8352496ebe96a8fbf",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        },
+        {
+          "files": ["assets/js/lib/tiny-slider.js"],
+          "hosts": ["toddmotto.com"],
+          "kind": "comment",
+          "reason": "A blog post URL named in a comment or licence banner; not a request"
+        },
+        {
+          "files": ["assets/js/lib/tiny-slider.js"],
+          "hosts": ["docs.google.com"],
+          "kind": "comment",
+          "reason": "A spreadsheet URL named in a comment or licence banner; not a request"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "90c276a2b0ceffaca43555a614c813df438c529627795b070b40165e405566b1"
+    },
+    {
+      "name": "digest",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Digest",
+      "commit": "e2f75c4f932dbf93bd07a295f4871112b79c7788",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "a479c51f6fca9f9941e2eb082a643f8940a690440e1a3176b20cb7fcb9b68002"
+    },
+    {
+      "name": "bulletin",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Bulletin",
+      "commit": "ec80373de4c3bd5edeef2268a36d0a7adeb92502",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "27e9fad1a020e2ac75ffe6dbe10d807f13f73fc5b20b9ec10c0587e5cf7c35bf"
+    },
+    {
+      "name": "journal",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Journal",
+      "commit": "083614b6fe72dc8642c789c4d6a5cd2bad56c547",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "870d2b5200aa5a3487d9f3c2479989a6c2cbcddfdc3adf85789597fd8bacb9c0"
+    },
+    {
+      "name": "headline",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Headline",
+      "commit": "edeba7ca9450294853a074f62a83ed1640080ae6",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "8911f2c84d571b0c5b92686464b3cb4c4a7e37782f227e36abae9ebe5f58c97e"
+    },
+    {
+      "name": "solo",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Solo",
+      "commit": "39ac830aefdb14d9669bf037f96136b22018bdac",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        },
+        {
+          "files": ["assets/js/lib/jarallax.min.js"],
+          "hosts": ["github.com"],
+          "kind": "comment",
+          "reason": "The Jarallax project and licence named in a comment or licence banner; not a request"
+        },
+        {
+          "files": ["assets/js/lib/jarallax.min.js"],
+          "hosts": ["nkdev.info"],
+          "kind": "comment",
+          "reason": "The Jarallax author named in a comment or licence banner; not a request"
+        },
+        {
+          "files": ["default.hbs"],
+          "hosts": ["gomakethings.com"],
+          "kind": "comment",
+          "reason": "A tutorial URL crediting the colour-contrast script named in a comment or licence banner; not a request"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "a339453d2b4cd8cb28a4bf21ea3e9cfb1bdf6bbeeb936cbca9a2b5f148ae14a5"
+    },
+    {
+      "name": "episode",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Episode",
+      "commit": "fc4012a2461fce8707e331a715eb294d6d570085",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "afdc0cbbd3315bcfe2496fb0b5972e6bb7e7435d9daeaa3a3fcbbba4a4220f76"
+      },
+      "externalReferences": [
+        {
+          "files": ["assets/built/main.min.js"],
+          "hosts": ["www.facebook.com", "twitter.com", "www.pinterest.com"],
+          "kind": "navigation",
+          "reason": "PhotoSwipe share-button URL templates: used as a link target only when a reader clicks a share button in the image gallery; nothing is requested on page load"
+        },
+        {
+          "files": ["default.hbs"],
+          "hosts": ["gomakethings.com"],
+          "kind": "comment",
+          "reason": "A tutorial URL crediting the colour-contrast script named in a comment or licence banner; not a request"
+        }
+      ],
+      "version": "1.0.0",
+      "treeSha256": "28bd1cefbd368a942915d2994a85b60fd4558c0b38e76a1dd25722728adb518c"
+    },
+    {
+      "name": "starter",
+      "source": "github",
+      "upstream": "https://github.com/TryGhost/Starter",
+      "commit": "318f84128bda87dbe2ec0cdaf22410f732c44bcf",
+      "licence": {
+        "spdx": "MIT",
+        "file": "LICENSE",
+        "copyright": "Copyright (c) 2013-2026 Ghost Foundation",
+        "sha256": "56df280a26071c1e84578abcb1e7dce02502d27816bce1184617e93ee5b086bf"
+      },
+      "version": "1.0.0",
+      "treeSha256": "05ea02569f50220db945e57f612edf5b6e6f00ca825d6022b756c4b4e3adf28e"
+    }
+  ],
+  "fonts": [
+    {
+      "family": "Inter",
+      "dir": "inter",
+      "upstream": "https://github.com/rsms/inter",
+      "commit": "e3a3d4c57d5ecc01453a575621882a384c1995a3",
+      "release": "v4.1",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "LICENSE.txt",
+        "copyright": "Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)",
+        "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a"
+      },
+      "reservedFontName": null,
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "docs/font-files/InterVariable.woff2",
+          "to": "InterVariable.woff2",
+          "style": "normal",
+          "weight": "100 900",
+          "sha256": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"
+        },
+        {
+          "from": "docs/font-files/InterVariable-Italic.woff2",
+          "to": "InterVariable-Italic.woff2",
+          "style": "italic",
+          "weight": "100 900",
+          "sha256": "e564f652916db6c139570fefb9524a77c4d48f30c92928de9db19b6b5c7a262a"
+        }
+      ]
+    },
+    {
+      "family": "Lora",
+      "dir": "lora",
+      "upstream": "https://github.com/cyrealtype/Lora-Cyrillic",
+      "commit": "0caf2e6389163dd49e5f973d7ed8bf42e60d83a2",
+      "release": "v3.021",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "copyright": "Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), with Reserved Font Name \"Lora\".",
+        "sha256": "1d9a970809ac804b582a6ce7f0ebc4e7fefcbfd7ff6299cad35ee656a21be716"
+      },
+      "reservedFontName": "Lora",
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "fonts/webfonts/Lora[wght].woff2",
+          "to": "Lora-Variable.woff2",
+          "style": "normal",
+          "weight": "400 700",
+          "sha256": "e4359fb64060d178a1a2d14e56e6dcba97a79361328e0492b67891e7a454e1e3"
+        },
+        {
+          "from": "fonts/webfonts/Lora-Italic[wght].woff2",
+          "to": "Lora-Italic-Variable.woff2",
+          "style": "italic",
+          "weight": "400 700",
+          "sha256": "5b9c73c0ee6be6d1bc32f866cd69f71b9d37604d9b0277938b2cdb26f1f87190"
+        }
+      ]
+    },
+    {
+      "family": "EB Garamond",
+      "dir": "eb-garamond",
+      "upstream": "https://github.com/octaviopardo/EBGaramond12",
+      "commit": "106a4a6d377987459ae5e68673a4570f13b957fb",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "copyright": "Copyright 2017 The EB Garamond Project Authors (https://github.com/octaviopardo/EBGaramond12)",
+        "sha256": "058611bd968817d532cedeab6acaa055e882d365a88523df00e7917ad7a0f704"
+      },
+      "reservedFontName": null,
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "fonts/webfonts/EBGaramond[wght].woff2",
+          "to": "EBGaramond-Variable.woff2",
+          "style": "normal",
+          "weight": "400 800",
+          "sha256": "7667eac47b012e7f92c14e2ec8b41d3b850e1e8d49e0db45f7417517866fb78a"
+        },
+        {
+          "from": "fonts/webfonts/EBGaramond-Italic[wght].woff2",
+          "to": "EBGaramond-Italic-Variable.woff2",
+          "style": "italic",
+          "weight": "400 800",
+          "sha256": "1a980db8b87916a047a8dc7a71dce9af787eed141a55bb229146ad5fc8b8c223"
+        }
+      ]
+    },
+    {
+      "family": "Mulish",
+      "dir": "mulish",
+      "upstream": "https://github.com/googlefonts/mulish",
+      "commit": "f6e7d9355bb88edbf33b01b23f5375909109c7f9",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "copyright": "Copyright 2016 The Mulish Project Authors (https://github.com/googlefonts/mulish)",
+        "sha256": "097e9ac414d9251c8580c073a13f8899798c66db746de60662148789ca693f19"
+      },
+      "reservedFontName": null,
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "fonts/webfonts/Mulish-Regular.woff2",
+          "to": "Mulish-Regular.woff2",
+          "style": "normal",
+          "weight": "400",
+          "sha256": "f1775b0de77fec76125ad1c9b6a3dac746108dba0e1c1374952909f62071cf29"
+        },
+        {
+          "from": "fonts/webfonts/Mulish-Italic.woff2",
+          "to": "Mulish-Italic.woff2",
+          "style": "italic",
+          "weight": "400",
+          "sha256": "b49e8da1080bb48a3dbf4148c34c05ceb9bb9e79eac2e35609ff4c85ddf9e8bb"
+        },
+        {
+          "from": "fonts/webfonts/Mulish-Medium.woff2",
+          "to": "Mulish-Medium.woff2",
+          "style": "normal",
+          "weight": "500",
+          "sha256": "3aee3467f8b0799b50b66595e7ef527109d13adcf04376bf9b90aeef33012ce7"
+        },
+        {
+          "from": "fonts/webfonts/Mulish-SemiBold.woff2",
+          "to": "Mulish-SemiBold.woff2",
+          "style": "normal",
+          "weight": "600",
+          "sha256": "c78c2bd173fdeda6369cf20303231965db5c42a9267862526a96a22870718756"
+        },
+        {
+          "from": "fonts/webfonts/Mulish-Bold.woff2",
+          "to": "Mulish-Bold.woff2",
+          "style": "normal",
+          "weight": "700",
+          "sha256": "49aefaf3ddab628b395a4f2ca2dd38f721fbabcef6357e61e3bd9517ea47e9e4"
+        },
+        {
+          "from": "fonts/webfonts/Mulish-BoldItalic.woff2",
+          "to": "Mulish-BoldItalic.woff2",
+          "style": "italic",
+          "weight": "700",
+          "sha256": "c119cf48a71ada8fae1f682f8cc1a5afacde04dab72ce0a58c5810ce3be3e405"
+        }
+      ]
+    },
+    {
+      "family": "JetBrains Mono",
+      "dir": "jetbrains-mono",
+      "upstream": "https://github.com/JetBrains/JetBrainsMono",
+      "commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
+      "release": "v2.304",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "copyright": "Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)",
+        "sha256": "30f0c136e3c88e422d0791acd97238870f9054a9729bc34cf2ff0d4ed8cac4ad"
+      },
+      "reservedFontName": null,
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "fonts/webfonts/JetBrainsMono-Regular.woff2",
+          "to": "JetBrainsMono-Regular.woff2",
+          "style": "normal",
+          "weight": "400",
+          "sha256": "a9cb1cd82332b23a47e3a1239d25d13c86d16c4220695e34b243effa999f45f2"
+        },
+        {
+          "from": "fonts/webfonts/JetBrainsMono-Italic.woff2",
+          "to": "JetBrainsMono-Italic.woff2",
+          "style": "italic",
+          "weight": "400",
+          "sha256": "cb6a1b246318ed3885d7dffa14a2609297fe80e9b8e500bea33b52fa312a36a4"
+        },
+        {
+          "from": "fonts/webfonts/JetBrainsMono-Medium.woff2",
+          "to": "JetBrainsMono-Medium.woff2",
+          "style": "normal",
+          "weight": "500",
+          "sha256": "086c48dfbea9ddaff1320f7e09399b8e2924e88ce67453721255db3bdbb5a353"
+        },
+        {
+          "from": "fonts/webfonts/JetBrainsMono-Bold.woff2",
+          "to": "JetBrainsMono-Bold.woff2",
+          "style": "normal",
+          "weight": "700",
+          "sha256": "c503cc5ec5f8b2c7666b7ecda1adf44bd45f2e6579b2eba0fc292150416588a2"
+        },
+        {
+          "from": "fonts/webfonts/JetBrainsMono-BoldItalic.woff2",
+          "to": "JetBrainsMono-BoldItalic.woff2",
+          "style": "italic",
+          "weight": "700",
+          "sha256": "3a013466c0eee979fb9d42c2d7a8887cd3645dc8b897cfc5b71781cf982efc5a"
+        }
+      ]
+    },
+    {
+      "family": "Source Serif 4",
+      "dir": "source-serif-4",
+      "upstream": "https://github.com/adobe-fonts/source-serif",
+      "commit": "17cfec64bc132c81255dda15ea64a0bf27ef4da9",
+      "release": "4.005R",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "LICENSE.md",
+        "copyright": "Copyright 2014 - 2023 Adobe (http://www.adobe.com/), with Reserved Font Name ‘Source’. All Rights Reserved. Source is a trademark of Adobe in the United States and/or other countries.",
+        "sha256": "75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7"
+      },
+      "reservedFontName": "Source",
+      "modification": "none",
+      "source": {
+        "kind": "release-zip",
+        "url": "https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-4.005_WOFF2.zip",
+        "sha256": "af10e80dcd2296748b04cb9917db9f7ba0ae65101165fd2f0c16b9812d9abd28"
+      },
+      "files": [
+        {
+          "from": "source-serif-4.005_WOFF2/VAR/SourceSerif4Variable-Roman.otf.woff2",
+          "to": "SourceSerif4Variable-Roman.woff2",
+          "style": "normal",
+          "weight": "200 900",
+          "sha256": "f146ee102dddcc5bc7a2cf4af5bcf129832195941b92bd0a512626f390688c1e"
+        },
+        {
+          "from": "source-serif-4.005_WOFF2/VAR/SourceSerif4Variable-Italic.otf.woff2",
+          "to": "SourceSerif4Variable-Italic.woff2",
+          "style": "italic",
+          "weight": "200 900",
+          "sha256": "da0aa4649d3a48d10809ee4c55099abe797653abfceda94abd31b2f42a3e0f0f"
+        }
+      ]
+    },
+    {
+      "family": "IBM Plex Sans",
+      "dir": "ibm-plex-sans",
+      "upstream": "https://github.com/IBM/plex",
+      "commit": "242c4cccd37e87985a5337815c99b960ef13c65c",
+      "release": "v6.4.2",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "LICENSE.txt",
+        "copyright": "Copyright © 2017 IBM Corp. with Reserved Font Name \"Plex\"",
+        "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+      },
+      "reservedFontName": "Plex",
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-Regular.woff2",
+          "to": "IBMPlexSans-Regular.woff2",
+          "style": "normal",
+          "weight": "400",
+          "sha256": "ba711a3085ff9f27440b6b9c4550cfc47c97bf36591d5da958b975bb3add8c1a"
+        },
+        {
+          "from": "IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-Italic.woff2",
+          "to": "IBMPlexSans-Italic.woff2",
+          "style": "italic",
+          "weight": "400",
+          "sha256": "13284fab1821ba6e3652c1580fcf2bbfd8c9309520c69b3d1224dab40b37c597"
+        },
+        {
+          "from": "IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-Medium.woff2",
+          "to": "IBMPlexSans-Medium.woff2",
+          "style": "normal",
+          "weight": "500",
+          "sha256": "5660f8a658f8bb50dbc005232f885eadffd2bc1c235c4f6fbb63469d1f9cde6d"
+        },
+        {
+          "from": "IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-SemiBold.woff2",
+          "to": "IBMPlexSans-SemiBold.woff2",
+          "style": "normal",
+          "weight": "600",
+          "sha256": "f78048030eab62e860efa39a0df79e2e5581bf122eb95b9bc42c0b8a4988d205"
+        },
+        {
+          "from": "IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-Bold.woff2",
+          "to": "IBMPlexSans-Bold.woff2",
+          "style": "normal",
+          "weight": "700",
+          "sha256": "fa7130d854a660b39a7fc9e6e0f2dc23dba5f1346e2adea3e1fe37b6d884133d"
+        },
+        {
+          "from": "IBM-Plex-Sans/fonts/complete/woff2/IBMPlexSans-BoldItalic.woff2",
+          "to": "IBMPlexSans-BoldItalic.woff2",
+          "style": "italic",
+          "weight": "700",
+          "sha256": "73d57000ee0fa7d6e1dd3a9fe5901c2d7c71904af9a935dbbc1d44abc9574c1f"
+        }
+      ]
+    },
+    {
+      "family": "IBM Plex Serif",
+      "dir": "ibm-plex-serif",
+      "upstream": "https://github.com/IBM/plex",
+      "commit": "242c4cccd37e87985a5337815c99b960ef13c65c",
+      "release": "v6.4.2",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "LICENSE.txt",
+        "copyright": "Copyright © 2017 IBM Corp. with Reserved Font Name \"Plex\"",
+        "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+      },
+      "reservedFontName": "Plex",
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "IBM-Plex-Serif/fonts/complete/woff2/IBMPlexSerif-Regular.woff2",
+          "to": "IBMPlexSerif-Regular.woff2",
+          "style": "normal",
+          "weight": "400",
+          "sha256": "8e1906e5bd1c981f7fb837540a95a754e86524f317ab4523976406b6a4128b6b"
+        },
+        {
+          "from": "IBM-Plex-Serif/fonts/complete/woff2/IBMPlexSerif-Italic.woff2",
+          "to": "IBMPlexSerif-Italic.woff2",
+          "style": "italic",
+          "weight": "400",
+          "sha256": "eaebf4b31ea65b071a3eff38b7832084436e62d6e0e6a7d4bfbc6dc4d31c013d"
+        },
+        {
+          "from": "IBM-Plex-Serif/fonts/complete/woff2/IBMPlexSerif-Medium.woff2",
+          "to": "IBMPlexSerif-Medium.woff2",
+          "style": "normal",
+          "weight": "500",
+          "sha256": "2eb75e035155ea1d0805fafaa012f7083e5034f935f17cfcc650b17bdf530c2d"
+        },
+        {
+          "from": "IBM-Plex-Serif/fonts/complete/woff2/IBMPlexSerif-SemiBold.woff2",
+          "to": "IBMPlexSerif-SemiBold.woff2",
+          "style": "normal",
+          "weight": "600",
+          "sha256": "45495ba3e86aede56963e08d20feaa30c789a87c774a6c1c8313d25ebd63be69"
+        },
+        {
+          "from": "IBM-Plex-Serif/fonts/complete/woff2/IBMPlexSerif-Bold.woff2",
+          "to": "IBMPlexSerif-Bold.woff2",
+          "style": "normal",
+          "weight": "700",
+          "sha256": "1ba2fa015458f36efe822137627f75df1ee340e6d1c0d92c7ca5a3b423db75d9"
+        },
+        {
+          "from": "IBM-Plex-Serif/fonts/complete/woff2/IBMPlexSerif-BoldItalic.woff2",
+          "to": "IBMPlexSerif-BoldItalic.woff2",
+          "style": "italic",
+          "weight": "700",
+          "sha256": "cf7e4359cdfc697d90ea785091a9fa289db8f064aed5c099001b08dba97c1805"
+        }
+      ]
+    },
+    {
+      "family": "IBM Plex Mono",
+      "dir": "ibm-plex-mono",
+      "upstream": "https://github.com/IBM/plex",
+      "commit": "242c4cccd37e87985a5337815c99b960ef13c65c",
+      "release": "v6.4.2",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "LICENSE.txt",
+        "copyright": "Copyright © 2017 IBM Corp. with Reserved Font Name \"Plex\"",
+        "sha256": "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
+      },
+      "reservedFontName": "Plex",
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-Regular.woff2",
+          "to": "IBMPlexMono-Regular.woff2",
+          "style": "normal",
+          "weight": "400",
+          "sha256": "49ce58b41a0e1cb921c0f58d9a5b8b96a2cc21437c7066f3ba4f24873076d131"
+        },
+        {
+          "from": "IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-Italic.woff2",
+          "to": "IBMPlexMono-Italic.woff2",
+          "style": "italic",
+          "weight": "400",
+          "sha256": "6afc2a6edd9a1d1f8104daf139a5062392f47da2f97fe19cb18a6a5a1fa67ec3"
+        },
+        {
+          "from": "IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-Medium.woff2",
+          "to": "IBMPlexMono-Medium.woff2",
+          "style": "normal",
+          "weight": "500",
+          "sha256": "8c2c290cbd998fa1f647e4572aca6ebbd72589551b0f3f9f8bb8628fbb8219d5"
+        },
+        {
+          "from": "IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-SemiBold.woff2",
+          "to": "IBMPlexMono-SemiBold.woff2",
+          "style": "normal",
+          "weight": "600",
+          "sha256": "ed5eaca7522336959d6c3810bd9bb78424f0d964082d581bfbea169ee08d14e3"
+        },
+        {
+          "from": "IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-Bold.woff2",
+          "to": "IBMPlexMono-Bold.woff2",
+          "style": "normal",
+          "weight": "700",
+          "sha256": "5788454f0ba4bd6300752c474215c4dd926682fa173ae1c6252d57828b6a235d"
+        },
+        {
+          "from": "IBM-Plex-Mono/fonts/complete/woff2/IBMPlexMono-BoldItalic.woff2",
+          "to": "IBMPlexMono-BoldItalic.woff2",
+          "style": "italic",
+          "weight": "700",
+          "sha256": "b0bfaa05c90c662c164ca0515ec42baddac93129eab1af067f8872d84f10df46"
+        }
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "name": "dawn",
+      "upstream": "https://github.com/TryGhost/Dawn",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.5.1 from code.jquery.com at page load; removing it means patching the theme"
+    },
+    {
+      "name": "ease",
+      "upstream": "https://github.com/TryGhost/Ease",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.3.1 from code.jquery.com at page load; removing it means patching the theme"
+    },
+    {
+      "name": "alto",
+      "upstream": "https://github.com/TryGhost/Alto",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.5.1 from code.jquery.com at page load; removing it means patching the theme"
+    },
+    {
+      "name": "dope",
+      "upstream": "https://github.com/TryGhost/Dope",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.5.1 from code.jquery.com at page load; removing it means patching the theme"
+    },
+    {
+      "name": "edge",
+      "upstream": "https://github.com/TryGhost/Edge",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.5.1 from code.jquery.com at page load; removing it means patching the theme"
+    },
+    {
+      "name": "wave",
+      "upstream": "https://github.com/TryGhost/Wave",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.3.1 from code.jquery.com at page load; removing it means patching the theme"
+    },
+    {
+      "name": "argon",
+      "upstream": "https://github.com/TryGhost/Argon",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.4.1 from code.jquery.com at page load; removing it means patching the theme; the repository is also archived"
+    },
+    {
+      "name": "lyra",
+      "upstream": "https://github.com/TryGhost/Lyra",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.5.1 from code.jquery.com at page load; removing it means patching the theme; the repository is also archived"
+    },
+    {
+      "name": "tribeca",
+      "upstream": "https://github.com/TryGhost/Tribeca",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.4.1 from code.jquery.com at page load; removing it means patching the theme; the repository is also archived"
+    },
+    {
+      "name": "taste",
+      "upstream": "https://github.com/TryGhost/Taste",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads its fonts from fonts.googleapis.com and fonts.gstatic.com at page load, which the platform forbids (ws#1067)"
+    },
+    {
+      "name": "zap",
+      "upstream": "https://github.com/TryGhost/Zap",
+      "reason": "licence-unclear",
+      "detail": "The repository carries no licence file, so no right to redistribute is granted"
+    },
+    {
+      "name": "roon",
+      "upstream": "https://github.com/TryGhost/Roon",
+      "reason": "outside-origin-at-runtime",
+      "detail": "Loads Google Fonts, Pinterest and Twitter scripts and an image from an Amazon S3 bucket; archived and built for Ghost 3"
+    },
+    {
+      "name": "massively",
+      "upstream": "https://github.com/TryGhost/Massively",
+      "reason": "outside-origin-at-runtime",
+      "detail": "Archived HTML5 UP port: its stylesheet imports Google Fonts at page load; its licence file also combines MIT with Creative Commons Attribution 3.0 terms"
+    },
+    {
+      "name": "editorial",
+      "upstream": "https://github.com/TryGhost/Editorial",
+      "reason": "outside-origin-at-runtime",
+      "detail": "Archived HTML5 UP port: its stylesheet imports Google Fonts at page load; its licence file also combines MIT with Creative Commons Attribution 3.0 terms"
+    },
+    {
+      "name": "themes",
+      "upstream": "https://github.com/TryGhost/Themes",
+      "reason": "not-a-theme",
+      "detail": "The monorepo the individual themes are published from; each of its packages is a repository of its own, listed here"
+    },
+    {
+      "name": "action-deploy-theme",
+      "upstream": "https://github.com/TryGhost/action-deploy-theme",
+      "reason": "not-a-theme",
+      "detail": "A GitHub Action that uploads a theme to a Ghost site, not a theme"
+    }
+  ]
+}
