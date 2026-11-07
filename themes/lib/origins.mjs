@@ -100,6 +100,17 @@ function attrsOf(rawAttrs) {
   return attrs;
 }
 
+// An element with a text body, as [full match, attributes, body]. The opening
+// tag skips quoted attribute values (which may hold a `>`); the closing tag is
+// `</name` then whitespace, `/` or `>`, in any case.
+const rawTextBlock = (name) =>
+  new RegExp(
+    `<${name}(?=[\\s/>])((?:[^>"']|"[^"]*"|'[^']*')*)>([\\s\\S]*?)<\\/${name}(?=[\\s/>])[^>]*>`,
+    'gi'
+  );
+const SCRIPT_BLOCK = rawTextBlock('script');
+const STYLE_BLOCK = rawTextBlock('style');
+
 // Classify every URL in a markup file (.hbs, .html, .svg).
 function classifyMarkup(rawText, { svg = false } = {}) {
   const text = svg ? rawText : stripHbsComments(rawText);
@@ -107,8 +118,11 @@ function classifyMarkup(rawText, { svg = false } = {}) {
   const claimed = new Set();
 
   // 1. Script bodies: JavaScript context.
-  for (const m of text.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
-    const bodyStart = m.index + m[0].indexOf('>') + 1;
+  // A browser ends the element at `</script` followed by whitespace, `/` or `>`,
+  // so the closing tag may carry spaces or attributes; a stricter pattern would
+  // swallow the next element into this body and read its URL as inert text.
+  for (const m of text.matchAll(SCRIPT_BLOCK)) {
+    const bodyStart = m.index + '<script'.length + m[1].length + 1;
     for (const u of urlsIn(m[2])) {
       const index = bodyStart + u.index;
       claimed.add(index);
@@ -117,9 +131,9 @@ function classifyMarkup(rawText, { svg = false } = {}) {
   }
 
   // 2. Style blocks: CSS context.
-  for (const m of text.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
-    const bodyStart = m.index + m[0].indexOf('>') + 1;
-    for (const r of classifyCss(m[1])) {
+  for (const m of text.matchAll(STYLE_BLOCK)) {
+    const bodyStart = m.index + '<style'.length + m[1].length + 1;
+    for (const r of classifyCss(m[2])) {
       const index = bodyStart + r.index;
       claimed.add(index);
       results.push({ ...r, index });

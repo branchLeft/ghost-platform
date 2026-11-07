@@ -56,6 +56,50 @@ describe('markup: positions a browser fetches without a click are loads', () => 
   }
 });
 
+describe('markup: a closing tag a browser accepts ends the element', () => {
+  const loads = (html) =>
+    classes('default.hbs', html)
+      .filter((c) => c.startsWith('load:'))
+      .map((c) => c.slice('load:'.length));
+  const third = 'https://third-party.example/x.js';
+  const closers = {
+    'whitespace before >': '</script >',
+    'attribute': '</script data-x="y">',
+    'upper case and a newline': '</SCRIPT\n>',
+    'a slash': '</script/>',
+  };
+  for (const [name, closer] of Object.entries(closers)) {
+    it(`a script closed by ${name} does not swallow the next script`, () => {
+      assert.deepEqual(loads(`<script>a()${closer}<script src="${third}"></script>`), [third]);
+    });
+  }
+
+  it('a style closed with whitespace does not swallow the next stylesheet', () => {
+    const html = `<style>.a{}</style ><link rel="stylesheet" href="https://third-party.example/a.css"><style>.b{}</style>`;
+    assert.deepEqual(loads(html), ['https://third-party.example/a.css']);
+  });
+
+  it('a style closed with an attribute does not swallow the next element', () => {
+    const html = `<style>.a{}</style x="y"><img src="https://third-party.example/a.png"><style>.b{}</style>`;
+    assert.deepEqual(loads(html), ['https://third-party.example/a.png']);
+  });
+
+  it('a > inside a quoted attribute value does not end the opening tag', () => {
+    const html = `<script data-x="a>b">var u = "https://third-party.example/s"</script>`;
+    assert.deepEqual(classes('default.hbs', html), ['other:https://third-party.example/s']);
+  });
+
+  it('a name that merely starts with script is not a script block', () => {
+    const html = `<scripts>https://third-party.example/s</scripts>`;
+    assert.deepEqual(classes('default.hbs', html), ['other:https://third-party.example/s']);
+  });
+
+  it('GREEN: a plain script body still reads its URL as inert text', () => {
+    const html = `<script>var u = "https://third-party.example/s"</script>`;
+    assert.deepEqual(classes('default.hbs', html), ['other:https://third-party.example/s']);
+  });
+});
+
 describe('markup: names that are not loads', () => {
   it('an anchor is navigation', () => {
     assert.deepEqual(classes('a.hbs', '<a href="https://ghost.org/">Ghost</a>'), [
