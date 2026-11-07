@@ -86,7 +86,7 @@ jobs:
             services/identity/pnpm-lock.yaml
             services/request-guard/pnpm-lock.yaml
 
-      # The registry token is on the three install steps alone. A compile or
+      # The registry token is on the four install steps alone. A compile or
       # test step runs code from the repository and from what was just
       # installed, and must not be able to read it.
       - name: Install the data layer's dependencies
@@ -109,9 +109,15 @@ jobs:
         working-directory: services/identity
         run: pnpm run build
 
+      - name: Install the request guard's dependencies
+        working-directory: services/request-guard
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build the request guard
         working-directory: services/request-guard
-        run: pnpm install --frozen-lockfile && pnpm run build
+        run: pnpm run build
 
       - name: Install dependencies
         working-directory: portal/apps
