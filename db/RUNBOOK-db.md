@@ -126,25 +126,16 @@ page that states it.
 
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
-**Retired to the `db1_stack` role, do not run these by hand:** the socket
-directory, the copy of `db/stack/` and the host prerequisites
-(`install_host_prereqs.py`). The `db1_stack` role of `branchLeft/shared-infra`
-creates `/opt/branchleft/db/run/mysqld`, renders `compose.yml` and
-`conf.d/branchleft.cnf`, and installs the MySQL 8.0 toolchain and `age` from its
-own pinned inputs. It runs in db1's gated pull; the gated apply that converged it
-is [gated apply run](https://github.com/branchLeft/shared-infra/actions/runs/41903489960) (4 Nov 2026).
-Once applied, running `install_host_prereqs.py` again would put back the
-repository entry the role removes.
-
-Still a hand step, not in the role: copying `db/provision/` to db1. The units in
-§5 and the scripts the backup timers run come from that directory, and no role
-delivers it yet.
+**Intended path, not yet confirmed.** The `db1_stack` role of `branchLeft/shared-infra` is meant to do the socket directory, the stack render and the prerequisites. A gated apply that converges it has not been confirmed: the apply run's log shows no per-role result. Until a gated apply is confirmed, these hand steps stay current.
 
 ```bash
 EDGE1_IPV4=$(hcloud server ip edge1)
 DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@"$DB1_PRIVATE_IP":/opt/branchleft/db
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'python3 /opt/branchleft/db/provision/install_host_prereqs.py'
 ```
 
 `chmod 777` is deliberate, not sloppy: the directory holds nothing but an
@@ -156,10 +147,11 @@ relationship to coordinate a tighter mode around.
 `db/provision/` must ship alongside `db/stack/`: §5 below copies systemd
 units from `/opt/branchleft/db/provision/`, and both units' `ExecStart`
 runs scripts from that same path -- nothing else puts it on the host.
-The `db1_stack` role installs what those scripts shell out to (`age`, and a
-MySQL-8.0-matched `mysql`/`mysqldump`/`mysqlbinlog`; the script's own docstring
-gives the version-pairing constraints). Do not re-run `install_host_prereqs.py`
-by hand.
+`install_host_prereqs.py` then installs what those scripts shell out to
+(`age`, and a MySQL-8.0-matched `mysql`/`mysqldump`/`mysqlbinlog` -- see the
+script's own docstring for the exact version-pairing constraints); it is
+idempotent, so re-running this step against an already-provisioned db1
+completes in seconds with no network access at all.
 
 ## 2. Write `/etc/branchleft/db.env`
 
@@ -204,19 +196,38 @@ error makes bash echo the offending line, password included. Read a single
 key with `sed -n 's/^VAR=//p'`, or hand the whole file to a command with
 `systemd-run --property=EnvironmentFile=/etc/branchleft/db.env`.
 
-## 3. Pin the image and start (the drop-in step is retired to `db1_stack`)
+## 3. Install the stack's systemd drop-in, pin the image, and start
 
-**Retired: the drop-in is no longer installed, do not install it by hand.** The
-`db1_stack` role of `branchLeft/shared-infra` removes the legacy drop-in
-`/etc/systemd/system/branchleft-compose@db.service.d/override.conf` and writes
-`/etc/branchleft/db-exporter.my.cnf` itself, from the exporter password its
-caller supplies, before the stack starts. Putting `db/systemd/db.override.conf`
-back would reinstate the second writer that the role removes. The role applies
-through db1's gated pull (applied in
-[gated apply run](https://github.com/branchLeft/shared-infra/actions/runs/41903489960), 4 Nov 2026).
-A rebuilt db1 gets this from a gated run, not from this section.
+**Intended path, not yet confirmed.** The `db1_stack` role of `branchLeft/shared-infra` is meant to remove the legacy drop-in and write the exporter file. A gated apply that converges it has not been confirmed. Until one is, the drop-in steps below stay current.
 
-Still a hand step, not in the role: the first pin and the first start below.
+The drop-in goes on **before** the first start. It adds one `ExecStartPre`
+that renders `/etc/branchleft/db-exporter.my.cnf` from `EXPORTER_MYSQL_PWD`,
+and the exporter bind-mounts that file. Docker creates a *directory* at a
+bind-mount source it cannot find, so a start without the drop-in loaded leaves
+a stub directory there. The renderer removes an empty one; a non-empty one it
+refuses, and the stack then fails every start until someone clears it by hand.
+Recovery only: clearing a stub directory by hand is a recovery step the `db1_stack`
+role does not cover, so it runs only after the owner has read the failure.
+
+All three commands run against `db1`, which has no public address -- the same
+`$JUMP` hop through `edge1` as every other remote command in this file:
+
+```bash
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
+JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
+  'install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d'
+scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" db/systemd/db.override.conf \
+  root@"$DB1_PRIVATE_IP":/etc/systemd/system/branchleft-compose@db.service.d/override.conf
+ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'systemctl daemon-reload'
+```
+
+It is installed by hand rather than by shared-infra's
+`install-systemd-drop-ins.sh`. That script would match this file if pointed at
+this checkout, but nothing points it here and no host provisioning run does --
+so **a rebuilt db1 does not get this drop-in back**, and this step has to be
+repeated as part of any rebuild.
 
 The first pin is also the first deploy -- there is no separate bootstrap
 path, because `branchleft-compose@.service`'s `EnvironmentFile` for the pin
