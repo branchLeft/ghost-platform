@@ -1,6 +1,6 @@
 # Bundled themes and fonts
 
-The tenant Ghost image ships a set of open-source Ghost themes and a set of open-licence fonts. Every file is served from the tenant's own origin. This directory holds the pins, the tools that fetch and check them, and the tests. Work item: the curated theme and font set (workspace issue 1650); the decision that fonts are self-hosted is the workspace decision record 1067.
+The tenant Ghost image ships a set of open-source Ghost themes and a set of open-licence fonts. Every file is served from the tenant's own origin. This directory holds the pins, the tools that fetch and check them, and the tests. The rule behind all of it: the platform serves everything from the tenant's own origin and its content policy has no font rule, so a theme or font that loads anything from another origin either breaks or leaks a reader's request. Fonts are therefore self-hosted.
 
 ## What is bundled
 
@@ -17,7 +17,9 @@ A theme is excluded, and listed in `manifest.json` under `excluded` with its rea
 | Theme | Reason |
 |---|---|
 | Dawn, Ease, Alto, Dope, Edge, Wave | `default.hbs` loads jQuery from code.jquery.com at page load |
+| Pico, Wave-Archive | same (`default.hbs` line 90 in Pico loads jQuery 3.4.1; Wave-Archive loads 3.3.1); MIT, archived |
 | Argon, Lyra, Tribeca | same, and the repositories are archived |
+| Source-ActivityPub, Starter-ActivityPub | customised copies of Source built for one site, not general-purpose themes (reason `site-specific`) |
 | Taste | loads its fonts from Google Fonts at page load |
 | Roon | loads Google Fonts, Pinterest and Twitter scripts and an image from an Amazon S3 bucket; archived |
 | Massively, Editorial | archived; the stylesheet imports Google Fonts; the licence file combines MIT with Creative Commons Attribution 3.0 |
@@ -26,13 +28,35 @@ A theme is excluded, and listed in `manifest.json` under `excluded` with its rea
 
 Paid and marketplace themes are out by licence and are not evaluated one by one.
 
+### No theme goes unscreened
+
+`org-theme-repos.snapshot.json` is a committed snapshot of the TryGhost organisation's open-source theme repositories. `manifest.test.mjs` requires that the bundled themes together with `excluded` equal the snapshot exactly, so a repository that appears in the snapshot without a decision (or an entry for a repository not in it) turns the test red.
+
+To refresh the snapshot, list the organisation and update `repos` and `takenOn`:
+
+1. `gh repo list TryGhost --limit 1000 --topic ghost-theme --json name --jq '.[].name'` gives every repository with the `ghost-theme` topic.
+2. Some theme repositories carry no topic (Wave-Archive and the two ActivityPub copies did not). Read the rest of the organisation for them: `gh repo list TryGhost --limit 1000 --json name,description,isArchived --jq '.[] | select((.description // "") | test("theme"; "i")) | [.name, .isArchived, .description] | @tsv'`, and add each real Ghost theme.
+3. Add a decision for every new name: bundle it (below) or add it to `excluded` here and in `manifest.json` with its reason, then run `node --test themes/*.test.mjs`.
+
+## Fonts the themes carry themselves
+
+Nine themes carry their own font files under `assets/fonts/` (Lora, PT Serif, Raleway, Open Sans, Libre Baskerville, Mona Sans, Manrope, Mulish, Inter, JetBrains Mono). The theme's own MIT licence does not cover them. They are kept exactly as the theme ships them (no subsetting, no conversion, no renaming) and the manifest records them:
+
+- `embeddedFontFamilies` has one record per family: the SIL OFL 1.1 text (`licences/<family>/OFL.txt`, fetched with `curl` from the font's upstream repository at the pinned commit, named in `licence.sourcePath`, never typed by hand), its copyright line, its sha256, and the Reserved Font Names the licence declares (`reservedFontNames`, empty when none).
+- Each theme's `embeddedFonts` lists every font file by path and sha256. `verify.mjs` fails a font file (any `.woff`, `.woff2`, `.ttf`, `.otf`, `.eot` or `.ttc`, anywhere in a theme, base-image themes included) that the manifest does not list, a listed file that is missing, and a file whose bytes differ from the pin. For a family with a Reserved Font Name the failure says so: a modified file may not ship under that name.
+- The build ships each family's licence text beside the platform fonts, at `/assets/platform-fonts/embedded/<family>/OFL.txt` in every theme.
+- A pinned hash proves the bytes are the ones the theme commits, which are web builds of the fonts, not necessarily the foundry's own release files (no file here has been shown byte-identical to a foundry release). Reserved-name families are Lora, PT Serif, Raleway, Libre Baskerville and Mona Sans.
+
+To add a font family, fetch its licence with `curl -fsSL -o themes/licences/<family>/OFL.txt <raw URL at a full commit>`, add the family and the file lists to the manifest, and run `fetch.mjs --pin`.
+
 ## How the checks work
 
 `verify.mjs` runs at image build and fails the build on any problem. The same functions run in CI against a synthetic bundle (`verify.test.mjs`), and `image/themes.image.test.mjs` runs against the built image.
 
 - **Pins.** Each theme is fetched as a GitHub tarball at its full commit SHA and its tree hash must equal the manifest's. Each font file must equal its sha256. A font from a release archive (Source Serif 4) checks the archive's sha256 first.
 - **Licences.** Each licence file must be present, equal its pinned hash, contain the recorded copyright line, read as the recorded SPDX licence, and be in the open set (MIT, OFL-1.1). A font licence's declared Reserved Font Name must equal the manifest's.
-- **Outside origins.** `lib/origins.mjs` reads every `.hbs` file and everything under `assets/` and sorts each absolute URL into a class. A URL in a loading position (script, image, frame, stylesheet link, CSS `url()` or `@import`, form action) is always a failure, and no declaration can allow it. A link target, a feed link or an XML namespace is not a load. Any other URL (a string or comment in JavaScript, say) must be declared in the theme's `externalReferences` with a file, a host, a kind (`navigation`, `comment`, `inert-string`) and a reason. A declaration that matches nothing is a failure. This is a static floor: a URL assembled at runtime is invisible to it.
+- **Usage.** `node themes/fetch.mjs --out DIR` fetches, checks every pin and writes `DIR/themes` and `DIR/fonts`; with `--pin` it is the maintainer step that computes and writes the pins. `node themes/verify.mjs --bundle DIR [--base-themes DIR]` checks that output; `--base-themes` is the themes directory of the Ghost base image, where Casper and Source ship.
+- **Outside origins.** `lib/origins.mjs` reads every `.hbs` file and everything under `assets/` and sorts each absolute URL into one of four classes: `namespace` (an XML or RSS identifier, never fetched), `navigation` (an `<a href>` or a `<link rel="alternate|canonical|...">` target that a click or feed reader follows), `load` (a URL a browser fetches without a click) and `other`. A URL in a loading position (script, image, frame, stylesheet link, CSS `url()` or `@import`, form action) is always a failure, and no declaration can allow it. A link target, a feed link or an XML namespace is not a load. Any other URL (a string or comment in JavaScript, say) must be declared in the theme's `externalReferences` with a file, a host, a kind (`navigation`, `comment`, `inert-string`) and a reason. A declaration that matches nothing is a failure. This is a static floor: a URL assembled at runtime is invisible to it.
 - **Missing build output.** Every `{{asset "x"}}` a template names must exist in the theme.
 - **Rendered pages.** The image test activates each theme in a real Ghost and checks the rendered home page loads nothing from another origin, that its own stylesheets and scripts answer 200, and that the fonts answer with the pinned bytes. Ghost's sample posts point at images on static.ghost.org; those are the fixture's content and are not counted.
 

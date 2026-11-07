@@ -1,29 +1,6 @@
-// Outside-origin scanner for a bundled theme or font stylesheet.
-//
-// The platform serves everything from the tenant's own origin and its content
-// policy has no font rule, so a theme that loads anything from another origin
-// either breaks or leaks a reader's request (ws#1650, decision record ws#1067).
-// This module finds every absolute or protocol-relative URL in the files Ghost
-// serves from a theme (every .hbs, and everything under assets/) and sorts each
-// one into exactly one of four classes:
-//
-//   namespace   an XML or RSS namespace identifier. It names a vocabulary and
-//               is never fetched.
-//   navigation  an <a href> or a <link rel="alternate|canonical|..."> target.
-//               A reader's click or a feed reader follows it; the page does not.
-//   load        a URL in a position a browser fetches without a click: a
-//               script/img/iframe/media src, a stylesheet or preload <link>,
-//               a CSS url() or @import, a <form action>. ALWAYS a violation.
-//   other       any other place the URL appears (a string in JavaScript, a
-//               comment in a script or stylesheet, a data attribute). A
-//               violation unless the manifest declares that (file, host) with
-//               a reason, so every such URL has been read by a person.
-//
-// A declaration that no longer matches anything is also a violation, so the
-// list cannot rot into a blanket allowance.
-//
-// This is a static floor, not a browser run: a URL built at runtime from parts
-// is invisible to it. The browser run of each theme remains the real test.
+// Outside-origin scanner for a bundled theme: sorts every absolute or protocol-relative URL in the
+// files Ghost serves into namespace, navigation, load or other (rules: themes/README.md).
+// A static floor, not a browser run: a URL built at runtime from parts is invisible to it.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -289,11 +266,8 @@ export function runtimeFiles(themeDir) {
 }
 
 /**
- * Scan a materialised theme directory.
- *
- * @param {string} themeDir
- * @param {Array<{files: string[], hosts: string[], kind: string, reason: string}>} declared
- * @returns {{violations: object[], references: object[], unusedDeclarations: object[]}}
+ * Scan a materialised theme directory against the manifest's declarations
+ * ({files, hosts, kind, reason}[]); returns {violations, references, unusedDeclarations}.
  */
 export function scanTheme(themeDir, declared = []) {
   const violations = [];

@@ -15,6 +15,8 @@ const MIT =
   'Copyright (c) 2013-2026 Example Foundation\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software.\n';
 const OFL =
   'Copyright 2011 The Example Project Authors, with Reserved Font Name "Example".\n\nThis Font Software is licensed under the SIL Open Font License, Version 1.1. SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n';
+const EMBEDDED_OFL =
+  'Copyright 2012 The Embedded Project Authors, with Reserved Font Names "Embedded" and "Other".\n\n-----\nSIL OPEN FONT LICENSE Version 1.1 - 26 February 2007\n';
 const SHA = 'a'.repeat(40);
 
 let root;
@@ -40,6 +42,8 @@ function build() {
   write('base/beta/package.json', '{"version":"4.5.6"}');
   write('bundle/fonts/example/OFL.txt', OFL);
   write('bundle/fonts/example/Example-Regular.woff2', 'woff2-bytes');
+  write('bundle/themes/alpha/assets/fonts/embedded-regular.woff2', 'embedded-bytes');
+  write('bundle/fonts/embedded/embedded/OFL.txt', EMBEDDED_OFL);
 
   manifest = {
     schema: 1,
@@ -57,6 +61,19 @@ function build() {
           copyright: 'Copyright (c) 2013-2026 Example Foundation',
           sha256: sha256File(path.join(root, 'bundle/themes/alpha/LICENSE')),
         },
+        embeddedFonts: [
+          {
+            family: 'Embedded',
+            files: [
+              {
+                path: 'assets/fonts/embedded-regular.woff2',
+                sha256: sha256File(
+                  path.join(root, 'bundle/themes/alpha/assets/fonts/embedded-regular.woff2')
+                ),
+              },
+            ],
+          },
+        ],
         treeSha256: treeSha256(path.join(root, 'bundle/themes/alpha')),
       },
       {
@@ -97,6 +114,24 @@ function build() {
             weight: '400',
           },
         ],
+      },
+    ],
+    embeddedFontFamilies: [
+      {
+        family: 'Embedded',
+        dir: 'embedded',
+        upstream: 'https://github.com/Example/Embedded',
+        commit: SHA,
+        licence: {
+          spdx: 'OFL-1.1',
+          file: 'OFL.txt',
+          sourcePath: 'OFL.txt',
+          copyright:
+            'Copyright 2012 The Embedded Project Authors, with Reserved Font Names "Embedded" and "Other".',
+          sha256: sha256File(path.join(root, 'bundle/fonts/embedded/embedded/OFL.txt')),
+        },
+        reservedFontNames: ['Embedded', 'Other'],
+        modification: 'none',
       },
     ],
     excluded: [
@@ -210,6 +245,49 @@ describe('verifyBundle', () => {
       '@font-face{font-family:"Example";src:url("example/Gone.woff2")}'
     );
     assert.match(run().join('\n'), /example\/Gone\.woff2 does not exist/);
+  });
+
+  it('RED: a font file the manifest does not list fails, even with the tree pin updated', () => {
+    write('bundle/themes/alpha/assets/fonts/stowaway.woff', 'unlicensed-bytes');
+    manifest.themes[0].treeSha256 = treeSha256(path.join(bundle, 'themes/alpha'));
+    assert.match(
+      run().join('\n'),
+      /theme alpha: font file assets\/fonts\/stowaway\.woff is not in the manifest's embedded fonts/
+    );
+  });
+
+  it('RED: a font file in a base-image theme the manifest does not list fails', () => {
+    write('base/beta/assets/fonts/Stowaway.TTF', 'unlicensed-bytes');
+    manifest.themes[1].treeSha256 = treeSha256(path.join(base, 'beta'));
+    assert.match(run().join('\n'), /theme beta: font file assets\/fonts\/Stowaway\.TTF is not in/);
+  });
+
+  it('RED: a reserved-name font file that differs from its upstream pin fails', () => {
+    write('bundle/themes/alpha/assets/fonts/embedded-regular.woff2', 'subset-bytes');
+    manifest.themes[0].treeSha256 = treeSha256(path.join(bundle, 'themes/alpha'));
+    assert.match(
+      run().join('\n'),
+      /font file assets\/fonts\/embedded-regular\.woff2 differs from its upstream pin, and Embedded is a reserved font name \(Embedded, Other\)/
+    );
+  });
+
+  it('RED: a listed font file that is missing fails', () => {
+    fs.rmSync(path.join(bundle, 'themes/alpha/assets/fonts/embedded-regular.woff2'));
+    manifest.themes[0].treeSha256 = treeSha256(path.join(bundle, 'themes/alpha'));
+    assert.match(
+      run().join('\n'),
+      /listed font file assets\/fonts\/embedded-regular\.woff2 is missing/
+    );
+  });
+
+  it('RED: a missing licence text for an embedded family fails', () => {
+    fs.rmSync(path.join(bundle, 'fonts/embedded/embedded/OFL.txt'));
+    assert.match(run().join('\n'), /embedded font Embedded: licence file OFL\.txt is missing/);
+  });
+
+  it('RED: an embedded licence that declares a reserved name the manifest does not record fails', () => {
+    manifest.embeddedFontFamilies[0].reservedFontNames = ['Embedded'];
+    assert.match(run().join('\n'), /embedded font Embedded: licence declares reserved font names/);
   });
 
   it('RED: a symlink that leaves the theme tree fails', () => {

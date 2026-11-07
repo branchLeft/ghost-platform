@@ -1,19 +1,17 @@
 #!/usr/bin/env node
-// Verify a materialised bundle against themes/manifest.json.
-//
-//   node themes/verify.mjs --bundle DIR [--base-themes DIR]
-//
-// --bundle is the output of fetch.mjs. --base-themes is the themes directory of
-// the Ghost base image (Casper and Source ship there, not from GitHub). The
-// image build runs this and fails the build on any problem, so a theme or font
-// that references an outside origin, differs from its pin, or lacks its
-// licence cannot reach an image.
+// Verify a materialised bundle against themes/manifest.json. Usage: themes/README.md.
+// The image build runs this; any problem fails the build.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readManifest } from './fetch.mjs';
-import { validateManifest, declaredReservedFontName } from './lib/manifest.mjs';
+import {
+  FONT_EXTENSIONS,
+  declaredReservedFontName,
+  declaredReservedNames,
+  validateManifest,
+} from './lib/manifest.mjs';
 import { classifyFile, missingAssets, scanTheme } from './lib/origins.mjs';
 import { sha256File, treeSha256 } from './lib/treehash.mjs';
 
@@ -37,7 +35,65 @@ function checkLicenceFile(problems, label, file, licence) {
   return text;
 }
 
-export function verifyTheme(problems, t, dir) {
+// Every font file anywhere under a theme directory, as a posix path from it.
+export function fontFilesIn(dir) {
+  const out = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (FONT_EXTENSIONS.test(e.name))
+        out.push(path.relative(dir, p).split(path.sep).join('/'));
+    }
+  };
+  walk(dir);
+  return out.sort();
+}
+
+// A font file a theme carries is a file this bundle redistributes, so it needs a
+// licence record: an unlisted one fails, and so does a listed one whose bytes are
+// not the pinned ones (for a reserved-name family that is a modified file under
+// a name the licence forbids it).
+export function verifyEmbeddedFonts(problems, t, dir, families = []) {
+  const label = `theme ${t.name}`;
+  const byName = new Map(families.map((f) => [f.family, f]));
+  const listed = new Map();
+  for (const e of t.embeddedFonts ?? [])
+    for (const file of e.files) listed.set(file.path, { family: e.family, sha256: file.sha256 });
+  for (const rel of fontFilesIn(dir)) {
+    if (!listed.has(rel))
+      problems.push(`${label}: font file ${rel} is not in the manifest's embedded fonts`);
+  }
+  for (const [rel, rec] of listed) {
+    const p = path.join(dir, rel);
+    if (!fs.existsSync(p)) {
+      problems.push(`${label}: listed font file ${rel} is missing`);
+    } else if (sha256File(p) !== rec.sha256) {
+      const names = byName.get(rec.family)?.reservedFontNames ?? [];
+      problems.push(
+        names.length > 0
+          ? `${label}: font file ${rel} differs from its upstream pin, and ${rec.family} is a reserved font name (${names.join(', ')})`
+          : `${label}: font file ${rel} differs from its pin`
+      );
+    }
+  }
+}
+
+export function verifyEmbeddedFamily(problems, f, dir) {
+  const label = `embedded font ${f.family}`;
+  const text = checkLicenceFile(problems, label, path.join(dir, f.licence.file), f.licence);
+  if (text === null) return;
+  const lower = (list) => list.map((n) => n.toLowerCase()).sort();
+  const declared = lower(declaredReservedNames(text));
+  const recorded = lower(f.reservedFontNames);
+  if (JSON.stringify(declared) !== JSON.stringify(recorded)) {
+    problems.push(
+      `${label}: licence declares reserved font names ${JSON.stringify(declared)} but the manifest records ${JSON.stringify(recorded)}`
+    );
+  }
+}
+
+export function verifyTheme(problems, t, dir, families = []) {
   const label = `theme ${t.name}`;
   if (!fs.existsSync(dir)) {
     problems.push(`${label}: not present at ${dir}`);
@@ -45,6 +101,7 @@ export function verifyTheme(problems, t, dir) {
   }
   if (treeSha256(dir) !== t.treeSha256) problems.push(`${label}: tree differs from its pin`);
   checkLicenceFile(problems, label, path.join(dir, path.basename(t.licence.file)), t.licence);
+  verifyEmbeddedFonts(problems, t, dir, families);
   const scan = scanTheme(dir, t.externalReferences ?? []);
   for (const v of scan.violations)
     problems.push(`${label}: ${v.file}:${v.line} ${v.url} (${v.why})`);
@@ -94,15 +151,18 @@ export function verifyBundle(manifest, bundle, baseThemes) {
       `bundle themes ${JSON.stringify(present)} differ from the manifest ${JSON.stringify(wanted)}`
     );
   }
+  const families = manifest.embeddedFontFamilies;
   for (const t of manifest.themes) {
-    if (t.source === 'github') verifyTheme(problems, t, path.join(themesDir, t.name));
+    if (t.source === 'github') verifyTheme(problems, t, path.join(themesDir, t.name), families);
     else if (!baseThemes)
       problems.push(`theme ${t.name}: --base-themes is required to check base-image themes`);
-    else verifyTheme(problems, t, path.join(baseThemes, t.name));
+    else verifyTheme(problems, t, path.join(baseThemes, t.name), families);
   }
 
   const fontsDir = path.join(bundle, 'fonts');
   for (const f of manifest.fonts) verifyFont(problems, f, path.join(fontsDir, f.dir));
+  for (const f of families)
+    verifyEmbeddedFamily(problems, f, path.join(fontsDir, 'embedded', f.dir));
 
   const cssFile = path.join(fontsDir, 'fonts.css');
   if (!fs.existsSync(cssFile)) problems.push('fonts.css is missing');

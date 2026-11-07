@@ -1,17 +1,7 @@
-// The bundled themes and fonts, observed in the built image.
-//
-//   IMAGE=ghost-platform:ci node --test themes/image/themes.image.test.mjs
-//
-// The unit tests prove the scanner on fixtures and verify.mjs proves the pins at
-// build time. This proves the result where it matters: a real Ghost, started
-// from the image, lists every bundled theme, activates each one, renders its
-// home page, and that page (a) names no outside origin, (b) has every stylesheet
-// and script it links answer 200 from this origin, and (c) can reach the
-// platform fonts at /assets/platform-fonts/. It is a server-rendered check, not
-// a browser run: a request a script makes at runtime is outside it.
-//
-// Skipped when IMAGE is unset, so a plain `node --test` of the repo is not
-// slowed by a container.
+// The bundled themes and fonts, observed in the built image: a real Ghost lists and activates
+// each theme, and its rendered home page names no outside origin and links only assets that answer.
+// Server-rendered, not a browser run. Run: IMAGE=ghost-platform:ci node --test themes/image/themes.image.test.mjs
+// Skipped when IMAGE is unset.
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -31,9 +21,8 @@ const LABEL = 'branchleft.component=themes-image-test';
 const OWNER_EMAIL = 'owner@example.com';
 const OWNER_PASSWORD = crypto.randomBytes(24).toString('hex');
 
-// Ghost's seeded sample posts and the default publication cover point at
-// images on this host. They are the fixture's content, not the theme's, and an
-// empty site renders none of them, so they are not counted.
+// Ghost's seeded sample posts and the default publication cover point at images on
+// this host: the fixture's content, not the theme's, so they are not counted.
 const FIXTURE_HOSTS = new Set(['static.ghost.org']);
 
 // Outside origins a rendered page loads, as [{url, host, class}]: a script,
@@ -233,6 +222,17 @@ describe('the built image', { skip: IMAGE ? false : 'IMAGE is not set' }, () => 
               `${f.dir}/${file.to} bytes differ from the pin`
             );
           }
+        }
+        for (const f of MANIFEST.embeddedFontFamilies) {
+          const licence = `${base}/assets/platform-fonts/embedded/${f.dir}/${f.licence.file}`;
+          const res = await fetch(licence);
+          assert.equal(res.status, 200, `${theme.name}: ${f.dir} licence answered ${res.status}`);
+          const bytes = Buffer.from(await res.arrayBuffer());
+          assert.equal(
+            crypto.createHash('sha256').update(bytes).digest('hex'),
+            f.licence.sha256,
+            `${f.dir} licence bytes differ from the pin`
+          );
         }
       }
     );

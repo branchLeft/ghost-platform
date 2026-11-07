@@ -1,13 +1,8 @@
 #!/usr/bin/env node
-// Materialise the pinned themes and fonts from themes/manifest.json.
-//
-//   node themes/fetch.mjs --out DIR          fetch, check every pin, write DIR/themes and DIR/fonts
-//   node themes/fetch.mjs --out DIR --pin    the maintainer step: compute and write the pins
-//
-// The default mode never writes the manifest and fails on the first byte that
-// differs from its pin. Nothing is fetched except by a full commit SHA or a
-// release asset whose sha256 is pinned. Node built-ins only; the image build
-// runs this with the Node already in the Ghost base image (themes/README.md).
+// Materialise the pinned themes and fonts from themes/manifest.json (usage: themes/README.md).
+// The default mode never writes the manifest and fails on the first byte that differs from its pin.
+// Nothing is fetched except by a full commit SHA or a release asset with a pinned sha256.
+// Node built-ins only: the image build runs it with the Node already in the Ghost base image.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -137,6 +132,14 @@ export async function materialise(manifest, out, { pin = false, baseThemes } = {
         (v) => (t.licence.sha256 = v)
       );
       checkPin(`${t.name} tree`, treeSha256(dest), t.treeSha256, pin, (v) => (t.treeSha256 = v));
+      for (const e of t.embeddedFonts ?? []) {
+        for (const file of e.files) {
+          const label = `${t.name} ${file.path}`;
+          checkPin(label, sha256File(path.join(dest, file.path)), file.sha256, pin, (v) => {
+            file.sha256 = v;
+          });
+        }
+      }
       console.log(`theme ${t.name}: ${t.commit.slice(0, 12)} ok`);
     }
 
@@ -183,6 +186,18 @@ export async function materialise(manifest, out, { pin = false, baseThemes } = {
         );
       }
       console.log(`font ${f.family}: ${f.files.length} file(s) ok`);
+    }
+    // The licence text of every font family a theme embeds travels beside the
+    // platform fonts, so it is served from the tenant's origin in each theme.
+    for (const f of manifest.embeddedFontFamilies ?? []) {
+      const source = path.join(HERE, 'licences', f.dir, path.basename(f.licence.file));
+      if (pin) {
+        f.licence.copyright = firstCopyrightLine(fs.readFileSync(source, 'utf8'));
+        f.licence.sha256 = sha256File(source);
+      }
+      const dest = path.join(out, 'fonts', 'embedded', f.dir);
+      fs.mkdirSync(dest, { recursive: true });
+      fs.copyFileSync(source, path.join(dest, path.basename(f.licence.file)));
     }
     fs.writeFileSync(path.join(out, 'fonts', 'fonts.css'), fontsCss(manifest));
     return manifest;

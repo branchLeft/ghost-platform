@@ -92,7 +92,62 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "3f2c776261d9ad15b366ba2d1c12b03473040138c27e511e435c5abe8f37671a"
+      "treeSha256": "3f2c776261d9ad15b366ba2d1c12b03473040138c27e511e435c5abe8f37671a",
+      "embeddedFonts": [
+        {
+          "family": "Mulish",
+          "files": [
+            {
+              "path": "assets/fonts/mulish-v10-latin-600.woff",
+              "sha256": "09316b3566022b751bfccfa4a12e4f0635253c236dd6d458d573b6a95e7d3566"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-600.woff2",
+              "sha256": "aeaffdb6d8f2f125a07031b7b926b95ad41c78a35b855c520df75103c15f6b4b"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700.woff",
+              "sha256": "cd8c6a9931fb32175cd7ceffb1cb9197664e200a7617a6f31598511f54890150"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700.woff2",
+              "sha256": "6d13eae29980e2a249cff3890704f5242cb8a5f975acf097e584bd87a1d8660d"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700italic.woff",
+              "sha256": "185d62073e51130ac5557b877ffa56bb2448b4cc3b2abf54631f98fc52c3e9be"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700italic.woff2",
+              "sha256": "106d094ed2d53956585b86f706cca5f626c80771b5c21653703e3d42802babe8"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-800.woff",
+              "sha256": "3de1b22789456f572544f694fc924691f4cd97c01eea668acbce62751c760afa"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-800.woff2",
+              "sha256": "d716702817248ee7ce11a3deb564cf986bc7bd6c8e52b6d08438055667af442e"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-italic.woff",
+              "sha256": "1516b3145aaaa2477b06f32d94ec820cbc362875a029d53bb19e3b8bd7798fdb"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-italic.woff2",
+              "sha256": "cc5090e717c0bdb0f1436bcc464ff21d0c6cff20ace265c013229ef6610ebf3b"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-regular.woff",
+              "sha256": "604f276287f3f99c3cb0838730ae93f4858229f6cd62911c464e65975bc81638"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-regular.woff2",
+              "sha256": "b00cc37bebabd4ff71a567f5c7502f1be92a4997160b4a46fa574b4fc6cac4ee"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "ruby",
@@ -114,7 +169,83 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "2ff127c5a1caac7ea21044b7995133d24af39366ae807e3d81aa5e77ca86d3f8"
+      "treeSha256": "2ff127c5a1caac7ea21044b7995133d24af39366ae807e3d81aa5e77ca86d3f8",
+      "embeddedFonts": [
+        {
+          "family": "Lora",
+          "files": [
+            {
+              "path": "assets/fonts/lora-v23-latin-700.woff",
+              "sha256": "8aa8d08560aeb088e8d2dd8d1dd7b8eb233e3ca9251d1a0d01dd6ef603c5950a"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-700.woff2",
+              "sha256": "a5d9bb5c1067545ab7bc5ec13a1bf70b5e58d858343a06bcef6b6dd74dfa935c"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-700italic.woff",
+              "sha256": "f7cfca31b3d47c810ea9e9b6c88b2aa82e90a939ec956425ba510d7f46480c84"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-700italic.woff2",
+              "sha256": "12143b4a2f443a772acf8c69274bd4b8bee08deffe31679a4101727e919ec7d1"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-italic.woff",
+              "sha256": "d84129d1c864c04962c93aa4d9ed296808734c0dcfae7a5b1b82b85d7578846c"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-italic.woff2",
+              "sha256": "2ad4f70d8df9c5982ea15ee0bff6a3f8dff29e1d4028f907cbf667821952d40c"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-regular.woff",
+              "sha256": "04d0075c9cd289225866ad57eab82f9f08b44802dbb7c630faad6e7b4607f739"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-regular.woff2",
+              "sha256": "b11ee4fcbe58eec547cd278229b67c1093e8961e3e2d9f200b8b0facc73df274"
+            }
+          ]
+        },
+        {
+          "family": "Open Sans",
+          "files": [
+            {
+              "path": "assets/fonts/open-sans-v28-latin-700.woff",
+              "sha256": "b1fda8d891e6e8beeb38acc3ccce3369b8e6529154da0f28fcdd35d3b1319dae"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-700.woff2",
+              "sha256": "a61d67250a5c36640e22099937af31613e68d6134439d5d4329efea0372aea79"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-700italic.woff",
+              "sha256": "6bddd7153a296463a354f5efdcb36819360d20120a3da0be8b8aceeb4ca5e8db"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-700italic.woff2",
+              "sha256": "3131314786063c25356e58697cbc14131dbb8d8b585e4a92b855f25d2eee09dc"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-italic.woff",
+              "sha256": "788e76b99a2f24dbc86420d4a89324a6ffb9e1ee5cc42f151ad4c15533abd14e"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-italic.woff2",
+              "sha256": "f27408b033a0195d0f29b0ecbc143f470c4fbb0807472a688b2f9e66403651e0"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-regular.woff",
+              "sha256": "d74109965066b25f13a8f7992b811fdcac88ba83e618b3dbbf689a12c55e4923"
+            },
+            {
+              "path": "assets/fonts/open-sans-v28-latin-regular.woff2",
+              "sha256": "cce577471c2586f3e0c2518fff84a970d33f61491fb8c629341b86f238cf07c0"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "edition",
@@ -148,7 +279,91 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "90c276a2b0ceffaca43555a614c813df438c529627795b070b40165e405566b1"
+      "treeSha256": "90c276a2b0ceffaca43555a614c813df438c529627795b070b40165e405566b1",
+      "embeddedFonts": [
+        {
+          "family": "Lora",
+          "files": [
+            {
+              "path": "assets/fonts/lora-v23-latin-700.woff",
+              "sha256": "8aa8d08560aeb088e8d2dd8d1dd7b8eb233e3ca9251d1a0d01dd6ef603c5950a"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-700.woff2",
+              "sha256": "a5d9bb5c1067545ab7bc5ec13a1bf70b5e58d858343a06bcef6b6dd74dfa935c"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-700italic.woff",
+              "sha256": "f7cfca31b3d47c810ea9e9b6c88b2aa82e90a939ec956425ba510d7f46480c84"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-700italic.woff2",
+              "sha256": "12143b4a2f443a772acf8c69274bd4b8bee08deffe31679a4101727e919ec7d1"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-italic.woff",
+              "sha256": "d84129d1c864c04962c93aa4d9ed296808734c0dcfae7a5b1b82b85d7578846c"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-italic.woff2",
+              "sha256": "2ad4f70d8df9c5982ea15ee0bff6a3f8dff29e1d4028f907cbf667821952d40c"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-regular.woff",
+              "sha256": "04d0075c9cd289225866ad57eab82f9f08b44802dbb7c630faad6e7b4607f739"
+            },
+            {
+              "path": "assets/fonts/lora-v23-latin-regular.woff2",
+              "sha256": "b11ee4fcbe58eec547cd278229b67c1093e8961e3e2d9f200b8b0facc73df274"
+            }
+          ]
+        },
+        {
+          "family": "Mulish",
+          "files": [
+            {
+              "path": "assets/fonts/mulish-v10-latin-700.woff",
+              "sha256": "cd8c6a9931fb32175cd7ceffb1cb9197664e200a7617a6f31598511f54890150"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700.woff2",
+              "sha256": "6d13eae29980e2a249cff3890704f5242cb8a5f975acf097e584bd87a1d8660d"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700italic.woff",
+              "sha256": "185d62073e51130ac5557b877ffa56bb2448b4cc3b2abf54631f98fc52c3e9be"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-700italic.woff2",
+              "sha256": "106d094ed2d53956585b86f706cca5f626c80771b5c21653703e3d42802babe8"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-800.woff",
+              "sha256": "3de1b22789456f572544f694fc924691f4cd97c01eea668acbce62751c760afa"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-800.woff2",
+              "sha256": "d716702817248ee7ce11a3deb564cf986bc7bd6c8e52b6d08438055667af442e"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-italic.woff",
+              "sha256": "1516b3145aaaa2477b06f32d94ec820cbc362875a029d53bb19e3b8bd7798fdb"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-italic.woff2",
+              "sha256": "cc5090e717c0bdb0f1436bcc464ff21d0c6cff20ace265c013229ef6610ebf3b"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-regular.woff",
+              "sha256": "604f276287f3f99c3cb0838730ae93f4858229f6cd62911c464e65975bc81638"
+            },
+            {
+              "path": "assets/fonts/mulish-v10-latin-regular.woff2",
+              "sha256": "b00cc37bebabd4ff71a567f5c7502f1be92a4997160b4a46fa574b4fc6cac4ee"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "digest",
@@ -170,7 +385,99 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "a479c51f6fca9f9941e2eb082a643f8940a690440e1a3176b20cb7fcb9b68002"
+      "treeSha256": "a479c51f6fca9f9941e2eb082a643f8940a690440e1a3176b20cb7fcb9b68002",
+      "embeddedFonts": [
+        {
+          "family": "PT Serif",
+          "files": [
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-700.woff",
+              "sha256": "116246ac15be5d912d23c9d2ec37cd5570afe0ddca1c85212860500171c6db67"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-700.woff2",
+              "sha256": "7f9694a5641741d04e1c98eb1011059826aa5feb34e47d2b2f95bdb47cb0c2f5"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-700italic.woff",
+              "sha256": "f814ab02b070dd469b4529b50df479bbfa31ed9cbe151115062a3bbfa4aa0bb6"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-700italic.woff2",
+              "sha256": "a8b4c3fed174cde914ce1d74e3e97a4c7d17a9d615ba13065e8dc58531a84046"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-italic.woff",
+              "sha256": "330f45c46ecdad79bb816fa2d5a04b59857b3cc4cf67b2ad9b56ee39d2d9f494"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-italic.woff2",
+              "sha256": "dd6661b8cd544cf84130afd811d872ce216a1f069eef967566a300a7dfb8506e"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-regular.woff",
+              "sha256": "faef7ae7b87a05e061140cd5084e52c5282044ac990a6f5630b3e295b717bd66"
+            },
+            {
+              "path": "assets/fonts/pt-serif-v16-latin-regular.woff2",
+              "sha256": "d355afb9705c3f8651f6a1f813b4670b758d59a17783830f534e7a8839c5b666"
+            }
+          ]
+        },
+        {
+          "family": "Raleway",
+          "files": [
+            {
+              "path": "assets/fonts/raleway-v27-latin-600.woff",
+              "sha256": "47a5705ab06e658ee6e5b8803df784f0a2815d1bfac28e4919c2c4275a55f5dc"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-600.woff2",
+              "sha256": "8bac99fa843bdfd58658a615b25b38b2ade166821592342cee022bc21ac8382d"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-700.woff",
+              "sha256": "34f100a624663be79ad9d9b860240d27b3b8095a66d06e857def4efaf42b74a0"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-700.woff2",
+              "sha256": "5a6b61a6dec37b97dc483e82526807617e7bf1fb643c89c5bfeff6f92b91fade"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-700italic.woff",
+              "sha256": "0e4ac9294245e87f06e144b3c3229446de5a6fe344e03ab34e6531f9d2a0f49d"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-700italic.woff2",
+              "sha256": "d9107436011fd526b7a0c47c8f9b3ab786f1d3a8cf04841324c1ecbfdc53a685"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-800.woff",
+              "sha256": "9d7418c21145f62a67529160e3713306e61376bd85f7edf5768e36a7abe8f624"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-800.woff2",
+              "sha256": "ba6066bee321a74af5ccab41f29c36c22804f3992c6a46d950418a9ed2a18a25"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-italic.woff",
+              "sha256": "da1b2c46c1cc5f388858cd341695335dc4f784362113183fd87ff069137e30b2"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-italic.woff2",
+              "sha256": "728af3628c36abac03303337a8fd98f3e81823de529c12d6120e6d1767dca906"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-regular.woff",
+              "sha256": "3bbc5ff26a74a81ee41685eb520b458bdbf8eaa6fc2b8a5479e6126eb257002d"
+            },
+            {
+              "path": "assets/fonts/raleway-v27-latin-regular.woff2",
+              "sha256": "8b70efc57dd27f773ed2d4ea3bac776caf346124c36fd73cba96176de33d7ec3"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "bulletin",
@@ -192,7 +499,107 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "27e9fad1a020e2ac75ffe6dbe10d807f13f73fc5b20b9ec10c0587e5cf7c35bf"
+      "treeSha256": "27e9fad1a020e2ac75ffe6dbe10d807f13f73fc5b20b9ec10c0587e5cf7c35bf",
+      "embeddedFonts": [
+        {
+          "family": "Lora",
+          "files": [
+            {
+              "path": "assets/fonts/lora-v25-latin-500.woff",
+              "sha256": "b41d041bc5d89843d98c94161f99eedf6bd33582a04e2caabcec2e526b32c690"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-500.woff2",
+              "sha256": "a030441aff16edfc8321df07f50838f9c3ca55a5722e015578c6e5faf2a15ff7"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700.woff",
+              "sha256": "b3e36da1e5b784c6b4893373759056f72917e874c61d8726a7705ecac5d29f3f"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700.woff2",
+              "sha256": "3a17e5edebc51237d03713bb1097838c89a66ead9aa88e1457856fa33307bcb9"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700italic.woff",
+              "sha256": "824b835cd6bad121d5c006d72ecb5d000d97794f540533a771bf1bd4af941d33"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700italic.woff2",
+              "sha256": "032fd06fe8afb0177d1ea8da8788295b5e9ed9a2c87c766ac3e3de4510abef53"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-italic.woff",
+              "sha256": "03e106f74edd76bcaf9de6a3d54d333d3b43825ba7d6ecffb43c537833409fc3"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-italic.woff2",
+              "sha256": "e254162ac42128b141fe361781eb3062bd213b112a4be0987b5ef36ab010aed0"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-regular.woff",
+              "sha256": "0666dd981bab781d3d103a646cc23c9bb397da513598abfbb62c946caa8dccd5"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-regular.woff2",
+              "sha256": "0d707cc06b442a17dd58f0ed2176c626e6b7c5808d43c2bedf80136945c6994b"
+            }
+          ]
+        },
+        {
+          "family": "Mulish",
+          "files": [
+            {
+              "path": "assets/fonts/mulish-v12-latin-500.woff",
+              "sha256": "47b779629625cd04fd24280dce272dd05b1f05cb51c4cd9ac59907c296697afb"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-500.woff2",
+              "sha256": "faf6e6e3573dc6f4be5e7efe63ccd97dbe4b5a63de4ca70f8587566ca91063e1"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-700.woff",
+              "sha256": "b6df2cc9cbf6d5df623eb41e17a3f2560a2bb3e4bfda2daa3d071b8050a705d8"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-700.woff2",
+              "sha256": "3aa91c51b50b964f0b5bee46661c9d6b6846001def952144cfdf5572c52ae2d2"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-700italic.woff",
+              "sha256": "3bdd626f3515f6168d43afa8d62684f5467a06cde46f2fe330c0f82f020c9ec1"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-700italic.woff2",
+              "sha256": "41d043158cc5c42e2d131d8690e288b228f5be067e534c3a8241839410799b44"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-800.woff",
+              "sha256": "1e38dd09de85eeed7496ac2d02686cd6fbebac11d0ef169146a56b3d346c163b"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-800.woff2",
+              "sha256": "c6efaa026081560a5beeb2828f60cf762a8bed346153dd6fc8a3b80b6216881b"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-italic.woff",
+              "sha256": "a6999d52c1e2421f3f3e328c4568ae579ca4ae94034b23f00d4d674c71223243"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-italic.woff2",
+              "sha256": "4908c7d8cbedbe4eeecdd60bd0a3e838a1844eb2091fd687ccea805d2176b2cd"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-regular.woff",
+              "sha256": "311fcff59328116f0133af4815b16f66b8718c393e32b349a1d6a9276b1d7f2d"
+            },
+            {
+              "path": "assets/fonts/mulish-v12-latin-regular.woff2",
+              "sha256": "ad234f0985f2142bb1fa3a281ddf2511d320f84f73422df2b2384f115b4b9131"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "journal",
@@ -214,7 +621,99 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "870d2b5200aa5a3487d9f3c2479989a6c2cbcddfdc3adf85789597fd8bacb9c0"
+      "treeSha256": "870d2b5200aa5a3487d9f3c2479989a6c2cbcddfdc3adf85789597fd8bacb9c0",
+      "embeddedFonts": [
+        {
+          "family": "Inter",
+          "files": [
+            {
+              "path": "assets/fonts/inter-v12-latin-500.woff",
+              "sha256": "2514f3dfbfcbcfa6e0515edbcaceb65a682c7d6062e1a6b2d438917cc75382e9"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-500.woff2",
+              "sha256": "d53336707c39d1ec20a2b1f7399ca9f183c45592e215a42fd596dfa2dbb8ad7a"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-600.woff",
+              "sha256": "22b2f9fbbe8a76005ec2f4ef38f2a412267a00578c838e01233711f22d329004"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-600.woff2",
+              "sha256": "048d136d592e66896cccc1fe4fada4feb16b7f6af671cd49a2fe6ed6b2276c6c"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-700.woff",
+              "sha256": "51df444d3a9a5b5368402f46d7ec6145d78a8e55d184c12bf431c72a3c982da6"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-700.woff2",
+              "sha256": "ced2d8e02e2fbf08d2edec9b5f13648ed8348588a05f7181632f3c1dd6e1f5c3"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-regular.woff",
+              "sha256": "3ea830d422488e32c1394d4db011a7761ba94ed5e8ee150a3b3ca5139ac86017"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-regular.woff2",
+              "sha256": "0364d368abf457d4e70dbc7a7a360f3486eaea2837b194915b23d4398bee91ac"
+            }
+          ]
+        },
+        {
+          "family": "Lora",
+          "files": [
+            {
+              "path": "assets/fonts/lora-v25-latin-500.woff",
+              "sha256": "b41d041bc5d89843d98c94161f99eedf6bd33582a04e2caabcec2e526b32c690"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-500.woff2",
+              "sha256": "a030441aff16edfc8321df07f50838f9c3ca55a5722e015578c6e5faf2a15ff7"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-600.woff",
+              "sha256": "84fd1829f9c677c9a489470ae388c41db16ea47ccae2aaf6f0939ea6cafe17a5"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-600.woff2",
+              "sha256": "44b4442febfe231cca21eb677d1d8786c2871ad4df5b242871213b938275eb25"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700.woff",
+              "sha256": "b3e36da1e5b784c6b4893373759056f72917e874c61d8726a7705ecac5d29f3f"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700.woff2",
+              "sha256": "3a17e5edebc51237d03713bb1097838c89a66ead9aa88e1457856fa33307bcb9"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700italic.woff",
+              "sha256": "824b835cd6bad121d5c006d72ecb5d000d97794f540533a771bf1bd4af941d33"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700italic.woff2",
+              "sha256": "032fd06fe8afb0177d1ea8da8788295b5e9ed9a2c87c766ac3e3de4510abef53"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-italic.woff",
+              "sha256": "03e106f74edd76bcaf9de6a3d54d333d3b43825ba7d6ecffb43c537833409fc3"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-italic.woff2",
+              "sha256": "e254162ac42128b141fe361781eb3062bd213b112a4be0987b5ef36ab010aed0"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-regular.woff",
+              "sha256": "0666dd981bab781d3d103a646cc23c9bb397da513598abfbb62c946caa8dccd5"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-regular.woff2",
+              "sha256": "0d707cc06b442a17dd58f0ed2176c626e6b7c5808d43c2bedf80136945c6994b"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "headline",
@@ -236,7 +735,99 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "8911f2c84d571b0c5b92686464b3cb4c4a7e37782f227e36abae9ebe5f58c97e"
+      "treeSha256": "8911f2c84d571b0c5b92686464b3cb4c4a7e37782f227e36abae9ebe5f58c97e",
+      "embeddedFonts": [
+        {
+          "family": "Inter",
+          "files": [
+            {
+              "path": "assets/fonts/inter-v12-latin-500.woff",
+              "sha256": "2514f3dfbfcbcfa6e0515edbcaceb65a682c7d6062e1a6b2d438917cc75382e9"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-500.woff2",
+              "sha256": "d53336707c39d1ec20a2b1f7399ca9f183c45592e215a42fd596dfa2dbb8ad7a"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-600.woff",
+              "sha256": "22b2f9fbbe8a76005ec2f4ef38f2a412267a00578c838e01233711f22d329004"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-600.woff2",
+              "sha256": "048d136d592e66896cccc1fe4fada4feb16b7f6af671cd49a2fe6ed6b2276c6c"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-700.woff",
+              "sha256": "51df444d3a9a5b5368402f46d7ec6145d78a8e55d184c12bf431c72a3c982da6"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-700.woff2",
+              "sha256": "ced2d8e02e2fbf08d2edec9b5f13648ed8348588a05f7181632f3c1dd6e1f5c3"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-regular.woff",
+              "sha256": "3ea830d422488e32c1394d4db011a7761ba94ed5e8ee150a3b3ca5139ac86017"
+            },
+            {
+              "path": "assets/fonts/inter-v12-latin-regular.woff2",
+              "sha256": "0364d368abf457d4e70dbc7a7a360f3486eaea2837b194915b23d4398bee91ac"
+            }
+          ]
+        },
+        {
+          "family": "Lora",
+          "files": [
+            {
+              "path": "assets/fonts/lora-v25-latin-500.woff",
+              "sha256": "b41d041bc5d89843d98c94161f99eedf6bd33582a04e2caabcec2e526b32c690"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-500.woff2",
+              "sha256": "a030441aff16edfc8321df07f50838f9c3ca55a5722e015578c6e5faf2a15ff7"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-600.woff",
+              "sha256": "84fd1829f9c677c9a489470ae388c41db16ea47ccae2aaf6f0939ea6cafe17a5"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-600.woff2",
+              "sha256": "44b4442febfe231cca21eb677d1d8786c2871ad4df5b242871213b938275eb25"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700.woff",
+              "sha256": "b3e36da1e5b784c6b4893373759056f72917e874c61d8726a7705ecac5d29f3f"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700.woff2",
+              "sha256": "3a17e5edebc51237d03713bb1097838c89a66ead9aa88e1457856fa33307bcb9"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700italic.woff",
+              "sha256": "824b835cd6bad121d5c006d72ecb5d000d97794f540533a771bf1bd4af941d33"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-700italic.woff2",
+              "sha256": "032fd06fe8afb0177d1ea8da8788295b5e9ed9a2c87c766ac3e3de4510abef53"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-italic.woff",
+              "sha256": "03e106f74edd76bcaf9de6a3d54d333d3b43825ba7d6ecffb43c537833409fc3"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-italic.woff2",
+              "sha256": "e254162ac42128b141fe361781eb3062bd213b112a4be0987b5ef36ab010aed0"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-regular.woff",
+              "sha256": "0666dd981bab781d3d103a646cc23c9bb397da513598abfbb62c946caa8dccd5"
+            },
+            {
+              "path": "assets/fonts/lora-v25-latin-regular.woff2",
+              "sha256": "0d707cc06b442a17dd58f0ed2176c626e6b7c5808d43c2bedf80136945c6994b"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "solo",
@@ -276,7 +867,60 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "a339453d2b4cd8cb28a4bf21ea3e9cfb1bdf6bbeeb936cbca9a2b5f148ae14a5"
+      "treeSha256": "a339453d2b4cd8cb28a4bf21ea3e9cfb1bdf6bbeeb936cbca9a2b5f148ae14a5",
+      "embeddedFonts": [
+        {
+          "family": "JetBrains Mono",
+          "files": [
+            {
+              "path": "assets/fonts/jetbrains-mono-v13-latin-700.woff2",
+              "sha256": "b61b3571184874913a6725fcca83072a32d7e67b20035f2bb00b622005fe4f2b"
+            },
+            {
+              "path": "assets/fonts/jetbrains-mono-v13-latin-700italic.woff2",
+              "sha256": "6b6a9998d46ed1314bb6696224dc924a9af64c285cb67751afecf3316fe93a52"
+            },
+            {
+              "path": "assets/fonts/jetbrains-mono-v13-latin-800.woff2",
+              "sha256": "e5db5b8a17181b24a900ee6dd7b80e331580676c54e51fa0afcba5d37a612da1"
+            },
+            {
+              "path": "assets/fonts/jetbrains-mono-v13-latin-italic.woff2",
+              "sha256": "1cf35d4bf720d58a2de6b1117d7368243738f15b6af0fc194e4be37a95c42e3e"
+            },
+            {
+              "path": "assets/fonts/jetbrains-mono-v13-latin-regular.woff2",
+              "sha256": "78f358e747d690a7df06f17ad1c4e190bd1b7db6c69335e86d60e75975aade59"
+            }
+          ]
+        },
+        {
+          "family": "Libre Baskerville",
+          "files": [
+            {
+              "path": "assets/fonts/libre-baskerville-v14-latin-700.woff2",
+              "sha256": "658cbf469e751ade6d30b701fc7ca00b3403329481955d30acb721ca38b45d99"
+            },
+            {
+              "path": "assets/fonts/libre-baskerville-v14-latin-italic.woff2",
+              "sha256": "d809e5e194d9762855a81f8e4002da916b66a81ddc4b3fbdaf770ce4aa0fb560"
+            },
+            {
+              "path": "assets/fonts/libre-baskerville-v14-latin-regular.woff2",
+              "sha256": "6c6c9c3fad669c3d32227f5cc3467735c8211ddcf4f8c184c2e62e7f3ef7af44"
+            }
+          ]
+        },
+        {
+          "family": "Manrope",
+          "files": [
+            {
+              "path": "assets/fonts/Manrope[wght].woff2",
+              "sha256": "b079b975d509b2bac8c43ba6fac399095b9d9eb9bc7761486b5ea675da7b7fd1"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "episode",
@@ -304,7 +948,18 @@
         }
       ],
       "version": "1.0.0",
-      "treeSha256": "28bd1cefbd368a942915d2994a85b60fd4558c0b38e76a1dd25722728adb518c"
+      "treeSha256": "28bd1cefbd368a942915d2994a85b60fd4558c0b38e76a1dd25722728adb518c",
+      "embeddedFonts": [
+        {
+          "family": "Mona Sans",
+          "files": [
+            {
+              "path": "assets/fonts/Mona-Sans.woff2",
+              "sha256": "6bde7bbfcd77d21bf13d8d2199e4299f66d24e9a69c231ae674266951f5c3a6c"
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "starter",
@@ -821,7 +1476,7 @@
       "name": "taste",
       "upstream": "https://github.com/TryGhost/Taste",
       "reason": "outside-origin-at-runtime",
-      "detail": "default.hbs loads its fonts from fonts.googleapis.com and fonts.gstatic.com at page load, which the platform forbids (ws#1067)"
+      "detail": "default.hbs loads its fonts from fonts.googleapis.com and fonts.gstatic.com at page load, which the platform forbids"
     },
     {
       "name": "zap",
@@ -858,6 +1513,182 @@
       "upstream": "https://github.com/TryGhost/action-deploy-theme",
       "reason": "not-a-theme",
       "detail": "A GitHub Action that uploads a theme to a Ghost site, not a theme"
+    },
+    {
+      "name": "pico",
+      "upstream": "https://github.com/TryGhost/Pico",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs line 90 loads jQuery 3.4.1 from code.jquery.com at page load; MIT, archived; removing the script means patching the theme"
+    },
+    {
+      "name": "wave-archive",
+      "upstream": "https://github.com/TryGhost/Wave-Archive",
+      "reason": "outside-origin-at-runtime",
+      "detail": "default.hbs loads jQuery 3.3.1 from code.jquery.com at page load; MIT, archived; removing the script means patching the theme"
+    },
+    {
+      "name": "source-activitypub",
+      "upstream": "https://github.com/TryGhost/Source-ActivityPub",
+      "reason": "site-specific",
+      "detail": "A customised copy of Source built for one site (the ActivityPub site), not a general-purpose theme; Source itself is bundled from the base image"
+    },
+    {
+      "name": "starter-activitypub",
+      "upstream": "https://github.com/TryGhost/Starter-ActivityPub",
+      "reason": "site-specific",
+      "detail": "A fork described as a customised Source theme built for one site (the ActivityPub site), not a general-purpose theme; archived"
+    }
+  ],
+  "embeddedFontFamilies": [
+    {
+      "family": "Inter",
+      "dir": "inter",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/inter/OFL.txt",
+        "copyright": "Copyright 2020 The Inter Project Authors (https://github.com/rsms/inter)",
+        "sha256": "5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57"
+      },
+      "reservedFontNames": [],
+      "modification": "none"
+    },
+    {
+      "family": "JetBrains Mono",
+      "dir": "jetbrains-mono",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/jetbrainsmono/OFL.txt",
+        "copyright": "Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)",
+        "sha256": "b2fe5e8987594e9ffd1d2ca52a2f5d73eb8335243893c5d6254b5ad69269591d"
+      },
+      "reservedFontNames": [],
+      "modification": "none"
+    },
+    {
+      "family": "Libre Baskerville",
+      "dir": "libre-baskerville",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/librebaskerville/OFL.txt",
+        "copyright": "Copyright 2012 The Libre Baskerville Project Authors (https://github.com/impallari/Libre-Baskerville) with Reserved Font Name Libre Baskerville.",
+        "sha256": "3624eddd4c8f8a908130a417ae7cd089c9da69899c4e0ca1a5217d0a6fae16fd"
+      },
+      "reservedFontNames": ["Libre Baskerville"],
+      "modification": "none"
+    },
+    {
+      "family": "Lora",
+      "dir": "lora",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/lora/OFL.txt",
+        "copyright": "Copyright 2011 The Lora Project Authors (https://github.com/cyrealtype/Lora-Cyrillic), with Reserved Font Name \"Lora\".",
+        "sha256": "1d9a970809ac804b582a6ce7f0ebc4e7fefcbfd7ff6299cad35ee656a21be716"
+      },
+      "reservedFontNames": ["Lora"],
+      "modification": "none"
+    },
+    {
+      "family": "Manrope",
+      "dir": "manrope",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/manrope/OFL.txt",
+        "copyright": "Copyright 2018 The Manrope Project Authors (https://github.com/googlefonts/manrope)",
+        "sha256": "58172e0c0fac2cda8a37b348164bb55e44b0e69051e557e92b1d3f6910141f7b"
+      },
+      "reservedFontNames": [],
+      "modification": "none"
+    },
+    {
+      "family": "Mona Sans",
+      "dir": "mona-sans",
+      "upstream": "https://github.com/github/mona-sans",
+      "commit": "4bc6ba8b354c36b4fb66d32cd67b4c1f2beb0a06",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "OFL.txt",
+        "copyright": "Copyright 2022 The Mona Sans Project Authors (https://github.com/github/mona-sans), with Reserved Font Name \"Mona\"",
+        "sha256": "9261dcb61fb5e3c587d50d7a9fdae12bc7422d8822d7ac06b8f34550479575de"
+      },
+      "reservedFontNames": ["Mona"],
+      "modification": "none"
+    },
+    {
+      "family": "Mulish",
+      "dir": "mulish",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/mulish/OFL.txt",
+        "copyright": "Copyright 2016 The Mulish Project Authors (https://github.com/googlefonts/mulish)",
+        "sha256": "097e9ac414d9251c8580c073a13f8899798c66db746de60662148789ca693f19"
+      },
+      "reservedFontNames": [],
+      "modification": "none"
+    },
+    {
+      "family": "Open Sans",
+      "dir": "open-sans",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/opensans/OFL.txt",
+        "copyright": "Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans)",
+        "sha256": "fbbbcfef55318de350562559b671360de6d597112ecc5c73881b05092db89602"
+      },
+      "reservedFontNames": [],
+      "modification": "none"
+    },
+    {
+      "family": "PT Serif",
+      "dir": "pt-serif",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/ptserif/OFL.txt",
+        "copyright": "Copyright (c) 2010, ParaType Ltd. (http://www.paratype.com/public),",
+        "sha256": "ddf311c28ddf5a5ad9747649837346b67bed9d356789c3072bb27dbce49e514d"
+      },
+      "reservedFontNames": ["PT Sans", "PT Serif", "ParaType"],
+      "modification": "none"
+    },
+    {
+      "family": "Raleway",
+      "dir": "raleway",
+      "upstream": "https://github.com/google/fonts",
+      "commit": "86aced91de05cd4f96a06838124cca45be337b2b",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "sourcePath": "ofl/raleway/OFL.txt",
+        "copyright": "Copyright 2010 The Raleway Project Authors (impallari@gmail.com), with Reserved Font Name \"Raleway\".",
+        "sha256": "7e946cf1171784d1015279e7dc35f827957a6b5d1f1f659ae0c98e5f5e37ed9b"
+      },
+      "reservedFontNames": ["Raleway"],
+      "modification": "none"
     }
   ]
 }

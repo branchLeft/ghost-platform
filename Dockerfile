@@ -123,6 +123,7 @@ RUN rm -rf /tmp/kalotyp
 # the content directory by the base image's entrypoint, theme by theme.
 COPY themes/fetch.mjs themes/verify.mjs themes/manifest.json /tmp/themes/
 COPY themes/lib/ /tmp/themes/lib/
+COPY themes/licences/ /tmp/themes/licences/
 RUN set -e \
     && node /tmp/themes/fetch.mjs --out /tmp/themes-bundle \
     && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \

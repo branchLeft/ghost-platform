@@ -10,13 +10,19 @@ import { fileURLToPath } from 'node:url';
 import { fontsCss, readManifest } from './fetch.mjs';
 import {
   declaredReservedFontName,
+  declaredReservedNames,
   EXCLUSION_REASONS,
   OPEN_LICENCES,
+  screening,
   validateManifest,
 } from './lib/manifest.mjs';
+import { sha256File } from './lib/treehash.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REAL = readManifest();
+const SNAPSHOT = JSON.parse(
+  fs.readFileSync(path.join(HERE, 'org-theme-repos.snapshot.json'), 'utf8')
+);
 const clone = () => structuredClone(REAL);
 
 describe('the committed manifest', () => {
@@ -80,6 +86,33 @@ describe('the committed manifest', () => {
       assert.ok(
         REAL.excluded.some((e) => e.name === wanted && e.reason === 'outside-origin-at-runtime'),
         wanted
+      );
+    }
+  });
+
+  it('screens every theme repository in the committed snapshot of the organisation', () => {
+    assert.deepEqual(screening(REAL, SNAPSHOT), { unscreened: [], unknown: [] });
+  });
+
+  it('excludes the jQuery-from-a-CDN themes Pico and Wave-Archive', () => {
+    for (const wanted of ['pico', 'wave-archive']) {
+      assert.ok(
+        REAL.excluded.some((e) => e.name === wanted && e.reason === 'outside-origin-at-runtime'),
+        wanted
+      );
+    }
+  });
+
+  it('records the licence text of every embedded font family, as pinned', () => {
+    for (const f of REAL.embeddedFontFamilies) {
+      const file = path.join(HERE, 'licences', f.dir, f.licence.file);
+      assert.equal(sha256File(file), f.licence.sha256, `${f.family} licence differs from its pin`);
+      const text = fs.readFileSync(file, 'utf8');
+      assert.ok(text.includes(f.licence.copyright), `${f.family}: copyright line not in licence`);
+      assert.deepEqual(
+        declaredReservedNames(text).sort(),
+        [...f.reservedFontNames].sort(),
+        `${f.family}: reserved font names differ from the licence`
       );
     }
   });
@@ -163,6 +196,95 @@ describe('the licence check: red cases', () => {
     const m = clone();
     m.excluded[0].reason = 'felt like it';
     assert.match(validateManifest(m).join('\n'), /reason must be one of/);
+  });
+});
+
+describe('the screening check: red cases', () => {
+  it('dropping Pico from the exclusions leaves it unscreened', () => {
+    const m = clone();
+    m.excluded = m.excluded.filter((e) => e.name !== 'pico');
+    assert.deepEqual(screening(m, SNAPSHOT), { unscreened: ['pico'], unknown: [] });
+  });
+
+  it('a theme repository added to the organisation is unscreened until listed', () => {
+    const snapshot = { repos: [...SNAPSHOT.repos, 'Brand-New'] };
+    assert.deepEqual(screening(REAL, snapshot).unscreened, ['brand-new']);
+  });
+
+  it('an entry for a repository absent from the snapshot is reported', () => {
+    const m = clone();
+    m.excluded.push({
+      ...m.excluded[0],
+      name: 'ghost-of-a-theme',
+      upstream: 'https://github.com/X/Ghost-Of-A-Theme',
+    });
+    assert.deepEqual(screening(m, SNAPSHOT).unknown, ['ghost-of-a-theme']);
+  });
+});
+
+describe('the embedded font records: red cases', () => {
+  const themeWithFonts = (m) => m.themes.find((t) => t.embeddedFonts?.length > 0);
+
+  it('a theme font family with no licence record fails', () => {
+    const m = clone();
+    themeWithFonts(m).embeddedFonts[0].family = 'Unlicensed Sans';
+    assert.match(
+      validateManifest(m).join('\n'),
+      /Unlicensed Sans: family is not in embeddedFontFamilies/
+    );
+  });
+
+  it('a family under a licence other than OFL-1.1 fails', () => {
+    const m = clone();
+    m.embeddedFontFamilies[0].licence.spdx = 'MIT';
+    assert.match(validateManifest(m).join('\n'), /embedded fonts are carried under OFL-1.1 only/);
+  });
+
+  it('a file with no hash fails', () => {
+    const m = clone();
+    delete themeWithFonts(m).embeddedFonts[0].files[0].sha256;
+    assert.match(validateManifest(m).join('\n'), /sha256 must be 64 hex characters/);
+  });
+
+  it('a family marked modified fails', () => {
+    const m = clone();
+    m.embeddedFontFamilies[0].modification = 'subset';
+    assert.match(validateManifest(m).join('\n'), /modification must be "none"/);
+  });
+
+  it('a family no theme embeds fails, so records cannot rot', () => {
+    const m = clone();
+    m.embeddedFontFamilies.push({ ...m.embeddedFontFamilies[0], family: 'Orphan', dir: 'orphan' });
+    assert.match(validateManifest(m).join('\n'), /embedded font Orphan: no theme embeds it/);
+  });
+});
+
+describe('declaredReservedNames', () => {
+  it('reads quoted, several, bare and no names', () => {
+    assert.deepEqual(
+      declaredReservedNames(
+        'Copyright 2011 The Lora Project Authors, with Reserved Font Name "Lora".\n\n-----\nSIL OPEN FONT LICENSE Version 1.1'
+      ),
+      ['Lora']
+    );
+    assert.deepEqual(
+      declaredReservedNames(
+        'Copyright (c) 2010, ParaType Ltd.,\nwith Reserved Font Names "PT Sans", "PT Serif" and "ParaType".\n\n-----\nSIL OPEN FONT LICENSE Version 1.1'
+      ),
+      ['PT Sans', 'PT Serif', 'ParaType']
+    );
+    assert.deepEqual(
+      declaredReservedNames(
+        'Copyright 2012 The Libre Baskerville Project Authors with Reserved Font Name Libre Baskerville.\n\n-----\nSIL OPEN FONT LICENSE Version 1.1'
+      ),
+      ['Libre Baskerville']
+    );
+    assert.deepEqual(
+      declaredReservedNames(
+        'Copyright 2020 The Inter Project Authors\n\n-----\nSIL OPEN FONT LICENSE Version 1.1\n"Reserved Font Name" refers to any names'
+      ),
+      []
+    );
   });
 });
 

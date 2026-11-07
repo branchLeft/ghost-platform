@@ -17,7 +17,12 @@ export const EXCLUSION_REASONS = [
   'unmaintained',
   'technical-blocker',
   'not-a-theme',
+  'site-specific',
 ];
+
+// Extensions that make a file a font. verify.mjs fails any such file under a
+// bundled theme that the manifest does not list.
+export const FONT_EXTENSIONS = /\.(woff2?|ttf|otf|eot|ttc)$/i;
 
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -74,6 +79,7 @@ export function validateManifest(m) {
     problems.push('ghost must be the pinned Ghost version');
   if (!Array.isArray(m?.themes)) problems.push('themes must be a list');
   if (!Array.isArray(m?.fonts)) problems.push('fonts must be a list');
+  if (!Array.isArray(m?.embeddedFontFamilies)) problems.push('embeddedFontFamilies must be a list');
   if (!Array.isArray(m?.excluded)) problems.push('excluded must be a list');
   if (problems.length) return problems;
 
@@ -154,6 +160,62 @@ export function validateManifest(m) {
     }
   }
 
+  const embeddedFamilies = new Map();
+  for (const f of m.embeddedFontFamilies) {
+    const where = `embedded font ${f.family}`;
+    if (typeof f.family !== 'string' || f.family === '')
+      problems.push('embedded font: family required');
+    if (embeddedFamilies.has(f.family)) problems.push(`${where}: duplicate family`);
+    embeddedFamilies.set(f.family, f);
+    if (!SLUG.test(f.dir ?? '')) problems.push(`${where}: dir must be a lowercase slug`);
+    if (!GITHUB.test(f.upstream ?? ''))
+      problems.push(`${where}: upstream must be a github.com repository URL`);
+    if (!HEX40.test(f.commit ?? '')) problems.push(`${where}: commit must be a full 40-hex commit`);
+    checkLicence(problems, where, f.licence);
+    if (f.licence?.spdx && f.licence.spdx !== 'OFL-1.1')
+      problems.push(`${where}: embedded fonts are carried under OFL-1.1 only`);
+    if (typeof f.licence?.sourcePath !== 'string' || f.licence.sourcePath === '')
+      problems.push(`${where}: licence.sourcePath must name the licence file in the upstream`);
+    if (
+      !Array.isArray(f.reservedFontNames) ||
+      f.reservedFontNames.some((n) => typeof n !== 'string' || n === '')
+    ) {
+      problems.push(`${where}: reservedFontNames must be a list of names (empty if none)`);
+    }
+    // The files are shipped as the theme carries them, byte for byte.
+    if (f.modification !== 'none') problems.push(`${where}: modification must be "none"`);
+  }
+
+  const usedFamilies = new Set();
+  for (const t of m.themes) {
+    const seen = new Set();
+    for (const e of t.embeddedFonts ?? []) {
+      const where = `theme ${t.name}: embeddedFonts ${e.family}`;
+      if (!embeddedFamilies.has(e.family))
+        problems.push(`${where}: family is not in embeddedFontFamilies`);
+      usedFamilies.add(e.family);
+      if (!Array.isArray(e.files) || e.files.length === 0)
+        problems.push(`${where}: files must be a non-empty list`);
+      for (const file of e.files ?? []) {
+        const p = file.path ?? '';
+        if (
+          !/^[A-Za-z0-9][^\\]*$/.test(p) ||
+          p.split('/').includes('..') ||
+          !FONT_EXTENSIONS.test(p)
+        )
+          problems.push(`${where}: path ${JSON.stringify(p)} must be a relative font file path`);
+        if (seen.has(p)) problems.push(`${where}: ${p} is listed twice in theme ${t.name}`);
+        seen.add(p);
+        if (!HEX64.test(file.sha256 ?? ''))
+          problems.push(`${where}: ${p} sha256 must be 64 hex characters`);
+      }
+    }
+  }
+  for (const family of embeddedFamilies.keys()) {
+    if (!usedFamilies.has(family))
+      problems.push(`embedded font ${family}: no theme embeds it; remove the record`);
+  }
+
   const excluded = new Set();
   for (const e of m.excluded) {
     const where = `excluded ${e.name}`;
@@ -169,6 +231,37 @@ export function validateManifest(m) {
       problems.push(`${where}: upstream must be a github.com repository URL`);
   }
   return problems;
+}
+
+// The lowercase repository name every bundled or excluded theme answers to: the
+// upstream repository, or the theme name for one shipped in the base image.
+export function catalogue(m) {
+  const key = (e) => (e.upstream ? e.upstream.split('/').pop() : e.name).toLowerCase();
+  return [...m.themes.map(key), ...m.excluded.map(key)].sort();
+}
+
+// Compare the manifest with a snapshot of the organisation's theme repositories
+// ({repos: [...]}). `unscreened` are in the snapshot but neither bundled nor
+// excluded; `unknown` are in the manifest but not in the snapshot.
+export function screening(m, snapshot) {
+  const have = new Set(catalogue(m));
+  const want = new Set(snapshot.repos.map((r) => r.toLowerCase()));
+  return {
+    unscreened: [...want].filter((r) => !have.has(r)).sort(),
+    unknown: [...have].filter((r) => !want.has(r)).sort(),
+  };
+}
+
+// Every Reserved Font Name an embedded font's licence declares, from the
+// copyright notice above the licence text (empty when it declares none).
+export function declaredReservedNames(licenceText) {
+  const head = licenceText.split(/^.*SIL OPEN FONT LICENSE.*$/im)[0];
+  const m = /\bwith\s+Reserved\s+Font\s+Names?\s+([\s\S]*)$/i.exec(head);
+  if (!m) return [];
+  const quoted = [...m[1].matchAll(/["“]([^"”]+)["”]/g)].map((q) => q[1].trim());
+  if (quoted.length > 0) return quoted;
+  const bare = /^[^.\n]+/.exec(m[1]);
+  return bare ? [bare[0].trim()] : [];
 }
 
 // The copyright line a font licence declares a Reserved Font Name on, if any.

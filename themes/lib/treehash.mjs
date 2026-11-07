@@ -1,11 +1,7 @@
-// A content hash of a directory tree: sha256 over the sorted lines
-// "<sha256 of file>  <posix path>\n". Independent of file modes, mtimes and of
-// how the tree arrived (a GitHub tarball, git archive, a copy), so the same
-// pin holds on a laptop and in the image build.
-//
-// A symbolic link is hashed as "link:<target>" and must be relative and stay
-// inside the tree: a link out of it could make the hash vouch for bytes it
-// never read.
+// A content hash of a directory tree: sha256 over the sorted lines "<sha256 of file>  <posix path>\n".
+// Independent of modes, mtimes and how the tree arrived, so one pin holds on a laptop and in the build.
+// A symbolic link is hashed as "link:<target>" and must stay inside the tree, or the hash
+// would vouch for bytes it never read.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
