@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TokenVerifier } from 'ghost-platform-identity/dist/index.js';
 import { createClientLimit, type ClientLimitOptions } from './clientLimit.js';
 import { cookieName, parseCookies, setCookie } from './cookies.js';
+import { portalErrorLine, type PortalErrorStep } from './errorLine.js';
 import { escapeHtml, renderPage, STYLESHEET, type NavItem } from './html.js';
 import { authorizeUrl, expiryOf, exchangeCode, newPkce, type OidcClient } from './oidc.js';
 import { PendingLoginSealer } from './pendingLogin.js';
@@ -112,11 +113,10 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   const clientLimit =
     options.clientLimit === undefined ? undefined : createClientLimit(options.clientLimit);
 
-  function report(step: 'bind' | 'landing' | 'action' | 'handler', error: unknown): void {
+  function report(step: PortalErrorStep, error: unknown): void {
     if (options.onError === undefined) return;
-    const name = error instanceof Error ? error.name : typeof error;
     try {
-      options.onError(JSON.stringify({ event: 'portal.error', step, error: name }));
+      options.onError(portalErrorLine(step, error));
     } catch {
       // Nowhere left to report to.
     }

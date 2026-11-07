@@ -4,8 +4,21 @@ import { fileURLToPath } from 'node:url';
 
 const SOURCE_ROOT = fileURLToPath(new URL('../src/', import.meta.url));
 
-/** The module sabotaged when a caller names none. */
-const DEFAULT_SOURCE = 'tenant/supportSmtpMailer.ts';
+/** A module a test breaks on purpose: its file, and the `src` folder its relative imports point back into. */
+export interface Target {
+  readonly file: string;
+  readonly folder: string;
+}
+
+export const MAILER: Target = {
+  file: fileURLToPath(new URL('../src/tenant/supportSmtpMailer.ts', import.meta.url)),
+  folder: 'tenant',
+};
+
+export const POOL: Target = {
+  file: fileURLToPath(new URL('../src/shell/pool.ts', import.meta.url)),
+  folder: 'shell',
+};
 
 /**
  * Where mutants are written: under portal/apps, so a bare `nodemailer` import
@@ -21,23 +34,26 @@ export function clearMutants(): void {
 /**
  * Loads a copy of a real module with one exact piece of text replaced. The
  * target must occur exactly once, so a mutation that changes nothing, or
- * something else, throws instead of passing quietly. `source` is the module's
- * path under `src/` (the SMTP mailer when omitted). The copy's relative
- * imports are pointed back at the module's own directory under `src/` before
- * the target is looked for, so a target or a replacement may name one of
- * them: `../../src/<directory>/<file>` for a real module, or `./<name>.js` for
- * another mutant written by an earlier call.
+ * something else, throws instead of passing quietly. `where` is the module:
+ * a `Target`, or its path under `src/` (e.g. `shell/clientLimit.ts`); the SMTP
+ * mailer when omitted. The copy's relative imports are pointed back at the
+ * module's own directory under `src/` before the target is looked for, so a
+ * target or a replacement may name one of them: `../../src/<directory>/<file>`
+ * for a real module, or `./<name>.js` for another mutant written by an earlier
+ * call.
  */
 export async function importSabotaged<T>(
   name: string,
   target: string,
   replacement: string,
-  source: string = DEFAULT_SOURCE
+  where: string | Target = MAILER
 ): Promise<T> {
-  const original = readFileSync(`${SOURCE_ROOT}${source}`, 'utf8');
+  const source: Target =
+    typeof where === 'string' ? { file: `${SOURCE_ROOT}${where}`, folder: dirname(where) } : where;
+  const original = readFileSync(source.file, 'utf8');
   const pointed = original.replace(
     /from '\.\/([^']+)'/g,
-    (_match, file: string) => `from '../../src/${dirname(source)}/${file}'`
+    (_match, file: string) => `from '../../src/${source.folder}/${file}'`
   );
   const occurrences = pointed.split(target).length - 1;
   if (occurrences !== 1) {

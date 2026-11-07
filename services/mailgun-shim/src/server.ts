@@ -57,11 +57,21 @@ const smtpFrontDoor = createSmtpFrontDoor({
 });
 void smtpFrontDoor.listen(config.smtpFrontDoor.port, config.smtpFrontDoor.host);
 
+// loadConfig already refuses a drain port with no SHIM_DRAIN_HOST; this repeats
+// it so the listen call below can never fall back to every interface.
+if (config.drainPort !== undefined && config.drainHost === undefined) {
+  throw new Error('SHIM_DRAIN_HOST is required when SHIM_DRAIN_PORT is set');
+}
 const drainServer =
-  drainApp &&
-  drainApp.listen(config.drainPort, () => {
-    log.info('worker_lifecycle', { event: 'drain_listening', port: config.drainPort });
-  });
+  drainApp && config.drainPort !== undefined && config.drainHost !== undefined
+    ? drainApp.listen(config.drainPort, config.drainHost, () => {
+        log.info('worker_lifecycle', {
+          event: 'drain_listening',
+          host: config.drainHost,
+          port: config.drainPort,
+        });
+      })
+    : undefined;
 
 const server = app.listen(config.port, () => {
   log.info('worker_lifecycle', { event: 'listening', port: config.port });
