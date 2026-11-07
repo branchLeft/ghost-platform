@@ -8,9 +8,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// Tenant zero is the only `tenant` entry the repo may hold. Both values are
-// already public in the register.
-export const TENANT_ZERO = Object.freeze({ name: 'blog', repo: 'branchLeft/ghost-tenant-blog' });
+// The names the repo may hold: the infrastructure names and tenant zero, exactly
+// as the register at origin/main carries them. All are already public. The kind
+// is no exemption: an entry of ANY kind is refused unless its name, kind and repo
+// are listed here. Extending this list is a reviewed code change, and it is the
+// only way to add a name.
+export const PERMITTED_ENTRIES = Object.freeze(
+  [
+    { name: 'website', kind: 'infrastructure' },
+    { name: 'edge', kind: 'infrastructure' },
+    { name: 'db', kind: 'infrastructure' },
+    { name: 'monitoring', kind: 'infrastructure' },
+    { name: 'nextcloud1', kind: 'infrastructure' },
+    { name: 'mail-spool', kind: 'infrastructure' },
+    { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },
+  ].map((entry) => Object.freeze(entry))
+);
+const ENTRY_KEYS = new Set(['name', 'kind', 'repo']);
 
 const REGISTER = path.join('registers', 'tenant-names.json');
 // The published packages: `render-core` and `infra/tenant`. Their sources are
@@ -26,8 +40,13 @@ const TENANT_ZERO_REFS = new Set(['ghost-tenant-blog', 'ghost-tenant-blog-blog']
 
 // The two allowlist checks are the whole rule. Mutating either to `return true`
 // is the sabotage the test makes.
-export function isTenantZero(entry) {
-  return entry.name === TENANT_ZERO.name && entry.repo === TENANT_ZERO.repo;
+export function isPermittedEntry(entry) {
+  return PERMITTED_ENTRIES.some(
+    (permitted) =>
+      entry?.name === permitted.name &&
+      entry?.kind === permitted.kind &&
+      entry?.repo === permitted.repo
+  );
 }
 
 export function isTenantZeroRef(ref) {
@@ -45,10 +64,11 @@ function checkRegister(root) {
   if (!Array.isArray(parsed?.names)) return [`${REGISTER}: has no names array`];
   const findings = [];
   for (const entry of parsed.names) {
-    if (entry?.kind === 'infrastructure') continue;
-    if (entry?.kind === 'tenant' && isTenantZero(entry)) continue;
+    const extraKey =
+      entry && typeof entry === 'object' && Object.keys(entry).some((key) => !ENTRY_KEYS.has(key));
+    if (!extraKey && isPermittedEntry(entry)) continue;
     findings.push(
-      `${REGISTER}: a ${JSON.stringify(entry?.kind)} entry other than infrastructure and tenant zero: a customer name belongs in the control plane, not here`
+      `${REGISTER}: an entry that is not on the permitted list of infrastructure names and tenant zero: a customer name belongs in the control plane, not here`
     );
   }
   return findings;
@@ -72,10 +92,10 @@ function* sourceFiles(directory) {
 }
 
 // A register-shaped entry: one object literal holding a string `name` and
-// `kind: 'tenant'`. Other `kind: 'tenant'` objects (a mail identity, a claimant)
-// carry no `name`.
+// `kind: 'tenant'` or `kind: 'infrastructure'`, the register's two kinds. Other
+// `kind: 'tenant'` objects (a mail identity, a claimant) carry no `name`.
 const OBJECT_LITERAL = /\{[^{}]*\}/g;
-const KIND_TENANT = /\bkind['"]?\s*[:=]\s*['"]tenant['"]/;
+const KIND_FIELD = /\bkind['"]?\s*[:=]\s*['"](tenant|infrastructure)['"]/;
 const NAME_FIELD = /\bname['"]?\s*[:=]\s*['"]([^'"]+)['"]/;
 const REPO_FIELD = /\brepo['"]?\s*[:=]\s*['"]([^'"]+)['"]/;
 // A tenant repository reference. `<name>` and `${...}` placeholders do not match.
@@ -86,12 +106,13 @@ function checkSource(root, file) {
   const relative = path.relative(root, file);
   const findings = [];
   for (const [literal] of text.matchAll(OBJECT_LITERAL)) {
-    if (!KIND_TENANT.test(literal)) continue;
+    const kind = KIND_FIELD.exec(literal)?.[1];
+    if (kind === undefined) continue;
     const name = NAME_FIELD.exec(literal)?.[1];
     if (name === undefined) continue;
     const repo = REPO_FIELD.exec(literal)?.[1];
-    if (!isTenantZero({ name, repo })) {
-      findings.push(`${relative}: a register-shaped tenant entry other than tenant zero`);
+    if (!isPermittedEntry({ name, kind, repo })) {
+      findings.push(`${relative}: a register-shaped entry that is not on the permitted list`);
     }
   }
   for (const [, slug] of text.matchAll(TENANT_REPO_REF)) {

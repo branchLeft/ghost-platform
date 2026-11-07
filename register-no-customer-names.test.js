@@ -16,6 +16,8 @@ const ROOT = import.meta.dirname;
 const GUARD = path.join(ROOT, 'scripts', 'assert-register-holds-no-customer-names.js');
 const NAME = 'CUSTOMER_NAME_PLACEHOLDER'.toLowerCase().replaceAll('_', '-');
 const PLACEHOLDER_ENTRY = `  { name: '${NAME}', kind: 'tenant', repo: 'branchLeft/ghost-tenant-${NAME}' },\n`;
+const INFRA_PLACEHOLDER_ENTRY = `  { name: '${NAME}', kind: 'infrastructure' },\n`;
+const INFRA_LINE = "  { name: 'website', kind: 'infrastructure' },\n";
 const ZERO_LINE = "  { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },\n";
 
 const REGISTER = path.join('registers', 'tenant-names.json');
@@ -69,6 +71,44 @@ const PLACEMENTS = [
         });
         return JSON.stringify(register, null, 2);
       }),
+  ],
+  [
+    'the repo register, labelled infrastructure',
+    (root) =>
+      edit(root, REGISTER, (text) => {
+        const register = JSON.parse(text);
+        register.names.push({ name: NAME, kind: 'infrastructure' });
+        return JSON.stringify(register, null, 2);
+      }),
+  ],
+  [
+    'the repo register, labelled infrastructure with a repo field',
+    (root) =>
+      edit(root, REGISTER, (text) => {
+        const register = JSON.parse(text);
+        register.names.push({
+          name: NAME,
+          kind: 'infrastructure',
+          repo: `branchLeft/ghost-tenant-${NAME}`,
+        });
+        return JSON.stringify(register, null, 2);
+      }),
+  ],
+  [
+    'the generated block in the render-core copy, labelled infrastructure',
+    (root) =>
+      edit(root, RENDER_CORE_COPY, (text) =>
+        text.replace(INFRA_LINE, INFRA_LINE + INFRA_PLACEHOLDER_ENTRY)
+      ),
+  ],
+  [
+    'a register-shaped infrastructure entry in another source file',
+    (root) => {
+      fs.writeFileSync(
+        path.join(root, 'infra', 'tenant', 'extra.ts'),
+        `export const X = [{ name: '${NAME}', kind: 'infrastructure' }];\n`
+      );
+    },
   ],
   [
     'the generated block in the render-core copy',
@@ -147,6 +187,34 @@ test('red: an entry of an unknown kind in the register is refused', () => {
   assert.equal(guard(GUARD, root).code, 1);
 });
 
+test('red: a permitted register entry carrying an extra field is refused', () => {
+  const root = tempTree();
+  edit(root, REGISTER, (text) => {
+    const register = JSON.parse(text);
+    register.names[0].note = NAME;
+    return JSON.stringify(register);
+  });
+  const result = guard(GUARD, root);
+  assert.equal(result.code, 1);
+  assert.ok(!result.stderr.includes(NAME), 'a finding never repeats the name');
+});
+
+test('red then green: the register entry kind is no exemption', () => {
+  const root = tempTree();
+  edit(root, REGISTER, (text) => {
+    const register = JSON.parse(text);
+    register.names.push({ name: NAME, kind: 'infrastructure' });
+    return JSON.stringify(register);
+  });
+  assert.equal(guard(GUARD, root).code, 1, 'red: a new infrastructure name is refused');
+  edit(root, REGISTER, (text) => {
+    const register = JSON.parse(text);
+    register.names = register.names.filter((entry) => entry.name !== NAME);
+    return JSON.stringify(register);
+  });
+  assert.equal(guard(GUARD, root).code, 0, 'green: removing it passes');
+});
+
 test('the boundary: unpublished tests and a <name> placeholder in docs are not findings', () => {
   const root = tempTree();
   fs.mkdirSync(path.join(root, 'infra', 'tenant', 'test'), { recursive: true });
@@ -173,10 +241,7 @@ test('a usage error is exit 2', () => {
 test('sabotage: with the allowlist checks removed the guard is blind to every placement (red recorded, then green)', () => {
   const source = fs.readFileSync(GUARD, 'utf-8');
   const blind = source
-    .replace(
-      'return entry.name === TENANT_ZERO.name && entry.repo === TENANT_ZERO.repo;',
-      'return true;'
-    )
+    .replace(/return PERMITTED_ENTRIES\.some\([\s\S]*?\n {2}\);/, 'return true;')
     .replace('return TENANT_ZERO_REFS.has(ref);', 'return true;');
   assert.notEqual(blind, source, 'the mutation applied');
   assert.equal(blind.split('return true;').length - 1, 2, 'both allowlist checks were removed');

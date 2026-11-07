@@ -77,10 +77,18 @@ customer name is ever pulled into a runner's memory or log.
 
 ## Creating the credential (owner)
 
+`gh secret set` prompts for the value itself, so no `read` precedes it:
+
 ```
-read -rs CONTROL_PLANE_NAME_LOOKUP_TOKEN
 gh secret set CONTROL_PLANE_NAME_LOOKUP_TOKEN --repo branchLeft/ghost-platform --env tenant-provisioning
-gh variable set CONTROL_PLANE_NAME_LOOKUP_URL --repo branchLeft/ghost-platform
+```
+
+The URL is a variable and needs its value on the command line. Read it into the
+shell first, then pass it:
+
+```
+read -r CONTROL_PLANE_NAME_LOOKUP_URL
+gh variable set CONTROL_PLANE_NAME_LOOKUP_URL --repo branchLeft/ghost-platform --body "$CONTROL_PLANE_NAME_LOOKUP_URL"
 ```
 
 The secret is an environment secret, never a repository secret:
