@@ -96,6 +96,15 @@ jobs:
       - name: CSP script-hash derivation tests
         run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
 
+      # The checkout proof's own parts: the payment-origin derivation (it
+      # decides what widens script-src, so it refuses a stub, an enforced or a
+      # non-Stripe capture) and the stand-ins the live run uses (fake Stripe,
+      # SMTP sink, the test-key-only setup). node:test and Node built-ins only,
+      # no install. The live run (csp/gate/csp-checkout-gate.sh) needs Docker
+      # and Chromium and stays out of CI.
+      - name: CSP checkout proof tests
+        run: node --test csp/derive/derive-payment-origins.test.mjs csp/proof/*.test.mjs
+
       # The CSP gates' verdict logic. Needs render-core built, so build it
       # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
       # Docker and Chromium and stays out of CI, like csp/proof/.

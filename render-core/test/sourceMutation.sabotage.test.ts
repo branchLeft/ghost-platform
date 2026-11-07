@@ -10,6 +10,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { validate } from '../src/validate.js';
 import type { render as RenderFn } from '../src/render.js';
+import type { renderEdgeSiteBlock as RenderEdgeSiteBlockFn } from '../src/edge.js';
 import type { tenantEnvironment as TenantEnvironmentFn } from '../src/environment.js';
 import type { renderSettings as RenderSettingsFn } from '../src/settings.js';
 import { TEST_ZONES, demoDescriptor, entryTenantDescriptor } from './fixtures.js';
@@ -300,5 +301,93 @@ describe('DEMO-STRIPE-LIMIT — source-mutation sabotage', () => {
       TEST_ZONES
     );
     expect(realEnv).not.toHaveProperty(KEY);
+  });
+});
+
+describe('PAYMENTS-ALLOWANCE — source-mutation sabotage', () => {
+  const themeCsp = { kind: 'computed', hashes: [] } as const;
+  const stripe = { kind: 'stripe' } as const;
+  const ORIGINS_LINE = 'const list = origins[directive] ?? [];';
+
+  it('an edge.ts that drops the measured Stripe origins is caught: the paid header loses js.stripe.com; the real module keeps it', async () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+
+    // RED: mutate the one line that reads the measured origins, so the paid
+    // policy renders as if the allowance were empty -- the regression the live
+    // checkout gate catches as a script-src-elem violation for
+    // https://js.stripe.com on every page of a paid site.
+    const sabotaged = await importSabotaged<{ renderEdgeSiteBlock: typeof RenderEdgeSiteBlockFn }>(
+      'edge.ts',
+      (source) => {
+        if (!source.includes(ORIGINS_LINE)) {
+          throw new Error(
+            'sabotage target string not found in edge.ts -- update the mutation to match the current source'
+          );
+        }
+        return source.replace(ORIGINS_LINE, 'const list: string[] = [];');
+      }
+    );
+    const sabotagedEdge = sabotaged.renderEdgeSiteBlock(
+      descriptor,
+      TEST_ZONES,
+      uploadLimits(),
+      themeCsp,
+      stripe
+    );
+    expect(sabotagedEdge.contentSecurityPolicy).not.toContain('js.stripe.com');
+    expect(sabotagedEdge.contentSecurityPolicy).not.toContain('frame-src');
+
+    // GREEN: the real, unmutated module renders them.
+    const { renderEdgeSiteBlock: realRenderEdgeSiteBlock } = await import('../src/edge.js');
+    const realEdge = realRenderEdgeSiteBlock(
+      descriptor,
+      TEST_ZONES,
+      uploadLimits(),
+      themeCsp,
+      stripe
+    );
+    expect(realEdge.contentSecurityPolicy).toContain('js.stripe.com');
+    expect(realEdge.contentSecurityPolicy).toContain("frame-src 'self' https://js.stripe.com");
+  });
+
+  it('an edge.ts without the origin-shape check lets CSP syntax through the allowlist; the real module refuses it', async () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+    const smuggled =
+      'const list = [...(origins[directive] ?? []), "https://x.example; script-src *"];';
+    const injectOrigin = (source: string): string => {
+      if (!source.includes(ORIGINS_LINE)) {
+        throw new Error(
+          'sabotage target string not found in edge.ts -- update the mutation to match the current source'
+        );
+      }
+      return source.replace(ORIGINS_LINE, smuggled);
+    };
+
+    // RED: a smuggled origin with the shape check removed reaches the header.
+    const unchecked = await importSabotaged<{ renderEdgeSiteBlock: typeof RenderEdgeSiteBlockFn }>(
+      'edge.ts',
+      (source) => {
+        const check = 'if (!PAYMENT_ORIGIN_PATTERN.test(origin)) {';
+        if (!source.includes(check)) {
+          throw new Error(
+            'sabotage target string not found in edge.ts -- update the mutation to match the current source'
+          );
+        }
+        return injectOrigin(source).replace(check, 'if (false) {');
+      }
+    );
+    expect(
+      unchecked.renderEdgeSiteBlock(descriptor, TEST_ZONES, uploadLimits(), themeCsp, stripe)
+        .contentSecurityPolicy
+    ).toContain('script-src *');
+
+    // GREEN: the same smuggled origin against the real shape check is refused.
+    const checked = await importSabotaged<{ renderEdgeSiteBlock: typeof RenderEdgeSiteBlockFn }>(
+      'edge.ts',
+      injectOrigin
+    );
+    expect(() =>
+      checked.renderEdgeSiteBlock(descriptor, TEST_ZONES, uploadLimits(), themeCsp, stripe)
+    ).toThrow(/bare https origin/);
   });
 });

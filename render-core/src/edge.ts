@@ -12,6 +12,7 @@ import type { GateSpec, TenantDescriptor } from './descriptor.js';
 import type { ZoneConfig } from './validate.js';
 import { servedHostnameOf } from './validate.js';
 import type { UploadLimits } from './runtime.js';
+import paymentsOrigins from './payments-origins.json' with { type: 'json' };
 
 export interface EdgeGate {
   readonly kind: 'none' | 'passphrase';
@@ -54,6 +55,55 @@ export type ThemeCsp =
 /** The fail-soft default (LLD-5's own mark): report-only until a real hash set is supplied. */
 export const THEME_CSP_UNAVAILABLE: ThemeCsp = { kind: 'unavailable' };
 
+/**
+ * Whether the site takes payments through Stripe, and so must let the
+ * browser load Stripe's script and frames. `none` renders the policy exactly
+ * as it was before payments existed. Same operational-state rule as
+ * `ThemeCsp`: an explicit parameter, never a `TenantDescriptor` field (a
+ * descriptor field would force a schema bump, and a tenant with no payments
+ * must not get a wider `script-src`). See edge.md#the-payments-allowance.
+ */
+export type PaymentsCsp = { readonly kind: 'stripe' } | { readonly kind: 'none' };
+
+/** The default: no payment origins in the policy. */
+export const PAYMENTS_CSP_NONE: PaymentsCsp = { kind: 'none' };
+
+/** The directives a payments allowance may extend, in rendered order. */
+const PAYMENT_DIRECTIVES = ['script-src', 'frame-src', 'connect-src'] as const;
+type PaymentDirective = (typeof PAYMENT_DIRECTIVES)[number];
+
+// One https origin, nothing else: no path, no wildcard, no quote or
+// semicolon that could close the directive early. Anchored, like
+// SCRIPT_HASH_PATTERN, so a hand edit of the generated file cannot smuggle
+// CSP syntax into the rendered header.
+const PAYMENT_ORIGIN_PATTERN =
+  /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * The origins Stripe needs, per directive. They are MEASURED, not written:
+ * `payments-origins.json` is produced only by
+ * `csp/derive/derive-payment-origins.mjs` from a real browser's violation
+ * report against a real Ghost loading the real Stripe.js, and its `--check`
+ * fails when the file drifts. This module renders them and never adds one.
+ */
+function stripeOrigins(): Readonly<Record<PaymentDirective, readonly string[]>> {
+  const origins = paymentsOrigins.origins as Record<string, string[]>;
+  const out = {} as Record<PaymentDirective, readonly string[]>;
+  for (const directive of PAYMENT_DIRECTIVES) {
+    const list = origins[directive] ?? [];
+    for (const origin of list) {
+      if (!PAYMENT_ORIGIN_PATTERN.test(origin)) {
+        throw new FieldValidationError(
+          `paymentsOrigins.${directive}`,
+          `payments origin "${origin}" must be a bare https origin (scheme and host only).`
+        );
+      }
+    }
+    out[directive] = list;
+  }
+  return out;
+}
+
 export interface EdgeSiteBlock {
   /** The hostname the site is reached on — safe to display, redirect to or
    * log. Never fed to a certificate-admission decision; see
@@ -92,7 +142,10 @@ function edgeGate(gate: GateSpec): EdgeGate {
  * enforcing (LLD-5's fail-soft mark) — never a security-reviewed final
  * policy beyond what the spike measured for the default theme.
  */
-function contentSecurityPolicy(themeCsp: ThemeCsp): {
+function contentSecurityPolicy(
+  themeCsp: ThemeCsp,
+  payments: PaymentsCsp
+): {
   readonly value: string;
   readonly mode: 'enforcing' | 'report-only';
 } {
@@ -100,11 +153,25 @@ function contentSecurityPolicy(themeCsp: ThemeCsp): {
     themeCsp.kind === 'computed' && themeCsp.hashes.length > 0
       ? `script-src 'self' ${themeCsp.hashes.map((hash) => `'${hash}'`).join(' ')}`
       : "script-src 'self'";
+  const origins = payments.kind === 'stripe' ? stripeOrigins() : null;
+  const withOrigins = (directive: PaymentDirective, base: string): string[] => {
+    const extra = origins?.[directive] ?? [];
+    if (extra.length === 0) {
+      // No measured origin: script-src keeps its base; the others are not
+      // rendered at all and fall back to default-src 'self', as before.
+      return directive === 'script-src' ? [base] : [];
+    }
+    return [`${base} ${extra.join(' ')}`];
+  };
   const value = [
     "default-src 'self'",
     "img-src 'self' data: https:",
     "style-src 'self' 'unsafe-inline'",
-    scriptSrc,
+    ...withOrigins('script-src', scriptSrc),
+    // frame-src and connect-src: default-src would not cover a third-party
+    // frame or beacon, and an explicit directive is how they are allowed.
+    ...withOrigins('frame-src', "frame-src 'self'"),
+    ...withOrigins('connect-src', "connect-src 'self'"),
     "frame-ancestors 'self'",
   ].join('; ');
   return { value, mode: themeCsp.kind === 'computed' ? 'enforcing' : 'report-only' };
@@ -114,9 +181,10 @@ export function renderEdgeSiteBlock(
   descriptor: Pick<TenantDescriptor, 'kind' | 'siteUrl' | 'hostname' | 'gate'>,
   zones: Pick<ZoneConfig, 'platformZone' | 'ownedDomains'>,
   limits: UploadLimits,
-  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE
+  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE,
+  payments: PaymentsCsp = PAYMENTS_CSP_NONE
 ): EdgeSiteBlock {
-  const csp = contentSecurityPolicy(themeCsp);
+  const csp = contentSecurityPolicy(themeCsp, payments);
   return {
     displayHostname: new URL(descriptor.siteUrl).host,
     admittedHostname: servedHostnameOf(descriptor, zones),

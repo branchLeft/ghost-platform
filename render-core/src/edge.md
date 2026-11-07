@@ -29,3 +29,28 @@ report-only policy plus a flag — an enforcing policy is never guessed.
 `style-src 'unsafe-inline'` stays for every tenant: Portal styles the iframe
 it builds for itself inline, and that residual is accepted as materially
 less dangerous than injected script.
+
+## The payments allowance
+
+A paid-enabled Ghost loads `https://js.stripe.com/v3/` on every page, and
+Stripe.js opens frames from the same origin. The policy above blocks both, so
+`renderEdgeSiteBlock` takes a fifth parameter, `payments: PaymentsCsp`
+(`{ kind: 'stripe' } | { kind: 'none' }`, default `none`). With `stripe`, each
+directive in `payments-origins.json` that has a measured origin gains it:
+`script-src` after the hashes, plus an explicit `frame-src 'self' <origins>`
+(`default-src` is not a substitute for a third-party frame, and an explicit
+directive is how it is allowed). A directive with no measured origin is not
+rendered and falls back to `default-src 'self'`. `none` renders byte-identically
+to the policy before this parameter existed.
+
+It is a parameter, not a `TenantDescriptor` field, for the reason `ThemeCsp` is
+(operational state; a descriptor field would force a schema bump), and
+additionally because a tenant with no payments must not get a wider `script-src`.
+
+The origins are measured, never written here. `payments-origins.json` is
+produced only by `csp/derive/derive-payment-origins.mjs` from a real browser's
+report against the real Stripe.js. This module only renders them, and refuses an
+entry that is not a bare `https://host` (a quote or a semicolon in it would
+close the directive early). With `stripe` and no derived theme hash set the
+policy is still report-only: a payments allowance never makes a policy
+enforcing. The live proof is `csp/gate/csp-checkout-gate.sh`.

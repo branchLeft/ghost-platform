@@ -39,6 +39,11 @@ serve the policy or the refusal broken and must exit non-zero. It prints `GATE_T
 seconds for LLD-4's release-timing claim (measured on a workstation, not the
 demo host).
 
+This gate is for a site **without** payments: its "exactly one violation" rule
+cannot hold for a paid site, where Ghost loads `js.stripe.com` on every page.
+`csp-checkout-gate.md` is the gate for a paid site. Both source `lib.sh` for the
+Ghost container's arguments and the readiness wait.
+
 Where it runs (the issue's open question) is not decided here: a headless
 Chromium beside seven slots is unmeasured; this gate needs only an origin to
 browse, so it can run from the control side. It never needs egress from the

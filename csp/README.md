@@ -33,6 +33,23 @@ demo-gate) keeps compiling and keeps rendering the report-only policy
 exactly as before — wiring a real, derived value through a running service
 is the harness's job (LLD-3), which does not exist in this repo yet.
 
+**Payments.** A site with paid members enabled
+loads `https://js.stripe.com/v3/` on every page and Stripe.js opens its own
+frames, so the policy above blocks both unless told otherwise.
+`renderEdgeSiteBlock`'s fifth parameter, `payments: PaymentsCsp`, is that
+telling: `{ kind: 'stripe' }` adds the measured origins to `script-src` and an
+explicit `frame-src`; `{ kind: 'none' }` (the default) renders the policy
+byte-for-byte as before. Same rule as `ThemeCsp`: an explicit parameter, never a
+`TenantDescriptor` field, so a tenant with no payments never gets a wider
+`script-src`. Wiring it through the broker or provisioner is a follow-up, as it
+is for `ThemeCsp`. The origins are **measured** by
+`derive/derive-payment-origins.mjs` from a real browser against the real Stripe.js
+and live in `render-core/src/payments-origins.json`. The proof is
+`gate/csp-checkout-gate.sh` (sign-up, magic link, checkout and the return, with a
+fake Stripe API and an SMTP sink; see `gate/csp-checkout-gate.md` for what it
+does and does not prove). `gate/lib.sh` holds the Ghost container's arguments the
+two live gates share.
+
 **`proof/`** — the live proof LLD-5's own "Done means" asks for: a real
 pinned Ghost, this repo's self-hosted widget bundles (`widgets/`, so Portal
 never reaches a third-party origin), a real Caddy in front, and a real

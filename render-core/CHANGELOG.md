@@ -4,6 +4,21 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**The edge policy can allow Stripe, for a site that takes payments.**
+
+- **New:** `renderEdgeSiteBlock(descriptor, zones, limits, themeCsp?, payments?)`
+  and `render(descriptor, zones, themeCsp?, payments?)` take a `PaymentsCsp`
+  (`{ kind: 'stripe' } | { kind: 'none' }`), exported with `PAYMENTS_CSP_NONE`.
+  `stripe` adds the measured origins in `payments-origins.json` (today
+  `https://js.stripe.com` to `script-src` and an explicit `frame-src`).
+- **Unchanged output:** the default is `none`, which renders byte-identically to
+  before, so no existing caller's `edge.json` moves. A tenant with no payments
+  must keep it.
+- **Rollout:** nothing passes `stripe` yet. Wiring it through the broker and the
+  provisioner is a follow-up; until then no deployed edge allows Stripe. The
+  origins are derived, not hand-edited (`csp/derive/derive-payment-origins.md`).
+  See src/edge.md#the-payments-allowance.
+
 **A demo slot cannot connect a real Stripe account.**
 
 - **Changed output:** a demo's `environment:` gains

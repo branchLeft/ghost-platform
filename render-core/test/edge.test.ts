@@ -7,14 +7,19 @@
  * means") lives in `csp/proof/run-proof.sh`, driven by the derivation tool
  * in `csp/derive/`; this file is the pure, no-I/O half.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   renderEdgeSiteBlock,
   THEME_CSP_UNAVAILABLE,
   validateScriptHash,
+  type PaymentsCsp,
   type ScriptHash,
   type ThemeCsp,
 } from '../src/edge.js';
+import { render } from '../src/render.js';
 import { FieldValidationError } from '../src/brand.js';
 import { uploadLimits } from '../src/runtime.js';
 import { TEST_ZONES, demoDescriptor, entryTenantDescriptor } from './fixtures.js';
@@ -111,6 +116,91 @@ describe('renderEdgeSiteBlock — content security policy', () => {
     const edge = renderEdgeSiteBlock(descriptor, TEST_ZONES, limits, themeCsp);
     expect(edge.contentSecurityPolicy).toContain("script-src 'self'");
     expect(edge.contentSecurityPolicy).not.toContain('sha256-');
+  });
+});
+
+describe('renderEdgeSiteBlock — the payments allowance', () => {
+  const limits = uploadLimits();
+  const themeCsp: ThemeCsp = { kind: 'computed', hashes: [HASH_A, HASH_B] };
+  const descriptor = () => validate(entryTenantDescriptor(), TEST_ZONES);
+  // The committed file is the single source of the origins; the test reads it
+  // rather than restating them, so a re-measurement does not need a test edit.
+  const measured = (
+    JSON.parse(
+      readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'payments-origins.json'),
+        'utf-8'
+      )
+    ) as { origins: Record<'script-src' | 'frame-src' | 'connect-src', string[]> }
+  ).origins;
+
+  it('omitting payments renders byte-identically to payments none (existing callers do not move)', () => {
+    const omitted = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, themeCsp);
+    const none = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, themeCsp, { kind: 'none' });
+    expect(none).toEqual(omitted);
+    expect(omitted.contentSecurityPolicy).toBe(
+      "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; " +
+        `script-src 'self' '${HASH_A}' '${HASH_B}'; frame-ancestors 'self'`
+    );
+  });
+
+  it('control: payments none carries no third-party origin at all', () => {
+    const edge = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, themeCsp, { kind: 'none' });
+    expect(edge.contentSecurityPolicy).not.toContain('stripe');
+    expect(edge.contentSecurityPolicy).not.toContain('frame-src');
+  });
+
+  it('stripe adds the measured origins to script-src and an explicit frame-src, and stays enforcing', () => {
+    const edge = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, themeCsp, {
+      kind: 'stripe',
+    });
+    expect(edge.contentSecurityPolicyMode).toBe('enforcing');
+    const expected = [
+      "default-src 'self'",
+      "img-src 'self' data: https:",
+      "style-src 'self' 'unsafe-inline'",
+      `script-src 'self' '${HASH_A}' '${HASH_B}' ${measured['script-src'].join(' ')}`,
+      `frame-src 'self' ${measured['frame-src'].join(' ')}`,
+      ...(measured['connect-src'].length > 0
+        ? [`connect-src 'self' ${measured['connect-src'].join(' ')}`]
+        : []),
+      "frame-ancestors 'self'",
+    ].join('; ');
+    expect(edge.contentSecurityPolicy).toBe(expected);
+    expect(edge.contentSecurityPolicy).toContain('https://js.stripe.com');
+  });
+
+  it('stripe never widens the policy past the measured origins (no wildcard, no scheme source)', () => {
+    const csp = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, themeCsp, {
+      kind: 'stripe',
+    }).contentSecurityPolicy;
+    const scriptSrc = csp.split('; ').find((d) => d.startsWith('script-src')) ?? '';
+    expect(scriptSrc).not.toContain('*');
+    expect(scriptSrc).not.toMatch(/\shttps:(\s|$)/);
+    expect(scriptSrc).not.toContain("'unsafe-inline'");
+    expect(csp.split('; ').find((d) => d.startsWith('default-src'))).toBe("default-src 'self'");
+  });
+
+  it('stripe with no derived theme hash set stays report-only, never a guessed enforcing policy', () => {
+    const edge = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, THEME_CSP_UNAVAILABLE, {
+      kind: 'stripe',
+    });
+    expect(edge.contentSecurityPolicyMode).toBe('report-only');
+    expect(edge.contentSecurityPolicy).toContain('https://js.stripe.com');
+  });
+
+  it('render() passes the allowance through to edge.json, and omits it by default', () => {
+    const stack = validate(entryTenantDescriptor(), TEST_ZONES);
+    const edgeJson = (payments?: PaymentsCsp) => {
+      const artefact = (
+        payments
+          ? render(stack, TEST_ZONES, themeCsp, payments)
+          : render(stack, TEST_ZONES, themeCsp)
+      ).find((a) => a.path === 'edge.json');
+      return JSON.parse(artefact?.content ?? '{}') as { contentSecurityPolicy: string };
+    };
+    expect(edgeJson({ kind: 'stripe' }).contentSecurityPolicy).toContain('https://js.stripe.com');
+    expect(edgeJson().contentSecurityPolicy).not.toContain('stripe');
   });
 });
 
