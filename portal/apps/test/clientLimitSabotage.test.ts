@@ -1,9 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createShell } from '../src/shell/app.js';
+import { parseTrustedProxies } from 'ghost-platform-request-guard/dist/index.js';
+import {
+  CLIENT_BROAD_LIMIT,
+  CLIENT_BROAD_TABLE_SIZE,
+  createClientLimit,
+} from '../src/shell/clientLimit.js';
 import {
   concurrentCallbacks,
+  EDGE,
   floodOutcome,
+  inBlock,
   LIMIT,
+  requestFrom,
+  rotateAcrossOneBlock,
   type CreateShell,
   type FloodOutcome,
 } from './clientLimitRig.js';
@@ -57,7 +67,7 @@ describe('sabotage: the check on starting a sign-in is what refuses a flood', ()
   it('RED: with the check dropped, the thirty-first start is let through', async () => {
     const create = await shellWithLimit(
       'login-check-dropped',
-      'logins.attempt(keyOf(request), nowMs)',
+      'meter(logins, request, nowMs)',
       '({ allowed: true })'
     );
     const outcome = await floodOutcome(create);
@@ -76,7 +86,7 @@ describe('sabotage: the check on the callback is what keeps a flood off the toke
   it('RED: with the check dropped, the thirty-first callback reaches the token endpoint', async () => {
     const create = await shellWithLimit(
       'callback-check-dropped',
-      'callbacks.attempt(keyOf(request), nowMs)',
+      'meter(callbacks, request, nowMs)',
       '({ allowed: true })'
     );
     const outcome = await floodOutcome(create);
@@ -104,6 +114,72 @@ describe('sabotage: keying on the verified client address is what spares the oth
 
   it('GREEN: the real shell keeps the other client admitted', async () => {
     expect((await floodOutcome(createShell)).otherClientLogin.status).toBe(302);
+  });
+});
+
+interface LimitModule {
+  readonly createClientLimit: typeof createClientLimit;
+}
+
+const limitWith = (name: string, target: string, replacement: string): Promise<LimitModule> =>
+  importSabotaged<LimitModule>(name, target, replacement, LIMIT_SOURCE);
+
+describe('sabotage: the broad /48 tier is what stops a client rotating through its /64s', () => {
+  const REQUESTS = CLIENT_BROAD_LIMIT + 5;
+
+  it('RED: with the broad key dropped, every rotated /64 is let through', async () => {
+    const mutant = await limitWith(
+      'broad-tier-dropped',
+      'const broad = broadKey !== null && broadKey !== key ? broadKey : null;',
+      'const broad = null;'
+    );
+    expect(rotateAcrossOneBlock(mutant.createClientLimit, REQUESTS).every(Boolean)).toBe(true);
+  });
+
+  it('GREEN: the real limiter refuses once the /48 is spent', () => {
+    const verdicts = rotateAcrossOneBlock(createClientLimit, REQUESTS);
+    expect(verdicts.filter(Boolean)).toHaveLength(CLIENT_BROAD_LIMIT);
+  });
+
+  it('RED: with the broad ceiling counting nothing, every rotated /64 is let through', async () => {
+    const mutant = await limitWith(
+      'broad-never-charged',
+      'if (broad !== null) tiers.broad.attempt(broad, nowMs);',
+      ''
+    );
+    expect(rotateAcrossOneBlock(mutant.createClientLimit, REQUESTS).every(Boolean)).toBe(true);
+  });
+
+  it('GREEN: the real limiter charges the broad ceiling', () => {
+    expect(rotateAcrossOneBlock(createClientLimit, REQUESTS)[CLIENT_BROAD_LIMIT]).toBe(false);
+  });
+});
+
+describe('sabotage: refusing when the /48 table is full is what keeps its counts', () => {
+  /** Spends one /48 to its ceiling, fills the broad table with others, then asks again. */
+  const spentBlockAfterAFlood = (create: typeof createClientLimit): boolean => {
+    const limit = create({ trustedProxies: parseTrustedProxies(EDGE) });
+    for (let index = 0; index < CLIENT_BROAD_LIMIT; index += 1) {
+      limit.login(requestFrom(inBlock(0xaaaa, index + 1)), 0);
+    }
+    for (let index = 0; index < CLIENT_BROAD_TABLE_SIZE; index += 1) {
+      const high = Math.floor(index / 65_536).toString(16);
+      limit.login(requestFrom(`2001:${high}:${(index % 65_536).toString(16)}::1`), 1);
+    }
+    return limit.login(requestFrom(inBlock(0xaaaa, 9_999)), 2).allowed;
+  };
+
+  it('RED: with the broad table evicting, a flood of /48s resets the spent one', async () => {
+    const mutant = await limitWith(
+      'broad-table-evicts',
+      "onFull: 'refuse',",
+      "onFull: 'evict-oldest',"
+    );
+    expect(spentBlockAfterAFlood(mutant.createClientLimit)).toBe(true);
+  });
+
+  it('GREEN: the real limiter still refuses the spent /48', () => {
+    expect(spentBlockAfterAFlood(createClientLimit)).toBe(false);
   });
 });
 

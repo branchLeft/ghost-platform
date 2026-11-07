@@ -1,6 +1,8 @@
+import type { IncomingMessage } from 'node:http';
 import { CALLBACK_PATH, createTokenVerifier } from 'ghost-platform-identity/dist/index.js';
 import { parseTrustedProxies } from 'ghost-platform-request-guard/dist/index.js';
 import type { createShell } from '../src/shell/app.js';
+import type { createClientLimit } from '../src/shell/clientLimit.js';
 import { serve, type Running } from './browser.js';
 import { CLIENT_PORTAL, FakeIssuer, ISSUER, jwks, mint, NOW, PROJECT_ID } from './idp.js';
 
@@ -236,4 +238,32 @@ export async function concurrentCallbacks(create: CreateShell): Promise<Answer[]
   } finally {
     await rig.close();
   }
+}
+
+/** A request from `address` through the trusted edge, as the limiter reads it. */
+export function requestFrom(address: string): IncomingMessage {
+  return {
+    socket: { remoteAddress: EDGE },
+    headers: { 'x-forwarded-for': address },
+  } as unknown as IncomingMessage;
+}
+
+/** The IPv6 address of host 1 on the numbered /64 inside the /48 `2001:db8:<block>::/48`. */
+export const inBlock = (block: number, subnet: number): string =>
+  `2001:db8:${block.toString(16)}:${subnet.toString(16)}::1`;
+
+/**
+ * One client rotating through a fresh /64 of a single /48 on every request,
+ * so no /64 ever nears its own limit. Returns the verdicts, in order, of
+ * `requests` sign-in starts.
+ */
+export function rotateAcrossOneBlock(
+  create: typeof createClientLimit,
+  requests: number
+): boolean[] {
+  const limit = create({ trustedProxies: parseTrustedProxies(EDGE) });
+  return Array.from(
+    { length: requests },
+    (_unused, index) => limit.login(requestFrom(inBlock(1, index + 1)), 0).allowed
+  );
 }

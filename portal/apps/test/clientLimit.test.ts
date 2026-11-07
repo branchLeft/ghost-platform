@@ -1,4 +1,3 @@
-import type { IncomingMessage } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OwnerDb } from 'ghost-platform-portal-data/owner';
 import type { TenantDb } from 'ghost-platform-portal-data/tenant';
@@ -7,7 +6,13 @@ import { createShell } from '../src/shell/app.js';
 import { createTenantPortal } from '../src/tenant/app.js';
 import { serve } from './browser.js';
 import { CLIENT_PORTAL, ISSUER, PROJECT_ID } from './idp.js';
-import { CLIENT_LIMIT, CLIENT_TABLE_SIZE, createClientLimit } from '../src/shell/clientLimit.js';
+import {
+  CLIENT_BROAD_LIMIT,
+  CLIENT_BROAD_TABLE_SIZE,
+  CLIENT_LIMIT,
+  CLIENT_TABLE_SIZE,
+  createClientLimit,
+} from '../src/shell/clientLimit.js';
 import { parseTrustedProxies } from 'ghost-platform-request-guard/dist/index.js';
 import {
   ask,
@@ -20,8 +25,11 @@ import {
   EDGE,
   floodOutcome,
   forwardedFor,
+  inBlock,
   LIMIT,
   repeat,
+  requestFrom,
+  rotateAcrossOneBlock,
   startRig,
   type Rig,
   type RigOptions,
@@ -179,11 +187,6 @@ describe('the per-client limit on the callback', () => {
 });
 
 describe('a table of clients that is full', () => {
-  const requestFrom = (address: string): IncomingMessage =>
-    ({
-      socket: { remoteAddress: EDGE },
-      headers: { 'x-forwarded-for': address },
-    }) as unknown as IncomingMessage;
   const address = (index: number): string =>
     `10.${Math.floor(index / 65_536) % 256}.${Math.floor(index / 256) % 256}.${index % 256}`;
   const build = () => createClientLimit({ trustedProxies: parseTrustedProxies(EDGE) });
@@ -209,6 +212,101 @@ describe('a table of clients that is full', () => {
       limit.login(requestFrom(address(index)), 1);
     }
     expect(limit.login(requestFrom('192.0.2.1'), 2).allowed).toBe(false);
+  });
+});
+
+describe('a client rotating through the /64s of one /48', () => {
+  const build = () => createClientLimit({ trustedProxies: parseTrustedProxies(EDGE) });
+
+  it('is refused at the broad ceiling although no /64 nears its own', () => {
+    expect(CLIENT_BROAD_LIMIT).toBe(300);
+    const verdicts = rotateAcrossOneBlock(createClientLimit, CLIENT_BROAD_LIMIT + 5);
+    expect(verdicts.slice(0, CLIENT_BROAD_LIMIT).every(Boolean)).toBe(true);
+    expect(verdicts.slice(CLIENT_BROAD_LIMIT).some(Boolean)).toBe(false);
+  });
+
+  it('leaves a different /48 alone, and tells the refused one when to come back', () => {
+    const limit = build();
+    for (let index = 0; index < CLIENT_BROAD_LIMIT; index += 1) {
+      limit.login(requestFrom(inBlock(1, index + 1)), 0);
+    }
+    const refused = limit.login(requestFrom(inBlock(1, 9_999)), 10_000);
+    expect(refused).toEqual({ allowed: false, retryAfterSeconds: 50 });
+    expect(limit.login(requestFrom(inBlock(2, 1)), 10_000).allowed).toBe(true);
+    expect(limit.login(requestFrom(inBlock(1, 9_999)), 60_000).allowed).toBe(true);
+  });
+
+  it('keeps the two routes apart', () => {
+    const limit = build();
+    for (let index = 0; index < CLIENT_BROAD_LIMIT; index += 1) {
+      limit.login(requestFrom(inBlock(1, index + 1)), 0);
+    }
+    expect(limit.login(requestFrom(inBlock(1, 9_999)), 0).allowed).toBe(false);
+    expect(limit.callback(requestFrom(inBlock(1, 9_999)), 0).allowed).toBe(true);
+  });
+
+  it('does not spend the /48 on requests its own /64 already refused', () => {
+    const limit = build();
+    for (let sent = 0; sent < CLIENT_BROAD_LIMIT * 2; sent += 1) {
+      limit.login(requestFrom(inBlock(1, 1)), 0);
+    }
+    // Thirty were let through, so 270 of the /48's 300 remain for its other /64s.
+    for (let index = 0; index < CLIENT_BROAD_LIMIT - CLIENT_LIMIT; index += 1) {
+      expect(limit.login(requestFrom(inBlock(1, index + 2)), 0).allowed).toBe(true);
+    }
+    expect(limit.login(requestFrom(inBlock(1, 9_999)), 0).allowed).toBe(false);
+  });
+
+  it('leaves an IPv4 client with its own limit alone, however many other clients there are', () => {
+    const limit = build();
+    for (let sent = 0; sent < CLIENT_LIMIT; sent += 1) limit.login(requestFrom('192.0.2.1'), 0);
+    expect(limit.login(requestFrom('192.0.2.1'), 0).allowed).toBe(false);
+    // Past the broad ceiling's count of clients: IPv4 is never charged to it.
+    for (let index = 0; index < CLIENT_BROAD_LIMIT * 2; index += 1) {
+      const other = `198.51.${Math.floor(index / 250)}.${index % 250}`;
+      expect(limit.login(requestFrom(other), 0).allowed).toBe(true);
+    }
+  });
+});
+
+describe('a table of /48s that is full', () => {
+  const build = () => createClientLimit({ trustedProxies: parseTrustedProxies(EDGE) });
+  const fill = (limit: ReturnType<typeof build>, now: number): void => {
+    for (let index = 0; index < CLIENT_BROAD_TABLE_SIZE; index += 1) {
+      // A distinct /48 per index: the second and third hextets are its high and low halves.
+      const high = Math.floor(index / 65_536).toString(16);
+      const low = (index % 65_536).toString(16);
+      limit.login(requestFrom(`2001:${high}:${low}::1`), now);
+    }
+  };
+
+  it('refuses a new /48 and keeps the counts it holds, rather than forgetting the oldest', () => {
+    const limit = build();
+    for (let index = 0; index < CLIENT_BROAD_LIMIT; index += 1) {
+      limit.login(requestFrom(inBlock(0xaaaa, index + 1)), 0);
+    }
+    expect(limit.login(requestFrom(inBlock(0xaaaa, 9_999)), 0).allowed).toBe(false);
+    fill(limit, 1);
+    // Full of live /48s: a new one is refused, with the window as its retry time.
+    expect(limit.login(requestFrom('2002:1:1::1'), 2)).toEqual({
+      allowed: false,
+      retryAfterSeconds: 60,
+    });
+    // The oldest /48, at its ceiling, was not forgotten to make room.
+    expect(limit.login(requestFrom(inBlock(0xaaaa, 9_999)), 3).allowed).toBe(false);
+  });
+
+  it('admits new /48s again once the old windows expire', () => {
+    const limit = build();
+    fill(limit, 0);
+    expect(limit.login(requestFrom('2002:1:1::1'), 1).allowed).toBe(false);
+    expect(limit.login(requestFrom('2002:1:1::1'), 60_000).allowed).toBe(true);
+  });
+
+  it('does not stop an IPv4 client, which the broad table never holds', () => {
+    const limit = build();
+    fill(limit, 0);
+    expect(limit.login(requestFrom('192.0.2.1'), 1).allowed).toBe(true);
   });
 });
 

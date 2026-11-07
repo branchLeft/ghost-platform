@@ -24,7 +24,7 @@ table that is full of live windows does with a key it holds no window for:
 | `onFull`               | A new key arrives when the table is full                                                                                                    | Used by                                                                         |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `'refuse'` (default)   | Refused, with `retryAfterSeconds` set to the window. The table never grows and no key is admitted uncounted.                                  | The demo gate's three ceilings and the portal's support-ticket limiter.         |
-| `'evict-oldest'`       | The key whose window began first is forgotten and the new key is admitted with a fresh count. The table never grows past `maxSources`.        | The portal's sign-in ceilings, which must never lock a real visitor out.       |
+| `'evict-oldest'`       | The key whose window began first is forgotten and the new key is admitted with a fresh count. The table never grows past `maxSources`.        | The portal's per-client sign-in ceilings, which must never lock a real visitor out. Its /48 tier uses `'refuse'`. |
 
 Under `'refuse'` a flood of distinct keys can make the service unavailable but
 never unmetered. Under `'evict-oldest'` a flood of distinct keys can restart

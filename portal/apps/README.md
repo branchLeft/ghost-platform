@@ -190,9 +190,34 @@ the shared `services/request-guard`.
 
 A client is its IPv6 /64, or its IPv4 address. A trusted peer that sends no
 usable `X-Forwarded-For` is metered as one pooled client, so a broken edge
-fails towards limited, not open. Each ceiling remembers 10,000 clients; when
-full it forgets the oldest and admits the new one, so a flood of addresses can
-restart another client's count but never refuses a visitor for lack of room.
+fails towards limited, not open. Each route's client ceiling remembers 10,000
+clients; when full it forgets the oldest and admits the new one, so a flood of
+addresses can restart another client's count but never refuses a visitor for
+lack of room.
+
+An IPv6 request is also counted against its /48, by the same
+`resolveBroad` key `services/demo-gate` uses, in a second ceiling of 300 per
+route per 60 seconds (ten times a client's). A /48 holds 65,536 /64s, so a
+client rotating its /64 on every request would never reach 30; it reaches 300.
+A request is refused if either ceiling refuses it, and is counted against
+neither when it is refused, so a /64 already over its limit does not spend its
+/48's. IPv4 has no broader key and is counted once, as before. The /48
+ceiling remembers 100,000 /48s and, unlike the client ceiling, **refuses** a
+new /48 when full of live windows (the fail-closed policy the demo gate uses)
+rather than forgetting the oldest: forgetting would let a flood of /48s reset
+exactly the counts this ceiling keeps. A full table therefore turns away new
+IPv6 visitors for up to a window, and never IPv4 ones.
+
+### Accepted: a full table of /48s refuses new IPv6 visitors
+
+Filling the /48 table takes 100,000 distinct /48s inside one window, which an
+attacker needs a /31 or more to do (a /32 holds 65,536). Until the window
+passes, a new /48 sees `429`; /48s already counted and every IPv4 client are
+unaffected. The alternative, forgetting the oldest, lets that same flood
+restart a /48's count, which is the evasion the ceiling exists to stop. The
+client ceiling still forgets the oldest /64 or IPv4 address when full; the
+/48 ceiling bounds how many /64s one /48 can put there, so filling it takes
+at least 34 /48s.
 
 ### Accepted: the sealing key is per process
 
