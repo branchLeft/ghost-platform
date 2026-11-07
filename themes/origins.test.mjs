@@ -64,7 +64,7 @@ describe('markup: a closing tag a browser accepts ends the element', () => {
   const third = 'https://third-party.example/x.js';
   const closers = {
     'whitespace before >': '</script >',
-    'attribute': '</script data-x="y">',
+    attribute: '</script data-x="y">',
     'upper case and a newline': '</SCRIPT\n>',
     'a slash': '</script/>',
   };
