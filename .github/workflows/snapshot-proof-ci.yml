@@ -11,8 +11,10 @@ on:
     paths:
       - 'db/provision/snapshot_probe*'
       - 'db/provision/replication_client_probe*'
+      - 'db/provision/percona_snapshot_probe*'
       - 'db/provision/prove-snapshot-locking.sh'
       - 'db/provision/prove-replication-client.sh'
+      - 'db/provision/prove-percona-snapshot.sh'
       - 'db/provision/bounded_snapshot.py'
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
@@ -23,8 +25,10 @@ on:
     paths:
       - 'db/provision/snapshot_probe*'
       - 'db/provision/replication_client_probe*'
+      - 'db/provision/percona_snapshot_probe*'
       - 'db/provision/prove-snapshot-locking.sh'
       - 'db/provision/prove-replication-client.sh'
+      - 'db/provision/prove-percona-snapshot.sh'
       - 'db/provision/bounded_snapshot.py'
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
@@ -104,3 +108,38 @@ jobs:
           SABOTAGE=backup-admin-grant db/provision/prove-replication-client.sh || rc=$?
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
+
+      # The Percona Server proof (percona_snapshot_probe.md). The candidate
+      # image is the one digest prove-percona-snapshot.sh pins, pulled by digest
+      # first so a pull failure shows here. The red cases come before the
+      # green run: each runs on db1's stock Oracle MySQL, must exit 1, and
+      # exit 2 means the control stayed green so could not have failed.
+      - name: Pull the pinned Percona digest
+        run: |
+          pins="$(grep -oE 'percona/percona-server@sha256:[0-9a-f]{64}' db/provision/prove-percona-snapshot.sh | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/provision/prove-percona-snapshot.sh must pin exactly one Percona digest, found: $pins" >&2
+            exit 1
+          fi
+          docker pull "$pins"
+
+      - name: Red case, a commit forced between the snapshot and the coordinates, no lock
+        run: |
+          rc=0
+          PROOF_SOURCE=stock SABOTAGE=commit-before-coordinates db/provision/prove-percona-snapshot.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, the retired global-lock dump under a long reader
+        run: |
+          rc=0
+          PROOF_SOURCE=stock SABOTAGE=global-lock db/provision/prove-percona-snapshot.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      # Exits 0 only when controls 1 to 5 pass and control 6 is recorded; exit
+      # 3 means the candidate is inadequate. The log has each control's
+      # measured values, and for a table that differs, where the missing
+      # transaction sits in the source's own binary log.
+      - name: Run the Percona proof, un-sabotaged
+        run: db/provision/prove-percona-snapshot.sh
