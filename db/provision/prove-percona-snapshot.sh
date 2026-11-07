@@ -6,8 +6,9 @@
 #
 #   PROOF_SOURCE=percona (default)  the source is the Percona candidate
 #   PROOF_SOURCE=stock              the source is db1's pinned Oracle MySQL;
-#                                   the only source the two SABOTAGE cases use
-# The replica is always Percona, as db-t1's is.
+#                                   the source of the two stock SABOTAGE cases
+# The replica is always Percona, as db-t1's is. Both servers run GTID mode: the
+# replica is seeded by the dump's GTID set, never by file and position.
 set -euo pipefail
 
 # Refuse an ambient Docker target before any container is started.
@@ -88,13 +89,18 @@ done
 MYSQL_ROOT_PASSWORD="$(cat "$WORK/root.pw")"
 export MYSQL_ROOT_PASSWORD
 
+# GTID mode, on from the first start, on both servers: the replica is seeded
+# from the dump's GTID set and started with SOURCE_AUTO_POSITION=1.
+# percona_snapshot_probe.py checks these two settings on the source.
+GTID_FLAGS=(--gtid_mode=ON --enforce_gtid_consistency=ON)
+
 # Image, config mount point, name, then mysqld flags. The config is mounted
-# unchanged; only the bind address (db1's private address) is overridden on
-# the command line.
+# unchanged; only the bind address (db1's private address) and GTID mode are
+# set on the command line.
 start_server() {
     docker run -d --platform "$PLATFORM" --name "$3" --network "$NET" -e MYSQL_ROOT_PASSWORD \
         -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:$2:ro" \
-        "$1" --bind-address=0.0.0.0 "${@:4}" >/dev/null
+        "$1" --bind-address=0.0.0.0 "${GTID_FLAGS[@]}" "${@:4}" >/dev/null
 }
 
 # Readiness is a real query on the final server, never a ping: the image's

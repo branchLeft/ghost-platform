@@ -112,8 +112,9 @@ jobs:
       # The Percona Server proof (percona_snapshot_probe.md). The candidate
       # image is the one digest prove-percona-snapshot.sh pins, pulled by digest
       # first so a pull failure shows here. The red cases come before the
-      # green run: each runs on db1's stock Oracle MySQL, must exit 1, and
-      # exit 2 means the control stayed green so could not have failed.
+      # green run: the first two run on db1's stock Oracle MySQL, the two GTID
+      # cases on the Percona candidate; each must exit 1, and exit 2 means the
+      # control stayed green so could not have failed.
       - name: Pull the pinned Percona digest
         run: |
           pins="$(grep -oE 'percona/percona-server@sha256:[0-9a-f]{64}' db/provision/prove-percona-snapshot.sh | sort -u)"
@@ -137,9 +138,26 @@ jobs:
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
 
+      # The seeding set changed by exactly one transaction of one tenant: the
+      # oracle that reads the source's binary log must see it, as a duplicated
+      # row (one dropped from the set) or a lost one (one added to it).
+      - name: Red case, one transaction dropped from the GTID set the replica is seeded with
+        run: |
+          rc=0
+          PROOF_SOURCE=percona SABOTAGE=gtid-drop-one db/provision/prove-percona-snapshot.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, one transaction added to the GTID set the replica is seeded with
+        run: |
+          rc=0
+          PROOF_SOURCE=percona SABOTAGE=gtid-extra-one db/provision/prove-percona-snapshot.sh || rc=$?
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
       # Exits 0 only when controls 1 to 5 pass and control 6 is recorded; exit
       # 3 means the candidate is inadequate. The log has each control's
-      # measured values, and for a table that differs, where the missing
-      # transaction sits in the source's own binary log.
+      # measured values and the oracle's count of committed rows lost or
+      # duplicated, read from the source's own binary log.
       - name: Run the Percona proof, un-sabotaged
         run: db/provision/prove-percona-snapshot.sh

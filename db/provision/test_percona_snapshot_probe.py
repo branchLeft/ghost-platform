@@ -7,6 +7,7 @@ prove-percona-snapshot.sh, run in snapshot-proof-ci.yml."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -35,6 +36,7 @@ exit 1
 # proof was built (percona_snapshot_probe.md, control 6).
 PERCONA_COMMENT = "-- CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000003', MASTER_LOG_POS=1461;"
 NEW_SPELLING = "-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='mysql-bin.000004', SOURCE_LOG_POS=157;"
+SETTINGS = {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1", "gtid_mode": "ON", "enforce_gtid_consistency": "ON"}
 
 
 class SabotageFixturesTests(unittest.TestCase):
@@ -45,7 +47,7 @@ class SabotageFixturesTests(unittest.TestCase):
         by_verdict: dict[str, set[bool]] = {}
         for label, expected, _ in psp.SELF_TEST_CASES:
             by_verdict.setdefault(label.split(":")[0], set()).add(expected)
-        self.assertEqual(set(by_verdict), {"variables", "latency", "dump_lock", "grant", "snapshot_coordinate", "comment"})
+        self.assertEqual(set(by_verdict), {"variables", "gtid_oracle", "latency", "dump_lock", "grant", "snapshot_coordinate", "comment"})
         for name, outcomes in by_verdict.items():
             self.assertEqual(outcomes, {True, False}, f"{name} needs both a sabotage and a healthy fixture")
 
@@ -74,14 +76,22 @@ class ChecksumSabotageTests(unittest.TestCase):
 
 class VerdictTests(unittest.TestCase):
     def test_a_stock_server_has_no_snapshot_variables(self) -> None:
-        verdict = psp.variables_verdict({}, {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1"})
+        verdict = psp.variables_verdict({}, SETTINGS)
         self.assertFalse(verdict.passed)
         self.assertIn("Binlog_snapshot_file", verdict.reason)
 
     def test_statement_format_fails_the_variable_check(self) -> None:
-        verdict = psp.variables_verdict(dict.fromkeys(psp.SNAPSHOT_STATUS, ""), {"log_bin": "1", "binlog_format": "STATEMENT", "sync_binlog": "1"})
+        verdict = psp.variables_verdict(dict.fromkeys(psp.SNAPSHOT_STATUS, ""), {**SETTINGS, "binlog_format": "STATEMENT"})
         self.assertFalse(verdict.passed)
         self.assertIn("binlog_format", verdict.reason)
+
+    def test_a_server_without_gtid_mode_fails_the_variable_check(self) -> None:
+        status = dict.fromkeys(psp.SNAPSHOT_STATUS, "")
+        for name in ("gtid_mode", "enforce_gtid_consistency"):
+            verdict = psp.variables_verdict(status, {**SETTINGS, name: "OFF"})
+            self.assertFalse(verdict.passed, name)
+            self.assertIn(f"@@{name}", verdict.reason)
+        self.assertTrue(psp.variables_verdict(status, SETTINGS).passed)
 
     def test_one_tenant_stalling_fails_the_whole_run_and_names_it(self) -> None:
         verdict = psp.latency_verdict({"t1": [0.004], "t2": [0.004, 0.2], "t3": [0.004]}, psp.LATENCY_LIMIT_SECONDS)
@@ -209,36 +219,239 @@ class CommentFindingTests(unittest.TestCase):
         self.assertFalse(psp.comment_verdict(finding).passed)
 
 
-class MissingRowTests(unittest.TestCase):
-    """The diagnosis printed when a seeded replica lacks a row: the source's
-    own binary log, not the replica, says where that row's transaction sits."""
+UUID_A = "11111111-2222-3333-4444-555555555555"
+UUID_B = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
-    DECODED = (
-        "# at 100\n#241107 12:00:00 server id 1  end_log_pos 200\n### INSERT INTO `t1`.`posts`\n### SET\n###   @2='w1-7'\n###   @3='w1-7'\n"
-        "# at 200\n### INSERT INTO `t1`.`emails`\n"
-    )
 
-    def test_the_event_position_is_the_last_at_before_the_row(self) -> None:
-        self.assertEqual(psp.binlog_event_position(self.DECODED, "w1-7"), 100)
+class GtidSetTests(unittest.TestCase):
+    def test_a_set_is_parsed_merged_and_formatted_back(self) -> None:
+        parsed = psp.parse_gtid_set(f"{UUID_A}:1-5:6-9:12,{UUID_B}:3")
+        self.assertEqual(parsed, {UUID_A: [(1, 9), (12, 12)], UUID_B: [(3, 3)]})
+        self.assertEqual(psp.format_gtid_set(parsed), f"{UUID_A}:1-9:12,{UUID_B}:3")
 
-    def test_a_row_not_in_the_log_has_no_position(self) -> None:
-        self.assertIsNone(psp.binlog_event_position(self.DECODED, "w9-9"))
+    def test_line_breaks_in_a_dump_or_a_batch_row_are_ignored(self) -> None:
+        text = f"{UUID_A}:1-5,\n{UUID_B}:3"
+        self.assertEqual(psp.parse_gtid_set(text), psp.parse_gtid_set(f"{UUID_A}:1-5,{UUID_B}:3"))
+        self.assertEqual(psp.normalize_gtid_set(f"{UUID_A}:1-5,\\n{UUID_B}:3"), f"{UUID_A}:1-5,{UUID_B}:3")
 
-    def test_before_the_coordinates_and_absent_from_the_dump_means_the_coordinates_ran_ahead(self) -> None:
-        text = psp.classify_missing(event_position=2900137, coordinates=("mysql-bin.000003", 2901402), in_dump=False)
-        self.assertIn("coordinates ran ahead of the snapshot", text)
+    def test_the_empty_set_is_a_set(self) -> None:
+        self.assertEqual(psp.parse_gtid_set(""), {})
 
-    def test_after_the_coordinates_means_the_replay_lost_it(self) -> None:
-        text = psp.classify_missing(event_position=3000000, coordinates=("mysql-bin.000003", 2901402), in_dump=False)
-        self.assertIn("the replay should have applied it", text)
-        self.assertNotIn("ran ahead", text)
+    def test_text_that_is_not_a_set_is_refused(self) -> None:
+        for bad in ("1-5", f"{UUID_A}", f"{UUID_A}:1-5'; DROP DATABASE t1; --", "not-a-uuid:1"):
+            with self.assertRaises(ValueError, msg=bad):
+                psp.normalize_gtid_set(bad)
 
-    def test_in_the_dump_means_the_load_or_replay_lost_it(self) -> None:
-        text = psp.classify_missing(event_position=10, coordinates=("mysql-bin.000003", 2901402), in_dump=True)
-        self.assertIn("in the dump but not on the replica", text)
+    def test_membership_is_by_uuid_and_sequence(self) -> None:
+        parsed = psp.parse_gtid_set(f"{UUID_A}:1-5:9")
+        self.assertTrue(psp.gtid_contains(parsed, UUID_A.upper(), 5))
+        self.assertTrue(psp.gtid_contains(parsed, UUID_A, 9))
+        self.assertFalse(psp.gtid_contains(parsed, UUID_A, 6))
+        self.assertFalse(psp.gtid_contains(parsed, UUID_B, 1))
 
-    def test_a_row_not_found_in_the_coordinates_file_says_so(self) -> None:
-        self.assertIn("mysql-bin.000003", psp.classify_missing(event_position=None, coordinates=("mysql-bin.000003", 5), in_dump=False))
+    def test_taking_one_transaction_out_splits_the_interval(self) -> None:
+        self.assertEqual(psp.gtid_without(f"{UUID_A}:1-9", UUID_A, 5), f"{UUID_A}:1-4:6-9")
+        self.assertEqual(psp.gtid_without(f"{UUID_A}:1-9", UUID_A, 9), f"{UUID_A}:1-8")
+        self.assertEqual(psp.gtid_without(f"{UUID_A}:1-9", UUID_A, 1), f"{UUID_A}:2-9")
+        self.assertEqual(psp.gtid_without(f"{UUID_A}:4", UUID_A, 4), "")
+
+    def test_adding_one_transaction_merges_with_its_neighbours(self) -> None:
+        self.assertEqual(psp.gtid_with(f"{UUID_A}:1-4:6-9", UUID_A, 5), f"{UUID_A}:1-9")
+        self.assertEqual(psp.gtid_with(f"{UUID_A}:1-4", UUID_A, 7), f"{UUID_A}:1-4:7")
+
+    def test_each_change_is_exactly_one_transaction(self) -> None:
+        base = f"{UUID_A}:1-20"
+        dropped = psp.parse_gtid_set(psp.gtid_without(base, UUID_A, 11))
+        self.assertEqual(sum(last - first + 1 for first, last in dropped[UUID_A]), 19)
+
+    def test_sets_compare_by_content_not_spelling(self) -> None:
+        self.assertTrue(psp.same_gtid_set(f"{UUID_A}:1-3:4-9", f"{UUID_A.upper()}:1-9"))
+        self.assertFalse(psp.same_gtid_set(f"{UUID_A}:1-9", f"{UUID_A}:1-8"))
+
+    def test_the_dump_says_which_set_its_snapshot_holds(self) -> None:
+        dump = f"-- GTID state at the beginning of the backup\n\nSET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '{UUID_A}:1-123';\n"
+        self.assertEqual(psp.dump_gtid_set(dump), f"{UUID_A}:1-123")
+        self.assertEqual(psp.dump_gtid_set(f"SET @@GLOBAL.GTID_PURGED='{UUID_A}:1-5,\n{UUID_B}:1-2';"), f"{UUID_A}:1-5,{UUID_B}:1-2")
+        self.assertIsNone(psp.dump_gtid_set("-- MySQL dump\nCREATE TABLE t (id INT);\n"))
+
+    def test_replacing_the_dumps_set_changes_only_that_set(self) -> None:
+        dump = f"x\nSET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '{UUID_A}:1-123';\ny\n"
+        replaced = psp.replace_dump_gtid_set(dump, f"{UUID_A}:1-122")
+        self.assertEqual(replaced, f"x\nSET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '{UUID_A}:1-122';\ny\n")
+        with self.assertRaises(ValueError):
+            psp.replace_dump_gtid_set("no set here", f"{UUID_A}:1-2")
+
+    def test_a_dump_holds_the_writers_rows_only(self) -> None:
+        dump = "INSERT INTO `posts` VALUES (1,'seed 1','seed-1'),(2,'w3-17','w3-17'),(3,'forced-t1-9','forced-t1-9');"
+        self.assertEqual(psp.dump_slugs(dump), frozenset({"w3-17"}))
+
+
+class BinlogPlacementTests(unittest.TestCase):
+    """The source's own binary log, as mysqlbinlog prints it, says which GTID
+    committed each posts row."""
+
+    H = "###"  # the prefix mysqlbinlog gives a decoded row
+    DECODED = f"""\
+SET @@SESSION.GTID_NEXT= '{UUID_A}:7'/*!*/;
+BEGIN
+/*!*/;
+{H} INSERT INTO `t1`.`posts`
+{H} SET
+{H}   @1=301 /* INT meta=0 nullable=0 is_null=0 */
+{H}   @2='w1-7' /* VARSTRING(1020) meta=1020 nullable=0 is_null=0 */
+{H}   @3='w1-7' /* VARSTRING(764) meta=764 nullable=0 is_null=0 */
+{H} UPDATE `t1`.`posts`
+{H} WHERE
+{H}   @1=301 /* INT meta=0 nullable=0 is_null=0 */
+{H}   @3='w1-7' /* VARSTRING(764) meta=764 nullable=0 is_null=0 */
+{H} INSERT INTO `t1`.`emails`
+{H} SET
+{H}   @1=9 /* INT meta=0 nullable=0 is_null=0 */
+COMMIT/*!*/;
+SET @@SESSION.GTID_NEXT= '{UUID_A}:8'/*!*/;
+BEGIN
+{H} INSERT INTO `t2`.`posts`
+{H} SET
+{H}   @1=12 /* INT meta=0 nullable=0 is_null=0 */
+{H}   @2='w2-1' /* VARSTRING(1020) meta=1020 nullable=0 is_null=0 */
+{H}   @3='w2-1' /* VARSTRING(764) meta=764 nullable=0 is_null=0 */
+COMMIT/*!*/;
+SET @@SESSION.GTID_NEXT= 'AUTOMATIC' /* added by mysqlbinlog */ /*!*/;
+"""
+
+    def test_each_row_is_placed_at_its_transactions_gtid(self) -> None:
+        placements = psp.binlog_placements(self.DECODED)
+        self.assertEqual(placements["w1-7"], psp.Placement("t1", UUID_A, 7))
+        self.assertEqual(placements["w2-1"], psp.Placement("t2", UUID_A, 8))
+
+    def test_an_updated_row_is_not_a_placement(self) -> None:
+        self.assertEqual(sorted(psp.binlog_placements(self.DECODED)), ["w1-7", "w2-1"])
+
+    def test_a_log_with_no_posts_insert_places_nothing(self) -> None:
+        self.assertEqual(psp.binlog_placements(f"SET @@SESSION.GTID_NEXT= '{UUID_A}:1'/*!*/;\n### INSERT INTO `t1`.`emails`\n"), {})
+
+
+class OracleTests(unittest.TestCase):
+    """The oracle of control 1: every committed row is in the snapshot or
+    after the set the replica is seeded with, and exactly one of the two."""
+
+    PLACED = {
+        "w1-1": psp.Placement("t1", UUID_A, 5),
+        "w1-2": psp.Placement("t1", UUID_A, 7),
+        "w1-3": psp.Placement("t1", UUID_A, 9),
+        "w2-1": psp.Placement("t2", UUID_A, 8),
+    }
+    ROWS = frozenset({"w1-1"})
+
+    def judge(self, rows: frozenset[str], gtid_set: str) -> psp.OracleCount:
+        return psp.gtid_oracle(tenant="t1", rows=rows, gtid_set=gtid_set, committed=["w1-1", "w1-2", "w1-3"], placements=self.PLACED)
+
+    def test_a_snapshot_and_its_own_set_are_consistent(self) -> None:
+        count = self.judge(frozenset({"w1-1"}), f"{UUID_A}:1-6")
+        self.assertEqual((count.lost, count.duplicated, count.unplaced), (0, 0, 0))
+        self.assertEqual((count.in_snapshot, count.after_set), (1, 2))
+        self.assertTrue(psp.oracle_verdict(count).passed)
+
+    def test_a_row_the_set_holds_but_the_snapshot_lacks_is_lost(self) -> None:
+        count = self.judge(frozenset({"w1-1"}), f"{UUID_A}:1-8")
+        self.assertEqual(count.lost, 1)
+        verdict = psp.oracle_verdict(count)
+        self.assertFalse(verdict.passed)
+        self.assertIn("LOST t1 w1-2", verdict.reason)
+
+    def test_a_row_the_snapshot_holds_but_the_set_lacks_is_duplicated(self) -> None:
+        count = self.judge(frozenset({"w1-1", "w1-2"}), f"{UUID_A}:1-6")
+        self.assertEqual(count.duplicated, 1)
+        verdict = psp.oracle_verdict(count)
+        self.assertFalse(verdict.passed)
+        self.assertIn("DUPLICATED t1 w1-2", verdict.reason)
+
+    def test_a_row_the_binary_log_never_placed_blinds_the_oracle(self) -> None:
+        count = psp.gtid_oracle(tenant="t1", rows=self.ROWS, gtid_set=f"{UUID_A}:1-6", committed=["w1-1", "w1-9"], placements=self.PLACED)
+        self.assertEqual(count.unplaced, 1)
+        self.assertFalse(psp.oracle_verdict(count).passed)
+
+    def test_an_oracle_that_saw_one_region_only_proves_nothing(self) -> None:
+        nothing_after = self.judge(frozenset({"w1-1", "w1-2", "w1-3"}), f"{UUID_A}:1-10")
+        self.assertFalse(psp.oracle_verdict(nothing_after).passed)
+        nothing_in_snapshot = self.judge(frozenset(), f"{UUID_A}:1-4")
+        self.assertFalse(psp.oracle_verdict(nothing_in_snapshot).passed)
+        self.assertFalse(psp.oracle_verdict(psp.OracleCount()).passed)
+
+    def test_counts_add_across_snapshots_and_keep_a_few_examples(self) -> None:
+        bad = self.judge(frozenset({"w1-1"}), f"{UUID_A}:1-8")
+        total = bad + bad + bad + bad
+        self.assertEqual((total.snapshots, total.lost), (4, 4))
+        self.assertLessEqual(len(total.examples), psp.ORACLE_EXAMPLES)
+
+    def test_a_gap_in_the_set_is_a_row_after_it(self) -> None:
+        # w1-2 (7) sits in the gap of 1-6:8-9: a commit the snapshot could not see yet.
+        count = self.judge(frozenset({"w1-1", "w1-3"}), f"{UUID_A}:1-6:8-9")
+        self.assertEqual((count.lost, count.duplicated, count.after_set), (0, 0, 1))
+
+
+class MutationTests(unittest.TestCase):
+    """The sabotages change the seeding set by exactly one of a tenant's
+    transactions, and the oracle must go red on each."""
+
+    PLACED = {
+        "w1-1": psp.Placement("t1", UUID_A, 5),
+        "w1-2": psp.Placement("t1", UUID_A, 7),
+        "w1-3": psp.Placement("t1", UUID_A, 9),
+        "w1-4": psp.Placement("t1", UUID_A, 11),
+        "w2-1": psp.Placement("t2", UUID_A, 6),
+        "w2-2": psp.Placement("t2", UUID_A, 8),
+        "seed-1": psp.Placement("t1", UUID_A, 2),
+    }
+    ROWS = frozenset({"w1-1", "w1-2", "w1-3"})
+    SET = f"{UUID_A}:1-10"
+    COMMITTED = ["w1-1", "w1-2", "w1-3", "w1-4"]
+
+    def oracle(self, rows: frozenset[str], gtid_set: str) -> psp.Verdict:
+        return psp.oracle_verdict(psp.gtid_oracle(tenant="t1", rows=rows, gtid_set=gtid_set, committed=self.COMMITTED, placements=self.PLACED))
+
+    def test_the_healthy_case_is_green_so_the_red_ones_mean_something(self) -> None:
+        self.assertTrue(self.oracle(self.ROWS, self.SET).passed)
+
+    def test_dropping_one_transaction_takes_the_tenants_latest_held_one_and_goes_red(self) -> None:
+        changed = psp.mutate_gtid_set("drop", "t1", self.ROWS, self.SET, self.PLACED)
+        assert changed is not None
+        new_set, what = changed
+        self.assertEqual(new_set, f"{UUID_A}:1-8:10")
+        self.assertIn(f"{UUID_A}:9", what)
+        verdict = self.oracle(self.ROWS, new_set)
+        self.assertFalse(verdict.passed)
+        self.assertIn("DUPLICATED t1 w1-3", verdict.reason)
+
+    def test_adding_one_transaction_takes_the_tenants_earliest_unheld_one_and_goes_red(self) -> None:
+        changed = psp.mutate_gtid_set("extra", "t1", self.ROWS, self.SET, self.PLACED)
+        assert changed is not None
+        new_set, what = changed
+        self.assertEqual(new_set, f"{UUID_A}:1-11")
+        self.assertIn(f"{UUID_A}:11", what)
+        verdict = self.oracle(self.ROWS, new_set)
+        self.assertFalse(verdict.passed)
+        self.assertIn("LOST t1 w1-4", verdict.reason)
+
+    def test_another_tenants_transactions_and_the_seed_are_never_chosen(self) -> None:
+        drop = psp.mutate_gtid_set("drop", "t1", self.ROWS, self.SET, self.PLACED)
+        assert drop is not None
+        self.assertNotIn(f"{UUID_A}:6", drop[1])
+        self.assertNotIn(f"{UUID_A}:8", drop[1])
+        self.assertNotIn(f"{UUID_A}:2)", drop[1])
+
+    def test_a_tenant_with_nothing_to_change_is_left_alone(self) -> None:
+        self.assertIsNone(psp.mutate_gtid_set("drop", "t3", self.ROWS, self.SET, self.PLACED))
+        self.assertIsNone(psp.mutate_gtid_set("extra", "t1", self.ROWS | {"w1-4"}, self.SET, self.PLACED))
+
+    def test_an_unknown_mutation_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            psp.mutate_gtid_set("shuffle", "t1", self.ROWS, self.SET, self.PLACED)
+
+    def test_every_gtid_sabotage_names_a_mutation_the_function_knows(self) -> None:
+        for name, kind in psp.GTID_MUTATIONS.items():
+            self.assertIn(name, psp.SABOTAGE_TARGETS)
+            self.assertIsNotNone(psp.mutate_gtid_set(kind, "t1", self.ROWS, self.SET, self.PLACED), name)
 
 
 class StatusParsingTests(unittest.TestCase):
@@ -272,15 +485,28 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(psp.SABOTAGE_TARGETS["global-lock"], (2, 3))
         self.assertFalse(psp.SEEDING["global-lock"])
 
-    def test_the_sabotages_run_on_the_stock_source(self) -> None:
-        self.assertEqual(psp.SABOTAGE_SOURCE, "stock")
-        self.assertIn(psp.SABOTAGE_SOURCE, psp.SOURCE_KINDS)
+    def test_the_stock_sabotages_run_on_the_stock_source_and_the_gtid_ones_on_percona(self) -> None:
+        self.assertEqual(set(psp.SABOTAGE_SOURCES), set(psp.SABOTAGE_TARGETS))
+        self.assertTrue(set(psp.SABOTAGE_SOURCES.values()) <= set(psp.SOURCE_KINDS))
+        self.assertEqual(psp.SABOTAGE_SOURCES["commit-before-coordinates"], "stock")
+        self.assertEqual(psp.SABOTAGE_SOURCES["global-lock"], "stock")
+        for name in psp.GTID_MUTATIONS:
+            self.assertEqual(psp.SABOTAGE_SOURCES[name], "percona", name)
+
+    def test_the_gtid_sabotages_target_control_one_and_seed_a_replica(self) -> None:
+        for name in psp.GTID_MUTATIONS:
+            self.assertEqual(psp.SABOTAGE_TARGETS[name], (1,))
+            self.assertTrue(psp.SEEDING[name])
+            self.assertEqual(psp.DUMP_MODES[name], "percona")
 
     def test_the_default_run_is_one_long_round_with_the_long_transaction_then_short_ones(self) -> None:
         plan = psp.PLANS[None]
         self.assertEqual(plan[0], psp.RoundSpec(long_round=True, long_transaction=True))
         self.assertTrue(all(not spec.long_round for spec in plan[1:]))
-        self.assertGreaterEqual(len(plan), 2)
+        self.assertGreaterEqual(len(plan), 5)
+
+    def test_three_writers_per_tenant_run_in_every_round(self) -> None:
+        self.assertEqual(psp.WRITERS_PER_TENANT, 3)
 
     def test_the_long_reader_sleeps_sixty_seconds_on_three_tenants_schemas(self) -> None:
         self.assertEqual(psp.SLEEP_SECONDS, 60)
@@ -293,20 +519,39 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(psp.exit_code({1: True}, sabotaged=True), 2)
         self.assertEqual(psp.exit_code({1: False, 2: True}, sabotaged=False), 3)
 
-    def test_the_dump_arguments_leave_source_data_off_only_for_the_stock_no_lock_case(self) -> None:
-        for name, mode in psp.DUMP_MODES.items():
-            ctx = sp.Ctx(
-                source=sp.Server("snapshot-proof-s", "x"),
-                replica=sp.Server("snapshot-proof-r", "x"),
-                workdir=pathlib.Path("."),
-                passwords=sp.Passwords("a", "b", "c", "d"),
-                sabotage=name,
-            )
-            argv = psp.dump_argv(psp.Run(ctx, "p"), "t1")
+    @staticmethod
+    def _run(sabotage: str | None) -> psp.Run:
+        ctx = sp.Ctx(
+            source=sp.Server("snapshot-proof-s", "x"),
+            replica=sp.Server("snapshot-proof-r", "x"),
+            workdir=pathlib.Path("."),
+            passwords=sp.Passwords("a", "b", "c", "d"),
+            sabotage=sabotage,
+        )
+        return psp.Run(ctx, "p")
+
+    def test_a_passing_dump_asks_for_the_gtid_set_and_never_for_file_and_position(self) -> None:
+        for name in (None, *psp.GTID_MUTATIONS):
+            argv = psp.dump_argv(self._run(name), "t1")
             self.assertIn("--single-transaction", argv)
-            self.assertEqual("--source-data=2" in argv, mode != "commit-before-coordinates", name)
+            self.assertIn("--set-gtid-purged=ON", argv, name)
+            self.assertNotIn("--source-data=2", argv, name)
             self.assertEqual(argv[-2:], ["--databases", "t1"])
             self.assertFalse({"--lock-tables", "--lock-all-tables", "--master-data"} & set(argv))
+
+    def test_only_the_recorded_finding_and_the_retired_path_ask_for_file_and_position(self) -> None:
+        self.assertIn("--source-data=2", psp.dump_argv(self._run(None), "t1", coordinates=True))
+        self.assertIn("--source-data=2", psp.dump_argv(self._run("global-lock"), "t1"))
+        self.assertNotIn("--source-data=2", psp.dump_argv(self._run("commit-before-coordinates"), "t1"))
+        self.assertNotIn("--set-gtid-purged=ON", psp.dump_argv(self._run("commit-before-coordinates"), "t1"))
+
+    def test_the_seeding_path_never_uses_file_and_position(self) -> None:
+        for function in (psp.reseed, psp.start_replication_by_gtid, psp.seed_and_compare, psp.run_round):
+            source = inspect.getsource(function)
+            self.assertNotIn("MASTER_LOG", source, function.__name__)
+            self.assertNotIn("SOURCE_LOG", source, function.__name__)
+            self.assertNotIn("read_log_status", source, function.__name__)
+        self.assertIn("SOURCE_AUTO_POSITION=1", inspect.getsource(psp.start_replication_by_gtid))
 
 
 class LockSamplerTests(unittest.TestCase):
@@ -353,6 +598,13 @@ class ImagePinTests(unittest.TestCase):
         self.assertIn("percona_snapshot_probe.py run", _WRAPPER_TEXT)
         self.assertIn('--source-kind "$SOURCE_KIND"', _WRAPPER_TEXT)
 
+    def test_both_servers_start_in_gtid_mode_with_the_flags_the_probe_checks(self) -> None:
+        for name, want in psp.GTID_SETTINGS:
+            self.assertIn(f"--{name}={want}", _WRAPPER_TEXT)
+        # One function starts both containers, and it passes the flags.
+        self.assertEqual(len(re.findall(r'"\$\{GTID_FLAGS\[@\]\}"', _WRAPPER_TEXT)), 1)
+        self.assertEqual(len(re.findall(r'^start_server "\$(?:SOURCE|REPLICA)_IMAGE"', _WRAPPER_TEXT, re.M)), 2)
+
 
 class WrapperTests(unittest.TestCase):
     def _run(self, *, context: str, extra: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess, str]:
@@ -398,9 +650,9 @@ class CiTests(unittest.TestCase):
     def test_the_green_proof_runs_un_sabotaged(self) -> None:
         self.assertRegex(_CI, r"run: db/provision/prove-percona-snapshot\.sh\n")
 
-    def test_each_sabotage_must_exit_one(self) -> None:
-        for name in psp.SABOTAGE_TARGETS:
-            self.assertIn(f"PROOF_SOURCE=stock SABOTAGE={name} db/provision/prove-percona-snapshot.sh", _CI, name)
+    def test_each_sabotage_must_exit_one_on_its_own_source(self) -> None:
+        for name, source in psp.SABOTAGE_SOURCES.items():
+            self.assertIn(f"PROOF_SOURCE={source} SABOTAGE={name} db/provision/prove-percona-snapshot.sh", _CI, name)
         self.assertGreaterEqual(len(re.findall(r'test "\$rc" = 1', _CI)), 3 + len(psp.SABOTAGE_TARGETS))
 
     def test_the_proof_triggers_the_workflow(self) -> None:

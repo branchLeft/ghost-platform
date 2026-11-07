@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Step 0 for the tenant database host (option (e), Percona Server): whether a
-per-tenant `mysqldump --single-transaction --source-data=2`, run by an account
-that holds no RELOAD and no LOCK TABLES, gives binary-log coordinates that match
-its snapshot, with no lock any writer can wait behind. It runs on local
+per-tenant `mysqldump --single-transaction --set-gtid-purged=ON`, run by an
+account that holds no RELOAD and no LOCK TABLES, gives a GTID set that matches
+its snapshot, with no lock any writer can wait behind, so a replica seeded from
+the dump and started with SOURCE_AUTO_POSITION=1 misses no committed row and
+applies none twice. File and position coordinates are not used: on this server
+they run ahead of the snapshot (percona_snapshot_probe.md). It runs on local
 throwaway containers of the Percona candidate image (the source and the
-replica), and, for its two red cases, of db1's pinned stock MySQL as the source.
-Design, controls and exit codes: db/provision/percona_snapshot_probe.md. The
-verdict functions are pure; test_percona_snapshot_probe.py drives them without
-Docker. Nothing here reaches a host.
+replica), and, for two of its red cases, of db1's pinned stock MySQL as the
+source. Design, controls and exit codes: db/provision/percona_snapshot_probe.md.
+The verdict functions are pure; test_percona_snapshot_probe.py drives them
+without Docker. Nothing here reaches a host.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import NamedTuple
 
 _HERE = pathlib.Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -34,6 +38,10 @@ import snapshot_probe as sp  # noqa: E402
 Verdict = sp.Verdict
 
 TENANTS = ("t1", "t2", "t3")
+# Concurrent writers on each tenant. The loss that file and position coordinates
+# show is a race between commits, and a single writer per tenant hid it: three
+# per tenant lost rows in every round it was tried.
+WRITERS_PER_TENANT = 3
 # The tenant that carries the long open transaction and the long reader.
 LONG_TENANT = "t1"
 SLEEP_SECONDS = 60
@@ -55,10 +63,23 @@ EXPECTED_ERRNO_LOCK_TABLES = 1044
 SABOTAGE_TARGETS = {
     "commit-before-coordinates": (1,),
     "global-lock": (2, 3),
+    "gtid-drop-one": (1,),
+    "gtid-extra-one": (1,),
 }
-# Both red cases run on db1's stock Oracle MySQL; the green run on Percona.
-SABOTAGE_SOURCE = "stock"
+# The first two red cases run on db1's stock Oracle MySQL. The two GTID cases
+# mutate the set the real Percona dump wrote, so they run on Percona.
+SABOTAGE_SOURCES = {
+    "commit-before-coordinates": "stock",
+    "global-lock": "stock",
+    "gtid-drop-one": "percona",
+    "gtid-extra-one": "percona",
+}
+# The two that change the GTID set the replica is seeded with by exactly one
+# transaction of one tenant: the oracle must see a single transaction.
+GTID_MUTATIONS = {"gtid-drop-one": "drop", "gtid-extra-one": "extra"}
 SOURCE_KINDS = ("percona", "stock")
+# The GTID mode both servers run, passed by prove-percona-snapshot.sh.
+GTID_SETTINGS = (("gtid_mode", "ON"), ("enforce_gtid_consistency", "ON"))
 
 # What `mysqldump --source-data=2` writes, in either spelling.
 COORDINATES_COMMENT = re.compile(
@@ -93,18 +114,23 @@ def parse_status(lines: Iterable[str]) -> dict[str, str]:
 
 def variables_verdict(status: Mapping[str, str], settings: Mapping[str, str]) -> Verdict:
     """Control 1, first half. The server must expose the three snapshot
-    variables, and run the binary-log settings db1's `branchleft.cnf` sets,
-    since the per-tenant replay depends on ROW format."""
+    variables, run the binary-log settings db1's `branchleft.cnf` sets, since
+    the per-tenant replay depends on ROW format, and run GTID mode, since the
+    replica is seeded by GTID set."""
     missing = [name for name in SNAPSHOT_STATUS if name not in status]
     problems = []
     if missing:
         problems.append(f"the server has no status variable {missing}")
-    for name, want in (("log_bin", "1"), ("binlog_format", "ROW"), ("sync_binlog", "1")):
+    for name, want in (("log_bin", "1"), ("binlog_format", "ROW"), ("sync_binlog", "1"), *GTID_SETTINGS):
         if settings.get(name) != want:
             problems.append(f"@@{name} is {settings.get(name)!r}, not {want!r}")
     if problems:
         return Verdict(False, "; ".join(problems))
-    return Verdict(True, "Binlog_snapshot_file, _position and _gtid_executed exist; log_bin=1, binlog_format=ROW, sync_binlog=1")
+    return Verdict(
+        True,
+        "Binlog_snapshot_file, _position and _gtid_executed exist; log_bin=1, binlog_format=ROW, sync_binlog=1, "
+        "gtid_mode=ON, enforce_gtid_consistency=ON",
+    )
 
 
 def latency_verdict(samples: Mapping[str, Sequence[float]], limit: float, baseline: Mapping[str, float] | None = None) -> Verdict:
@@ -266,6 +292,273 @@ def comment_verdict(finding: CommentFinding) -> Verdict:
     return Verdict(finding.form is not None, finding.text)
 
 
+# --------------------------------------------------------------------------
+# GTID sets, and the oracle that judges a snapshot against the set it is
+# seeded with
+# --------------------------------------------------------------------------
+
+_UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_GTID_PART = rf"{_UUID}(?::\d+(?:-\d+)?)+"
+GTID_SET_TEXT = re.compile(rf"(?:{_GTID_PART}(?:,{_GTID_PART})*)?")
+# `SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '<set>';`, what the dump writes
+# under --set-gtid-purged=ON, which the replica's load applies.
+GTID_PURGED_LINE = re.compile(r"GTID_PURGED=(?:/\*!\d+ '\+'\*/ )?'([^']*)'")
+GTID_NEXT_LINE = re.compile(rf"^SET @@SESSION\.GTID_NEXT= '({_UUID}):(\d+)'")
+POSTS_INSERT_LINE = re.compile(r"^### INSERT INTO `(\w+)`\.`posts`\s*$")
+SLUG_COLUMN_LINE = re.compile(r"^###\s+@3='([^']*)'")
+WRITER_SLUG = re.compile(r"w\d+-\d+")
+# Examples of a lost or duplicated row a verdict prints.
+ORACLE_EXAMPLES = 3
+
+GtidSet = dict[str, list[tuple[int, int]]]
+
+
+def normalize_gtid_set(text: str) -> str:
+    """A GTID set as the server or the dump wrote it, without the line breaks
+    (real, or the two characters `\\n` that `mysql -B` prints) and spaces it
+    may carry. Raises ValueError for text that is not a GTID set."""
+    cleaned = re.sub(r"(?:\\n|\s)+", "", text)
+    if not GTID_SET_TEXT.fullmatch(cleaned):
+        raise ValueError(f"not a GTID set: {text[:80]!r}")
+    return cleaned
+
+
+def parse_gtid_set(text: str) -> GtidSet:
+    """uuid (lower case) -> sorted, merged (first, last) sequence intervals."""
+    parsed: GtidSet = {}
+    cleaned = normalize_gtid_set(text)
+    for part in cleaned.split(",") if cleaned else []:
+        uuid, *intervals = part.split(":")
+        spans = parsed.setdefault(uuid.lower(), [])
+        for interval in intervals:
+            first, _, last = interval.partition("-")
+            spans.append((int(first), int(last or first)))
+    return {uuid: _merge(spans) for uuid, spans in parsed.items()}
+
+
+def _merge(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for first, last in sorted(spans):
+        if merged and first <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+        else:
+            merged.append((first, last))
+    return merged
+
+
+def format_gtid_set(parsed: Mapping[str, Sequence[tuple[int, int]]]) -> str:
+    return ",".join(
+        uuid + "".join(f":{first}-{last}" if last > first else f":{first}" for first, last in spans)
+        for uuid, spans in sorted(parsed.items())
+        if spans
+    )
+
+
+def gtid_contains(parsed: Mapping[str, Sequence[tuple[int, int]]], uuid: str, seq: int) -> bool:
+    return any(first <= seq <= last for first, last in parsed.get(uuid.lower(), ()))
+
+
+def gtid_without(text: str, uuid: str, seq: int) -> str:
+    """The set with the one transaction `uuid:seq` taken out."""
+    parsed = parse_gtid_set(text)
+    spans: list[tuple[int, int]] = []
+    for first, last in parsed.get(uuid.lower(), []):
+        if first <= seq <= last:
+            spans += [(first, seq - 1)] if seq > first else []
+            spans += [(seq + 1, last)] if seq < last else []
+        else:
+            spans.append((first, last))
+    parsed[uuid.lower()] = spans
+    return format_gtid_set(parsed)
+
+
+def gtid_with(text: str, uuid: str, seq: int) -> str:
+    """The set with the one transaction `uuid:seq` added."""
+    parsed = parse_gtid_set(text)
+    parsed[uuid.lower()] = _merge([*parsed.get(uuid.lower(), []), (seq, seq)])
+    return format_gtid_set(parsed)
+
+
+def same_gtid_set(left: str, right: str) -> bool:
+    return parse_gtid_set(left) == parse_gtid_set(right)
+
+
+def dump_gtid_set(dump_text: str) -> str | None:
+    """The GTID set a `--set-gtid-purged=ON` dump says its snapshot holds."""
+    match = GTID_PURGED_LINE.search(dump_text)
+    return normalize_gtid_set(match.group(1)) if match else None
+
+
+def replace_dump_gtid_set(dump_text: str, gtid_set: str) -> str:
+    """The dump with the GTID set its load seeds the server with replaced."""
+    replaced, count = re.subn(r"(GTID_PURGED=(?:/\*!\d+ '\+'\*/ )?')[^']*'", lambda m: f"{m.group(1)}{normalize_gtid_set(gtid_set)}'", dump_text, count=1)
+    if count != 1:
+        raise ValueError("the dump has no GTID_PURGED line to replace")
+    return replaced
+
+
+def dump_slugs(dump_text: str) -> frozenset[str]:
+    """The writers' posts rows (`w<n>-<n>`) a dump holds."""
+    return frozenset(re.findall(r"'(w\d+-\d+)'", dump_text))
+
+
+class Placement(NamedTuple):
+    """Where in the source's binary log a posts row was committed."""
+
+    tenant: str
+    uuid: str
+    seq: int
+
+
+def binlog_placements(decoded_binlog: str) -> dict[str, Placement]:
+    """slug -> the GTID of the transaction that inserted it, from the text
+    `mysqlbinlog --base64-output=DECODE-ROWS -v` printed for the source's own
+    binary log. An oracle that is not the replica and not the dump."""
+    placements: dict[str, Placement] = {}
+    gtid: tuple[str, int] | None = None
+    tenant: str | None = None
+    for line in decoded_binlog.splitlines():
+        match = GTID_NEXT_LINE.match(line)
+        if match:
+            gtid, tenant = (match.group(1).lower(), int(match.group(2))), None
+            continue
+        match = POSTS_INSERT_LINE.match(line)
+        if match:
+            tenant = match.group(1)
+            continue
+        if tenant is not None:
+            match = SLUG_COLUMN_LINE.match(line)
+            if match and gtid is not None:
+                placements[match.group(1)] = Placement(tenant, gtid[0], gtid[1])
+                tenant = None
+            elif line.startswith("### ") and line != "### SET" and not line.startswith("###   @"):
+                tenant = None  # another statement began before the slug column
+    return placements
+
+
+@dataclasses.dataclass(frozen=True)
+class OracleCount:
+    """One or more snapshots judged against the set each was seeded with."""
+
+    snapshots: int = 0
+    checked: int = 0
+    in_snapshot: int = 0
+    after_set: int = 0
+    lost: int = 0
+    duplicated: int = 0
+    unplaced: int = 0
+    examples: tuple[str, ...] = ()
+
+    def __add__(self, other: "OracleCount") -> "OracleCount":
+        return OracleCount(
+            self.snapshots + other.snapshots,
+            self.checked + other.checked,
+            self.in_snapshot + other.in_snapshot,
+            self.after_set + other.after_set,
+            self.lost + other.lost,
+            self.duplicated + other.duplicated,
+            self.unplaced + other.unplaced,
+            (self.examples + other.examples)[:ORACLE_EXAMPLES],
+        )
+
+
+def gtid_oracle(
+    *,
+    tenant: str,
+    rows: frozenset[str],
+    gtid_set: str,
+    committed: Iterable[str],
+    placements: Mapping[str, Placement],
+) -> OracleCount:
+    """One snapshot against its seeding set. `committed` is every writer row
+    on the source when the writers had stopped; `rows` is what the dump holds;
+    `gtid_set` is the set the replica was seeded with. A committed row must be
+    in the dump or after the set, and exactly one of the two: in the set but
+    not the dump is LOST (the replica never gets it), in the dump but not in
+    the set is DUPLICATED (the replica applies it a second time)."""
+    parsed = parse_gtid_set(gtid_set)
+    checked = in_snapshot = after_set = lost = duplicated = unplaced = 0
+    examples: list[str] = []
+    for slug in sorted(committed):
+        placed = placements.get(slug)
+        if placed is None:
+            unplaced += 1
+            if len(examples) < ORACLE_EXAMPLES:
+                examples.append(f"UNPLACED {tenant} {slug}: not in the source's binary log")
+            continue
+        checked += 1
+        in_dump = slug in rows
+        in_set = gtid_contains(parsed, placed.uuid, placed.seq)
+        in_snapshot += in_dump
+        after_set += not in_set
+        if in_set and not in_dump:
+            lost += 1
+            if len(examples) < ORACLE_EXAMPLES:
+                examples.append(f"LOST {tenant} {slug} ({placed.uuid}:{placed.seq} is in the seeding set, the dump lacks the row)")
+        elif in_dump and not in_set:
+            duplicated += 1
+            if len(examples) < ORACLE_EXAMPLES:
+                examples.append(f"DUPLICATED {tenant} {slug} ({placed.uuid}:{placed.seq} is not in the seeding set, the dump holds the row)")
+    return OracleCount(1, checked, in_snapshot, after_set, lost, duplicated, unplaced, tuple(examples))
+
+
+def oracle_verdict(count: OracleCount) -> Verdict:
+    """Control 1's oracle. Every committed row is either in the snapshot or
+    after the seeding set, none is both and none is neither; every row was
+    found in the source's binary log; and both regions were exercised, since an
+    oracle that only ever saw one of them proves nothing."""
+    problems = []
+    if count.snapshots == 0 or count.checked == 0:
+        problems.append("no snapshot or no committed row was checked")
+    if count.lost:
+        problems.append(f"{count.lost} committed rows LOST (in the seeding set, not in the snapshot)")
+    if count.duplicated:
+        problems.append(f"{count.duplicated} rows DUPLICATED (in the snapshot, not in the seeding set)")
+    if count.unplaced:
+        problems.append(f"{count.unplaced} committed rows were not found in the source's binary log, so the oracle was blind to them")
+    if count.checked and not count.in_snapshot:
+        problems.append("no checked row was in a snapshot")
+    if count.checked and not count.after_set:
+        problems.append("no checked row was after a seeding set, so nothing was replayed")
+    if problems:
+        return Verdict(False, "; ".join(problems + list(count.examples)))
+    return Verdict(
+        True,
+        f"{count.snapshots} snapshots, {count.checked} committed-row checks ({count.in_snapshot} in a snapshot, "
+        f"{count.after_set} after the seeding set): 0 lost, 0 duplicated",
+    )
+
+
+def mutate_gtid_set(
+    kind: str, tenant: str, rows: frozenset[str], gtid_set: str, placements: Mapping[str, Placement]
+) -> tuple[str, str] | None:
+    """The sabotage on the seeding set: exactly one transaction of one tenant.
+    `drop`: take out the latest of the tenant's transactions that the set and
+    the dump both hold, so the replica applies it a second time. `extra`: add
+    the earliest of the tenant's transactions that the set and the dump both
+    lack, so the replica never gets it. Returns the new set and what was done,
+    or None when the tenant has no such transaction."""
+    parsed = parse_gtid_set(gtid_set)
+    own = [
+        (placed.seq, slug, placed)
+        for slug, placed in placements.items()
+        if placed.tenant == tenant and WRITER_SLUG.fullmatch(slug)
+    ]
+    if kind == "drop":
+        held = sorted((seq, slug, placed) for seq, slug, placed in own if slug in rows and gtid_contains(parsed, placed.uuid, seq))
+        if not held:
+            return None
+        seq, slug, placed = held[-1]
+        return gtid_without(gtid_set, placed.uuid, seq), f"{tenant}: dropped {placed.uuid}:{seq} (row {slug}) from the seeding set"
+    if kind == "extra":
+        later = sorted((seq, slug, placed) for seq, slug, placed in own if slug not in rows and not gtid_contains(parsed, placed.uuid, seq))
+        if not later:
+            return None
+        seq, slug, placed = later[0]
+        return gtid_with(gtid_set, placed.uuid, seq), f"{tenant}: added {placed.uuid}:{seq} (row {slug}) to the seeding set"
+    raise ValueError(f"unknown GTID mutation {kind!r}")
+
+
 def inject_sql(tag: str) -> str:
     """One committed transaction that adds a row to every table of a tenant:
     the commit the sabotage forces between the snapshot and the coordinates."""
@@ -305,23 +598,46 @@ def pinned_percona(wrapper_text: str) -> str:
 
 _OK = ("mysql-bin.000003", 1461)
 _NEXT = ("mysql-bin.000003", 1700)
+_SETTINGS = {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1", "gtid_mode": "ON", "enforce_gtid_consistency": "ON"}
+_UUID_A = "11111111-2222-3333-4444-555555555555"
+_PLACED = {
+    "w1-1": Placement("t1", _UUID_A, 5),
+    "w1-2": Placement("t1", _UUID_A, 7),
+    "w1-3": Placement("t1", _UUID_A, 9),
+}
+
+
+def _oracle(rows: frozenset[str], gtid_set: str, placements: Mapping[str, Placement] = _PLACED) -> Verdict:
+    return oracle_verdict(gtid_oracle(tenant="t1", rows=rows, gtid_set=gtid_set, committed=_PLACED, placements=placements))
+
 
 SELF_TEST_CASES: tuple[tuple[str, bool, Callable[[], Verdict]], ...] = (
-    (
-        "variables: stock server has none",
-        False,
-        lambda: variables_verdict({}, {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1"}),
-    ),
+    ("variables: stock server has none", False, lambda: variables_verdict({}, _SETTINGS)),
     (
         "variables: statement format",
         False,
-        lambda: variables_verdict(dict.fromkeys(SNAPSHOT_STATUS, ""), {"log_bin": "1", "binlog_format": "STATEMENT", "sync_binlog": "1"}),
+        lambda: variables_verdict(dict.fromkeys(SNAPSHOT_STATUS, ""), {**_SETTINGS, "binlog_format": "STATEMENT"}),
+    ),
+    ("variables: gtid mode off", False, lambda: variables_verdict(dict.fromkeys(SNAPSHOT_STATUS, ""), {**_SETTINGS, "gtid_mode": "OFF"})),
+    ("variables: healthy", True, lambda: variables_verdict(dict.fromkeys(SNAPSHOT_STATUS, ""), _SETTINGS)),
+    (
+        "gtid_oracle: a committed row in the seeding set but not in the snapshot",
+        False,
+        lambda: _oracle(frozenset({"w1-1"}), f"{_UUID_A}:1-8"),
     ),
     (
-        "variables: healthy",
-        True,
-        lambda: variables_verdict(dict.fromkeys(SNAPSHOT_STATUS, ""), {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1"}),
+        "gtid_oracle: a row in the snapshot but not in the seeding set",
+        False,
+        lambda: _oracle(frozenset({"w1-1", "w1-2", "w1-3"}), f"{_UUID_A}:1-8"),
     ),
+    (
+        "gtid_oracle: a committed row the binary log never placed",
+        False,
+        lambda: _oracle(frozenset({"w1-1"}), f"{_UUID_A}:1-6", {"w1-1": _PLACED["w1-1"]}),
+    ),
+    ("gtid_oracle: nothing after the set was seen", False, lambda: _oracle(frozenset({"w1-1", "w1-2", "w1-3"}), f"{_UUID_A}:1-10")),
+    ("gtid_oracle: healthy", True, lambda: _oracle(frozenset({"w1-1", "w1-2"}), f"{_UUID_A}:1-8")),
+    ("gtid_oracle: healthy with a gap in the set", True, lambda: _oracle(frozenset({"w1-1", "w1-3"}), f"{_UUID_A}:1-6:9-9")),
     ("latency: a 10 s stall on one tenant", False, lambda: latency_verdict({"t1": [0.004, 10.1], "t2": [0.004], "t3": [0.005]}, LATENCY_LIMIT_SECONDS)),
     ("latency: a tenant with no samples", False, lambda: latency_verdict({"t1": [0.004], "t2": []}, LATENCY_LIMIT_SECONDS)),
     ("latency: healthy", True, lambda: latency_verdict({"t1": [0.004, 0.031], "t2": [0.005], "t3": [0.006]}, LATENCY_LIMIT_SECONDS)),
@@ -426,16 +742,24 @@ class RoundSpec:
 
 # The rounds each run does, how a dump is taken, and whether a replica is seeded.
 # Default: one long round (a long write transaction and SELECT SLEEP(60) on
-# one tenant) then four short ones: a coordinate race is a window, so one lucky
+# one tenant) then four short ones: a commit race is a window, so one lucky
 # pass proves little (replication_client_probe.py makes the same point). The
 # sabotages need less.
 PLANS: Mapping[str | None, tuple[RoundSpec, ...]] = {
     None: (RoundSpec(True, True),) + (RoundSpec(False, False),) * 4,
     "commit-before-coordinates": (RoundSpec(False, False),),
     "global-lock": (RoundSpec(True, False),),
+    "gtid-drop-one": (RoundSpec(False, False),) * 2,
+    "gtid-extra-one": (RoundSpec(False, False),) * 2,
 }
-DUMP_MODES: Mapping[str | None, str] = {None: "percona", "commit-before-coordinates": "commit-before-coordinates", "global-lock": "old-path"}
-SEEDING: Mapping[str | None, bool] = {None: True, "commit-before-coordinates": True, "global-lock": False}
+DUMP_MODES: Mapping[str | None, str] = {
+    None: "percona",
+    "commit-before-coordinates": "commit-before-coordinates",
+    "global-lock": "old-path",
+    "gtid-drop-one": "percona",
+    "gtid-extra-one": "percona",
+}
+SEEDING: Mapping[str | None, bool] = {None: True, "commit-before-coordinates": True, "global-lock": False, "gtid-drop-one": True, "gtid-extra-one": True}
 
 
 @dataclasses.dataclass
@@ -444,8 +768,14 @@ class DumpRecord:
     path: pathlib.Path
     returncode: int
     stderr: str
-    coordinates: Coordinates | None
     finding: CommentFinding
+    # The GTID set the replica is seeded with, and whether the dump file
+    # carries it (a `--set-gtid-purged=ON` dump does; the stock no-lock
+    # sabotage reads it from the live server instead, after the dump).
+    gtid_set: str | None
+    set_in_dump: bool
+    # The writers' posts rows the dump holds.
+    rows: frozenset[str]
 
 
 @dataclasses.dataclass
@@ -458,6 +788,7 @@ class Scenario:
     lock_samples: int = 0
     lock_table_samples: int = 0
     snapshots: int = 0
+    oracle: OracleCount = dataclasses.field(default_factory=OracleCount)
 
 
 @dataclasses.dataclass
@@ -516,19 +847,22 @@ def revoke_old_path(run: Run) -> None:
         run.ctx.source.run(f"REVOKE RELOAD, REPLICATION CLIENT ON *.* FROM '{account}'@'localhost';", check=False)
 
 
-def dump_argv(run: Run, tenant: str) -> list[str]:
+def dump_argv(run: Run, tenant: str, *, coordinates: bool = False) -> list[str]:
     """The per-tenant dump, as dump_tenant.py takes it, plus --no-tablespaces
-    (the account has no PROCESS). The stock-no-lock case leaves --source-data
-    off: a stock account without RELOAD cannot use it, and the coordinates are
-    then read by the sabotage itself."""
+    (the account has no PROCESS). On Percona it writes the snapshot's GTID set
+    (--set-gtid-purged=ON) and no file and position: `coordinates` adds
+    --source-data=2 for control 6 alone, which only records the comment. The
+    stock no-lock case reads the set itself after the dump, and a stock account
+    without RELOAD cannot use --source-data. The retired path takes it."""
+    old_path = run.mode == "old-path"
     argv = [
         "mysqldump",
         f"--user={run.account(tenant)}",
         "--single-transaction",
-        *([] if run.mode == "commit-before-coordinates" else ["--source-data=2"]),
+        *(["--source-data=2"] if old_path or (coordinates and run.mode == "percona") else []),
         "--routines",
         "--triggers",
-        "--set-gtid-purged=OFF",
+        f"--set-gtid-purged={'ON' if run.mode == 'percona' else 'OFF'}",
         "--no-tablespaces",
         "--databases",
         tenant,
@@ -536,86 +870,95 @@ def dump_argv(run: Run, tenant: str) -> list[str]:
     return argv
 
 
-def dump_tenant(run: Run, tenant: str, name: str) -> DumpRecord:
+def source_gtid_executed(server: sp.Server) -> str:
+    """The server's GTID set right now."""
+    return normalize_gtid_set(server.query("SELECT @@GLOBAL.gtid_executed;")[0][0])
+
+
+def dump_tenant(run: Run, tenant: str, name: str, *, coordinates: bool = False) -> DumpRecord:
     """One tenant's dump. Under `commit-before-coordinates` a committed
     transaction is forced into every table of the tenant after the dump
-    finishes, and only then is log_status read as the coordinates: the order
-    the design exists to close, with no lock between the two."""
+    finishes, and only then is the server's GTID set read as the replica's
+    start point: the order the design exists to close, with no lock between
+    the two."""
     ctx = run.ctx
-    process = ctx.source.popen(dump_argv(run, tenant), run.password, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = ctx.source.popen(dump_argv(run, tenant, coordinates=coordinates), run.password, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     out, err = process.communicate(timeout=300)
     path = ctx.workdir / name
     path.write_bytes(out)
-    finding = comment_finding(out.decode(errors="replace"))
-    coordinates = finding.coordinates
+    text = out.decode(errors="replace")
+    stderr = err.decode(errors="replace").strip()[:400]
+    try:
+        gtid_set = dump_gtid_set(text)
+    except ValueError as exc:
+        gtid_set, stderr = None, f"{stderr} {exc}".strip()
+    set_in_dump = gtid_set is not None
     if run.mode == "commit-before-coordinates" and process.returncode == 0:
         ctx.source.run(inject_sql(f"forced-{tenant}-{time.monotonic_ns()}"), database=tenant)
-        coordinates = sp.read_log_status(ctx.source)
-    return DumpRecord(tenant, path, process.returncode, err.decode(errors="replace").strip()[:400], coordinates, finding)
+        gtid_set = source_gtid_executed(ctx.source)
+    return DumpRecord(tenant, path, process.returncode, stderr, comment_finding(text), gtid_set, set_in_dump, dump_slugs(text))
 
 
 def checked_dump(run: Run, tenant: str, name: str) -> DumpRecord:
     record = dump_tenant(run, tenant, name)
-    if record.returncode != 0 or record.coordinates is None:
-        raise sp.ProofError(f"the dump of {tenant} failed ({record.returncode}) or has no coordinates: {record.stderr}")
+    if record.returncode != 0 or (SEEDING[run.sabotage] and not record.gtid_set):
+        raise sp.ProofError(f"the dump of {tenant} failed ({record.returncode}) or has no GTID set: {record.stderr}")
     return record
 
 
+def start_replication_by_gtid(ctx: sp.Ctx) -> None:
+    """The replica asks the source for every transaction its own GTID set
+    lacks. No file, no position."""
+    ctx.replica.run(
+        f"CHANGE REPLICATION SOURCE TO SOURCE_HOST='{ctx.source.name}', SOURCE_USER='{sp.REPLICATION_USER}', "
+        f"SOURCE_PASSWORD='{ctx.passwords.repl}', SOURCE_AUTO_POSITION=1, SOURCE_SSL=1, SOURCE_CONNECT_RETRY=2; START REPLICA;"
+    )
+
+
+def wait_caught_up_gtid(replica: sp.Server, target: str, timeout: float = 240) -> str | None:
+    """None once the replica has executed every transaction in `target`, else
+    the reason it did not (an applier or connection error, or a timeout)."""
+    target = normalize_gtid_set(target)
+    deadline = time.monotonic() + timeout
+    status: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        status = sp.replica_status(replica)
+        if status.get("Last_SQL_Errno", "0") not in ("0", ""):
+            return f"replica SQL thread stopped: error {status['Last_SQL_Errno']}: {status.get('Last_SQL_Error', '')[:200]}"
+        if status.get("Last_IO_Errno", "0") not in ("0", ""):
+            return f"replica IO thread stopped: error {status['Last_IO_Errno']}: {status.get('Last_IO_Error', '')[:200]}"
+        if replica.query(f"SELECT GTID_SUBSET('{target}', @@GLOBAL.gtid_executed);")[0][0] == "1":
+            return None
+        time.sleep(0.5)
+    return f"replica did not execute GTID set {target} in {timeout:.0f}s (it has {status.get('Executed_Gtid_Set', '')[:120]})"
+
+
 def reseed(run: Run, record: DumpRecord) -> int:
-    """Seeds the replica with one tenant: its dump, then replication at the
-    dump's recorded coordinates, filtered to that tenant. Returns the rows of
-    emails the dump alone held."""
+    """Seeds the replica with one tenant: its dump, then replication by GTID
+    set (SOURCE_AUTO_POSITION=1), filtered to that tenant. The replica's own
+    GTID state is cleared first, so the dump's set is the whole of it. Returns
+    the rows of emails the dump alone held."""
     ctx = run.ctx
-    for statement in ("STOP REPLICA", "RESET REPLICA ALL", f"DROP DATABASE IF EXISTS {record.tenant}"):
+    for statement in ("STOP REPLICA", "RESET REPLICA ALL", f"DROP DATABASE IF EXISTS {record.tenant}", "RESET MASTER"):
         ctx.replica.run(statement, check=False)
     ctx.replica.load_file(record.path)
+    if not record.set_in_dump:
+        ctx.replica.run(f"SET @@GLOBAL.GTID_PURGED='{normalize_gtid_set(record.gtid_set or '')}';")
+    seeded = normalize_gtid_set(ctx.replica.query("SELECT @@GLOBAL.gtid_purged;")[0][0])
+    if not same_gtid_set(seeded, record.gtid_set or ""):
+        raise sp.ProofError(f"{record.tenant}: the replica was seeded with GTID set {seeded}, not the {record.gtid_set} the oracle judged")
     in_dump = int(ctx.replica.query(f"SELECT COUNT(*) FROM {record.tenant}.emails;")[0][0])
     ctx.replica.run(f"CHANGE REPLICATION FILTER REPLICATE_WILD_DO_TABLE = ('{record.tenant}.%');")
-    sp.start_replication(ctx, *record.coordinates)
+    start_replication_by_gtid(ctx)
     return in_dump
 
 
-def binlog_event_position(decoded_binlog: str, slug: str) -> int | None:
-    """The `# at` offset of the row event that inserted `slug`, in the text
-    `mysqlbinlog --base64-output=DECODE-ROWS -v` printed; None if not there."""
-    index = decoded_binlog.find(f"'{slug}'")
-    if index < 0:
-        return None
-    offsets = re.findall(r"^# at (\d+)$", decoded_binlog[:index], re.M)
-    return int(offsets[-1]) if offsets else None
-
-
-def classify_missing(*, event_position: int | None, coordinates: Coordinates, in_dump: bool) -> str:
-    """Where a row that is on the source but not on the seeded replica sits
-    against the dump and its recorded coordinates. Only a row committed before
-    the coordinates yet absent from the dump says the coordinates ran ahead of
-    the snapshot: the replay starts after it and the dump never held it."""
-    if in_dump:
-        return "in the dump but not on the replica: the replay or load lost it"
-    if event_position is None:
-        return f"absent from the dump and not in {coordinates[0]}"
-    if event_position < coordinates[1]:
-        return (
-            f"committed to the binary log at {event_position}, before the recorded coordinates {coordinates[1]}, "
-            "yet absent from the dump: the coordinates ran ahead of the snapshot"
-        )
-    return f"at {event_position}, after the recorded coordinates {coordinates[1]}: the replay should have applied it"
-
-
-def locate_missing(run: Run, record: DumpRecord, limit: int = 3) -> list[str]:
-    """For a tenant whose tables differ: the posts rows the replica lacks,
-    each placed against the dump and the coordinates by reading the source's
-    own binary log, an oracle that is not the replica."""
+def read_placements(run: Run) -> dict[str, Placement]:
+    """Every posts row's GTID, read from the source's own binary log through
+    the replica's mysqlbinlog (the stock image has none), as the replication
+    account. The log is the oracle: not the replica, and not the dump."""
     ctx = run.ctx
-    tenant = record.tenant
-    source = {row[0] for row in ctx.source.query(f"SELECT slug FROM {tenant}.posts;")}
-    replica = {row[0] for row in ctx.replica.query(f"SELECT slug FROM {tenant}.posts;")}
-    lacking = sorted(source - replica)
-    if not lacking:
-        return []
-    dump_text = record.path.read_text(errors="replace")
-    # The stock image has no mysqlbinlog; the Percona replica's reads the source's
-    # log over the network as the replication account, whichever source it is.
+    first = ctx.source.query("SHOW BINARY LOGS;")[0][0]
     result = subprocess.run(
         ctx.replica.exec_argv(
             [
@@ -626,23 +969,46 @@ def locate_missing(run: Run, record: DumpRecord, limit: int = 3) -> list[str]:
                 "--ssl-mode=REQUIRED",
                 "--base64-output=DECODE-ROWS",
                 "-v",
-                record.coordinates[0],
+                "--to-last-log",
+                first,
             ]
         ),
         env=sp._client_env(ctx.passwords.repl),
         capture_output=True,
         text=True,
         check=False,
-        timeout=300,
+        timeout=900,
     )
     if result.returncode != 0:
         said = (result.stderr.strip() or result.stdout.strip())[:200]
-        return [f"{len(lacking)} posts rows missing; mysqlbinlog exited {result.returncode} reading {record.coordinates[0]}: {said}"]
-    decoded = result.stdout
-    return [
-        f"posts row {slug} {classify_missing(event_position=binlog_event_position(decoded, slug), coordinates=record.coordinates, in_dump=slug in dump_text)}"
-        for slug in lacking[:limit]
-    ] + ([f"and {len(lacking) - limit} more posts rows"] if len(lacking) > limit else [])
+        raise sp.ProofError(f"mysqlbinlog exited {result.returncode} reading the source's binary log from {first}: {said}")
+    return binlog_placements(result.stdout)
+
+
+def committed_rows(run: Run) -> dict[str, list[str]]:
+    """Each tenant's writer rows on the source, read once the writers stopped."""
+    return {
+        tenant: [row[0] for row in run.ctx.source.query(f"SELECT slug FROM {tenant}.posts WHERE slug REGEXP '^w[0-9]+-[0-9]+$';")]
+        for tenant in TENANTS
+    }
+
+
+def apply_gtid_sabotage(run: Run, records: Mapping[str, DumpRecord], placements: Mapping[str, Placement], scenario: Scenario) -> None:
+    """Under `gtid-drop-one` and `gtid-extra-one`: change the set each tenant's
+    replica is seeded with by one of that tenant's transactions, in the dump
+    file the replica loads and in the record the oracle judges."""
+    kind = GTID_MUTATIONS.get(run.sabotage)
+    if kind is None:
+        return
+    for tenant, record in records.items():
+        changed = mutate_gtid_set(kind, tenant, record.rows, record.gtid_set or "", placements)
+        if changed is None:
+            scenario.lines.append(f"  sabotage {run.sabotage}: {tenant} had no transaction to change")
+            continue
+        new_set, what = changed
+        record.path.write_text(replace_dump_gtid_set(record.path.read_text(errors="surrogateescape"), new_set), errors="surrogateescape")
+        record.gtid_set = new_set
+        scenario.lines.append(f"  sabotage {run.sabotage}: {what}")
 
 
 def _brief(text: str, limit: int = 200) -> str:
@@ -650,28 +1016,26 @@ def _brief(text: str, limit: int = 200) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + " ..."
 
 
-def seed_and_compare(run: Run, records: Mapping[str, DumpRecord], final: Coordinates) -> tuple[Verdict, list[str]]:
-    """Each tenant in turn: seed, replay to the source's final position,
-    compare every table's count and CHECKSUM TABLE, and require that the
-    replay applied something the dump did not hold."""
+def seed_and_compare(run: Run, records: Mapping[str, DumpRecord], final: str) -> tuple[Verdict, list[str]]:
+    """Each tenant in turn: seed by GTID set, replay to the source's final
+    GTID set, compare every table's count and CHECKSUM TABLE, and require that
+    the replay applied something the dump did not hold."""
     ctx = run.ctx
     failures: list[str] = []
     lines: list[str] = []
     for tenant in TENANTS:
         record = records[tenant]
         in_dump = reseed(run, record)
-        failure = sp.wait_caught_up(ctx.replica, *final)
+        failure = wait_caught_up_gtid(ctx.replica, final)
         source_sums = sp.table_sums(ctx.source, tenant)
         replica_sums = sp.table_sums(ctx.replica, tenant)
         rows_final = int(ctx.replica.query(f"SELECT COUNT(*) FROM {tenant}.emails;")[0][0]) if failure is None else in_dump
         parts = [sp.checksum_verdict(source_sums, replica_sums), rcp.replay_verdict(in_dump, rows_final)]
         reasons = ([failure] if failure is not None else []) + [_brief(part.reason) for part in parts if not part.passed]
-        if not parts[0].passed:
-            reasons += locate_missing(run, record)
         if reasons:
             failures.append(f"{tenant}: " + "; ".join(reasons))
         lines.append(
-            f"  {tenant}: seeded at {record.coordinates[0]}:{record.coordinates[1]}, replayed to {final[0]}:{final[1]}; "
+            f"  {tenant}: seeded with GTID set {_brief(record.gtid_set or '', 80)}, replayed to {_brief(final, 80)}; "
             + ("; ".join(reasons) if reasons else "; ".join(part.reason for part in parts))
         )
     return (Verdict(False, " | ".join(failures)) if failures else Verdict(True, f"all {len(TENANTS)} tenants matched")), lines
@@ -698,16 +1062,36 @@ def start_long_reader(run: Run, done: threading.Event, errors: list[sp.ProofErro
     raise sp.ProofError("the long reader never started")
 
 
+def finish_writers(writers: Mapping[str, Sequence[sp.Writer]]) -> dict[str, list[list[tuple[float, float]]]]:
+    """Stops every writer, each tenant's samples as one list per writer. Every
+    writer is stopped even when one died; the first death is then raised."""
+    samples: dict[str, list[list[tuple[float, float]]]] = {tenant: [] for tenant in writers}
+    first: sp.ProofError | None = None
+    for tenant, group in writers.items():
+        for writer in group:
+            try:
+                samples[tenant].append(writer.finish())
+            except sp.ProofError as exc:
+                first = first or exc
+    if first is not None:
+        raise first
+    return samples
+
+
 def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> None:
     ctx = run.ctx
-    writers = {tenant: sp.Writer(ctx.source, tenant, sp.blog_statement) for tenant in TENANTS}
+    writers = {tenant: [sp.Writer(ctx.source, tenant, sp.blog_statement) for _ in range(WRITERS_PER_TENANT)] for tenant in TENANTS}
     holder: sp.Session | None = None
     reader: sp.Session | None = None
     done = threading.Event()
     reader_errors: list[sp.ProofError] = []
     records: dict[str, DumpRecord] = {}
-    for writer in writers.values():
-        writer.start()
+    # Every dump this round takes, not only the last of each tenant: the oracle
+    # judges each one against the set it carries.
+    round_dumps: list[DumpRecord] = []
+    for group in writers.values():
+        for writer in group:
+            writer.start()
     dumping = time.monotonic()
     passes = 0
     try:
@@ -721,6 +1105,7 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
         while True:
             for tenant in TENANTS:
                 records[tenant] = checked_dump(run, tenant, f"{tenant}-round{number}.sql")
+                round_dumps.append(records[tenant])
             passes += 1
             if not spec.long_round or done.is_set():
                 break
@@ -731,7 +1116,7 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
                 raise reader_errors[0]
     finally:
         try:
-            samples = {tenant: writer.finish() for tenant, writer in writers.items()}
+            samples = finish_writers(writers)
         finally:
             if reader is not None:
                 reader.close()
@@ -740,24 +1125,42 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
         holder.run("COMMIT;")
         holder.close()
         committed = "; the long transaction committed after the last dump"
-    for tenant, tenant_samples in samples.items():
-        scenario.latencies[tenant].extend(latency for _, latency in tenant_samples[WARMUP_SAMPLES:])
-        before = [latency for start, latency in tenant_samples[WARMUP_SAMPLES:] if start + latency < dumping]
-        scenario.baseline[tenant] = max(scenario.baseline[tenant], max(before, default=0.0))
+    for tenant, per_writer in samples.items():
+        for writer_samples in per_writer:
+            scenario.latencies[tenant].extend(latency for _, latency in writer_samples[WARMUP_SAMPLES:])
+            before = [latency for start, latency in writer_samples[WARMUP_SAMPLES:] if start + latency < dumping]
+            scenario.baseline[tenant] = max(scenario.baseline[tenant], max(before, default=0.0))
     scenario.snapshots += passes * len(TENANTS)
-    statements = {tenant: len(tenant_samples) for tenant, tenant_samples in samples.items()}
+    statements = {tenant: sum(len(writer_samples) for writer_samples in per_writer) for tenant, per_writer in samples.items()}
     kind = "short"
     if spec.long_round:
         kind = f"long: SELECT SLEEP({SLEEP_SECONDS}) on {LONG_TENANT}" + (" and an open write transaction" if spec.long_transaction else "")
-    scenario.lines.append(f"round {number} ({kind}): {passes} pass(es) of {len(TENANTS)} dumps, write transactions per tenant {statements}{committed}")
+    scenario.lines.append(
+        f"round {number} ({kind}): {passes} pass(es) of {len(TENANTS)} dumps, {WRITERS_PER_TENANT} writers per tenant, "
+        f"write transactions per tenant {statements}{committed}"
+    )
     if not SEEDING[run.sabotage]:
         return
-    final = sp.read_log_status(ctx.source)
-    verdict, lines = seed_and_compare(run, records, final)
-    scenario.rounds.append(verdict)
+    final = source_gtid_executed(ctx.source)
+    placements = read_placements(run)
+    committed_by_tenant = committed_rows(run)
+    apply_gtid_sabotage(run, records, placements, scenario)
+    replica_verdict, lines = seed_and_compare(run, records, final)
+    count = OracleCount()
+    for record in round_dumps:
+        count += gtid_oracle(
+            tenant=record.tenant,
+            rows=record.rows,
+            gtid_set=record.gtid_set or "",
+            committed=committed_by_tenant[record.tenant],
+            placements=placements,
+        )
+    oracle = oracle_verdict(count)
+    scenario.oracle += count
+    failed = [f"{name}: {part.reason}" for name, part in (("replica", replica_verdict), ("oracle", oracle)) if not part.passed]
+    scenario.rounds.append(Verdict(False, " | ".join(failed)) if failed else Verdict(True, f"{replica_verdict.reason}; {oracle.reason}"))
     scenario.lines.extend(lines)
-
-
+    scenario.lines.append(f"  oracle, {len(round_dumps)} snapshots against the source's binary log: {oracle.reason}")
 def get_scenario(run: Run) -> Scenario:
     """The one pass that controls 1, 2 and 3 share: writers on every tenant
     for the whole of it, a lock sampler on the dump accounts, and the rounds."""
@@ -796,24 +1199,53 @@ def get_scenario(run: Run) -> Scenario:
 
 
 def control_1(run: Run) -> sp.ControlResult:
-    """The variables exist, and a replica seeded at the recorded coordinates
-    matches every table of every tenant."""
+    """The variables exist, GTID mode is on, and a replica seeded from each
+    dump's GTID set matches every table of every tenant. The oracle beside it
+    reads the source's own binary log: every committed row is in the snapshot
+    or after its set, and exactly one of the two."""
     ctx = run.ctx
+    title = "variables and a GTID set consistent with the snapshot"
     status = parse_status(f"{row[0]}\t{row[1]}" for row in ctx.source.query("SHOW STATUS LIKE 'Binlog_snapshot%';"))
-    row = ctx.source.query("SELECT @@log_bin, @@binlog_format, @@sync_binlog;")[0]
-    settings = {"log_bin": row[0], "binlog_format": row[1], "sync_binlog": row[2]}
+    row = ctx.source.query("SELECT @@log_bin, @@binlog_format, @@sync_binlog, @@gtid_mode, @@enforce_gtid_consistency;")[0]
+    settings = {"log_bin": row[0], "binlog_format": row[1], "sync_binlog": row[2], "gtid_mode": row[3], "enforce_gtid_consistency": row[4]}
     version = ctx.source.query("SELECT @@version, @@version_comment;")[0]
     numbers = [f"source server: {version[0]} ({version[1]})"]
     variables = variables_verdict(status, settings)
-    # Under a sabotage the source is stock MySQL, which has no such variables
-    # by design; what must go red is the replica, not this check.
+    # Under the stock-source sabotages the source has no such variables by
+    # design; what must go red is the replica, not this check.
     if not variables.passed and not run.sabotage:
-        return sp.ControlResult(1, "variables and consistent coordinates", variables, numbers)
-    scenario = get_scenario(run)
+        return sp.ControlResult(1, title, variables, numbers)
+    mutation = GTID_MUTATIONS.get(run.sabotage)
+    try:
+        scenario = get_scenario(run)
+    except (sp.ProofError, subprocess.TimeoutExpired) as exc:
+        if mutation is None:
+            raise
+        # A harness failure is not the oracle seeing the change.
+        return sp.ControlResult(1, title, Verdict(True, f"the sabotage run did not complete, so nothing was detected: {type(exc).__name__}: {exc}"), numbers)
     numbers += scenario.lines
     rounds = rcp.rounds_verdict(scenario.rounds)
-    verdict = rounds if run.sabotage else Verdict(rounds.passed, f"{variables.reason}; {rounds.reason}")
-    return sp.ControlResult(1, "variables and consistent coordinates", verdict, numbers)
+    if mutation is not None:
+        # Red only counts when the oracle itself saw the one changed
+        # transaction: a drop shows as a duplicated row, an extra as a lost one.
+        seen = scenario.oracle.duplicated if mutation == "drop" else scenario.oracle.lost
+        if not seen:
+            return sp.ControlResult(
+                1, title, Verdict(True, f"the oracle did not see the {mutation} of one transaction ({scenario.oracle.lost} lost, {scenario.oracle.duplicated} duplicated)"), numbers
+            )
+    if run.sabotage:
+        verdict = rounds
+    elif rounds.passed:
+        verdict = Verdict(
+            True,
+            f"{variables.reason}; all {len(scenario.rounds)} rounds seeded by GTID set and replayed cleanly with {WRITERS_PER_TENANT} writers per tenant; "
+            f"oracle over all rounds: {scenario.oracle.snapshots} snapshots, {scenario.oracle.checked} committed-row checks "
+            f"({scenario.oracle.in_snapshot} in a snapshot, {scenario.oracle.after_set} after the seeding set), "
+            f"{scenario.oracle.lost} lost, {scenario.oracle.duplicated} duplicated",
+        )
+    else:
+        verdict = Verdict(False, f"{variables.reason}; {rounds.reason}")
+    return sp.ControlResult(1, title, verdict, numbers)
 
 
 def control_2(run: Run) -> sp.ControlResult:
@@ -913,12 +1345,15 @@ def control_5(run: Run) -> sp.ControlResult:
 
 
 def control_6(run: Run) -> sp.ControlResult:
-    """FINDING: the comment form the dump emits, and whether
-    extract_tenant_binlog.SOURCE_DATA_PATTERN parses it."""
-    record = dump_tenant(run, LONG_TENANT, "finding.sql")
+    """FINDING: the comment form a dump with --source-data=2 emits, and whether
+    extract_tenant_binlog.SOURCE_DATA_PATTERN parses it. Recorded for that
+    extractor only: the proof never seeds a replica from these coordinates,
+    which run ahead of the snapshot on this server (the proof's documentation)."""
+    record = dump_tenant(run, LONG_TENANT, "finding.sql", coordinates=True)
     if record.returncode != 0:
         return sp.ControlResult(6, "coordinates comment form (finding)", Verdict(False, f"the dump failed ({record.returncode}): {record.stderr}"), [])
-    return sp.ControlResult(6, "coordinates comment form (finding)", comment_verdict(record.finding), [])
+    note = ["file and position are recorded here only; seeding uses the GTID set (control 1), because the coordinates can include a transaction the snapshot cannot see"]
+    return sp.ControlResult(6, "coordinates comment form (finding)", comment_verdict(record.finding), note)
 
 
 CONTROLS: Mapping[int, Callable[[Run], sp.ControlResult]] = {1: control_1, 2: control_2, 3: control_3, 4: control_4, 5: control_5, 6: control_6}
@@ -932,8 +1367,9 @@ def run_probe(args: argparse.Namespace) -> int:
     if args.sabotage is not None and args.sabotage not in SABOTAGE_TARGETS:
         print(f"unknown SABOTAGE {args.sabotage!r}; known: {sorted(SABOTAGE_TARGETS)}", file=sys.stderr)
         return 64
-    if args.sabotage is not None and args.source_kind != SABOTAGE_SOURCE:
-        print(f"SABOTAGE {args.sabotage} runs on the {SABOTAGE_SOURCE} source (PROOF_SOURCE={SABOTAGE_SOURCE}), not {args.source_kind}", file=sys.stderr)
+    if args.sabotage is not None and args.source_kind != SABOTAGE_SOURCES[args.sabotage]:
+        want = SABOTAGE_SOURCES[args.sabotage]
+        print(f"SABOTAGE {args.sabotage} runs on the {want} source (PROOF_SOURCE={want}), not {args.source_kind}", file=sys.stderr)
         return 64
     controls = [int(part) for part in args.controls.split()]
     if args.sabotage:
