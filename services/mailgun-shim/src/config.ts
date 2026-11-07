@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { DEFAULT_ALLOWED_SOURCE_CIDRS } from './smtpFrontDoor.js';
 
 export interface SmtpFrontDoorConfig {
@@ -23,6 +24,11 @@ export interface ShimConfig {
    * combined listener.
    */
   drainPort?: number;
+  /**
+   * SHIM_DRAIN_HOST: the one address the drain listener binds. Always set
+   * when drainPort is; never a wildcard.
+   */
+  drainHost?: string;
   dbPath: string;
   throttlePath?: string;
   messagesPerHour: number;
@@ -152,6 +158,43 @@ function drainPortFrom(env: ShimEnv, port: number): number | undefined {
 }
 
 /**
+ * True for every spelling of "all interfaces": 0.0.0.0, and for IPv6 `::`,
+ * `::0`, the expanded all-zeros form, and the IPv4-mapped 0.0.0.0. The URL
+ * parser puts an IPv6 literal into one canonical form, so the spellings are
+ * compared once rather than enumerated.
+ */
+function isWildcardAddress(ip: string): boolean {
+  if (isIP(ip) === 4) return ip.split('.').every((octet) => Number(octet) === 0);
+  const canonical = new URL(`http://[${ip.split('%')[0]}]`).hostname;
+  return canonical === '[::]' || canonical === '[::ffff:0:0]';
+}
+
+/**
+ * SHIM_DRAIN_HOST is required whenever SHIM_DRAIN_PORT is set and has no
+ * default: the drain handover hands out queued mail behind one token, so the
+ * address it binds is a decision the deployment makes, never one this code
+ * falls back on. An unset or empty value, a hostname (it could resolve to a
+ * wildcard or change), or a wildcard address stops startup.
+ */
+function drainHostFrom(env: ShimEnv): string {
+  const raw = env.SHIM_DRAIN_HOST;
+  if (raw === undefined || raw === '') {
+    throw new Error(
+      'SHIM_DRAIN_HOST is required when SHIM_DRAIN_PORT is set: the drain listener binds one address, never every interface'
+    );
+  }
+  if (isIP(raw) === 0) {
+    throw new Error(`SHIM_DRAIN_HOST must be an IP address literal, got ${JSON.stringify(raw)}`);
+  }
+  if (isWildcardAddress(raw)) {
+    throw new Error(
+      `SHIM_DRAIN_HOST must not be a wildcard address (${raw}): that binds every interface, and a tenant network could reach /drain`
+    );
+  }
+  return raw;
+}
+
+/**
  * SHIM_DB_PATH has no safe default. An unset value or ":memory:" means
  * every restart silently drops the queue, tenant keys and suppression
  * list — the exact failure mode this store exists to close. The escape
@@ -172,10 +215,12 @@ export function loadConfig(env: ShimEnv = process.env): ShimConfig {
 
   const port = Number(env.PORT) || 8080;
   const drainPort = drainPortFrom(env, port);
+  const drainHost = drainPort === undefined ? undefined : drainHostFrom(env);
 
   return {
     port,
     drainPort,
+    drainHost,
     dbPath,
     throttlePath: env.SHIM_THROTTLE_PATH,
     messagesPerHour,
