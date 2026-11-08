@@ -1,0 +1,77 @@
+name: Image attestation, token-less verify
+
+# Proves the host's attestation verifier can judge an image with no GitHub token
+# in the environment. The probe runs scripts/verify-image-attestation.sh under a
+# scrubbed environment, the way a host runs it, on the current tenant image and
+# on a control image that another workflow built. See
+# scripts/probe-tokenless-attestation.md.
+#
+# github.token appears only in the two resolve steps, and only to list the
+# publish runs. The probe step has no token in its environment.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/image-attestation-tokenless.yml
+      - scripts/probe-tokenless-attestation.sh
+      - scripts/resolve-published-image.sh
+      - scripts/verify-image-attestation.sh
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/image-attestation-tokenless.yml
+      - scripts/probe-tokenless-attestation.sh
+      - scripts/resolve-published-image.sh
+      - scripts/verify-image-attestation.sh
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tokenless-verify:
+    name: token-less check of the image attestation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Print the gh version the runner uses
+        run: gh --version
+
+      - name: Resolve the real tenant image digest from its newest publish run
+        id: real
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          image="$(./scripts/resolve-published-image.sh registry-push.yml ghcr.io/branchleft/ghost-tenant)"
+          echo "real: $image"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the control image digest from its newest publish run
+        id: control
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          image="$(./scripts/resolve-published-image.sh portal-apps-image.yml ghcr.io/branchleft/portal-apps)"
+          echo "control: $image"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+      - name: Probe the token-less verify (real digest, forged control)
+        env:
+          REAL_IMAGE: ${{ steps.real.outputs.image }}
+          CONTROL_IMAGE: ${{ steps.control.outputs.image }}
+        run: ./scripts/probe-tokenless-attestation.sh "$REAL_IMAGE" "$CONTROL_IMAGE"
