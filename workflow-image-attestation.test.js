@@ -218,30 +218,26 @@ test('github.token reaches only the two resolve steps, and the probe step has no
   for (const s of withToken) {
     assert.match(s, /- name: Resolve /, 'github.token is only in a resolve step');
   }
-  const probe = stepNamed(text, 'Probe the token-less verify');
-  assert.doesNotMatch(probe, /GH_TOKEN|GITHUB_TOKEN|github\.token/);
+  const probe = stepNamed(text, 'Probe the verifier with a placeholder GH_TOKEN');
+  assert.doesNotMatch(probe, /GH_TOKEN:|GITHUB_TOKEN|github\.token|secrets\./);
+  assert.doesNotMatch(text, /secrets\./, 'no secret in the workflow');
 });
 
-test('the placeholder experiment runs always, with a fixed non-credential and no real token', () => {
+test('the job has one probe step, standing: no step is red by design, none is conditional', () => {
   const text = uncommented(TOKENLESS);
-  const exp = stepNamed(text, 'Experiment, the same probe with a placeholder GH_TOKEN');
-  assert.match(exp, /\n {8}if: always\(\)\n/);
-  assert.match(exp, /PROBE_GH_TOKEN_PLACEHOLDER: placeholder-not-a-credential\n/);
-  assert.doesNotMatch(exp, /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN:/);
-  assert.match(
-    exp,
-    /run: \.\/scripts\/probe-tokenless-attestation\.sh "\$REAL_IMAGE" "\$CONTROL_IMAGE"/
-  );
-  assert.doesNotMatch(text, /secrets\./, 'no secret in the workflow');
+  const probes = steps(text).filter((s) => s.includes('probe-tokenless-attestation.sh'));
+  assert.equal(probes.length, 1, 'one probe step');
+  assert.doesNotMatch(text, /\n {8}if: /, 'no step condition');
+  assert.doesNotMatch(text, /PROBE_GH_TOKEN_PLACEHOLDER|Experiment/, 'no experiment left');
 });
 
 test('the probe runs after both resolve steps and is given both references', () => {
   const text = uncommented(TOKENLESS);
   const real = text.indexOf('- name: Resolve the real');
   const control = text.indexOf('- name: Resolve the control');
-  const probeAt = text.indexOf('- name: Probe the token-less verify');
+  const probeAt = text.indexOf('- name: Probe the verifier with a placeholder GH_TOKEN');
   assert.ok(real > -1 && control > -1 && probeAt > real && probeAt > control);
-  const probe = stepNamed(text, 'Probe the token-less verify');
+  const probe = stepNamed(text, 'Probe the verifier with a placeholder GH_TOKEN');
   assert.match(
     probe,
     /run: \.\/scripts\/probe-tokenless-attestation\.sh "\$REAL_IMAGE" "\$CONTROL_IMAGE"\s*$/
@@ -292,9 +288,17 @@ test('the probe calls the one verifier with the literal identity, under the host
   );
   assert.match(
     probe,
-    /"\$PLACEHOLDER" != "placeholder-not-a-credential"/,
-    'any value but the placeholder is refused'
+    /\nPLACEHOLDER="placeholder-not-a-credential"\n/,
+    'the placeholder is one fixed literal, not read from the environment'
   );
+  assert.doesNotMatch(probe, /\$\{PROBE_GH_TOKEN|\$\{GH_TOKEN/, 'no caller token is read');
+  for (const flag of ['--source-ref refs/heads/main', '--deny-self-hosted-runners']) {
+    assert.ok(
+      read('scripts/verify-image-attestation.sh').includes(flag),
+      `the one verifier keeps ${flag}`
+    );
+  }
+  assert.doesNotMatch(probe, /with no token|TOKENLESS VERIFY OK|auth status/);
   for (const name of [
     'GH_TOKEN',
     'GITHUB_TOKEN',

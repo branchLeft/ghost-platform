@@ -2,54 +2,77 @@
 
 ## What this does
 
-Checks that the image verifier can judge an attestation with no GitHub token in
-the environment, which is how a host runs it. It calls
-`scripts/verify-image-attestation.sh` and never restates its logic.
+Checks that the image verifier works the way a host runs it: with `GH_TOKEN` set
+to one fixed placeholder string and nothing else. It calls
+`scripts/verify-image-attestation.sh` and never restates its logic, so the gh
+flags and values are those of that one script. The host verifier (the host
+function in shared-infra) is the one that sets the placeholder on the host. This
+job proves the same behaviour on a hosted runner.
 
 ```sh
 ./scripts/probe-tokenless-attestation.sh <real image@sha256:64hex> <forged image@sha256:64hex>
 ```
 
-The probe runs three checks, in order:
+The probe runs four checks, in order:
 
-1. **Environment proof.** Under the scrubbed environment, `GH_TOKEN`,
-   `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` are unset,
-   the gh config directory has no hosts file, and `gh auth status` exits
-   non-zero. Any credential fails with `ASSERT FAILED: probe environment is not token-less`.
-2. **Real digest.** The verifier runs on the real digest with
-   `--bundle-from-oci`. Success prints `TOKENLESS VERIFY OK`. A token need fails
-   with `ASSERT FAILED: verification needs a GitHub token`. A network or Sigstore
+1. **Environment proof.** Under the scrubbed environment, `GH_TOKEN` is the
+   literal `placeholder-not-a-credential`, `GITHUB_TOKEN`,
+   `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` are unset, and the gh
+   config directory has no hosts file. Anything else fails with
+   `ASSERT FAILED: probe environment`. The placeholder is fixed in the script and
+   is not read from the caller, so no real token can reach the verifier.
+2. **API evidence.** One extra call on the real digest runs with
+   `GH_DEBUG=api`, kept apart from the output the verdicts are read from, and
+   prints how many requests gh logged to `api.github.com` and which hosts it
+   logged.
+3. **Real digest.** The verifier runs with `--bundle-from-oci`. Success prints
+   `VERIFIED with a placeholder GH_TOKEN; no GitHub API call observed` (or the
+   count, if the evidence call logged any). A token need fails with
+   `ASSERT FAILED: verification needs a GitHub token`. A network or Sigstore
    fault is retried three times, 20 seconds apart, then fails as a fault, not a
    verdict. Anything else fails as a refusal for the attestation or identity.
-3. **Control.** The same call on the forged digest, a real attestation from a
+4. **Control.** The same call on the forged digest, a real attestation from a
    different workflow, must exit non-zero with gh's identity or policy wording.
    An acceptance fails with `ASSERT FAILED: forged digest accepted: the probe is vacuous`.
 
 The scrubbed environment copies the host's keys by hand: `PATH`, `HOME`,
 `GH_CONFIG_DIR` and `XDG_CONFIG_HOME` (all an empty directory),
-`GH_PROMPT_DISABLED`, `GH_NO_UPDATE_NOTIFIER`, `LC_ALL=C` and
-`VERIFY_PLAIN_ERRORS=1`. The host's function lives in another repository, so
-these values are restated once, here. Keep them in step with it.
+`GH_PROMPT_DISABLED`, `GH_NO_UPDATE_NOTIFIER`, `LC_ALL=C`,
+`VERIFY_PLAIN_ERRORS=1` and the placeholder `GH_TOKEN`. Keep them in step with
+the host's function.
 
-## Placeholder mode
+## What the first runs found
 
-`PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential` runs the same checks
-with `GH_TOKEN` set to that one literal string. It asks whether gh's local auth
-gate takes any value on the `--bundle-from-oci` path. One extra call on the
-real digest runs with `GH_DEBUG=api`, kept apart from the output the verdicts
-are read from, and the probe prints the hosts gh logged a request to. Any other value is refused before gh
-runs, so a real token cannot be passed this way. The workflow runs it as a
-second step after the token-less one, even when that one failed.
+Token-less is not possible, and a placeholder is enough.
+
+- [Run 42427972700](https://github.com/branchLeft/ghost-platform/actions/runs/42427972700):
+  with no `GH_TOKEN` at all, gh 2.103.3 refused on the real digest with
+  `To get started with GitHub CLI, please run:  gh auth login`, before any
+  network call. Red.
+- [Run 42428728854](https://github.com/branchLeft/ghost-platform/actions/runs/42428728854):
+  with `GH_TOKEN=placeholder-not-a-credential`, the real digest verified, and the
+  forged digest was refused with `no valid attestation for ... from
+  branchLeft/ghost-platform/.github/workflows/registry-push.yml on refs/heads/main`.
+  Green. The `GH_DEBUG=api` call logged 22 requests, 9 to
+  `tuf-repo-cdn.sigstore.dev` and 13 to `tuf-repo.github.com`, none to
+  `api.github.com`, and no Authorization header.
+
+So gh's local gate takes any non-empty `GH_TOKEN` on the `--bundle-from-oci`
+path, and the verdict is cryptographic. This job stands as the proof that a real
+token is not required. The debug log covers gh's own HTTP client only, not its
+registry reads.
 
 ## Why the classes are split
 
 A token need, a transport fault and an identity refusal all make gh exit
 non-zero. Only the identity refusal is a verdict. A probe that read a fault as a
 refusal would pass with no evidence, so the classes are checked by the markers
-in the output, and a token need is never retried.
+in the output, and a token need is never retried. gh's debug text names TUF, so
+it is kept out of the output the classes are read from.
 
 ## Offline test
 
 `scripts/test-probe-tokenless-attestation.sh` runs this probe against a stub gh,
-with the caller exporting `GH_TOKEN` and `GITHUB_TOKEN`. It proves each
-assertion fires on its mechanism and that the green case passes with no token.
+with the caller exporting stand-ins for real credentials. It proves each
+assertion fires on its mechanism and that the green case sees only the
+placeholder.
