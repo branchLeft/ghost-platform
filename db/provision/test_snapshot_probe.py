@@ -751,7 +751,7 @@ class OtherLockSabotageTests(unittest.TestCase):
         self.assertEqual(sp.SABOTAGE_TARGETS["other-lock"], (2,))
 
     def test_the_scenario_runs_the_hold_only_under_the_sabotage(self) -> None:
-        source = inspect.getsource(sp._long_reader_window)
+        source = inspect.getsource(sp.long_reader_scenario)
         self.assertIn('ctx.sabotaged("other-lock")', source)
         self.assertIn("if inject:", source)
 
@@ -784,150 +784,206 @@ class OneScenarioTests(unittest.TestCase):
         self.assertEqual(inspect.getsource(sp).count("def writer_stall_verdict"), 1)
 
 
-class _FakeDurableSource:
-    """A source that keeps the two durability settings and answers the probe's
-    read and SET GLOBAL, no Docker. `fail_set_after` makes the Nth SET raise
-    after applying its first assignment, as a failure part-way would."""
+_MOUNTS = (
+    "overlay / overlay rw,relatime 0 0\n"
+    "proc /proc proc rw,nosuid 0 0\n"
+    "tmpfs /var/lib/mysql tmpfs rw,nosuid,nodev,size=1048576k 0 0\n"
+    "tmpfs /dev tmpfs rw,nosuid 0 0\n"
+)
 
-    name = "fake-source"
 
-    def __init__(self, sync_binlog: str = "1", flush: str = "1") -> None:
-        self.values = {"sync_binlog": sync_binlog, "innodb_flush_log_at_trx_commit": flush}
-        self.history: list[tuple[str, str]] = []
-        self.sets = 0
-        self.fail_set_number: int | None = None
-        self.refuse_to_apply = False
+class _FakeServer:
+    def __init__(self, name: str, datadir: str = "/var/lib/mysql/") -> None:
+        self.name = name
+        self.datadir = datadir
 
     def query(self, sql: str, **_: object) -> list[list[str]]:
-        assert "@@GLOBAL.sync_binlog" in sql, sql
-        return [[self.values["sync_binlog"], self.values["innodb_flush_log_at_trx_commit"]]]
+        assert sql == "SELECT @@datadir;", sql
+        return [[self.datadir]]
 
-    def run(self, sql: str, **_: object):
-        match = re.fullmatch(r"SET GLOBAL (.+);", sql)
-        assert match, sql
-        self.sets += 1
-        if self.refuse_to_apply:
-            return None
-        for index, part in enumerate(match.group(1).split(", ")):
-            name, value = part.split("=")
-            if self.fail_set_number == self.sets and index == 1:
-                raise sp.ProofError("SET GLOBAL failed part-way")
-            self.values[name] = value
-            self.history.append((name, value))
-        return None
+    def exec_argv(self, inner, **_: object) -> list[str]:
+        return ["docker", "exec", self.name, *inner]
 
 
-class RelaxedDurabilityTests(unittest.TestCase):
-    REAL = {"sync_binlog": "1", "innodb_flush_log_at_trx_commit": "1"}
-    RELAXED = {"sync_binlog": "0", "innodb_flush_log_at_trx_commit": "2"}
+def _completed(stdout: str = "", returncode: int = 0):
+    return subprocess.CompletedProcess([], returncode, stdout, "")
 
-    def test_the_window_runs_with_fsync_relaxed_and_the_real_settings_come_back(self) -> None:
-        source = _FakeDurableSource()
-        with sp.relaxed_durability(source) as line:
-            self.assertEqual(source.values, self.RELAXED)
-        self.assertEqual(source.values, self.REAL)
-        self.assertIn("this window only", line)
-        self.assertIn("sync_binlog=0", line)
-        self.assertIn("were sync_binlog=1", line)
 
-    def test_what_comes_back_is_what_was_there_not_a_hard_coded_default(self) -> None:
-        source = _FakeDurableSource(sync_binlog="100", flush="0")
-        with sp.relaxed_durability(source):
-            pass
-        self.assertEqual(source.values, {"sync_binlog": "100", "innodb_flush_log_at_trx_commit": "0"})
+class MountTypeTests(unittest.TestCase):
+    def test_the_datadir_is_found_on_its_own_mount(self) -> None:
+        self.assertEqual(sp.mount_type(_MOUNTS, "/var/lib/mysql/"), "tmpfs")
+        self.assertEqual(sp.mount_type(_MOUNTS, "/var/lib/mysql"), "tmpfs")
 
-    def test_the_restore_runs_when_the_window_fails(self) -> None:
-        source = _FakeDurableSource()
-        with self.assertRaises(sp.ProofError):
-            with sp.relaxed_durability(source):
-                self.assertEqual(source.values, self.RELAXED)
-                raise sp.ProofError("control 2 window failed")
-        self.assertEqual(source.values, self.REAL)
+    def test_without_a_mount_of_its_own_the_datadir_is_on_the_container_filesystem(self) -> None:
+        self.assertEqual(sp.mount_type(_MOUNTS, "/var/lib/other/"), "overlay")
 
-    def test_the_restore_runs_on_an_interrupt(self) -> None:
-        source = _FakeDurableSource()
-        with self.assertRaises(KeyboardInterrupt):
-            with sp.relaxed_durability(source):
-                raise KeyboardInterrupt
-        self.assertEqual(source.values, self.REAL)
+    def test_the_longest_mount_point_wins_and_a_name_prefix_is_not_a_path_prefix(self) -> None:
+        self.assertEqual(sp.mount_type(_MOUNTS + "ext4 /var/lib/mysql/nested ext4 rw 0 0\n", "/var/lib/mysql/nested/x/"), "ext4")
+        self.assertEqual(sp.mount_type("tmpfs /var/lib/mysql2 tmpfs rw 0 0\noverlay / overlay rw 0 0\n", "/var/lib/mysql/"), "overlay")
+        self.assertIsNone(sp.mount_type("", "/var/lib/mysql/"))
 
-    def test_the_restore_runs_when_relaxing_itself_fails_part_way(self) -> None:
-        source = _FakeDurableSource()
-        source.fail_set_number = 1
-        with self.assertRaises(sp.ProofError):
-            with sp.relaxed_durability(source):
-                self.fail("the body must not run when the settings could not be relaxed")
-        self.assertEqual(source.values, self.REAL)
 
-    def test_a_setting_that_did_not_take_is_an_error_not_a_quiet_pass(self) -> None:
-        source = _FakeDurableSource()
-        source.refuse_to_apply = True
-        with self.assertRaises(sp.ProofError) as caught:
-            with sp.relaxed_durability(source):
-                self.fail("the body must not run under settings that were not applied")
-        self.assertIn("durability not relaxed", str(caught.exception))
-
-    def test_the_scenario_restores_on_every_exit_including_the_failing_one(self) -> None:
+class TmpfsSourceTests(unittest.TestCase):
+    def _ctx(self, *, with_tmpfs: bool = True) -> sp.Ctx:
         import unittest.mock as mock
 
-        source = _FakeDurableSource()
-        ctx = mock.Mock(source=source)
-        seen: list[dict[str, str]] = []
+        return sp.Ctx(
+            source=_FakeServer("real-disk-source"),
+            replica=_FakeServer("replica"),
+            workdir=pathlib.Path("."),
+            passwords=mock.Mock(),
+            sabotage=None,
+            control_2_source=_FakeServer("tmpfs-source") if with_tmpfs else None,
+        )
 
-        def fails(*_: object) -> None:
-            seen.append(dict(source.values))
-            raise sp.ProofError("the long reader never started")
+    def test_a_datadir_on_tmpfs_passes_and_says_so(self) -> None:
+        import unittest.mock as mock
 
-        with mock.patch.object(sp, "_long_reader_window", side_effect=fails):
+        with mock.patch.object(sp.subprocess, "run", return_value=_completed(_MOUNTS)):
+            line = sp.assert_on_tmpfs(_FakeServer("tmpfs-source"))
+        self.assertIn("on tmpfs", line)
+        self.assertIn("every other control on the real disk", line)
+
+    def test_a_datadir_that_fell_back_to_the_disk_is_refused(self) -> None:
+        import unittest.mock as mock
+
+        with mock.patch.object(sp.subprocess, "run", return_value=_completed("overlay / overlay rw 0 0\n")):
+            with self.assertRaises(sp.ProofError) as caught:
+                sp.assert_on_tmpfs(_FakeServer("tmpfs-source"))
+        self.assertIn("not tmpfs", str(caught.exception))
+        self.assertIn("overlay", str(caught.exception))
+
+    def test_a_mount_table_that_cannot_be_read_is_refused_not_assumed_fine(self) -> None:
+        import unittest.mock as mock
+
+        with mock.patch.object(sp.subprocess, "run", return_value=_completed("", 1)):
             with self.assertRaises(sp.ProofError):
-                sp.long_reader_scenario(ctx, mock.Mock())
-        self.assertEqual(seen, [self.RELAXED])
-        self.assertEqual(source.values, self.REAL)
+                sp.assert_on_tmpfs(_FakeServer("tmpfs-source"))
 
-    def test_the_scenario_reports_what_it_ran_under(self) -> None:
+    def test_no_tmpfs_source_means_control_two_does_not_run(self) -> None:
+        with self.assertRaises(sp.ProofError) as caught:
+            sp.tmpfs_ctx(self._ctx(with_tmpfs=False))
+        self.assertIn("--tmpfs-source", str(caught.exception))
+
+    def test_the_tmpfs_context_is_checked_then_seeded_and_the_real_source_is_left_alone(self) -> None:
         import unittest.mock as mock
 
-        source = _FakeDurableSource()
-        ran = sp.LongReaderRun([(100.0, 0.004)], (100.0, 110.0), 0.004, 1, tag="w1")
-        with mock.patch.object(sp, "_long_reader_window", return_value=ran):
-            run = sp.long_reader_scenario(mock.Mock(source=source), mock.Mock())
-        self.assertIn("commit durability relaxed for this window only", run.durability)
-        _, lines = sp.control_2_outcome(run, old_path=False)
-        self.assertIn(run.durability, lines)
-        self.assertEqual(source.values, self.REAL)
+        ctx = self._ctx()
+        order: list[str] = []
+        seeded: list[sp.Ctx] = []
+        with (
+            mock.patch.object(sp, "assert_on_tmpfs", side_effect=lambda server: order.append("check") or "NOTE") as check,
+            mock.patch.object(sp, "seed", side_effect=lambda fresh: (order.append("seed"), seeded.append(fresh))),
+        ):
+            more: list[sp.Ctx] = []
+            fresh = sp.tmpfs_ctx(ctx, more.append)
+        check.assert_called_once_with(ctx.control_2_source)
+        self.assertEqual(order, ["check", "seed"])
+        self.assertIs(fresh.source, ctx.control_2_source)
+        self.assertIsNot(fresh.source, ctx.source)
+        self.assertEqual(seeded, [fresh])
+        self.assertEqual(more, [fresh])
+        self.assertEqual(fresh.texts["control_2_source"], "NOTE")
+        self.assertIsNot(fresh.notes, ctx.notes)
+        self.assertEqual(ctx.source.name, "real-disk-source")
 
-    def test_sabotage_runs_are_inside_the_relaxed_window_and_so_restored_too(self) -> None:
-        # The old-path and other-lock branches live in _long_reader_window,
-        # the only thing the wrapper runs.
-        wrapper = inspect.getsource(sp.long_reader_scenario)
-        window = inspect.getsource(sp._long_reader_window)
-        self.assertIn("with relaxed_durability(ctx.source)", wrapper)
-        self.assertIn("_long_reader_window(ctx, actions)", wrapper)
-        self.assertIn('ctx.sabotaged("old-path")', window)
-        self.assertIn('ctx.sabotaged("other-lock")', window)
+    def test_a_failed_tmpfs_check_stops_before_anything_is_seeded(self) -> None:
+        import unittest.mock as mock
 
-    def test_one_home_for_the_setting_and_only_control_two_uses_it(self) -> None:
+        with (
+            mock.patch.object(sp, "assert_on_tmpfs", side_effect=sp.ProofError("not tmpfs")),
+            mock.patch.object(sp, "seed") as seed,
+        ):
+            with self.assertRaises(sp.ProofError):
+                sp.tmpfs_ctx(self._ctx())
+        seed.assert_not_called()
+
+    def test_control_two_of_the_snapshot_probe_runs_its_scenario_and_snapshots_on_the_tmpfs_source(self) -> None:
+        import unittest.mock as mock
+
+        ctx = self._ctx()
+        seen: dict[str, object] = {}
+        run = sp.LongReaderRun([(100.0, 0.004)], (100.0, 110.0), 0.004, 1, tag="w1")
+
+        def scenario(scenario_ctx, actions):
+            seen["scenario"] = scenario_ctx.source.name
+            actions.snapshot()
+            actions.old_path()
+            return run
+
+        with (
+            mock.patch.object(sp, "assert_on_tmpfs", return_value="NOTE"),
+            mock.patch.object(sp, "seed"),
+            mock.patch.object(sp, "long_reader_scenario", side_effect=scenario),
+            mock.patch.object(sp, "take_snapshot", side_effect=lambda snap_ctx, name: seen.setdefault("snapshot", snap_ctx.source.name)),
+            mock.patch.object(sp, "old_path_sequence", side_effect=lambda old_ctx: seen.setdefault("old_path", old_ctx.source.name)),
+        ):
+            result = sp.control_2(ctx)
+        self.assertEqual(seen, {"scenario": "tmpfs-source", "snapshot": "tmpfs-source", "old_path": "tmpfs-source"})
+        self.assertEqual(result.numbers[0], "NOTE")
+
+    def test_control_two_of_the_replication_probe_runs_both_phases_on_the_tmpfs_source_and_seeds_its_account_there(self) -> None:
+        import unittest.mock as mock
+
         import replication_client_probe as rcp
 
-        self.assertEqual(inspect.getsource(sp).count("def relaxed_durability"), 1)
-        self.assertNotIn("sync_binlog", inspect.getsource(rcp))
-        self.assertNotIn("relaxed_durability", inspect.getsource(rcp))
-        # The replication probe's control 2 reaches it through the shared scenario.
-        self.assertIn("sp.long_reader_scenario(", inspect.getsource(rcp.other_tenant_phase))
-        for number in (1, 3, 4, 5):
-            for module in (sp, rcp):
-                function = getattr(module, f"control_{number}", None)
-                if function is not None:
-                    text = inspect.getsource(function)
-                    self.assertNotIn("relaxed_durability", text)
-                    self.assertNotIn("sync_binlog", text)
+        ctx = self._ctx()
+        seen: dict[str, str] = {}
+        verdict = rcp.Verdict(True, "ok")
+        with (
+            mock.patch.object(sp, "assert_on_tmpfs", return_value="NOTE"),
+            mock.patch.object(sp, "seed"),
+            mock.patch.object(rcp, "seed_account", side_effect=lambda r: seen.setdefault("account", r.ctx.source.name)),
+            mock.patch.object(rcp, "other_tenant_phase", side_effect=lambda r: (seen.setdefault("stall", r.ctx.source.name), (verdict, []))[1]),
+            mock.patch.object(rcp, "lock_phase", side_effect=lambda r: (seen.setdefault("lock", r.ctx.source.name), (verdict, []))[1]),
+        ):
+            result = rcp.control_2(rcp.Run(ctx, "pw"))
+        self.assertEqual(seen, {"account": "tmpfs-source", "stall": "tmpfs-source", "lock": "tmpfs-source"})
+        self.assertEqual(result.numbers[0], "NOTE")
 
-    def test_the_gate_is_unchanged_by_the_relaxation(self) -> None:
+    def test_no_other_control_of_either_probe_uses_the_tmpfs_source(self) -> None:
+        import replication_client_probe as rcp
+
+        for module, numbers in ((sp, (1, 3, 4, 5, 6)), (rcp, (1, 3))):
+            for number in numbers:
+                text = inspect.getsource(getattr(module, f"control_{number}"))
+                self.assertNotIn("tmpfs_ctx", text, f"{module.__name__}.control_{number}")
+                self.assertNotIn("control_2_source", text, f"{module.__name__}.control_{number}")
+
+    def test_the_durability_settings_are_never_changed_by_the_probe(self) -> None:
+        import replication_client_probe as rcp
+
+        for module in (sp, rcp):
+            text = inspect.getsource(module)
+            for name in ("sync_binlog", "innodb_flush_log_at_trx_commit", "SET GLOBAL"):
+                self.assertNotIn(name, text, module.__name__)
+
+    def test_the_gate_and_the_statistic_are_unchanged(self) -> None:
         self.assertEqual(sp.WRITER_LIMIT_SECONDS, 0.1)
-        stalled, lines = sp.fixture_outcome(stalled=True)
+        stalled, _ = sp.fixture_outcome(stalled=True)
         self.assertFalse(stalled.passed)
         self.assertIn("control 2", stalled.reason)
         self.assertTrue(sp.fixture_outcome(stalled=False)[0].passed)
+
+
+class TmpfsScriptTests(unittest.TestCase):
+    def test_only_control_twos_source_is_started_on_tmpfs_and_the_location_is_named_once(self) -> None:
+        self.assertEqual(_PROOF_SCRIPT.count("CONTROL_2_DATADIR_TMPFS="), 1)
+        self.assertIn('DATADIR_TMPFS="$CONTROL_2_DATADIR_TMPFS" start_server "$TMPSRC"', _PROOF_SCRIPT)
+        self.assertEqual(_PROOF_SCRIPT.count("DATADIR_TMPFS="), 2)  # the setting and the one call that uses it
+        self.assertIn('start_server "$SRC"\n', _PROOF_SCRIPT)
+        self.assertIn("start_server \"$REP\" --server-id=2", _PROOF_SCRIPT)
+        self.assertNotIn("/dev/shm", _PROOF_SCRIPT)
+        self.assertNotIn("/mnt", _PROOF_SCRIPT)
+
+    def test_the_probe_is_told_the_tmpfs_source_and_it_is_torn_down(self) -> None:
+        self.assertIn('--tmpfs-source "$TMPSRC"', _PROOF_SCRIPT)
+        self.assertIn('docker rm -f "$SRC" "$REP" "$TMPSRC"', _PROOF_SCRIPT)
+        self.assertIn('wait_ready "$TMPSRC"', _PROOF_SCRIPT)
+
+    def test_the_durability_settings_are_not_in_the_script(self) -> None:
+        for name in ("sync_binlog", "innodb_flush_log_at_trx_commit"):
+            self.assertNotIn(name, _PROOF_SCRIPT)
 
 
 class DiagnosticKnobsAreGoneTests(unittest.TestCase):
@@ -955,15 +1011,15 @@ class DiagnosticKnobsAreGoneTests(unittest.TestCase):
 
 
 class HistorySizingTests(unittest.TestCase):
-    def test_the_source_alone_gets_the_history_size_and_the_cnf_is_untouched(self) -> None:
-        self.assertIn('start_server "$SRC" --performance-schema-events-statements-history-long-size=100000', _PROOF_SCRIPT)
-        self.assertNotIn("history-long-size", _PROOF_SCRIPT.split('start_server "$REP"')[1].splitlines()[0])
+    def test_control_twos_source_alone_gets_the_history_size_and_the_cnf_is_untouched(self) -> None:
+        self.assertIn('start_server "$TMPSRC" --performance-schema-events-statements-history-long-size=100000', _PROOF_SCRIPT)
+        self.assertEqual(_PROOF_SCRIPT.count("history-long-size"), 1)
         cnf = (_REPO_ROOT / "db" / "stack" / "conf.d" / "branchleft.cnf").read_text(encoding="utf-8")
         self.assertNotIn("history_long", cnf.replace("-", "_"))
 
     def test_the_history_query_reads_only_the_instrument_table_and_is_not_timed_with_the_window(self) -> None:
         self.assertIn("performance_schema.events_statements_history_long", sp.HISTORY_SQL)
-        source = inspect.getsource(sp._long_reader_window)
+        source = inspect.getsource(sp.long_reader_scenario)
         # Read once, after the writer has stopped, outside the try block.
         self.assertGreater(source.index("read_history(ctx)"), source.index("samples = writer.finish()"))
 

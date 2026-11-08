@@ -443,11 +443,14 @@ def lock_phase(run: Run) -> tuple[Verdict, list[str]]:
 
 
 def control_2(run: Run) -> sp.ControlResult:
-    """Another tenant's writes are never blocked: no stall, no global lock."""
-    stall, stall_lines = other_tenant_phase(run)
-    lock, lock_lines = lock_phase(run)
+    """Another tenant's writes are never blocked: no stall, no global lock.
+    Both phases run on the tmpfs source (snapshot_probe.tmpfs_ctx), seeded
+    with this probe's account too."""
+    on_tmpfs = dataclasses.replace(run, ctx=sp.tmpfs_ctx(run.ctx, lambda fresh: seed_account(dataclasses.replace(run, ctx=fresh))))
+    stall, stall_lines = other_tenant_phase(on_tmpfs)
+    lock, lock_lines = lock_phase(on_tmpfs)
     verdict = Verdict(stall.passed and lock.passed, "; ".join(part.reason for part in (stall, lock)))
-    return sp.ControlResult(2, "another tenant is not blocked", verdict, stall_lines + lock_lines)
+    return sp.ControlResult(2, "another tenant is not blocked", verdict, [on_tmpfs.ctx.texts["control_2_source"], *stall_lines, *lock_lines])
 
 
 def control_3(run: Run) -> sp.ControlResult:
@@ -477,7 +480,7 @@ CONTROLS: Mapping[int, Callable[[Run], sp.ControlResult]] = {1: control_1, 2: co
 
 
 def run_probe(args: argparse.Namespace) -> int:
-    reason = sp.refusal([args.source, args.replica], os.environ.get("DOCKER_HOST"), sp.docker_context)
+    reason = sp.refusal([name for name in (args.source, args.replica, args.tmpfs_source) if name], os.environ.get("DOCKER_HOST"), sp.docker_context)
     if reason is not None:
         print(f"REFUSED: {reason}", file=sys.stderr)
         return EXIT_REFUSED
@@ -489,6 +492,7 @@ def run_probe(args: argparse.Namespace) -> int:
         workdir=workdir,
         passwords=sp.Passwords.read(workdir),
         sabotage=args.sabotage,
+        control_2_source=sp.Server(args.tmpfs_source, root) if args.tmpfs_source else None,
     )
     run = Run(ctx, (workdir / f"{COORD}.pw").read_text().strip())
     controls = [int(part) for part in args.controls.split()]
@@ -540,6 +544,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner = sub.add_parser("run", help="run the controls against two running containers (prove-replication-client.sh does this)")
     runner.add_argument("--source", required=True)
     runner.add_argument("--replica", required=True)
+    runner.add_argument("--tmpfs-source", default=None, help="control 2's own source, datadir on tmpfs (the script starts it)")
     runner.add_argument("--workdir", required=True)
     runner.add_argument("--controls", default="1 2 3")
     runner.add_argument("--sabotage", default=None)

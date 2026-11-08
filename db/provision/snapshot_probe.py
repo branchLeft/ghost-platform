@@ -1076,6 +1076,8 @@ class Ctx:
     workdir: pathlib.Path
     passwords: Passwords
     sabotage: str | None
+    # Control 2's own source, on tmpfs (see tmpfs_ctx); None if none was started.
+    control_2_source: Server | None = None
     notes: dict[str, int] = dataclasses.field(default_factory=dict)
     texts: dict[str, str] = dataclasses.field(default_factory=dict)
 
@@ -1284,8 +1286,6 @@ class LongReaderRun:
     holds: list[Hold] = dataclasses.field(default_factory=list)
     events: list[ServerEvent] | None = None
     history_note: str = "server-side history not read"
-    # What the window ran under (see relaxed_durability); empty when not set.
-    durability: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1380,56 +1380,64 @@ def read_history(ctx: Ctx) -> tuple[list[ServerEvent] | None, str]:
         return None, f"server-side history unavailable: {exc}"
 
 
-# What control 2's window runs the source under. The source's real settings
-# (sync_binlog=1, innodb_flush_log_at_trx_commit=1) make every commit wait on
-# the runner's disk, and a hosted runner's disk sometimes takes 150 to 570 ms
-# to fsync: a stall in every variant measured, with no snapshot running at all,
-# and gone with the fsync removed. Control 2's claim is that the snapshot does
-# not stall another schema's commits, not that the disk is fast. Only this
-# window is relaxed; every other control keeps real fsync.
-DURABILITY_RELAXED = (("sync_binlog", 0), ("innodb_flush_log_at_trx_commit", 2))
-_DURABILITY_READ_SQL = "SELECT " + ", ".join(f"@@GLOBAL.{name}" for name, _ in DURABILITY_RELAXED) + ";"
+# Control 2 runs on its own source, whose datadir is on tmpfs, started by the
+# proof script (CONTROL_2_DATADIR_TMPFS there, the one place the location is
+# named). A hosted runner's disk sometimes stalls a commit for 150 to 570 ms,
+# with no snapshot running at all and with fsync relaxed too; a datadir off the
+# disk cleared every stall (0 of 20 runners). So control 2 does not exercise
+# real-disk I/O contention between the snapshot's reads and another schema's
+# commits. It still proves the locking property, because a lock wait does not
+# depend on the disk. Every other control keeps the real-disk source and real
+# fsync.
+def mount_type(mounts: str, path: str) -> str | None:
+    """The filesystem type of the mount that holds `path`, from the text of
+    /proc/mounts: the longest mount point that is a prefix of the path."""
+    best: tuple[int, str] | None = None
+    target = path.rstrip("/") + "/"
+    for line in mounts.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        point = fields[1].rstrip("/") + "/"
+        if target.startswith(point) and (best is None or len(point) > best[0]):
+            best = (len(point), fields[2])
+    return best[1] if best else None
 
 
-def _durability_assignments(values: Iterable[object]) -> str:
-    return ", ".join(f"{name}={value}" for (name, _), value in zip(DURABILITY_RELAXED, values))
+def assert_on_tmpfs(server: Server) -> str:
+    """Raise unless the server's datadir is really on tmpfs, so control 2 can
+    never silently fall back to the disk. Returns the line the report carries."""
+    datadir = server.query("SELECT @@datadir;")[0][0]
+    result = subprocess.run(server.exec_argv(["cat", "/proc/mounts"]), capture_output=True, text=True, check=False, timeout=30)
+    if result.returncode != 0:
+        raise ProofError(f"{server.name}: could not read /proc/mounts to check the datadir: {result.stderr.strip()[:200]}")
+    kind = mount_type(result.stdout, datadir)
+    if kind != "tmpfs":
+        raise ProofError(f"{server.name}: datadir {datadir} is on {kind!r}, not tmpfs: control 2 would measure the disk")
+    return f"control 2 source: datadir {datadir} on tmpfs, every other control on the real disk with real fsync"
 
 
-@contextlib.contextmanager
-def relaxed_durability(source: Server):
-    """Relax the source's commit durability for the body, and put back what
-    was there on every exit path (an assertion, a sabotage, an interrupt, a
-    failure to relax). The one home of the setting and of its restore; yields
-    a line saying what ran. A restore that fails is an error, never silent."""
-    original = source.query(_DURABILITY_READ_SQL)[0]
-    relaxed = tuple(value for _, value in DURABILITY_RELAXED)
-    try:
-        source.run(f"SET GLOBAL {_durability_assignments(relaxed)};")
-        now = tuple(source.query(_DURABILITY_READ_SQL)[0])
-        if now != tuple(str(value) for value in relaxed):
-            raise ProofError(f"{source.name}: durability not relaxed, reads {now}")
-        yield (
-            f"commit durability relaxed for this window only ({_durability_assignments(relaxed)}, "
-            f"were {_durability_assignments(original)}), restored after it"
-        )
-    finally:
-        source.run(f"SET GLOBAL {_durability_assignments(original)};")
+def tmpfs_ctx(ctx: Ctx, seed_more: Callable[[Ctx], None] = lambda fresh: None) -> Ctx:
+    """The context control 2 runs in, in both probes: the tmpfs source, checked
+    to be on tmpfs and seeded exactly as the real-disk source is. `seed_more`
+    is what a probe adds to that (its own account). The real-disk source is not
+    touched."""
+    if ctx.control_2_source is None:
+        raise ProofError("control 2 has no tmpfs source: the proof script did not start one (--tmpfs-source)")
+    note = assert_on_tmpfs(ctx.control_2_source)
+    fresh = dataclasses.replace(ctx, source=ctx.control_2_source, notes={}, texts={"control_2_source": note})
+    seed(fresh)
+    seed_more(fresh)
+    return fresh
 
 
 def long_reader_scenario(ctx: Ctx, actions: ScenarioActions) -> LongReaderRun:
-    """The one scenario control 2 has, in both probes, run with the source's
-    commit durability relaxed for its window only (relaxed_durability)."""
-    with relaxed_durability(ctx.source) as durability:
-        run = _long_reader_window(ctx, actions)
-    return dataclasses.replace(run, durability=durability)
-
-
-def _long_reader_window(ctx: Ctx, actions: ScenarioActions) -> LongReaderRun:
-    """A SELECT SLEEP(10) reads the other schema's table while the blog is
-    snapshotted by `actions.snapshot`, or under sabotage by the old path
-    (RELOAD plus `mysqldump --source-data=2`), or with a lock really held on
-    the other schema (`other-lock`). The other schema's continuous writer is
-    the only probe running; its statement history is read after the window."""
+    """The one scenario control 2 has, in both probes. A SELECT SLEEP(10)
+    reads the other schema's table while the blog is snapshotted by
+    `actions.snapshot`, or under sabotage by the old path (RELOAD plus
+    `mysqldump --source-data=2`), or with a lock really held on the other
+    schema (`other-lock`). The other schema's continuous writer is the only
+    probe running; its statement history is read after the window."""
     old_path = ctx.sabotaged("old-path")
     inject = ctx.sabotaged("other-lock")
     history_note = enable_history(ctx)
@@ -1537,7 +1545,6 @@ def control_2_outcome(run: LongReaderRun, *, old_path: bool) -> tuple[Verdict, l
         f"a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
         f"{run.snapshots} {'old-path dump' if old_path else 'snapshot(s)'} ran",
         f"baseline worst `other` statement before it: {_ms(run.baseline_worst)}",
-        *([run.durability] if run.durability else []),
         *report.lines(),
     ]
     return verdict, lines
@@ -1558,11 +1565,14 @@ def fixture_outcome(*, stalled: bool) -> tuple[Verdict, list[str]]:
 
 
 def control_2(ctx: Ctx) -> ControlResult:
-    """Another schema's writes are not blocked."""
-    actions = ScenarioActions(snapshot=lambda: take_snapshot(ctx, "under-reader.sql"), old_path=lambda: old_path_sequence(ctx))
-    run = long_reader_scenario(ctx, actions)
-    verdict, numbers = control_2_outcome(run, old_path=ctx.sabotaged("old-path"))
-    return ControlResult(2, "another schema's writes are not blocked", verdict, numbers)
+    """Another schema's writes are not blocked. Runs on the tmpfs source."""
+    on_tmpfs = tmpfs_ctx(ctx)
+    actions = ScenarioActions(
+        snapshot=lambda: take_snapshot(on_tmpfs, "under-reader.sql"), old_path=lambda: old_path_sequence(on_tmpfs)
+    )
+    run = long_reader_scenario(on_tmpfs, actions)
+    verdict, numbers = control_2_outcome(run, old_path=on_tmpfs.sabotaged("old-path"))
+    return ControlResult(2, "another schema's writes are not blocked", verdict, [on_tmpfs.texts["control_2_source"], *numbers])
 
 
 def control_3(ctx: Ctx) -> ControlResult:
@@ -1902,7 +1912,7 @@ def docker_context() -> str:
 
 
 def run(args: argparse.Namespace) -> int:
-    reason = refusal([args.source, args.replica], os.environ.get("DOCKER_HOST"), docker_context)
+    reason = refusal([name for name in (args.source, args.replica, args.tmpfs_source) if name], os.environ.get("DOCKER_HOST"), docker_context)
     if reason is not None:
         print(f"REFUSED: {reason}", file=sys.stderr)
         return EXIT_REFUSED
@@ -1913,6 +1923,7 @@ def run(args: argparse.Namespace) -> int:
         workdir=workdir,
         passwords=Passwords.read(workdir),
         sabotage=args.sabotage,
+        control_2_source=Server(args.tmpfs_source, (workdir / "root.pw").read_text().strip()) if args.tmpfs_source else None,
     )
     controls = [int(part) for part in args.controls.split()]
     if args.sabotage:
@@ -1957,6 +1968,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner = sub.add_parser("run", help="run the controls against two running containers (prove-snapshot-locking.sh does this)")
     runner.add_argument("--source", required=True)
     runner.add_argument("--replica", required=True)
+    runner.add_argument("--tmpfs-source", default=None, help="control 2's own source, datadir on tmpfs (the script starts it)")
     runner.add_argument("--workdir", required=True)
     runner.add_argument("--controls", default="1 2 3 4 5 6")
     runner.add_argument("--sabotage", default=None)
