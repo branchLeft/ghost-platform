@@ -16,9 +16,14 @@ choose the image and which workflow it expects.
 Exit 0 means verified. Any other exit means do not trust the image.
 
 Without `--bundle-from-oci` the attestation is fetched through the GitHub API,
-which needs `GH_TOKEN`. With it, the signed bundle is read from the image's own
-registry entry. Unverified: that this needs no GitHub token beyond what `gh`
-itself requires. The run-side node is to test it on a host with no `GH_TOKEN`.
+which needs a real `GH_TOKEN` or `GITHUB_TOKEN`; the script refuses before `gh`
+runs when neither is set. With `--bundle-from-oci` the signed bundle is read from
+the image's own registry entry and no GitHub API call is made. `gh` still refuses
+to start without a non-empty token, so when neither `GH_TOKEN` nor `GITHUB_TOKEN`
+is set the script sets `GH_TOKEN` to one fixed placeholder that is not a
+credential. A real token already set is left alone. The placeholder is never
+printed. Offline, the probe test proves this path; the live run on a host with no
+token is still to do.
 
 ## Why it is strict
 
