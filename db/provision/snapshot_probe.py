@@ -9,12 +9,14 @@ Nothing here reaches a host.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import itertools
 import os
 import pathlib
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import threading
@@ -64,6 +66,7 @@ GATING_CONTROLS = (1, 2, 3, 4, 5)
 SABOTAGE_TARGETS = {
     "coordinates-after-write": (1,),
     "old-path": (2, 3),
+    "other-lock": (2,),
     "reload-grant": (4,),
     "no-timeout": (5,),
     "no-deadline": (5,),
@@ -95,21 +98,370 @@ def _ms(seconds: float) -> str:
     return f"{seconds * 1000:.1f} ms"
 
 
+def indexed_between(samples: Iterable[tuple[float, float]], began: float, ended: float) -> list[tuple[int, float, float]]:
+    """(statement number, start, latency) of the statements that overlap the
+    window [began, ended]. The number is the 1-based position in `samples`,
+    which is the number in the statement's own SQL text."""
+    return [
+        (number, start, latency)
+        for number, (start, latency) in enumerate(samples, 1)
+        if start + latency >= began and start <= ended
+    ]
+
+
 def latencies_between(samples: Iterable[tuple[float, float]], began: float, ended: float) -> list[float]:
     """Latencies of the statements that overlap the window [began, ended].
     A sample is (start, latency); one that started before the window and
     finished inside it counts, since that is a stall seen from inside."""
-    return [latency for start, latency in samples if start + latency >= began and start <= ended]
+    return [latency for _, _, latency in indexed_between(samples, began, ended)]
 
 
-def writer_stall_verdict(latencies: Sequence[float], limit: float) -> Verdict:
-    """Control 2. A probe that took no samples is blind, not clean."""
+def writer_stall_verdict(latencies: Sequence[float], limit: float, *, mechanism: str | None = None) -> Verdict:
+    """Control 2, the one verdict for both probes: the client-observed
+    maximum against a fixed limit. A probe that took no samples is blind, not
+    clean. `mechanism` (from `StallReport`) is named in a red reason only."""
     if not latencies:
-        return Verdict(False, "the writer took no samples in the window: the probe could not see a stall")
+        return Verdict(False, "control 2: the writer took no samples in the window: the probe could not see a stall")
     worst = max(latencies)
     if worst > limit:
-        return Verdict(False, f"worst statement {_ms(worst)} exceeds the {_ms(limit)} limit over {len(latencies)} statements")
-    return Verdict(True, f"worst statement {_ms(worst)} within the {_ms(limit)} limit over {len(latencies)} statements")
+        named = f"; mechanism: {mechanism}" if mechanism else ""
+        return Verdict(
+            False, f"control 2: worst statement {_ms(worst)} exceeds the {_ms(limit)} limit over {len(latencies)} statements{named}"
+        )
+    return Verdict(True, f"control 2: worst statement {_ms(worst)} within the {_ms(limit)} limit over {len(latencies)} statements")
+
+
+# --------------------------------------------------------------------------
+# Control 2's stall report. The gate above sees one client-side maximum; this
+# says where a slow statement spent its time, from the server's own statement
+# history, so a red names a mechanism instead of "jitter". Pure: the Docker
+# side only fetches the rows (`read_history`) and times the snapshots.
+# --------------------------------------------------------------------------
+
+HISTORY_CONSUMER = "events_statements_history_long"
+HISTORY_SQL = (
+    "SELECT THREAD_ID, TIMER_START, TIMER_WAIT, IFNULL(CURRENT_SCHEMA, ''), LEFT(SQL_TEXT, 200) "
+    f"FROM performance_schema.{HISTORY_CONSUMER} WHERE SQL_TEXT IS NOT NULL ORDER BY TIMER_START;"
+)
+_PICOSECONDS = 1e12
+# A sample this quick is the clock reference: its server start and its client
+# send differ by the clock offset and the usual pipe transit, nothing else.
+FAST_SAMPLE_SECONDS = 0.010
+MIN_FAST_SAMPLES = 5
+# A slow sample counts as released by a snapshot statement that ended this
+# close to its acknowledgement.
+RELEASED_BY_SECONDS = 0.010
+# Under this share of a slow sample's time inside the server, the delay is on
+# the client side (docker exec pipe, scheduling).
+IN_SERVER_SHARE = 0.5
+SLOWEST_REPORTED = 3
+MAX_SLOW_LINES = 8
+
+EVENT_COORDINATE = "coordinate read"
+EVENT_LOCK = "LOCK or UNLOCK TABLES"
+EVENT_OPEN = "snapshot open"
+EVENT_DUMP = "other dump statement"
+EVENT_FLUSH = "FLUSH (old path)"
+EVENT_OTHER = "other statement"
+# The phases a snapshot can hold a lock in; a stall released by one of these
+# ending is the snapshot's own doing.
+SNAPSHOT_PHASES = (EVENT_COORDINATE, EVENT_LOCK, EVENT_OPEN, EVENT_FLUSH)
+
+_EVENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (EVENT_COORDINATE, re.compile(r"performance_schema\.log_status|^SHOW (MASTER|BINARY LOG) STATUS", re.I)),
+    (EVENT_LOCK, re.compile(r"^(LOCK|UNLOCK) TABLES", re.I)),
+    (EVENT_OPEN, re.compile(r"CONSISTENT SNAPSHOT", re.I)),
+    (EVENT_FLUSH, re.compile(r"^FLUSH", re.I)),
+    (
+        EVENT_DUMP,
+        re.compile(
+            r"SQL_NO_CACHE|^SHOW (CREATE|TABLE STATUS|VARIABLES|FULL TABLES|TABLES|TRIGGERS|FIELDS|COLUMNS)|SAVEPOINT"
+            r"|ISOLATION LEVEL|SQL_QUOTE_SHOW_CREATE|SET SESSION (lock|wait)_timeout|CONNECTION_ID\(\)"
+            r"|information_schema\.TABLES|^KILL CONNECTION|^SET |^/\*!\d+ |^SELECT @@",
+            re.I,
+        ),
+    ),
+)
+# The other schema's writer (`other_posts_statement`) and the long reader.
+_WRITER_TEXT = re.compile(r"INSERT INTO posts \(title\) VALUES \('(w\d+-\d+)'\)")
+_READER_PREFIX = "SELECT SLEEP(10)"
+
+# What the verdict names. A closed set: test_snapshot_probe.py asserts it.
+MECH_HELD_LOCK = "held lock on other.posts (injected hold, {millis} ms)"
+MECH_COORDINATE = "coordinate read"
+MECH_LOCK_PHASE = "snapshot lock phase"
+MECH_IN_SERVER = "in-server, no snapshot overlap"
+MECH_CLIENT = "pre- or post-server (client side)"
+MECH_UNATTRIBUTED = "unattributed"
+
+
+@dataclasses.dataclass(frozen=True)
+class ServerEvent:
+    """One completed statement from the server's history, on the server's own
+    timer (seconds)."""
+
+    thread: int
+    start: float
+    wait: float
+    schema: str
+    text: str
+
+    @property
+    def end(self) -> float:
+        return self.start + self.wait
+
+
+@dataclasses.dataclass(frozen=True)
+class Hold:
+    """A lock the sabotage held on the other schema, in the client's clock."""
+
+    start: float
+    end: float
+    millis: int
+
+
+@dataclasses.dataclass(frozen=True)
+class SlowSample:
+    number: int
+    offset: float
+    latency: float
+    pre: float | None
+    inside: float | None
+    post: float | None
+    snapshot: int | None
+    overlapping: tuple[tuple[str, int], ...]
+    released_by: tuple[str, float] | None
+    coordinate_gap: float | None
+    mechanism: str
+
+
+@dataclasses.dataclass(frozen=True)
+class StallReport:
+    client_worst: float
+    statements: int
+    baseline_worst: float
+    server_available: bool
+    server_note: str
+    matched: int
+    unattributed: int
+    server_worst: float | None
+    inside_p50: float | None
+    offset: float | None
+    offset_source: str
+    slow: tuple[SlowSample, ...]
+    over_limit: int
+    mechanism: str
+
+    def lines(self) -> list[str]:
+        summary = (
+            f"control 2 report: client worst {_ms(self.client_worst)} over {self.statements} statements "
+            f"(baseline worst {_ms(self.baseline_worst)}); "
+        )
+        if self.server_available:
+            summary += (
+                f"server: {self.matched} matched, {self.unattributed} unattributed, in-server worst "
+                f"{_ms(self.server_worst or 0.0)}, p50 {_ms(self.inside_p50 or 0.0)}; clock offset "
+                + (f"{self.offset * 1000:.1f} ms from {self.offset_source}" if self.offset is not None else "unknown")
+            )
+        else:
+            summary += self.server_note
+        lines = [summary]
+        for rank, slow in enumerate(self.slow[:MAX_SLOW_LINES], 1):
+            lines.append(f"slow #{rank}: {_slow_text(slow)}")
+        if len(self.slow) > MAX_SLOW_LINES:
+            lines.append(f"... {len(self.slow) - MAX_SLOW_LINES} more slow statements, {self.over_limit} over the limit in all")
+        return lines
+
+
+def _around(gap: float) -> str:
+    """`gap` is an event's end minus the acknowledgement: negative is before."""
+    return f"{abs(gap) * 1000:.1f} ms {'before' if gap < 0 else 'after'}"
+
+
+def _slow_text(slow: SlowSample) -> str:
+    if slow.inside is None or slow.pre is None or slow.post is None:
+        split = "no server record"
+    else:
+        split = f"pre-server {_ms(slow.pre)} + in-server {_ms(slow.inside)} + post-server {_ms(slow.post)}"
+    phase = "between snapshots" if slow.snapshot is None else f"snapshot {slow.snapshot} running"
+    text = f"statement {slow.number} at +{slow.offset:.3f} s, client {_ms(slow.latency)} = {split}; {phase}"
+    if slow.coordinate_gap is not None:
+        text += f"; nearest coordinate read ended {_around(slow.coordinate_gap)} the ack"
+    if slow.released_by is not None:
+        text += f"; released by {slow.released_by[0]} (ended {_around(slow.released_by[1])} the ack)"
+    if slow.overlapping:
+        text += "; overlapping: " + ", ".join(f"{label} x{count}" for label, count in slow.overlapping)
+    return text + f"; mechanism: {slow.mechanism}"
+
+
+def classify_event(text: str) -> str:
+    """Which part of a snapshot (or of the harness) a statement is, by its SQL."""
+    for label, pattern in _EVENT_PATTERNS:
+        if pattern.search(text):
+            return label
+    return EVENT_OTHER
+
+
+def parse_history(lines: Iterable[str]) -> list[ServerEvent]:
+    """`HISTORY_SQL`'s rows. A row that does not parse is dropped; the report
+    then shows it as an unattributed sample, never as a clean one."""
+    events = []
+    for line in lines:
+        fields = line.split("\t", 4)
+        if len(fields) != 5 or fields[4] == "NULL":
+            continue
+        try:
+            events.append(
+                ServerEvent(int(fields[0]), int(fields[1]) / _PICOSECONDS, int(fields[2]) / _PICOSECONDS, fields[3], fields[4])
+            )
+        except ValueError:
+            continue
+    return events
+
+
+def clock_offset(pairs: Iterable[tuple[float, float, float]]) -> tuple[float, int] | None:
+    """Client clock minus server clock, as the median over the fast samples of
+    (client send - server start), and how many samples it rests on. A pair is
+    (client send, server start, in-server seconds)."""
+    gaps = [send - start for send, start, wait in pairs if wait < FAST_SAMPLE_SECONDS]
+    return (statistics.median(gaps), len(gaps)) if gaps else None
+
+
+def snapshot_at(intervals: Sequence[tuple[float, float]], moment: float) -> int | None:
+    """The 1-based number of the snapshot running at `moment`, if any."""
+    for number, (began, ended) in enumerate(intervals, 1):
+        if began <= moment <= ended:
+            return number
+    return None
+
+
+def stall_mechanism(
+    *,
+    latency: float,
+    inside: float | None,
+    released_by: tuple[str, float] | None,
+    hold: Hold | None,
+) -> str:
+    """The one label for a slow statement. An injected hold needs no server
+    record; everything else does, so a missing record is unattributed. In
+    the server, a stall is the snapshot's only when a snapshot statement
+    ended as it was acknowledged: a snapshot is running much of the time, so
+    overlap alone proves nothing."""
+    if hold is not None:
+        return MECH_HELD_LOCK.format(millis=hold.millis)
+    if inside is None:
+        return MECH_UNATTRIBUTED
+    if latency <= 0 or inside < latency * IN_SERVER_SHARE:
+        return MECH_CLIENT
+    if released_by is not None:
+        return MECH_COORDINATE if released_by[0] == EVENT_COORDINATE else MECH_LOCK_PHASE
+    return MECH_IN_SERVER
+
+
+def stall_report(
+    *,
+    tag: str,
+    window_samples: Sequence[tuple[int, float, float]],
+    began: float,
+    baseline_worst: float,
+    events: Sequence[ServerEvent] | None,
+    server_note: str = "",
+    reader_sent: float | None = None,
+    snapshot_intervals: Sequence[tuple[float, float]] = (),
+    holds: Sequence[Hold] = (),
+    limit: float = WRITER_LIMIT_SECONDS,
+) -> StallReport:
+    """Everything control 2 knows about its slow statements. `window_samples`
+    are (statement number, client send, client latency) inside the window; a
+    statement's server record is found by its unique SQL text, never by
+    time. A slow statement with no record is reported as unattributed."""
+    client_worst = max((latency for _, _, latency in window_samples), default=0.0)
+    by_key: dict[str, ServerEvent] = {}
+    reader: ServerEvent | None = None
+    for event in events or ():
+        match = _WRITER_TEXT.fullmatch(event.text)
+        if match is not None and event.schema == OTHER:
+            by_key[match.group(1)] = event
+        elif event.text.startswith(_READER_PREFIX):
+            reader = event
+    records = [(number, send, latency, by_key.get(f"{tag}-{number}")) for number, send, latency in window_samples]
+    fast = clock_offset((send, event.start, event.wait) for _, send, _, event in records if event is not None)
+    offset: float | None = None
+    offset_source = ""
+    if fast is not None and fast[1] >= MIN_FAST_SAMPLES:
+        offset, offset_source = fast[0], f"{fast[1]} fast samples"
+    elif reader is not None and reader_sent is not None:
+        offset, offset_source = reader_sent - reader.start, "the SLEEP anchor"
+    # The digest statistic: the other schema's writer statements on the
+    # server's own timer, inside the long reader's own span.
+    if reader is not None:
+        in_span = [e.wait for e in by_key.values() if reader.start <= e.start <= reader.end]
+    else:
+        in_span = [event.wait for *_, event in records if event is not None]
+    excluded = {event.thread for event in by_key.values()} | ({reader.thread} if reader is not None else set())
+    others = [(event, classify_event(event.text)) for event in events or () if event.thread not in excluded]
+    slowest = sorted(records, key=lambda record: record[2], reverse=True)
+    chosen = {record[0] for record in slowest[:SLOWEST_REPORTED]} | {record[0] for record in records if record[2] > limit}
+    over_limit = sum(1 for record in records if record[2] > limit)
+    slow: list[SlowSample] = []
+    for number, send, latency, event in slowest:
+        if number not in chosen:
+            continue
+        ack = send + latency
+        pre = inside = post = None
+        overlapping: dict[str, int] = {}
+        released_by = None
+        coordinate_gap = None
+        if offset is not None:
+            low, high = send - offset, ack - offset
+            for other, label in others:
+                if other.start <= high and other.end >= low:
+                    overlapping[label] = overlapping.get(label, 0) + 1
+            coordinates = [other.end for other, label in others if label == EVENT_COORDINATE]
+            if coordinates:
+                coordinate_gap = min((end - high for end in coordinates), key=abs)
+            ended_near = [(abs(other.end - high), label, other.end - high) for other, label in others if label in SNAPSHOT_PHASES]
+            ended_near = [near for near in ended_near if near[0] <= RELEASED_BY_SECONDS]
+            if ended_near:
+                _, label, gap = min(ended_near)
+                released_by = (label, gap)
+            if event is not None:
+                inside = event.wait
+                pre = max(0.0, (event.start + offset) - send)
+                post = max(0.0, latency - pre - inside)
+        hold = next((h for h in holds if send <= h.end and ack >= h.start), None)
+        slow.append(
+            SlowSample(
+                number=number,
+                offset=send - began,
+                latency=latency,
+                pre=pre,
+                inside=inside,
+                post=post,
+                snapshot=snapshot_at(snapshot_intervals, ack),
+                overlapping=tuple(sorted(overlapping.items())),
+                released_by=released_by,
+                coordinate_gap=coordinate_gap,
+                mechanism=stall_mechanism(latency=latency, inside=inside, released_by=released_by, hold=hold),
+            )
+        )
+    matched = sum(1 for *_, event in records if event is not None)
+    return StallReport(
+        client_worst=client_worst,
+        statements=len(window_samples),
+        baseline_worst=baseline_worst,
+        server_available=events is not None,
+        server_note=server_note,
+        matched=matched,
+        unattributed=len(records) - matched,
+        server_worst=max(in_span, default=None),
+        inside_p50=statistics.median(in_span) if in_span else None,
+        offset=offset,
+        offset_source=offset_source,
+        slow=tuple(slow),
+        over_limit=over_limit,
+        mechanism=slow[0].mechanism if slow else MECH_UNATTRIBUTED,
+    )
 
 
 def checksum_verdict(source: Mapping[str, tuple[int, int | None]], replica: Mapping[str, tuple[int, int | None]]) -> Verdict:
@@ -286,6 +638,8 @@ SELF_TEST_CASES: tuple[tuple[str, bool, Callable[[], Verdict]], ...] = (
     ("writer_stall: a 10 s stall", False, lambda: writer_stall_verdict([0.004, 0.006, 10.1, 0.005], WRITER_LIMIT_SECONDS)),
     ("writer_stall: healthy", True, lambda: writer_stall_verdict([0.004, 0.006, 0.031, 0.005], WRITER_LIMIT_SECONDS)),
     ("writer_stall: no samples", False, lambda: writer_stall_verdict([], WRITER_LIMIT_SECONDS)),
+    ("control_2_report: a 500 ms hold on the other schema", False, lambda: fixture_outcome(stalled=True)[0]),
+    ("control_2_report: the same window, lock released", True, lambda: fixture_outcome(stalled=False)[0]),
     (
         "checksum: mismatched checksum",
         False,
@@ -722,6 +1076,8 @@ class Ctx:
     workdir: pathlib.Path
     passwords: Passwords
     sabotage: str | None
+    # Control 2's own source, on tmpfs (see tmpfs_ctx); None if none was started.
+    control_2_source: Server | None = None
     notes: dict[str, int] = dataclasses.field(default_factory=dict)
     texts: dict[str, str] = dataclasses.field(default_factory=dict)
 
@@ -923,6 +1279,24 @@ class LongReaderRun:
     window: tuple[float, float]
     baseline_worst: float
     snapshots: int
+    # What the stall report needs. The defaults are the no-instrument case.
+    tag: str = ""
+    reader_sent: float | None = None
+    snapshot_intervals: list[tuple[float, float]] = dataclasses.field(default_factory=list)
+    holds: list[Hold] = dataclasses.field(default_factory=list)
+    events: list[ServerEvent] | None = None
+    history_note: str = "server-side history not read"
+
+
+@dataclasses.dataclass(frozen=True)
+class ScenarioActions:
+    """What one probe snapshots with, so the scenario below is written once.
+    `snapshot` takes one snapshot of the blog; `old_path` is the retired
+    `mysqldump --source-data=2`, with the grant it needs given and taken back
+    by the callable itself."""
+
+    snapshot: Callable[[], object]
+    old_path: Callable[[], object]
 
 
 def _grant_old_path(ctx: Ctx) -> None:
@@ -948,15 +1322,133 @@ def old_path_dump(ctx: Ctx) -> None:
         raise ProofError(f"the old-path mysqldump failed: {stderr.decode(errors='replace')[:300]}")
 
 
-def long_reader_scenario(ctx: Ctx) -> LongReaderRun:
-    """A SELECT SLEEP(10) reads the other schema's table while the blog is
-    snapshotted: the real module, or under sabotage the old path
-    (RELOAD plus `mysqldump --source-data=2`). The other schema's
-    continuous writer is the only probe running."""
+def old_path_sequence(ctx: Ctx) -> None:
+    """The retired path as this probe runs it: the grant it needs, the dump,
+    and the grant taken back whatever happens."""
+    _grant_old_path(ctx)
+    try:
+        old_path_dump(ctx)
+    finally:
+        _revoke_old_path(ctx)
+
+
+# `other-lock`: a real lock on the other schema's table, held this long, this
+# long into the window. Control 2 must go red naming it.
+INJECTED_HOLD_SECONDS = 0.5
+INJECTED_HOLD_DELAY_SECONDS = 3.0
+
+
+def hold_other_lock(
+    session: Session,
+    hold_seconds: float = INJECTED_HOLD_SECONDS,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Hold:
+    """`LOCK TABLES other.posts READ` on its own session for `hold_seconds`,
+    then `UNLOCK TABLES`. The other schema's writer needs a write lock on
+    that table, so it waits for exactly this long."""
+    session.run(f"LOCK TABLES {OTHER}.posts READ;")
+    start = clock()
+    try:
+        sleep(hold_seconds)
+    finally:
+        session.run("UNLOCK TABLES;")
+    return Hold(start, clock(), round(hold_seconds * 1000))
+
+
+def enable_history(ctx: Ctx) -> str | None:
+    """As root, switch on the statement-history consumer and empty it, before
+    the timed window. None on success, else why the server side is not
+    visible (the control still judges the client-side maximum)."""
+    try:
+        ctx.source.run(
+            f"UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME = '{HISTORY_CONSUMER}'; "
+            f"TRUNCATE TABLE performance_schema.{HISTORY_CONSUMER};"
+        )
+    except ProofError as exc:
+        return f"server-side history unavailable: {exc}"
+    return None
+
+
+def read_history(ctx: Ctx) -> tuple[list[ServerEvent] | None, str]:
+    """Read once, as root, after the window and after every writer has
+    stopped: nothing here is inside the timed region."""
+    try:
+        return parse_history(ctx.source.run(HISTORY_SQL).stdout.splitlines()), ""
+    except ProofError as exc:
+        return None, f"server-side history unavailable: {exc}"
+
+
+# Control 2 runs on its own source, whose datadir is on tmpfs, started by the
+# proof script (CONTROL_2_DATADIR_TMPFS there, the one place the location is
+# named). A hosted runner's disk sometimes stalls a commit for 150 to 570 ms,
+# with no snapshot running at all and with fsync relaxed too; a datadir off the
+# disk cleared every stall (0 of 20 runners). So control 2 does not exercise
+# real-disk I/O contention between the snapshot's reads and another schema's
+# commits. It still proves the locking property, because a lock wait does not
+# depend on the disk. Every other control keeps the real-disk source and real
+# fsync.
+def mount_type(mounts: str, path: str) -> str | None:
+    """The filesystem type of the mount that holds `path`, from the text of
+    /proc/mounts: the longest mount point that is a prefix of the path."""
+    best: tuple[int, str] | None = None
+    target = path.rstrip("/") + "/"
+    for line in mounts.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        point = fields[1].rstrip("/") + "/"
+        if target.startswith(point) and (best is None or len(point) > best[0]):
+            best = (len(point), fields[2])
+    return best[1] if best else None
+
+
+def assert_on_tmpfs(server: Server) -> str:
+    """Raise unless the server's datadir is really on tmpfs, so control 2 can
+    never silently fall back to the disk. Returns the line the report carries."""
+    datadir = server.query("SELECT @@datadir;")[0][0]
+    result = subprocess.run(server.exec_argv(["cat", "/proc/mounts"]), capture_output=True, text=True, check=False, timeout=30)
+    if result.returncode != 0:
+        raise ProofError(f"{server.name}: could not read /proc/mounts to check the datadir: {result.stderr.strip()[:200]}")
+    kind = mount_type(result.stdout, datadir)
+    if kind != "tmpfs":
+        raise ProofError(f"{server.name}: datadir {datadir} is on {kind!r}, not tmpfs: control 2 would measure the disk")
+    return f"control 2 source: datadir {datadir} on tmpfs, every other control on the real disk with real fsync"
+
+
+def tmpfs_ctx(ctx: Ctx, seed_more: Callable[[Ctx], None] = lambda fresh: None) -> Ctx:
+    """The context control 2 runs in, in both probes: the tmpfs source, checked
+    to be on tmpfs and seeded exactly as the real-disk source is. `seed_more`
+    is what a probe adds to that (its own account). The real-disk source is not
+    touched."""
+    if ctx.control_2_source is None:
+        raise ProofError("control 2 has no tmpfs source: the proof script did not start one (--tmpfs-source)")
+    note = assert_on_tmpfs(ctx.control_2_source)
+    fresh = dataclasses.replace(ctx, source=ctx.control_2_source, notes={}, texts={"control_2_source": note})
+    seed(fresh)
+    seed_more(fresh)
+    return fresh
+
+
+def long_reader_scenario(ctx: Ctx, actions: ScenarioActions) -> LongReaderRun:
+    """The one scenario control 2 has, in both probes. A SELECT SLEEP(10)
+    reads the other schema's table while the blog is snapshotted by
+    `actions.snapshot`, or under sabotage by the old path (RELOAD plus
+    `mysqldump --source-data=2`), or with a lock really held on the other
+    schema (`other-lock`). The other schema's continuous writer is the only
+    probe running; its statement history is read after the window."""
     old_path = ctx.sabotaged("old-path")
+    inject = ctx.sabotaged("other-lock")
+    history_note = enable_history(ctx)
     writer = Writer(ctx.source, OTHER, other_posts_statement)
     reader = ctx.source.session(database=OTHER)
     snapshots = 0
+    intervals: list[tuple[float, float]] = []
+    holds: list[Hold] = []
+    hold_errors: list[ProofError] = []
+    holder: threading.Thread | None = None
+    reader_sent: list[float] = []
     writer.start()
     try:
         time.sleep(2.5)
@@ -966,11 +1458,22 @@ def long_reader_scenario(ctx: Ctx) -> LongReaderRun:
 
         def hold_reader() -> None:
             try:
+                reader_sent.append(time.monotonic())
                 reader.run("SELECT SLEEP(10) FROM posts LIMIT 1;")
             except ProofError as exc:
                 reader_error.append(exc)
             finally:
                 reader_done.set()
+
+        def hold_lock_mid_window() -> None:
+            time.sleep(INJECTED_HOLD_DELAY_SECONDS)
+            locker = ctx.source.session()
+            try:
+                holds.append(hold_other_lock(locker))
+            except ProofError as exc:
+                hold_errors.append(exc)
+            finally:
+                locker.close()
 
         threading.Thread(target=hold_reader, daemon=True).start()
         for _ in range(100):
@@ -980,38 +1483,102 @@ def long_reader_scenario(ctx: Ctx) -> LongReaderRun:
         else:
             raise ProofError("the long reader never started")
         began = time.monotonic()
+        if inject:
+            holder = threading.Thread(target=hold_lock_mid_window, daemon=True)
+            holder.start()
         if old_path:
-            _grant_old_path(ctx)
-            old_path_dump(ctx)
+            moment = time.monotonic()
+            actions.old_path()
+            intervals.append((moment, time.monotonic()))
             snapshots = 1
         else:
             while not reader_done.is_set():
-                take_snapshot(ctx, "under-reader.sql")
+                moment = time.monotonic()
+                actions.snapshot()
+                intervals.append((moment, time.monotonic()))
                 snapshots += 1
                 time.sleep(0.2)
         reader_done.wait(timeout=60)
+        if holder is not None:
+            holder.join(timeout=30)
+            if hold_errors:
+                raise hold_errors[0]
         if reader_error:
             raise reader_error[0]
         ended = time.monotonic()
     finally:
-        if old_path:
-            _revoke_old_path(ctx)
         reader.close()
         samples = writer.finish()
-    return LongReaderRun(samples, (began, ended), baseline_worst, snapshots)
+    events: list[ServerEvent] | None = None
+    if history_note is None:
+        events, history_note = read_history(ctx)
+    return LongReaderRun(
+        samples,
+        (began, ended),
+        baseline_worst,
+        snapshots,
+        tag=writer.tag,
+        reader_sent=reader_sent[0] if reader_sent else None,
+        snapshot_intervals=intervals,
+        holds=holds,
+        events=events,
+        history_note=history_note or "",
+    )
+
+
+def control_2_outcome(run: LongReaderRun, *, old_path: bool) -> tuple[Verdict, list[str]]:
+    """The one judgement and report of control 2, for both probes."""
+    in_window = indexed_between(run.other_samples, *run.window)
+    report = stall_report(
+        tag=run.tag,
+        window_samples=in_window,
+        began=run.window[0],
+        baseline_worst=run.baseline_worst,
+        events=run.events,
+        server_note=run.history_note,
+        reader_sent=run.reader_sent,
+        snapshot_intervals=run.snapshot_intervals,
+        holds=run.holds,
+    )
+    verdict = writer_stall_verdict([latency for _, _, latency in in_window], WRITER_LIMIT_SECONDS, mechanism=report.mechanism)
+    if verdict.passed:
+        verdict = Verdict(True, f"{verdict.reason} {PASS_CAVEAT}")
+    lines = [
+        f"a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
+        f"{run.snapshots} {'old-path dump' if old_path else 'snapshot(s)'} ran",
+        f"baseline worst `other` statement before it: {_ms(run.baseline_worst)}",
+        *report.lines(),
+    ]
+    return verdict, lines
+
+
+def fixture_outcome(*, stalled: bool) -> tuple[Verdict, list[str]]:
+    """Control 2's judgement of a canned window, no Docker: 330 statements of
+    4 ms and an injected hold on the other schema at 3 s. With `stalled`, the
+    statement that began as the lock was taken waited it out (500 ms); without,
+    the same window and hold with the writer unaffected."""
+    samples = [(100.0 + 0.03 * number, 0.004) for number in range(330)]
+    if stalled:
+        samples[100] = (samples[100][0], 0.5)
+    run = LongReaderRun(
+        samples, (100.0, 110.0), 0.004, 29, tag="w1", holds=[Hold(103.0, 103.5, 500)], history_note="server-side history not read"
+    )
+    return control_2_outcome(run, old_path=False)
+
+
+# Carried by every control 2 PASS line: what the tmpfs source cannot show.
+PASS_CAVEAT = "(datadir on tmpfs; the coordinate read's fsync wait is not covered)"
 
 
 def control_2(ctx: Ctx) -> ControlResult:
-    """Another schema's writes are not blocked."""
-    run = long_reader_scenario(ctx)
-    latencies = latencies_between(run.other_samples, *run.window)
-    verdict = writer_stall_verdict(latencies, WRITER_LIMIT_SECONDS)
-    numbers = [
-        f"a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
-        f"{run.snapshots} {'old-path dump' if ctx.sabotaged('old-path') else 'snapshot(s)'} ran",
-        f"baseline worst `other` statement before it: {_ms(run.baseline_worst)}",
-    ]
-    return ControlResult(2, "another schema's writes are not blocked", verdict, numbers)
+    """Another schema's writes are not blocked. Runs on the tmpfs source."""
+    on_tmpfs = tmpfs_ctx(ctx)
+    actions = ScenarioActions(
+        snapshot=lambda: take_snapshot(on_tmpfs, "under-reader.sql"), old_path=lambda: old_path_sequence(on_tmpfs)
+    )
+    run = long_reader_scenario(on_tmpfs, actions)
+    verdict, numbers = control_2_outcome(run, old_path=on_tmpfs.sabotaged("old-path"))
+    return ControlResult(2, "another schema's writes are not blocked", verdict, [on_tmpfs.texts["control_2_source"], *numbers])
 
 
 def control_3(ctx: Ctx) -> ControlResult:
@@ -1351,7 +1918,7 @@ def docker_context() -> str:
 
 
 def run(args: argparse.Namespace) -> int:
-    reason = refusal([args.source, args.replica], os.environ.get("DOCKER_HOST"), docker_context)
+    reason = refusal([name for name in (args.source, args.replica, args.tmpfs_source) if name], os.environ.get("DOCKER_HOST"), docker_context)
     if reason is not None:
         print(f"REFUSED: {reason}", file=sys.stderr)
         return EXIT_REFUSED
@@ -1362,6 +1929,7 @@ def run(args: argparse.Namespace) -> int:
         workdir=workdir,
         passwords=Passwords.read(workdir),
         sabotage=args.sabotage,
+        control_2_source=Server(args.tmpfs_source, (workdir / "root.pw").read_text().strip()) if args.tmpfs_source else None,
     )
     controls = [int(part) for part in args.controls.split()]
     if args.sabotage:
@@ -1406,6 +1974,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner = sub.add_parser("run", help="run the controls against two running containers (prove-snapshot-locking.sh does this)")
     runner.add_argument("--source", required=True)
     runner.add_argument("--replica", required=True)
+    runner.add_argument("--tmpfs-source", default=None, help="control 2's own source, datadir on tmpfs (the script starts it)")
     runner.add_argument("--workdir", required=True)
     runner.add_argument("--controls", default="1 2 3 4 5 6")
     runner.add_argument("--sabotage", default=None)

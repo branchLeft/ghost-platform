@@ -10,13 +10,6 @@ import type { UpstreamBody } from './upstream.js';
 
 const MIB = 1024 * 1024;
 
-/**
- * The body ceiling for a tenant whose credential names none, in MiB. It must
- * equal the platform's default upload ceiling; a test reads that file and
- * fails when the two drift.
- */
-export const DEFAULT_BODY_CEILING_MIB = 128;
-
 /** A body this size or smaller stays in memory; past it the body is spooled to disk. */
 export const SPOOL_THRESHOLD_BYTES = 4 * MIB;
 
@@ -28,12 +21,15 @@ export type CeilingResult =
   { readonly ok: true; readonly bytes: number } | { readonly ok: false; readonly refusal: Refusal };
 
 /**
- * The most body bytes this tenant may send in one request. An absent field
- * means the default; a field that is not a positive whole number of MiB is
- * refused, never read as "no cap".
+ * The most body bytes this tenant may send in one request. There is no
+ * default: an absent ceiling is refused as internal-error (the gateway holds
+ * no usable limit for this tenant, which is not the caller's fault), and a
+ * field that is not a positive whole number of MiB is refused as
+ * credential-invalid. Neither is ever read as "no cap" or as a guessed limit.
  */
 export function resolveBodyCeiling(credential: CredentialRecord): CeilingResult {
-  const mib = credential.uploadCeilingMib ?? DEFAULT_BODY_CEILING_MIB;
+  const mib = credential.uploadCeilingMib;
+  if (mib === undefined) return { ok: false, refusal: refusal('internal-error') };
   const bytes = mib * MIB;
   if (!Number.isSafeInteger(mib) || mib <= 0 || !Number.isSafeInteger(bytes)) {
     return { ok: false, refusal: refusal('credential-invalid') };

@@ -18,6 +18,10 @@ on:
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
       - .github/workflows/image-attestation-ci.yml
+      - scripts/probe-tokenless-attestation.sh
+      - scripts/resolve-published-image.sh
+      - scripts/test-probe-tokenless-attestation.sh
+      - .github/workflows/image-attestation-tokenless.yml
   pull_request:
     branches: [main]
     paths:
@@ -30,6 +34,10 @@ on:
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
       - .github/workflows/image-attestation-ci.yml
+      - scripts/probe-tokenless-attestation.sh
+      - scripts/resolve-published-image.sh
+      - scripts/test-probe-tokenless-attestation.sh
+      - .github/workflows/image-attestation-tokenless.yml
 
 permissions:
   contents: read
@@ -50,5 +58,8 @@ jobs:
         run: ./scripts/test-verify-image-attestation.sh
 
       # Plain node:test, no dependency to install.
+      - name: Run the token-less probe test
+        run: ./scripts/test-probe-tokenless-attestation.sh
+
       - name: Lint the image workflows and the attest action
         run: node --test workflow-image-attestation.test.js
