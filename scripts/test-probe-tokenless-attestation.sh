@@ -48,7 +48,7 @@ if [ "$MODE" = needs-token ]; then
 fi
 # A token in the environment makes this stub accept anything, as a token-backed
 # gh would. A leaked token therefore shows as an accepted forgery.
-if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+if [ -n "${GITHUB_TOKEN:-}" ] || { [ -n "${GH_TOKEN:-}" ] && [ "$GH_TOKEN" != placeholder-not-a-credential ]; }; then
   exit 0
 fi
 if [ "$MODE" = accept-all ]; then
@@ -121,6 +121,43 @@ elif grep -Fq 'token-visible' "$WORK/bin/calls.log"; then
   FAILED=1
 else
   echo "ok   [identity]: the real digest verified and the forged digest was refused for its identity, with no token"
+fi
+
+# Placeholder mode: the one literal placeholder is accepted and drives the same
+# verdicts; any other value is refused before gh runs.
+printf '%s\n' identity > "$WORK/bin/mode"
+if ! PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential "$PROBE" "$REAL" "$FORGED" > "$OUT" 2>&1; then
+  echo "FAIL [placeholder identity]: the probe failed, expected a pass:"
+  sed 's/^/    /' "$OUT"
+  FAILED=1
+elif ! grep -Fq 'GH_TOKEN: the literal placeholder' "$OUT" || ! grep -Fq 'GitHub API lines in gh --debug output' "$OUT"; then
+  echo "FAIL [placeholder identity]: the pass did not report the placeholder and the API lines:"
+  sed 's/^/    /' "$OUT"
+  FAILED=1
+else
+  echo "ok   [placeholder identity]: the same verdicts with the placeholder, API lines reported"
+fi
+
+printf '%s\n' needs-token > "$WORK/bin/mode"
+if PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential "$PROBE" "$REAL" "$FORGED" > "$OUT" 2>&1 \
+  || ! grep -Fq 'ASSERT FAILED: verification needs a GitHub token' "$OUT"; then
+  echo "FAIL [placeholder needs-token]: expected the token-need assertion:"
+  sed 's/^/    /' "$OUT"
+  FAILED=1
+else
+  echo "ok   [placeholder needs-token]: a token need still names its mechanism"
+fi
+
+printf '%s\n' identity > "$WORK/bin/mode"
+: > "$WORK/bin/calls.log"
+if PROBE_GH_TOKEN_PLACEHOLDER=some-other-value "$PROBE" "$REAL" "$FORGED" > "$OUT" 2>&1 \
+  || ! grep -Fq 'ASSERT FAILED: PROBE_GH_TOKEN_PLACEHOLDER must be the literal' "$OUT" \
+  || [ -s "$WORK/bin/calls.log" ]; then
+  echo "FAIL [placeholder other value]: expected a refusal before gh ran:"
+  sed 's/^/    /' "$OUT"
+  FAILED=1
+else
+  echo "ok   [placeholder other value]: any other value is refused before gh runs"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

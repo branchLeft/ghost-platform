@@ -222,6 +222,19 @@ test('github.token reaches only the two resolve steps, and the probe step has no
   assert.doesNotMatch(probe, /GH_TOKEN|GITHUB_TOKEN|github\.token/);
 });
 
+test('the placeholder experiment runs always, with a fixed non-credential and no real token', () => {
+  const text = uncommented(TOKENLESS);
+  const exp = stepNamed(text, 'Experiment, the same probe with a placeholder GH_TOKEN');
+  assert.match(exp, /\n {8}if: always\(\)\n/);
+  assert.match(exp, /PROBE_GH_TOKEN_PLACEHOLDER: placeholder-not-a-credential\n/);
+  assert.doesNotMatch(exp, /secrets\.|github\.token|GITHUB_TOKEN|GH_TOKEN:/);
+  assert.match(
+    exp,
+    /run: \.\/scripts\/probe-tokenless-attestation\.sh "\$REAL_IMAGE" "\$CONTROL_IMAGE"/
+  );
+  assert.doesNotMatch(text, /secrets\./, 'no secret in the workflow');
+});
+
 test('the probe runs after both resolve steps and is given both references', () => {
   const text = uncommented(TOKENLESS);
   const real = text.indexOf('- name: Resolve the real');
@@ -231,7 +244,7 @@ test('the probe runs after both resolve steps and is given both references', () 
   const probe = stepNamed(text, 'Probe the token-less verify');
   assert.match(
     probe,
-    /run: \.\/scripts\/probe-tokenless-attestation\.sh "\$REAL_IMAGE" "\$CONTROL_IMAGE"\n?$/
+    /run: \.\/scripts\/probe-tokenless-attestation\.sh "\$REAL_IMAGE" "\$CONTROL_IMAGE"\s*$/
   );
   assert.match(probe, /REAL_IMAGE: \$\{\{ steps\.real\.outputs\.image \}\}/);
   assert.match(probe, /CONTROL_IMAGE: \$\{\{ steps\.control\.outputs\.image \}\}/);
@@ -274,8 +287,13 @@ test('the probe calls the one verifier with the literal identity, under the host
   }
   assert.doesNotMatch(
     probe,
-    /GH_TOKEN=|GITHUB_TOKEN=|\|\| true/,
-    'no token is set, nothing is swallowed'
+    /GH_TOKEN=(?!"\$PLACEHOLDER")|GITHUB_TOKEN=|\|\| true/,
+    'no token is set but the one literal placeholder, nothing is swallowed'
+  );
+  assert.match(
+    probe,
+    /"\$PLACEHOLDER" != "placeholder-not-a-credential"/,
+    'any value but the placeholder is refused'
   );
   for (const name of [
     'GH_TOKEN',

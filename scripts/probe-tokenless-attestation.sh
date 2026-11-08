@@ -17,6 +17,12 @@
 #
 # PROBE_RETRY_WAIT sets the wait between transport retries (20 seconds by
 # default). The offline test sets it to 0.
+#
+# Placeholder mode. PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential runs
+# the same probe with GH_TOKEN set to that one literal string and GH_DEBUG=api
+# on, to show whether gh's local auth gate takes any value on the
+# --bundle-from-oci path and whether any call to the GitHub API is made. Any
+# other value is refused, so a real token can never be passed this way.
 set -u
 
 assert_fail() {
@@ -36,6 +42,10 @@ VERIFY="$HERE/verify-image-attestation.sh"
 REPO="branchLeft/ghost-platform"
 SIGNER="branchLeft/ghost-platform/.github/workflows/registry-push.yml"
 RETRY_WAIT="${PROBE_RETRY_WAIT:-20}"
+PLACEHOLDER="${PROBE_GH_TOKEN_PLACEHOLDER:-}"
+if [ -n "$PLACEHOLDER" ] && [ "$PLACEHOLDER" != "placeholder-not-a-credential" ]; then
+  assert_fail "PROBE_GH_TOKEN_PLACEHOLDER must be the literal placeholder-not-a-credential, nothing else"
+fi
 
 TOKEN_RE='gh auth login|GH_TOKEN|GITHUB_TOKEN|HTTP 40[13]|authentication|not logged in|unauthorized|forbidden'
 TRANSPORT_RE='dial tcp|i/o timeout|no such host|connection reset|connection refused|TUF'
@@ -53,9 +63,15 @@ GH_DIR="$(dirname "$(command -v gh)")"
 
 # Runs a command under the host's scrubbed environment.
 scrubbed() {
-  env -i PATH="$GH_DIR:/usr/bin:/bin" HOME="$EMPTY" GH_CONFIG_DIR="$EMPTY" \
-    XDG_CONFIG_HOME="$EMPTY" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
-    LC_ALL=C VERIFY_PLAIN_ERRORS=1 "$@"
+  if [ -n "$PLACEHOLDER" ]; then
+    env -i PATH="$GH_DIR:/usr/bin:/bin" HOME="$EMPTY" GH_CONFIG_DIR="$EMPTY" \
+      XDG_CONFIG_HOME="$EMPTY" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
+      LC_ALL=C VERIFY_PLAIN_ERRORS=1 GH_TOKEN="$PLACEHOLDER" GH_DEBUG=api "$@"
+  else
+    env -i PATH="$GH_DIR:/usr/bin:/bin" HOME="$EMPTY" GH_CONFIG_DIR="$EMPTY" \
+      XDG_CONFIG_HOME="$EMPTY" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
+      LC_ALL=C VERIFY_PLAIN_ERRORS=1 "$@"
+  fi
 }
 
 has_match() {
@@ -73,6 +89,14 @@ mechanism() {
 
 echo "Environment proof: the verifier runs under a scrubbed environment"
 for name in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; do
+  if [ -n "$PLACEHOLDER" ] && [ "$name" = GH_TOKEN ]; then
+    # shellcheck disable=SC2016
+    if [ "$(scrubbed sh -c 'printf %s "$GH_TOKEN"')" != "$PLACEHOLDER" ]; then
+      assert_fail "placeholder mode: GH_TOKEN is not the placeholder"
+    fi
+    echo "  GH_TOKEN: the literal placeholder, not a credential"
+    continue
+  fi
   if scrubbed sh -c "test -n \"\${$name+set}\""; then
     assert_fail "probe environment is not token-less: $name is set"
   fi
@@ -82,10 +106,22 @@ if [ -e "$EMPTY/hosts.yml" ]; then
   assert_fail "probe environment is not token-less: a gh hosts file exists"
 fi
 echo "  gh config directory: no hosts file"
-if scrubbed gh auth status >"$WORK/auth.out" 2>&1; then
-  assert_fail "probe environment is not token-less: gh auth status succeeded"
+if [ -z "$PLACEHOLDER" ]; then
+  if scrubbed gh auth status >"$WORK/auth.out" 2>&1; then
+    assert_fail "probe environment is not token-less: gh auth status succeeded"
+  fi
+  echo "  gh auth status: exits non-zero"
 fi
-echo "  gh auth status: exits non-zero"
+
+# In placeholder mode, shows what gh sent to the GitHub API, from GH_DEBUG=api.
+API_RE='api\.github\.com|^\* Request (to|at)|^> (GET|POST) '
+note_api() {
+  [ -n "$PLACEHOLDER" ] || return 0
+  echo "  GitHub API lines in gh --debug output: $(grep -Eci "$API_RE" "$WORK/verify.out")"
+  grep -Ei "$API_RE" "$WORK/verify.out" | head -n 10 | sed 's/^/    /'
+  echo "  gh output (exit $RC):"
+  sed 's/^/    | /' "$WORK/verify.out"
+}
 
 # One verifier call under the scrubbed environment. A transport fault is retried
 # up to four attempts; anything else is final. Sets RC, and leaves the output in
@@ -109,6 +145,7 @@ run_verify() {
 
 echo "Real digest: verify $REAL with --bundle-from-oci, token-less"
 run_verify "$REAL"
+note_api
 if [ "$RC" -ne 0 ]; then
   if has_match "$TOKEN_RE"; then
     assert_fail "verification needs a GitHub token (mechanism: $(mechanism))"
@@ -123,6 +160,7 @@ echo "TOKENLESS VERIFY OK"
 
 echo "Control: verify the forged digest $FORGED with the same call"
 run_verify "$FORGED"
+note_api
 if [ "$RC" -eq 0 ]; then
   assert_fail "forged digest accepted: the probe is vacuous"
 fi

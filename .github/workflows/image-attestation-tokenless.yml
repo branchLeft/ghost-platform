@@ -75,3 +75,16 @@ jobs:
           REAL_IMAGE: ${{ steps.real.outputs.image }}
           CONTROL_IMAGE: ${{ steps.control.outputs.image }}
         run: ./scripts/probe-tokenless-attestation.sh "$REAL_IMAGE" "$CONTROL_IMAGE"
+
+      # An experiment, not a credential: the same probe with GH_TOKEN set to one
+      # fixed placeholder string and gh API debug output on. It shows whether gh's
+      # local auth gate takes any value on the --bundle-from-oci path, and whether
+      # any call to the GitHub API is made. It runs even when the step above
+      # failed, and the job stays red while that step is red.
+      - name: Experiment, the same probe with a placeholder GH_TOKEN
+        if: always()
+        env:
+          REAL_IMAGE: ${{ steps.real.outputs.image }}
+          CONTROL_IMAGE: ${{ steps.control.outputs.image }}
+          PROBE_GH_TOKEN_PLACEHOLDER: placeholder-not-a-credential
+        run: ./scripts/probe-tokenless-attestation.sh "$REAL_IMAGE" "$CONTROL_IMAGE"

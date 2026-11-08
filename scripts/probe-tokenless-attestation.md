@@ -31,6 +31,15 @@ The scrubbed environment copies the host's keys by hand: `PATH`, `HOME`,
 `VERIFY_PLAIN_ERRORS=1`. The host's function lives in another repository, so
 these values are restated once, here. Keep them in step with it.
 
+## Placeholder mode
+
+`PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential` runs the same checks
+with `GH_TOKEN` set to that one literal string and `GH_DEBUG=api` on. It asks
+whether gh's local auth gate takes any value on the `--bundle-from-oci` path,
+and prints the GitHub API lines gh logged. Any other value is refused before gh
+runs, so a real token cannot be passed this way. The workflow runs it as a
+second step after the token-less one, even when that one failed.
+
 ## Why the classes are split
 
 A token need, a transport fault and an identity refusal all make gh exit
