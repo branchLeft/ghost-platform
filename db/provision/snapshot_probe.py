@@ -158,7 +158,6 @@ SLOWEST_REPORTED = 3
 MAX_SLOW_LINES = 8
 
 EVENT_COORDINATE = "coordinate read"
-EVENT_STUB = "coordinate stub"
 EVENT_LOCK = "LOCK or UNLOCK TABLES"
 EVENT_OPEN = "snapshot open"
 EVENT_DUMP = "other dump statement"
@@ -170,7 +169,6 @@ SNAPSHOT_PHASES = (EVENT_COORDINATE, EVENT_LOCK, EVENT_OPEN, EVENT_FLUSH)
 
 _EVENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (EVENT_COORDINATE, re.compile(r"performance_schema\.log_status|^SHOW (MASTER|BINARY LOG) STATUS", re.I)),
-    (EVENT_STUB, re.compile(r"binary_log_file", re.I)),
     (EVENT_LOCK, re.compile(r"^(LOCK|UNLOCK) TABLES", re.I)),
     (EVENT_OPEN, re.compile(r"CONSISTENT SNAPSHOT", re.I)),
     (EVENT_FLUSH, re.compile(r"^FLUSH", re.I)),
@@ -1286,16 +1284,18 @@ class LongReaderRun:
     holds: list[Hold] = dataclasses.field(default_factory=list)
     events: list[ServerEvent] | None = None
     history_note: str = "server-side history not read"
+    # What the window ran under (see relaxed_durability); empty when not set.
+    durability: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
 class ScenarioActions:
     """What one probe snapshots with, so the scenario below is written once.
-    `snapshot` takes one snapshot of the blog (None: take none, a diagnostic
-    only); `old_path` is the retired `mysqldump --source-data=2`, with the
-    grant it needs given and taken back by the callable itself."""
+    `snapshot` takes one snapshot of the blog; `old_path` is the retired
+    `mysqldump --source-data=2`, with the grant it needs given and taken back
+    by the callable itself."""
 
-    snapshot: Callable[[], object] | None
+    snapshot: Callable[[], object]
     old_path: Callable[[], object]
 
 
@@ -1380,13 +1380,56 @@ def read_history(ctx: Ctx) -> tuple[list[ServerEvent] | None, str]:
         return None, f"server-side history unavailable: {exc}"
 
 
+# What control 2's window runs the source under. The source's real settings
+# (sync_binlog=1, innodb_flush_log_at_trx_commit=1) make every commit wait on
+# the runner's disk, and a hosted runner's disk sometimes takes 150 to 570 ms
+# to fsync: a stall in every variant measured, with no snapshot running at all,
+# and gone with the fsync removed. Control 2's claim is that the snapshot does
+# not stall another schema's commits, not that the disk is fast. Only this
+# window is relaxed; every other control keeps real fsync.
+DURABILITY_RELAXED = (("sync_binlog", 0), ("innodb_flush_log_at_trx_commit", 2))
+_DURABILITY_READ_SQL = "SELECT " + ", ".join(f"@@GLOBAL.{name}" for name, _ in DURABILITY_RELAXED) + ";"
+
+
+def _durability_assignments(values: Iterable[object]) -> str:
+    return ", ".join(f"{name}={value}" for (name, _), value in zip(DURABILITY_RELAXED, values))
+
+
+@contextlib.contextmanager
+def relaxed_durability(source: Server):
+    """Relax the source's commit durability for the body, and put back what
+    was there on every exit path (an assertion, a sabotage, an interrupt, a
+    failure to relax). The one home of the setting and of its restore; yields
+    a line saying what ran. A restore that fails is an error, never silent."""
+    original = source.query(_DURABILITY_READ_SQL)[0]
+    relaxed = tuple(value for _, value in DURABILITY_RELAXED)
+    try:
+        source.run(f"SET GLOBAL {_durability_assignments(relaxed)};")
+        now = tuple(source.query(_DURABILITY_READ_SQL)[0])
+        if now != tuple(str(value) for value in relaxed):
+            raise ProofError(f"{source.name}: durability not relaxed, reads {now}")
+        yield (
+            f"commit durability relaxed for this window only ({_durability_assignments(relaxed)}, "
+            f"were {_durability_assignments(original)}), restored after it"
+        )
+    finally:
+        source.run(f"SET GLOBAL {_durability_assignments(original)};")
+
+
 def long_reader_scenario(ctx: Ctx, actions: ScenarioActions) -> LongReaderRun:
-    """The one scenario control 2 has, in both probes. A SELECT SLEEP(10)
-    reads the other schema's table while the blog is snapshotted by
-    `actions.snapshot`, or under sabotage by the old path (RELOAD plus
-    `mysqldump --source-data=2`), or with a lock really held on the other
-    schema (`other-lock`). The other schema's continuous writer is the only
-    probe running; its statement history is read after the window."""
+    """The one scenario control 2 has, in both probes, run with the source's
+    commit durability relaxed for its window only (relaxed_durability)."""
+    with relaxed_durability(ctx.source) as durability:
+        run = _long_reader_window(ctx, actions)
+    return dataclasses.replace(run, durability=durability)
+
+
+def _long_reader_window(ctx: Ctx, actions: ScenarioActions) -> LongReaderRun:
+    """A SELECT SLEEP(10) reads the other schema's table while the blog is
+    snapshotted by `actions.snapshot`, or under sabotage by the old path
+    (RELOAD plus `mysqldump --source-data=2`), or with a lock really held on
+    the other schema (`other-lock`). The other schema's continuous writer is
+    the only probe running; its statement history is read after the window."""
     old_path = ctx.sabotaged("old-path")
     inject = ctx.sabotaged("other-lock")
     history_note = enable_history(ctx)
@@ -1440,7 +1483,7 @@ def long_reader_scenario(ctx: Ctx, actions: ScenarioActions) -> LongReaderRun:
             actions.old_path()
             intervals.append((moment, time.monotonic()))
             snapshots = 1
-        elif actions.snapshot is not None:
+        else:
             while not reader_done.is_set():
                 moment = time.monotonic()
                 actions.snapshot()
@@ -1494,6 +1537,7 @@ def control_2_outcome(run: LongReaderRun, *, old_path: bool) -> tuple[Verdict, l
         f"a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
         f"{run.snapshots} {'old-path dump' if old_path else 'snapshot(s)'} ran",
         f"baseline worst `other` statement before it: {_ms(run.baseline_worst)}",
+        *([run.durability] if run.durability else []),
         *report.lines(),
     ]
     return verdict, lines
@@ -1513,62 +1557,11 @@ def fixture_outcome(*, stalled: bool) -> tuple[Verdict, list[str]]:
     return control_2_outcome(run, old_path=False)
 
 
-# Diagnostic knobs (temporary; removed with the diagnosis, see the PR). Set in
-# PROBE_DIAG, a comma list; each changes only what control 2 snapshots with.
-DIAGNOSTIC_VARIANTS = ("no-snapshot", "const-coordinate", "plain-dump")
-CONSTANT_COORDINATE_SQL = """SELECT '{"binary_log_file":"x","binary_log_position":1}';"""
-
-
-def diagnostic_variants(environ: Mapping[str, str] | None = None) -> frozenset[str]:
-    raw = (os.environ if environ is None else environ).get("PROBE_DIAG", "")
-    names = {part for part in re.split(r"[,\s]+", raw) if part}
-    unknown = sorted(names - set(DIAGNOSTIC_VARIANTS))
-    if unknown:
-        raise ProofError(f"unknown PROBE_DIAG {unknown}; known: {list(DIAGNOSTIC_VARIANTS)}")
-    return frozenset(names)
-
-
-@contextlib.contextmanager
-def constant_coordinates(active: bool):
-    """With `active`, the module's coordinate read is a constant SELECT with
-    the same shape of answer and no lock-protected read, patched in this
-    process only (the module on disk is untouched)."""
-    if not active:
-        yield
-        return
-    original = bs._COORDINATE_SQL[bs.COORDINATES_LOG_STATUS]
-    bs._COORDINATE_SQL[bs.COORDINATES_LOG_STATUS] = CONSTANT_COORDINATE_SQL
-    try:
-        yield
-    finally:
-        bs._COORDINATE_SQL[bs.COORDINATES_LOG_STATUS] = original
-
-
-def plain_dump(ctx: Ctx, name: str) -> None:
-    """A snapshot-shaped load with none of the module's locks: the same
-    mysqldump arguments as the real path, written to the same place."""
-    with open(ctx.workdir / name, "wb") as handle:
-        dump = ctx.source.popen(
-            ["mysqldump", f"--user={MOVER}", *DUMP_ARGS], ctx.passwords.mover, stdout=handle, stderr=subprocess.PIPE
-        )
-        _, stderr = dump.communicate(timeout=300)
-    if dump.returncode != 0:
-        raise ProofError(f"the plain mysqldump failed: {stderr.decode(errors='replace')[:300]}")
-
-
 def control_2(ctx: Ctx) -> ControlResult:
     """Another schema's writes are not blocked."""
-    variants = diagnostic_variants()
     actions = ScenarioActions(snapshot=lambda: take_snapshot(ctx, "under-reader.sql"), old_path=lambda: old_path_sequence(ctx))
-    if "no-snapshot" in variants:
-        actions = dataclasses.replace(actions, snapshot=None)
-    if "plain-dump" in variants:
-        actions = dataclasses.replace(actions, snapshot=lambda: plain_dump(ctx, "under-reader.sql"))
-    with constant_coordinates("const-coordinate" in variants):
-        run = long_reader_scenario(ctx, actions)
+    run = long_reader_scenario(ctx, actions)
     verdict, numbers = control_2_outcome(run, old_path=ctx.sabotaged("old-path"))
-    if variants:
-        numbers.insert(0, f"DIAGNOSTIC variants {sorted(variants)}: not the shipped path")
     return ControlResult(2, "another schema's writes are not blocked", verdict, numbers)
 
 

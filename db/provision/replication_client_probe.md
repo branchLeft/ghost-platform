@@ -87,6 +87,10 @@ Control 2's scenario, its verdict and its report are `snapshot_probe.py`'s
 This probe supplies only its own snapshot (`take_snapshot` here, with
 `SHOW MASTER STATUS` coordinates) and its own old-path dump. The report, and
 what each of its figures means, is under control 2 in `snapshot_probe.md`.
+That scenario also runs with the source's commit durability relaxed for its
+window only and restored on every exit (`relaxed_durability`, written once in
+`snapshot_probe.py`, explained there), so this probe's control 2 gets it with
+no copy and no datadir option; its other controls keep real fsync.
 Every red case that targets control 2 has a step in `snapshot-proof-ci.yml`
 that requires exit code 1 and `RED control 2,` in the log
 (`test_replication_client_probe.py` fails if one is missing).

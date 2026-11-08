@@ -119,6 +119,24 @@ and a healthy one that must pass, with no Docker.
    snapshot and old-path dump), judged by one function
    (`writer_stall_verdict`).
 
+   **Durability, for this window only.** The source's real settings make
+   every commit wait on the disk (`sync_binlog=1`,
+   `innodb_flush_log_at_trx_commit=1`). A hosted runner's disk sometimes takes
+   150 to 570 ms to fsync, and when it does `other`'s commit waits for it:
+   measured on 120 fresh runners, 19 stalled, the stall inside the server in
+   every one, at the same rate (6 of 30 against 8 of 30) with no snapshot
+   running at all, and none on a tmpfs datadir (0 of 20). The control's claim
+   is that the snapshot does not stall another schema's commits, not that the
+   disk is fast, so `long_reader_scenario` runs under `relaxed_durability`:
+   `SET GLOBAL sync_binlog=0, innodb_flush_log_at_trx_commit=2` on the source
+   at the start and the values it read put back on every exit (a failed
+   window, a sabotage, an interrupt, a failure while relaxing). That is the
+   only place the settings change: controls 1, 3, 4 and 5 run on real fsync,
+   and the report line says what the window ran under. The limit stays 100 ms
+   and the statistic stays the client-observed maximum. A held lock and the
+   old path are lock waits, not fsyncs, so both sabotages stay red. The
+   runner's local `/mnt` disk was tried and still stalled on 2 of 20.
+
    **The stall report.** Beside the maximum, control 2 prints where its
    slowest statements spent their time, so a red names a mechanism. Before
    the window the source's statement-history consumer

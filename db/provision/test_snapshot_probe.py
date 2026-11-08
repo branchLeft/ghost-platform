@@ -585,13 +585,6 @@ class StallReportTests(unittest.TestCase):
         window.holds = [sp.Hold(105.0, 105.5, 500)]
         self.assertEqual(window.worst().mechanism, sp.MECH_IN_SERVER)
 
-    def test_the_constant_coordinate_stub_is_never_a_coordinate_read(self) -> None:
-        window = _Window()
-        window.add(sp.CONSTANT_COORDINATE_SQL.rstrip(";"), ends=-0.002)
-        slow = window.worst()
-        self.assertNotEqual(slow.mechanism, sp.MECH_COORDINATE)
-        self.assertEqual(sp.classify_event(sp.CONSTANT_COORDINATE_SQL), sp.EVENT_STUB)
-
     def test_the_writer_and_the_reader_are_not_counted_as_overlapping_events(self) -> None:
         slow = _Window().worst()
         self.assertEqual(slow.overlapping, ())
@@ -758,7 +751,7 @@ class OtherLockSabotageTests(unittest.TestCase):
         self.assertEqual(sp.SABOTAGE_TARGETS["other-lock"], (2,))
 
     def test_the_scenario_runs_the_hold_only_under_the_sabotage(self) -> None:
-        source = inspect.getsource(sp.long_reader_scenario)
+        source = inspect.getsource(sp._long_reader_window)
         self.assertIn('ctx.sabotaged("other-lock")', source)
         self.assertIn("if inject:", source)
 
@@ -791,43 +784,174 @@ class OneScenarioTests(unittest.TestCase):
         self.assertEqual(inspect.getsource(sp).count("def writer_stall_verdict"), 1)
 
 
-class DiagnosticKnobTests(unittest.TestCase):
-    def test_a_known_variant_list_is_parsed(self) -> None:
-        self.assertEqual(sp.diagnostic_variants({"PROBE_DIAG": "no-snapshot, plain-dump"}), frozenset({"no-snapshot", "plain-dump"}))
-        self.assertEqual(sp.diagnostic_variants({}), frozenset())
+class _FakeDurableSource:
+    """A source that keeps the two durability settings and answers the probe's
+    read and SET GLOBAL, no Docker. `fail_set_after` makes the Nth SET raise
+    after applying its first assignment, as a failure part-way would."""
 
-    def test_an_unknown_variant_is_refused(self) -> None:
+    name = "fake-source"
+
+    def __init__(self, sync_binlog: str = "1", flush: str = "1") -> None:
+        self.values = {"sync_binlog": sync_binlog, "innodb_flush_log_at_trx_commit": flush}
+        self.history: list[tuple[str, str]] = []
+        self.sets = 0
+        self.fail_set_number: int | None = None
+        self.refuse_to_apply = False
+
+    def query(self, sql: str, **_: object) -> list[list[str]]:
+        assert "@@GLOBAL.sync_binlog" in sql, sql
+        return [[self.values["sync_binlog"], self.values["innodb_flush_log_at_trx_commit"]]]
+
+    def run(self, sql: str, **_: object):
+        match = re.fullmatch(r"SET GLOBAL (.+);", sql)
+        assert match, sql
+        self.sets += 1
+        if self.refuse_to_apply:
+            return None
+        for index, part in enumerate(match.group(1).split(", ")):
+            name, value = part.split("=")
+            if self.fail_set_number == self.sets and index == 1:
+                raise sp.ProofError("SET GLOBAL failed part-way")
+            self.values[name] = value
+            self.history.append((name, value))
+        return None
+
+
+class RelaxedDurabilityTests(unittest.TestCase):
+    REAL = {"sync_binlog": "1", "innodb_flush_log_at_trx_commit": "1"}
+    RELAXED = {"sync_binlog": "0", "innodb_flush_log_at_trx_commit": "2"}
+
+    def test_the_window_runs_with_fsync_relaxed_and_the_real_settings_come_back(self) -> None:
+        source = _FakeDurableSource()
+        with sp.relaxed_durability(source) as line:
+            self.assertEqual(source.values, self.RELAXED)
+        self.assertEqual(source.values, self.REAL)
+        self.assertIn("this window only", line)
+        self.assertIn("sync_binlog=0", line)
+        self.assertIn("were sync_binlog=1", line)
+
+    def test_what_comes_back_is_what_was_there_not_a_hard_coded_default(self) -> None:
+        source = _FakeDurableSource(sync_binlog="100", flush="0")
+        with sp.relaxed_durability(source):
+            pass
+        self.assertEqual(source.values, {"sync_binlog": "100", "innodb_flush_log_at_trx_commit": "0"})
+
+    def test_the_restore_runs_when_the_window_fails(self) -> None:
+        source = _FakeDurableSource()
         with self.assertRaises(sp.ProofError):
-            sp.diagnostic_variants({"PROBE_DIAG": "faster"})
+            with sp.relaxed_durability(source):
+                self.assertEqual(source.values, self.RELAXED)
+                raise sp.ProofError("control 2 window failed")
+        self.assertEqual(source.values, self.REAL)
 
-    def test_the_constant_coordinate_has_the_shape_the_module_parses_and_is_restored(self) -> None:
-        self.assertEqual(bs.parse_log_status(['{"binary_log_file":"x","binary_log_position":1}']), ("x", 1))
-        original = dict(bs._COORDINATE_SQL)
-        with sp.constant_coordinates(True):
-            self.assertEqual(bs._COORDINATE_SQL[bs.COORDINATES_LOG_STATUS], sp.CONSTANT_COORDINATE_SQL)
-            self.assertEqual(bs._COORDINATE_SQL[bs.COORDINATES_MASTER_STATUS], original[bs.COORDINATES_MASTER_STATUS])
-        self.assertEqual(bs._COORDINATE_SQL, original)
-        with sp.constant_coordinates(False):
-            self.assertEqual(bs._COORDINATE_SQL, original)
+    def test_the_restore_runs_on_an_interrupt(self) -> None:
+        source = _FakeDurableSource()
+        with self.assertRaises(KeyboardInterrupt):
+            with sp.relaxed_durability(source):
+                raise KeyboardInterrupt
+        self.assertEqual(source.values, self.REAL)
 
-    def test_a_data_root_outside_tmpfs_or_the_local_disk_is_refused_before_any_container(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            fake = pathlib.Path(tmp) / "docker"
-            fake.write_text(_FAKE_DOCKER, encoding="utf-8")
-            fake.chmod(0o755)
-            log = pathlib.Path(tmp) / "calls.log"
-            env = {key: value for key, value in os.environ.items() if key != "DOCKER_HOST"}
-            env.update(
-                PATH=f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}",
-                FAKE_DOCKER_LOG=str(log),
-                FAKE_DOCKER_CONTEXT="desktop-linux",
-                PROOF_DATA_ROOT="/etc/mysql-proof",
-            )
-            result = subprocess.run(["bash", str(_PROOF_SCRIPT_PATH)], env=env, capture_output=True, text=True, check=False, timeout=120)
-            calls = log.read_text(encoding="utf-8") if log.exists() else ""
-        self.assertEqual(result.returncode, 5, result.stderr)
-        self.assertIn("PROOF_DATA_ROOT", result.stderr)
-        self.assertNotIn("network create", calls)
+    def test_the_restore_runs_when_relaxing_itself_fails_part_way(self) -> None:
+        source = _FakeDurableSource()
+        source.fail_set_number = 1
+        with self.assertRaises(sp.ProofError):
+            with sp.relaxed_durability(source):
+                self.fail("the body must not run when the settings could not be relaxed")
+        self.assertEqual(source.values, self.REAL)
+
+    def test_a_setting_that_did_not_take_is_an_error_not_a_quiet_pass(self) -> None:
+        source = _FakeDurableSource()
+        source.refuse_to_apply = True
+        with self.assertRaises(sp.ProofError) as caught:
+            with sp.relaxed_durability(source):
+                self.fail("the body must not run under settings that were not applied")
+        self.assertIn("durability not relaxed", str(caught.exception))
+
+    def test_the_scenario_restores_on_every_exit_including_the_failing_one(self) -> None:
+        import unittest.mock as mock
+
+        source = _FakeDurableSource()
+        ctx = mock.Mock(source=source)
+        seen: list[dict[str, str]] = []
+
+        def fails(*_: object) -> None:
+            seen.append(dict(source.values))
+            raise sp.ProofError("the long reader never started")
+
+        with mock.patch.object(sp, "_long_reader_window", side_effect=fails):
+            with self.assertRaises(sp.ProofError):
+                sp.long_reader_scenario(ctx, mock.Mock())
+        self.assertEqual(seen, [self.RELAXED])
+        self.assertEqual(source.values, self.REAL)
+
+    def test_the_scenario_reports_what_it_ran_under(self) -> None:
+        import unittest.mock as mock
+
+        source = _FakeDurableSource()
+        ran = sp.LongReaderRun([(100.0, 0.004)], (100.0, 110.0), 0.004, 1, tag="w1")
+        with mock.patch.object(sp, "_long_reader_window", return_value=ran):
+            run = sp.long_reader_scenario(mock.Mock(source=source), mock.Mock())
+        self.assertIn("commit durability relaxed for this window only", run.durability)
+        _, lines = sp.control_2_outcome(run, old_path=False)
+        self.assertIn(run.durability, lines)
+        self.assertEqual(source.values, self.REAL)
+
+    def test_sabotage_runs_are_inside_the_relaxed_window_and_so_restored_too(self) -> None:
+        # The old-path and other-lock branches live in _long_reader_window,
+        # the only thing the wrapper runs.
+        wrapper = inspect.getsource(sp.long_reader_scenario)
+        window = inspect.getsource(sp._long_reader_window)
+        self.assertIn("with relaxed_durability(ctx.source)", wrapper)
+        self.assertIn("_long_reader_window(ctx, actions)", wrapper)
+        self.assertIn('ctx.sabotaged("old-path")', window)
+        self.assertIn('ctx.sabotaged("other-lock")', window)
+
+    def test_one_home_for_the_setting_and_only_control_two_uses_it(self) -> None:
+        import replication_client_probe as rcp
+
+        self.assertEqual(inspect.getsource(sp).count("def relaxed_durability"), 1)
+        self.assertNotIn("sync_binlog", inspect.getsource(rcp))
+        self.assertNotIn("relaxed_durability", inspect.getsource(rcp))
+        # The replication probe's control 2 reaches it through the shared scenario.
+        self.assertIn("sp.long_reader_scenario(", inspect.getsource(rcp.other_tenant_phase))
+        for number in (1, 3, 4, 5):
+            for module in (sp, rcp):
+                function = getattr(module, f"control_{number}", None)
+                if function is not None:
+                    text = inspect.getsource(function)
+                    self.assertNotIn("relaxed_durability", text)
+                    self.assertNotIn("sync_binlog", text)
+
+    def test_the_gate_is_unchanged_by_the_relaxation(self) -> None:
+        self.assertEqual(sp.WRITER_LIMIT_SECONDS, 0.1)
+        stalled, lines = sp.fixture_outcome(stalled=True)
+        self.assertFalse(stalled.passed)
+        self.assertIn("control 2", stalled.reason)
+        self.assertTrue(sp.fixture_outcome(stalled=False)[0].passed)
+
+
+class DiagnosticKnobsAreGoneTests(unittest.TestCase):
+    # The names are split so this file does not contain them itself.
+    KNOBS = ("PROBE_" + "DIAG", "PROOF_DATA_" + "ROOT")
+
+    def test_no_diagnostic_knob_is_read_anywhere_in_the_proofs_or_their_workflows(self) -> None:
+        roots = [_REPO_ROOT / "db" / "provision", _REPO_ROOT / ".github" / "workflows"]
+        offenders = []
+        for root in roots:
+            for path in sorted(root.iterdir()):
+                if path.is_file() and path.suffix in {".py", ".sh", ".md", ".yml"} and path.name != pathlib.Path(__file__).name:
+                    text = path.read_text(encoding="utf-8")
+                    offenders += [f"{path.name}: {knob}" for knob in self.KNOBS if knob in text]
+        self.assertEqual(offenders, [])
+
+    def test_the_temporary_diagnostic_workflow_is_deleted(self) -> None:
+        # Red on the soak head, where the matrix still has to run, and green on
+        # the final head: the diagnosis is not a permanent soak.
+        self.assertFalse((_REPO_ROOT / ".github" / "workflows" / "snapshot-proof-diagnostic.yml").exists())
+
+    def test_the_diagnostic_variants_and_their_helpers_are_not_in_the_probe(self) -> None:
+        for name in ("DIAGNOSTIC_VARIANTS", "diagnostic_variants", "constant_coordinates", "CONSTANT_COORDINATE_SQL", "plain_dump", "EVENT_STUB"):
+            self.assertFalse(hasattr(sp, name), name)
 
 
 class HistorySizingTests(unittest.TestCase):
@@ -839,7 +963,7 @@ class HistorySizingTests(unittest.TestCase):
 
     def test_the_history_query_reads_only_the_instrument_table_and_is_not_timed_with_the_window(self) -> None:
         self.assertIn("performance_schema.events_statements_history_long", sp.HISTORY_SQL)
-        source = inspect.getsource(sp.long_reader_scenario)
+        source = inspect.getsource(sp._long_reader_window)
         # Read once, after the writer has stopped, outside the try block.
         self.assertGreater(source.index("read_history(ctx)"), source.index("samples = writer.finish()"))
 
