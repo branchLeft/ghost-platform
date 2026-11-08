@@ -9,10 +9,11 @@ name: Snapshot proof diagnostic (temporary)
 #   [diag-stage1]  V0 as shipped (instrumented), V1 no snapshots, V2 the
 #                  coordinate read replaced by a constant. 10 runners each.
 #   [diag-stage2]  the variants the decision rule calls for, by editing
-#                  stage2's matrix first: V3 coordinates by SHOW MASTER STATUS,
+#                  stage2's matrix first: V0 and V1 again (the one expansion),
 #                  V4 datadir on tmpfs (diagnostic only, fsync removed), V5
 #                  datadir on the runner's local /mnt disk, V6 a plain
-#                  mysqldump loop with none of the module's locks.
+#                  mysqldump loop with none of the module's locks. (V3,
+#                  coordinates by SHOW MASTER STATUS, only if R1 is live.)
 #   [diag-soak]    the real un-sabotaged proofs on 20 runners, on the fix head.
 #
 # Read a stage with: gh run view <run id> --log | grep -E "control 2 report|slow #"
@@ -72,8 +73,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [v3, v4, v5, v6]
-        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        # Stage 1 left the rule unresolved (V1 stalled once of 10, V2 three of
+        # 10), so this is the one allowed expansion of V0 and V1 (20 fresh
+        # runners each, 30 with stage 1), plus V4 and V5 on 20 runners each
+        # (R3) and V6 on 10 (R2). V3 is not called for: R1 is out, since V2
+        # stalled with the coordinate read removed.
+        variant: [v0, v1, v4, v5, v6]
+        runner: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        exclude:
+          - { variant: v6, runner: 11 }
+          - { variant: v6, runner: 12 }
+          - { variant: v6, runner: 13 }
+          - { variant: v6, runner: 14 }
+          - { variant: v6, runner: 15 }
+          - { variant: v6, runner: 16 }
+          - { variant: v6, runner: 17 }
+          - { variant: v6, runner: 18 }
+          - { variant: v6, runner: 19 }
+          - { variant: v6, runner: 20 }
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -97,7 +114,8 @@ jobs:
           echo "DIAG variant=$VARIANT runner=$TRIAL image=$ImageVersion"
           df -h /dev/shm /mnt
           case "$VARIANT" in
-            v3) db/provision/prove-replication-client.sh ;;
+            v0) db/provision/prove-snapshot-locking.sh ;;
+            v1) PROBE_DIAG=no-snapshot db/provision/prove-snapshot-locking.sh ;;
             v4) PROOF_DATA_ROOT=/dev/shm/proof db/provision/prove-snapshot-locking.sh ;;
             v5)
               sudo mkdir -p /mnt/proof
