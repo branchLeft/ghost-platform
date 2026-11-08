@@ -132,7 +132,7 @@ jobs:
           cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
-          grep -F 'RED control 2,' "$log"
+          grep -F 'RED control 2,' "$log" | grep -F 'exceeds the 100.0 ms limit'
           grep -F 'RED control 3,' "$log"
 
       - name: Red case, the old path stalls the other tenant (REPLICATION CLIENT probe)
@@ -144,7 +144,7 @@ jobs:
           cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
-          grep -F 'RED control 2,' "$log"
+          grep -F 'RED control 2,' "$log" | grep -F 'exceeds the 100.0 ms limit'
 
       # Control 2, a real lock: LOCK TABLES other.posts READ held for 500 ms in a
       # separate session, mid-window. The red line names the control and the

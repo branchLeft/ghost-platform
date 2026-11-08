@@ -965,6 +965,13 @@ class TmpfsSourceTests(unittest.TestCase):
         self.assertIn("control 2", stalled.reason)
         self.assertTrue(sp.fixture_outcome(stalled=False)[0].passed)
 
+    def test_a_pass_says_what_tmpfs_cannot_show_and_a_red_does_not_carry_it(self) -> None:
+        green, _ = sp.fixture_outcome(stalled=False)
+        self.assertIn("(datadir on tmpfs; the coordinate read's fsync wait is not covered)", green.reason)
+        self.assertIn("within the 100.0 ms limit", green.reason)
+        red, _ = sp.fixture_outcome(stalled=True)
+        self.assertNotIn("tmpfs", red.reason)
+
 
 class TmpfsScriptTests(unittest.TestCase):
     def test_only_control_twos_source_is_started_on_tmpfs_and_the_location_is_named_once(self) -> None:

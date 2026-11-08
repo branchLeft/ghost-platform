@@ -137,13 +137,21 @@ and a healthy one that must pass, with no Docker.
    the snapshot.
 
    The cost, in plain words: control 2 no longer exercises real-disk I/O
-   contention between the snapshot's reads and another schema's commits. It
-   still proves the locking property, that the coordinate read and the
-   `LOCK`/`UNLOCK TABLES` phases do not block another schema's commits beyond
-   100 ms, because a lock wait does not depend on the disk: `other-lock` and
-   `old-path` stay red on the tmpfs source. The evidence that the snapshot is
-   not the cause is the no-snapshot rate above, and its power is low (30 runners
-   a side). What would show a snapshot-induced I/O stall is a measurement on a
+   contention between the snapshot's reads and another schema's commits. On
+   tmpfs it proves metadata-lock and lock-phase waits only: that the `LOCK`/
+   `UNLOCK TABLES` phases and the snapshot's other statements do not block
+   another schema's commits beyond 100 ms. `other-lock` and `old-path` stay
+   red on the tmpfs source, because a held lock or a `FLUSH TABLES` wait does
+   not depend on the disk. It does not cover the coordinate read
+   (`performance_schema.log_status`). On the reading of MySQL's implementation
+   (the reviewer's, not tested here), that read holds the binary log and the
+   commit pipeline's locks, so its hold time includes waiting on an in-flight
+   fsync, which depends on the disk, and tmpfs hides that interaction. So the
+   production-like-host measurement below is still owed for the coordinate
+   read, and every control 2 PASS line says so. The evidence that the snapshot
+   is not the cause of the runner stalls is the no-snapshot rate above, and its
+   power is low (30 runners a side). What would show a snapshot-induced I/O
+   stall, the coordinate read's fsync wait included, is a measurement on a
    production-like host, with real disks, of `other`'s commit latency during a
    snapshot against without one; that is not part of this proof. The limit
    stays 100 ms and the statistic stays the client-observed maximum.

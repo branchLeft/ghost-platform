@@ -91,7 +91,9 @@ Control 2, both its phases, runs on the tmpfs-datadir source the proof script
 starts for it (`tmpfs_ctx`, written once in `snapshot_probe.py`, with the
 reason and the cost under "Control 2's source" there), seeded with this
 probe's account too; its other controls keep the real-disk source and real
-fsync.
+fsync. On tmpfs it proves metadata-lock and lock-phase waits only; the
+coordinate read's wait on an in-flight fsync is not covered (the PASS line says
+so), and a production-like-host measurement of it is still owed.
 Every red case that targets control 2 has a step in `snapshot-proof-ci.yml`
 that requires exit code 1 and `RED control 2,` in the log
 (`test_replication_client_probe.py` fails if one is missing).

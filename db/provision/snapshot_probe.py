@@ -1541,6 +1541,8 @@ def control_2_outcome(run: LongReaderRun, *, old_path: bool) -> tuple[Verdict, l
         holds=run.holds,
     )
     verdict = writer_stall_verdict([latency for _, _, latency in in_window], WRITER_LIMIT_SECONDS, mechanism=report.mechanism)
+    if verdict.passed:
+        verdict = Verdict(True, f"{verdict.reason} {PASS_CAVEAT}")
     lines = [
         f"a SELECT SLEEP(10) held other.posts for {run.window[1] - run.window[0]:.1f} s while "
         f"{run.snapshots} {'old-path dump' if old_path else 'snapshot(s)'} ran",
@@ -1562,6 +1564,10 @@ def fixture_outcome(*, stalled: bool) -> tuple[Verdict, list[str]]:
         samples, (100.0, 110.0), 0.004, 29, tag="w1", holds=[Hold(103.0, 103.5, 500)], history_note="server-side history not read"
     )
     return control_2_outcome(run, old_path=False)
+
+
+# Carried by every control 2 PASS line: what the tmpfs source cannot show.
+PASS_CAVEAT = "(datadir on tmpfs; the coordinate read's fsync wait is not covered)"
 
 
 def control_2(ctx: Ctx) -> ControlResult:

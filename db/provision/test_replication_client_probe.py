@@ -195,6 +195,13 @@ class CiTests(unittest.TestCase):
         self.assertIn("RED control 2,", step)
         self.assertIn("RED control 3,", step)
 
+    def test_the_old_path_steps_require_the_limit_sentence_so_a_refused_check_cannot_satisfy_them(self) -> None:
+        # A control that did not complete is also printed as RED under a
+        # sabotage; only a real stall carries the limit sentence.
+        for script in ("prove-snapshot-locking.sh", "prove-replication-client.sh"):
+            (step,) = _red_steps("old-path", script)
+            self.assertIn("grep -F 'RED control 2,' \"$log\" | grep -F 'exceeds the 100.0 ms limit'", step, script)
+
     def test_every_red_step_still_runs_when_an_earlier_step_failed(self) -> None:
         red = [step for step in _steps() if "SABOTAGE=" in step]
         self.assertGreaterEqual(len(red), 3 + 3)
