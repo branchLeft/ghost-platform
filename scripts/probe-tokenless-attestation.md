@@ -5,9 +5,9 @@
 Checks that the image verifier works the way a host runs it: with `GH_TOKEN` set
 to one fixed placeholder string and nothing else. It calls
 `scripts/verify-image-attestation.sh` and never restates its logic, so the gh
-flags and values are those of that one script. The host verifier (the host
-function in shared-infra) is the one that sets the placeholder on the host. This
-job proves the same behaviour on a hosted runner.
+flags and values are those of that one script. The host verifier in
+shared-infra PR 665 is being changed to set the same placeholder; this job
+proves the behaviour on a hosted runner.
 
 ```sh
 ./scripts/probe-tokenless-attestation.sh <real image@sha256:64hex> <forged image@sha256:64hex>
@@ -32,8 +32,13 @@ The probe runs four checks, in order:
    fault is retried three times, 20 seconds apart, then fails as a fault, not a
    verdict. Anything else fails as a refusal for the attestation or identity.
 4. **Control.** The same call on the forged digest, a real attestation from a
-   different workflow, must exit non-zero with gh's identity or policy wording.
-   An acceptance fails with `ASSERT FAILED: forged digest accepted: the probe is vacuous`.
+   different workflow, must exit non-zero, and not because of a token need or a
+   network fault. The probe also requires gh's policy wording or the script's
+   `no valid attestation for` line, which the script prints on any gh failure,
+   so that line alone does not name the cause. An acceptance fails with
+   `ASSERT FAILED: forged digest accepted: the probe is vacuous`. The control
+   differs from the real digest in its signer workflow. `--source-ref` and
+   `--deny-self-hosted-runners` have no control of their own here.
 
 The scrubbed environment copies the host's keys by hand: `PATH`, `HOME`,
 `GH_CONFIG_DIR` and `XDG_CONFIG_HOME` (all an empty directory),
@@ -64,8 +69,8 @@ registry reads.
 
 ## Why the classes are split
 
-A token need, a transport fault and an identity refusal all make gh exit
-non-zero. Only the identity refusal is a verdict. A probe that read a fault as a
+A token need, a transport fault and a refusal of the attestation all make gh
+exit non-zero. Only the refusal is a verdict. A probe that read a fault as a
 refusal would pass with no evidence, so the classes are checked by the markers
 in the output, and a token need is never retried. gh's debug text names TUF, so
 it is kept out of the output the classes are read from.

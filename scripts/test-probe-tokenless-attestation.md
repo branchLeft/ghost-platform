@@ -13,7 +13,7 @@ Each case asserts the exact text of the assertion it should trip:
 | `needs-token` | `verification needs a GitHub token` |
 | `accept-all` | `forged digest accepted: the probe is vacuous` |
 | `fault-forged` | `forged digest refused by a fault, not by identity` |
-| `identity` | exit 0, `VERIFIED with a placeholder GH_TOKEN; no GitHub API call observed`, forged refused for its identity, gh saw only the placeholder |
+| `identity` | exit 0, `VERIFIED with a placeholder GH_TOKEN; no GitHub API call observed`, forged refused with neither a token need nor a fault, gh saw only the placeholder |
 | `api-call` | exit 0, the logged `api.github.com` call is counted and the "no GitHub API call" wording is absent |
 
 The test exports `GH_TOKEN` and `GITHUB_TOKEN` itself. The stub accepts
