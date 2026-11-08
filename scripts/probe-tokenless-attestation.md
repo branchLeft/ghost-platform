@@ -34,9 +34,10 @@ these values are restated once, here. Keep them in step with it.
 ## Placeholder mode
 
 `PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential` runs the same checks
-with `GH_TOKEN` set to that one literal string and `GH_DEBUG=api` on. It asks
-whether gh's local auth gate takes any value on the `--bundle-from-oci` path,
-and prints the GitHub API lines gh logged. Any other value is refused before gh
+with `GH_TOKEN` set to that one literal string. It asks whether gh's local auth
+gate takes any value on the `--bundle-from-oci` path. One extra call on the
+real digest runs with `GH_DEBUG=api`, kept apart from the output the verdicts
+are read from, and the probe prints the hosts gh logged a request to. Any other value is refused before gh
 runs, so a real token cannot be passed this way. The workflow runs it as a
 second step after the token-less one, even when that one failed.
 

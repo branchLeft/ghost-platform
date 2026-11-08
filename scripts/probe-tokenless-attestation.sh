@@ -19,8 +19,9 @@
 # default). The offline test sets it to 0.
 #
 # Placeholder mode. PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential runs
-# the same probe with GH_TOKEN set to that one literal string and GH_DEBUG=api
-# on, to show whether gh's local auth gate takes any value on the
+# the same probe with GH_TOKEN set to that one literal string, plus one extra
+# debug call (GH_DEBUG=api) that lists the hosts gh logs, to show whether gh's
+# local auth gate takes any value on the
 # --bundle-from-oci path and whether any call to the GitHub API is made. Any
 # other value is refused, so a real token can never be passed this way.
 set -u
@@ -43,6 +44,7 @@ REPO="branchLeft/ghost-platform"
 SIGNER="branchLeft/ghost-platform/.github/workflows/registry-push.yml"
 RETRY_WAIT="${PROBE_RETRY_WAIT:-20}"
 PLACEHOLDER="${PROBE_GH_TOKEN_PLACEHOLDER:-}"
+DEBUG_VAL=0
 if [ -n "$PLACEHOLDER" ] && [ "$PLACEHOLDER" != "placeholder-not-a-credential" ]; then
   assert_fail "PROBE_GH_TOKEN_PLACEHOLDER must be the literal placeholder-not-a-credential, nothing else"
 fi
@@ -66,7 +68,7 @@ scrubbed() {
   if [ -n "$PLACEHOLDER" ]; then
     env -i PATH="$GH_DIR:/usr/bin:/bin" HOME="$EMPTY" GH_CONFIG_DIR="$EMPTY" \
       XDG_CONFIG_HOME="$EMPTY" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
-      LC_ALL=C VERIFY_PLAIN_ERRORS=1 GH_TOKEN="$PLACEHOLDER" GH_DEBUG=api "$@"
+      LC_ALL=C VERIFY_PLAIN_ERRORS=1 GH_TOKEN="$PLACEHOLDER" GH_DEBUG="$DEBUG_VAL" "$@"
   else
     env -i PATH="$GH_DIR:/usr/bin:/bin" HOME="$EMPTY" GH_CONFIG_DIR="$EMPTY" \
       XDG_CONFIG_HOME="$EMPTY" GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 \
@@ -113,15 +115,24 @@ if [ -z "$PLACEHOLDER" ]; then
   echo "  gh auth status: exits non-zero"
 fi
 
-# In placeholder mode, shows what gh sent to the GitHub API, from GH_DEBUG=api.
-API_RE='api\.github\.com|^\* Request (to|at)|^> (GET|POST) '
-note_api() {
+# In placeholder mode, one extra verifier call on the real digest with GH_DEBUG=api,
+# kept apart from the output the verdicts are read from (the debug text names TUF
+# and other words the classes match on). It lists the hosts gh logged a request to.
+api_evidence() {
   [ -n "$PLACEHOLDER" ] || return 0
-  echo "  GitHub API lines in gh --debug output: $(grep -Eci "$API_RE" "$WORK/verify.out")"
-  grep -Ei "$API_RE" "$WORK/verify.out" | head -n 10 | sed 's/^/    /'
-  echo "  gh output (exit $RC):"
-  sed 's/^/    | /' "$WORK/verify.out"
+  echo "Evidence: which hosts gh logs a request to, on the real digest (GH_DEBUG=api)"
+  DEBUG_VAL=api
+  scrubbed "$VERIFY" "$REAL" "$REPO" "$SIGNER" --bundle-from-oci >"$WORK/debug.out" 2>&1
+  debug_rc=$?
+  DEBUG_VAL=0
+  echo "  debug call exit: $debug_rc"
+  echo "  requests logged to api.github.com: $(grep -c '^\* Request to https://api\.github\.com' "$WORK/debug.out")"
+  echo "  requests logged in all: $(grep -c '^\* Request to ' "$WORK/debug.out")"
+  echo "  hosts requested:"
+  sed -n 's|^\* Request to https://\([^/]*\)/.*|\1|p' "$WORK/debug.out" | sort | uniq -c | sed 's/^/    /'
+  echo "  Authorization headers logged: $(grep -c '^> Authorization:' "$WORK/debug.out")"
 }
+api_evidence
 
 # One verifier call under the scrubbed environment. A transport fault is retried
 # up to four attempts; anything else is final. Sets RC, and leaves the output in
@@ -145,7 +156,6 @@ run_verify() {
 
 echo "Real digest: verify $REAL with --bundle-from-oci, token-less"
 run_verify "$REAL"
-note_api
 if [ "$RC" -ne 0 ]; then
   if has_match "$TOKEN_RE"; then
     assert_fail "verification needs a GitHub token (mechanism: $(mechanism))"
@@ -160,7 +170,6 @@ echo "TOKENLESS VERIFY OK"
 
 echo "Control: verify the forged digest $FORGED with the same call"
 run_verify "$FORGED"
-note_api
 if [ "$RC" -eq 0 ]; then
   assert_fail "forged digest accepted: the probe is vacuous"
 fi

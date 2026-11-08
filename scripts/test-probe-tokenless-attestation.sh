@@ -42,6 +42,11 @@ if [ "$1" = auth ]; then
   echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2
   exit 1
 fi
+# Debug output names TUF, as the real gh does; it must never decide a verdict.
+case "${GH_DEBUG:-0}" in
+  0 | '') ;;
+  *) echo '* Request to https://tuf-repo-cdn.sigstore.dev/15.root.json' >&2 ;;
+esac
 if [ "$MODE" = needs-token ]; then
   echo "To get started with GitHub CLI, please run:  gh auth login" >&2
   exit 1
@@ -130,7 +135,9 @@ if ! PROBE_GH_TOKEN_PLACEHOLDER=placeholder-not-a-credential "$PROBE" "$REAL" "$
   echo "FAIL [placeholder identity]: the probe failed, expected a pass:"
   sed 's/^/    /' "$OUT"
   FAILED=1
-elif ! grep -Fq 'GH_TOKEN: the literal placeholder' "$OUT" || ! grep -Fq 'GitHub API lines in gh --debug output' "$OUT"; then
+elif ! grep -Fq 'GH_TOKEN: the literal placeholder' "$OUT" \
+  || ! grep -Fq 'requests logged to api.github.com: 0' "$OUT" \
+  || ! grep -Fq 'tuf-repo-cdn.sigstore.dev' "$OUT"; then
   echo "FAIL [placeholder identity]: the pass did not report the placeholder and the API lines:"
   sed 's/^/    /' "$OUT"
   FAILED=1
