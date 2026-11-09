@@ -41,8 +41,8 @@ def ruleset():
         lines.append(f"-A {FORWARD_CHAIN} -i {bridge} ! -o {bridge} -j REJECT")
     lines.append(f"-A {INPUT_CHAIN} -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN")
     lines.append(f"-A {INPUT_CHAIN} -j REJECT")
-    lines.append("COMMIT")
-    return "\n".join(lines) + "\n"
+    lines.append("COMMIT\n")
+    return "\n".join(lines)
 
 
 def run_tool(argv, **kwargs):
