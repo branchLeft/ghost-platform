@@ -3,7 +3,11 @@ name: Mailgun shim image
 # Builds the mailgun-shim container image on every PR/push touching
 # services/mailgun-shim/ (build-only, no credentials — mirrors build.yml's
 # stance for the tenant image), and on push to `main` also pushes it to
-# ghcr.io/branchleft/mailgun-shim tagged with the git SHA and `latest`.
+# ghcr.io/branchleft/mailgun-shim tagged with the git SHA and `latest`, reads
+# the pushed digest back, and signs that digest with a keyless GitHub artifact
+# attestation bound to this workflow's identity. A host pins the digest and
+# verifies the attestation (scripts/verify-image-attestation.sh) before it runs
+# the image.
 #
 # Uses GHCR rather than the platform's GCP Artifact Registry
 # (registry-push.yml): mx1, the Hetzner host this image runs on, is outside
@@ -71,17 +75,27 @@ jobs:
   push:
     name: Build and push mailgun-shim image
     runs-on: ubuntu-latest
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image, and the host's verifier accepts only refs/heads/main.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     # Only 2 successful runs exist (small sample, only fires on push to
     # main/dispatch) -- observed 0.52-0.67min, but a generous bound chosen
-    # deliberately given how little data that is.
-    timeout-minutes: 15
+    # deliberately given how little data that is. The attest step adds the
+    # verify retries (two minutes at most), so the bound is a little larger.
+    timeout-minutes: 20
 
+    # `id-token: write` and `attestations: write` let the run sign the pushed
+    # digest with a keyless GitHub artifact attestation (the attest step below).
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
 
     defaults:
       run:
@@ -94,6 +108,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -118,13 +134,46 @@ jobs:
       - name: Push
         run: docker push "$IMAGE" --all-tags
 
+      # The digest is read from the image store after the push, never
+      # assembled from a tag. Both tags share it, so one attestation covers
+      # `latest` and the SHA tag. A missing or malformed digest fails the job.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      # Signs the digest with a keyless GitHub artifact attestation, then
+      # verifies it with the identity below and checks that a wrong identity is
+      # rejected. The identity is a literal on purpose: read from this run's
+      # own `github.workflow_ref` it would agree with itself and prove nothing.
+      # The same value, with the source ref `refs/heads/main`, is what a host
+      # passes to scripts/verify-image-attestation.sh.
+      - name: Attest and verify the pushed image
+        uses: ./.github/actions/attest-and-verify-image
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ steps.digest.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/mailgun-shim-image.yml
+          repo: branchLeft/ghost-platform
+
       - name: Write outcome to job summary
         if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
         run: |
           {
             echo '## mailgun-shim image push'
             echo
             echo "Commit: \`$IMAGE_TAG\`"
             echo "Image: \`$IMAGE:$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
             echo 'Also tagged `latest`.'
+            echo "The attest and verify step above signs this digest; check it with \`scripts/verify-image-attestation.sh\`."
           } >> "$GITHUB_STEP_SUMMARY"

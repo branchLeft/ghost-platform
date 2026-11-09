@@ -17,6 +17,7 @@ on:
       - .github/workflows/registry-push.yml
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
+      - .github/workflows/mailgun-shim-image.yml
       - .github/workflows/image-attestation-ci.yml
       - scripts/probe-tokenless-attestation.sh
       - scripts/resolve-published-image.sh
@@ -33,6 +34,7 @@ on:
       - .github/workflows/registry-push.yml
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
+      - .github/workflows/mailgun-shim-image.yml
       - .github/workflows/image-attestation-ci.yml
       - scripts/probe-tokenless-attestation.sh
       - scripts/resolve-published-image.sh
