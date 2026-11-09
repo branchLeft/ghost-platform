@@ -42,7 +42,10 @@ export type HoldReason =
   | 'probe-failed'
   | 'no-mysql-in-ring-0';
 
-/** A hold is routed to a person on the owner digest channel. It is not a page. */
+/**
+ * A hold keeps the release on the current version and is raised as an
+ * operational alert and a filed work item. It is not a page.
+ */
 export interface Held {
   status: 'held';
   at: RingName | 'preflight' | 'gates';
@@ -66,7 +69,7 @@ export interface RingControllerDependencies {
   health(tenantId: string): Promise<Health>;
   /** A throw means blocked. */
   reportedErrors(tenantId: string, sinceMs: number): Promise<readonly string[]>;
-  /** The owner digest channel. Never a page. */
+  /** The operational alert and filed-work-item sink. Never a page, never an approval. */
   hold(held: Held): Promise<void>;
   clock: { now(): number; sleep(ms: number): Promise<void> };
 }
