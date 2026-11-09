@@ -31,8 +31,10 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 - **New:** `renderEdgeSiteBlock(descriptor, zones, limits, themeCsp?, payments?)`
   and `render(descriptor, zones, themeCsp?, payments?)` take a `PaymentsCsp`
   (`{ kind: 'stripe' } | { kind: 'none' }`), exported with `PAYMENTS_CSP_NONE`.
-  `stripe` adds the measured origins in `payments-origins.json` (today
-  `https://js.stripe.com` to `script-src` and an explicit `frame-src`).
+  `stripe` adds the origins in `payments-origins.json`: the measured set unioned
+  with Stripe's published Checkout and Stripe.js sources (documentation, not yet
+  verified against real Stripe.js), so `script-src`, `frame-src` and
+  `connect-src` gain the published hosts, including `https://*.js.stripe.com`.
 - **Unchanged output:** the default is `none`, which renders byte-identically to
   before, so no existing caller's `edge.json` moves. A tenant with no payments
   must keep it.

@@ -2,44 +2,34 @@
 // The allowlist is derived, not typed, so what is tested is the refusal to
 // derive from a capture that would produce a wrong or widened set: a stub
 // Stripe.js, an enforced (so truncated) capture, or an origin that is not
-// Stripe's. Plus the committed file against its own renderer.
+// Stripe's. Plus the published floor (never narrower than Stripe's own list) and
+// the committed file against the derivation.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { deriveOrigins, ORIGINS_PATH, renderOriginsFile } from './derive-payment-origins.mjs';
+import {
+  deriveOrigins,
+  ORIGINS_PATH,
+  PUBLISHED_FLOOR,
+  renderOriginsFile,
+} from './derive-payment-origins.mjs';
 
 const CLI = fileURLToPath(new URL('./derive-payment-origins.mjs', import.meta.url));
 const runCli = (args, capture) =>
   spawnSync(process.execPath, [CLI, ...args], { input: JSON.stringify(capture), encoding: 'utf8' });
 
-// A real-JS, report-only capture that reproduces exactly the committed set.
-const capturingCommitted = () => {
-  const { origins } = JSON.parse(readFileSync(ORIGINS_PATH, 'utf-8'));
-  const directiveOf = {
-    'script-src': 'script-src-elem',
-    'frame-src': 'frame-src',
-    'connect-src': 'connect-src',
-  };
-  return {
-    realStripeJs: true,
-    violations: Object.entries(origins).flatMap(([d, list]) =>
-      list.map((origin) => ({
-        directive: directiveOf[d],
-        blockedURI: `${origin}/x`,
-        disposition: 'report',
-      }))
-    ),
-  };
-};
+const committed = () => JSON.parse(readFileSync(ORIGINS_PATH, 'utf-8'));
 
 const v = (directive, blockedURI, disposition = 'report') => ({
   directive,
   blockedURI,
   disposition,
 });
-// What the real Stripe.js produced against the strict policy, report-only.
+
+// What the measurement recorded: a real-JS, report-only capture whose only
+// Stripe origin was js.stripe.com in script-src and frame-src.
 const realCapture = {
   realStripeJs: true,
   violations: [
@@ -50,17 +40,26 @@ const realCapture = {
   ],
 };
 
-test('derives each directive from the violations, de-duplicated and sorted', () => {
+test('derives each directive from the violations, de-duplicated and sorted, with the floor', () => {
   const { origins, problems } = deriveOrigins(realCapture);
   assert.deepEqual(problems, []);
   assert.deepEqual(origins, {
-    'script-src': ['https://js.stripe.com'],
-    'frame-src': ['https://js.stripe.com'],
-    'connect-src': [],
+    'script-src': [
+      'https://*.js.stripe.com',
+      'https://checkout.stripe.com',
+      'https://js.stripe.com',
+    ],
+    'frame-src': [
+      'https://*.js.stripe.com',
+      'https://checkout.stripe.com',
+      'https://hooks.stripe.com',
+      'https://js.stripe.com',
+    ],
+    'connect-src': ['https://api.stripe.com', 'https://checkout.stripe.com'],
   });
 });
 
-test('maps connect-src and keeps several origins per directive sorted', () => {
+test('maps connect-src and keeps several origins per directive sorted, measured plus floor', () => {
   const { origins, problems } = deriveOrigins({
     realStripeJs: true,
     violations: [
@@ -70,8 +69,22 @@ test('maps connect-src and keeps several origins per directive sorted', () => {
     ],
   });
   assert.deepEqual(problems, []);
-  assert.deepEqual(origins['connect-src'], ['https://api.stripe.com', 'https://r.stripe.com']);
-  assert.deepEqual(origins['frame-src'], ['https://m.stripe.network']);
+  assert.deepEqual(origins['connect-src'], [
+    'https://api.stripe.com',
+    'https://checkout.stripe.com',
+    'https://r.stripe.com',
+  ]);
+  assert.ok(origins['frame-src'].includes('https://m.stripe.network'));
+  assert.ok(origins['frame-src'].includes('https://js.stripe.com'));
+});
+
+test('a measurement that misses a published source cannot narrow the policy', () => {
+  const { origins } = deriveOrigins(realCapture);
+  for (const [directive, sources] of Object.entries(PUBLISHED_FLOOR)) {
+    for (const source of sources) {
+      assert.ok(origins[directive].includes(source), `${directive} lost ${source}`);
+    }
+  }
 });
 
 test('refuses a capture made with the stub Stripe.js', () => {
@@ -107,7 +120,11 @@ test('control: an origin outside Stripe is reported, never added', () => {
       v('script-src-elem', 'https://stripe.com.evil.example/x.js'),
     ],
   });
-  assert.deepEqual(origins['script-src'], ['https://js.stripe.com']);
+  assert.deepEqual(origins['script-src'], [
+    'https://*.js.stripe.com',
+    'https://checkout.stripe.com',
+    'https://js.stripe.com',
+  ]);
   assert.equal(problems.length, 3);
   assert.ok(problems.every((p) => /not a Stripe https origin/.test(p)));
 });
@@ -133,35 +150,58 @@ test('refuses a capture that reported no Stripe origin at all', () => {
   assert.ok(problems.some((p) => /no Stripe origin at all/.test(p)));
 });
 
-test('the committed allowlist is exactly what the renderer writes for its own contents', () => {
-  const committed = readFileSync(ORIGINS_PATH, 'utf-8');
-  const parsed = JSON.parse(committed);
-  assert.equal(renderOriginsFile(parsed.origins), committed);
-  assert.deepEqual(Object.keys(parsed.origins), ['script-src', 'frame-src', 'connect-src']);
+// Stripe's own list, as fetched 2026-11-09 from docs.stripe.com/security/guide.
+// Every source here must stay in the committed file: removing one from the JSON
+// (or from the floor) turns this red.
+test('each published Stripe source is present in the committed allowlist', () => {
+  const { origins } = committed();
+  for (const [directive, sources] of Object.entries(PUBLISHED_FLOOR)) {
+    for (const source of sources) {
+      assert.ok(
+        origins[directive].includes(source),
+        `payments-origins.json ${directive} is missing the published ${source}`
+      );
+    }
+  }
+  assert.ok(origins['script-src'].includes('https://*.js.stripe.com'));
+  assert.ok(origins['frame-src'].includes('https://hooks.stripe.com'));
+  assert.ok(origins['connect-src'].includes('https://api.stripe.com'));
 });
 
-test('the committed allowlist carries only https Stripe origins', () => {
-  const { origins } = JSON.parse(readFileSync(ORIGINS_PATH, 'utf-8'));
-  for (const list of Object.values(origins)) {
+test('the committed allowlist is exactly what the renderer writes for its own contents', () => {
+  const text = readFileSync(ORIGINS_PATH, 'utf-8');
+  assert.equal(renderOriginsFile(committed().origins), text);
+  assert.deepEqual(Object.keys(committed().origins), ['script-src', 'frame-src', 'connect-src']);
+});
+
+test('the committed file equals what the derivation produces from the measured capture', () => {
+  const { origins, problems } = deriveOrigins(realCapture);
+  assert.deepEqual(problems, []);
+  assert.equal(renderOriginsFile(origins), readFileSync(ORIGINS_PATH, 'utf-8'));
+});
+
+test('the committed allowlist carries only https Stripe origins, wildcard only as *.<host>', () => {
+  for (const list of Object.values(committed().origins)) {
     for (const origin of list) {
-      assert.match(origin, /^https:\/\/([a-z0-9-]+\.)*stripe\.(com|network)$/);
+      assert.match(origin, /^https:\/\/((\*|[a-z0-9-]+)\.)*stripe\.(com|network)$/);
     }
   }
 });
 
 test('--check: a capture that reproduces the committed set is green (exit 0)', () => {
-  const r = runCli(['--check'], capturingCommitted());
+  const r = runCli(['--check'], realCapture);
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /DERIVE PAYMENT ORIGINS GREEN/);
 });
 
 test('--check control: an origin the committed file lacks is red (exit 1), showing both sets', () => {
-  const capture = capturingCommitted();
-  capture.violations.push({
-    directive: 'connect-src',
-    blockedURI: 'https://r.stripe.com/b',
-    disposition: 'report',
-  });
+  const capture = {
+    ...realCapture,
+    violations: [
+      ...realCapture.violations,
+      { directive: 'connect-src', blockedURI: 'https://r.stripe.com/b', disposition: 'report' },
+    ],
+  };
   const r = runCli(['--check'], capture);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /does not match what the browser reported/);
@@ -169,7 +209,7 @@ test('--check control: an origin the committed file lacks is red (exit 1), showi
 });
 
 test('--check: a stub-JS capture is refused even when its origins would match', () => {
-  const r = runCli(['--check'], { ...capturingCommitted(), realStripeJs: false });
+  const r = runCli(['--check'], { ...realCapture, realStripeJs: false });
   assert.equal(r.status, 1);
   assert.match(r.stderr, /stub Stripe\.js/);
 });

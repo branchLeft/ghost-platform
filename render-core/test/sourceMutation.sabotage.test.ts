@@ -347,7 +347,10 @@ describe('PAYMENTS-ALLOWANCE — source-mutation sabotage', () => {
       stripe
     );
     expect(realEdge.contentSecurityPolicy).toContain('js.stripe.com');
-    expect(realEdge.contentSecurityPolicy).toContain("frame-src 'self' https://js.stripe.com");
+    // frame-src now also carries Stripe's published hosts; the measured one must still be there.
+    expect(realEdge.contentSecurityPolicy).toMatch(
+      /frame-src 'self' [^;]*https:\/\/js\.stripe\.com(?=;|$)/
+    );
   });
 
   it('an edge.ts without the origin-shape check lets CSP syntax through the allowlist; the real module refuses it', async () => {

@@ -170,12 +170,15 @@ describe('renderEdgeSiteBlock — the payments allowance', () => {
     expect(edge.contentSecurityPolicy).toContain('https://js.stripe.com');
   });
 
-  it('stripe never widens the policy past the measured origins (no wildcard, no scheme source)', () => {
+  it('stripe never widens the policy past the published and measured origins (no bare wildcard, no scheme source)', () => {
     const csp = renderEdgeSiteBlock(descriptor(), TEST_ZONES, limits, themeCsp, {
       kind: 'stripe',
     }).contentSecurityPolicy;
     const scriptSrc = csp.split('; ').find((d) => d.startsWith('script-src')) ?? '';
-    expect(scriptSrc).not.toContain('*');
+    // The only wildcard allowed is Stripe's own leading `*.` host label.
+    for (const token of scriptSrc.split(' ').filter((t) => t.includes('*'))) {
+      expect(token).toMatch(/^https:\/\/\*\.[a-z0-9.-]+$/);
+    }
     expect(scriptSrc).not.toMatch(/\shttps:(\s|$)/);
     expect(scriptSrc).not.toContain("'unsafe-inline'");
     expect(csp.split('; ').find((d) => d.startsWith('default-src'))).toBe("default-src 'self'");

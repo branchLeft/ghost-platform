@@ -1,8 +1,17 @@
 {
   "generatedBy": "csp/derive/derive-payment-origins.mjs",
   "origins": {
-    "script-src": ["https://js.stripe.com"],
-    "frame-src": ["https://js.stripe.com"],
-    "connect-src": []
+    "script-src": [
+      "https://*.js.stripe.com",
+      "https://checkout.stripe.com",
+      "https://js.stripe.com"
+    ],
+    "frame-src": [
+      "https://*.js.stripe.com",
+      "https://checkout.stripe.com",
+      "https://hooks.stripe.com",
+      "https://js.stripe.com"
+    ],
+    "connect-src": ["https://api.stripe.com", "https://checkout.stripe.com"]
   }
 }

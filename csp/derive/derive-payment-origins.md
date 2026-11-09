@@ -41,8 +41,25 @@ node csp/derive/derive-payment-origins.mjs --check < capture.json   # exit 1 unl
 ```
 
 `--check` is what the live proof runs: the committed allowlist must equal the
-measured set exactly, so it fails both when a new origin appears and when a
-listed one is no longer needed.
+measured set unioned with the published floor, so it fails when a new origin
+appears or a listed one drifts.
+
+## The published floor
+
+The output is the measured set **unioned with** `PUBLISHED_FLOOR` in the script,
+never narrower than it. The floor is Stripe's own Content Security Policy list
+for Checkout and Stripe.js, from
+https://docs.stripe.com/security/guide (section "Content Security Policy"),
+fetched 2026-11-09:
+
+- `script-src`: `https://*.js.stripe.com`, `https://checkout.stripe.com`, `https://js.stripe.com`
+- `frame-src`: `https://*.js.stripe.com`, `https://checkout.stripe.com`, `https://hooks.stripe.com`, `https://js.stripe.com`
+- `connect-src`: `https://api.stripe.com`, `https://checkout.stripe.com`
+
+It comes from documentation. It has **not** been verified against the real
+Stripe.js. Excluded on purpose: `maps.googleapis.com` (Address Element with the
+tenant's own Google key), and the Connect, Onelink, Crypto and `img-src`
+sections, none of which this site loads.
 
 ## Measured on 2026-11-07
 

@@ -72,12 +72,14 @@ export const PAYMENTS_CSP_NONE: PaymentsCsp = { kind: 'none' };
 const PAYMENT_DIRECTIVES = ['script-src', 'frame-src', 'connect-src'] as const;
 type PaymentDirective = (typeof PAYMENT_DIRECTIVES)[number];
 
-// One https origin, nothing else: no path, no wildcard, no quote or
-// semicolon that could close the directive early. Anchored, like
-// SCRIPT_HASH_PATTERN, so a hand edit of the generated file cannot smuggle
-// CSP syntax into the rendered header.
+// One https origin, nothing else: no path, no quote or semicolon that could
+// close the directive early, and no wildcard except a single leading `*.` host
+// label (Stripe's own `*.js.stripe.com`, from the published floor). A bare `*`
+// or any other wildcard position is refused. Anchored, like SCRIPT_HASH_PATTERN,
+// so a hand edit of the generated file cannot smuggle CSP syntax into the
+// rendered header.
 const PAYMENT_ORIGIN_PATTERN =
-  /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+  /^https:\/\/(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
 /**
  * The origins Stripe needs, per directive. They are MEASURED, not written:

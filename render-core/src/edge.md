@@ -49,8 +49,10 @@ additionally because a tenant with no payments must not get a wider `script-src`
 
 The origins are measured, never written here. `payments-origins.json` is
 produced only by `csp/derive/derive-payment-origins.mjs` from a real browser's
-report against the real Stripe.js. This module only renders them, and refuses an
-entry that is not a bare `https://host` (a quote or a semicolon in it would
-close the directive early). With `stripe` and no derived theme hash set the
+report against the real Stripe.js, unioned with Stripe's published floor (the
+derivation's `PUBLISHED_FLOOR`, documentation-sourced). This module only renders
+them, and refuses an entry that is not a bare `https://host`, except Stripe's
+leading `*.` host label (a quote or a semicolon in it would close the directive
+early). With `stripe` and no derived theme hash set the
 policy is still report-only: a payments allowance never makes a policy
 enforcing. The live proof is `csp/gate/csp-checkout-gate.sh`.

@@ -36,16 +36,49 @@ export const DIRECTIVE_OF = {
 };
 const DIRECTIVES = ['script-src', 'frame-src', 'connect-src'];
 
+/**
+ * Stripe's published Content Security Policy sources for Checkout and Stripe.js:
+ * https://docs.stripe.com/security/guide, section "Content Security Policy",
+ * fetched 2026-11-09. This is a FLOOR: the measured set is unioned with it and
+ * never replaces it, so a capture that happens to miss a published source
+ * cannot narrow the policy. It is taken from documentation and has NOT been
+ * verified against the real Stripe.js. `*.js.stripe.com` is the one wildcard;
+ * Stripe documents it as a performance allowance for Stripe.js frames.
+ * Excluded from the doc on purpose: maps.googleapis.com (Address Element with
+ * the tenant's own Google key), and the Connect, Onelink, Crypto and img-src
+ * sections, none of which this site loads.
+ */
+export const PUBLISHED_FLOOR = Object.freeze({
+  'script-src': ['https://*.js.stripe.com', 'https://checkout.stripe.com', 'https://js.stripe.com'],
+  'frame-src': [
+    'https://*.js.stripe.com',
+    'https://checkout.stripe.com',
+    'https://hooks.stripe.com',
+    'https://js.stripe.com',
+  ],
+  'connect-src': ['https://api.stripe.com', 'https://checkout.stripe.com'],
+});
+
 /** Hosts Stripe serves from; a blocked request to anything else is not Stripe's. */
 const STRIPE_DOMAINS = ['stripe.com', 'stripe.network'];
 const isStripeHost = (host) =>
   STRIPE_DOMAINS.some((domain) => host === domain || host.endsWith(`.${domain}`));
 
 /**
+ * The measured per-directive origins unioned with PUBLISHED_FLOOR: sorted,
+ * de-duplicated, and never narrower than the floor. Pure: no capture is read.
+ */
+export function withPublishedFloor(measured) {
+  return Object.fromEntries(
+    DIRECTIVES.map((d) => [d, [...new Set([...(measured[d] ?? []), ...PUBLISHED_FLOOR[d]])].sort()])
+  );
+}
+
+/**
  * `capture` is capture-checkout.mjs's JSON. Returns `{ origins, problems }`:
- * `origins` maps each directive to its sorted, de-duplicated origins;
- * `problems` is non-empty when the capture cannot be trusted or contained an
- * origin that is not Stripe's.
+ * `origins` maps each directive to the measured origins unioned with
+ * PUBLISHED_FLOOR, sorted and de-duplicated; `problems` is non-empty when the
+ * capture cannot be trusted or contained an origin that is not Stripe's.
  */
 export function deriveOrigins(capture) {
   const problems = [];
@@ -82,19 +115,19 @@ export function deriveOrigins(capture) {
     }
     found[directive].add(url.origin);
   }
-  const origins = Object.fromEntries(DIRECTIVES.map((d) => [d, [...found[d]].sort()]));
-  if (problems.length === 0 && DIRECTIVES.every((d) => origins[d].length === 0)) {
+  const measured = Object.fromEntries(DIRECTIVES.map((d) => [d, [...found[d]].sort()]));
+  if (problems.length === 0 && DIRECTIVES.every((d) => measured[d].length === 0)) {
     problems.push(
       'the capture reported no Stripe origin at all; the probe policy was not exercised'
     );
   }
-  return { origins, problems };
+  return { origins: withPublishedFloor(measured), problems };
 }
 
 /** The committed file's exact text for a derived set (Prettier-stable: short arrays stay on one line). */
 export function renderOriginsFile(origins) {
   const lines = DIRECTIVES.map((d) => {
-    const one = `    "${d}": ${JSON.stringify(origins[d])}`;
+    const one = `    "${d}": [${origins[d].map((o) => JSON.stringify(o)).join(', ')}]`;
     if (one.length <= 80) return one;
     return `    "${d}": [\n${origins[d].map((o) => `      ${JSON.stringify(o)}`).join(',\n')}\n    ]`;
   });
