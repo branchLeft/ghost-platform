@@ -2,9 +2,11 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
-## Unreleased
+## 8.0.0
 
-- **Breaking, ships as 8.0.0: the tenant stack holds no secret value.** The
+**The tenant stack holds no secret value. The host renders the secrets file.**
+
+- **Breaking: the tenant stack holds no secret value.** The
   `secrets` argument and the `GhostTenantSecrets` type are removed, and so is
   the `secretsEnvFile` output, which was a Pulumi secret recorded in stack
   state. A caller that still passes `secrets` is refused at construction.
