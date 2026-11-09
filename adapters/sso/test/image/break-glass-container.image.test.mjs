@@ -25,12 +25,12 @@ if (!IMAGE) {
   throw new Error('IMAGE must name the built Ghost image, e.g. IMAGE=ghost-platform:ci');
 }
 const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts');
-const WRAPPER = fs.readFileSync(path.join(SCRIPTS, 'host/branchleft-break-glass.sh'), 'utf8');
+const WRAPPER = fs.readFileSync(path.join(SCRIPTS, 'host/branchleft-break-glass.py'), 'utf8');
 const SERVICE = fs.readFileSync(
   path.join(SCRIPTS, 'systemd/branchleft-break-glass-expire.service'),
   'utf8'
 );
-const NODE_IMAGE = /^IMAGE='([^']+)'$/m.exec(WRAPPER)[1];
+const NODE_IMAGE = /^IMAGE = '([^']+)'$/m.exec(WRAPPER)[1];
 
 const TENANT = `bg-ctr-${crypto.randomBytes(3).toString('hex')}`;
 const SUPPORT = 'support@platform.example';
@@ -60,14 +60,15 @@ function withTempDirectories(text, replace) {
   }
   return out;
 }
-const wrapperPath = path.join(work, 'branchleft-break-glass.sh');
+const wrapperPath = path.join(work, 'branchleft-break-glass.py');
 fs.writeFileSync(
   wrapperPath,
   withTempDirectories(WRAPPER, [
-    ['source=$TOOL_DIR,', `source=${SCRIPTS},`],
-    ['source=$STATE_DIR,', `source=${stateDir},`],
-    ['source=$LOG_DIR,', `source=${logDir},`],
-  ])
+    [`TOOL_DIR = '/usr/local/lib/branchleft/break-glass'`, `TOOL_DIR = '${SCRIPTS}'`],
+    [`STATE_DIR = '/var/lib/branchleft/break-glass-grants'`, `STATE_DIR = '${stateDir}'`],
+    [`LOG_DIR = '/var/log/branchleft'`, `LOG_DIR = '${logDir}'`],
+  ]),
+  { mode: 0o755 }
 );
 
 /** The expire unit's own command line, with the same three directories swapped. */
@@ -96,7 +97,7 @@ function stubSystemctl(exitCode) {
 }
 
 function runWrapper(env, ...args) {
-  const r = spawnSync('/bin/sh', [wrapperPath, ...args], { encoding: 'utf8', env });
+  const r = spawnSync(wrapperPath, args, { encoding: 'utf8', env });
   return { code: r.status, stdout: r.stdout.trim(), stderr: r.stderr.trim() };
 }
 
@@ -436,7 +437,7 @@ describe(
         { mode: 0o755 }
       );
       fs.writeFileSync(path.join(bin, 'systemctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-      spawnSync('/bin/sh', [wrapperPath, 'status'], {
+      spawnSync(wrapperPath, ['status'], {
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
       });
       const argv = fs.readFileSync(argvFile, 'utf8').split('\0').slice(0, -1);

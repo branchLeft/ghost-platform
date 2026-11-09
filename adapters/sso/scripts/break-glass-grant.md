@@ -21,7 +21,7 @@ branchleft-break-glass revoke --tenant <slug> --reason <one line>
 branchleft-break-glass status
 ```
 
-`branchleft-break-glass` is the host wrapper (`host/branchleft-break-glass.sh`,
+`branchleft-break-glass` is the host wrapper (`host/branchleft-break-glass.py`,
 installed at `/usr/local/sbin/branchleft-break-glass`). The app host has no
 Node: the wrapper and the expire unit run this file inside a pinned Node
 container (see "The container"), and `expire` is what the unit runs.
