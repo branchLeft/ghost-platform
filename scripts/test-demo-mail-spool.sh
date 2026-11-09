@@ -75,7 +75,7 @@ wait_spool_healthy() {
     done
 }
 
-apply_policy() { on_host "sh /policy/branchleft_demo_egress.sh" >/dev/null; }
+apply_policy() { on_host "python3 /policy/branchleft_demo_egress.py" >/dev/null; }
 
 # Runs inside the spool container, which has node and nothing else.
 # shellcheck disable=SC2317,SC2329 # run only through eval, in expect_ok and expect_refused
@@ -120,6 +120,9 @@ wait_dockerd
 # shellcheck disable=SC2016 # expanded on the stand-in host, not here
 DOCKERD_PATH="$(on_host 'tr "\0" "\n" < /proc/$(pidof dockerd)/environ | sed -n "s/^PATH=//p"')"
 [ -n "$DOCKERD_PATH" ] || { echo "could not read dockerd's PATH on the stand-in host"; exit 1; }
+# The dind image ships no Python, and the policy is a Python program. Installed
+# before any policy is applied, while the stand-in still has its egress.
+on_host "apk add --no-cache python3 >/dev/null"
 
 # The host pulls the spool image itself (the host keeps its egress); the probe
 # image comes from the outer daemon.
