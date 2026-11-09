@@ -9,6 +9,7 @@ database host gains no new service). See dial_in_transport.md#module-overview.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import os
 import pathlib
@@ -41,6 +42,61 @@ def _load_bounded_snapshot():
 
 
 bounded_snapshot = _load_bounded_snapshot()
+
+
+def _load_gtid_snapshot():
+    """`db/provision/gtid_snapshot.py`, by path, the same way."""
+    if "gtid_snapshot" in sys.modules:
+        return sys.modules["gtid_snapshot"]
+    source = pathlib.Path(__file__).resolve().parents[3] / "db" / "provision" / "gtid_snapshot.py"
+    spec = importlib.util.spec_from_file_location("gtid_snapshot", source)
+    if spec is None or spec.loader is None or not source.is_file():
+        raise ImportError(f"{source} is missing -- check out the whole of branchLeft/ghost-platform")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["gtid_snapshot"] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules["gtid_snapshot"]
+        raise
+    return module
+
+
+
+def _mysqldump_version() -> str:
+    """What the `mysqldump` this worker would run says about itself. A
+    missing or silent binary gives the empty string, which the client check
+    refuses."""
+    try:
+        result = subprocess.run(
+            ["mysqldump", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+            env={name: os.environ[name] for name in _CHILD_ENV_ALLOWLIST if name in os.environ},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout or ""
+
+# How RemoteMysqldumpTransport makes its dump consistent. "bounded" takes a
+# short, bounded table lock (db1, Oracle MySQL). "gtid" takes no lock at all
+# and needs a server whose mysqldump reads its GTID set atomically with the
+# snapshot (Percona Server on the tenant database host).
+SNAPSHOT_BOUNDED = "bounded"
+SNAPSHOT_GTID = "gtid"
+SNAPSHOT_MODES = (SNAPSHOT_BOUNDED, SNAPSHOT_GTID)
+SNAPSHOT_MODE_ENV = "BACKUP_WORKER_SNAPSHOT_MODE"
+
+
+def snapshot_mode_from_env(environ: Mapping[str, str]) -> str:
+    """`bounded` unless BACKUP_WORKER_SNAPSHOT_MODE says otherwise; an
+    unknown value is refused rather than falling back to either mode."""
+    mode = environ.get(SNAPSHOT_MODE_ENV, SNAPSHOT_BOUNDED)
+    if mode not in SNAPSHOT_MODES:
+        raise DialInTransportError(f"{SNAPSHOT_MODE_ENV} must be one of {SNAPSHOT_MODES}, not {mode!r}")
+    return mode
 
 # What `run` returns when no consistent snapshot could be taken: a producer
 # failure like any other nonzero exit, with the reason already on stderr.
@@ -174,7 +230,16 @@ class RemoteMysqldumpTransport:
         popen=subprocess.Popen,
         limits: "bounded_snapshot.Limits | None" = None,
         sleep=time.sleep,
+        snapshot: str = SNAPSHOT_BOUNDED,
+        client_version=None,
     ) -> None:
+        if snapshot not in SNAPSHOT_MODES:
+            raise DialInTransportError(f"snapshot must be one of {SNAPSHOT_MODES}, not {snapshot!r}")
+        self._snapshot = snapshot
+        # Loaded only in gtid mode, so a release that does not carry
+        # gtid_snapshot.py still imports and runs in the default mode.
+        self._gtid = _load_gtid_snapshot() if snapshot == SNAPSHOT_GTID else None
+        self._client_version = client_version or _mysqldump_version
         self._host = host
         self._port = port
         self._user = user
@@ -183,10 +248,12 @@ class RemoteMysqldumpTransport:
         self._popen = popen
         self._limits = limits or bounded_snapshot.Limits()
         self._sleep = sleep
-        self.last_snapshot: bounded_snapshot.SnapshotReport | None = None
+        self.last_snapshot = None
         self.last_snapshot_aborts = 0
 
     def dump_args(self, db_name: str) -> list[str]:
+        if self._gtid is not None:
+            return self._gtid.dump_args(db_name)
         return [
             "--single-transaction",
             "--routines",
@@ -225,22 +292,36 @@ class RemoteMysqldumpTransport:
             popen=self._popen,
         )
 
-        try:
-            dump, report = bounded_snapshot.take_bounded_snapshot(
-                factory=factory,
-                schemas=[db_name],
-                dump_args=self.dump_args(db_name),
-                limits=self._limits,
-                sleep=self._sleep,
-                log=lambda message: print(f"dial_in_transport: {tenant}: {message}", file=sys.stderr),
-            )
-        except bounded_snapshot.SnapshotError as exc:
-            self.last_snapshot_aborts = exc.aborted_attempts
-            print(
-                f"dial_in_transport: {tenant}: no consistent snapshot of {self._host}:{self._port}: {exc}",
-                file=sys.stderr,
-            )
-            return SNAPSHOT_FAILED_EXIT_CODE
+        gtid = self._gtid
+        scanner = None
+        if gtid is not None:
+            # No coordinator, no lock: the dump's own snapshot, and the
+            # recovery position read off its header as it streams.
+            try:
+                gtid.assert_percona_client(self._client_version())
+                dump = gtid.take_gtid_snapshot(factory=factory, args=self.dump_args(db_name))
+            except gtid.GtidError as exc:
+                print(f"dial_in_transport: {tenant}: refusing to dump: {exc}", file=sys.stderr)
+                return SNAPSHOT_FAILED_EXIT_CODE
+            report = gtid.GtidSnapshotReport()
+            scanner = gtid.PurgedStatementScanner()
+        else:
+            try:
+                dump, report = bounded_snapshot.take_bounded_snapshot(
+                    factory=factory,
+                    schemas=[db_name],
+                    dump_args=self.dump_args(db_name),
+                    limits=self._limits,
+                    sleep=self._sleep,
+                    log=lambda message: print(f"dial_in_transport: {tenant}: {message}", file=sys.stderr),
+                )
+            except bounded_snapshot.SnapshotError as exc:
+                self.last_snapshot_aborts = exc.aborted_attempts
+                print(
+                    f"dial_in_transport: {tenant}: no consistent snapshot of {self._host}:{self._port}: {exc}",
+                    file=sys.stderr,
+                )
+                return SNAPSHOT_FAILED_EXIT_CODE
         self.last_snapshot = report
         self.last_snapshot_aborts = report.aborted_attempts
 
@@ -253,10 +334,20 @@ class RemoteMysqldumpTransport:
 
         timer = threading.Timer(self._timeout_seconds, _on_timeout)
         timer.start()
+        header_refusal: str | None = None
         try:
             try:
                 stdout.write(report.coordinates_comment())
                 for line in process.stdout:
+                    if scanner is not None:
+                        try:
+                            scanner.feed_bytes(line)
+                        except gtid.GtidError as exc:
+                            # A malformed or doubled header: stop the dump and
+                            # refuse it like any other no-position dump.
+                            header_refusal = str(exc)
+                            bounded_snapshot.kill_process(process)
+                            break
                     stdout.write(line)
             finally:
                 process.stdout.close()
@@ -269,6 +360,20 @@ class RemoteMysqldumpTransport:
 
         dump.stderr.join(5.0)
         stderr_tail = dump.stderr.text()[-_STDERR_CAPTURE_LIMIT:]
+
+        if header_refusal is not None:
+            print(f"dial_in_transport: {tenant}: refusing the dump: {header_refusal}", file=sys.stderr)
+            return SNAPSHOT_FAILED_EXIT_CODE
+        if scanner is not None and exit_code == 0 and not timed_out.is_set():
+            # A dump with no recovery position is not a backup: report a
+            # failure so the caller discards what streamed.
+            try:
+                position = scanner.require_position()
+            except gtid.GtidError as exc:
+                print(f"dial_in_transport: {tenant}: {exc}", file=sys.stderr)
+                return SNAPSHOT_FAILED_EXIT_CODE
+            self.last_snapshot = dataclasses.replace(report, recovery_gtid_set=position)
+            print(f"dial_in_transport: {tenant}: recovery position {position}", file=sys.stderr)
 
         if timed_out.is_set():
             raise DialInTransportError(
