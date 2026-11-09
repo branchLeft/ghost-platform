@@ -7,7 +7,7 @@ spool, a slot's Ghost submits to it on both paths, it has no route off the
 host, and its queue survives a reboot. The proof runs the stack
 `render-core` renders (`renderMailSpoolStack`) in a privileged
 Docker-in-Docker stand-in named `demo1`, with the real
-`branchleft_demo_egress.sh` policy applied, installed the way
+`branchleft_demo_egress.py` policy applied, installed the way
 `ghost-platform-docs/demo-host-mail-spool-runbook.md` installs it.
 
 Asserted, each from inside a container rather than from the Compose file:

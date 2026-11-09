@@ -1,6 +1,6 @@
 #!/bin/sh
-# Proves demo-host/provision/branchleft_demo_egress.sh against a real dockerd
-# inside a privileged Docker-in-Docker stand-in for demo1; see that script's
+# Proves demo-host/provision/branchleft_demo_egress.py against a real dockerd
+# inside a privileged Docker-in-Docker stand-in for demo1; see that program's
 # .md, "Proof". Creates only containers and a network under one prefix.
 # Usage: ./scripts/test-demo-container-egress.sh
 set -eu
@@ -76,6 +76,9 @@ done
 # shellcheck disable=SC2016 # expanded on the stand-in host, not here
 DOCKERD_PATH="$(on_host 'tr "\0" "\n" < /proc/$(pidof dockerd)/environ | sed -n "s/^PATH=//p"')"
 [ -n "$DOCKERD_PATH" ] || { echo "could not read dockerd's PATH on the stand-in host"; exit 1; }
+# The dind image ships no Python, and the policy is a Python program. Installed
+# before any policy is applied, while the stand-in still has its egress.
+on_host "apk add --no-cache python3 >/dev/null"
 
 docker save "$PROBE_IMAGE" | docker exec -i "$HOST" docker load >/dev/null
 
@@ -100,7 +103,7 @@ expect_reach "a default-bridge container reaches the outside" "probe bridge \"$T
 expect_reach "a demo-network container reaches a host service" "probe demo \"$TO_HOST\""
 
 echo "== the wrong host is refused"
-if on_host "BRANCHLEFT_DEMO_EGRESS_HOST=app1 sh /policy/branchleft_demo_egress.sh" >/dev/null 2>&1; then
+if on_host "BRANCHLEFT_DEMO_EGRESS_HOST=app1 python3 /policy/branchleft_demo_egress.py" >/dev/null 2>&1; then
     fail "the policy ran on a host not named app1 while told to expect app1"
 else
     pass "the policy refuses a host that is not the expected one"
@@ -108,9 +111,9 @@ fi
 expect_reach "the refusal changed nothing" "probe demo \"$TO_OUTSIDE\""
 
 echo "== the policy"
-on_host "sh /policy/branchleft_demo_egress.sh"
+on_host "python3 /policy/branchleft_demo_egress.py"
 FIRST="$(on_host "iptables-save; ip6tables-save" | grep -c BRANCHLEFT-DEMO)"
-on_host "sh /policy/branchleft_demo_egress.sh" >/dev/null
+on_host "python3 /policy/branchleft_demo_egress.py" >/dev/null
 SECOND="$(on_host "iptables-save; ip6tables-save" | grep -c BRANCHLEFT-DEMO)"
 if [ "$FIRST" = "$SECOND" ]; then
     pass "a second run leaves the same $FIRST policy lines"

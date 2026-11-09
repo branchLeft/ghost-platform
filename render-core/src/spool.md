@@ -79,7 +79,7 @@ is `branchleft-mail-spool-drain`, and it is constrained three ways:
 
 - its bridge interface is named `br-mailspool`, so a host policy can match it
   by name. On demo1 it is inside the existing `br-+` egress policy
-  (`demo-host/provision/branchleft_demo_egress.sh`), which refuses every
+  (`demo-host/provision/branchleft_demo_egress.py`), which refuses every
   connection a bridged container opens off its own bridge.
 - IP masquerade is off, so a packet the spool sends towards the gateway
   leaves with a container address nothing outside the host routes back to.
