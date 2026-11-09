@@ -44,36 +44,36 @@ the list's validation.
 
 ## Visibility
 
-The mirror packages stay **private**, GitHub's default. The reason is Docker's
-Terms of Use (<https://www.docker.com/legal/docker-terms-service/>, effective
-2026-08-26), which say users "may redistribute Docker Images made available in
-Docker Hub at no cost, to third parties but solely when bundled with or
+The mirror packages are **public**. Public by default is the standing rule, and
+a public package lets a host pull a mirrored image by digest and verify its
+attestation with no credential. A workflow cannot change a package's
+visibility; the owner sets it on the package, and the packages read as public.
+
+A public package is redistribution, so each image's licence decides whether it
+may be mirrored. `images.json` records the licence and a `redistribution` flag
+for every entry. `conditioned` means the licence sets conditions a public copy
+has to meet (an offer of the corresponding source for GPL code, notices,
+trademark terms). Nothing in this script meets them, and a `conditioned` entry
+is open until its conditions are checked and recorded.
+
+Docker's Terms of Use (<https://www.docker.com/legal/docker-terms-service/>,
+effective 2026-08-26) say users "may redistribute Docker Images made available
+in Docker Hub at no cost, to third parties but solely when bundled with or
 incorporated into its own software products, and not on a standalone basis",
-and that other parties' images are "Third-Party Content subject to their
-corresponding terms and conditions". A public package of unmodified Docker Hub
-images is standalone redistribution, so the copy is kept private and used only
-by this repository's own workflows.
+and that third-party images are "Third-Party Content subject to their
+corresponding terms and conditions". The text does not say whether an image
+that Docker publishes as an Official Image counts as Docker Hub content or as
+third-party content under its own licence. That is not settled here, and a
+public copy of a Docker Hub image depends on it.
 
-What this does not establish. Secrecy is not the reason: the images are public
-upstream, so "no confidentiality exposure" answers a question that was not asked.
-The reason is the Docker terms above, no standalone redistribution to third
-parties. A fork of this public repository belongs to a third party, and GitHub's
-package documentation says that granting a public repository access to a private
-package can let its forks, and Dependabot, read it. Whether that applies to these
-packages has not been observed. It is not recorded as an accepted risk in
-`.claude/ACCEPTED-RISKS.md`. Whether to accept it, or to require it to be
-observed on the first run first, is the owner's decision; this change does not
-make it.
-
-The consumers are this repository's workflows, pulling with `GITHUB_TOKEN`
-(`packages: read`) after a `docker login ghcr.io`. Hosts are not consumers:
-host stacks keep their Docker Hub references until the owner decides how a host
-would hold a pull credential. The upstream licences recorded in `images.json`
-are checked for this private CI copy only.
+The consumers are this repository's workflows, which pull with `GITHUB_TOKEN`
+(`packages: read`) after a `docker login ghcr.io`, and hosts, which may pull by
+digest without a credential. Host stacks that still name a Docker Hub reference
+move to the mirror reference in their own change.
 
 ## Local development (no credential)
 
-A private mirror must not make local work harder: an agent or the owner
+The mirror must not make local work harder: an agent or the owner
 building or testing on a laptop has no GHCR credential and needs none. Every
 image reference therefore keeps the same digest and takes only its registry from
 one variable whose default is the public source:

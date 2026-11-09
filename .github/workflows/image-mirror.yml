@@ -6,7 +6,7 @@ name: Image mirror
 # anonymous pulls per runner address, so the mirror gives CI a copy it can read
 # with the run's own token; this is the only job that touches the upstream
 # registries.
-# The packages stay private (see scripts/mirror-images.md#visibility).
+# The packages are public (see scripts/mirror-images.md#visibility).
 #
 # Authority: the run's own GITHUB_TOKEN with `packages: write`. No Docker Hub
 # login and no stored secret. Idempotent: an entry whose mirror tag already
