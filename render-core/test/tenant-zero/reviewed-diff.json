@@ -121,5 +121,11 @@
       "settings.social_web"
     ],
     "reason": "Ghost settings the render core pins (code injection blocked and empty, social web off); 5.0.0 rendered no settings file, so the running values can only be read from Ghost admin."
+  },
+  {
+    "id": "stop-grace-period",
+    "status": "intended",
+    "paths": ["compose.services.ghost-a.stop_grace_period"],
+    "reason": "5.0.0 sets no stop grace period, so a stop gives Ghost Docker's 10-second default before SIGKILL; the render sets 60s on each colour, a provisional value until the two-instance harness measures the batch."
   }
 ]
