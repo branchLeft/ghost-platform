@@ -73,6 +73,14 @@ on a bound, success or not; `backup_worker.run_tenant_dump` reads both.
 
 ### Snapshot mode
 
+`gtid_snapshot.py` is loaded by path only when the transport is built in
+`"gtid"` mode, so a release that lacks it still imports and runs `"bounded"`;
+it is in the installer's required release files all the same, with a test that
+every `db/provision` module this file loads by path is listed. In `"gtid"`
+mode a `mysqldump` that does not name Percona in `--version` is refused before
+anything starts, and a malformed or doubled GTID header found mid-stream stops
+the dump and returns `SNAPSHOT_FAILED_EXIT_CODE` like any other refusal.
+
 `snapshot=` is `"bounded"` (the default, above) or `"gtid"`, chosen at the
 worker by `BACKUP_WORKER_SNAPSHOT_MODE` (an unknown value is refused, never
 defaulted). In `"gtid"` mode no coordinator session is opened and nothing is

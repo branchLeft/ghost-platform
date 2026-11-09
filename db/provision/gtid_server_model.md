@@ -33,6 +33,17 @@ program), and `Server.run` (answering for `mysqlbinlog` and `mysql`, the shape
 
 ## What it does not model
 
+**The wrong client.** The `stock` flavour is only an Oracle 8.0.32+ client,
+which takes a global read lock and fails closed for lack of `RELOAD`. An
+Oracle client older than 8.0.32 reads the set after its snapshot with no lock
+and writes a header that can hold transactions the dump lacks; the restore
+then silently misses them. The model cannot show that case and no test here
+does. What guards it is `gtid_snapshot.assert_percona_client`, which refuses
+any `mysqldump` whose `--version` does not name Percona, before a dump starts;
+the model's tests only show that the refusal happens, not that the
+distinction is the right one.
+
+
 An engine, locks other than the table lock above, parallel appliers, real
 mysqlbinlog output (the fake prints the few lines the extract code reads),
 crash recovery. It cannot show that a real server reads its set atomically

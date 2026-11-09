@@ -131,6 +131,25 @@ class DumpArgumentTests(unittest.TestCase):
                 gs.assert_lock_free_args([*[a for a in base if a != "--set-gtid-purged=ON"], other])
 
 
+class ClientTests(unittest.TestCase):
+    def test_perconas_client_is_accepted(self):
+        gs.assert_percona_client("mysqldump  Ver 8.0.46-37 for Linux on x86_64 (Percona Server (GPL), Release '37')\n")
+
+    def test_any_other_client_or_none_is_refused(self):
+        for text in (
+            "mysqldump  Ver 8.0.31 for Linux on x86_64 (MySQL Community Server - GPL)",
+            "mysqldump  Ver 8.0.40 for Linux on x86_64 (MySQL Community Server - GPL)",
+            "mysqldump from 12.3.2-MariaDB, client 10.19",
+            "",
+        ):
+            with self.subTest(text=text), self.assertRaises(gs.GtidError):
+                gs.assert_percona_client(text)
+
+    def test_only_the_version_line_counts(self):
+        with self.assertRaises(gs.GtidError):
+            gs.assert_percona_client("mysqldump  Ver 8.0.40 (MySQL Community Server - GPL)\nPercona is mentioned later\n")
+
+
 class TakeSnapshotTests(unittest.TestCase):
     def test_only_mysqldump_is_started_and_no_lock_is_asked_for(self):
         server = model.Server()

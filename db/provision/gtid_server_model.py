@@ -130,7 +130,7 @@ class Server:
         # header carries. "snapshot" is the contract (the set of the read
         # view, read atomically with it); "live_after" reads the server's
         # executed set after the snapshot has opened; "none" writes no
-        # statement at all.
+        # statement at all; "malformed" and "doubled" write a bad header.
         self.header_set_source = "snapshot"
         self.spawned: list[str] = []
         self.argv_log: list[list[str]] = []
@@ -256,10 +256,15 @@ class Server:
         yield "SET @MYSQLDUMP_TEMP_LOG_BIN = @@SESSION.SQL_LOG_BIN;\n"
         yield "SET @@SESSION.SQL_LOG_BIN= 0;\n"
         if header == "gtid" and self.header_set_source != "none":
-            gtids = snapshot.gtids if self.header_set_source == "snapshot" else frozenset(self.executed)
+            live = self.header_set_source == "live_after"
+            gtids = frozenset(self.executed) if live else snapshot.gtids
             yield "\n--\n-- GTID state at the beginning of the backup \n--\n\n"
             text = gtid_set_text(gtids, separator=",\n")
+            if self.header_set_source == "malformed":
+                text = "not-a-set"
             yield f"SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '{text}';\n"
+            if self.header_set_source == "doubled":
+                yield f"SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ '{text}';\n"
         elif header == "position":
             yield f"-- CHANGE MASTER TO MASTER_LOG_FILE='{snapshot.log_file}', MASTER_LOG_POS={snapshot.log_position};\n"
         yield f"\nCREATE DATABASE /*!32312 IF NOT EXISTS*/ `{schema}` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;\n"

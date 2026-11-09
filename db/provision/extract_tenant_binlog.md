@@ -61,7 +61,10 @@ reads either (`find_recovery_start`, returning a `RecoveryStart`):
   `mysqlbinlog --exclude-gtids=<set> --skip-gtids`, so a transaction in the
   set is skipped and every other one is applied, in log order. `--skip-gtids`
   leaves the restore target's own GTID state alone, so it needs neither
-  `gtid_mode` nor the privilege to set `GTID_NEXT`.
+  `gtid_mode` nor the privilege to set `GTID_NEXT`. It is the documented
+  exception-only option; the use fits because the target is a scratch server
+  loaded from the dump, whose own `GTID_PURGED` the replayed events must not
+  collide with.
 
 A dump with both forms, or neither, is refused: the position is one thing,
 read from one place. A GTID set cannot say where a file begins, so the

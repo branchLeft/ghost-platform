@@ -43,6 +43,11 @@ own tests is everything around the claim; see "How it is proved".
    `--set-gtid-purged` other than `ON`, and a command missing
    `--single-transaction` or `--set-gtid-purged=ON`. A dump that is only
    consistent because something locked is not this module's dump.
+   `assert_percona_client` refuses, before any dump starts, a `mysqldump`
+   whose `--version` line does not name Percona. The transport runs it on
+   every dump in this mode. It is deliberately stricter than "8.0.32 or later":
+   an Oracle client before 8.0.32 would not fail but would write a header
+   that can hold transactions the dump lacks.
 3. `take_gtid_snapshot`: starts that one process through `ClientFactory` (the
    password reaches it only by inherited fd, as in `bounded_snapshot.py`).
 4. `PurgedStatementScanner`: read as the dump streams, line by line. It reads

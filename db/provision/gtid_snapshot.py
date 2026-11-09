@@ -198,6 +198,22 @@ def scan_dump_position(lines) -> str:
     return scanner.require_position()
 
 
+def assert_percona_client(version_text: str) -> None:
+    """Refuses a `mysqldump` that is not Percona's. Only Percona's client
+    reads the GTID set atomically with its snapshot. An Oracle client from
+    before 8.0.32 reads it after the snapshot with no lock, so its header can
+    hold transactions the dump lacks and the restore silently misses them; a
+    later Oracle client takes a global read lock instead. Neither is this
+    mode's dump, so neither is allowed to start one."""
+    first_line = (version_text.strip().splitlines() or [""])[0]
+    if "percona" not in first_line.lower():
+        shown = first_line or "no output from mysqldump --version"
+        raise GtidError(
+            f"the mysqldump client is not Percona's ({shown!r}): only Percona's reads the GTID set "
+            "atomically with its snapshot"
+        )
+
+
 def dump_args(db_name: str) -> list[str]:
     """The lock-free dump for one tenant database. `--no-tablespaces`: the
     backup account holds no PROCESS."""

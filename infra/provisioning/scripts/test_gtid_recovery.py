@@ -17,6 +17,7 @@ import pathlib
 import random
 import sys
 import unittest
+from unittest import mock
 
 _DB_PROVISION = pathlib.Path(__file__).resolve().parents[3] / "db" / "provision"
 sys.path.insert(0, str(_DB_PROVISION))
@@ -27,13 +28,20 @@ import extract_tenant_binlog as etb  # noqa: E402
 import gtid_server_model as model  # noqa: E402
 import gtid_snapshot as gs  # noqa: E402
 
+PERCONA_CLIENT = "mysqldump  Ver 8.0.46-37 for Linux on x86_64 (Percona Server (GPL), Release '37', Revision 'x')\n"
+ORACLE_CLIENT = "mysqldump  Ver 8.0.31 for Linux on x86_64 (MySQL Community Server - GPL)\n"
 TENANTS = ("a", "b", "c")
 SCHEMA = {t: f"ghost_{t}" for t in TENANTS}
 
 
 def transport(server: model.Server, *, snapshot: str = dit.SNAPSHOT_GTID) -> dit.RemoteMysqldumpTransport:
     return dit.RemoteMysqldumpTransport(
-        host="db-t1", user="backup", ssl_ca="/ca.pem", popen=server.popen, snapshot=snapshot
+        host="db-t1",
+        user="backup",
+        ssl_ca="/ca.pem",
+        popen=server.popen,
+        snapshot=snapshot,
+        client_version=lambda: PERCONA_CLIENT,
     )
 
 
@@ -196,6 +204,32 @@ class NoPauseTests(unittest.TestCase):
         code, text, via = dump(server, "a")
         self.assertEqual(code, dit.SNAPSHOT_FAILED_EXIT_CODE)
         self.assertIsNone(via.last_snapshot.recovery_gtid_set)
+
+    def test_a_client_that_is_not_perconas_is_refused_before_anything_starts(self):
+        server, _ = server_with_history(3)
+        for version in (ORACLE_CLIENT, "mysqldump  Ver 8.0.40 for Linux (MySQL Community Server - GPL)\n", ""):
+            via = dit.RemoteMysqldumpTransport(
+                host="db-t1", user="b", ssl_ca="/ca.pem", popen=server.popen, snapshot=dit.SNAPSHOT_GTID,
+                client_version=lambda v=version: v,
+            )
+            code, text, _ = dump(server, "a", via)
+            self.assertEqual((code, text, server.spawned), (dit.SNAPSHOT_FAILED_EXIT_CODE, "", []))
+
+    def test_the_default_client_probe_reads_the_binary_and_survives_its_absence(self):
+        done = mock.Mock(stdout=PERCONA_CLIENT)
+        with mock.patch.object(dit.subprocess, "run", return_value=done) as run:
+            self.assertEqual(dit._mysqldump_version(), PERCONA_CLIENT)
+        self.assertEqual(run.call_args.args[0], ["mysqldump", "--version"])
+        with mock.patch.object(dit.subprocess, "run", side_effect=FileNotFoundError):
+            self.assertEqual(dit._mysqldump_version(), "")
+
+    def test_a_malformed_or_doubled_header_mid_stream_ends_in_the_usual_refusal(self):
+        for source in ("malformed", "doubled"):
+            server, _ = server_with_history(3)
+            server.header_set_source = source
+            code, _, via = dump(server, "a")
+            self.assertEqual(code, dit.SNAPSHOT_FAILED_EXIT_CODE, source)
+            self.assertIsNone(via.last_snapshot.recovery_gtid_set)
 
     def test_the_bounded_mode_is_unchanged_by_default(self):
         self.assertEqual(dit.snapshot_mode_from_env({}), dit.SNAPSHOT_BOUNDED)
