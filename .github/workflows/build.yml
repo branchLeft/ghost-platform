@@ -20,6 +20,13 @@ on:
 # PR (and on every push to `main`, redundantly with registry-push.yml's own
 # build — see that file's header for why the rebuild there is accepted
 # rather than shared), nothing more.
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: docker build
