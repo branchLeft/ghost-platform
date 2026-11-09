@@ -64,6 +64,10 @@ PROBE_NAMES = (
 )
 
 REDACTED = "[redacted]"
+BUCKET_MARKER = "branchleft-gw-probe-"
+EXIT_CONFIG = 2
+EXIT_NOT_THROWAWAY = 3
+PREFLIGHT_PAGE_KEYS = 100
 FENCE_ACTIONS = ("s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket")
 DEFAULT_DWELL_SECONDS = 300.0
 POLL_SECONDS = 15.0
@@ -78,6 +82,8 @@ _NAME = re.compile(r"\A[A-Z][A-Z0-9_]{0,63}\Z")
 _LOCATION = re.compile(r"\A[a-z][a-z0-9-]{1,15}\Z")
 _SECRET_KEY = re.compile(r"\A[A-Za-z0-9/+=]{16,128}\Z")
 _CODE = re.compile(r"<Code>([A-Za-z0-9]{1,64})</Code>")
+_KEY = re.compile(r"<Key>([^<]*)</Key>")
+_TRUNCATED = re.compile(r"<IsTruncated>\s*true\s*</IsTruncated>", re.IGNORECASE)
 _UPLOAD_ID = re.compile(r"<UploadId>([^<]{1,1024})</UploadId>")
 _LOCAL_NETWORK_ERRNO = frozenset(
     code
@@ -562,6 +568,39 @@ def fence_project_id(ctx: Context) -> str | None:
     return digits if digits.isdigit() else None
 
 
+def read_policy(ctx: Context) -> Reply:
+    """GET of the bucket policy by the bucket's own key: 404 means there is none."""
+    return ctx.owner.request("GET", None, query={"policy": ""})
+
+
+def _canonical(value: object) -> object:
+    """A policy in a form that ignores key order and one-versus-many wording."""
+    if isinstance(value, dict):
+        return {key: _canonical(item) for key, item in value.items()}
+    items = value if isinstance(value, list) else [value]
+    return sorted(
+        (_canonical(item) if isinstance(item, dict) else item for item in items),
+        key=lambda item: json.dumps(item, sort_keys=True),
+    )
+
+
+def remove_own_policy(ctx: Context, written: str) -> bool:
+    """Deletes the bucket policy only if it is still the one this run wrote."""
+    current = read_policy(ctx)
+    if current.status == 404:
+        return True
+    if not current.ok:
+        return False
+    try:
+        same = _canonical(json.loads(current.body)) == _canonical(json.loads(written))
+    except ValueError:
+        return False
+    if not same:
+        return False
+    reply = ctx.owner.request("DELETE", None, query={"policy": ""})
+    return reply.ok or reply.status == 404
+
+
 def probe_allow_fence(ctx: Context) -> Outcome:
     control = ctx.key("fence", "control")
     seeded = ctx.owner.request("PUT", control, payload=_blob("fence", 256))
@@ -591,17 +630,18 @@ def probe_allow_fence(ctx: Context) -> Outcome:
         document = fence_policy(ctx.site.bucket, principal)
     except _policy.PolicyInputError as exc:
         return inconclusive(f"the policy could not be built: {exc}")
+    existing = read_policy(ctx)
+    if existing.status != 404:
+        return inconclusive(
+            "a bucket policy is present or unreadable just before the write, so none was "
+            f"written: {existing.describe()}"
+        )
     applied = ctx.owner.request(
         "PUT", None, query={"policy": ""}, payload=document.encode(), extra=None
     )
     if not applied.ok:
         return inconclusive(f"the policy was not accepted: {applied.describe()}")
-
-    def remove_policy() -> bool:
-        reply = ctx.owner.request("DELETE", None, query={"policy": ""})
-        return reply.ok or reply.status == 404
-
-    ctx.forget_later("bucket policy", remove_policy)
+    ctx.forget_later("bucket policy", lambda: remove_own_policy(ctx, document))
     admitted_key = ctx.key("fence", "by-fence-key")
     payload = _blob("fence-key", 128)
     started = ctx.clock()
@@ -805,6 +845,28 @@ def run_cleanup(ctx: Context) -> tuple[int, list[str]]:
     return removed, left
 
 
+def preflight(ctx: Context) -> str | None:
+    """Reads only. Returns why the bucket is not a clean throwaway, or None when it is."""
+    policy = read_policy(ctx)
+    if policy.ok:
+        return "the bucket already has a bucket policy"
+    if policy.status != 404:
+        return f"the bucket policy could not be read ({policy.describe()})"
+    listing = ctx.owner.request(
+        "GET", query={"list-type": "2", "max-keys": str(PREFLIGHT_PAGE_KEYS)}
+    )
+    if not listing.ok:
+        return f"the bucket could not be listed ({listing.describe()})"
+    text = listing.body.decode("utf-8", errors="replace")
+    inside = ctx.prefix + "/"
+    foreign = [key for key in _KEY.findall(text) if not key.startswith(inside)]
+    if foreign:
+        return f"the bucket holds {len(foreign)} key(s) outside the probe prefix"
+    if _TRUNCATED.search(text):
+        return "the bucket holds more keys than one bounded page shows"
+    return None
+
+
 def run_site(
     ctx: Context, redact: Redactor
 ) -> tuple[dict[str, Outcome], tuple[int, list[str]]]:
@@ -918,6 +980,11 @@ def read_site(
         raise ConfigError(
             f"the value of --{prefix}-bucket-env is not a bucket name"
         ) from None
+    if not bucket.startswith(BUCKET_MARKER):
+        raise ConfigError(
+            f"the value of --{prefix}-bucket-env does not start with the throwaway marker "
+            f"{BUCKET_MARKER!r}; this program only runs against a bucket made for it"
+        )
     credentials = []
     for label, (id_name, secret_name) in (("owner", owner), ("fence", fence)):
         key_id = _env(environ, f"--{label}-key-id-env", id_name)
@@ -955,7 +1022,8 @@ def build_context(
     sleep: Callable[[float], None] = time.sleep,
 ) -> Context:
     def now() -> datetime.datetime:
-        return datetime.datetime.now(datetime.UTC)
+        # datetime.UTC needs 3.11; the shebang interpreter can be 3.9
+        return datetime.datetime.now(datetime.timezone.utc)  # noqa: UP017
 
     return Context(
         site=site,
@@ -1027,7 +1095,7 @@ def main(
             raise ConfigError("the target and the control name the same location")
     except ConfigError as exc:
         print(f"refused: {exc}", file=err)
-        return 2
+        return EXIT_CONFIG
     redact = Redactor([v for site in sites for v in site.sensitive()])
     run_id = secrets.token_hex(4)
     contexts = [
@@ -1043,6 +1111,17 @@ def main(
         )
         for site in sites
     ]
+    problems = [
+        (ctx.site.location, reason)
+        for ctx in contexts
+        if (reason := preflight(ctx)) is not None
+    ]
+    if problems:
+        for location, reason in problems:
+            print(
+                f"refused: {location}: {redact(reason)}; nothing was written", file=err
+            )
+        return EXIT_NOT_THROWAWAY
     for site in sites:
         print(f"started {site.location}", file=err)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:

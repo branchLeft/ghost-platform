@@ -7,7 +7,9 @@ the probe asks and how it reads the answers, never what the real backend does.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
+import datetime
 import hashlib
 import http.server
 import importlib.util
@@ -34,7 +36,7 @@ _spec.loader.exec_module(probe)
 OWNER_ID, OWNER_SECRET = "OWNERKEYID00000000A", "ownerSecretValue0123456789abcdef"
 FENCE_ID, FENCE_SECRET = "FENCEKEYID00000000B", "fenceSecretValue0123456789abcdef"
 NBG1_HOST, FSN1_HOST = "nbg1.storage.example.invalid", "fsn1.storage.example.invalid"
-NBG1_BUCKET, FSN1_BUCKET = "probe-bucket-nbg1", "probe-bucket-fsn1"
+NBG1_BUCKET, FSN1_BUCKET = "branchleft-gw-probe-nbg1", "branchleft-gw-probe-fsn1"
 OWNER_PROJECT, FENCE_PROJECT = "1111", "4242"
 XML_ERROR = "<Error><Code>{}</Code></Error>"
 
@@ -52,6 +54,21 @@ class Behaviour:
     ack_delay: float = 0.0
     truncate_matching: str = ""
     unknown_keys: bool = False
+    policy_unreadable: bool = False
+
+
+FOREIGN_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ProductionFence",
+            "Effect": "Allow",
+            "Principal": {"AWS": ["arn:aws:iam:::user/p9999:PRODUCTIONKEY0000000"]},
+            "Action": ["s3:GetObject"],
+            "Resource": ["arn:aws:s3:::somewhere/*"],
+        }
+    ],
+}
 
 
 class FakeState:
@@ -64,6 +81,7 @@ class FakeState:
         self.fence_since_policy = 0
         self.uploads: dict[str, dict[int, bytes]] = {}
         self.seen_bytes: list[bytes] = []
+        self.writes: list[str] = []
         self.lock = threading.Lock()
 
 
@@ -120,6 +138,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             state.seen_bytes.append(
                 str(self.headers).encode() + self.path.encode() + body
             )
+            if self.command in ("PUT", "POST", "DELETE"):
+                state.writes.append(f"{self.command} {self.path}")
         parts = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
         segments = parts.path.lstrip("/").split("/", 1)
@@ -141,6 +161,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if who != "owner":
                 return self.error(403, "AccessDenied")
             with state.lock:
+                if self.command == "GET":
+                    if state.behaviour.policy_unreadable:
+                        return self.error(403, "AccessDenied")
+                    if state.policy is None:
+                        return self.error(404, "NoSuchBucketPolicy")
+                    return self.reply(200, json.dumps(state.policy).encode())
                 if self.command == "PUT":
                     state.policy = json.loads(body)
                     state.fence_since_policy = 0
@@ -164,10 +190,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.command == "HEAD":
             return self.reply(200)
         prefix = query.get("prefix", [""])[0]
-        keys = sorted(k for k in state.objects if k.startswith(prefix))
+        limit = int(query.get("max-keys", ["1000"])[0])
+        every = sorted(k for k in state.objects if k.startswith(prefix))
+        keys = every[:limit]
         document = "<ListBucketResult>" + "".join(
             f"<Contents><Key>{k}</Key></Contents>" for k in keys
         )
+        truncated = "true" if len(every) > limit else "false"
+        document += f"<IsTruncated>{truncated}</IsTruncated>"
         return self.reply(200, (document + "</ListBucketResult>").encode())
 
     def object_level(
@@ -667,6 +697,150 @@ class EndToEndTests(unittest.TestCase):
             for blob in state.seen_bytes:
                 self.assertNotIn(OWNER_SECRET.encode(), blob)
                 self.assertNotIn(FENCE_SECRET.encode(), blob)
+
+
+class ThrowawayGuardTests(unittest.TestCase):
+    def untouched(self, fakes: Fakes) -> None:
+        for state in fakes.states.values():
+            self.assertEqual(state.writes, [])
+
+    def test_a_bucket_without_the_marker_is_refused_before_any_request(self) -> None:
+        for side in ("T_BUCKET", "C_BUCKET"):
+            with self.subTest(side=side):
+                fakes = Fakes(self, Behaviour())
+                env = fake_env()
+                env[side] = "production-media-bucket"
+                code, out, err = run_main(self, fakes, env)
+                self.assertEqual(code, probe.EXIT_CONFIG)
+                self.assertEqual(out, "")
+                self.assertIn("throwaway marker", err)
+                self.assertNotIn("production-media-bucket", err)
+                self.untouched(fakes)
+                for state in fakes.states.values():
+                    self.assertEqual(state.seen_bytes, [])
+
+    def test_a_bucket_that_already_has_a_policy_is_refused_and_not_written(
+        self,
+    ) -> None:
+        for held in ("nbg1", "fsn1"):
+            with self.subTest(held=held):
+                fakes = Fakes(self, Behaviour())
+                fakes.states[held].policy = json.loads(json.dumps(FOREIGN_POLICY))
+                code, out, err = run_main(self, fakes)
+                self.assertEqual(code, probe.EXIT_NOT_THROWAWAY)
+                self.assertEqual(out, "")
+                self.assertIn("already has a bucket policy", err)
+                self.assertIn("nothing was written", err)
+                self.untouched(fakes)
+                self.assertEqual(fakes.states[held].policy, FOREIGN_POLICY)
+
+    def test_a_bucket_holding_a_foreign_key_is_refused_and_not_written(self) -> None:
+        for held in ("nbg1", "fsn1"):
+            with self.subTest(held=held):
+                fakes = Fakes(self, Behaviour())
+                fakes.states[held].objects["customer/file.bin"] = b"keep"
+                code, out, err = run_main(self, fakes)
+                self.assertEqual(code, probe.EXIT_NOT_THROWAWAY)
+                self.assertEqual(out, "")
+                self.assertIn("outside the probe prefix", err)
+                self.untouched(fakes)
+                self.assertEqual(
+                    fakes.states[held].objects, {"customer/file.bin": b"keep"}
+                )
+
+    def test_a_policy_that_cannot_be_read_is_refused_not_assumed_absent(self) -> None:
+        fakes = Fakes(self, Behaviour(policy_unreadable=True))
+        code, _, err = run_main(self, fakes)
+        self.assertEqual(code, probe.EXIT_NOT_THROWAWAY)
+        self.assertIn("policy could not be read", err)
+        self.untouched(fakes)
+
+    def test_a_listing_that_may_be_cut_short_is_refused(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        ctx = fakes.context()
+        for number in range(probe.PREFLIGHT_PAGE_KEYS + 1):
+            fakes.states["nbg1"].objects[ctx.key(f"k{number:04d}")] = b""
+        reason = probe.preflight(ctx)
+        self.assertIsNotNone(reason)
+        self.assertIn("more keys than one bounded page", reason or "")
+
+    def test_a_clean_bucket_with_only_the_probe_prefix_passes(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        ctx = fakes.context()
+        fakes.states["nbg1"].objects[ctx.key("left", "over")] = b""
+        self.assertIsNone(probe.preflight(ctx))
+
+    def test_the_refusal_names_no_bucket_endpoint_or_key(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        fakes.states["nbg1"].policy = json.loads(json.dumps(FOREIGN_POLICY))
+        _, out, err = run_main(self, fakes)
+        for value in (NBG1_BUCKET, FSN1_BUCKET, NBG1_HOST, OWNER_SECRET, OWNER_ID):
+            self.assertNotIn(value, out + err)
+
+    def test_a_policy_that_appears_before_the_write_is_not_replaced(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        state = fakes.states["nbg1"]
+
+        def appears(ctx: object) -> str:
+            state.policy = json.loads(json.dumps(FOREIGN_POLICY))
+            return FENCE_PROJECT
+
+        with mock.patch.object(probe, "fence_project_id", side_effect=appears):
+            outcome = probe.probe_allow_fence(fakes.context())
+        self.assertEqual(outcome.verdict, probe.INCONCLUSIVE)
+        self.assertIn("none was written", outcome.reason)
+        self.assertEqual(state.policy, FOREIGN_POLICY)
+        self.assertFalse([w for w in state.writes if "policy" in w])
+
+    def test_cleanup_leaves_a_policy_it_did_not_write(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        ctx = fakes.context()
+        self.assertEqual(probe.probe_allow_fence(ctx).verdict, probe.PASS)
+        fakes.states["nbg1"].policy = json.loads(json.dumps(FOREIGN_POLICY))
+        removed, left = probe.run_cleanup(ctx)
+        self.assertIn("bucket policy", left)
+        self.assertEqual(fakes.states["nbg1"].policy, FOREIGN_POLICY)
+        self.assertGreater(removed, 0)
+
+    def test_cleanup_removes_its_own_policy_however_the_backend_words_it(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        ctx = fakes.context()
+        self.assertEqual(probe.probe_allow_fence(ctx).verdict, probe.PASS)
+        stored = fakes.states["nbg1"].policy
+        assert stored is not None
+        statement = stored["Statement"][0]
+        statement["Action"] = list(reversed(statement["Action"]))
+        statement["Principal"]["AWS"] = statement["Principal"]["AWS"][0]
+        removed, left = probe.run_cleanup(ctx)
+        self.assertEqual(left, [])
+        self.assertIsNone(fakes.states["nbg1"].policy)
+        self.assertGreater(removed, 0)
+
+
+class CompatibilityTests(unittest.TestCase):
+    """The program runs under the system interpreter, which is older than the one CI uses."""
+
+    source = (_HERE / "probe-gateway-storage.py").read_text()
+
+    def test_it_parses_as_python_3_9(self) -> None:
+        ast.parse(self.source, feature_version=(3, 9))
+
+    def test_it_uses_no_datetime_name_added_after_python_3_9(self) -> None:
+        tree = ast.parse(self.source)
+        later = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "datetime"
+            and node.attr == "UTC"
+        ]
+        self.assertEqual(later, [])
+
+    def test_the_signing_clock_is_timezone_aware_utc(self) -> None:
+        fakes = Fakes(self, Behaviour())
+        stamp = fakes.context().owner.now()
+        self.assertEqual(stamp.utcoffset(), datetime.timedelta(0))
 
 
 class HygieneTests(unittest.TestCase):

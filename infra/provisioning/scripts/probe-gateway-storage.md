@@ -13,6 +13,29 @@ line per probe.
 It is run by hand. It makes no change to anything but the two throwaway buckets, and it
 removes what it wrote before it exits.
 
+## Which buckets it will touch
+
+Only a bucket made for it. Three guards, in order, each before the first write:
+
+1. **Marker.** A bucket name must start with `branchleft-gw-probe-` (the same style as the
+   lifecycle probe's `branchleft-lifecycle-probe-`). Any other name is refused at start
+   with exit code 2 and a message naming the option, never the value. Create the two
+   buckets under that prefix in the console, and delete them there afterwards.
+2. **Clean bucket.** With the bucket's own key, the program reads the bucket policy and one
+   bounded page (100 keys) of the listing. It refuses with exit code 3, and has then made
+   no write at either location, if the bucket already has a policy, if the policy cannot
+   be read (not assumed absent), if any key lies outside this run's own `gw-probe-<id>/`
+   prefix, or if the page is cut short. The owner key therefore needs permission to read
+   the policy and list the bucket.
+3. **Own policy only.** The `allow-fence` probe reads the policy again immediately before
+   it writes one, and does not write if any policy has appeared. It records the document
+   it wrote. Cleanup deletes the bucket policy only if the policy read back is that
+   document (key order and one-versus-many wording ignored); otherwise it leaves it and
+   names `bucket policy` as not removed.
+
+The program runs under the system `/usr/bin/python3` (3.9 on the owner's Mac), so it uses
+nothing newer than 3.9; a test checks this.
+
 ## Inputs and what is never shown
 
 Every option takes the NAME of an environment variable. The values (endpoint, location,
@@ -94,9 +117,15 @@ For each probe the two locations' outcomes are compared:
 The target and control must name different endpoints, buckets and locations; otherwise
 the run is refused, because a control that is the target is not a control.
 
+Two limits to read the output with: `limit-counting` is a stub that always reports
+`INCONCLUSIVE` and measures nothing, and a run in which both locations behave correctly
+still shows `INCONCLUSIVE` comparison lines for most probes, so read each location's own
+line.
+
 ## Cleanup
 
-Everything written is removed in reverse order, the policy last. The `cleanup` line says
+Everything written is removed in reverse order, and the policy only if it is still the one
+this run wrote. The `cleanup` line says
 how many removals worked and names any key left behind. The bucket itself is not touched;
 deleting it is a console step.
 
