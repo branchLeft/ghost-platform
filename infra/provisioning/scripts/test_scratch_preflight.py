@@ -115,9 +115,13 @@ class Throwaway:
         self._wait_ready(timeout=240)
 
     def _wait_ready(self, timeout: float = 60) -> None:
+        """Ready means answering over TCP. The image's entrypoint first runs a
+        temporary server with networking off, on which only the socket answers;
+        a socket probe passes on that server, which is then shut down while the
+        tests are already using it, and the real server starts after."""
         deadline = time.monotonic() + timeout
         while True:
-            probe = self.client(["-N", "-B", "-e", "SELECT 1;"], password="")
+            probe = self.client(["--protocol=TCP", "-N", "-B", "-e", "SELECT 1;"], password="")
             if probe.returncode == 0 and probe.stdout.strip() == "1":
                 return
             if time.monotonic() >= deadline:
