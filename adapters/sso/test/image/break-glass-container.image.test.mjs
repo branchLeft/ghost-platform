@@ -64,9 +64,11 @@ const wrapperPath = path.join(work, 'branchleft-break-glass.py');
 fs.writeFileSync(
   wrapperPath,
   withTempDirectories(WRAPPER, [
-    [`TOOL_DIR = '/usr/local/lib/branchleft/break-glass'`, `TOOL_DIR = '${SCRIPTS}'`],
-    [`STATE_DIR = '/var/lib/branchleft/break-glass-grants'`, `STATE_DIR = '${stateDir}'`],
-    [`LOG_DIR = '/var/log/branchleft'`, `LOG_DIR = '${logDir}'`],
+    // Source side of each bind mount only, as the shell-era test did: the target stays at the
+    // path the tool uses (break-glass-grant.mjs writes to /var/lib/branchleft/... by name).
+    ['source={TOOL_DIR},', `source=${SCRIPTS},`],
+    ['source={STATE_DIR},', `source=${stateDir},`],
+    ['source={LOG_DIR},', `source=${logDir},`],
   ]),
   { mode: 0o755 }
 );
