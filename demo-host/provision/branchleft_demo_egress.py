@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 # Denies every bridged container on the demo host any connection it opens
 # itself; the host keeps its own egress. What it allows, and why it refuses
 # to run elsewhere: branchleft_demo_egress.md.

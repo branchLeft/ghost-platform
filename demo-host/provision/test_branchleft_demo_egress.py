@@ -195,7 +195,17 @@ class DemoEgressTests(unittest.TestCase):
             source = handle.read()
         self.assertNotIn("shell=True", source)
         self.assertNotIn("os.system", source)
-        self.assertTrue(source.startswith("#!/usr/bin/env python3\n"))
+
+
+class ProgramFileTests(unittest.TestCase):
+    def test_the_shebang_is_the_host_interpreter_in_isolated_mode(self):
+        with open(SCRIPT, encoding="utf-8") as handle:
+            first_line = handle.readline()
+        # One argument only: Linux passes everything after the path as one.
+        self.assertEqual(first_line, "#!/usr/bin/python3 -I\n")
+
+    def test_the_program_is_executable_by_mode_0755(self):
+        self.assertEqual(stat.S_IMODE(os.stat(SCRIPT).st_mode), 0o755)
 
 
 class HungToolTests(unittest.TestCase):

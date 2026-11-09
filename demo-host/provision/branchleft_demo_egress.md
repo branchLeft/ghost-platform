@@ -69,8 +69,11 @@ exists today.
   to rewrite.
 - **Installed as** `/usr/local/sbin/branchleft-demo-egress`, and re-run by
   `branchleft-demo-egress.service` at every boot and every Docker restart.
-- **Python 3, standard library only, no shell.** It runs on the host's
-  `python3` and on the Alpine `python3` its container proof installs. Every
+- **Python 3, standard library only, no shell.** Its shebang is
+  `#!/usr/bin/python3 -I`, so the host needs `/usr/bin/python3`, as its other
+  root programs already do; `-I` ignores `PYTHON*` variables, the user site and
+  the working directory. Its container proof runs it with the Alpine `python3`
+  that the proof installs. Every
   tool is called from an argument list, never through a shell. Each call has a
   30-second limit: a call that hangs stops the program there, as a failed call
   does, before any later step.
