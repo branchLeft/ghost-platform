@@ -31,6 +31,7 @@ from dial_in_transport import (
     DialInTransportError,
     LocalProcessTransport,
     RemoteMysqldumpTransport,
+    snapshot_mode_from_env,
 )
 from pull_encrypt_store import CopyTarget, PullEncryptStoreError, pull_encrypt_and_store
 
@@ -159,6 +160,9 @@ class DumpResult:
     lock_wait_seconds: float | None = None
     lock_hold_seconds: float | None = None
     lock_aborts: int = 0
+    # The GTID set of exactly the transactions this tenant's dump holds, when
+    # the snapshot was lock-free: where point-in-time replay starts.
+    recovery_gtid_set: str | None = None
 
 
 def _snapshot_measurements(transport: DialInTransport, timer: _LockWaitTimer) -> dict:
@@ -168,11 +172,15 @@ def _snapshot_measurements(transport: DialInTransport, timer: _LockWaitTimer) ->
     report = getattr(transport, "last_snapshot", None)
     aborts = int(getattr(transport, "last_snapshot_aborts", 0) or 0)
     if report is not None:
-        return {
+        measured = {
             "lock_wait_seconds": report.lock_wait_seconds,
             "lock_hold_seconds": report.hold_seconds,
             "lock_aborts": aborts,
         }
+        position = getattr(report, "recovery_gtid_set", None)
+        if isinstance(position, str):
+            measured["recovery_gtid_set"] = position
+        return measured
     return {"lock_wait_seconds": timer.elapsed, "lock_hold_seconds": None, "lock_aborts": aborts}
 
 
@@ -696,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
             user=_require_env("BACKUP_WORKER_MYSQL_USER"),
             ssl_ca=_require_env("BACKUP_WORKER_MYSQL_SSL_CA"),
             port=int(os.environ.get("BACKUP_WORKER_DB_PORT", "3306")),
+            snapshot=snapshot_mode_from_env(os.environ),
         )
 
     mysql_pwd = _require_env("DB_DUMP_MYSQL_PWD")
@@ -737,6 +746,8 @@ def main(argv: list[str] | None = None) -> int:
         f"backup_worker: {args.tenant}: floor tables seen {sorted(result.floor_tables_seen)}, "
         f"stored to {list(result.copies_written)}"
     )
+    if result.recovery_gtid_set is not None:
+        print(f"backup_worker: {args.tenant}: recovery position {result.recovery_gtid_set}")
     # Only reached for a floor-verified result.ok=True, per 09-backup-and-
     # recovery.html's decision table: the monitored gauge advances on a
     # successful floor result, never on the strength of the worker having

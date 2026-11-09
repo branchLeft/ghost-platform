@@ -47,6 +47,35 @@ the *whole* sorted list must be a contiguous binlog sequence with no gap --
 a gap would under-replay silently, since mysqlbinlog reads exactly the
 files it is given and has no way to notice one missing.
 
+## Recovery position: file and position, or GTID set
+
+A dump carries its recovery position in one of two forms, and this module
+reads either (`find_recovery_start`, returning a `RecoveryStart`):
+
+- **File and position**: the `-- CHANGE MASTER TO MASTER_LOG_FILE=...,
+  MASTER_LOG_POS=...;` comment the bounded snapshot writes. Replay starts at
+  that position in that file (above).
+- **GTID set**: the `SET @@GLOBAL.GTID_PURGED=...` statement of a lock-free
+  dump (`gtid_snapshot.md`): exactly the transactions the dump holds. No file
+  or position is involved. Replay runs every given file with
+  `mysqlbinlog --exclude-gtids=<set> --skip-gtids`, so a transaction in the
+  set is skipped and every other one is applied, in log order. `--skip-gtids`
+  leaves the restore target's own GTID state alone, so it needs neither
+  `gtid_mode` nor the privilege to set `GTID_NEXT`.
+
+A dump with both forms, or neither, is refused: the position is one thing,
+read from one place. A GTID set cannot say where a file begins, so the
+contiguity check stays, and one more is added for the one failure a set
+cannot see: **a missing earlier binlog file**. The transactions before the
+first file given are exactly that file's `Previous-GTIDs` event; if any is
+not in the dump's set, it is in neither the dump nor the files, and the
+restore would silently lack it. `assert_binlogs_cover_gtid_set` reads the
+event from `mysqlbinlog --stop-position=4096 <first file>` and refuses a
+replay it does not fit (`binlog gap`). A first file with no such event was
+not written with GTIDs, so the set could not be honoured, and is refused too.
+`--skip-gap-check` turns the check off for an operator who has verified the
+range some other way; it says so on stderr.
+
 `mysqlbinlog` is not in the official `mysql` image (`db/RUNBOOK-db.md`'s
 toolchain note); a pinned recovery image that carries it is tracked
 separately and does not exist yet. This module assumes `mysqlbinlog` is
@@ -100,6 +129,10 @@ apart from a tenant that genuinely wrote nothing: it has no bearing on the
 row/statement counts themselves, which stay legitimately zero either way.
 
 ## mysqlbinlog_argv
+
+Exactly one of `start_position` and `exclude_gtids` is given. With
+`exclude_gtids` the command is `mysqlbinlog --exclude-gtids=<set>
+--skip-gtids [--database=...]`, with no `--start-position`.
 
 `database=None` builds the *unscoped* command -- every tenant's events,
 exactly Drill A's existing manual step -- kept as a first-class option here
