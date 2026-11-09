@@ -17,6 +17,12 @@ on:
       - 'adapters/scanning-storage/**'
       - 'Dockerfile'
       - 'render-core/test/golden/**'
+      # The held-media backup proof runs the real media backup and restore.
+      - 'infra/provisioning/scripts/media_backup_restore.py'
+      - 'infra/provisioning/scripts/media_backup_held_proof.py'
+      - 'infra/provisioning/scripts/shared_objectstorage.py'
+      - 'db/provision/objectstorage.py'
+      - '.python-version'
       - '.github/workflows/scanning-storage-ci.yml'
 
 permissions:
@@ -49,6 +55,29 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # The held-media backup proof drives the real media backup and restore
+      # (Python, with `age`) over fixture directories. A missing tool fails
+      # that test in CI rather than skipping it.
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      # The same pinned, checksummed release infra-provisioning-scripts-ci.yml installs.
+      - name: Install age (pinned)
+        working-directory: /tmp
+        run: |
+          set -e
+          AGE_VERSION=v1.3.1
+          AGE_TARBALL=age-${AGE_VERSION}-linux-amd64.tar.gz
+          AGE_SHA256=bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377
+          curl -sL -o "$AGE_TARBALL" \
+            "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/${AGE_TARBALL}"
+          echo "${AGE_SHA256}  ${AGE_TARBALL}" | sha256sum -c -
+          tar -xzf "$AGE_TARBALL"
+          sudo install -m 0755 age/age age/age-keygen /usr/local/bin/
+          age --version
 
       - name: Test with coverage
         run: pnpm run coverage
