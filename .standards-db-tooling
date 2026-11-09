@@ -82,6 +82,11 @@ portal/data/test/hba*.ts
 infra/provisioning/scripts/restore_drill.py
 infra/provisioning/scripts/test_restore_drill.py
 
+# The pre-swap scratch-copy gate: decrypts a backup, imports it into a throwaway
+# server and reads back what it restored, never the tenant's live database.
+infra/provisioning/scripts/scratch_preflight.py
+infra/provisioning/scripts/test_scratch_preflight.py
+
 # Backup and restore check for the control host's Nextcloud stack: pg_dump,
 # a restore into a throwaway server, and count queries, never row reads.
 control/provision/nextcloud_backup.py
