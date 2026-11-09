@@ -1,0 +1,137 @@
+name: Attest the mirrored mysql image
+
+# The db stack's mysql is a third-party image, so nothing here builds it. This
+# workflow vouches for it: it takes the digest the mirror list holds for the
+# pinned mysql release, pulls that digest from our own registry copy
+# (ghcr.io/branchleft/mirror/mysql, filled by image-mirror.yml), scans it, and
+# signs the same digest with a keyless GitHub artifact attestation bound to
+# THIS workflow's identity. The digest never changes, so a host that pins it
+# pulls the very bytes that were scanned and signed.
+#
+# The order below is fixed and the test pins it:
+#   1 pull by digest  2 scan  3 re-sign (attest)  4 verify
+#
+# Step 2 is a fail-closed placeholder until the shared image scan exists in
+# branchLeft/github-workflows (Grype, failing on critical or high findings).
+# Until then this workflow ends red before the attest step on purpose: no
+# image is signed unscanned. When the shared scan lands, replace that one step
+# with a call to it; nothing else in this file changes.
+#
+# Attest and verify is the repository's one composite action, called as it
+# stands; no copy of it lives here. A pinned-release bump is a new mysql entry
+# in .github/image-mirror/images.json and a new UPSTREAM_TAG below, in one
+# reviewed change; the list edit also triggers this workflow.
+#
+# Credentials: this run's own GITHUB_TOKEN. No stored credential.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mysql-image-attest.yml
+      - .github/image-mirror/images.json
+      - scripts/resolve-mirror-entry.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mysql-image-attest
+  cancel-in-progress: false
+
+jobs:
+  attest:
+    name: Pull, scan, re-sign and verify the mysql image
+    runs-on: ubuntu-latest
+    # `main` for every trigger: a manual dispatch from another ref must not sign.
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+
+    # `id-token: write` lets the run mint its keyless signing certificate and
+    # `attestations: write` lets it store the attestation; `packages: write`
+    # stores the signed bundle beside the image in the registry.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    env:
+      MIRROR_NAME: mysql
+      UPSTREAM_TAG: '8.0.46'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      # The digest comes from the mirror list, the one home of the pin. Exactly
+      # one entry must list the release, or the run stops.
+      - name: Resolve the pinned image from the mirror list
+        id: pin
+        run: python3 scripts/resolve-mirror-entry.py "$MIRROR_NAME" "$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # STEP 1 OF 4: pull by digest. Docker checks the bytes against the digest
+      # it was given, and the image store must then list exactly that digest.
+      - name: 'Step 1 of 4: pull the image by digest'
+        env:
+          IMAGE: ${{ steps.pin.outputs.image }}
+          DIGEST: ${{ steps.pin.outputs.digest }}
+        run: |
+          docker pull "$IMAGE@$DIGEST"
+          if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE@$DIGEST" | grep -Fxq "$IMAGE@$DIGEST"; then
+            echo "::error::the pulled image does not list $IMAGE@$DIGEST"
+            exit 1
+          fi
+
+      # STEP 2 OF 4: scan. NOT WIRED YET. This step is the one place the shared
+      # image scan from branchLeft/github-workflows goes (Grype, failing on
+      # critical or high findings, SBOM kept), given the same IMAGE and DIGEST.
+      # It fails closed: the attest step below is unreachable until this step
+      # is replaced, so no unscanned image is ever signed.
+      - name: 'Step 2 of 4: scan the image (shared scan not wired yet)'
+        run: |
+          echo "::error::the shared image scan is not wired into this workflow yet; refusing to sign an unscanned image"
+          exit 1
+
+      # STEPS 3 AND 4 OF 4: re-sign and verify. The repository's one composite
+      # action signs the digest, then verifies it through the GitHub API and
+      # from the registry copy, then checks that a wrong identity is rejected.
+      # The identity is a literal on purpose: read from this run's own
+      # `github.workflow_ref` it would agree with itself and prove nothing. The
+      # same value, with the source ref `refs/heads/main`, is what a host passes
+      # to scripts/verify-image-attestation.sh.
+      - name: 'Steps 3 and 4 of 4: re-sign and verify the image'
+        uses: ./.github/actions/attest-and-verify-image
+        with:
+          image: ${{ steps.pin.outputs.image }}
+          digest: ${{ steps.pin.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/mysql-image-attest.yml
+          repo: branchLeft/ghost-platform
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          IMAGE: ${{ steps.pin.outputs.image }}
+          DIGEST: ${{ steps.pin.outputs.digest }}
+        run: |
+          {
+            echo '## mysql image re-sign'
+            echo
+            echo "Pin this: \`${IMAGE:-NO IMAGE}@${DIGEST:-NO DIGEST}\`"
+            echo "Signed by \`branchLeft/ghost-platform/.github/workflows/mysql-image-attest.yml\`; check it with \`scripts/verify-image-attestation.sh\`."
+          } >> "$GITHUB_STEP_SUMMARY"
