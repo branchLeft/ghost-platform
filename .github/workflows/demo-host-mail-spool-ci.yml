@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - render-core/src/spool.ts
-      - demo-host/provision/branchleft_demo_egress.sh
+      - demo-host/provision/branchleft_demo_egress.py
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
       - scripts/mail-spool-proof/**
@@ -18,7 +18,7 @@ on:
     branches: [main]
     paths:
       - render-core/src/spool.ts
-      - demo-host/provision/branchleft_demo_egress.sh
+      - demo-host/provision/branchleft_demo_egress.py
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
       - scripts/mail-spool-proof/**

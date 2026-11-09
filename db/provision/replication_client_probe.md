@@ -80,6 +80,23 @@ exists to see.
 | `backup-admin-grant`       | grants the account `BACKUP_ADMIN`, so a pass would not show `REPLICATION CLIENT` is enough | 1, 3 |
 | `reload-grant`             | grants `RELOAD`; `FLUSH TABLES WITH READ LOCK` is accepted                       | 3 |
 | `old-path`                 | `RELOAD` plus `mysqldump --source-data=2`: its `FLUSH TABLES` waits for the long reader and `other`'s writes queue behind it | 2 |
+| `other-lock`               | holds a real `LOCK TABLES other.posts READ` in its own session for 500 ms, 3 s into the window; `other`'s writer waits it out. The red line names `control 2` and `held lock on other.posts (injected hold, 500 ms)` | 2 |
+
+Control 2's scenario, its verdict and its report are `snapshot_probe.py`'s
+(`long_reader_scenario`, `control_2_outcome`), written once for both probes.
+This probe supplies only its own snapshot (`take_snapshot` here, with
+`SHOW MASTER STATUS` coordinates) and its own old-path dump. The report, and
+what each of its figures means, is under control 2 in `snapshot_probe.md`.
+Control 2, both its phases, runs on the tmpfs-datadir source the proof script
+starts for it (`tmpfs_ctx`, written once in `snapshot_probe.py`, with the
+reason and the cost under "Control 2's source" there), seeded with this
+probe's account too; its other controls keep the real-disk source and real
+fsync. On tmpfs it proves metadata-lock and lock-phase waits only; the
+coordinate read's wait on an in-flight fsync is not covered (the PASS line says
+so), and a production-like-host measurement of it is still owed.
+Every red case that targets control 2 has a step in `snapshot-proof-ci.yml`
+that requires exit code 1 and `RED control 2,` in the log
+(`test_replication_client_probe.py` fails if one is missing).
 
 ## Why the ordering is consistent
 

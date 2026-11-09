@@ -22,6 +22,17 @@ export interface NewCredential {
   readonly folder: string;
   readonly bucket: string;
   readonly createdAt: string;
+  /** The tenant's upload ceiling in MiB; absent stores NULL, which the upload path refuses. The caller validates it; mint requires it. */
+  readonly uploadCeilingMib?: number;
+}
+
+/**
+ * Maps a row to the stored record. A NULL ceiling is left out of the record,
+ * never carried as `null`. An absent ceiling is refused by the upload path.
+ */
+function toStored(row: typeof credentials.$inferSelect): StoredCredential {
+  const { uploadCeilingMib, ...rest } = row;
+  return uploadCeilingMib === null ? { ...rest } : { ...rest, uploadCeilingMib };
 }
 
 export type InsertResult =
@@ -207,7 +218,7 @@ export class SqliteCredentialStore implements CredentialStore {
 
   get(keyId: string): StoredCredential | undefined {
     const row = this.#db.select().from(credentials).where(eq(credentials.keyId, keyId)).get();
-    return row === undefined ? undefined : { ...row };
+    return row === undefined ? undefined : toStored(row);
   }
 
   /**
@@ -225,7 +236,7 @@ export class SqliteCredentialStore implements CredentialStore {
         .all();
       return { value: inserted, changed: inserted !== undefined };
     });
-    if (row !== undefined) return { ok: true, credential: { ...row } };
+    if (row !== undefined) return { ok: true, credential: toStored(row) };
     if (this.get(credential.keyId) !== undefined) return { ok: false, reason: 'key-id-taken' };
     return { ok: false, reason: 'folder-has-active-credential' };
   }
@@ -238,7 +249,7 @@ export class SqliteCredentialStore implements CredentialStore {
       .where(eq(credentials.folder, folder))
       .orderBy(asc(credentials.createdAt), asc(credentials.keyId))
       .all()
-      .map((row) => ({ ...row }));
+      .map(toStored);
   }
 
   /** Disables every active credential for a folder, stamping `disabledAt` on each; returns how many it changed. */

@@ -68,10 +68,10 @@ test('no type check, build or test step can read the registry token', () => {
   }
 });
 
-test('three installs carry the token: both built packages and the applications', () => {
+test('four installs carry the token: the three built packages and the applications', () => {
   const { steps } = parts(uncommented(real));
   const withToken = steps.filter((step) => installs(step) && step.includes(TOKEN));
-  assert.equal(withToken.length, 3);
+  assert.equal(withToken.length, 4);
 });
 
 test('the checkout does not keep its credential in the repository config', () => {
