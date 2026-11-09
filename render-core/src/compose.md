@@ -65,3 +65,20 @@ again for each existing tenant on it. The script is idempotent and creates
 only the missing volume. The tenant image must carry the adapter's
 unique-temporary-name write (`adapters/scanning-storage/src/metrics.md`) with
 or before that render, because both colours now write into one directory.
+
+## The stop grace period
+
+Each Ghost service sets `stop_grace_period` to `GHOST_STOP_GRACE_PERIOD`
+(60 seconds). Without it Docker waits 10 seconds after SIGTERM and then sends
+SIGKILL, which can cut a send batch in half. The value is provisional: the
+issue names no batch duration, so 60 seconds is an assumption, six times
+Docker's default. The two-instance harness measures the real batch, and that
+measurement replaces this constant.
+
+`assertRuntimePosture` refuses a Ghost service without a whole-seconds
+`stop_grace_period`, so dropping the line fails the render rather than
+shipping a stack that is killed mid-batch.
+
+Every tenant rendered by this module gets the setting: the entry and
+professional tenants, tenant zero, and each demo slot. The mail spool is not
+a Ghost service and keeps its own stop behaviour.

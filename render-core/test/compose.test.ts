@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Port, PrivateIpV4, Slug, TenantUid } from '../src/brand.js';
-import { GHOST_CONTAINER_PORT, assertRuntimePosture, renderComposeStack } from '../src/compose.js';
+import {
+  GHOST_CONTAINER_PORT,
+  GHOST_STOP_GRACE_PERIOD,
+  assertRuntimePosture,
+  renderComposeStack,
+} from '../src/compose.js';
 import type { YamlValue } from '../src/yaml.js';
 
 const baseArgs = {
@@ -28,6 +33,7 @@ function okService(): Record<string, YamlValue> {
   return {
     read_only: true,
     init: true,
+    stop_grace_period: GHOST_STOP_GRACE_PERIOD,
     user: '30123:30123',
     cap_drop: ['ALL'],
     security_opt: ['no-new-privileges:true'],
@@ -60,6 +66,32 @@ describe('renderComposeStack()', () => {
   it('is a header comment followed by the compose document', () => {
     const yaml = renderComposeStack(baseArgs);
     expect(yaml.startsWith('# The acme Ghost stack')).toBe(true);
+  });
+
+  it('gives every Ghost container a stop grace period, so a stop waits for in-flight work', () => {
+    const yaml = renderComposeStack(baseArgs);
+    expect(yaml.match(/stop_grace_period: '60s'/g)).toHaveLength(2);
+    expect(yaml).toContain(`stop_grace_period: '${GHOST_STOP_GRACE_PERIOD}'`);
+  });
+
+  it('SABOTAGE — a Ghost container with no stop grace period is refused, the real render restores green', () => {
+    // RED: removing the setting from a rendered service, as the render
+    // would if the line were dropped, leaves Docker's 10-second default and
+    // a SIGKILL mid-batch.
+    const { stop_grace_period: _drop, ...withoutGrace } = okService();
+    expect(() => assertRuntimePosture(doc(withoutGrace), '10.20.1.50')).toThrow(
+      /must set `stop_grace_period`/
+    );
+    // GREEN: the compliant service, and the real render, carry it.
+    expect(() => assertRuntimePosture(doc(okService()), '10.20.1.50')).not.toThrow();
+    expect(() => renderComposeStack(baseArgs)).not.toThrow();
+  });
+
+  it('refuses a stop grace period that is not a whole number of seconds', () => {
+    const service = { ...okService(), stop_grace_period: '1m' };
+    expect(() => assertRuntimePosture(doc(service), '10.20.1.50')).toThrow(
+      /must set `stop_grace_period`/
+    );
   });
 });
 
