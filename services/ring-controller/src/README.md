@@ -264,10 +264,12 @@ order.
 
 - **Pre-flight.** The environment check runs first. A release whose route
   is not `fast-path` (a major version, an irreversible migration) is held
-  as `consent-required` with no gate run and no bump. Consent is the
-  owner's, and the route is decided upstream.
-- **Hold, not page.** A red gate, a consent route or a regression is a
-  hold, routed to a person on the owner digest channel. The only page is the
+  as `consent-required` with no gate run and no bump. Nobody consents to it:
+  the route is decided upstream, and the release is refused, so tenants stay
+  on the current version.
+- **Hold, not page.** A red gate, a refused route or a regression is a
+  hold: tenants stay on the current version, and the hold is raised as an
+  operational alert and a filed work item. The only page is the
   one the state machine already raises for `failed-unsafe`. The `hold` sink
   is separate from `BumpDependencies.page` so the written register of what
   may page is untouched.
