@@ -22,6 +22,8 @@ on:
       - scripts/resolve-published-image.sh
       - scripts/test-probe-tokenless-attestation.sh
       - .github/workflows/image-attestation-tokenless.yml
+      - .github/workflows/mysql-image-attest.yml
+      - workflow-mysql-image-attest.test.js
   pull_request:
     branches: [main]
     paths:
@@ -38,6 +40,8 @@ on:
       - scripts/resolve-published-image.sh
       - scripts/test-probe-tokenless-attestation.sh
       - .github/workflows/image-attestation-tokenless.yml
+      - .github/workflows/mysql-image-attest.yml
+      - workflow-mysql-image-attest.test.js
 
 permissions:
   contents: read
@@ -69,3 +73,6 @@ jobs:
 
       - name: Lint the image workflows and the attest action
         run: node --test workflow-image-attestation.test.js
+
+      - name: Lint the mysql image attest workflow
+        run: node --test workflow-mysql-image-attest.test.js

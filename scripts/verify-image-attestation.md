@@ -60,5 +60,10 @@ last line too, and must fail the check rather than pass as a rejection.
 | `ghcr.io/branchleft/ghost-tenant` | `branchLeft/ghost-platform/.github/workflows/registry-push.yml` |
 | `ghcr.io/branchleft/portal-apps` | `branchLeft/ghost-platform/.github/workflows/portal-apps-image.yml` |
 | `ghcr.io/branchleft/demo-edge` | `branchLeft/ghost-platform/.github/workflows/demo-edge-image.yml` |
+| `ghcr.io/branchleft/mirror/mysql` | `branchLeft/ghost-platform/.github/workflows/mysql-image-attest.yml` |
+
+The mysql row is a third-party image. Nothing here built it: the signature says
+the workflow pulled that digest from our mirror, scanned it and vouched for it.
+The signed digest is the mirror's own, so a host that pins it pulls the scanned bytes.
 
 The test for this script is `scripts/test-verify-image-attestation.sh`.
