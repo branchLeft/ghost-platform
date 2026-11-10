@@ -37,7 +37,9 @@ test('the global pnpm is an exact version, and nothing else is installed globall
 
 test('the pnpm version matches the packageManager pin of the packages it builds', () => {
   for (const dir of ['portal/apps', 'portal/data', 'services/identity', 'services/request-guard']) {
-    const pkg = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, dir, 'package.json'), 'utf8'));
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(import.meta.dirname, dir, 'package.json'), 'utf8')
+    );
     assert.equal(pkg.packageManager, PNPM, `${dir} packageManager`);
   }
 });
@@ -47,7 +49,10 @@ test('npm is removed in the same RUN that installs with it', () => {
   const installRun = runs.find((run) => run.includes('npm install --global'));
   assert.ok(installRun, 'a RUN installs with npm');
   assert.match(installRun, /rm -rf \/usr\/local\/lib\/node_modules\/npm\b/);
-  assert.ok(installRun.indexOf('npm install --global') < installRun.indexOf('rm -rf /usr/local/lib/node_modules/npm'));
+  assert.ok(
+    installRun.indexOf('npm install --global') <
+      installRun.indexOf('rm -rf /usr/local/lib/node_modules/npm')
+  );
 });
 
 test('the pnpm store is removed in the same RUN that installs into it', () => {
