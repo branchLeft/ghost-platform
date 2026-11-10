@@ -1,0 +1,255 @@
+name: Storage gateway image
+
+# Builds the storage gateway image (services/storage-gateway/Dockerfile) and
+# smoke-checks the built image: the store's native driver loads on Alpine, the
+# process is not root, the image carries no package manager, and the service
+# refuses to start with no configuration.
+#
+# A pull request builds and checks only, with no credential. On push to `main`
+# (or a manual dispatch from `main`) a second job pushes the image to
+# ghcr.io/branchleft/storage-gateway tagged with the git SHA, reads the pushed
+# digest back from the image store, refuses to finish without a well-formed
+# sha256, and publishes `ghcr.io/branchleft/storage-gateway@sha256:...` as the
+# job's `image` output and in its summary. A tag can be re-pointed, a digest
+# cannot. There is deliberately no `latest` tag.
+#
+# The push job publishes the very image the checks ran against: the build job
+# saves it as an artifact and outputs its image ID, and the push job loads it,
+# checks the ID matches, then tags and pushes it. Nothing is rebuilt.
+#
+# The pushed digest is then scanned and attested. There is deliberately no
+# deploy job: nothing here delivers the image to a host. The gateway host pins
+# a digest that has passed the scan and the attestation, and that delivery
+# belongs to the host's own path.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/storage-gateway/**
+      - .github/workflows/storage-gateway-image.yml
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - services/storage-gateway/**
+      - .github/workflows/storage-gateway-image.yml
+
+# `packages: read` because the image's build stage installs
+# `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
+# workflow's top level never requests a write credential: only the push and
+# attest jobs below ask for `packages: write`, for themselves.
+permissions:
+  contents: read
+  packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: docker build + image checks (storage-gateway)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    outputs:
+      image-id: ${{ steps.proven.outputs.image-id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The secret is consumed by a `RUN --mount` in the Dockerfile, so it
+      # reaches `pnpm install` without entering a layer or the build history.
+      - name: Build image
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag storage-gateway:ci \
+            services/storage-gateway
+
+      - name: The credential store's native driver loads and opens a database
+        run: |
+          docker run --rm --entrypoint node storage-gateway:ci -e "
+            const Database = require('better-sqlite3');
+            const row = new Database(':memory:').prepare('select 1 as one').get();
+            if (row.one !== 1) process.exit(1);
+          "
+
+      - name: The process is not root
+        run: |
+          uid="$(docker run --rm --entrypoint id storage-gateway:ci -u)"
+          if [ "$uid" = "0" ]; then
+            echo "::error::the image runs as root"
+            exit 1
+          fi
+
+      - name: The image carries no package manager
+        run: |
+          found="$(docker run --rm --entrypoint sh storage-gateway:ci -c 'command -v npm npx pnpm yarn || true')"
+          if [ -n "$found" ]; then
+            echo "::error::the image carries a package manager: $found"
+            exit 1
+          fi
+
+      - name: The service refuses to start with no configuration
+        run: |
+          if output="$(docker run --rm storage-gateway:ci 2>&1)"; then
+            echo "::error::the service started with no configuration"
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep -q 'refusing to start'
+
+      # Only reached when the checks above passed. The image ID is read after
+      # them, from the tag they ran, and travels with the saved tarball so the
+      # push job can refuse anything else.
+      - name: Save the checked image
+        id: proven
+        run: |
+          docker save --output storage-gateway.tar storage-gateway:ci
+          echo "image-id=$(docker image inspect --format '{{.Id}}' storage-gateway:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the checked image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: storage-gateway-image
+          path: storage-gateway.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the checked storage-gateway image
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/storage-gateway
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Download the checked image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: storage-gateway-image
+
+      # The loaded image must be exactly the one the checks ran against.
+      - name: Load the checked image and check its ID
+        env:
+          PROVEN_ID: ${{ needs.build.outputs.image-id }}
+        run: |
+          docker load --input storage-gateway.tar
+          loaded="$(docker image inspect --format '{{.Id}}' storage-gateway:ci)"
+          if [ -z "$PROVEN_ID" ] || [ "$loaded" != "$PROVEN_ID" ]; then
+            echo "::error::loaded image '$loaded' is not the checked image '$PROVEN_ID'"
+            exit 1
+          fi
+          docker tag storage-gateway:ci "$IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## storage-gateway image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+            echo "The scan and attest jobs follow: use this digest only once both are green."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The pushed digest, scanned by the shared image-scan workflow before anything
+  # signs it. It fails the run on any critical or high finding no exemption
+  # covers; the threshold is fixed in that workflow and cannot be lowered here.
+  # No exemption file exists in this repository: a finding with no available
+  # fix goes through the exemption route, never a changed threshold.
+  scan:
+    name: Scan the pushed storage-gateway image
+    needs: push
+    permissions:
+      contents: read
+      packages: read
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0
+    with:
+      image: ${{ needs.push.outputs.image }}
+
+  # Signs the digest with a keyless GitHub artifact attestation, then verifies
+  # it with the identity below and checks that a wrong identity is rejected. It
+  # needs the scan, so an image that fails the scan is never signed. The
+  # identity is a literal on purpose: read from this run's own
+  # `github.workflow_ref` it would agree with itself and prove nothing. The
+  # same value, with the source ref `refs/heads/main`, is what a host passes to
+  # scripts/verify-image-attestation.sh. `id-token: write` mints the keyless
+  # signing certificate and `attestations: write` stores the attestation; the
+  # registry login needs `packages: write` for the stored bundle.
+  attest:
+    name: Attest and verify the scanned storage-gateway image
+    needs: [push, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/branchleft/storage-gateway
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest and verify the pushed image
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ needs.push.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/storage-gateway-image.yml
+          repo: branchLeft/ghost-platform
