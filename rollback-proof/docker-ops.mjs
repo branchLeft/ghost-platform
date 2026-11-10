@@ -105,7 +105,8 @@ class Colour extends GhostContainer {
     const admin = new GhostAdmin(this);
     admin.cookie = cookie;
     return {
-      createPost: (post) => admin.createPost(post),
+      // `marker` is the proof's own note of what to look for, not a Ghost field.
+      createPost: ({ slug, title, html }) => admin.createPost({ slug, title, html }),
       createMember: (member) => admin.createMember(member),
       listPosts: () => admin.listPosts(),
       me: async () => (await admin.call('GET', '/users/me/')).status,

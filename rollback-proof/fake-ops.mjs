@@ -53,7 +53,7 @@ export function fakeOps(images, { world = fakeWorld(), everythingRenders = false
       async createPost(post) {
         if (!world.cookies.has(cookie)) throw new Error('not signed in');
         if (faultsAt('publish')) throw new Error('publish answered 500');
-        world.posts.set(post.slug, post.html.replace(/<[^>]+>/g, ''));
+        world.posts.set(post.slug, post.html);
       },
       async createMember(member) {
         if (faultsAt('member-create')) throw new Error('member creation answered 500');

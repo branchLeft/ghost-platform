@@ -27,16 +27,19 @@ const SEED_POST = Object.freeze({
   slug: 'rollback-proof-seed',
   title: 'ROLLBACK_PROOF_SEED_TITLE',
   html: '<p>ROLLBACK_PROOF_SEED_BODY</p>',
+  marker: 'ROLLBACK_PROOF_SEED_BODY',
 });
 const NEW_POST = Object.freeze({
   slug: 'rollback-proof-written-by-new',
   title: 'ROLLBACK_PROOF_NEW_TITLE',
   html: '<p>ROLLBACK_PROOF_NEW_BODY</p>',
+  marker: 'ROLLBACK_PROOF_NEW_BODY',
 });
 const OLD_POST = Object.freeze({
   slug: 'rollback-proof-written-after-rollback',
   title: 'ROLLBACK_PROOF_AFTER_TITLE',
   html: '<p>ROLLBACK_PROOF_AFTER_BODY</p>',
+  marker: 'ROLLBACK_PROOF_AFTER_BODY',
 });
 const NEVER_PUBLISHED_SLUG = 'rollback-proof-never-published';
 const MEMBER = Object.freeze({ email: 'member-rollback-proof@example.test', name: 'MEMBER_NAME' });
@@ -189,8 +192,7 @@ async function rollBack({ session, oldImage, seeded, check, record, clock, log }
       for (const post of [SEED_POST, NEW_POST]) {
         if (!slugs.includes(post.slug)) throw new Error(`post ${post.slug} is missing`);
         const page = await colour.page(`/${post.slug}/`);
-        const marker = post.html.replace(/<[^>]+>/g, '');
-        if (page.status !== 200 || !page.text.includes(marker)) {
+        if (page.status !== 200 || !page.text.includes(post.marker)) {
           throw new Error(`post ${post.slug} does not render (HTTP ${page.status})`);
         }
       }
