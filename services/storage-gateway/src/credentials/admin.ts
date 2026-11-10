@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { resolveBodyCeiling } from '../body.js';
+import type { CredentialRecord } from '../contracts.js';
 import { authenticateAdmin, type AdminAuthDeps, type AdminCaller } from './adminAuth.js';
 import { deriveTenantSecret } from './derive.js';
 import type { MasterSecret } from './masterSecret.js';
@@ -19,6 +21,14 @@ export interface AdminResponse {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
 }
+
+/**
+ * The most a mint may set as a tenant's upload ceiling, in MiB (5 GiB). It is
+ * a sanity bound against a typo or an unbounded value, not a tier value: the
+ * per-tier ceilings are the owner's and the provisioning controller passes
+ * them on each mint.
+ */
+export const MAX_UPLOAD_CEILING_MIB = 5 * 1024;
 
 export type AdminOperation = 'mint' | 'disable' | 'disable-folder' | 'state';
 
@@ -101,6 +111,9 @@ function describe(credential: StoredCredential): object {
     bucket: credential.bucket,
     state: credential.state,
     createdAt: credential.createdAt,
+    ...(credential.uploadCeilingMib === undefined
+      ? {}
+      : { uploadCeilingMib: credential.uploadCeilingMib }),
   };
 }
 
@@ -122,7 +135,20 @@ function route(method: string, path: string): Routed {
   return undefined;
 }
 
-function parseMintBody(rawBody: Buffer): { folder: string; bucket: string } | undefined {
+interface MintBody {
+  readonly folder: string;
+  readonly bucket: string;
+  readonly uploadCeilingMib: number;
+}
+
+/**
+ * Reads a mint request. The ceiling is mandatory: a request without one is
+ * refused, because the upload path holds no default and would refuse every
+ * upload from the credential. A present one must be a number the body stage
+ * would accept (the body stage's own rule decides) and no more than
+ * {@link MAX_UPLOAD_CEILING_MIB}.
+ */
+function parseMintBody(rawBody: Buffer): MintBody | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody.toString('utf8'));
@@ -130,10 +156,21 @@ function parseMintBody(rawBody: Buffer): { folder: string; bucket: string } | un
     return undefined;
   }
   if (typeof parsed !== 'object' || parsed === null) return undefined;
-  const { folder, bucket } = parsed as Record<string, unknown>;
+  const { folder, bucket, uploadCeilingMib } = parsed as Record<string, unknown>;
   if (typeof folder !== 'string' || !FOLDER_PATTERN.test(folder)) return undefined;
   if (typeof bucket !== 'string' || !BUCKET_PATTERN.test(bucket)) return undefined;
-  return { folder, bucket };
+  if (typeof uploadCeilingMib !== 'number') return undefined;
+  if (uploadCeilingMib > MAX_UPLOAD_CEILING_MIB) return undefined;
+  // Only the ceiling is read from this record; the others satisfy its type.
+  const candidate: CredentialRecord = {
+    folder,
+    bucket,
+    state: 'active',
+    createdAt: '',
+    uploadCeilingMib,
+  };
+  if (!resolveBodyCeiling(candidate).ok) return undefined;
+  return { folder, bucket, uploadCeilingMib };
 }
 
 /**
@@ -165,13 +202,14 @@ export function createAdminInterface(deps: AdminDeps) {
   function mint(caller: AdminCaller, rawBody: Buffer): AdminResponse {
     const body = parseMintBody(rawBody);
     if (body === undefined)
-      return respond(400, { error: 'body must name a valid folder and bucket' });
+      return respond(400, { error: 'body must name a valid folder, bucket and upload ceiling' });
     const at = new Date(deps.auth.nowMs()).toISOString();
     const inserted = deps.store.insert({
       keyId: mintKeyId(),
       folder: body.folder,
       bucket: body.bucket,
       createdAt: at,
+      uploadCeilingMib: body.uploadCeilingMib,
     });
     if (!inserted.ok) {
       return inserted.reason === 'key-id-taken'

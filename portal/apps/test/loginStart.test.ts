@@ -31,6 +31,7 @@ function build(origin: string, sessionSeconds?: number) {
     projectId: PROJECT_ID,
     redirectUri: `${origin}${CALLBACK_PATH}`,
     publicOrigin: origin,
+    cookiePrefix: 'portal',
     verifier: createTokenVerifier({
       issuer: ISSUER,
       clientId: CLIENT_PORTAL,

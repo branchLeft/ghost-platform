@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RefusalLogEntry } from '../src/admit.js';
 import type { CredentialRecord } from '../src/contracts.js';
 import {
-  DEFAULT_BODY_CEILING_MIB,
   SPOOL_THRESHOLD_BYTES,
   receiveBody,
   resolveBodyCeiling,
@@ -109,9 +108,10 @@ describe('resolveBodyCeiling', () => {
     createdAt: '2026-01-01T00:00:00Z',
   };
 
-  it('gives 128 MiB when the credential names no ceiling', () => {
-    expect(DEFAULT_BODY_CEILING_MIB).toBe(128);
-    expect(resolveBodyCeiling(base)).toEqual({ ok: true, bytes: 128 * MIB });
+  it('refuses a credential that names no ceiling as internal-error, never a default', () => {
+    const result = resolveBodyCeiling(base);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusal.code).toBe('internal-error');
   });
 
   it('honours the credential field', () => {

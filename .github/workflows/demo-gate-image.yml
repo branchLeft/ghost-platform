@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - services/demo-gate/**
+      - services/request-guard/**
       - render-core/**
       - scripts/test-demo-gate.sh
       - scripts/test-demo-edge.sh
@@ -26,6 +27,7 @@ on:
     branches: [main]
     paths:
       - services/demo-gate/**
+      - services/request-guard/**
       - render-core/**
       - scripts/test-demo-gate.sh
       - scripts/test-demo-edge.sh

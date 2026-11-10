@@ -32,8 +32,12 @@ template-generated duplicate of tenant zero rendering. `validate()` and
 `validateTenantStack()` take the repository as `options.claimantRepo`; the
 caller supplies it, because this package has no identity of its own. Without a
 claimant (`render()` has none) only infrastructure names and length are
-checked. The register is written by hand, so a tenant name not yet in it is not
-protected; that gap is tracked as a follow-up.
+checked. The register holds tenant zero and the infrastructure names only.
+Customer tenant names are deliberately absent, because the register is public and
+this package is published; whether one is taken is decided by the control plane
+when it accepts the sign-up, and by the provisioning workflow stopping when the
+tenant's own repository already exists. This package can do neither, so a
+customer name is not protected here.
 
 ## Metrics volume
 

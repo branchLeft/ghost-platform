@@ -2,7 +2,9 @@
 // gate's PR job passes on a send the pinned spool would turn away.
 // The control is the sender-domain check: a credential may only send as its own
 // registered sender domain, on the Mailgun route (400) and at SMTP MAIL FROM
-// (553). No Docker: this spawns server.js and cli.js on ephemeral ports.
+// (553). The drain listener binds SHIM_DRAIN_HOST alone, and the stand-in refuses
+// to start with SHIM_DRAIN_PORT and no host, as the real shim does. No Docker:
+// this spawns server.js and cli.js on ephemeral ports.
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -54,6 +56,7 @@ before(async () => {
       ...env,
       PORT: String(ports.http),
       SHIM_DRAIN_PORT: String(ports.drain),
+      SHIM_DRAIN_HOST: '127.0.0.1',
       SMTP_LISTEN_PORT: String(ports.smtp),
       SHIM_DRAIN_TOKEN: TOKEN,
     },
@@ -180,3 +183,40 @@ test('SMTP MAIL FROM outside the sender domain gets 553, inside gets 250', async
   assert.match(foreign, /^553 /, 'a foreign envelope sender must be refused');
   assert.match(own, /^250 /, 'the registered domain must be accepted');
 });
+
+test('the stand-in refuses to start with a drain port and no drain host', async () => {
+  const { SHIM_DRAIN_HOST: _unset, ...withoutHost } = env;
+  const r = spawnSync(process.execPath, [SERVER], {
+    env: {
+      ...withoutHost,
+      PORT: String(await freePort()),
+      SHIM_DRAIN_PORT: String(await freePort()),
+      SMTP_LISTEN_PORT: String(await freePort()),
+      SHIM_DRAIN_TOKEN: TOKEN,
+    },
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  assert.equal(r.status, 1, `expected exit 1, got ${r.status} ${r.signal ?? ''}: ${r.stderr}`);
+  assert.match(r.stderr, /SHIM_DRAIN_HOST is required when SHIM_DRAIN_PORT is set/);
+});
+
+// The drain listener is bound to the one host it was given, so an address the
+// machine holds on another interface does not answer. Skipped where the machine
+// has no non-loopback IPv4 address; the CI runner has one.
+const otherAddress = Object.values(os.networkInterfaces())
+  .flat()
+  .find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
+
+test(
+  'the drain listener answers on its bound host and not on another address of the machine',
+  { skip: otherAddress ? false : 'no non-loopback IPv4 address on this machine' },
+  async () => {
+    const bound = await fetch(`http://127.0.0.1:${ports.drain}/metrics`);
+    assert.equal(bound.status, 200, 'the drain listener must answer on SHIM_DRAIN_HOST');
+    await assert.rejects(
+      fetch(`http://${otherAddress}:${ports.drain}/metrics`, { signal: AbortSignal.timeout(3000) }),
+      'the drain listener must not answer on an address it was not bound to'
+    );
+  }
+);

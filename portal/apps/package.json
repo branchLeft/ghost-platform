@@ -17,6 +17,7 @@
   "dependencies": {
     "ghost-platform-identity": "link:../../services/identity",
     "ghost-platform-portal-data": "link:../data",
+    "ghost-platform-request-guard": "link:../../services/request-guard",
     "nodemailer": "^9.1.1",
     "pg": "^8.13.0"
   },

@@ -157,15 +157,8 @@ output, not the other way round.
 
 ## Resolving the request source
 
-`source.ts`'s `SourceResolver.resolve` decides who is asking, for the
-purpose of the attempt ceiling. The socket peer is the only fact about a
-request nobody on the far side can choose. `X-Forwarded-For` is read only
-when that peer is a configured trusted proxy -- the edge -- and then only
-its rightmost entry, which is the address the edge itself saw; anything to
-its left was written by the client. A trusted peer that sends no usable
-header yields no source at all, and the caller refuses rather than falling
-back to the proxy's own address, which would pool every visitor into one
-bucket.
+The attempt ceiling, the request-source resolver and their `peek`, sweep and
+overflow rules live in `../request-guard/README.md`, shared with the portal.
 
 ## A trusted-proxy list left empty
 
@@ -200,49 +193,6 @@ Two things address the gap; the second is the one that sets the value:
 Trust is by address: any process in the host's network namespace that can
 open the gate's port is a trusted peer and can set its own source with
 `X-Forwarded-For`. A visitor cannot.
-
-## `peek` and the reclaim sweep
-
-`ceiling.ts`'s `peek` gives the verdict `attempt` would give right now,
-without recording an attempt: no entry created for the key, no count
-incremented. It may still evict other sources' already-expired windows when
-the table looks full, the same reclaiming `attempt` itself does — without
-that, a table that once reached `maxSources` would refuse every source
-forever, since nothing else ever runs a sweep once every caller peeks before
-it ever calls `attempt`.
-
-For a caller checking more than one ceiling before deciding whether to
-charge any of them: peek every ceiling first, and only call `attempt` on
-ones that already peeked `allowed`, so a request refused by one ceiling
-never creates or charges an entry in another.
-
-`login()` charges both ceilings only once a request has passed every
-check that comes before a derivation. A request refused earlier -- wrong
-content type, unreadable or oversized body, empty or over-long passphrase
--- costs neither ceiling. Every request that reaches a derivation costs
-both, including an unknown host, an unleased slot or an untied lease,
-which derive against the decoy hash.
-
-A malformed request is not free. Each of those 400 refusals is charged to a
-third, separate bucket, the malformed ceiling (`GATE_CEILING_MALFORMED_ATTEMPTS`,
-keyed on the same narrow source), and is answered `429` once that bucket is
-spent, so a flood of them is bounded. The bucket is consulted only on those
-400 paths: a well-formed attempt never reads or writes it, so a flood of
-malformed requests can make further malformed requests from that source
-`429`, but it can never refuse or charge a valid login.
-
-## Why `attempt` and `peek` share one decision path
-
-`ceiling.ts`'s `attempt` and `peek` share the whole decision function, sweep
-included, so the two can never disagree about what "allowed" means. `peek`
-was the regression the sweep's old home (only inside `attempt`) caused: once
-a table held `maxSources` expired windows, `peek` refused every source
-forever, and `login()` never reaches `attempt` on a source `peek` has
-already refused, so nothing was left to reclaim them.
-
-The sweep is safe to run from a read-only call: it only ever deletes entries
-already treated as absent for every verdict, so evicting one changes no
-decision, only the table's own size.
 
 ## The broad ceiling's default of 1000
 
@@ -286,7 +236,7 @@ would hold more pending derivations than that.
 
 ## Why a derivation gate exists
 
-The per-source ceiling (`ceiling.ts`) limits attempts from one source over
+The per-source ceiling (`request-guard`'s `ceiling.ts`) limits attempts from one source over
 time, but places no limit on how many distinct sources can be
 mid-derivation together, and each derivation the slot's own hash allows can
 hold up to 256 MiB and run for as long as its parameters ask. A flood

@@ -17,6 +17,9 @@ importers:
       ghost-platform-portal-data:
         specifier: link:../data
         version: link:../data
+      ghost-platform-request-guard:
+        specifier: link:../../services/request-guard
+        version: link:../../services/request-guard
       nodemailer:
         specifier: ^9.1.1
         version: 9.1.1

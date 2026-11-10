@@ -15,6 +15,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { TENANT_KINDS } from './tenantKind.js';
+import { TENANT_NAME_PATTERN } from './tenantName.js';
 import {
   DEMO_STATES,
   LABEL_PATTERN,
@@ -40,8 +41,9 @@ const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'
  * organisation id and its kind (a real tenant or a demo slot). A tenant reads
  * its own row and holds no write privilege on it, so it cannot change its own
  * kind; the owner role bypasses row security by attribute. The kind has no
- * default: a row that names none is refused, never guessed. The policies are
- * explained in the package README.
+ * default: a row that names none is refused, never guessed. A real tenant's
+ * sign-up name is held here, unique, and nowhere in any repository. The
+ * policies are explained in the package README.
  */
 export const tenantRegister = portal
   .table(
@@ -51,11 +53,20 @@ export const tenantRegister = portal
       zitadelOrgId: text('zitadel_org_id').notNull().unique(),
       createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
       kind: text('kind').notNull(),
+      tenantName: text('tenant_name'),
     },
     (table) => [
       check(
         'tenant_register_kind_known',
         sql`${table.kind} IN (${sql.raw(sqlList(TENANT_KINDS))})`
+      ),
+      // The name a customer signed up under, in its stored (normalised) form.
+      // Null for a demo slot. Unique, so a second sign-up under a taken name is
+      // refused by the table even to a statement that skips the code.
+      unique('tenant_register_tenant_name_unique').on(table.tenantName),
+      check(
+        'tenant_register_tenant_name_shape',
+        sql`${table.tenantName} ~ ${sql.raw(`'${TENANT_NAME_PATTERN}'`)}`
       ),
       pgPolicy('tenant_isolation', {
         as: 'permissive',

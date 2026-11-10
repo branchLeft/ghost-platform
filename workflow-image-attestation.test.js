@@ -162,6 +162,7 @@ test('every action used is a local one or pinned to a full commit sha', () => {
   const files = [
     ACTION,
     '.github/workflows/image-attestation-ci.yml',
+    '.github/workflows/image-attestation-tokenless.yml',
     ...IMAGE_WORKFLOWS.map((n) => `.github/workflows/${n}`),
   ];
   for (const file of files) {
@@ -182,4 +183,138 @@ test('the CI workflow is read-only', () => {
   const text = uncommented('.github/workflows/image-attestation-ci.yml');
   assert.match(text, /permissions:\n {2}contents: read\n/);
   assert.doesNotMatch(text, /write|id-token|attestations|secrets\./);
+});
+
+// The token-less probe workflow and its scripts. The probe must run the one
+// verifier, under the host's scrubbed keys, and no token may reach its step.
+const TOKENLESS = '.github/workflows/image-attestation-tokenless.yml';
+const PROBE = 'scripts/probe-tokenless-attestation.sh';
+const RESOLVE = 'scripts/resolve-published-image.sh';
+const PROBE_TEST = 'scripts/test-probe-tokenless-attestation.sh';
+
+// The steps of a job, each from its `- name:` line to the next step.
+function steps(text) {
+  return text.split(/\n(?=      - name: )/).filter((s) => s.includes('- name: '));
+}
+
+function stepNamed(text, prefix) {
+  const found = steps(text).find((s) => s.includes(`- name: ${prefix}`));
+  assert.ok(found, `a step named ${prefix}`);
+  return found;
+}
+
+test('the token-less workflow grants read only and never swallows a failure', () => {
+  const text = uncommented(TOKENLESS);
+  assert.match(text, /permissions:\n {2}contents: read\n/);
+  assert.match(text, /permissions:\n {6}contents: read\n {6}actions: read\n/);
+  assert.doesNotMatch(text, /id-token|attestations|packages/);
+  assert.doesNotMatch(text, /continue-on-error|\|\| true/);
+});
+
+test('github.token reaches only the two resolve steps, and the probe step has no token', () => {
+  const text = uncommented(TOKENLESS);
+  const withToken = steps(text).filter((s) => s.includes('github.token'));
+  assert.equal(withToken.length, 2, 'github.token is in exactly two steps');
+  for (const s of withToken) {
+    assert.match(s, /- name: Resolve /, 'github.token is only in a resolve step');
+  }
+  const probe = stepNamed(text, 'Probe the verifier with a placeholder GH_TOKEN');
+  assert.doesNotMatch(probe, /GH_TOKEN:|GITHUB_TOKEN|github\.token|secrets\./);
+  assert.doesNotMatch(text, /secrets\./, 'no secret in the workflow');
+});
+
+test('the job has one probe step, standing: no step is red by design, none is conditional', () => {
+  const text = uncommented(TOKENLESS);
+  const probes = steps(text).filter((s) => s.includes('probe-tokenless-attestation.sh'));
+  assert.equal(probes.length, 1, 'one probe step');
+  assert.doesNotMatch(text, /\n {8}if: /, 'no step condition');
+  assert.doesNotMatch(text, /PROBE_GH_TOKEN_PLACEHOLDER|Experiment/, 'no experiment left');
+});
+
+test('the probe runs after both resolve steps and is given both references', () => {
+  const text = uncommented(TOKENLESS);
+  const real = text.indexOf('- name: Resolve the real');
+  const control = text.indexOf('- name: Resolve the control');
+  const probeAt = text.indexOf('- name: Probe the verifier with a placeholder GH_TOKEN');
+  assert.ok(real > -1 && control > -1 && probeAt > real && probeAt > control);
+  const probe = stepNamed(text, 'Probe the verifier with a placeholder GH_TOKEN');
+  assert.match(
+    probe,
+    /run: \.\/scripts\/probe-tokenless-attestation\.sh "\$REAL_IMAGE" "\$CONTROL_IMAGE"\s*$/
+  );
+  assert.match(probe, /REAL_IMAGE: \$\{\{ steps\.real\.outputs\.image \}\}/);
+  assert.match(probe, /CONTROL_IMAGE: \$\{\{ steps\.control\.outputs\.image \}\}/);
+});
+
+test('no run block takes an expression, and no workflow or probe text runs the verifier directly', () => {
+  const text = uncommented(TOKENLESS);
+  for (const s of steps(text)) {
+    const at = s.indexOf('run:');
+    if (at > -1) assert.doesNotMatch(s.slice(at), /\$\{\{/, 'no expression in a run block');
+  }
+  for (const file of [TOKENLESS, PROBE, RESOLVE]) {
+    assert.doesNotMatch(
+      uncommented(file),
+      /attestation verify/,
+      `${file} has no second copy of the verifier`
+    );
+  }
+});
+
+test('the probe calls the one verifier with the literal identity, under the host keys', () => {
+  const probe = read(PROBE);
+  assert.match(probe, /VERIFY="\$HERE\/verify-image-attestation\.sh"/);
+  assert.match(
+    probe,
+    /SIGNER="branchLeft\/ghost-platform\/\.github\/workflows\/registry-push\.yml"/
+  );
+  assert.match(probe, /scrubbed "\$VERIFY" "\$1" "\$REPO" "\$SIGNER" --bundle-from-oci/);
+  for (const key of [
+    'PATH=',
+    'HOME="$EMPTY"',
+    'GH_CONFIG_DIR="$EMPTY"',
+    'XDG_CONFIG_HOME="$EMPTY"',
+    'GH_PROMPT_DISABLED=1',
+    'GH_NO_UPDATE_NOTIFIER=1',
+    'LC_ALL=C',
+    'VERIFY_PLAIN_ERRORS=1',
+  ]) {
+    assert.ok(probe.includes(key), `the scrubbed environment sets ${key}`);
+  }
+  assert.doesNotMatch(
+    probe,
+    /GH_TOKEN=(?!"\$PLACEHOLDER")|GITHUB_TOKEN=|\|\| true/,
+    'no token is set but the one literal placeholder, nothing is swallowed'
+  );
+  assert.match(
+    probe,
+    /\nPLACEHOLDER="placeholder-not-a-credential"\n/,
+    'the placeholder is one fixed literal, not read from the environment'
+  );
+  assert.doesNotMatch(probe, /\$\{PROBE_GH_TOKEN|\$\{GH_TOKEN/, 'no caller token is read');
+  for (const flag of ['--source-ref refs/heads/main', '--deny-self-hosted-runners']) {
+    assert.ok(
+      read('scripts/verify-image-attestation.sh').includes(flag),
+      `the one verifier keeps ${flag}`
+    );
+  }
+  assert.doesNotMatch(probe, /with no token|TOKENLESS VERIFY OK|auth status/);
+  for (const name of [
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'GH_ENTERPRISE_TOKEN',
+    'GITHUB_ENTERPRISE_TOKEN',
+  ]) {
+    assert.ok(probe.includes(name), `the environment proof checks ${name}`);
+  }
+});
+
+test('the CI workflow lists the new files in both path filters and runs the probe test', () => {
+  const ci = read('.github/workflows/image-attestation-ci.yml');
+  for (const f of [PROBE, RESOLVE, PROBE_TEST, TOKENLESS]) {
+    assert.equal(ci.split(`- ${f}\n`).length - 1, 2, `${f} is in both path filters`);
+  }
+  assert.ok(
+    uncommented('.github/workflows/image-attestation-ci.yml').includes(`run: ./${PROBE_TEST}`)
+  );
 });

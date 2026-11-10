@@ -182,6 +182,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0005_tenant_kind',
       'applied migration 0006_demo_lifecycle_register',
       'applied migration 0007_demo_rebuild_extended',
+      'applied migration 0008_tenant_name',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -393,6 +394,34 @@ describe('--migrate-only on a real server', () => {
     expect(drifted.code).toBe(1);
     expect(drifted.err.join('\n')).toMatch(
       /M21: portal\.demo_state_event constraint demo_state_event_transition_allowed/
+    );
+  });
+
+  it('adds the tenant name to a register that already exists, unique and a slug', async () => {
+    const all = readMigrations();
+    const nameIndex = all.findIndex((m) => m.tag === '0008_tenant_name');
+    expect(nameIndex).toBeGreaterThan(0);
+    const before = await run({ migrations: all.slice(0, nameIndex) });
+    expect(before.err).toEqual([]);
+    expect(before.code).toBe(0);
+    const columns = `SELECT count(*) AS n FROM information_schema.columns
+        WHERE table_schema = 'portal' AND table_name = 'tenant_register' AND column_name = 'tenant_name'`;
+    expect((await admin(PROV_DB, columns))[0]!.rows[0].n).toBe('0');
+    const result = await migrate();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('applied migration 0008_tenant_name');
+    expect(result.out).toContain('post-check passed: the server matches the manifest');
+    expect((await admin(PROV_DB, columns))[0]!.rows[0].n).toBe('1');
+    // Dropping the unique constraint is a difference the post-check names.
+    await admin(
+      PROV_DB,
+      'ALTER TABLE portal.tenant_register DROP CONSTRAINT tenant_register_tenant_name_unique'
+    );
+    const dropped = await migrate();
+    expect(dropped.code).toBe(1);
+    expect(dropped.err.join('\n')).toMatch(
+      /missing M21: portal\.tenant_register constraint tenant_register_tenant_name_unique/
     );
   });
 

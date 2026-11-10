@@ -71,6 +71,34 @@ retries, nothing is written and `run` returns `SNAPSHOT_FAILED_EXIT_CODE`
 hold, attempts) and `last_snapshot_aborts` the number of attempts given up
 on a bound, success or not; `backup_worker.run_tenant_dump` reads both.
 
+### Snapshot mode
+
+`gtid_snapshot.py` is loaded by path only when the transport is built in
+`"gtid"` mode, so a release that lacks it still imports and runs `"bounded"`;
+it is in the installer's required release files all the same, with a test that
+every `db/provision` module this file loads by path is listed. In `"gtid"`
+mode a `mysqldump` that does not name Percona in `--version` is refused before
+anything starts, and a malformed or doubled GTID header found mid-stream stops
+the dump and returns `SNAPSHOT_FAILED_EXIT_CODE` like any other refusal.
+
+`snapshot=` is `"bounded"` (the default, above) or `"gtid"`, chosen at the
+worker by `BACKUP_WORKER_SNAPSHOT_MODE` (an unknown value is refused, never
+defaulted). In `"gtid"` mode no coordinator session is opened and nothing is
+locked: `gtid_snapshot.take_gtid_snapshot` starts one `mysqldump
+--single-transaction --set-gtid-purged=ON` and the transport streams it
+through a `PurgedStatementScanner`, which reads the recovery position off the
+dump's header. `last_snapshot` is a `GtidSnapshotReport`: its lock wait,
+hold and tables-locked are zero, and `recovery_gtid_set` is the tenant's
+position, logged, carried in `DumpResult.recovery_gtid_set` and printed by
+the worker and the nightly loop. A dump that exits 0 with no GTID statement
+returns `SNAPSHOT_FAILED_EXIT_CODE`: a dump with no recovery position is not
+a backup, and the caller discards what streamed. The mode needs Percona
+Server on the tenant database host **and Percona's `mysqldump` on the worker's
+host**: the client is what reads the set atomically with its snapshot. Oracle's
+8.0.32+ client takes a global read lock for `--set-gtid-purged=ON`, which the
+backup account is not granted, so with the wrong client (or against Oracle
+MySQL) the dump fails rather than locking. See db/provision/gtid_snapshot.md.
+
 The password reaches each `mysql` and `mysqldump` child only through an
 inherited pipe fd, read once as an option file
 (`--defaults-extra-file=/dev/fd/N`): never argv, never the child's

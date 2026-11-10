@@ -15,6 +15,7 @@ services:
   ghost-a:
     image: '${IMAGE}'
     restart: 'unless-stopped'
+    stop_grace_period: '60s'
     user: '30001:30001'
     init: true
     read_only: true
@@ -101,6 +102,7 @@ services:
   ghost-b:
     image: '${IMAGE}'
     restart: 'unless-stopped'
+    stop_grace_period: '60s'
     user: '30001:30001'
     init: true
     read_only: true

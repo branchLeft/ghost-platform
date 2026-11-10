@@ -21,6 +21,7 @@ beforeAll(async () => {
       projectId: PROJECT_ID,
       redirectUri: `${origin}${CALLBACK_PATH}`,
       publicOrigin: origin,
+      cookiePrefix: 'portal',
       verifier: createTokenVerifier({
         issuer: ISSUER,
         clientId: CLIENT_PORTAL,
@@ -194,5 +195,90 @@ describe('the error lines the shell hands to its hook', () => {
       bind = async () => 'bound';
       onError = (line) => void logged.push(line);
     }
+  });
+});
+
+// Browsers do not isolate cookies by port, so on loopback development two
+// applications share one cookie jar. Each shell must keep to the names its
+// `cookiePrefix` gives it, or signing in to one replaces the other's session.
+describe("the shell's cookie names", () => {
+  let pair: Running;
+
+  function shellWith(origin: string, cookiePrefix: string, page: string) {
+    return createShell<string>({
+      issuer: ISSUER,
+      clientId: CLIENT_PORTAL,
+      projectId: PROJECT_ID,
+      redirectUri: `${origin}${CALLBACK_PATH}`,
+      publicOrigin: origin,
+      cookiePrefix,
+      verifier: createTokenVerifier({
+        issuer: ISSUER,
+        clientId: CLIENT_PORTAL,
+        requiredRole: 'tenant-admin',
+        allowedOrgIds: new Set(['org-x']),
+        clock: () => NOW,
+        fetchKeys: async () => jwks,
+      }),
+      secureCookies: false,
+      title: 'T',
+      nav: [],
+      signOutLabel: 'OUT',
+      clock: () => NOW,
+      fetch: issuer.fetch,
+      bind: async () => 'bound',
+      landing: async () => page,
+    });
+  }
+
+  // Both shells answer on one origin, as two apps on one host name would to a
+  // browser's jar; the `x-app` request header picks which one a request reaches.
+  beforeAll(async () => {
+    pair = await serve((origin) => {
+      const first = shellWith(origin, 'first', '<p>FIRST_PAGE</p>');
+      const second = shellWith(origin, 'second', '<p>SECOND_PAGE</p>');
+      return (request, response) =>
+        (request.headers['x-app'] === 'second' ? second : first)(request, response);
+    });
+  });
+
+  afterAll(async () => {
+    await pair.close();
+  });
+
+  const through = (app: 'first' | 'second') => ({ headers: { 'x-app': app } });
+
+  async function signInTo(browser: Browser, app: 'first' | 'second'): Promise<void> {
+    const started = await browser.request('/login', through(app));
+    const state = new URL(started.location ?? '').searchParams.get('state') ?? '';
+    const code = issuer.issue(token());
+    const done = await browser.request(
+      `${CALLBACK_PATH}?code=${code}&state=${state}`,
+      through(app)
+    );
+    expect(done.status).toBe(302);
+  }
+
+  it('names its cookies from its prefix, and never from the portal', async () => {
+    const browser = new Browser(pair.origin);
+    const started = await browser.request('/login', through('second'));
+    expect(started.status).toBe(302);
+    expect(browser.cookie('second_login')).toBeDefined();
+    expect(browser.cookie('portal_login')).toBeUndefined();
+    await signInTo(browser, 'second');
+    expect(browser.cookie('second_session')).toBeDefined();
+    expect(browser.cookie('portal_session')).toBeUndefined();
+    expect(browser.cookie('portal_login')).toBeUndefined();
+  });
+
+  it('leaves the first application signed in when the second signs in', async () => {
+    const browser = new Browser(pair.origin);
+    await signInTo(browser, 'first');
+    expect((await browser.request('/', through('first'))).body).toContain('FIRST_PAGE');
+    await signInTo(browser, 'second');
+    expect((await browser.request('/', through('second'))).body).toContain('SECOND_PAGE');
+    const again = await browser.request('/', through('first'));
+    expect(again.status).toBe(200);
+    expect(again.body).toContain('FIRST_PAGE');
   });
 });

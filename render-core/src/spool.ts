@@ -73,6 +73,21 @@ export const MAIL_SPOOL_DRAIN_NETWORK = 'branchleft-mail-spool-drain';
  * `br-+` egress policy, and a fixed name an app host's policy can match. */
 export const MAIL_SPOOL_DRAIN_BRIDGE = 'br-mailspool';
 
+/**
+ * The drain network's fixed addressing, so the drain listener has a stable
+ * address to bind (`SHIM_DRAIN_HOST`). Outside Docker's default pools
+ * (172.16/12, 192.168/16) and the estate's own 10.20.1.0/24; the mail gate
+ * (scripts/mail-gate) uses its own subnet on purpose. See
+ * spool.md#the-drain-network.
+ */
+export const MAIL_SPOOL_DRAIN_SUBNET = '10.231.200.0/29';
+export const MAIL_SPOOL_DRAIN_GATEWAY = '10.231.200.1';
+
+/** The spool's own address on the drain network, and the one address its
+ * drain listener binds. The only value `SHIM_DRAIN_HOST` is ever rendered
+ * with, and the `ipv4_address` of the service on the drain network. */
+export const MAIL_SPOOL_DRAIN_ADDRESS = '10.231.200.2';
+
 /** Where the spool's one secret is read from; root-owned, 0600, written by
  * an operator alone. */
 export const MAIL_SPOOL_SECRETS_PATH = `/etc/branchleft/${MAIL_SPOOL_STACK}.env`;
@@ -133,10 +148,21 @@ export function mailSpoolDocument(args: MailSpoolStackArgs): Record<string, Yaml
         'com.docker.network.bridge.name': MAIL_SPOOL_DRAIN_BRIDGE,
         'com.docker.network.bridge.enable_ip_masquerade': 'false',
       },
+      ipam: {
+        config: [{ subnet: MAIL_SPOOL_DRAIN_SUBNET, gateway: MAIL_SPOOL_DRAIN_GATEWAY }],
+      },
     },
+  };
+  // The service's networks are a map, not a list: the drain network carries
+  // the spool's fixed address, and `toYaml` cannot emit an empty mapping, so
+  // each tenant entry carries the service name as an alias (the name Ghost
+  // already resolves; Compose adds it anyway).
+  const serviceNetworks: Record<string, YamlValue> = {
+    [MAIL_SPOOL_DRAIN_NETWORK]: { ipv4_address: MAIL_SPOOL_DRAIN_ADDRESS },
   };
   for (const name of tenantNetworks) {
     networks[name] = { name, internal: true };
+    serviceNetworks[name] = { aliases: [MAIL_SPOOL_SERVICE] };
   }
 
   return {
@@ -162,6 +188,7 @@ export function mailSpoolDocument(args: MailSpoolStackArgs): Record<string, Yaml
         environment: {
           PORT: MAIL_SPOOL_HTTP_PORT,
           SHIM_DRAIN_PORT: MAIL_SPOOL_DRAIN_CONTAINER_PORT,
+          SHIM_DRAIN_HOST: MAIL_SPOOL_DRAIN_ADDRESS,
           SMTP_LISTEN_PORT: MAIL_SPOOL_SMTP_PORT,
           SHIM_DB_PATH: DB_PATH,
           [MAIL_SPOOL_DRAIN_TOKEN_KEY]:
@@ -169,7 +196,7 @@ export function mailSpoolDocument(args: MailSpoolStackArgs): Record<string, Yaml
             `${MAIL_SPOOL_SECRETS_PATH}}`,
         },
         ports: [drainPublish(args.drainPort)],
-        networks: [MAIL_SPOOL_DRAIN_NETWORK, ...tenantNetworks],
+        networks: serviceNetworks,
         volumes: [`${MAIL_SPOOL_DATA_VOLUME}:${DATA_MOUNT_PATH}`],
         healthcheck: healthcheck(),
       },
@@ -282,6 +309,15 @@ function checkNetworks(
       if (network.internal === true || network.external === true) {
         at(`network "${name}" must be a plain bridge this file owns`);
       }
+      const ipam = asRecord(network.ipam);
+      const config = Array.isArray(ipam?.config) ? ipam.config : [];
+      const pool = config.length === 1 ? asRecord(config[0]) : undefined;
+      if (pool?.subnet !== MAIL_SPOOL_DRAIN_SUBNET || pool?.gateway !== MAIL_SPOOL_DRAIN_GATEWAY) {
+        at(
+          `network "${name}" must declare exactly the ipam pool subnet ${MAIL_SPOOL_DRAIN_SUBNET} ` +
+            `and gateway ${MAIL_SPOOL_DRAIN_GATEWAY}, the fixed addresses the drain listener binds within`
+        );
+      }
       continue;
     }
     if (network.external === true) {
@@ -316,6 +352,42 @@ function checkPorts(
   }
 }
 
+/** An all-zero spelling of an unspecified address: 0.0.0.0, ::, [::], 0, ::0. It
+ * only gives the refusal its own message; the exact match below is the gate. */
+const UNSPECIFIED_ADDRESS = /^\[?[0.:]+\]?$/;
+
+function checkDrainHost(
+  service: Record<string, YamlValue>,
+  environment: Record<string, YamlValue>,
+  at: (message: string) => void
+): void {
+  const host = environment.SHIM_DRAIN_HOST;
+  if (host === undefined || host === '') {
+    at(
+      'must set SHIM_DRAIN_HOST: with a drain port and no drain host the drain listener has no ' +
+        'address to bind, and the shim refuses to start (never fall back to every interface)'
+    );
+  } else if (typeof host === 'string' && UNSPECIFIED_ADDRESS.test(host)) {
+    at(
+      `SHIM_DRAIN_HOST must not be a wildcard address (${host}): that binds every interface, ` +
+        'and a tenant network could reach /drain'
+    );
+  } else if (host !== MAIL_SPOOL_DRAIN_ADDRESS) {
+    at(
+      `SHIM_DRAIN_HOST must be the spool's fixed drain address ${MAIL_SPOOL_DRAIN_ADDRESS}, ` +
+        `got ${JSON.stringify(host)}`
+    );
+  }
+  const drainEntry = asRecord(asRecord(service.networks)?.[MAIL_SPOOL_DRAIN_NETWORK]);
+  if (drainEntry?.ipv4_address !== host || host === undefined) {
+    at(
+      `its entry on network "${MAIL_SPOOL_DRAIN_NETWORK}" must set ipv4_address to SHIM_DRAIN_HOST ` +
+        `(${JSON.stringify(host)}), got ${JSON.stringify(drainEntry?.ipv4_address)}: the listener ` +
+        'binds an address the container does not have, or one a tenant network can reach'
+    );
+  }
+}
+
 function checkEnvironment(service: Record<string, YamlValue>, at: (message: string) => void): void {
   const environment = asRecord(service.environment);
   if (!environment) {
@@ -335,6 +407,7 @@ function checkEnvironment(service: Record<string, YamlValue>, at: (message: stri
         `SHIM_DRAIN_PORT ${MAIL_SPOOL_DRAIN_CONTAINER_PORT}, never /drain on the tenant-facing listener`
     );
   }
+  checkDrainHost(service, environment, at);
   if (environment.SHIM_ALLOW_EPHEMERAL_DB !== undefined) {
     at('must not allow an ephemeral queue: a restart would drop every queued message');
   }
@@ -346,8 +419,9 @@ function checkEnvironment(service: Record<string, YamlValue>, at: (message: stri
 /**
  * Re-reads a rendered spool document and refuses anything that would give
  * the spool a route off the host, publish anything but the loopback drain
- * port, serve /drain on the listener the tenant networks reach, carry a secret, or drop the runtime hardening. See
- * spool.md#the-posture-check.
+ * port, serve /drain on the listener the tenant networks reach, bind the
+ * drain listener to anything but the drain network's fixed address, carry a
+ * secret, or drop the runtime hardening. See spool.md#the-posture-check.
  */
 export function assertSpoolPosture(document: Record<string, YamlValue>, drainPort: number): void {
   const services = asRecord(document.services) ?? {};

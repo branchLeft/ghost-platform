@@ -4,6 +4,28 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**The mail spool's drain listener binds one fixed address, never every interface.**
+
+- **Changed output:** `renderMailSpoolStack()` renders `SHIM_DRAIN_HOST:
+  '10.231.200.2'` in the spool's `environment:`. The drain network gains
+  `ipam: {config: [{subnet: '10.231.200.0/29', gateway: '10.231.200.1'}]}`. The
+  service's `networks:` changes from a list to a map: the drain network carries
+  `ipv4_address: '10.231.200.2'`, and each tenant network carries
+  `aliases: ['mail-spool']`. The image line, the ports and every other key are
+  unchanged.
+- New exports `MAIL_SPOOL_DRAIN_SUBNET`, `MAIL_SPOOL_DRAIN_GATEWAY` and
+  `MAIL_SPOOL_DRAIN_ADDRESS`. `assertSpoolPosture()` now also refuses a drain
+  port with no host, a wildcard host, any host but the fixed address, an ipam
+  pool other than the fixed one, and an `ipv4_address` that differs from the host.
+- **Rollout:** move the rendered file and the mailgun-shim image digest together,
+  in one gated apply. A shim image built from at least ghost-platform 09a9f61
+  refuses to start from a file with no `SHIM_DRAIN_HOST`; an older image ignores
+  the host and keeps listening on every interface. Re-rendering with this
+  release against the old pinned image is safe but fixes nothing. A deployed
+  drain network was created without a fixed pool, so the gated apply has to
+  recreate it; that step is not exercised by this change. See
+  src/spool.md#the-drain-port.
+
 **A demo slot cannot connect a real Stripe account.**
 
 - **Changed output:** a demo's `environment:` gains

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
-import { createSourceResolver } from '../../src/source.js';
+import { createSourceResolver } from 'ghost-platform-request-guard/dist/index.js';
 
 const KEY = Buffer.alloc(32, 1);
 const base = {

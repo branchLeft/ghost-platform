@@ -224,6 +224,9 @@ class _StderrTail:
         return "\n".join(self._lines)
 
 
+StderrTail = _StderrTail  # public name: gtid_snapshot drains its dump the same way
+
+
 class _LineReader:
     """A child's stdout as lines, read on a thread so every read can carry
     a deadline."""
