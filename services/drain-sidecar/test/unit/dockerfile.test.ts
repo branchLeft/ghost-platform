@@ -23,9 +23,7 @@ describe('Dockerfile base image', () => {
   });
 
   it('pins the digest the image scan was run against', () => {
-    expect(fromLines(dockerfile)[0]).toBe(
-      `FROM node:26.13.0-alpine@${SCANNED_BASE_DIGEST}`,
-    );
+    expect(fromLines(dockerfile)[0]).toBe(`FROM node:26.13.0-alpine@${SCANNED_BASE_DIGEST}`);
   });
 
   it('upgrades zlib before the package manager is used', () => {
