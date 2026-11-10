@@ -77,7 +77,7 @@ export {
   validateSlotName,
 } from './lease.js';
 
-export type { Artefact } from './render.js';
+export type { Artefact, RenderOptions } from './render.js';
 export {
   render,
   renderSecretsTemplate,
@@ -118,6 +118,7 @@ export {
 } from './spool.js';
 export type { MailSpoolStackArgs } from './spool.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
+export type { Colour } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {
   MAX_TENANT_SLUG_LENGTH,

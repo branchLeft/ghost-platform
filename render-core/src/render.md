@@ -103,3 +103,8 @@ report-only policy exactly as before. No caller in this repo passes a
 computed set yet: the harness that derives one at theme-admission time does
 not exist here — wiring a real value through is that story's job, not this
 one's.
+
+`options.activeColour` (a fourth, optional argument) narrows `compose.yml` to
+one colour's Ghost service; the other six artefacts are unchanged. Omitting it
+renders both colours, byte-identical to before. See
+compose.md#one-running-colour.
