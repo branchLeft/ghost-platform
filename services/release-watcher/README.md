@@ -60,6 +60,8 @@ The token asks for the least the watcher uses, on this repository only:
 - Contents: read and write, to create the branch and commit the `Dockerfile`
   change.
 - Pull requests: read and write, to open and update the PR.
+- Checks: read, for the merge step to read the required check results on the
+  PR head.
 - Nothing else. The watcher files no issue (a new major is a run notice), so no
   issues grant and no second token for another repository.
 

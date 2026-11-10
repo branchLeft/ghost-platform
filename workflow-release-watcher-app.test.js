@@ -64,12 +64,16 @@ test('the mint step reads the App id from a variable and the key from a secret',
   assert.match(step.body, /private-key:\s*\$\{\{\s*secrets\.DIGEST_APP_PRIVATE_KEY\s*\}\}/);
 });
 
-test('the minted token asks for contents and pull-requests write and nothing else', () => {
+test('the minted token asks for checks read, contents write and pull-requests write and nothing else', () => {
   const step = mintStep(readWorkflow());
   const asked = [...step.body.matchAll(/^\s+(permission-[a-z-]+):\s*(\S+)\s*$/gm)].map(
     (m) => `${m[1]}=${m[2]}`
   );
-  assert.deepEqual(asked.sort(), ['permission-contents=write', 'permission-pull-requests=write']);
+  assert.deepEqual(asked.sort(), [
+    'permission-checks=read',
+    'permission-contents=write',
+    'permission-pull-requests=write',
+  ]);
 });
 
 test('the token is scoped to this repository: no owner and no repositories input', () => {

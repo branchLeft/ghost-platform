@@ -9,7 +9,7 @@ name: Release watcher run
 # Identity: the PRs are opened by a GitHub App. Its installation token is
 # minted here at run time (it lives an hour at most) from the repository
 # variable DIGEST_APP_ID and the repository secret DIGEST_APP_PRIVATE_KEY,
-# scoped to this repository with contents and pull-requests write only. No
+# scoped to this repository with contents and pull-requests write and checks read only. No
 # long-lived token is stored. Until the variable is set the mint step is
 # skipped and the run opens no PR, as before.
 #
@@ -88,6 +88,7 @@ jobs:
         with:
           app-id: ${{ vars.DIGEST_APP_ID }}
           private-key: ${{ secrets.DIGEST_APP_PRIVATE_KEY }}
+          permission-checks: read
           permission-contents: write
           permission-pull-requests: write
 
