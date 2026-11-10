@@ -9,12 +9,10 @@ const SCANNED_BASE =
 
 const dockerfile = readFileSync(
   fileURLToPath(new URL('../../Dockerfile', import.meta.url)),
-  'utf8',
+  'utf8'
 );
 
-const fromLines = dockerfile
-  .split('\n')
-  .filter((line) => /^FROM\s/.test(line));
+const fromLines = dockerfile.split('\n').filter((line) => /^FROM\s/.test(line));
 
 describe('mail-collector Dockerfile base image', () => {
   it('has exactly one FROM line', () => {
