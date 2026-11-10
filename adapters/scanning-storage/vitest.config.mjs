@@ -11,8 +11,11 @@ export default defineConfig({
       // own image already carries it). It is excluded from coverage for
       // that reason, not because it is untested -- the image test drives it
       // inside a real Ghost container instead.
-      include: ['src/**/*.js'],
-      exclude: ['src/ScanningStorageAdapter.js'],
+      // The host end (verdict-host/) is held to the same floor. Its process
+      // entry, main.js, only wires the guard to the service and is driven by
+      // the no-egress test as a real child process, which coverage cannot see.
+      include: ['src/**/*.js', 'verdict-host/**/*.js'],
+      exclude: ['src/ScanningStorageAdapter.js', 'verdict-host/main.js'],
       thresholds: {
         // Non-negotiable for this component: it is the control that stops
         // illegal material being served, and an untested branch in it is a
