@@ -16,7 +16,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@branchleft/ghost-platform-render-core": "0.2.0",
+    "@branchleft/ghost-platform-render-core": "0.3.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
