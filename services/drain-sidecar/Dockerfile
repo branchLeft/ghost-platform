@@ -12,7 +12,12 @@
 # node:26.5.0-bookworm-slim as read from Docker Hub with
 # `docker buildx imagetools inspect node:26.5.0-bookworm-slim`, so a re-pointed
 # tag cannot change what ships. Re-read it when the tag is bumped.
-FROM node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
+
+# The npm bundled in the base image carries undici and brace-expansion below
+# their fixed releases. npm 12.2.2 bundles undici 6.29.1 and brace-expansion
+# 5.0.12, so it is installed first and the bundled copy is replaced.
+RUN npm install --global npm@12.2.2
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json pins.
