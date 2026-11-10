@@ -99,3 +99,8 @@ portal/data/test/helpers.ts
 # Test of the tenant register's write policy: grants and revokes the tenant
 # role's write privileges as an administrator, and undoes them after each case.
 portal/data/test/registerWrites.test.ts
+
+# Test of the prospect role's boundary: as an administrator it tampers with
+# the request table's checks and grants inside a rolled-back transaction to
+# prove each control fails closed, and reads the role's catalog facts back.
+portal/data/test/prospectRole.test.ts
