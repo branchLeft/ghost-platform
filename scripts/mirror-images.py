@@ -25,7 +25,7 @@ DEFAULT_LIST = Path(__file__).resolve().parent.parent / ".github" / "image-mirro
 DIGEST = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 NAME = re.compile(r"\A[a-z0-9]+(-[a-z0-9]+)*\Z")
 SOURCE = re.compile(r"\A[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+\Z")
-REGISTRY = re.compile(r"\Aghcr\.io/branchleft/mirror\Z")
+REGISTRY = re.compile(r"\Aghcr\.io/branchleft/mirror-private\Z")
 COPY_ATTEMPTS = 3
 
 # (argv) -> (returncode, stdout bytes, stderr text)
@@ -43,7 +43,7 @@ def load_list(path: Path) -> tuple[str, list[dict]]:
         raise ListError(f"cannot read {path}: {err}") from err
     registry = data.get("registry")
     if not isinstance(registry, str) or not REGISTRY.match(registry):
-        raise ListError(f"registry must be ghcr.io/branchleft/mirror, got {registry!r}")
+        raise ListError(f"registry must be ghcr.io/branchleft/mirror-private, got {registry!r}")
     images = data.get("images")
     if not isinstance(images, list) or not images:
         raise ListError("images must be a non-empty list")
