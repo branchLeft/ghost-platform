@@ -9,7 +9,7 @@
 
 # The registry comes from one build argument whose default is the public
 # source, so a local build pulls this exact digest with no credential. CI alone
-# passes IMAGE_REGISTRY=ghcr.io/branchleft/mirror; the digest, and so the
+# passes IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private; the digest, and so the
 # bytes, are the same either way.
 ARG IMAGE_REGISTRY
 FROM ${IMAGE_REGISTRY:-docker.io/library}/caddy:2-alpine@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b

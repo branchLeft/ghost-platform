@@ -48,7 +48,7 @@ ENTRY = {
     "redistribution": "permitted",
     "licenceSource": "https://example.invalid/LICENSE",
 }
-REGISTRY = "ghcr.io/branchleft/mirror"
+REGISTRY = "ghcr.io/branchleft/mirror-private"
 TAGGED = f"{REGISTRY}/ghost:d-{DIGEST[7:19]}"
 PINNED = f"{REGISTRY}/ghost@{DIGEST}"
 SOURCE = f"docker.io/library/ghost@{DIGEST}"
@@ -234,7 +234,7 @@ class MainTests(unittest.TestCase):
 
 PAIRS = {("docker.io/library/ghost", "sha256:" + "a" * 64)}
 MIRROR_OK = "${IMAGE_REGISTRY:-docker.io/library}/ghost:6@sha256:" + "a" * 64
-HARD_CODED = "ghcr.io/branchleft/mirror/ghost@sha256:" + "a" * 64
+HARD_CODED = "ghcr.io/branchleft/mirror-private/ghost@sha256:" + "a" * 64
 
 
 class ClassifyTests(unittest.TestCase):
@@ -267,6 +267,7 @@ class ClassifyTests(unittest.TestCase):
             "registry-1.docker.io/library/ghost:6": "docker.io",
             "quay.io/minio/minio:latest": "other-registry",
             "ghcr.io/zitadel/zitadel" + digest: "other-registry",
+            "ghcr.io/branchleft/mirror-private/ghost:6.55.0-alpine": "hard-coded-mirror",
             "ghcr.io/branchleft/mirror/ghost:6.55.0-alpine": "hard-coded-mirror",
             HARD_CODED: "hard-coded-mirror",
             "${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine": "tag-only",
@@ -413,7 +414,7 @@ class ModeTests(unittest.TestCase):
         "tag-only mirror ref": {"Dockerfile": "FROM ${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine\n"},
         "hard-coded mirror ref": {"Dockerfile": f"FROM {HARD_CODED}\n"},
         "mirror override without packages: read": {
-            ".github/workflows/ci.yml": "jobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror\n"
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n"
         },
         "override to the public registry": {
             ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: docker.io/library\n"
@@ -440,7 +441,7 @@ class ModeTests(unittest.TestCase):
     def test_enforce_is_green_on_a_clean_tree(self):
         files = {
             "Dockerfile": f"ARG IMAGE_REGISTRY\nFROM {MIRROR_OK}\n",
-            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror\n    steps:\n      - run: docker build -t app:ci .\n",
+            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n    steps:\n      - run: docker build -t app:ci .\n",
         }
         code, out = self.run_guard(files, "enforce")
         self.assertEqual(code, 0)
@@ -841,7 +842,7 @@ class FileTypeTests(unittest.TestCase):
 
 
 class OverrideTests(unittest.TestCase):
-    MIRROR = "ghcr.io/branchleft/mirror"
+    MIRROR = "ghcr.io/branchleft/mirror-private"
 
     def test_a_comment_does_not_grant_packages_read(self):
         text = f"# packages: read\nenv:\n  IMAGE_REGISTRY: {self.MIRROR}\n"
