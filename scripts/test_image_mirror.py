@@ -173,7 +173,7 @@ class ListTests(unittest.TestCase):
         _, images = mirror.load_list(LIST)
         pinned = [e for e in images if any("break-glass minter" in p for p in e.get("hostPins", []))]
         self.assertEqual([e["name"] for e in pinned], ["node"])
-        self.assertTrue(pinned[0]["digest"].startswith("sha256:2d49d876"))
+        self.assertTrue(pinned[0]["digest"].startswith("sha256:b2646ba6"))
 
     def test_rejects_a_name_that_is_not_the_sources_last_component(self):
         bad = dict(ENTRY, name="ghosty")

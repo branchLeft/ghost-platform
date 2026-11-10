@@ -60,6 +60,15 @@
       "source": "docker.io/library/node",
       "digest": "sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb",
       "upstreamTags": ["26.5.0-bookworm-slim"],
+      "licence": "MIT (plus bundled third-party notices)",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/nodejs/node/blob/main/LICENSE"
+    },
+    {
+      "name": "node",
+      "source": "docker.io/library/node",
+      "digest": "sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a",
+      "upstreamTags": ["26.13.0-alpine"],
       "hostPins": [
         "ops1 break-glass minter pin (same digest; host pulls stay on Docker Hub and are not mirrored for hosts)"
       ],
