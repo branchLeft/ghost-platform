@@ -1,0 +1,232 @@
+name: Rollback proof
+
+# The old Ghost image must boot, and keep working, on data the new image has
+# already migrated. rollback-proof/README.md has the checks and the exit codes.
+#
+# Three shapes of run:
+#   - `proof`: the unit tests and the sabotage proof. No Docker.
+#   - `live`: the proof for real, on a MySQL pinned to db1's digest. Two pairs,
+#     because a refusal only means something next to an acceptance: an image
+#     on its own migrated data must be accepted, and the real first bump range
+#     (an old image that writes a column a later release renames) must be
+#     refused, naming that column.
+#   - `candidate`: called by a workflow that has a release candidate. It runs
+#     the same proof on the pair it is given and fails unless it is accepted.
+#
+# No secret, no registry login, no write permission: public images, throwaway
+# containers, a runner that is gone at the end.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - rollback-proof/**
+      - test-support/image-harness.mjs
+      - services/export-bundler/test/image/ghost-admin.mjs
+      - services/export-bundler/test/image/ghost-container.mjs
+      - .github/workflows/rollback-proof-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - rollback-proof/**
+      - test-support/image-harness.mjs
+      - services/export-bundler/test/image/ghost-admin.mjs
+      - services/export-bundler/test/image/ghost-container.mjs
+      - .github/workflows/rollback-proof-ci.yml
+  workflow_call:
+    inputs:
+      old-image:
+        description: The image the tenants run now, by digest.
+        required: true
+        type: string
+      new-image:
+        description: The release candidate, by digest.
+        required: true
+        type: string
+      profile:
+        description: platform for the tenant image, stock for an upstream Ghost image.
+        required: false
+        default: platform
+        type: string
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  proof:
+    name: Rollback proof unit tests and sabotage
+    if: ${{ github.event_name != 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Unit tests
+        run: node --test rollback-proof/*.test.mjs
+
+      # Each control is broken in a scratch copy and the tests must go red;
+      # the un-broken copy must be green first.
+      - name: Sabotage proof
+        run: node rollback-proof/prove-sabotage.mjs
+
+  live:
+    name: Live proof, ${{ matrix.case }}
+    if: ${{ github.event_name != 'workflow_call' }}
+    needs: proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The image on its own migrated data: nothing moved, so it is accepted.
+          - case: accepted
+            old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
+            new: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
+            expect: '0'
+          # The first real bump range: 6.58 renames a column the 6.55 code writes.
+          - case: refused
+            old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
+            new: ghost:6.69.0-alpine@sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5
+            expect: '2'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      # The one digest db/RUNBOOK-db.md pins, so the proof migrates on the
+      # database engine the tenants run.
+      - name: Read the pinned mysql digest
+        id: mysql
+        run: |
+          pins="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/RUNBOOK-db.md must pin exactly one mysql:8.0 digest, found: $pins" >&2
+            exit 1
+          fi
+          echo "image=$pins" >> "$GITHUB_OUTPUT"
+
+      # Upstream Ghost images, so the stock profile: they have no scanning
+      # storage adapter. The exit code is the verdict: 0 accepted, 2 refused,
+      # 1 an error. The case states which one it must be, so a refusal for the
+      # wrong reason (an error) and an acceptance of the bad pair both fail here.
+      - name: Run the proof
+        env:
+          OLD_IMAGE: ${{ matrix.old }}
+          NEW_IMAGE: ${{ matrix.new }}
+          MYSQL_IMAGE: ${{ steps.mysql.outputs.image }}
+          EXPECT: ${{ matrix.expect }}
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          rc=0
+          node rollback-proof/cli.mjs run --profile stock --old "$OLD_IMAGE" --new "$NEW_IMAGE" --mysql "$MYSQL_IMAGE" --out "$REPORT" || rc=$?
+          echo "exit code: $rc (expected $EXPECT)"
+          test "$rc" = "$EXPECT"
+
+      - name: Verify the record the way the gate does
+        env:
+          OLD_IMAGE: ${{ matrix.old }}
+          NEW_IMAGE: ${{ matrix.new }}
+          EXPECT: ${{ matrix.expect }}
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          rc=0
+          node rollback-proof/cli.mjs verify --report "$REPORT" --old "$OLD_IMAGE" --new "$NEW_IMAGE" || rc=$?
+          echo "exit code: $rc (expected $EXPECT)"
+          test "$rc" = "$EXPECT"
+
+      # A refusal is only the right refusal if it names the measured break.
+      - name: The refusal names the renamed column
+        if: ${{ matrix.case == 'refused' }}
+        env:
+          REPORT: ${{ runner.temp }}/rollback-report-refused.json
+        run: |
+          jq -e '.findings | map(select(.kind == "missing-column" and .table == "email_batches" and .column == "provider_id")) | length == 1' "$REPORT"
+
+      - name: Record how long the proof took
+        if: ${{ always() }}
+        env:
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          if [ -f "$REPORT" ]; then
+            jq -r '"timings (ms): " + (.timings | tostring)' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the record
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rollback-report-${{ matrix.case }}
+          path: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+          if-no-files-found: ignore
+
+  candidate:
+    name: Rollback proof for the release candidate
+    if: ${{ github.event_name == 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Read the pinned mysql digest
+        id: mysql
+        run: |
+          pins="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/RUNBOOK-db.md must pin exactly one mysql:8.0 digest, found: $pins" >&2
+            exit 1
+          fi
+          echo "image=$pins" >> "$GITHUB_OUTPUT"
+
+      # Any non-zero exit refuses the candidate: 2 is a refusal, 1 an error.
+      - name: Run the proof
+        env:
+          OLD_IMAGE: ${{ inputs.old-image }}
+          NEW_IMAGE: ${{ inputs.new-image }}
+          PROFILE: ${{ inputs.profile }}
+          MYSQL_IMAGE: ${{ steps.mysql.outputs.image }}
+          REPORT: ${{ runner.temp }}/rollback-report-candidate.json
+        run: node rollback-proof/cli.mjs run --profile "$PROFILE" --old "$OLD_IMAGE" --new "$NEW_IMAGE" --mysql "$MYSQL_IMAGE" --out "$REPORT"
+
+      - name: Verify the record the way the gate does
+        env:
+          OLD_IMAGE: ${{ inputs.old-image }}
+          NEW_IMAGE: ${{ inputs.new-image }}
+          REPORT: ${{ runner.temp }}/rollback-report-candidate.json
+        run: node rollback-proof/cli.mjs verify --report "$REPORT" --old "$OLD_IMAGE" --new "$NEW_IMAGE"
+
+      - name: Upload the record
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rollback-report-candidate
+          path: ${{ runner.temp }}/rollback-report-candidate.json
+          if-no-files-found: ignore
