@@ -40,7 +40,7 @@ function stages(source: string): Record<string, string> {
 function jobs(source: string): Record<string, string> {
   const body = withoutComments(source).split(/^jobs:\n/m)[1] ?? '';
   const out: Record<string, string> = {};
-  for (const part of body.split(/^(?=  [a-z-]+:\n)/m)) {
+  for (const part of body.split(/^(?= {2}[a-z-]+:\n)/m)) {
     const name = /^ {2}([a-z-]+):\n/.exec(part)?.[1];
     if (name !== undefined) out[name] = part;
   }
