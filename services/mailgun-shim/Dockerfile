@@ -4,17 +4,21 @@
 # `RUN --mount=type=secret` below rather than leaving it to whichever frontend
 # the local daemon happens to bundle.
 
-# better-sqlite3 (the store's driver) ships prebuilt glibc and musl binaries
-# inside its npm package, so neither base needs a compiler. bookworm-slim is
-# chosen because it tracks Debian's glibc and Node's own release-testing
-# matrix, which matters more at this service's scale than the size delta.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
+# better-sqlite3 (the store's driver) ships prebuilt N-API binaries for glibc
+# and musl inside its npm package (prebuilds/linuxmusl-x64.node), selected at
+# load time on musl, so neither base needs a compiler. alpine is the smallest
+# base with no critical or high finding lacking a fix (see the PR body).
+FROM node:26.13.0-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
+
+# Alpine's zlib fix is not in the base's package index until upgraded here.
+RUN apk upgrade --no-cache zlib
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
-# package.json pins.
-# The base's bundled npm carries undici and brace-expansion versions with
-# published advisories; 11.21.2 bundles the fixed releases.
-RUN npm install --global npm@11.21.2 && npm install --global pnpm@11.17.0
+# package.json pins. npm is removed in the same layer: it is only the installer
+# for pnpm, and its bundled dependencies are not needed at run time. pnpm and
+# its store are removed after the last pnpm step (see `pnpm prune` below).
+RUN npm install --global pnpm@11.17.0 \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm
 
 WORKDIR /app
 
@@ -46,7 +50,11 @@ COPY drizzle ./drizzle
 # Dev dependencies (typescript, vitest, etc.) are only needed for the build
 # step above — pruning them keeps @types/*, tsc and the test toolchain out
 # of the image that actually ships.
-RUN pnpm prune --prod
+# pnpm ships its own copy of undici and tar, and its store holds every locked
+# package, dev ones included. Neither is needed at run time, so both go in the
+# same layer as the last pnpm call.
+RUN pnpm prune --prod \
+ && rm -rf /usr/local/lib/node_modules/pnpm /usr/local/bin/pnpm /usr/local/bin/pnpx /root/.local/share/pnpm /root/.cache/pnpm
 
 USER node
 EXPOSE 8080 25

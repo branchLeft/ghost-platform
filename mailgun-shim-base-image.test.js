@@ -10,7 +10,7 @@ const DOCKERFILE = path.join(import.meta.dirname, 'services', 'mailgun-shim', 'D
 
 // The digest the base was scanned at with Grype (see the PR body's findings table).
 const SCANNED_BASE =
-  'node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68';
+  'node:26.13.0-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216';
 
 function fromLines(text) {
   return text
@@ -22,7 +22,7 @@ function fromLines(text) {
 test('mailgun-shim base image is pinned by digest', () => {
   const froms = fromLines(fs.readFileSync(DOCKERFILE, 'utf8'));
   assert.equal(froms.length, 1, 'expected exactly one FROM line');
-  assert.match(froms[0], /^node:[0-9.]+-bookworm-slim@sha256:[0-9a-f]{64}$/);
+  assert.match(froms[0], /^node:[0-9.]+-alpine@sha256:[0-9a-f]{64}$/);
 });
 
 test('mailgun-shim base image digest equals the scanned digest', () => {
