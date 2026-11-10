@@ -21,6 +21,7 @@ import {
   OWNER,
   PROV_DB,
   PROVISIONER,
+  PROSPECT,
   TENANT,
   TENANT_PW,
   MIGRATOR_PW,
@@ -46,6 +47,7 @@ const ENV = {
   PORTAL_TENANT_LOGIN: TENANT,
   PORTAL_OWNER_LOGIN: OWNER,
   PORTAL_PROVISIONER_LOGIN: PROVISIONER,
+  PORTAL_PROSPECT_LOGIN: PROSPECT,
   PORTAL_MIGRATOR_LOGIN: MIGRATOR,
 };
 
@@ -134,6 +136,7 @@ describe('--migrate-only without a server', () => {
     expect(config.tenantPassword).toBe('');
     expect(config.ownerPassword).toBe('');
     expect(config.provisionerPassword).toBe('');
+    expect(config.prospectPassword).toBe('');
     expect(() => loadConfig(ENV, [], read)).toThrow(/PORTAL_ADMIN_URL_FILE/);
   });
 
@@ -171,7 +174,7 @@ describe('--migrate-only on a real server', () => {
   it('applies the pending migration with its grants and changes no password or role', async () => {
     await provisionedBeforeDocuments();
     const before = await logins();
-    expect(before).toHaveLength(7);
+    expect(before).toHaveLength(9);
     const result = await migrate();
     expect(result.err).toEqual([]);
     expect(result.code).toBe(0);
@@ -183,6 +186,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0006_demo_lifecycle_register',
       'applied migration 0007_demo_rebuild_extended',
       'applied migration 0008_tenant_name',
+      'applied migration 0009_demo_request',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -256,6 +260,59 @@ describe('--migrate-only on a real server', () => {
     expect(rows!.rows[0].n).toBe(0);
   });
 
+  it('refuses a server provisioned before the prospect role existed, creating nothing', async () => {
+    await provisionedBeforeDocuments();
+    // What a server provisioned before the front door existed looks like: the
+    // role and its login absent, nothing of theirs granted.
+    await admin(PROV_DB, 'REVOKE USAGE ON SCHEMA portal FROM portal_prospect');
+    await admin(
+      'postgres',
+      `REVOKE CONNECT ON DATABASE ${PROV_DB} FROM ${PROSPECT}`,
+      `DROP ROLE ${PROSPECT}`,
+      'DROP ROLE portal_prospect'
+    );
+    const result = await migrate();
+    expect(result.code).toBe(1);
+    expect(result.err).toEqual([
+      `provision failed: migrate refused: role portal_prospect, ${PROSPECT} is absent; --migrate-only creates no role, run the full provision first`,
+    ]);
+    const [rows] = await admin(
+      'postgres',
+      `SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_prospect', '${PROSPECT}')`
+    );
+    expect(rows!.rows[0].n).toBe(0);
+  });
+
+  it('adds the demo request table to a server that has the lifecycle, with the front door insert-only', async () => {
+    const all = readMigrations();
+    const index = all.findIndex((m) => m.tag === '0009_demo_request');
+    expect(index).toBeGreaterThan(0);
+    const before = await run({ migrations: all.slice(0, index) });
+    expect(before.err).toEqual([]);
+    expect(before.code).toBe(0);
+    const table = "SELECT to_regclass('portal.demo_request') AS t";
+    expect((await admin(PROV_DB, table))[0]!.rows[0].t).toBeNull();
+    const result = await migrate();
+    expect(result.err).toEqual([]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('applied migration 0009_demo_request');
+    expect((await admin(PROV_DB, table))[0]!.rows[0].t).toBe('portal.demo_request');
+    const [grants] = await admin(
+      PROV_DB,
+      `SELECT has_table_privilege('portal_prospect', 'portal.demo_request', 'INSERT') AS i,
+              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
+              has_table_privilege('portal_provisioner', 'portal.demo_request', 'SELECT') AS p`
+    );
+    expect(grants!.rows[0]).toEqual({ i: true, s: false, p: true });
+    // Widening the front door's grant is a difference the post-check names.
+    await admin(PROV_DB, 'GRANT SELECT ON portal.demo_request TO portal_prospect');
+    const widened = await migrate();
+    expect(widened.code).toBe(1);
+    expect(widened.err.join('\n')).toMatch(
+      /extra M06: SELECT on table portal\.demo_request to portal_prospect/
+    );
+  });
+
   it('refuses on a bare server: no migrator to connect as, creating neither roles nor the database', async () => {
     const result = await migrate();
     expect(result.code).toBe(1);
@@ -279,6 +336,8 @@ describe('--migrate-only on a real server', () => {
       `CREATE ROLE ${OWNER} LOGIN`,
       'CREATE ROLE portal_provisioner NOLOGIN',
       `CREATE ROLE ${PROVISIONER} LOGIN`,
+      'CREATE ROLE portal_prospect NOLOGIN',
+      `CREATE ROLE ${PROSPECT} LOGIN`,
       `CREATE ROLE ${MIGRATOR} LOGIN`
     );
     const result = await migrate();
@@ -494,6 +553,7 @@ describe('--migrate-only on a real server', () => {
           PORTAL_TENANT_LOGIN: TENANT,
           PORTAL_OWNER_LOGIN: OWNER,
           PORTAL_PROVISIONER_LOGIN: PROVISIONER,
+          PORTAL_PROSPECT_LOGIN: PROSPECT,
           PORTAL_MIGRATOR_LOGIN: MIGRATOR,
         },
         encoding: 'utf8',
@@ -569,7 +629,7 @@ describe('the migrator login is held to the manifest', () => {
     const checkpoint = checkpointFor(
       major,
       PROV_DB,
-      principalNames(TENANT, OWNER, PROVISIONER, MIGRATOR),
+      principalNames(TENANT, OWNER, PROVISIONER, PROSPECT, MIGRATOR),
       readMigrations()
         .slice(0, 3)
         .map((m) => m.tag)
@@ -696,7 +756,7 @@ describe('the migrator login is held to the manifest', () => {
 
   // The routine path has no password for these logins, so it probes with a wrong
   // one: an admitting rule reaches the check and fails it (28P01), a refusal does not.
-  it.each([TENANT, OWNER, PROVISIONER])(
+  it.each([TENANT, OWNER, PROVISIONER, PROSPECT])(
     'refuses, from the routine path, a pg_hba rule that admits %s to another database',
     async (login) => {
       await provisioned();

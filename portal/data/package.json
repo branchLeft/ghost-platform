@@ -10,6 +10,7 @@
     "./tenant": "./dist/src/tenant/index.js",
     "./owner": "./dist/src/owner/index.js",
     "./provisioner": "./dist/src/provisioner/index.js",
+    "./prospect": "./dist/src/prospect/index.js",
     "./migrate": "./dist/src/migrate.js"
   },
   "scripts": {

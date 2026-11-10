@@ -18,6 +18,7 @@ import {
   MIGRATOR_PW,
   OWNER,
   PROV_DB,
+  PROSPECT,
   PROVISIONER,
   TENANT,
   TENANT_PW,
@@ -75,7 +76,7 @@ describe('the provisioning lifecycle', () => {
     expect(result.code).toBe(0);
     expect(result.out).toEqual([
       'pre-check passed: no difference from the manifest',
-      `created portal_tenant, portal_owner, portal_provisioner, ${TENANT}, ${OWNER}, ${PROVISIONER}, ${MIGRATOR}`,
+      `created portal_tenant, portal_owner, portal_provisioner, portal_prospect, ${TENANT}, ${OWNER}, ${PROVISIONER}, ${PROSPECT}, ${MIGRATOR}`,
       `created database ${PROV_DB}`,
       'applied migration 0000_binding_functions',
       'applied migration 0001_tenant_register',
@@ -86,6 +87,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0006_demo_lifecycle_register',
       'applied migration 0007_demo_rebuild_extended',
       'applied migration 0008_tenant_name',
+      'applied migration 0009_demo_request',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),
@@ -174,6 +176,30 @@ describe('the provisioning lifecycle', () => {
       expect(await privilege('portal_owner', table, 'INSERT')).toBe(false);
       expect(await privilege('portal_tenant', table, 'SELECT')).toBe(false);
     }
+    // The front door inserts a request and does nothing else: it cannot read
+    // one back, change one or remove one. The lifecycle worker and the owner
+    // console read what it wrote and write nothing to it.
+    expect(await privilege('portal_prospect', 'portal.demo_request', 'INSERT')).toBe(true);
+    for (const what of ['SELECT', 'UPDATE', 'DELETE']) {
+      expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(false);
+    }
+    for (const role of ['portal_provisioner', 'portal_owner']) {
+      expect(await privilege(role, 'portal.demo_request', 'SELECT')).toBe(true);
+      for (const what of ['INSERT', 'UPDATE', 'DELETE']) {
+        expect(await privilege(role, 'portal.demo_request', what)).toBe(false);
+      }
+    }
+    expect(await privilege('portal_tenant', 'portal.demo_request', 'SELECT')).toBe(false);
+    // The front door holds nothing on any other portal table.
+    for (const table of [
+      'portal.tenant_register',
+      'portal.demo_state_event',
+      'portal.hostname_register',
+      'portal.hostname_retirement',
+    ]) {
+      expect(await privilege('portal_prospect', table, 'SELECT')).toBe(false);
+      expect(await privilege('portal_prospect', table, 'INSERT')).toBe(false);
+    }
     // A bare login session, with no SET ROLE, holds nothing in the portal schema.
     expect(await privilege(TENANT, 'portal.tenant_register', 'SELECT')).toBe(false);
   });
@@ -187,6 +213,7 @@ describe('the provisioning lifecycle', () => {
         tenant: 'rotated-tenant-1',
         owner: 'rotated-owner-1',
         provisioner: 'rotated-prov-1',
+        prospect: 'rotated-prospect-1',
         migrator: 'rotated-migrator-1',
       }
     );
@@ -198,7 +225,9 @@ describe('the provisioning lifecycle', () => {
     const strip = (lines: string[]): string[] =>
       lines.filter(
         (line) =>
-          ![TENANT, OWNER, PROVISIONER, MIGRATOR].some((login) => line.startsWith(`${login} `))
+          ![TENANT, OWNER, PROVISIONER, PROSPECT, MIGRATOR].some((login) =>
+            line.startsWith(`${login} `)
+          )
       );
     expect(strip(after)).toEqual(strip(before));
     expect(after).not.toEqual(before);
@@ -282,7 +311,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 10 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 11 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 
@@ -301,8 +330,8 @@ describe('the provisioning lifecycle', () => {
     );
     const major = await serverMajor();
     expect(result.err.at(-1)).toBe(
-      'provision failed: refused: 8 difference(s) from the manifest; already done by this run: ' +
-        `created portal_tenant, portal_owner, portal_provisioner, ${TENANT}, ${OWNER}, ${PROVISIONER}, ${MIGRATOR}; ` +
+      'provision failed: refused: 10 difference(s) from the manifest; already done by this run: ' +
+        `created portal_tenant, portal_owner, portal_provisioner, portal_prospect, ${TENANT}, ${OWNER}, ${PROVISIONER}, ${PROSPECT}, ${MIGRATOR}; ` +
         `created database ${PROV_DB} (empty)` +
         (major < 15 ? `; handed schema public of ${PROV_DB} to ${MIGRATOR}` : '')
     );
@@ -361,6 +390,47 @@ describe('the provisioning lifecycle', () => {
       );
     } finally {
       await admin(PROV_DB, 'REVOKE UPDATE ON portal.hostname_register FROM portal_provisioner');
+    }
+  });
+
+  it('the boundary smoke test fails when the prospect login holds the owner role', async () => {
+    expect((await run()).code).toBe(0);
+    await admin('postgres', `GRANT portal_owner TO ${PROSPECT}`);
+    try {
+      await expect(verifyBoundary(provConfig())).rejects.toThrow(
+        'prospect login assumes portal_owner: expected 42501, got ok'
+      );
+    } finally {
+      await admin('postgres', `REVOKE portal_owner FROM ${PROSPECT}`);
+    }
+  });
+
+  it.each([
+    ['SELECT', 'reads', 'prospect reads portal.demo_request: expected 42501, got ok'],
+    ['UPDATE', 'updates', 'prospect updates portal.demo_request: expected 42501, got ok'],
+    ['DELETE', 'deletes', 'prospect deletes from portal.demo_request: expected 42501, got ok'],
+  ])(
+    'the boundary smoke test fails when the prospect role could %s a request (%s)',
+    async (privilegeName, _verb, message) => {
+      expect((await run()).code).toBe(0);
+      await admin(PROV_DB, `GRANT ${privilegeName} ON portal.demo_request TO portal_prospect`);
+      try {
+        await expect(verifyBoundary(provConfig())).rejects.toThrow(message);
+      } finally {
+        await admin(PROV_DB, `REVOKE ${privilegeName} ON portal.demo_request FROM portal_prospect`);
+      }
+    }
+  );
+
+  it('the boundary smoke test fails when the prospect role could no longer insert a request', async () => {
+    expect((await run()).code).toBe(0);
+    await admin(PROV_DB, 'REVOKE INSERT ON portal.demo_request FROM portal_prospect');
+    try {
+      await expect(verifyBoundary(provConfig())).rejects.toThrow(
+        'prospect inserts into portal.demo_request: expected ok, got 42501'
+      );
+    } finally {
+      await admin(PROV_DB, 'GRANT INSERT ON portal.demo_request TO portal_prospect');
     }
   });
 
@@ -486,7 +556,8 @@ describe('the compiled command', () => {
   function compiled(
     tenantPassword: string,
     ownerPassword: string,
-    provisionerPassword = 'prov-pw'
+    provisionerPassword = 'prov-pw',
+    prospectPassword = 'prospect-pw'
   ) {
     if (!existsSync(dist))
       throw new Error('run `pnpm run build` first: the compiled command is missing');
@@ -497,6 +568,7 @@ describe('the compiled command', () => {
       PORTAL_TENANT_PASSWORD_FILE: tenantPassword,
       PORTAL_OWNER_PASSWORD_FILE: ownerPassword,
       PORTAL_PROVISIONER_PASSWORD_FILE: provisionerPassword,
+      PORTAL_PROSPECT_PASSWORD_FILE: prospectPassword,
       PORTAL_MIGRATOR_PASSWORD_FILE: MIGRATOR_PW,
     })) {
       env[name] = join(dir, name);
@@ -511,6 +583,7 @@ describe('the compiled command', () => {
           PORTAL_TENANT_LOGIN: TENANT,
           PORTAL_OWNER_LOGIN: OWNER,
           PORTAL_PROVISIONER_LOGIN: PROVISIONER,
+          PORTAL_PROSPECT_LOGIN: PROSPECT,
           PORTAL_MIGRATOR_LOGIN: MIGRATOR,
         },
         encoding: 'utf8',
@@ -524,13 +597,14 @@ describe('the compiled command', () => {
     'provisions with the password %j and the logins connect with it',
     async (password) => {
       await resetServer();
-      const result = compiled(password, `${password}-owner`);
+      const result = compiled(password, `${password}-owner`, 'prov-pw', `${password}-prospect`);
       expect(result.stderr).toBe('');
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('portal database provisioned');
       expect(result.stdout).not.toContain(password);
       await connectAs(TENANT, password);
       await connectAs(OWNER, `${password}-owner`);
+      await connectAs(PROSPECT, `${password}-prospect`);
     },
     60000
   );
