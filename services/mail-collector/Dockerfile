@@ -11,18 +11,20 @@
 # Dockerfile.dockerignore beside this file narrows that context to the two
 # packages.
 
-# No native dependency needs node-gyp here, so there is no musl-compatibility
-# reason to prefer -alpine. bookworm-slim is chosen instead because it tracks
-# Debian's glibc and Node's own release-testing matrix -- the same choice
-# services/mailgun-shim makes, for the same reason.
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
+# Alpine: the collector has no native dependency, so musl is no obstacle, and
+# the Alpine image carries far fewer packages than the Debian one, which keeps
+# the scan free of unfixed libc, util-linux and gcc rows.
+FROM node:26.13.0-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
 
-# The base image's bundled npm carries fixable advisories (undici,
-# brace-expansion, tar, ip-address); npm 12 carries the fixed versions.
-# Node 26 ships without corepack, so pnpm is installed at the version the
-# package.json files pin.
-RUN npm install --global npm@12.2.2 \
-    && npm install --global pnpm@11.17.0
+# zlib 1.3.2 in the base has a Critical advisory fixed in 1.4; the base image
+# has not been rebuilt with it yet.
+RUN apk upgrade --no-cache zlib
+
+# pnpm is installed at the version the package.json files pin, then npm is
+# removed: the image only runs node, and npm's bundled packages carry fixable
+# advisories. Node 26 ships without corepack.
+RUN npm install --global pnpm@11.28.11 \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Both packages keep their repository-relative layout, so the lockfile's
 # `../../deadmans-switch` link resolves inside the image exactly as it does in
