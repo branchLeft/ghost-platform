@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
 import {
   CustomDomainNotAllowedError,
   CustomDomainNotRequestedError,
@@ -317,7 +316,7 @@ describe('what the tables themselves refuse', () => {
         .values({ fqdn: DOMAIN, tenantId: TENANT_C, connectedAt: NOW })
     );
     expect(rootMessage(error)).toContain('connected_domain_pkey');
-    await fixture.admin.query('DELETE FROM portal.connected_domain');
+    await fixture.adminDb.delete(schema.connectedDomain);
   });
 
   it('refuses a name that is not a plain domain, and a token that is not a token', async () => {
@@ -350,7 +349,7 @@ describe('what the tables themselves refuse', () => {
     );
     expect(rootMessage(other)).toContain('row-level security');
     const edit = await rejection(
-      tenant.run(scopeA, (tx) => tx.execute(sql`UPDATE portal.connected_domain SET fqdn = fqdn`))
+      tenant.run(scopeA, (tx) => tx.update(schema.connectedDomain).set({ fqdn: DOMAIN }))
     );
     expect(rootMessage(edit)).toContain('permission denied');
     expect(await connectedRows()).toBe(0);
