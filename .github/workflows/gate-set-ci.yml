@@ -89,6 +89,8 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: adapters/sso/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
 
       # The content-policy gate renders its policy through render-core's built
       # output, and drives a headless Chromium through Playwright.
