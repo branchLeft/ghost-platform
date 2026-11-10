@@ -8,11 +8,13 @@
 # inside its npm package, so neither base needs a compiler. bookworm-slim is
 # chosen because it tracks Debian's glibc and Node's own release-testing
 # matrix, which matters more at this service's scale than the size delta.
-FROM node:26.5.0-bookworm-slim
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json pins.
-RUN npm install --global pnpm@11.17.0
+# The base's bundled npm carries undici and brace-expansion versions with
+# published advisories; 11.21.2 bundles the fixed releases.
+RUN npm install --global npm@11.21.2 && npm install --global pnpm@11.17.0
 
 WORKDIR /app
 
