@@ -2,7 +2,19 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
-## Unreleased
+## 0.3.0
+
+**Each Ghost container gets a 60 second stop grace period.**
+
+- **Changed output:** every rendered `compose.yml` gains
+  `stop_grace_period: '60s'` on both `ghost-a` and `ghost-b`, from the new
+  constant `GHOST_STOP_GRACE_PERIOD`, so a stop no longer SIGKILLs Ghost after
+  Docker's 10 second default in the middle of a send batch. A demo, a paying
+  tenant and tenant zero all gain it. The mail spool is not a Ghost service
+  and is unchanged. The value is provisional, pending a measured batch.
+- `assertRuntimePosture()` refuses a Ghost service with no whole-seconds
+  `stop_grace_period`, so dropping the line fails the render. See
+  src/compose.md#the-stop-grace-period.
 
 **The mail spool's drain listener binds one fixed address, never every interface.**
 
