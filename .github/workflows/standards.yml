@@ -16,4 +16,4 @@ concurrency:
 
 jobs:
   standards:
-    uses: branchLeft/standards/.github/workflows/standards.yml@v0.8.6
+    uses: branchLeft/standards/.github/workflows/standards.yml@v0.8.8
