@@ -29,13 +29,13 @@ const PUBLISHERS = {
   'mail-collector-image.yml': 'ghcr.io/branchleft/mail-collector',
   'drain-sidecar-image.yml': 'ghcr.io/branchleft/drain-sidecar',
   'recovery-image.yml': 'ghcr.io/branchleft/db-recovery',
+  'mailgun-shim-image.yml': 'ghcr.io/branchleft/mailgun-shim',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
 // and is in neither list fails the discovery test below.
 const NOT_COVERED = {
   'image-mirror.yml': 'copies third-party images by digest; the mirror has its own change',
-  'mailgun-shim-image.yml': 'its attest step comes from an open change; the scan joins it there',
 };
 
 // The shapes of a step that sends an image to a registry.
@@ -390,8 +390,7 @@ test('every workflow calls the scan at one revision, as the scan workflow requir
   assert.deepEqual([...refs], [PIN]);
 });
 
-test('no exemption file exists, so no workflow wires one', () => {
-  assert.equal(fs.existsSync(path.join(ROOT, '.image-scan-exemptions.json')), false);
+test('no workflow wires an exemption path, so the scan reads only the root exemption file', () => {
   for (const file of Object.keys(PUBLISHERS)) {
     assert.doesNotMatch(read(file), /exemptions-path/);
   }

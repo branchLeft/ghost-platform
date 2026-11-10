@@ -20,6 +20,7 @@ on:
       - .github/workflows/mail-collector-image.yml
       - .github/workflows/drain-sidecar-image.yml
       - .github/workflows/recovery-image.yml
+      - .github/workflows/mailgun-shim-image.yml
       - .github/workflows/image-attestation-ci.yml
       - scripts/probe-tokenless-attestation.sh
       - scripts/resolve-published-image.sh
@@ -39,6 +40,7 @@ on:
       - .github/workflows/mail-collector-image.yml
       - .github/workflows/drain-sidecar-image.yml
       - .github/workflows/recovery-image.yml
+      - .github/workflows/mailgun-shim-image.yml
       - .github/workflows/image-attestation-ci.yml
       - scripts/probe-tokenless-attestation.sh
       - scripts/resolve-published-image.sh
