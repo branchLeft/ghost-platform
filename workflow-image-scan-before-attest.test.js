@@ -153,7 +153,7 @@ export function problems(source, { file, image }) {
   if (!/^ {10}digest: \$\{\{ needs\.push\.outputs\.digest \}\}$/m.test(attest.text)) {
     found.push('attest job does not attest the pushed digest');
   }
-  if (!new RegExp(`^ {6}IMAGE: ${image.replace(/[.]/g, '\\.')}$`, 'm').test(attest.text)) {
+  if (!attest.text.split('\n').includes(`      IMAGE: ${image}`)) {
     found.push(`attest job does not name ${image}`);
   }
   if (!/^ {10}image: \$\{\{ env\.IMAGE \}\}$/m.test(attest.text)) {
