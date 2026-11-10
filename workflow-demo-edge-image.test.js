@@ -26,7 +26,7 @@ const DOCKERFILE = fs.readFileSync(path.join(ROOT, 'services', 'demo-edge', 'Doc
 // What the built binary printed, read from a real build of this Dockerfile
 // (`caddy version`, `caddy list-modules --versions`, `caddy build-info`).
 const OBSERVED = {
-  version: 'v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=\n',
+  version: 'v2.11.9 h1:bhZtcRKQOq0fuLvEgCdPYvUxXyGn9kzjG4lh2332DTE=\n',
   modules: [
     'dns.providers.hetzner v2.0.1',
     'http.handlers.reverse_proxy',
@@ -41,7 +41,7 @@ const OBSERVED = {
     'path\tcaddy',
     'mod\tcaddy\t(devel)\t',
     'dep\tgithub.com/caddy-dns/hetzner/v2\tv2.0.1\th1:lNv0M68UOtuBPLQ8VBeu7nByMNl+gRRa2B2H4RgMbYI=',
-    'dep\tgithub.com/caddyserver/caddy/v2\tv2.11.4\th1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=',
+    'dep\tgithub.com/caddyserver/caddy/v2\tv2.11.9\th1:bhZtcRKQOq0fuLvEgCdPYvUxXyGn9kzjG4lh2332DTE=',
     'build\t-trimpath=true',
     '',
   ].join('\n'),
@@ -182,8 +182,8 @@ test('the real publish workflow is gated, scoped, digest-verified, signed and re
 
 test('the pins checker reports each way the Dockerfile can drift', () => {
   const hetzner = 'github.com/caddy-dns/hetzner/v2@v2.0.1';
-  const builderDigest = /(caddy:2\.11\.4-builder-alpine)@sha256:[0-9a-f]{64}/;
-  const finalDigest = /(caddy:2\.11\.4-alpine)@sha256:[0-9a-f]{64}/;
+  const builderDigest = /(caddy:2\.11\.9-builder-alpine)@sha256:[0-9a-f]{64}/;
+  const finalDigest = /(caddy:2\.11\.9-alpine)@sha256:[0-9a-f]{64}/;
   const cases = [
     [swap(DOCKERFILE, `@v2.0.1`, ''), 'not pinned to a vX.Y.Z version'],
     [swap(DOCKERFILE, '@v2.0.1', '@latest'), 'not pinned to a vX.Y.Z version'],
@@ -191,19 +191,19 @@ test('the pins checker reports each way the Dockerfile can drift', () => {
     [DOCKERFILE.replace(builderDigest, '$1'), 'has no @sha256 digest pin'],
     [DOCKERFILE.replace(finalDigest, '$1'), 'has no @sha256 digest pin'],
     [DOCKERFILE.replace(builderDigest, '$1@sha256:abc'), 'has no @sha256 digest pin'],
-    [swap(DOCKERFILE, 'caddy:2.11.4-alpine@', 'caddy:2.11.3-alpine@'), 'disagree'],
-    [swap(DOCKERFILE, 'caddy:2.11.4-builder-alpine@', 'caddy:2.11.3-builder-alpine@'), 'disagree'],
-    [swap(DOCKERFILE, 'xcaddy build v2.11.4', 'xcaddy build v2.11.3'), 'xcaddy build v2.11.3'],
-    [swap(DOCKERFILE, 'xcaddy build v2.11.4 --with', 'xcaddy build --with'), 'no vX.Y.Z Caddy'],
-    [swap(DOCKERFILE, 'xcaddy build v2.11.4', 'xcaddy build latest'), 'no vX.Y.Z Caddy'],
+    [swap(DOCKERFILE, 'caddy:2.11.9-alpine@', 'caddy:2.11.3-alpine@'), 'disagree'],
+    [swap(DOCKERFILE, 'caddy:2.11.9-builder-alpine@', 'caddy:2.11.3-builder-alpine@'), 'disagree'],
+    [swap(DOCKERFILE, 'xcaddy build v2.11.9', 'xcaddy build v2.11.3'), 'xcaddy build v2.11.3'],
+    [swap(DOCKERFILE, 'xcaddy build v2.11.9 --with', 'xcaddy build --with'), 'no vX.Y.Z Caddy'],
+    [swap(DOCKERFILE, 'xcaddy build v2.11.9', 'xcaddy build latest'), 'no vX.Y.Z Caddy'],
     [
       swap(DOCKERFILE, hetzner, `${hetzner} --with github.com/example/other@v1.0.0`),
       'unexpected module',
     ],
     [swap(DOCKERFILE, hetzner, 'github.com/example/other@v1.0.0'), 'does not name'],
-    [`${DOCKERFILE}RUN xcaddy build v2.11.4 --with ${hetzner}\n`, 'exactly one xcaddy build'],
+    [`${DOCKERFILE}RUN xcaddy build v2.11.9 --with ${hetzner}\n`, 'exactly one xcaddy build'],
     [`${DOCKERFILE}FROM alpine:3.20\n`, 'exactly two FROM lines'],
-    [swap(DOCKERFILE, 'FROM caddy:2.11.4-builder-alpine', 'FROM busybox:1'), 'not the caddy image'],
+    [swap(DOCKERFILE, 'FROM caddy:2.11.9-builder-alpine', 'FROM busybox:1'), 'not the caddy image'],
     [swap(DOCKERFILE, ' AS builder', ''), 'first FROM is not'],
   ];
   for (const [text, expected] of cases) {
@@ -217,8 +217,8 @@ test('the pins checker reports each way the Dockerfile can drift', () => {
 test('a pin that only appears in a comment does not count', () => {
   const commented = swap(
     DOCKERFILE,
-    'RUN xcaddy build v2.11.4 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --output /usr/bin/caddy',
-    '# RUN xcaddy build v2.11.4 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --output /usr/bin/caddy'
+    'RUN xcaddy build v2.11.9 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --replace golang.org/x/net=golang.org/x/net@v0.62.0 --replace github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2 --output /usr/bin/caddy',
+    '# RUN xcaddy build v2.11.9 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --replace golang.org/x/net=golang.org/x/net@v0.62.0 --replace github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2 --output /usr/bin/caddy'
   );
   assert.ok(hasProblem(pinProblems(commented), 'exactly one xcaddy build'));
 });
@@ -259,7 +259,7 @@ test('the binary check reports each way the built image can differ from the pins
       'hetzner/v2 absent',
     ],
     [
-      { buildInfo: OBSERVED.buildInfo.replace('caddy/v2\tv2.11.4', 'caddy/v2\tv2.11.3') },
+      { buildInfo: OBSERVED.buildInfo.replace('caddy/v2\tv2.11.9', 'caddy/v2\tv2.11.3') },
       'build-info has github.com/caddyserver/caddy/v2 v2.11.3',
     ],
     [{ arch: 'arm64' }, "image architecture is 'arm64'"],

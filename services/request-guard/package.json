@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@11.28.11",
   "description": "The per-key attempt ceiling and the trusted-proxy request-source resolver, in one home for every service that meters an unauthenticated route (the demo gate, the tenant portal and the owner console).",
   "type": "module",
   "main": "dist/index.js",

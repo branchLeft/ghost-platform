@@ -1,6 +1,6 @@
 # demo-edge
 
-Caddy 2.11.4 with the Hetzner DNS module (`github.com/caddy-dns/hetzner/v2`
+Caddy 2.11.9 with the Hetzner DNS module (`github.com/caddy-dns/hetzner/v2`
 v2.0.1) compiled in. It is the image for the demo host's own TLS termination:
 one wildcard certificate, issued by DNS-01, covers every demo slot name, so
 no slot name reaches a certificate transparency log. The Caddyfile is
@@ -43,9 +43,12 @@ unless they help the open-source community. A reader pulls it by digest after
 
 ## Pins
 
-The pins live in the `Dockerfile` and nowhere else: Caddy `2.11.4` (builder tag,
-`xcaddy build` argument and final tag), both base image digests, and the Hetzner
-module `v2.0.1`. `workflow-demo-edge-image.test.js` fails when a digest or the
+The pins live in the `Dockerfile` and nowhere else: Caddy `2.11.9` (builder tag,
+`xcaddy build` argument and final tag), both base image digests, the Hetzner
+module `v2.0.1`, two `--replace` module versions (`golang.org/x/net` v0.62.0,
+`github.com/klauspost/compress` v1.20.2) and the Alpine `zlib` 1.4-r0 package.
+`test_demo_edge_base_pin.py` holds the digests and these pins to the values the
+image scan was run against. `workflow-demo-edge-image.test.js` fails when a digest or the
 module version is missing, when the three Caddy spellings disagree, and when the
 built binary reports anything other than what the `Dockerfile` says. To bump,
 change every spelling together and re-read the digests.
@@ -57,7 +60,7 @@ docker build -f services/demo-edge/Dockerfile services/demo-edge
 ```
 
 The build stage uses `xcaddy`; the final stage copies the binary onto the
-pinned `caddy:2.11.4-alpine` base. A `RUN` at the end fails the build when
+pinned `caddy:2.11.9-alpine` base. A `RUN` at the end fails the build when
 `dns.providers.hetzner` is absent from `caddy list-modules`.
 
 ## Configuration
