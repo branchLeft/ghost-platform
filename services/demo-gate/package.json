@@ -15,7 +15,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@branchleft/ghost-platform-render-core": "link:../../render-core",
+    "@branchleft/ghost-platform-render-core": "0.2.0",
     "ghost-platform-request-guard": "link:../request-guard"
   },
   "devDependencies": {

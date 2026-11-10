@@ -16,15 +16,9 @@ worked step -- see "Left out, deliberately" at the end.
 ## Runtime: a bundled single file, not a plain `pnpm install --frozen-lockfile` on the host
 
 `services/broker/package.json` depends on
-`@branchleft/ghost-platform-render-core` via `file:../../render-core`.
-Installed locally (`pnpm install --frozen-lockfile` in this checkout), that resolves to a symlink
-four directories up (`node_modules/@branchleft/ghost-platform-render-core
--> ../../../../render-core`) -- proven by running it, not assumed. render-
-core's own `package.json` says why a normal host install can't lean on the
-registry instead: "to be published the same way ... no publish workflow
-exists for it yet" (`CLAUDE.md`). A host install would therefore need the
-whole monorepo checkout staged at that exact relative layout, which is
-fragile to rsync and easy to let drift from what actually shipped.
+`@branchleft/ghost-platform-render-core` at an exact published version, which
+`pnpm install --frozen-lockfile` fetches from GitHub Packages and which needs
+a registry read credential. A host has none, so nothing is installed there.
 
 Instead, `pnpm run bundle` (`esbuild.bundle.mjs`) produces five self-
 contained ESM files with render-core (and this package's own modules)

@@ -10,13 +10,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "bundle": "pnpm --dir ../../render-core run build && pnpm run build && node esbuild.bundle.mjs",
+    "bundle": "pnpm run build && node esbuild.bundle.mjs",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@branchleft/ghost-platform-render-core": "link:../../render-core",
+    "@branchleft/ghost-platform-render-core": "0.2.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
