@@ -449,6 +449,7 @@ describe('the statements the command writes', () => {
     expect(all.filter((s) => s.includes('UPDATE'))).toEqual([
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.health_reading TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.support_access_reading TO "portal_owner"',
+      'GRANT SELECT, UPDATE ON TABLE portal.support_access_request TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.moderation_setting TO "portal_tenant"',
     ]);
   });

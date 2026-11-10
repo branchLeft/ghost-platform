@@ -14,7 +14,7 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { SUPPORT_ACCESS_STATES, SUPPORT_LANES } from './supportAccess.js';
+import { SUPPORT_ACCESS_STATES, SUPPORT_LANES, SUPPORT_REQUEST_STATUSES } from './supportAccess.js';
 import { TENANT_KINDS } from './tenantKind.js';
 import { TENANT_NAME_PATTERN } from './tenantName.js';
 import {
@@ -170,9 +170,10 @@ export const supportAccessReading = portal
 
 /**
  * A tenant's request for support access: one row per tenant while it is
- * that has asked, holding the tenant and the database-clock time and no text.
- * The tenant role may insert its own row and read it; no role updates or
- * deletes one. A request opens nothing: access
+ * that has asked, holding the tenant, the database-clock time, a status
+ * (`open`, then `dealt_with`) and no text. The tenant role may insert its own
+ * open row and read it; only the owner role updates the status, and no role
+ * deletes a row. A request opens nothing: access
  * is opened and closed on the tenant's host by the owner, and the portal holds
  * no way to do either.
  */
@@ -184,14 +185,27 @@ export const supportAccessRequest = portal
         .primaryKey()
         .references(() => tenantRegister.tenantId),
       requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+      status: text('status').notNull().default('open'),
     },
     (table) => [
+      check(
+        'support_access_request_status_known',
+        sql`${table.status} IN (${sql.raw(sqlList(SUPPORT_REQUEST_STATUSES))})`
+      ),
       pgPolicy('tenant_isolation', {
         as: 'permissive',
         for: 'all',
         to: portalTenant,
         using: sql`${table.tenantId} = public.bound_tenant()`,
         withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+      // A tenant files an open request and nothing else; the owner console
+      // alone moves one to dealt_with.
+      pgPolicy('tenant_insert_open', {
+        as: 'restrictive',
+        for: 'insert',
+        to: portalTenant,
+        withCheck: sql`${table.status} = 'open'`,
       }),
     ]
   )

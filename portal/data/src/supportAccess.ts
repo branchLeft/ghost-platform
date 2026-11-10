@@ -5,6 +5,9 @@ export type SupportAccessState = (typeof SUPPORT_ACCESS_STATES)[number];
 /** The two ways a grant is opened; the tenant page does not show which. */
 export const SUPPORT_LANES = ['consented', 'incident'] as const;
 export type SupportLane = (typeof SUPPORT_LANES)[number];
+/** A request is open until the owner deals with it; nothing else moves it, and nothing deletes it. */
+export const SUPPORT_REQUEST_STATUSES = ['open', 'dealt_with'] as const;
+export type SupportRequestStatus = (typeof SUPPORT_REQUEST_STATUSES)[number];
 
 /**
  * How old a reading may be and still be believed, in seconds. A reading older
@@ -73,8 +76,9 @@ export function deriveSupportAccessView(row: StoredReading | null, now: Date): S
   return unknown;
 }
 
-/** A tenant's pending request for support access, for the console's queue. */
+/** A tenant's request for support access, for the console's queue. */
 export interface SupportRequestView {
   readonly tenantId: string;
   readonly requestedAt: Date;
+  readonly status: SupportRequestStatus;
 }

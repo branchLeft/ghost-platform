@@ -1,4 +1,4 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
@@ -23,6 +23,7 @@ import {
 import {
   assertSupportReading,
   type SupportAccessReading,
+  type SupportRequestStatus,
   type SupportRequestView,
 } from '../supportAccess.js';
 
@@ -32,7 +33,9 @@ export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenant
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 export {
   InvalidSupportReadingError,
+  SUPPORT_REQUEST_STATUSES,
   type SupportAccessReading,
+  type SupportRequestStatus,
   type SupportRequestView,
 } from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
@@ -201,15 +204,43 @@ export class OwnerDb {
     });
   }
 
-  /** Every pending support-access request, oldest first: the console's queue. It has no paging. */
+  /**
+   * Every support-access request: open ones first, then dealt-with ones, each
+   * group oldest first. The console's queue; it has no paging.
+   */
   async listSupportRequests(): Promise<SupportRequestView[]> {
     return this.run(async (tx) => {
       const rows = await tx
         .select()
         .from(supportAccessRequest)
-        .orderBy(asc(supportAccessRequest.requestedAt), asc(supportAccessRequest.tenantId));
-      return rows.map((row) => ({ tenantId: row.tenantId, requestedAt: row.requestedAt }));
+        .orderBy(
+          desc(sql`${supportAccessRequest.status} = 'open'`),
+          asc(supportAccessRequest.requestedAt),
+          asc(supportAccessRequest.tenantId)
+        );
+      return rows.map((row) => ({
+        tenantId: row.tenantId,
+        requestedAt: row.requestedAt,
+        status: row.status as SupportRequestStatus,
+      }));
     });
+  }
+
+  /**
+   * Marks a tenant's open request dealt with. It returns whether one was open:
+   * a second call, or a tenant that never asked, changes nothing and returns
+   * false. The row stays; nothing deletes a request.
+   */
+  async markSupportRequestDealtWith(tenantId: string): Promise<boolean> {
+    const id = parseTenantId(tenantId);
+    const changed = await this.run((tx) =>
+      tx
+        .update(supportAccessRequest)
+        .set({ status: 'dealt_with' })
+        .where(and(eq(supportAccessRequest.tenantId, id), eq(supportAccessRequest.status, 'open')))
+        .returning({ tenantId: supportAccessRequest.tenantId })
+    );
+    return changed.length > 0;
   }
 
   /** Every demo with its current state, term and hostname: the console's read. It writes nothing. */

@@ -51,8 +51,11 @@ from the tenant's own row only (`TenantDb.ownSupportAccess`); a missing,
 stale or unrecognised reading is shown as unknown and never as closed. The page
 carries one button, `POST /site-access/request`, which files the signed-in
 tenant's request: the handler reads no form field, so no tenant id and no text
-can travel with it, and it changes no reading. The owner console lists the
-pending requests on its landing page, oldest first, on one page. Nothing under
+can travel with it, and it changes no reading. Once a request is filed the page
+shows its status word (open, then dealt with) and no time. The owner console
+lists every request on its landing page on one page, open ones first and oldest
+first; each open one carries a button, `POST /support-requests/dealt-with`,
+that marks it dealt with. Nothing deletes a request. Nothing under
 `portal/` can open or close access, and a test fails if portal source gains a
 revoke, a socket into a host, a child process or an ssh client. All wording is
 `ALL_CAPS` placeholder until the owner supplies it.

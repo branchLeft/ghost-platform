@@ -363,10 +363,54 @@ export const MORE_EXTRAS: readonly Tamper[] = [
   },
   {
     id: 'M06',
-    title: 'UPDATE on the support-access requests given to the owner role',
-    apply: [[P, 'GRANT UPDATE ON portal.support_access_request TO portal_owner']],
-    undo: [[P, 'REVOKE UPDATE ON portal.support_access_request FROM portal_owner']],
-    expect: /extra M06: UPDATE on table portal.support_access_request to portal_owner/,
+    title: 'UPDATE on the support-access requests given to the tenant role',
+    apply: [[P, 'GRANT UPDATE ON portal.support_access_request TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE ON portal.support_access_request FROM portal_tenant']],
+    expect: /extra M06: UPDATE on table portal.support_access_request to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE of the status column alone given to the tenant role',
+    apply: [[P, 'GRANT UPDATE (status) ON portal.support_access_request TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE (status) ON portal.support_access_request FROM portal_tenant']],
+    expect: /extra M07: UPDATE on column portal.support_access_request.status to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the support-access requests given to the owner role',
+    apply: [[P, 'GRANT DELETE ON portal.support_access_request TO portal_owner']],
+    undo: [[P, 'REVOKE DELETE ON portal.support_access_request FROM portal_owner']],
+    expect: /extra M06: DELETE on table portal.support_access_request to portal_owner/,
+  },
+  {
+    id: 'M20',
+    title: 'the insert restriction on the support-access requests dropped',
+    apply: [[P, 'DROP POLICY tenant_insert_open ON portal.support_access_request']],
+    undo: [
+      [
+        P,
+        "CREATE POLICY tenant_insert_open ON portal.support_access_request AS RESTRICTIVE FOR INSERT TO portal_tenant WITH CHECK (status = 'open')",
+      ],
+    ],
+    expect: /missing M20: policy tenant_insert_open on portal.support_access_request/,
+  },
+  {
+    id: 'M21',
+    title: 'the status check dropped from the support-access requests',
+    apply: [
+      [
+        P,
+        'ALTER TABLE portal.support_access_request DROP CONSTRAINT support_access_request_status_known',
+      ],
+    ],
+    undo: [
+      [
+        P,
+        "ALTER TABLE portal.support_access_request ADD CONSTRAINT support_access_request_status_known CHECK (status IN ('open', 'dealt_with'))",
+      ],
+    ],
+    expect:
+      /missing M21: portal.support_access_request constraint support_access_request_status_known/,
   },
   {
     id: 'M20',

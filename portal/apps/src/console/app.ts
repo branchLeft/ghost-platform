@@ -80,5 +80,13 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
         .join('');
       return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><ul>${rows}</ul>${renderSupportQueue(requests)}`;
     },
+    actions: {
+      // The only thing the queue can do: mark one tenant's open request dealt
+      // with. It writes the status and nothing else, and deletes nothing.
+      '/support-requests/dealt-with': async (_bound, _identity, form) => {
+        await options.db.markSupportRequestDealtWith(form.get('tenant') ?? '');
+        return '/';
+      },
+    },
   });
 }

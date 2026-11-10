@@ -35,7 +35,11 @@ import {
   supportAccessRequest,
   tenantRegister,
 } from '../schema.js';
-import { deriveSupportAccessView, type SupportAccessView } from '../supportAccess.js';
+import {
+  deriveSupportAccessView,
+  type SupportAccessView,
+  type SupportRequestStatus,
+} from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
@@ -138,7 +142,8 @@ export class TenantDb {
   /**
    * Records the bound tenant's request for support access: its own row, with
    * the database's clock and no text. A second request while one is pending
-   * records nothing and returns false. The request opens nothing.
+   * records nothing and returns false, and so does one after the owner has dealt
+   * with it. The request opens nothing.
    */
   async requestSupportAccess(scope: TenantScope): Promise<boolean> {
     const inserted = await this.run(scope, (tx) =>
@@ -151,11 +156,15 @@ export class TenantDb {
     return inserted.length > 0;
   }
 
-  /** The bound tenant's pending request, or null when it has none. */
-  async ownSupportRequest(scope: TenantScope): Promise<{ requestedAt: Date } | null> {
+  /** The bound tenant's request and its status, or null when it has none. */
+  async ownSupportRequest(
+    scope: TenantScope
+  ): Promise<{ requestedAt: Date; status: SupportRequestStatus } | null> {
     const rows = await this.run(scope, (tx) => tx.select().from(supportAccessRequest));
     const row = rows[0];
-    return row ? { requestedAt: row.requestedAt } : null;
+    return row
+      ? { requestedAt: row.requestedAt, status: row.status as SupportRequestStatus }
+      : null;
   }
 
   /**

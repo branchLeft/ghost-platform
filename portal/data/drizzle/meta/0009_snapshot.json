@@ -1,5 +1,5 @@
 {
-  "id": "de1d5524-666b-40cf-89b7-2d42ebd50ed1",
+  "id": "c89883ce-5305-4707-a3d4-76a1c1f88c85",
   "prevId": "125d4049-8431-4def-9251-729b61c3b790",
   "version": "7",
   "dialect": "postgresql",
@@ -628,6 +628,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
         }
       },
       "indexes": {},
@@ -653,9 +660,21 @@
           "to": ["portal_tenant"],
           "using": "\"portal\".\"support_access_request\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"support_access_request\".\"tenant_id\" = public.bound_tenant()"
+        },
+        "tenant_insert_open": {
+          "name": "tenant_insert_open",
+          "as": "RESTRICTIVE",
+          "for": "INSERT",
+          "to": ["portal_tenant"],
+          "withCheck": "\"portal\".\"support_access_request\".\"status\" = 'open'"
         }
       },
-      "checkConstraints": {},
+      "checkConstraints": {
+        "support_access_request_status_known": {
+          "name": "support_access_request_status_known",
+          "value": "\"portal\".\"support_access_request\".\"status\" IN ('open', 'dealt_with')"
+        }
+      },
       "isRLSEnabled": true
     },
     "portal.tenant_register": {

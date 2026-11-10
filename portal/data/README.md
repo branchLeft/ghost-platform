@@ -152,13 +152,18 @@ row, an older or future-dated one, and a state outside the closed list all come
 back `unknown` with no deadline. `closed` is returned only for a fresh reading
 that says `closed`, so a host that has stopped reporting never reads as closed.
 
-`portal.support_access_request` holds at most one row per tenant: the tenant id
-and the database-clock time, and no column that holds text. The tenant role may
-`INSERT` its own row (`TenantDb.requestSupportAccess`, which takes the tenant
-from the scope and ignores a repeat) and `SELECT` it; the owner role may
-`SELECT` (`OwnerDb.listSupportRequests`, oldest first, no paging). No role
-updates or deletes a request, so a request is never withdrawn or rewritten, and
-there is as yet no way to mark one dealt with. A request opens nothing: access
+`portal.support_access_request` holds at most one row per tenant: the tenant id,
+the database-clock time and a `status` (`open` or `dealt_with`, default `open`,
+held by a CHECK), and no column that holds text. The tenant role may `INSERT`
+its own row (`TenantDb.requestSupportAccess`, which takes the tenant from the
+scope and ignores a repeat, including a repeat after the request was dealt
+with) and `SELECT` it; a restrictive insert policy makes the row it files
+`open`. The tenant role holds no `UPDATE`, so it cannot change its status. The
+owner role may `SELECT` (`OwnerDb.listSupportRequests`, open requests first and
+oldest first, no paging) and `UPDATE`: `OwnerDb.markSupportRequestDealtWith`
+sets `dealt_with` on an open request and nothing else. No role deletes a
+request, so a request is never withdrawn, and a dealt-with row stays. A request
+opens nothing: access
 is opened and closed on the tenant's host by the owner, and the portal holds no
 way to do either. Both tables are isolated like every tenant table; the
 manifest's grants, policies and shapes (`provision/manifest.ts`) pin them, and

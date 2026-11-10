@@ -218,16 +218,18 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
       ],
     },
-    // TenantDb.requestSupportAccess inserts the tenant's own row and
-    // ownSupportRequest reads it; OwnerDb.listSupportRequests reads. Nothing
-    // updates or deletes a request, and the table has no column that holds text.
+    // TenantDb.requestSupportAccess inserts the tenant's own open row and
+    // ownSupportRequest reads it; OwnerDb.listSupportRequests reads and
+    // markSupportRequestDealtWith updates the status. The tenant role holds no
+    // UPDATE, so it cannot change its own status. Nothing deletes a request,
+    // and the table has no column that holds text.
     {
       kind: 'table',
       identity: 'portal.support_access_request',
       since: SUPPORT_ACCESS,
       grants: [
         { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
-        { grantee: 'ownerRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
       ],
     },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
@@ -349,13 +351,14 @@ function policy(
   since: string,
   cmd: string,
   using: string,
-  check: string
+  check: string,
+  permissive = true
 ): PolicyEntry {
   return {
     table,
     name,
     since,
-    text: `policy ${name} on ${table}: cmd=${cmd} permissive=true roles=${TENANT_ROLE} using=${using} check=${check}`,
+    text: `policy ${name} on ${table}: cmd=${cmd} permissive=${permissive} roles=${TENANT_ROLE} using=${using} check=${check}`,
   };
 }
 
@@ -385,6 +388,17 @@ export const POLICIES: readonly PolicyEntry[] = [
     '*',
     `(${BOUND})`,
     `(${BOUND})`
+  ),
+  // The restrictive half: whatever else lets a tenant insert, the row it files
+  // is open. Only the owner role's UPDATE moves a request to dealt_with.
+  policy(
+    'portal.support_access_request',
+    'tenant_insert_open',
+    SUPPORT_ACCESS,
+    'a',
+    'null',
+    "(status = 'open'::text)",
+    false
   ),
   policy(
     'portal.document_acceptance',
@@ -522,8 +536,12 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
     lines: [
       `column tenant_id uuid notnull=true ${PLAIN}`,
       `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
       'default requested_at now()',
+      "default status 'open'::text",
       'constraint support_access_request_pkey PRIMARY KEY (tenant_id)',
+      "constraint support_access_request_status_known CHECK ((status = ANY (ARRAY['open'::text, " +
+        "'dealt_with'::text])))",
       'constraint support_access_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
         '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
       'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +

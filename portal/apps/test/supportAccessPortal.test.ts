@@ -182,7 +182,38 @@ describe('the request button', () => {
     expect(await requests()).toEqual([TENANT_A]);
     const page = await browser.request('/site-access');
     expect(page.body).toContain('SUPPORT_ACCESS_REQUEST_SENT');
+    expect(page.body).toContain('SUPPORT_REQUEST_STATUS_OPEN');
     expect(page.body).not.toContain('<form method="post" action="/site-access/request">');
+  });
+
+  it('files an open request whatever status the body asks for', async () => {
+    const browser = await signedIn(ORG_A);
+    const body = new URLSearchParams({ status: 'dealt_with' }).toString();
+    expect((await post(browser, '/site-access/request', body)).status).toBe(303);
+    const rows = await fixture.adminDb.select().from(supportAccessRequest);
+    expect(rows.map((row) => row.status)).toEqual(['open']);
+  });
+
+  it('shows the status word once the owner has dealt with the request, and still no button', async () => {
+    const browser = await signedIn(ORG_A);
+    await post(browser, '/site-access/request');
+    expect(await owner.markSupportRequestDealtWith(TENANT_A)).toBe(true);
+    const page = await browser.request('/site-access');
+    expect(page.body).toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
+    expect(page.body).not.toContain('SUPPORT_REQUEST_STATUS_OPEN');
+    expect(page.body).not.toContain('<form method="post" action="/site-access/request">');
+    await post(browser, '/site-access/request');
+    const rows = await fixture.adminDb.select().from(supportAccessRequest);
+    expect(rows.map((row) => row.status)).toEqual(['dealt_with']);
+  });
+
+  it('offers the tenant no way to mark its own request', async () => {
+    const browser = await signedIn(ORG_A);
+    await post(browser, '/site-access/request');
+    const reply = await post(browser, '/support-requests/dealt-with', `tenant=${TENANT_A}`);
+    expect(reply.status).toBe(404);
+    const rows = await fixture.adminDb.select().from(supportAccessRequest);
+    expect(rows.map((row) => row.status)).toEqual(['open']);
   });
 
   it('takes the tenant from the session: a body naming B, with text, files A’s row only', async () => {

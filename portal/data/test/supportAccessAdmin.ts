@@ -1,5 +1,5 @@
 import { eq, sql, type SQL } from 'drizzle-orm';
-import { supportAccessReading } from '../src/schema.js';
+import { supportAccessReading, supportAccessRequest } from '../src/schema.js';
 import type { Fixture } from './helpers.js';
 
 /**
@@ -34,6 +34,18 @@ export const READING_TENANT_WRITE: Loosening = {
 export const REQUEST_TENANT_REWRITE: Loosening = {
   apply: [sql`GRANT UPDATE, DELETE ON portal.support_access_request TO portal_tenant`],
   restore: [sql`REVOKE UPDATE, DELETE ON portal.support_access_request FROM portal_tenant`],
+};
+
+export const REQUEST_TENANT_STATUS_WRITE: Loosening = {
+  apply: [sql`GRANT UPDATE (status) ON portal.support_access_request TO portal_tenant`],
+  restore: [sql`REVOKE UPDATE (status) ON portal.support_access_request FROM portal_tenant`],
+};
+
+export const REQUEST_INSERT_ANY_STATUS: Loosening = {
+  apply: [sql`ALTER POLICY tenant_insert_open ON portal.support_access_request WITH CHECK (true)`],
+  restore: [
+    sql`ALTER POLICY tenant_insert_open ON portal.support_access_request WITH CHECK (status = 'open')`,
+  ],
 };
 
 /** Runs `probe` with one control removed, and puts it back whatever the probe does. */
@@ -100,4 +112,16 @@ export async function requestRowText(fixture: Fixture): Promise<string[]> {
     sql`SELECT r::text AS row FROM portal.support_access_request r`
   );
   return (result.rows as Array<{ row: string }>).map((row) => row.row);
+}
+
+/** Puts one tenant's request back to a status, as the administrator. */
+export async function setRequestStatus(
+  fixture: Fixture,
+  tenantId: string,
+  status: 'open' | 'dealt_with'
+): Promise<void> {
+  await fixture.adminDb
+    .update(supportAccessRequest)
+    .set({ status })
+    .where(eq(supportAccessRequest.tenantId, tenantId));
 }

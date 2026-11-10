@@ -54,12 +54,37 @@ describe('renderSupportAccess', () => {
     expect(html.match(/<button/g)).toHaveLength(1);
   });
 
-  it('shows a pending request and no button', () => {
-    const html = renderSupportAccess({ state: 'closed', deadline: null }, { requestedAt: ASKED });
+  it('shows an open request as its status word and no button, and no time', () => {
+    const html = renderSupportAccess(
+      { state: 'closed', deadline: null },
+      { requestedAt: ASKED, status: 'open' }
+    );
     expect(html).toContain('SUPPORT_ACCESS_REQUEST_SENT');
-    expect(html).toContain('2027-01-15T07:30:00.000Z');
+    expect(html).toContain('SUPPORT_REQUEST_STATUS_OPEN');
+    expect(html).not.toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
+    expect(html).not.toContain('2027-01-15T07:30:00.000Z');
     expect(html).not.toContain('<form');
     expect(html).not.toContain('<button');
+  });
+
+  it('shows a request dealt with as that word, and still no button', () => {
+    const html = renderSupportAccess(
+      { state: 'closed', deadline: null },
+      { requestedAt: ASKED, status: 'dealt_with' }
+    );
+    expect(html).toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
+    expect(html).not.toContain('SUPPORT_REQUEST_STATUS_OPEN');
+    expect(html).not.toContain('<form');
+    expect(html).not.toContain('<button');
+  });
+
+  it('shows a status it does not know as neither word', () => {
+    const html = renderSupportAccess(
+      { state: 'closed', deadline: null },
+      { requestedAt: ASKED, status: 'bogus' }
+    );
+    expect(html).toContain('SUPPORT_REQUEST_STATUS_UNKNOWN');
+    expect(html).not.toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
   });
 
   it('offers no way to end access from the page, and points at the placeholders for how', () => {
@@ -71,22 +96,49 @@ describe('renderSupportAccess', () => {
 });
 
 describe('renderSupportQueue', () => {
+  const A = '11111111-1111-4111-8111-111111111111';
+  const B = '22222222-2222-4222-8222-222222222222';
+
   it('says so when no one has asked', () => {
     const html = renderSupportQueue([]);
     expect(html).toContain('SUPPORT_REQUESTS_PENDING 0');
     expect(html).not.toContain('<li>');
   });
 
-  it('lists every request with the tenant and the time, escaped, with no paging', () => {
+  it('lists every request with the tenant, the time and the status, escaped, with no paging', () => {
     const html = renderSupportQueue([
-      { tenantId: '11111111-1111-4111-8111-111111111111', requestedAt: ASKED },
-      { tenantId: '<b>', requestedAt: DEADLINE },
+      { tenantId: A, requestedAt: ASKED, status: 'open' },
+      { tenantId: '<b>', requestedAt: DEADLINE, status: 'open' },
     ]);
     expect(html).toContain('SUPPORT_REQUESTS_PENDING 2');
     expect(html.match(/<li>/g)).toHaveLength(2);
-    expect(html).toContain('11111111-1111-4111-8111-111111111111');
+    expect(html).toContain(A);
     expect(html).toContain('&lt;b&gt;');
     expect(html).not.toContain('<b>');
     expect(html).not.toMatch(/page=|next|previous/i);
+  });
+
+  it('counts only the open ones as pending and keeps the order it is given', () => {
+    const html = renderSupportQueue([
+      { tenantId: A, requestedAt: ASKED, status: 'open' },
+      { tenantId: B, requestedAt: DEADLINE, status: 'dealt_with' },
+    ]);
+    expect(html).toContain('SUPPORT_REQUESTS_PENDING 1');
+    expect(html.indexOf(A)).toBeLessThan(html.indexOf(B));
+    expect(html.match(/<li>/g)).toHaveLength(2);
+  });
+
+  it('gives each open request one mark-as-dealt-with form naming its tenant, and a dealt-with one none', () => {
+    const html = renderSupportQueue([
+      { tenantId: A, requestedAt: ASKED, status: 'open' },
+      { tenantId: B, requestedAt: DEADLINE, status: 'dealt_with' },
+    ]);
+    expect(html.match(/<form /g)).toHaveLength(1);
+    expect(html).toContain(
+      `<form method="post" action="/support-requests/dealt-with"><input type="hidden" name="tenant" value="${A}">`
+    );
+    expect(html).toContain('SUPPORT_REQUEST_MARK_DEALT_WITH');
+    expect(html).toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
+    expect(html).not.toMatch(/delete|remove/i);
   });
 });
