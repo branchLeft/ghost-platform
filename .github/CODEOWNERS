@@ -118,6 +118,9 @@
 # the template's own lines.
 /tools/floors.tsv        @branchLeft/branchleft-admin
 
+# SEC-5 image-scan exemptions: an agent must not approve its own exemption.
+/.image-scan-exemptions.json                     @branchLeft/branchleft-admin
+
 # branchLeft/standards templates/codeowners, synced whole (SYNC-1: these five
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
