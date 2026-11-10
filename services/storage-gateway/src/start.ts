@@ -1,5 +1,6 @@
 import { constants, readFileSync } from 'node:fs';
 import { access } from 'node:fs/promises';
+import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAdminHandler } from './admin-listener.js';
 import { ConfigError, type GatewayConfig } from './config.js';
@@ -22,6 +23,20 @@ const UPSTREAM_SECRET_FILE_MAX_BYTES = 512;
 const TLS_KEY_FILE_MAX_BYTES = 16 * 1024;
 /** A key id that no credential holds: the readiness check asks the store about it. */
 const READINESS_PROBE_KEY_ID = 'readiness-probe';
+/** The admin interface takes a handful of callers; it needs no more connections than this. */
+const ADMIN_MAX_CONNECTIONS = 16;
+
+function limitsOf(config: GatewayConfig): {
+  requestTimeoutMs: number;
+  headersTimeoutMs: number;
+  keepAliveTimeoutMs: number;
+} {
+  return {
+    requestTimeoutMs: config.requestTimeoutMs,
+    headersTimeoutMs: config.headersTimeoutMs,
+    keepAliveTimeoutMs: config.keepAliveTimeoutMs,
+  };
+}
 
 export interface StartOptions {
   /** The process environment: only the master secret's file setting is read from it here. */
@@ -34,6 +49,8 @@ export interface StartOptions {
 }
 
 export interface RunningGateway {
+  /** The tenant-facing server, exposed so a test can read the limits it was started with. */
+  readonly tenantServer: Server;
   readonly address: AddressInfo;
   readonly adminAddress?: AddressInfo;
   /** Drains both listeners within the configured grace, closes the store, and reports whether it had to cut connections. */
@@ -131,9 +148,15 @@ export async function startGateway(
           ? {}
           : { spoolThresholdBytes: config.spoolThresholdBytes }),
         maxBodyBytes: config.maxBodyBytes,
+        maxConcurrentUploads: config.maxConcurrentUploads,
         readiness,
       },
-      { requestTimeoutMs: config.requestTimeoutMs, ...(tls === undefined ? {} : { tls }) }
+      {
+        ...limitsOf(config),
+        maxConnections: config.maxConnections,
+        holdContinue: true,
+        ...(tls === undefined ? {} : { tls }),
+      }
     );
     listeners.push(gateway);
 
@@ -156,7 +179,8 @@ export async function startGateway(
         logger: log,
       });
       adminListener = createManagedListener(createAdminHandler(admin), {
-        requestTimeoutMs: config.requestTimeoutMs,
+        ...limitsOf(config),
+        maxConnections: ADMIN_MAX_CONNECTIONS,
         ...(tls === undefined ? {} : { tls }),
       });
       listeners.push(adminListener);
@@ -171,6 +195,7 @@ export async function startGateway(
 
     let stopping: Promise<{ forced: boolean }> | undefined;
     return {
+      tenantServer: gateway.server,
       address,
       ...(adminAddress === undefined ? {} : { adminAddress }),
       stop() {

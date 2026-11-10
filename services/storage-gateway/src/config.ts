@@ -33,19 +33,25 @@ export const ENV = {
   spoolThresholdBytes: 'STORAGE_GATEWAY_SPOOL_THRESHOLD_BYTES',
   maxBodyMib: 'STORAGE_GATEWAY_MAX_BODY_MIB',
   requestTimeoutMs: 'STORAGE_GATEWAY_REQUEST_TIMEOUT_MS',
+  headersTimeoutMs: 'STORAGE_GATEWAY_HEADERS_TIMEOUT_MS',
+  keepAliveTimeoutMs: 'STORAGE_GATEWAY_KEEP_ALIVE_TIMEOUT_MS',
+  maxConnections: 'STORAGE_GATEWAY_MAX_CONNECTIONS',
+  maxConcurrentUploads: 'STORAGE_GATEWAY_MAX_CONCURRENT_UPLOADS',
   shutdownGraceMs: 'STORAGE_GATEWAY_SHUTDOWN_GRACE_MS',
   adminKeysFile: 'STORAGE_GATEWAY_ADMIN_KEYS_FILE',
   adminListenHost: 'STORAGE_GATEWAY_ADMIN_LISTEN_HOST',
   adminListenPort: 'STORAGE_GATEWAY_ADMIN_LISTEN_PORT',
+  adminAllowNonLoopback: 'STORAGE_GATEWAY_ADMIN_ALLOW_NON_LOOPBACK',
   adminReplayWindowSeconds: 'STORAGE_GATEWAY_ADMIN_REPLAY_WINDOW_SECONDS',
 } as const;
 
 /**
- * The most body bytes the gateway reads from a client it has not yet
- * authenticated: the largest ceiling any tenant may hold. A tenant's own
- * ceiling is applied once its signature has verified.
+ * The most body bytes any one request may carry, whatever a tenant's own
+ * ceiling: the largest ceiling a tenant may hold. No body byte is read until
+ * the request's signature has verified, and then the smaller of this and the
+ * tenant's own ceiling applies from the first byte.
  */
-export const PREAUTH_BODY_CAP_MIB = MAX_UPLOAD_CEILING_MIB;
+export const MAX_BODY_CAP_MIB = MAX_UPLOAD_CEILING_MIB;
 
 export interface ListenConfig {
   readonly host: string;
@@ -79,9 +85,18 @@ export interface GatewayConfig {
   readonly storeAnchorPath: string;
   readonly spoolDir: string;
   readonly spoolThresholdBytes?: number;
-  /** The pre-authentication body cap, in bytes. */
+  /** The most bytes any one request body may carry, in bytes; a tenant's own ceiling may be lower. */
   readonly maxBodyBytes: number;
+  /** Time allowed to receive a whole request, body included. */
   readonly requestTimeoutMs: number;
+  /** Time allowed to receive a request's headers. Never more than the request timeout. */
+  readonly headersTimeoutMs: number;
+  /** How long an idle keep-alive connection is held open. */
+  readonly keepAliveTimeoutMs: number;
+  /** Most open connections on the tenant listener. */
+  readonly maxConnections: number;
+  /** Most authenticated body-bearing requests being received or forwarded at once. */
+  readonly maxConcurrentUploads: number;
   readonly shutdownGraceMs: number;
   /** Absent: the admin interface is not served at all. */
   readonly admin?: AdminConfig;
@@ -170,9 +185,9 @@ export function loadConfig(env: Env): GatewayConfig {
   checkTransport(ENV.listenHost, listen.host, tls, behindProxy);
 
   const maxBodyMib = whole(env, ENV.maxBodyMib, {
-    fallback: PREAUTH_BODY_CAP_MIB,
+    fallback: MAX_BODY_CAP_MIB,
     min: 1,
-    max: PREAUTH_BODY_CAP_MIB,
+    max: MAX_BODY_CAP_MIB,
   });
   const thresholdRaw = text(env, ENV.spoolThresholdBytes);
 
@@ -190,6 +205,30 @@ export function loadConfig(env: Env): GatewayConfig {
       }),
     };
     checkTransport(ENV.adminListenHost, admin.host, tls, behindProxy);
+    // The admin interface mints and revokes credentials: it leaves loopback only on an explicit say-so.
+    const adminOpen = text(env, ENV.adminAllowNonLoopback);
+    if (adminOpen !== undefined && adminOpen !== TRUE && adminOpen !== 'false') {
+      throw new ConfigError(`${ENV.adminAllowNonLoopback} must be ${TRUE} or false`);
+    }
+    if (!LOOPBACK.has(admin.host) && adminOpen !== TRUE) {
+      throw new ConfigError(
+        `${ENV.adminListenHost} is not loopback; set ${ENV.adminAllowNonLoopback}=${TRUE} to serve the admin interface off this host`
+      );
+    }
+  }
+
+  const requestTimeoutMs = whole(env, ENV.requestTimeoutMs, {
+    fallback: 300_000,
+    min: 1000,
+    max: 3_600_000,
+  });
+  const headersTimeoutMs = whole(env, ENV.headersTimeoutMs, {
+    fallback: Math.min(15_000, requestTimeoutMs),
+    min: 1000,
+    max: 120_000,
+  });
+  if (headersTimeoutMs > requestTimeoutMs) {
+    throw new ConfigError(`${ENV.headersTimeoutMs} must not exceed ${ENV.requestTimeoutMs}`);
   }
 
   return {
@@ -220,10 +259,18 @@ export function loadConfig(env: Env): GatewayConfig {
           }),
         }),
     maxBodyBytes: maxBodyMib * MIB,
-    requestTimeoutMs: whole(env, ENV.requestTimeoutMs, {
-      fallback: 300_000,
+    requestTimeoutMs,
+    headersTimeoutMs,
+    keepAliveTimeoutMs: whole(env, ENV.keepAliveTimeoutMs, {
+      fallback: 5000,
       min: 1000,
-      max: 3_600_000,
+      max: 120_000,
+    }),
+    maxConnections: whole(env, ENV.maxConnections, { fallback: 512, min: 1, max: 100_000 }),
+    maxConcurrentUploads: whole(env, ENV.maxConcurrentUploads, {
+      fallback: 32,
+      min: 1,
+      max: 10_000,
     }),
     shutdownGraceMs: whole(env, ENV.shutdownGraceMs, {
       fallback: 30_000,

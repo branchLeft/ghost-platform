@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import { PassThrough, pipeline, type Readable } from 'node:stream';
 import { admit } from './admit.js';
@@ -25,8 +25,13 @@ export interface GatewayServerDeps {
   readonly log: GatewayLog;
   readonly spoolDir: string;
   readonly spoolThresholdBytes?: number;
-  /** The most body bytes read before the client is known: the largest ceiling any tenant may hold. */
+  /**
+   * The most body bytes any one request may carry. No body is read before the
+   * signature verifies; then the smaller of this and the tenant's own ceiling applies.
+   */
   readonly maxBodyBytes: number;
+  /** Most authenticated body-bearing requests at once; the next is answered 503 unread. */
+  readonly maxConcurrentUploads: number;
   /** The name of a failing check, or undefined when the service can take traffic. */
   readonly readiness: () => Promise<string | undefined>;
   readonly now?: () => number;
@@ -65,6 +70,12 @@ function gatewayRequestOf(req: IncomingMessage, bodySha256: string | undefined):
     headers,
     ...(bodySha256 === undefined ? {} : { bodySha256 }),
   };
+}
+
+/** The body's real digest against the one the signature covered, compared without an early exit. */
+function digestMatches(actual: string, declared: string | undefined): boolean {
+  if (declared === undefined || declared.length !== actual.length) return false;
+  return timingSafeEqual(Buffer.from(actual, 'utf8'), Buffer.from(declared, 'utf8'));
 }
 
 /** A request that carries no header-signature at all is turned away before any body is read. */
@@ -110,7 +121,14 @@ export function createGatewayHandler(
   const now = deps.now ?? Date.now;
   const newRequestId = deps.newRequestId ?? randomUUID;
 
-  async function serve(req: IncomingMessage, signal: AbortSignal): Promise<Outcome> {
+  /** Authenticated body-bearing requests being received or forwarded: each may hold a spool file. */
+  let uploadsInFlight = 0;
+
+  async function serve(
+    req: IncomingMessage,
+    res: ServerResponse,
+    signal: AbortSignal
+  ): Promise<Outcome> {
     const method = (req.method ?? '').toUpperCase();
     const refuse = (code: RefusalCode, extra: Partial<Outcome> = {}): Outcome => {
       const answer = refusalAnswer(code);
@@ -128,44 +146,31 @@ export function createGatewayHandler(
       return outcome;
     }
 
+    const expectsBody = BODY_METHODS.has(method) || declaresBody(req);
     let body: ReceivedBody | undefined;
+    let slotTaken = false;
     try {
-      if (BODY_METHODS.has(method) || declaresBody(req)) {
-        const declared = declaredLengthOf(req);
-        const received = await receiveBody(guardedBody(req), {
-          ceilingBytes: deps.maxBodyBytes,
-          spoolDir: deps.spoolDir,
-          ...(deps.spoolThresholdBytes === undefined
-            ? {}
-            : { thresholdBytes: deps.spoolThresholdBytes }),
-          ...(declared === undefined ? {} : { declaredLength: declared }),
-          signal,
-          logger: deps.log,
-          log: { method },
-        });
-        if (!received.ok) {
-          return {
-            answer: refusalAnswer(received.refusal.code),
-            closeAfter: true,
-          };
-        }
-        body = received.body;
-      }
-
-      const request = gatewayRequestOf(req, body?.sha256);
+      // Who signed it is settled before a single body byte is read. The
+      // signature covers the digest the client declares for its body; the
+      // bytes are checked against that declaration once they have arrived.
+      const declared = req.headersDistinct['x-amz-content-sha256'];
+      const declaredDigest =
+        expectsBody && declared?.length === 1 ? (declared[0] as string) : undefined;
+      const request = gatewayRequestOf(req, declaredDigest);
       const admitted = await admit(request, {
         verifier: deps.verifier,
         credentials: deps.credentials,
         logger: deps.log,
         uploads: deps.uploads,
       });
-      if (!admitted.ok) return refuse(admitted.refusal.code, { closeAfter: false });
+      // A refused request's body is never read, so the connection cannot be reused.
+      if (!admitted.ok) return refuse(admitted.refusal.code, { closeAfter: expectsBody });
       const { route, tenant } = admitted;
       const known = { keyId: tenant.keyId, operation: route.operation };
-      const sized = body === undefined ? {} : { bytesIn: body.size };
 
-      if (body !== undefined) {
-        // The cap that applies to this tenant is known only now that the signature has verified.
+      let forwarded = request;
+      let sized: { bytesIn?: number } = {};
+      if (expectsBody) {
         const refusedWith = (code: RefusalCode): Outcome => {
           const r = refusal(code);
           deps.log.refusal({
@@ -177,8 +182,9 @@ export function createGatewayHandler(
             folder: tenant.folder,
             operation: route.operation,
           });
-          return refuse(code, { ...known, ...sized });
+          return refuse(code, { ...known, closeAfter: true });
         };
+
         let credential;
         try {
           credential = await deps.credentials.lookup(tenant.keyId);
@@ -188,11 +194,57 @@ export function createGatewayHandler(
         if (credential === undefined) return refusedWith('internal-error');
         const ceiling = resolveBodyCeiling(credential);
         if (!ceiling.ok) return refusedWith(ceiling.refusal.code);
-        if (body.size > ceiling.bytes) return refusedWith('body-too-large');
+        // The only body cap: the tenant's own ceiling, never more than the configured maximum.
+        const capBytes = Math.min(ceiling.bytes, deps.maxBodyBytes);
+        const declaredLength = declaredLengthOf(req);
+        if (declaredLength !== undefined && declaredLength > capBytes) {
+          return refusedWith('body-too-large');
+        }
+        if (uploadsInFlight >= deps.maxConcurrentUploads) return refusedWith('upstream-throttled');
+        uploadsInFlight += 1;
+        slotTaken = true;
+
+        // Only now is the client told to send what it holds back.
+        if (req.headers.expect?.toLowerCase() === '100-continue') res.writeContinue();
+        const received = await receiveBody(guardedBody(req), {
+          ceilingBytes: capBytes,
+          spoolDir: deps.spoolDir,
+          ...(deps.spoolThresholdBytes === undefined
+            ? {}
+            : { thresholdBytes: deps.spoolThresholdBytes }),
+          ...(declaredLength === undefined ? {} : { declaredLength }),
+          signal,
+          logger: deps.log,
+          log: { method, keyId: tenant.keyId, folder: tenant.folder, operation: route.operation },
+        });
+        if (!received.ok) {
+          return {
+            answer: refusalAnswer(received.refusal.code),
+            closeAfter: true,
+            ...known,
+          };
+        }
+        body = received.body;
+        sized = { bytesIn: body.size };
+        // The bytes must be the ones the signature covered.
+        if (!digestMatches(body.sha256, declaredDigest)) {
+          const outcome = refuse('signature-refused', { ...known, ...sized });
+          deps.log.refusal({
+            event: 'request-refused',
+            code: 'signature-refused',
+            status: outcome.answer.status,
+            method,
+            keyId: tenant.keyId,
+            folder: tenant.folder,
+            operation: route.operation,
+          });
+          return outcome;
+        }
+        forwarded = { ...request, bodySha256: body.sha256 };
       }
 
       const answer = await deps.upstream.forward({
-        request,
+        request: forwarded,
         route,
         tenant,
         ...(body === undefined ? {} : { body }),
@@ -203,6 +255,7 @@ export function createGatewayHandler(
       return refuse('internal-error', { closeAfter: true });
     } finally {
       await body?.dispose().catch(() => undefined);
+      if (slotTaken) uploadsInFlight -= 1;
     }
   }
 
@@ -270,7 +323,7 @@ export function createGatewayHandler(
     });
     requestContext
       .run({ requestId }, async () => {
-        const outcome = await serve(req, abort.signal);
+        const outcome = await serve(req, res, abort.signal);
         meta = outcome;
         send(res, outcome);
       })

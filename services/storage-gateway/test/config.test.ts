@@ -1,6 +1,6 @@
 import { chmod, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, ENV, PREAUTH_BODY_CAP_MIB, loadConfig } from '../src/config.js';
+import { ConfigError, ENV, MAX_BODY_CAP_MIB, loadConfig } from '../src/config.js';
 import { MAX_UPLOAD_CEILING_MIB } from '../src/credentials/admin.js';
 import { MasterSecretError } from '../src/credentials/masterSecret.js';
 import { startGateway } from '../src/start.js';
@@ -27,17 +27,43 @@ describe('loadConfig', () => {
     expect(config.listen).toEqual({ host: '127.0.0.1', port: 8443 });
     expect(config.upstream.region).toBe('nbg1');
     expect(config.upstream.deadlineMs).toBe(120_000);
-    expect(config.maxBodyBytes).toBe(PREAUTH_BODY_CAP_MIB * MIB);
+    expect(config.maxBodyBytes).toBe(MAX_BODY_CAP_MIB * MIB);
     expect(config.admin).toBeUndefined();
     expect(config.tls).toBeUndefined();
   });
 
-  it('caps the pre-authentication body at the largest ceiling a tenant may hold', () => {
-    expect(PREAUTH_BODY_CAP_MIB).toBe(MAX_UPLOAD_CEILING_MIB);
-    expect(() =>
-      loadConfig({ ...GOOD, [ENV.maxBodyMib]: String(PREAUTH_BODY_CAP_MIB + 1) })
-    ).toThrow(/between 1 and/);
+  it('caps any one body at the largest ceiling a tenant may hold', () => {
+    expect(MAX_BODY_CAP_MIB).toBe(MAX_UPLOAD_CEILING_MIB);
+    expect(() => loadConfig({ ...GOOD, [ENV.maxBodyMib]: String(MAX_BODY_CAP_MIB + 1) })).toThrow(
+      /between 1 and/
+    );
     expect(loadConfig({ ...GOOD, [ENV.maxBodyMib]: '2' }).maxBodyBytes).toBe(2 * MIB);
+  });
+
+  it('bounds every timeout and limit, with defaults', () => {
+    const config = loadConfig(GOOD);
+    expect(config.requestTimeoutMs).toBe(300_000);
+    expect(config.headersTimeoutMs).toBe(15_000);
+    expect(config.keepAliveTimeoutMs).toBe(5000);
+    expect(config.maxConnections).toBe(512);
+    expect(config.maxConcurrentUploads).toBe(32);
+    for (const [name, low, high] of [
+      [ENV.headersTimeoutMs, '999', '120001'],
+      [ENV.keepAliveTimeoutMs, '999', '120001'],
+      [ENV.maxConnections, '0', '100001'],
+      [ENV.maxConcurrentUploads, '0', '10001'],
+    ] as const) {
+      expect(() => loadConfig({ ...GOOD, [name]: low })).toThrow(name);
+      expect(() => loadConfig({ ...GOOD, [name]: high })).toThrow(name);
+    }
+  });
+
+  it('keeps the headers timeout inside the request timeout', () => {
+    expect(() =>
+      loadConfig({ ...GOOD, [ENV.requestTimeoutMs]: '5000', [ENV.headersTimeoutMs]: '6000' })
+    ).toThrow(/must not exceed/);
+    // A short request timeout alone pulls the headers default down with it.
+    expect(loadConfig({ ...GOOD, [ENV.requestTimeoutMs]: '2000' }).headersTimeoutMs).toBe(2000);
   });
 
   it.each(Object.keys(GOOD))('refuses to start without %s', (name) => {
@@ -107,6 +133,34 @@ describe('loadConfig', () => {
         [ENV.adminListenHost]: '0.0.0.0',
       })
     ).toThrow(ENV.adminListenHost);
+  });
+
+  it('binds the admin interface to loopback unless the host is told, in so many words, that it may leave it', () => {
+    const behindProxy = {
+      ...GOOD,
+      [ENV.adminKeysFile]: '/etc/gw/admin-keys.json',
+      [ENV.adminListenHost]: '10.0.0.5',
+      [ENV.plaintextBehindProxy]: 'true',
+    };
+    expect(() => loadConfig(behindProxy)).toThrow(ENV.adminAllowNonLoopback);
+    expect(() => loadConfig({ ...behindProxy, [ENV.adminAllowNonLoopback]: 'false' })).toThrow(
+      ENV.adminAllowNonLoopback
+    );
+    expect(() => loadConfig({ ...behindProxy, [ENV.adminAllowNonLoopback]: 'yes' })).toThrow(
+      /true or false/
+    );
+    expect(loadConfig({ ...behindProxy, [ENV.adminAllowNonLoopback]: 'true' }).admin?.host).toBe(
+      '10.0.0.5'
+    );
+    // The opt-in does not stand in for TLS or a declared proxy.
+    expect(() =>
+      loadConfig({
+        ...GOOD,
+        [ENV.adminKeysFile]: '/etc/gw/admin-keys.json',
+        [ENV.adminListenHost]: '10.0.0.5',
+        [ENV.adminAllowNonLoopback]: 'true',
+      })
+    ).toThrow(/no TLS is configured/);
   });
 
   it('reads the optional spool threshold', () => {
