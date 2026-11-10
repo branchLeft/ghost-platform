@@ -908,33 +908,37 @@
       "vulnerability": "CVE-2026-19445",
       "package": "python3.13",
       "image": "ghcr.io/branchleft/db-recovery",
-      "reason": "python3.13 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix (no-dsa, minor issue); only sid 3.13.18-1 fixed. Checked 2026-11-10 in the trixie, trixie-updates and trixie-security Packages indexes: 3.13.5-2+deb13u5 in trixie, absent from the other two. python3 depends on python3.13, so it cannot be removed. The image runs no network service.",
+      "reason": "python3.13 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
-      "expires": "2026-12-10"
+      "expires": "2026-12-10",
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
     },
     {
       "vulnerability": "CVE-2026-19445",
       "package": "python3.13-minimal",
       "image": "ghcr.io/branchleft/db-recovery",
-      "reason": "python3.13-minimal 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix (no-dsa, minor issue); only sid 3.13.18-1 fixed. Checked 2026-11-10 in the trixie, trixie-updates and trixie-security Packages indexes: 3.13.5-2+deb13u5 in trixie, absent from the other two. python3 depends on python3.13, so it cannot be removed. The image runs no network service.",
+      "reason": "python3.13-minimal 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
-      "expires": "2026-12-10"
+      "expires": "2026-12-10",
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
     },
     {
       "vulnerability": "CVE-2026-19445",
       "package": "libpython3.13-minimal",
       "image": "ghcr.io/branchleft/db-recovery",
-      "reason": "libpython3.13-minimal 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix (no-dsa, minor issue); only sid 3.13.18-1 fixed. Checked 2026-11-10 in the trixie, trixie-updates and trixie-security Packages indexes: 3.13.5-2+deb13u5 in trixie, absent from the other two. python3 depends on python3.13, so it cannot be removed. The image runs no network service.",
+      "reason": "libpython3.13-minimal 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
-      "expires": "2026-12-10"
+      "expires": "2026-12-10",
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
     },
     {
       "vulnerability": "CVE-2026-19445",
       "package": "libpython3.13-stdlib",
       "image": "ghcr.io/branchleft/db-recovery",
-      "reason": "libpython3.13-stdlib 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix (no-dsa, minor issue); only sid 3.13.18-1 fixed. Checked 2026-11-10 in the trixie, trixie-updates and trixie-security Packages indexes: 3.13.5-2+deb13u5 in trixie, absent from the other two. python3 depends on python3.13, so it cannot be removed. The image runs no network service.",
+      "reason": "libpython3.13-stdlib 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
-      "expires": "2026-12-10"
+      "expires": "2026-12-10",
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
     }
   ]
 }
