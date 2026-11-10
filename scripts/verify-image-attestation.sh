@@ -60,11 +60,10 @@ esac
 # token, so that path refuses here instead. The constant is never printed.
 if [ -n "$BUNDLE_FLAG" ]; then
   if [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
-    # Name and value are held apart: the plan's secret scan reads any such pair on one
-    # line as a credential and would withhold this file's diff from the approver.
-    AUTH_VAR="GH_TOKEN"
-    AUTH_GATE="placeholder-not-a-credential"
-    export "$AUTH_VAR=$AUTH_GATE"
+    # The plan's secret scan lets exactly this line through, by file and by text, from a
+    # reviewed allowance in the github-workflows ssh-check-hosts action. Change the line
+    # and that allowance together, or the host's plan withholds this file's diff.
+    export GH_TOKEN=placeholder-not-a-credential
   fi
 elif [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]; then
   echo "${ERR}refusing: verifying without --bundle-from-oci needs the GitHub API, so GH_TOKEN or GITHUB_TOKEN must hold a real token and neither is set" >&2

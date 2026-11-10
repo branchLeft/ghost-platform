@@ -26,7 +26,7 @@ const DOCKERFILE = fs.readFileSync(path.join(ROOT, 'services', 'demo-edge', 'Doc
 // What the built binary printed, read from a real build of this Dockerfile
 // (`caddy version`, `caddy list-modules --versions`, `caddy build-info`).
 const OBSERVED = {
-  version: 'v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=\n',
+  version: 'v2.11.9 h1:bhZtcRKQOq0fuLvEgCdPYvUxXyGn9kzjG4lh2332DTE=\n',
   modules: [
     'dns.providers.hetzner v2.0.1',
     'http.handlers.reverse_proxy',
@@ -41,7 +41,7 @@ const OBSERVED = {
     'path\tcaddy',
     'mod\tcaddy\t(devel)\t',
     'dep\tgithub.com/caddy-dns/hetzner/v2\tv2.0.1\th1:lNv0M68UOtuBPLQ8VBeu7nByMNl+gRRa2B2H4RgMbYI=',
-    'dep\tgithub.com/caddyserver/caddy/v2\tv2.11.4\th1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=',
+    'dep\tgithub.com/caddyserver/caddy/v2\tv2.11.9\th1:bhZtcRKQOq0fuLvEgCdPYvUxXyGn9kzjG4lh2332DTE=',
     'build\t-trimpath=true',
     '',
   ].join('\n'),
@@ -60,7 +60,7 @@ function demoEdgeProblems(source) {
   const text = withoutComments(source);
   const top = text.split(/^jobs:\n/m)[0];
   const jobs = parseJobs(source);
-  const { build, push } = jobs;
+  const { build, push, scan, attest } = jobs;
   const pull = jobs['anonymous-pull'];
 
   if (!/^permissions:\n {2}contents: read\n(?! {2}\S)/m.test(top)) {
@@ -71,10 +71,14 @@ function demoEdgeProblems(source) {
     found.push('signer-workflow is not the literal path of this workflow');
   }
   if (/workflow_ref/.test(text)) found.push('an identity is read from the run itself');
-  for (const grant of ['packages: write', 'id-token: write', 'attestations: write']) {
-    if (text.split(grant).length - 1 !== 1 || !push.text.includes(grant)) {
-      found.push(`${grant} is not on the push job alone`);
+  if (!scan || !attest) return [...found, 'there is no scan or attest job'];
+  for (const grant of ['id-token: write', 'attestations: write']) {
+    if (text.split(grant).length - 1 !== 1 || !attest.text.includes(grant)) {
+      found.push(`${grant} is not on the attest job alone`);
     }
+  }
+  if (text.split('packages: write').length - 1 !== 2 || !push.text.includes('packages: write')) {
+    found.push('packages: write is not on the push and attest jobs alone');
   }
   if (/:latest/.test(text)) found.push('an image is tagged latest');
   if (!/IMAGE_TAG: \$\{\{ github\.sha \}\}/.test(push.text)) {
@@ -95,16 +99,28 @@ function demoEdgeProblems(source) {
   if (!/node --test workflow-demo-edge-image\.test\.js/.test(build.text)) {
     found.push('the build job does not run the workflow and pins tests');
   }
-  const read = push.text.indexOf('id: digest');
-  const attest = push.text.indexOf('uses: ./.github/actions/attest-and-verify-image');
-  const summary = push.text.indexOf('Write outcome to job summary');
-  if (!(read > -1 && attest > read && summary > attest)) {
-    found.push('push job does not read the digest, then attest and verify, then summarise');
+  if (
+    !push.text.includes('id: digest') ||
+    !/digest: \$\{\{ steps\.digest\.outputs\.digest \}\}/.test(push.text)
+  ) {
+    found.push('push job does not read the digest back and output it');
+  }
+  if (
+    !/uses: branchLeft\/github-workflows\/\.github\/actions\/attest-and-verify-image@/.test(
+      attest.text
+    )
+  ) {
+    found.push('attest job does not call the shared attest and verify action');
+  }
+  if (!/^ {4}needs: \[push, scan\]$/m.test(attest.text)) {
+    found.push('attest job does not wait on the push and the scan');
   }
   if (!/Pin this: /.test(push.text)) found.push('push job summary lacks "Pin this:"');
 
   if (!pull) return [...found, 'there is no anonymous-pull job'];
-  if (!/^ {4}needs: push$/m.test(pull.text)) found.push('anonymous-pull does not wait on push');
+  if (!/^ {4}needs: \[push, attest\]$/m.test(pull.text)) {
+    found.push('anonymous-pull does not wait on push and attest');
+  }
   if (normalise(pull.condition) !== GUARD) {
     found.push('anonymous-pull has no job-level guard that is exactly the main-only expression');
   }
@@ -142,8 +158,8 @@ test('the real publish workflow is gated, scoped, digest-verified, signed and ch
 
 test('the pins checker reports each way the Dockerfile can drift', () => {
   const hetzner = 'github.com/caddy-dns/hetzner/v2@v2.0.1';
-  const builderDigest = /(caddy:2\.11\.4-builder-alpine)@sha256:[0-9a-f]{64}/;
-  const finalDigest = /(caddy:2\.11\.4-alpine)@sha256:[0-9a-f]{64}/;
+  const builderDigest = /(caddy:2\.11\.9-builder-alpine)@sha256:[0-9a-f]{64}/;
+  const finalDigest = /(caddy:2\.11\.9-alpine)@sha256:[0-9a-f]{64}/;
   const cases = [
     [swap(DOCKERFILE, `@v2.0.1`, ''), 'not pinned to a vX.Y.Z version'],
     [swap(DOCKERFILE, '@v2.0.1', '@latest'), 'not pinned to a vX.Y.Z version'],
@@ -151,19 +167,19 @@ test('the pins checker reports each way the Dockerfile can drift', () => {
     [DOCKERFILE.replace(builderDigest, '$1'), 'has no @sha256 digest pin'],
     [DOCKERFILE.replace(finalDigest, '$1'), 'has no @sha256 digest pin'],
     [DOCKERFILE.replace(builderDigest, '$1@sha256:abc'), 'has no @sha256 digest pin'],
-    [swap(DOCKERFILE, 'caddy:2.11.4-alpine@', 'caddy:2.11.3-alpine@'), 'disagree'],
-    [swap(DOCKERFILE, 'caddy:2.11.4-builder-alpine@', 'caddy:2.11.3-builder-alpine@'), 'disagree'],
-    [swap(DOCKERFILE, 'xcaddy build v2.11.4', 'xcaddy build v2.11.3'), 'xcaddy build v2.11.3'],
-    [swap(DOCKERFILE, 'xcaddy build v2.11.4 --with', 'xcaddy build --with'), 'no vX.Y.Z Caddy'],
-    [swap(DOCKERFILE, 'xcaddy build v2.11.4', 'xcaddy build latest'), 'no vX.Y.Z Caddy'],
+    [swap(DOCKERFILE, 'caddy:2.11.9-alpine@', 'caddy:2.11.3-alpine@'), 'disagree'],
+    [swap(DOCKERFILE, 'caddy:2.11.9-builder-alpine@', 'caddy:2.11.3-builder-alpine@'), 'disagree'],
+    [swap(DOCKERFILE, 'xcaddy build v2.11.9', 'xcaddy build v2.11.3'), 'xcaddy build v2.11.3'],
+    [swap(DOCKERFILE, 'xcaddy build v2.11.9 --with', 'xcaddy build --with'), 'no vX.Y.Z Caddy'],
+    [swap(DOCKERFILE, 'xcaddy build v2.11.9', 'xcaddy build latest'), 'no vX.Y.Z Caddy'],
     [
       swap(DOCKERFILE, hetzner, `${hetzner} --with github.com/example/other@v1.0.0`),
       'unexpected module',
     ],
     [swap(DOCKERFILE, hetzner, 'github.com/example/other@v1.0.0'), 'does not name'],
-    [`${DOCKERFILE}RUN xcaddy build v2.11.4 --with ${hetzner}\n`, 'exactly one xcaddy build'],
+    [`${DOCKERFILE}RUN xcaddy build v2.11.9 --with ${hetzner}\n`, 'exactly one xcaddy build'],
     [`${DOCKERFILE}FROM alpine:3.20\n`, 'exactly two FROM lines'],
-    [swap(DOCKERFILE, 'FROM caddy:2.11.4-builder-alpine', 'FROM busybox:1'), 'not the caddy image'],
+    [swap(DOCKERFILE, 'FROM caddy:2.11.9-builder-alpine', 'FROM busybox:1'), 'not the caddy image'],
     [swap(DOCKERFILE, ' AS builder', ''), 'first FROM is not'],
   ];
   for (const [text, expected] of cases) {
@@ -177,8 +193,8 @@ test('the pins checker reports each way the Dockerfile can drift', () => {
 test('a pin that only appears in a comment does not count', () => {
   const commented = swap(
     DOCKERFILE,
-    'RUN xcaddy build v2.11.4 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --output /usr/bin/caddy',
-    '# RUN xcaddy build v2.11.4 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --output /usr/bin/caddy'
+    'RUN xcaddy build v2.11.9 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --replace golang.org/x/net=golang.org/x/net@v0.62.0 --replace github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2 --output /usr/bin/caddy',
+    '# RUN xcaddy build v2.11.9 --with github.com/caddy-dns/hetzner/v2@v2.0.1 --replace golang.org/x/net=golang.org/x/net@v0.62.0 --replace github.com/klauspost/compress=github.com/klauspost/compress@v1.20.2 --output /usr/bin/caddy'
   );
   assert.ok(hasProblem(pinProblems(commented), 'exactly one xcaddy build'));
 });
@@ -219,7 +235,7 @@ test('the binary check reports each way the built image can differ from the pins
       'hetzner/v2 absent',
     ],
     [
-      { buildInfo: OBSERVED.buildInfo.replace('caddy/v2\tv2.11.4', 'caddy/v2\tv2.11.3') },
+      { buildInfo: OBSERVED.buildInfo.replace('caddy/v2\tv2.11.9', 'caddy/v2\tv2.11.3') },
       'build-info has github.com/caddyserver/caddy/v2 v2.11.3',
     ],
     [{ arch: 'arm64' }, "image architecture is 'arm64'"],
@@ -272,11 +288,13 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     [inPush('      packages: write\n', '      packages: read\n'), 'lacks packages: write'],
     [
       inPush(
-        '      - name: Attest and verify the pushed image\n        uses: ./.github/actions/attest-and-verify-image\n',
+        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0\n',
         '      - name: Attest and verify the pushed image\n        run: true\n'
       ),
-      'attest and verify',
+      'shared attest and verify action',
     ],
+    [inPush('    needs: [push, scan]\n', '    needs: [push]\n'), 'wait on the push and the scan'],
+    [inPush('      id-token: write\n', ''), 'not on the attest job alone'],
     // The attestation identity.
     [
       swap(
@@ -309,7 +327,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
         'permissions:\n  contents: read\n\n',
         'permissions:\n  contents: read\n  id-token: write\n\n'
       ),
-      'not on the push job alone',
+      'not on the attest job alone',
     ],
     [
       swap(
@@ -317,7 +335,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
         '    timeout-minutes: 20\n\n    outputs:\n      image-id',
         '    timeout-minutes: 20\n\n    permissions:\n      id-token: write\n\n    outputs:\n      image-id'
       ),
-      'only push may',
+      'only push and attest may',
     ],
     // The build job.
     [swap(WORKFLOW, '--platform linux/amd64 \\\n', ''), '--platform linux/amd64'],
@@ -336,11 +354,11 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     ],
     // The anonymous pull.
     [`${beforePull}\n`, 'no anonymous-pull job'],
-    [inPull('    needs: push\n', ''), 'does not wait on push'],
+    [inPull('    needs: [push, attest]\n', ''), 'does not wait on push and attest'],
     [inPull(guardTail, widened), 'exactly the main-only'],
     [
       inPull('      contents: read\n', '      contents: read\n      packages: write\n'),
-      'only push may',
+      'only push and attest may',
     ],
     [
       inPull('      contents: read\n', '      contents: read\n      packages: read\n'),
