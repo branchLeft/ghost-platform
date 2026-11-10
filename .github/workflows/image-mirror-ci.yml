@@ -40,6 +40,9 @@ jobs:
       - name: Mirror script and guard tests
         run: python3 -m unittest discover -s scripts -p 'test_image_mirror.py' -v
 
+      - name: Private package probe tests
+        run: python3 -m unittest discover -s scripts -p 'test_probe_private_packages.py' -v
+
       # Self-test first: a guard that has quietly stopped matching passes every
       # tree, so prove each sabotage still goes red and a clean tree green.
       - name: Guard self-test
