@@ -15,7 +15,7 @@ trap 'rm -rf "${WORK:?}"' EXIT
 mkdir "$WORK/bin"
 export GH_LOG="$WORK/gh.log"
 # The API path refuses before gh runs when no token is set, so the stub runs need
-# one. The stub ignores it. Name and value are held apart, as in the verifier.
+# one. The stub ignores it.
 STUB_TOKEN="stub-not-a-credential"
 export GH_TOKEN="$STUB_TOKEN"
 
