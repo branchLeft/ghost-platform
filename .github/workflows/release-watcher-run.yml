@@ -4,7 +4,14 @@ name: Release watcher run
 # repo's Dockerfile pins and keeps one PR per major line at the newest stable
 # digest. A newer major is noticed on every run and never followed. Fixed
 # code only: nothing here runs a model. services/release-watcher/README.md
-# has the decision rules and the token this job needs.
+# has the decision rules and the App this job needs.
+#
+# Identity: the PRs are opened by a GitHub App. Its installation token is
+# minted here at run time (it lives an hour at most) from the repository
+# variable DIGEST_APP_ID and the repository secret DIGEST_APP_PRIVATE_KEY,
+# scoped to this repository with contents and pull-requests write only. No
+# long-lived token is stored. Until the variable is set the mint step is
+# skipped and the run opens no PR, as before.
 #
 # The poll-age gauge lives on the state branch, `state/release-watcher`,
 # never on `main`. That branch carries no ruleset, so the gauge commit needs
@@ -74,10 +81,20 @@ jobs:
           fi
           echo "metrics=$STATE_WORKTREE/release-watcher.prom" >> "$GITHUB_OUTPUT"
 
+      - name: Mint the App installation token
+        id: app-token
+        if: ${{ vars.DIGEST_APP_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.DIGEST_APP_ID }}
+          private-key: ${{ secrets.DIGEST_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Run the watcher
         env:
           PYTHONPATH: services/release-watcher
-          RELEASE_WATCHER_TOKEN: ${{ secrets.RELEASE_WATCHER_TOKEN }}
+          RELEASE_WATCHER_TOKEN: ${{ steps.app-token.outputs.token }}
           METRICS_PATH: ${{ steps.state.outputs.metrics }}
         run: python3 -m release_watcher.cli --dockerfile Dockerfile --metrics "$METRICS_PATH"
 

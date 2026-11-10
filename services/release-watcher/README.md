@@ -35,36 +35,36 @@ Run by `.github/workflows/release-watcher-run.yml`. Tests:
 - The poll-age gauge is `ghost_release_watcher_last_success_timestamp_seconds`,
   written to `release-watcher.prom` on the `state/release-watcher` branch, beside
   `ghost_release_watcher_pr_writes_enabled`. A value of 0 means the runs succeed
-  but cannot open PRs (no `RELEASE_WATCHER_TOKEN`), so a healthy age alone does
+  but cannot open PRs (no App token minted), so a healthy age alone does
   not mean PRs are opening.
 - When `main` moves to a newer major, a PR left open on the older line is not
   touched again. It stays open until the owner closes it; the watcher now
   follows the new line.
 
-## The secret this needs
+## The identity this needs
 
-`RELEASE_WATCHER_TOKEN`, a repository secret on `branchLeft/ghost-platform`.
+A GitHub App, installed on `branchLeft/ghost-platform` only. Each run mints a
+short-lived installation token for it (`actions/create-github-app-token`,
+pinned by commit sha) and hands it to the watcher as `RELEASE_WATCHER_TOKEN`
+inside the job. Nothing long-lived is stored.
 
-Minimum scope, whichever identity is chosen:
+The names the workflow reads, all on `branchLeft/ghost-platform`:
 
-- Contents: read and write on `branchLeft/ghost-platform`, to create the
-  branch and commit the `Dockerfile` change.
-- Pull requests: read and write on `branchLeft/ghost-platform`, to open and
-  update the PR.
-- Nothing else, and no other repository.
+- Repository variable `DIGEST_APP_ID`: the App's id. While it is unset the mint
+  step is skipped and the run opens no PR.
+- Repository secret `DIGEST_APP_PRIVATE_KEY`: the App's private key, read by the
+  mint step alone.
 
-Until the secret exists, the run warns and opens no PR. The poll still
-runs and the gauge is still written.
+The token asks for the least the watcher uses, on this repository only:
 
-The identity is not decided. Two options are open for the owner, and neither is
-chosen by this change:
+- Contents: read and write, to create the branch and commit the `Dockerfile`
+  change.
+- Pull requests: read and write, to open and update the PR.
+- Nothing else. The watcher files no issue (a new major is a run notice), so no
+  issues grant and no second token for another repository.
 
-- A GitHub App installation token, installed on `branchLeft/ghost-platform`
-  only, with the two permissions above. Recommended: its token expires and is
-  scoped to this repository.
-- The workflow's own `GITHUB_TOKEN` with PR creation enabled. PRs opened with
-  it do not trigger the `pull_request` CI workflows, so their required checks
-  never run and the PR cannot merge without a manual push.
+Until the App exists the run warns and opens no PR. The poll still runs and the
+gauge is still written.
 
 ## Not wired yet (named follow-ups)
 
