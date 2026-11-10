@@ -15,11 +15,14 @@
 # reason to prefer -alpine. bookworm-slim is chosen instead because it tracks
 # Debian's glibc and Node's own release-testing matrix -- the same choice
 # services/mailgun-shim makes, for the same reason.
-FROM node:26.5.0-bookworm-slim
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68
 
+# The base image's bundled npm carries fixable advisories (undici,
+# brace-expansion, tar, ip-address); npm 12 carries the fixed versions.
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json files pin.
-RUN npm install --global pnpm@11.17.0
+RUN npm install --global npm@12.2.2 \
+    && npm install --global pnpm@11.17.0
 
 # Both packages keep their repository-relative layout, so the lockfile's
 # `../../deadmans-switch` link resolves inside the image exactly as it does in
