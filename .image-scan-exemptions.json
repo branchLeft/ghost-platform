@@ -1,6 +1,14 @@
 {
   "exemptions": [
     {
+      "vulnerability": "GHSA-mgcc-cww5-fp2q",
+      "package": "github.com/go-jose/go-jose/v3",
+      "image": "ghcr.io/branchleft/demo-edge",
+      "reason": "Denial of service when parsing JWKs that contain RSA keys. The GitHub advisory lists go-jose/v3 up to 3.0.5 with no patched version (first_patched_version null); the only fix is in go-jose/v4 4.1.6, a different module path. Grype reports fix state not-fixed for this package. Reachability in the demo edge is not established here. Revisit when a go-jose/v3 fix or a dependency move removes it.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
       "vulnerability": "CVE-2025-69720",
       "package": "libncursesw6",
       "image": "ghcr.io/branchleft/db-recovery",

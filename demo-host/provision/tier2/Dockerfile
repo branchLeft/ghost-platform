@@ -6,22 +6,31 @@
 # run script. Never published or deployed; see ../test_demo_edge_tier2.md.
 
 # Pinned by digest so a re-pointed tag cannot change what is built. The
-# builder image carries xcaddy and a Go toolchain new enough for Caddy 2.11.4
-# (Go 1.25.1 or later) and Pebble 2.10.1 (Go 1.24). Re-read the digests when
-# either tag is bumped.
+# builder image carries a Go toolchain new enough for Caddy 2.11.4 (Go 1.25.1
+# or later) and Pebble 2.10.1 (Go 1.24). Re-read the digests when either tag is
+# bumped.
+#
+# Every Go program here is built from a committed module (caddy/, ca/, tools/)
+# whose go.sum lists the hash of every module it needs, so a build never asks
+# the checksum database about anything and each download is still checked
+# against go.sum. Do not set GOSUMDB, GOFLAGS or the like here, and do not
+# build with a command that resolves versions (xcaddy, go install pkg@version,
+# go get): a missing hash must fail the build. See ../test_demo_edge_tier2.md.
 FROM caddy:2.11.4-builder-alpine@sha256:0aa610043dab5da82ad0a0268e46bb852785e6f5160f12f1c6fe3f42903d7e1b AS caddy
-# No file capability on the binary: the proof runs with every capability dropped,
-# and a file capability outside the bounding set makes exec fail.
-ENV XCADDY_SETCAP=0
+# A plain go build leaves no file capability on the binary, which the proof
+# needs: it runs with every capability dropped.
+ENV CGO_ENABLED=0
 WORKDIR /src
 COPY stubdns ./stubdns
-RUN mkdir -p /out && xcaddy build v2.11.4 --with example.test/stubdns=/src/stubdns --output /out/caddy-tier2
+COPY caddy ./caddy
+WORKDIR /src/caddy
+RUN mkdir -p /out && go build -trimpath -ldflags "-w -s" -o /out/caddy-tier2 .
 
 FROM caddy:2.11.4-builder-alpine@sha256:0aa610043dab5da82ad0a0268e46bb852785e6f5160f12f1c6fe3f42903d7e1b AS ca
 ENV CGO_ENABLED=0 GOBIN=/out
-RUN mkdir -p /out \
-    && go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.1 \
-    && go install github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1
+WORKDIR /src
+COPY ca ./
+RUN mkdir -p /out && go install tool
 
 FROM caddy:2.11.4-builder-alpine@sha256:0aa610043dab5da82ad0a0268e46bb852785e6f5160f12f1c6fe3f42903d7e1b AS tools
 ENV CGO_ENABLED=0

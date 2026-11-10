@@ -137,10 +137,15 @@ is published by a push to `main` that changes `portal/`, `services/identity/` or
 `services/request-guard/`,
 or by a manual dispatch. Each push that publishes signs the pushed digest with a
 keyless GitHub artifact attestation (SLSA build provenance, Sigstore
-public-good). The
-signing step, and the check that it verifies and that a wrong identity is
-rejected, is `.github/actions/attest-and-verify-image`. To verify an image
-yourself, name it by digest:
+public-good). Before it signs, the publish workflow scans the pushed digest with
+`branchLeft/github-workflows`' `image-scan.yml` (Grype, failing on any critical
+or high finding no valid exemption covers); an image that fails the scan is
+never signed. This repository has no exemption file: a finding with no fix goes
+through the exemption route there, never a lowered threshold. The signing
+step, and the check that it verifies and that a wrong identity is rejected, is
+that repository's `attest-and-verify-image` action; both are pinned to its
+`v1.1.0` release and no copy lives here. To verify an image yourself, name it
+by digest:
 
 ```sh
 ./scripts/verify-image-attestation.sh ghcr.io/branchleft/ghost-tenant@sha256:<64 hex> \

@@ -48,7 +48,7 @@ test('the checker still reports each way the publish job can go wrong', () => {
         '    timeout-minutes: 15\n',
         '    timeout-minutes: 15\n    permissions:\n      id-token: write\n'
       ),
-      'only push may',
+      'only push and attest may',
     ],
     [rebuildWith('        run: docker image build --tag x services/drain-sidecar'), 'rebuilds'],
     [rebuildWith('        run: docker buildx build --tag x services/drain-sidecar'), 'rebuilds'],

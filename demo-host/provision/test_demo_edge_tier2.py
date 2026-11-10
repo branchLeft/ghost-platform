@@ -13,12 +13,17 @@ test_demo_edge_tier2.md.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import pathlib
+import re
+import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from typing import Mapping
 
 import demo_edge_tier2 as tier2
@@ -276,6 +281,159 @@ class RunnerChoiceTests(unittest.TestCase):
 
     def test_an_empty_ci_variable_is_not_ci(self):
         self.assertIsNone(self.choose({"CI": ""}, False))
+
+
+SUMDB_TIMEOUT = (
+    '21.84 \tgithub.com/example/module/pkg: github.com/example/module@v1.2.3: verifying module: '
+    'github.com/example/module@v1.2.3: Get "https://sum.golang.org/lookup/github.com/example/module@v1.2.3": '
+    "dial tcp: lookup sum.golang.org on 168.63.129.16:53: read udp 172.17.0.3:60168->168.63.129.16:53: i/o timeout\n"
+    'ERROR: failed to build: failed to solve: process "/bin/sh -c go build" did not complete successfully: exit code: 1'
+)
+SUMDB_REFUSED = (
+    'go: github.com/example/module@v1.2.3: verifying module: github.com/example/module@v1.2.3: '
+    'Get "https://sum.golang.org/lookup/github.com/example/module@v1.2.3": dial tcp 127.0.0.1:443: '
+    "connect: connection refused\nERROR: failed to build"
+)
+COMPILE_ERROR = "# example.test/stubdns\nstubdns.go:40:2: undefined: Provider\nERROR: failed to build: exit code: 1"
+CHECKSUM_MISMATCH = (
+    "verifying github.com/example/module@v1.2.3: checksum mismatch\n"
+    "\tdownloaded: h1:AAAA\n\tgo.sum:     h1:BBBB\n\nSECURITY ERROR\n"
+    "This download does NOT match an earlier download recorded in go.sum.\nERROR: failed to build"
+)
+
+
+def completed(returncode: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(["docker", "build"], returncode, "", stderr)
+
+
+class ImageBuildRetryTests(unittest.TestCase):
+    """build_tier2_image tries again on a network error and on nothing else."""
+
+    def scripted(self, outcomes: tuple[subprocess.CompletedProcess[str] | Exception, ...]):
+        """A fake docker run that plays the outcomes in order, with the sleeps and
+        build commands it saw."""
+        queue = list(outcomes)
+        sleeps: list[float] = []
+        calls: list[object] = []
+
+        def run(command, **_kwargs):
+            calls.append(command)
+            outcome = queue.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        return run, sleeps, calls
+
+    def build(self, *outcomes: subprocess.CompletedProcess[str] | Exception) -> tuple[str, list[float], int]:
+        """Returns the tag, the sleeps taken and how many builds ran."""
+        run, sleeps, calls = self.scripted(outcomes)
+        with unittest.mock.patch("atexit.register"), contextlib.redirect_stderr(io.StringIO()):
+            tag = tier2.build_tier2_image(run=run, sleep=sleeps.append)
+        return tag, sleeps, len(calls)
+
+    def fails(self, *outcomes: subprocess.CompletedProcess[str] | Exception) -> tuple[str, list[float], int]:
+        """For a run that must raise ProofImageBuildFailed. Returns the message,
+        the sleeps taken and how many builds ran."""
+        run, sleeps, calls = self.scripted(outcomes)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(tier2.ProofImageBuildFailed) as caught:
+            tier2.build_tier2_image(run=run, sleep=sleeps.append)
+        return str(caught.exception), sleeps, len(calls)
+
+    def test_a_clean_build_runs_once(self):
+        _tag, sleeps, calls = self.build(completed(0))
+        self.assertEqual((sleeps, calls), ([], 1))
+
+    def test_a_checksum_database_timeout_is_tried_again_and_can_succeed(self):
+        _tag, sleeps, calls = self.build(completed(1, SUMDB_TIMEOUT), completed(0))
+        self.assertEqual((sleeps, calls), ([tier2.IMAGE_BUILD_BACKOFF_SECONDS[0]], 2))
+
+    def test_a_refused_connection_is_tried_again(self):
+        _tag, sleeps, calls = self.build(completed(1, SUMDB_REFUSED), completed(1, SUMDB_TIMEOUT), completed(0))
+        self.assertEqual((sleeps, calls), (list(tier2.IMAGE_BUILD_BACKOFF_SECONDS), 3))
+
+    def test_a_network_error_every_time_stops_at_the_attempt_limit_and_says_so(self):
+        message, sleeps, calls = self.fails(*[completed(1, SUMDB_TIMEOUT)] * tier2.IMAGE_BUILD_ATTEMPTS)
+        self.assertEqual(calls, tier2.IMAGE_BUILD_ATTEMPTS)
+        self.assertEqual(len(sleeps), tier2.IMAGE_BUILD_ATTEMPTS - 1)
+        self.assertIn(f"attempt {tier2.IMAGE_BUILD_ATTEMPTS} of {tier2.IMAGE_BUILD_ATTEMPTS}", message)
+        self.assertIn("sum.golang.org", message)
+
+    def test_a_compile_error_is_not_tried_again(self):
+        message, sleeps, calls = self.fails(completed(1, COMPILE_ERROR), completed(0))
+        self.assertEqual((sleeps, calls), ([], 1))
+        self.assertIn("undefined: Provider", message)
+
+    def test_a_checksum_mismatch_is_not_tried_again(self):
+        _message, sleeps, calls = self.fails(completed(1, CHECKSUM_MISMATCH), completed(0))
+        self.assertEqual((sleeps, calls), ([], 1))
+
+    def test_a_network_line_next_to_a_compile_error_is_not_tried_again(self):
+        _message, sleeps, calls = self.fails(completed(1, SUMDB_TIMEOUT + "\n" + COMPILE_ERROR), completed(0))
+        self.assertEqual((sleeps, calls), ([], 1))
+
+    def test_a_failure_with_no_network_text_is_not_tried_again(self):
+        _message, sleeps, calls = self.fails(completed(1, "ERROR: failed to build: exit code: 1"), completed(0))
+        self.assertEqual((sleeps, calls), ([], 1))
+
+    def test_a_timeout_is_not_tried_again(self):
+        _message, sleeps, calls = self.fails(subprocess.TimeoutExpired("docker", 1), completed(0))
+        self.assertEqual((sleeps, calls), ([], 1))
+
+
+class HermeticBuildTests(unittest.TestCase):
+    """The image build contacts no checksum database because every module it
+    builds is listed, with its hash, in a committed go.sum."""
+
+    MODULE_DIRECTORIES = ("caddy", "ca", "tools")
+    LOOSENING = (
+        "xcaddy", "GOSUMDB", "GONOSUMDB", "GONOSUMCHECK", "GOINSECURE", "GOFLAGS", "GOPROXY", "GOPRIVATE",
+        "GONOPROXY", "GOTOOLCHAIN", "-mod=mod", "-insecure", "go get", "go mod tidy", "go install github.com",
+    )
+
+    def dockerfile_instructions(self) -> str:
+        text = (tier2.TIER2_DIRECTORY / "Dockerfile").read_text(encoding="utf-8")
+        return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_the_dockerfile_loosens_nothing_and_fetches_no_unpinned_module(self):
+        instructions = self.dockerfile_instructions()
+        for word in self.LOOSENING:
+            self.assertNotIn(word, instructions, word)
+
+    def test_every_go_stage_builds_from_a_module_directory_with_its_hashes(self):
+        instructions = self.dockerfile_instructions()
+        for name in self.MODULE_DIRECTORIES:
+            self.assertTrue((tier2.TIER2_DIRECTORY / name / "go.mod").is_file(), name)
+            self.assertTrue((tier2.TIER2_DIRECTORY / name / "go.sum").is_file(), name)
+        self.assertIn("COPY caddy ", instructions)
+        self.assertIn("COPY ca ", instructions)
+        self.assertIn("COPY tools ", instructions)
+
+    def test_every_required_module_has_its_hash_in_go_sum(self):
+        for name in self.MODULE_DIRECTORIES:
+            directory = tier2.TIER2_DIRECTORY / name
+            sums = (directory / "go.sum").read_text(encoding="utf-8")
+            required = [
+                line.split()[:2]
+                for line in (directory / "go.mod").read_text(encoding="utf-8").splitlines()
+                if line.startswith("\t") and len(line.split()) >= 2 and line.split()[1].startswith("v")
+                and not line.split()[0].startswith("example.test/")
+            ]
+            self.assertTrue(required, name)
+            for module, version in required:
+                listed = re.search(rf"(?m)^{re.escape(module)} {re.escape(version)}/go\.mod h1:", sums)
+                self.assertIsNotNone(listed, f"{name}/go.sum has no hash for {module} {version}")
+
+    def test_the_caddy_version_is_one_value_in_the_module_and_the_stub_provider(self):
+        def caddy_version(path: pathlib.Path) -> str:
+            match = re.search(r"github\.com/caddyserver/caddy/v2 (v\S+)", path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(match, path)
+            return match.group(1)
+
+        self.assertEqual(
+            caddy_version(tier2.TIER2_DIRECTORY / "caddy" / "go.mod"),
+            caddy_version(tier2.TIER2_DIRECTORY / "stubdns" / "go.mod"),
+        )
 
 
 _RESOLUTION: list[tier2.ProofRunner | tier2.ProofUnavailable | None] = []
