@@ -13,6 +13,13 @@ import {
   type Fixture,
 } from '../../data/test/helpers.js';
 import { supportAccessRequest } from '../../data/src/schema.js';
+import {
+  READING_POLICY_OPEN,
+  deleteReading,
+  readingRow,
+  requestRowText,
+  whileLoosened,
+} from '../../data/test/supportAccessAdmin.js';
 import { createTenantPortal } from '../src/tenant/app.js';
 import { Browser, serve, type Running } from './browser.js';
 import { CLIENT_PORTAL, FakeIssuer, ISSUER, jwks, mint, NOW, PROJECT_ID } from './idp.js';
@@ -122,9 +129,7 @@ describe('the support-access page', () => {
   });
 
   it('control case: a tenant with no reading is unknown, never closed', async () => {
-    await fixture.admin.query('DELETE FROM portal.support_access_reading WHERE tenant_id = $1', [
-      TENANT_A,
-    ]);
+    await deleteReading(fixture, TENANT_A);
     const page = await (await signedIn(ORG_A)).request('/site-access');
     expect(page.body).toContain('SUPPORT_ACCESS_STATE_UNKNOWN');
     expect(page.body).not.toContain('SUPPORT_ACCESS_STATE_CLOSED');
@@ -159,18 +164,10 @@ describe('the support-access page', () => {
 
   it('control case: with the database policy opened, B’s deadline reaches A’s page', async () => {
     // Tenant B is bound; the loosened policy also hands it A's row, first.
-    await fixture.admin.query(
-      'ALTER POLICY tenant_isolation ON portal.support_access_reading USING (true)'
-    );
-    try {
+    await whileLoosened(fixture, READING_POLICY_OPEN, async () => {
       const page = await (await signedIn(ORG_B)).request('/site-access');
       expect(page.body).toContain(ONLY_A);
-    } finally {
-      await fixture.admin.query(
-        'ALTER POLICY tenant_isolation ON portal.support_access_reading ' +
-          'USING (tenant_id = public.bound_tenant())'
-      );
-    }
+    });
     const page = await (await signedIn(ORG_B)).request('/site-access');
     expect(page.body).not.toContain(ONLY_A);
   });
@@ -199,12 +196,10 @@ describe('the request button', () => {
     }).toString();
     expect((await post(browser, '/site-access/request', body)).status).toBe(303);
     expect(await requests()).toEqual([TENANT_A]);
-    const stored = await fixture.admin.query<{ row: string }>(
-      'SELECT support_access_request::text AS row FROM portal.support_access_request'
-    );
-    expect(stored.rows).toHaveLength(1);
-    expect(stored.rows[0]!.row).not.toContain('FREE_TEXT_NEVER_STORED');
-    expect(stored.rows[0]!.row).not.toContain('1999');
+    const stored = await requestRowText(fixture);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).not.toContain('FREE_TEXT_NEVER_STORED');
+    expect(stored[0]).not.toContain('1999');
   });
 
   it('a second press records nothing more', async () => {
@@ -217,12 +212,10 @@ describe('the request button', () => {
   it('opens nothing and closes nothing: the reading is as it was', async () => {
     const browser = await signedIn(ORG_A);
     await post(browser, '/site-access/request');
-    const rows = await fixture.admin.query<{ state: string; observed_at: Date }>(
-      'SELECT state, observed_at FROM portal.support_access_reading WHERE tenant_id = $1',
-      [TENANT_A]
-    );
-    expect(rows.rows).toHaveLength(1);
-    expect(rows.rows[0]).toMatchObject({ state: 'open', observed_at: seconds(-30) });
+    expect(await readingRow(fixture, TENANT_A)).toMatchObject({
+      state: 'open',
+      observedAt: seconds(-30),
+    });
     const page = await browser.request('/site-access');
     expect(page.body).toContain('SUPPORT_ACCESS_STATE_OPEN');
   });

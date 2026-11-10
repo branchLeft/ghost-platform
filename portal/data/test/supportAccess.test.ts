@@ -11,6 +11,15 @@ import {
 } from '../src/supportAccess.js';
 import { TenantDb, bindTenant } from '../src/tenant/index.js';
 import { TENANT_A, TENANT_B, createFixture, type Fixture } from './helpers.js';
+import {
+  READING_POLICY_OPEN,
+  READING_TENANT_WRITE,
+  REQUEST_CHECK_OPEN,
+  REQUEST_TENANT_REWRITE,
+  columnsOf,
+  privilegesOf,
+  whileLoosened,
+} from './supportAccessAdmin.js';
 
 const T0 = new Date('2026-11-10T12:00:00Z');
 const DEADLINE = new Date('2026-11-10T16:00:00Z');
@@ -209,12 +218,8 @@ describe('a tenant cannot write a reading', () => {
 
 describe('the request: a row and nothing else', () => {
   it('holds a tenant and a time and no text of any kind', async () => {
-    const result = await fixture.admin.query<{ column_name: string; data_type: string }>(
-      `SELECT column_name, data_type FROM information_schema.columns
-        WHERE table_schema = 'portal' AND table_name = 'support_access_request'
-        ORDER BY column_name`
-    );
-    expect(result.rows).toEqual([
+    const columns = await columnsOf(fixture, 'support_access_request');
+    expect(columns).toEqual([
       { column_name: 'requested_at', data_type: 'timestamp with time zone' },
       { column_name: 'tenant_id', data_type: 'uuid' },
     ]);
@@ -263,12 +268,10 @@ describe('the request: a row and nothing else', () => {
   });
 
   it('gives the tenant role INSERT and SELECT on the request table and nothing more', async () => {
-    const privileges = await fixture.admin.query<{ privilege_type: string }>(
-      `SELECT privilege_type FROM information_schema.role_table_grants
-        WHERE grantee = 'portal_tenant' AND table_schema = 'portal'
-          AND table_name = 'support_access_request' ORDER BY privilege_type`
-    );
-    expect(privileges.rows.map((row) => row.privilege_type)).toEqual(['INSERT', 'SELECT']);
+    expect(await privilegesOf(fixture, 'portal_tenant', 'support_access_request')).toEqual([
+      'INSERT',
+      'SELECT',
+    ]);
   });
 });
 
@@ -283,12 +286,9 @@ describe('the owner side', () => {
   });
 
   it('holds no UPDATE or DELETE for the owner role on the queue', async () => {
-    const privileges = await fixture.admin.query<{ privilege_type: string }>(
-      `SELECT privilege_type FROM information_schema.role_table_grants
-        WHERE grantee = 'portal_owner' AND table_schema = 'portal'
-          AND table_name = 'support_access_request' ORDER BY privilege_type`
-    );
-    expect(privileges.rows.map((row) => row.privilege_type)).toEqual(['SELECT']);
+    expect(await privilegesOf(fixture, 'portal_owner', 'support_access_request')).toEqual([
+      'SELECT',
+    ]);
   });
 
   it('replaces a tenant’s reading in place', async () => {
@@ -337,33 +337,13 @@ describe('the owner side', () => {
  * shows the matching probe now gets through, and restores it in a `finally`.
  */
 describe('sabotage: each probe goes red when its control is removed', () => {
-  async function loosened(
-    statements: readonly string[],
-    restore: readonly string[],
-    probe: () => Promise<void>
-  ) {
-    for (const statement of statements) await fixture.admin.query(statement);
-    try {
-      await probe();
-    } finally {
-      for (const statement of restore) await fixture.admin.query(statement);
-    }
-  }
-
   it('a policy that lets every row through shows tenant B’s reading to tenant A', async () => {
-    await loosened(
-      ['ALTER POLICY tenant_isolation ON portal.support_access_reading USING (true)'],
-      [
-        'ALTER POLICY tenant_isolation ON portal.support_access_reading ' +
-          'USING (tenant_id = public.bound_tenant())',
-      ],
-      async () => {
-        const rows = await tenant.run(bindTenant(TENANT_A), (tx) =>
-          tx.select().from(schema.supportAccessReading)
-        );
-        expect(rows.map((row) => row.tenantId).sort()).toEqual([TENANT_A, TENANT_B]);
-      }
-    );
+    await whileLoosened(fixture, READING_POLICY_OPEN, async () => {
+      const rows = await tenant.run(bindTenant(TENANT_A), (tx) =>
+        tx.select().from(schema.supportAccessReading)
+      );
+      expect(rows.map((row) => row.tenantId).sort()).toEqual([TENANT_A, TENANT_B]);
+    });
     const rows = await tenant.run(bindTenant(TENANT_A), (tx) =>
       tx.select().from(schema.supportAccessReading)
     );
@@ -374,20 +354,13 @@ describe('sabotage: each probe goes red when its control is removed', () => {
     await fixture.adminDb
       .delete(schema.supportAccessRequest)
       .where(sql`${schema.supportAccessRequest.tenantId} = ${TENANT_B}`);
-    await loosened(
-      ['ALTER POLICY tenant_isolation ON portal.support_access_request WITH CHECK (true)'],
-      [
-        'ALTER POLICY tenant_isolation ON portal.support_access_request ' +
-          'WITH CHECK (tenant_id = public.bound_tenant())',
-      ],
-      async () => {
-        await tenant.run(bindTenant(TENANT_A), (tx) =>
-          tx.insert(schema.supportAccessRequest).values({ tenantId: TENANT_B })
-        );
-        const rows = await fixture.adminDb.select().from(schema.supportAccessRequest);
-        expect(rows.map((row) => row.tenantId)).toContain(TENANT_B);
-      }
-    );
+    await whileLoosened(fixture, REQUEST_CHECK_OPEN, async () => {
+      await tenant.run(bindTenant(TENANT_A), (tx) =>
+        tx.insert(schema.supportAccessRequest).values({ tenantId: TENANT_B })
+      );
+      const rows = await fixture.adminDb.select().from(schema.supportAccessRequest);
+      expect(rows.map((row) => row.tenantId)).toContain(TENANT_B);
+    });
     await fixture.adminDb
       .delete(schema.supportAccessRequest)
       .where(sql`${schema.supportAccessRequest.tenantId} = ${TENANT_B}`);
@@ -401,16 +374,12 @@ describe('sabotage: each probe goes red when its control is removed', () => {
   });
 
   it('a write grant to the tenant role would let it write the reading the page shows', async () => {
-    await loosened(
-      ['GRANT INSERT, UPDATE ON portal.support_access_reading TO portal_tenant'],
-      ['REVOKE INSERT, UPDATE ON portal.support_access_reading FROM portal_tenant'],
-      async () => {
-        await tenant.run(bindTenant(TENANT_A), (tx) =>
-          tx.update(schema.supportAccessReading).set({ state: 'closed' })
-        );
-        expect((await tenant.ownSupportAccess(bindTenant(TENANT_A), at(310))).state).toBe('closed');
-      }
-    );
+    await whileLoosened(fixture, READING_TENANT_WRITE, async () => {
+      await tenant.run(bindTenant(TENANT_A), (tx) =>
+        tx.update(schema.supportAccessReading).set({ state: 'closed' })
+      );
+      expect((await tenant.ownSupportAccess(bindTenant(TENANT_A), at(310))).state).toBe('closed');
+    });
     expect(
       await refusedWith(
         tenant.run(bindTenant(TENANT_A), (tx) =>
@@ -421,14 +390,10 @@ describe('sabotage: each probe goes red when its control is removed', () => {
   });
 
   it('an update grant would let a tenant rewrite its request', async () => {
-    await loosened(
-      ['GRANT UPDATE, DELETE ON portal.support_access_request TO portal_tenant'],
-      ['REVOKE UPDATE, DELETE ON portal.support_access_request FROM portal_tenant'],
-      async () => {
-        await tenant.run(bindTenant(TENANT_A), (tx) => tx.delete(schema.supportAccessRequest));
-        expect(await tenant.ownSupportRequest(bindTenant(TENANT_A))).toBeNull();
-      }
-    );
+    await whileLoosened(fixture, REQUEST_TENANT_REWRITE, async () => {
+      await tenant.run(bindTenant(TENANT_A), (tx) => tx.delete(schema.supportAccessRequest));
+      expect(await tenant.ownSupportRequest(bindTenant(TENANT_A))).toBeNull();
+    });
     await tenant.requestSupportAccess(bindTenant(TENANT_A));
     expect(
       await refusedWith(

@@ -72,16 +72,8 @@
           "tableFrom": "demo_state_event",
           "tableTo": "demo_state_event",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "demo_id",
-            "previous_sequence",
-            "from_state"
-          ],
-          "columnsTo": [
-            "demo_id",
-            "sequence",
-            "to_state"
-          ],
+          "columnsFrom": ["demo_id", "previous_sequence", "from_state"],
+          "columnsTo": ["demo_id", "sequence", "to_state"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -89,21 +81,14 @@
       "compositePrimaryKeys": {
         "demo_state_event_demo_id_sequence_pk": {
           "name": "demo_state_event_demo_id_sequence_pk",
-          "columns": [
-            "demo_id",
-            "sequence"
-          ]
+          "columns": ["demo_id", "sequence"]
         }
       },
       "uniqueConstraints": {
         "demo_state_event_demo_sequence_state_unique": {
           "name": "demo_state_event_demo_sequence_state_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "demo_id",
-            "sequence",
-            "to_state"
-          ]
+          "columns": ["demo_id", "sequence", "to_state"]
         }
       },
       "policies": {},
@@ -181,12 +166,8 @@
           "tableFrom": "document_acceptance",
           "tableTo": "tenant_register",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "tenant_id"
-          ],
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -195,14 +176,8 @@
           "tableFrom": "document_acceptance",
           "tableTo": "document_version",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "kind",
-            "version"
-          ],
-          "columnsTo": [
-            "kind",
-            "version"
-          ],
+          "columnsFrom": ["kind", "version"],
+          "columnsTo": ["kind", "version"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -210,11 +185,7 @@
       "compositePrimaryKeys": {
         "document_acceptance_tenant_id_kind_version_pk": {
           "name": "document_acceptance_tenant_id_kind_version_pk",
-          "columns": [
-            "tenant_id",
-            "kind",
-            "version"
-          ]
+          "columns": ["tenant_id", "kind", "version"]
         }
       },
       "uniqueConstraints": {},
@@ -223,9 +194,7 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"document_acceptance\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"document_acceptance\".\"tenant_id\" = public.bound_tenant()"
         }
@@ -299,10 +268,7 @@
       "compositePrimaryKeys": {
         "document_version_kind_version_pk": {
           "name": "document_version_kind_version_pk",
-          "columns": [
-            "kind",
-            "version"
-          ]
+          "columns": ["kind", "version"]
         }
       },
       "uniqueConstraints": {},
@@ -379,12 +345,8 @@
           "tableFrom": "health_reading",
           "tableTo": "tenant_register",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "tenant_id"
-          ],
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -396,9 +358,7 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"health_reading\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"health_reading\".\"tenant_id\" = public.bound_tenant()"
         }
@@ -442,9 +402,7 @@
         "hostname_register_demo_id_unique": {
           "name": "hostname_register_demo_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "demo_id"
-          ]
+          "columns": ["demo_id"]
         }
       },
       "policies": {},
@@ -481,12 +439,8 @@
           "tableFrom": "hostname_retirement",
           "tableTo": "hostname_register",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "label"
-          ],
-          "columnsTo": [
-            "label"
-          ],
+          "columnsFrom": ["label"],
+          "columnsTo": ["label"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -545,12 +499,8 @@
           "tableFrom": "moderation_setting",
           "tableTo": "tenant_register",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "tenant_id"
-          ],
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -558,10 +508,7 @@
       "compositePrimaryKeys": {
         "moderation_setting_tenant_id_check_id_pk": {
           "name": "moderation_setting_tenant_id_check_id_pk",
-          "columns": [
-            "tenant_id",
-            "check_id"
-          ]
+          "columns": ["tenant_id", "check_id"]
         }
       },
       "uniqueConstraints": {},
@@ -570,9 +517,7 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"moderation_setting\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"moderation_setting\".\"tenant_id\" = public.bound_tenant()"
         }
@@ -637,12 +582,8 @@
           "tableFrom": "support_access_reading",
           "tableTo": "tenant_register",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "tenant_id"
-          ],
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -654,9 +595,7 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"support_access_reading\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"support_access_reading\".\"tenant_id\" = public.bound_tenant()"
         }
@@ -698,12 +637,8 @@
           "tableFrom": "support_access_request",
           "tableTo": "tenant_register",
           "schemaTo": "portal",
-          "columnsFrom": [
-            "tenant_id"
-          ],
-          "columnsTo": [
-            "tenant_id"
-          ],
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -715,9 +650,7 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"support_access_request\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"support_access_request\".\"tenant_id\" = public.bound_tenant()"
         }
@@ -768,16 +701,12 @@
         "tenant_register_zitadel_org_id_unique": {
           "name": "tenant_register_zitadel_org_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "zitadel_org_id"
-          ]
+          "columns": ["zitadel_org_id"]
         },
         "tenant_register_tenant_name_unique": {
           "name": "tenant_register_tenant_name_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "tenant_name"
-          ]
+          "columns": ["tenant_name"]
         }
       },
       "policies": {
@@ -785,9 +714,7 @@
           "name": "tenant_isolation",
           "as": "PERMISSIVE",
           "for": "ALL",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant()",
           "withCheck": "\"portal\".\"tenant_register\".\"tenant_id\" = public.bound_tenant()"
         },
@@ -795,9 +722,7 @@
           "name": "organisation_lookup",
           "as": "PERMISSIVE",
           "for": "SELECT",
-          "to": [
-            "portal_tenant"
-          ],
+          "to": ["portal_tenant"],
           "using": "\"portal\".\"tenant_register\".\"zitadel_org_id\" = public.bound_organisation()"
         }
       },
