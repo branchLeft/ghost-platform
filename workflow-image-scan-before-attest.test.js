@@ -390,7 +390,8 @@ test('every workflow calls the scan at one revision, as the scan workflow requir
   assert.deepEqual([...refs], [PIN]);
 });
 
-test('no workflow wires an exemption path, so the scan reads only the root exemption file', () => {
+test('no exemption file exists, so no workflow wires one', () => {
+  assert.equal(fs.existsSync(path.join(ROOT, '.image-scan-exemptions.json')), false);
   for (const file of Object.keys(PUBLISHERS)) {
     assert.doesNotMatch(read(file), /exemptions-path/);
   }
