@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "SEE LICENSE IN ../LICENSE",
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@11.28.11",
   "description": "The estate's dead-man's switch for drain workers: pings Healthchecks once per period in which every expected target has completed a poll cycle, never on its own timer. Consumed by services/mail-collector through a relative link: dependency.",
   "type": "module",
   "main": "dist/index.js",

@@ -17,6 +17,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, Mapping, Protocol, Sequence
 
@@ -29,6 +30,8 @@ import run_wildcard_proof as proof_run  # noqa: E402
 BIN_DIR_ENV = "DEMO_EDGE_TIER2_BIN_DIR"
 REQUIRED_BINARIES = (proof_run.CADDY_BINARY, "pebble", "pebble-challtestsrv", "soashim", "mkcert")
 IMAGE_BUILD_SECONDS = 1500
+IMAGE_BUILD_ATTEMPTS = 3
+IMAGE_BUILD_BACKOFF_SECONDS = (10, 30)
 PROOF_RUN_SECONDS = 600
 IN_IMAGE_BIN_DIR = "/usr/local/bin"
 IN_IMAGE_SCRIPT = "/opt/tier2/run_wildcard_proof.py"
@@ -334,17 +337,66 @@ def choose_proof_runner(
     return None
 
 
-def build_tier2_image() -> str:
+# What a build prints when the network, not the code, failed. Each line is a
+# sentence Go, BuildKit or a proxy actually emits.
+NETWORK_ERROR_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"dial tcp[^\n]*(i/o timeout|connection refused|no such host|network is unreachable)",
+        r"lookup [\w.-]+ on [\d.:]+: [^\n]*(i/o timeout|no such host|server misbehaving)",
+        r"TLS handshake timeout",
+        r"Client\.Timeout exceeded",
+        r"connection reset by peer",
+        r"temporary failure in name resolution",
+        r'(Get|Head|Post) "https?://[^"]+": [^\n]*unexpected EOF',
+        r"\b(502 Bad Gateway|503 Service Unavailable|504 Gateway Time-?out)\b",
+    )
+)
+# A build that printed any of these failed for a reason a retry cannot fix, even
+# when a network line is also in its output.
+BUILD_FAULT_MARKERS = (
+    "SECURITY ERROR",
+    "checksum mismatch",
+    "missing go.sum entry",
+    "updates to go.mod needed",
+    "# example.test/",
+    "undefined:",
+    "syntax error:",
+)
+
+
+def is_network_error(build_output: str) -> bool:
+    """True only when the output shows a network failure and no sign of a fault
+    in the code, the module pins or their checksums."""
+    if any(marker in build_output for marker in BUILD_FAULT_MARKERS):
+        return False
+    return any(pattern.search(build_output) for pattern in NETWORK_ERROR_PATTERNS)
+
+
+def build_tier2_image(
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
     """Builds tier2/Dockerfile and returns the tag, removing the image at
-    interpreter exit. Raises ProofImageBuildFailed when the build fails or
-    times out."""
+    interpreter exit. A build that failed on a network error is tried again,
+    IMAGE_BUILD_ATTEMPTS in all, after IMAGE_BUILD_BACKOFF_SECONDS; any other
+    failure, and a timeout, is not. Raises ProofImageBuildFailed when the build
+    fails or times out."""
     tag = f"demo-edge-tier2-test:{os.getpid()}"
     command = ["docker", "build", "--tag", tag, "--file", str(TIER2_DIRECTORY / "Dockerfile"), str(TIER2_DIRECTORY)]
-    try:
-        build = subprocess.run(command, capture_output=True, text=True, timeout=IMAGE_BUILD_SECONDS, check=False)
-    except subprocess.TimeoutExpired as error:
-        raise ProofImageBuildFailed("the Tier 2 image build timed out") from error
-    if build.returncode != 0:
-        raise ProofImageBuildFailed(f"the Tier 2 image build failed:\n{build.stderr[-3000:]}")
-    atexit.register(subprocess.run, ["docker", "rmi", "--force", tag], capture_output=True, check=False)
-    return tag
+    for attempt in range(1, IMAGE_BUILD_ATTEMPTS + 1):
+        try:
+            build = run(command, capture_output=True, text=True, timeout=IMAGE_BUILD_SECONDS, check=False)
+        except subprocess.TimeoutExpired as error:
+            raise ProofImageBuildFailed("the Tier 2 image build timed out") from error
+        if build.returncode == 0:
+            atexit.register(subprocess.run, ["docker", "rmi", "--force", tag], capture_output=True, check=False)
+            return tag
+        if attempt == IMAGE_BUILD_ATTEMPTS or not is_network_error(build.stderr):
+            raise ProofImageBuildFailed(
+                f"the Tier 2 image build failed on attempt {attempt} of {IMAGE_BUILD_ATTEMPTS}:\n{build.stderr[-3000:]}"
+            )
+        delay = IMAGE_BUILD_BACKOFF_SECONDS[min(attempt - 1, len(IMAGE_BUILD_BACKOFF_SECONDS) - 1)]
+        print(f"Tier 2 image build attempt {attempt} failed on a network error; retrying in {delay}s", file=sys.stderr)
+        sleep(delay)
+    raise AssertionError("unreachable: the last attempt returns or raises")
