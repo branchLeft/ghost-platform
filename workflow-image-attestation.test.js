@@ -26,6 +26,7 @@ const IMAGE_WORKFLOWS = [
   'mail-collector-image.yml',
   'drain-sidecar-image.yml',
   'recovery-image.yml',
+  'mysqld-exporter-image.yml',
 ];
 
 // The text of one job: from its `  name:` line to the next job or the end.

@@ -29,6 +29,7 @@ const PUBLISHERS = {
   'mail-collector-image.yml': 'ghcr.io/branchleft/mail-collector',
   'drain-sidecar-image.yml': 'ghcr.io/branchleft/drain-sidecar',
   'recovery-image.yml': 'ghcr.io/branchleft/db-recovery',
+  'mysqld-exporter-image.yml': 'ghcr.io/branchleft/mysqld-exporter',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
