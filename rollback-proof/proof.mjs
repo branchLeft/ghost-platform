@@ -16,6 +16,21 @@ export const REQUIRED_CHECKS = Object.freeze([
   'member-create',
 ]);
 
+/**
+ * What gates a candidate. The new image must boot on the old data and take a
+ * write: a candidate that is broken itself is never deployed.
+ */
+const GATE_CHECKS = Object.freeze(['new-boots']);
+/**
+ * The rollback test. Upgrades are forward-only: the way back is the pre-upgrade
+ * backup, so a red here is a warning that says so, not a refusal.
+ */
+export const ROLLBACK_CHECKS = Object.freeze(
+  REQUIRED_CHECKS.filter((n) => !GATE_CHECKS.includes(n))
+);
+/** The only rollback route for a candidate whose way back is red. */
+export const RESTORE_ROUTE = 'restore-from-backup';
+
 const REPORT_VERSION = 1;
 const OWNER = Object.freeze({
   email: 'owner-rollback-proof@example.test',
@@ -234,46 +249,85 @@ function finalise(record, startedAt, clock) {
     }
   }
   record.timings.totalMs = clock() - startedAt;
-  record.ok = recompute(record).length === 0;
-  if (record.ok) record.outcome = 'accepted';
-  else if (record.error !== undefined) record.outcome = 'error';
-  else record.outcome = 'refused';
+  const { reasons, warnings } = recompute(record);
+  record.warnings = warnings;
+  if (warnings.length > 0) record.rollbackRoute = RESTORE_ROUTE;
+  record.ok = reasons.length === 0;
+  if (!record.ok) record.outcome = record.error !== undefined ? 'error' : 'refused';
+  else record.outcome = warnings.length > 0 ? 'warned' : 'accepted';
   return record;
 }
 
-/** Why a record is not an acceptance: empty means it is one. Reads the checks, never `ok`. */
+/**
+ * Reads the checks, never `ok`, and returns the reasons the candidate is
+ * refused and the warnings it is accepted with. A rollback check that is red
+ * is a warning; a rollback check that did not run is one only because the old
+ * image did not boot, otherwise the record is half-finished and is refused.
+ */
 function recompute(record) {
   const reasons = [];
+  const warnings = [];
   const checks = Array.isArray(record.checks) ? record.checks : [];
+  const hitsFor = (name) => checks.filter((c) => c?.name === name);
+  const oldBoot = hitsFor('old-boots-on-migrated')[0];
+  const cascade = oldBoot?.ok === false && oldBoot.detail !== 'not run';
   for (const name of REQUIRED_CHECKS) {
-    const hits = checks.filter((c) => c?.name === name);
+    const hits = hitsFor(name);
     if (hits.length === 0) reasons.push(`required check ${name} is missing`);
     else if (hits.length > 1) reasons.push(`check ${name} is recorded ${hits.length} times`);
-    else if (hits[0].ok !== true) reasons.push(`${name} is red: ${hits[0].detail}`);
+    else if (hits[0].ok === true) continue;
+    else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);
+    else if (hits[0].detail === 'not run' && !(cascade && name !== 'schema-contract'))
+      reasons.push(`${name} did not run although the old image booted: the record is unfinished`);
+    else warnings.push({ check: name, detail: hits[0].detail, route: RESTORE_ROUTE });
   }
   for (const c of checks) {
     if (!REQUIRED_CHECKS.includes(c?.name)) reasons.push(`unknown check ${String(c?.name)}`);
   }
   if (record.error !== undefined) reasons.push(`the run ended in an error: ${record.error}`);
-  if (Array.isArray(record.findings) && record.findings.length > 0) {
-    reasons.push(`${record.findings.length} schema contract finding(s)`);
+  const schemaGreen = hitsFor('schema-contract')[0]?.ok === true;
+  if (Array.isArray(record.findings) && record.findings.length > 0 && schemaGreen) {
+    reasons.push(`${record.findings.length} schema finding(s) but schema-contract is green`);
   }
-  return reasons;
+  return { reasons, warnings };
+}
+
+/** True when the record names, for every warning, the one rollback route. */
+function namesRestoreRoute(record, warnings) {
+  if (warnings.length === 0) return true;
+  if (record.rollbackRoute !== RESTORE_ROUTE || !Array.isArray(record.warnings)) return false;
+  return warnings.every((w) =>
+    record.warnings.some((r) => r?.check === w.check && r.route === RESTORE_ROUTE)
+  );
 }
 
 /**
- * What the gate calls on a stored record: the reasons to refuse the pair, or an
- * empty list. Refuses another pair's record, any missing, repeated or red
- * required check, and a record whose own `ok` disagrees with its checks.
+ * What the gate calls on a stored record: the reasons to refuse the pair (empty
+ * means accepted) and the warnings it is accepted with, recomputed from the
+ * checks. Refuses another pair's record, a red gate check, a missing, repeated
+ * or unknown check, an unfinished or errored run, a record whose own `ok`
+ * disagrees with its checks, and a record that warns without naming the
+ * restore route.
  */
-export function verifyReport(record, { oldImage, newImage }) {
-  if (record === null || typeof record !== 'object') return ['the record is not an object'];
+export function assessReport(record, { oldImage, newImage }) {
+  if (record === null || typeof record !== 'object') {
+    return { reasons: ['the record is not an object'], warnings: [] };
+  }
   const reasons = [];
   if (record.v !== REPORT_VERSION) reasons.push(`unknown record version ${String(record.v)}`);
   if (record.old?.ref !== oldImage) reasons.push(`the record is for another old image`);
   if (record.new?.ref !== newImage) reasons.push(`the record is for another new image`);
-  reasons.push(...recompute(record));
+  const found = recompute(record);
+  reasons.push(...found.reasons);
+  if (!namesRestoreRoute(record, found.warnings)) {
+    reasons.push(`the record warns without naming the rollback route, ${RESTORE_ROUTE}`);
+  }
   if (record.ok === true && reasons.length > 0)
     reasons.push('the record claims ok and its checks disagree');
-  return reasons;
+  return { reasons, warnings: found.warnings };
+}
+
+/** The reasons to refuse the pair, or an empty list. */
+export function verifyReport(record, pair) {
+  return assessReport(record, pair).reasons;
 }

@@ -16,16 +16,18 @@ const mirror = JSON.parse(read('.github', 'image-mirror', 'images.json'));
 
 const GHOST_REF = /ghost:\d+\.\d+\.\d+-alpine@sha256:[0-9a-f]{64}/g;
 const matrix = [
-  ...code.matchAll(/- case: (\w+)\n\s+old: (\S+)\n\s+new: (\S+)\n\s+expect: '(\d)'/g),
-].map((m) => ({ name: m[1], old: m[2], new: m[3], expect: m[4] }));
+  ...code.matchAll(
+    /- case: (\w+)\n\s+old: (\S+)\n\s+new: (\S+)\n\s+expect: '(\d)'\n\s+outcome: (\w+)/g
+  ),
+].map((m) => ({ name: m[1], old: m[2], new: m[3], expect: m[4], outcome: m[5] }));
 
 describe('the live matrix', () => {
-  it('has the accepted case and the refused case, each with the exit code the CLI gives', () => {
+  it('has the accepted case and the warned case, each with the exit code and outcome the CLI gives', () => {
     assert.deepEqual(
-      matrix.map((m) => [m.name, m.expect]),
+      matrix.map((m) => [m.name, m.expect, m.outcome]),
       [
-        ['accepted', String(EXIT.accepted)],
-        ['refused', String(EXIT.refused)],
+        ['accepted', String(EXIT.accepted), 'accepted'],
+        ['warned', String(EXIT.warned), 'warned'],
       ]
     );
   });
@@ -39,10 +41,10 @@ describe('the live matrix', () => {
     );
   });
 
-  it('accepts the image on its own data and refuses a real later release', () => {
-    const [accepted, refused] = matrix;
+  it('accepts the image on its own data and warns about a real later release', () => {
+    const [accepted, warned] = matrix;
     assert.equal(accepted.old, accepted.new);
-    assert.notEqual(refused.old, refused.new);
+    assert.notEqual(warned.old, warned.new);
   });
 
   it('uses digests the image mirror list also records, so the pair is a known pair', () => {
@@ -65,8 +67,20 @@ describe('the job steps', () => {
     assert.doesNotMatch(code, /continue-on-error/);
   });
 
-  it('checks the refusal names the renamed column', () => {
+  it('checks the warning names the renamed column and the restore route', () => {
     assert.match(code, /jq -e [^\n]*"missing-column"[^\n]*"email_batches"[^\n]*"provider_id"/);
+    assert.match(code, /jq -e [^\n]*\.outcome == "warned"[^\n]*restore-from-backup/);
+  });
+
+  it('checks the outcome the case states, not only the exit code', () => {
+    assert.match(code, /OUTCOME: \$\{\{ matrix\.outcome \}\}/);
+    assert.match(code, /jq -e --arg outcome "\$OUTCOME" '\.outcome == \$outcome'/);
+  });
+
+  it('the command line puts the warning in the job summary and as a log annotation under Actions', () => {
+    const cli = read('rollback-proof', 'cli.mjs');
+    assert.match(cli, /process\.env\.GITHUB_ACTIONS === 'true'/);
+    assert.match(cli, /process\.env\.GITHUB_STEP_SUMMARY/);
   });
 
   it('the candidate job fails on any non-zero exit and verifies the record', () => {

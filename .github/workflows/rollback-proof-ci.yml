@@ -1,17 +1,21 @@
 name: Rollback proof
 
-# The old Ghost image must boot, and keep working, on data the new image has
-# already migrated. rollback-proof/README.md has the checks and the exit codes.
+# Upgrades are forward-only: the way back is the pre-upgrade backup. The proof
+# tries the old Ghost image on data the new image has already migrated; a way
+# back that is red is a warning that names restore-from-backup, not a refusal.
+# A new image that does not boot or take a write is still refused.
+# rollback-proof/README.md has the checks and the exit codes.
 #
 # Three shapes of run:
 #   - `proof`: the unit tests and the sabotage proof. No Docker.
 #   - `live`: the proof for real, on a MySQL pinned to db1's digest. Two pairs,
-#     because a refusal only means something next to an acceptance: an image
-#     on its own migrated data must be accepted, and the real first bump range
-#     (an old image that writes a column a later release renames) must be
-#     refused, naming that column.
+#     because a warning only means something next to a clean acceptance: an
+#     image on its own migrated data must be accepted clean, and the real first
+#     bump range (an old image that writes a column a later release renames)
+#     must be accepted with a warning that names that column.
 #   - `candidate`: called by a workflow that has a release candidate. It runs
-#     the same proof on the pair it is given and fails unless it is accepted.
+#     the same proof on the pair it is given and fails unless it is accepted,
+#     with or without warnings.
 #
 # No secret, no registry login, no write permission: public images, throwaway
 # containers, a runner that is gone at the end.
@@ -98,11 +102,14 @@ jobs:
             old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
             new: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
             expect: '0'
+            outcome: accepted
           # The first real bump range: 6.58 renames a column the 6.55 code writes.
-          - case: refused
+          # Accepted with a warning: the way back is the backup.
+          - case: warned
             old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
             new: ghost:6.69.0-alpine@sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5
-            expect: '2'
+            expect: '0'
+            outcome: warned
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -127,9 +134,10 @@ jobs:
           echo "image=$pins" >> "$GITHUB_OUTPUT"
 
       # Upstream Ghost images, so the stock profile: they have no scanning
-      # storage adapter. The exit code is the verdict: 0 accepted, 2 refused,
-      # 1 an error. The case states which one it must be, so a refusal for the
-      # wrong reason (an error) and an acceptance of the bad pair both fail here.
+      # storage adapter. The exit code is the verdict: 0 accepted (clean or with
+      # a warning), 2 refused, 1 an error. The case states the exit code and the
+      # outcome it must have, so an error and a warning taken for a clean
+      # acceptance both fail here.
       - name: Run the proof
         env:
           OLD_IMAGE: ${{ matrix.old }}
@@ -155,13 +163,22 @@ jobs:
           echo "exit code: $rc (expected $EXPECT)"
           test "$rc" = "$EXPECT"
 
-      # A refusal is only the right refusal if it names the measured break.
-      - name: The refusal names the renamed column
-        if: ${{ matrix.case == 'refused' }}
+      - name: The record states the outcome the case expects
         env:
-          REPORT: ${{ runner.temp }}/rollback-report-refused.json
+          OUTCOME: ${{ matrix.outcome }}
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          jq -e --arg outcome "$OUTCOME" '.outcome == $outcome' "$REPORT"
+
+      # A warning is only the right warning if it names the measured break and
+      # the rollback route.
+      - name: The warning names the renamed column and the restore route
+        if: ${{ matrix.case == 'warned' }}
+        env:
+          REPORT: ${{ runner.temp }}/rollback-report-warned.json
         run: |
           jq -e '.findings | map(select(.kind == "missing-column" and .table == "email_batches" and .column == "provider_id")) | length == 1' "$REPORT"
+          jq -e '.outcome == "warned" and .rollbackRoute == "restore-from-backup" and (.warnings | map(select(.check == "schema-contract" and .route == "restore-from-backup")) | length == 1)' "$REPORT"
 
       - name: Record how long the proof took
         if: ${{ always() }}
