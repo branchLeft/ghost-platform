@@ -1,30 +1,108 @@
 {
   "packages": [
-    {"name": "demo-edge", "visibility": "public"},
-    {"name": "db-recovery", "visibility": "public"},
-    {"name": "drain-sidecar", "visibility": "public"},
-    {"name": "ghost-tenant", "visibility": "public"},
-    {"name": "mail-collector", "visibility": "public"},
-    {"name": "mailgun-shim", "visibility": "public"},
-    {"name": "portal-apps", "visibility": "public"},
-    {"name": "mirror-private/alpine", "visibility": "public"},
-    {"name": "mirror-private/caddy", "visibility": "public"},
-    {"name": "mirror-private/curl", "visibility": "public"},
-    {"name": "mirror-private/debian", "visibility": "public"},
-    {"name": "mirror-private/docker", "visibility": "public"},
-    {"name": "mirror-private/dockerfile", "visibility": "public"},
-    {"name": "mirror-private/ghost", "visibility": "public"},
-    {"name": "mirror-private/healthchecks", "visibility": "public"},
-    {"name": "mirror-private/mysql", "visibility": "public"},
-    {"name": "mirror-private/mysqld-exporter", "visibility": "public"},
-    {"name": "mirror-private/node", "visibility": "public"},
-    {"name": "mirror-private/pebble", "visibility": "public"},
-    {"name": "mirror-private/pebble-challtestsrv", "visibility": "public"},
-    {"name": "mirror-private/percona-server", "visibility": "public"},
-    {"name": "mirror-private/postgres", "visibility": "public"},
-    {"name": "mirror-private/python", "visibility": "public"},
-    {"name": "mirror-private/s3mock", "visibility": "public"},
-    {"name": "mirror-private/versitygw", "visibility": "public"},
-    {"name": "mirror-private/zitadel", "visibility": "public"}
+    {
+      "name": "demo-edge",
+      "visibility": "public"
+    },
+    {
+      "name": "db-recovery",
+      "visibility": "public"
+    },
+    {
+      "name": "drain-sidecar",
+      "visibility": "public"
+    },
+    {
+      "name": "ghost-tenant",
+      "visibility": "public"
+    },
+    {
+      "name": "mail-collector",
+      "visibility": "public"
+    },
+    {
+      "name": "mailgun-shim",
+      "visibility": "public"
+    },
+    {
+      "name": "portal-apps",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/alpine",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/caddy",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/curl",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/debian",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/docker",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/dockerfile",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/ghost",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/healthchecks",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/mysql",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/mysqld-exporter",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/node",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/pebble",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/pebble-challtestsrv",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/percona-server",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/postgres",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/python",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/s3mock",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/versitygw",
+      "visibility": "public"
+    },
+    {
+      "name": "mirror-private/zitadel",
+      "visibility": "public"
+    }
   ]
 }
