@@ -1,0 +1,136 @@
+name: Gate set CI
+
+# The per-digest gate set (gate-set/README.md). Two jobs.
+#
+# `proof` needs no Docker: the runner, the verifier and the six gates' wiring
+# under test, then the sabotage proof that breaks each control in the real
+# source and requires the tests to go red.
+#
+# `candidate` builds the image this pull request would ship and runs all six
+# gates on it, then checks the record it wrote. A red gate fails the job, which
+# refuses the candidate. It runs when the Dockerfile moves, which is what a
+# digest-only pull request changes, and when anything a gate reads moves.
+# Credential-free apart from the run's own read-only token: the pinned spool
+# lives on GHCR, so the mail gate uses a stand-in spool built from the repo.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gate-set/**'
+      - 'Dockerfile'
+      - '.github/workflows/gate-set-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'gate-set/**'
+      - 'Dockerfile'
+      - 'docker-entrypoint.branchleft.sh'
+      - 'adapters/**'
+      - 'themes/**'
+      - 'csp/**'
+      - 'scripts/smoke-test.sh'
+      - 'scripts/test-storage-guard.sh'
+      - 'scripts/mail-gate/**'
+      - 'test-support/image-harness.mjs'
+      - '.github/workflows/gate-set-ci.yml'
+
+permissions:
+  contents: read
+  packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  proof:
+    name: Gate set tests and sabotage proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+
+      - name: Gate set tests (no Docker)
+        run: node --test gate-set/gate-set.test.mjs gate-set/gates.test.mjs
+
+      - name: Sabotage proof (each control broken, red, restored, green)
+        run: node gate-set/prove-sabotage.mjs
+
+  candidate:
+    name: All six gates on the candidate image
+    runs-on: ubuntu-latest
+    # The image build, then the six gates in turn: three Ghost boots for the
+    # mail and content-policy gates, a browser download, and the storage and
+    # theme image tests. Cancelled by the timeout, never waved through.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+
+      # The content-policy gate renders its policy through render-core's built
+      # output, and drives a headless Chromium through Playwright.
+      - name: Build render-core
+        working-directory: render-core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run build
+
+      - name: Install the content-policy gate's browser
+        working-directory: csp/proof
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Build the candidate image
+        run: docker build --tag ghost-platform:ci .
+
+      - name: Build the stand-in spool
+        run: docker build --tag spool-standin:ci scripts/mail-gate/spool-standin
+
+      # No `if:` and no `continue-on-error`: a red gate fails the job.
+      - name: Run the six gates and write the record
+        env:
+          MAIL_GATE_SPOOL_IMAGE: spool-standin:ci
+        run: node gate-set/gate-set.mjs run --image ghost-platform:ci --dockerfile Dockerfile --out "$RUNNER_TEMP"
+
+      # The attestation step's own check, run on the record just written, for the
+      # digest the Dockerfile pins.
+      - name: Check the record the way the attestation step does
+        run: |
+          set -euo pipefail
+          digest="$(sed -n 's/^FROM .*@\(sha256:[0-9a-f]\{64\}\).*/\1/p' Dockerfile | head -n 1)"
+          test -n "$digest"
+          node gate-set/gate-set.mjs verify --report "$RUNNER_TEMP/gate-report-${digest#sha256:}.json" --digest "$digest"
+
+      - name: Keep the record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-report
+          path: ${{ runner.temp }}/gate-report-*.json
+          if-no-files-found: warn
