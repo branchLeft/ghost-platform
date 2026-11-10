@@ -60,7 +60,7 @@ function demoEdgeProblems(source) {
   const text = withoutComments(source);
   const top = text.split(/^jobs:\n/m)[0];
   const jobs = parseJobs(source);
-  const { build, push } = jobs;
+  const { build, push, scan, attest } = jobs;
   const pull = jobs['anonymous-pull'];
 
   if (!/^permissions:\n {2}contents: read\n(?! {2}\S)/m.test(top)) {
@@ -71,10 +71,14 @@ function demoEdgeProblems(source) {
     found.push('signer-workflow is not the literal path of this workflow');
   }
   if (/workflow_ref/.test(text)) found.push('an identity is read from the run itself');
-  for (const grant of ['packages: write', 'id-token: write', 'attestations: write']) {
-    if (text.split(grant).length - 1 !== 1 || !push.text.includes(grant)) {
-      found.push(`${grant} is not on the push job alone`);
+  if (!scan || !attest) return [...found, 'there is no scan or attest job'];
+  for (const grant of ['id-token: write', 'attestations: write']) {
+    if (text.split(grant).length - 1 !== 1 || !attest.text.includes(grant)) {
+      found.push(`${grant} is not on the attest job alone`);
     }
+  }
+  if (text.split('packages: write').length - 1 !== 2 || !push.text.includes('packages: write')) {
+    found.push('packages: write is not on the push and attest jobs alone');
   }
   if (/:latest/.test(text)) found.push('an image is tagged latest');
   if (!/IMAGE_TAG: \$\{\{ github\.sha \}\}/.test(push.text)) {
@@ -95,16 +99,28 @@ function demoEdgeProblems(source) {
   if (!/node --test workflow-demo-edge-image\.test\.js/.test(build.text)) {
     found.push('the build job does not run the workflow and pins tests');
   }
-  const read = push.text.indexOf('id: digest');
-  const attest = push.text.indexOf('uses: ./.github/actions/attest-and-verify-image');
-  const summary = push.text.indexOf('Write outcome to job summary');
-  if (!(read > -1 && attest > read && summary > attest)) {
-    found.push('push job does not read the digest, then attest and verify, then summarise');
+  if (
+    !push.text.includes('id: digest') ||
+    !/digest: \$\{\{ steps\.digest\.outputs\.digest \}\}/.test(push.text)
+  ) {
+    found.push('push job does not read the digest back and output it');
+  }
+  if (
+    !/uses: branchLeft\/github-workflows\/\.github\/actions\/attest-and-verify-image@/.test(
+      attest.text
+    )
+  ) {
+    found.push('attest job does not call the shared attest and verify action');
+  }
+  if (!/^ {4}needs: \[push, scan\]$/m.test(attest.text)) {
+    found.push('attest job does not wait on the push and the scan');
   }
   if (!/Pin this: /.test(push.text)) found.push('push job summary lacks "Pin this:"');
 
   if (!pull) return [...found, 'there is no anonymous-pull job'];
-  if (!/^ {4}needs: push$/m.test(pull.text)) found.push('anonymous-pull does not wait on push');
+  if (!/^ {4}needs: \[push, attest\]$/m.test(pull.text)) {
+    found.push('anonymous-pull does not wait on push and attest');
+  }
   if (normalise(pull.condition) !== GUARD) {
     found.push('anonymous-pull has no job-level guard that is exactly the main-only expression');
   }
@@ -272,11 +288,13 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     [inPush('      packages: write\n', '      packages: read\n'), 'lacks packages: write'],
     [
       inPush(
-        '      - name: Attest and verify the pushed image\n        uses: ./.github/actions/attest-and-verify-image\n',
+        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0\n',
         '      - name: Attest and verify the pushed image\n        run: true\n'
       ),
-      'attest and verify',
+      'shared attest and verify action',
     ],
+    [inPush('    needs: [push, scan]\n', '    needs: [push]\n'), 'wait on the push and the scan'],
+    [inPush('      id-token: write\n', ''), 'not on the attest job alone'],
     // The attestation identity.
     [
       swap(
@@ -309,7 +327,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
         'permissions:\n  contents: read\n\n',
         'permissions:\n  contents: read\n  id-token: write\n\n'
       ),
-      'not on the push job alone',
+      'not on the attest job alone',
     ],
     [
       swap(
@@ -317,7 +335,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
         '    timeout-minutes: 20\n\n    outputs:\n      image-id',
         '    timeout-minutes: 20\n\n    permissions:\n      id-token: write\n\n    outputs:\n      image-id'
       ),
-      'only push may',
+      'only push and attest may',
     ],
     // The build job.
     [swap(WORKFLOW, '--platform linux/amd64 \\\n', ''), '--platform linux/amd64'],
@@ -336,11 +354,11 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     ],
     // The anonymous pull.
     [`${beforePull}\n`, 'no anonymous-pull job'],
-    [inPull('    needs: push\n', ''), 'does not wait on push'],
+    [inPull('    needs: [push, attest]\n', ''), 'does not wait on push and attest'],
     [inPull(guardTail, widened), 'exactly the main-only'],
     [
       inPull('      contents: read\n', '      contents: read\n      packages: write\n'),
-      'only push may',
+      'only push and attest may',
     ],
     [
       inPull('      contents: read\n', '      contents: read\n      packages: read\n'),
