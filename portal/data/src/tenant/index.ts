@@ -30,3 +30,9 @@ export {
   type DocumentView,
   type UpcomingView,
 } from '../documents.js';
+export {
+  SUPPORT_ACCESS_STATES,
+  SUPPORT_READING_FRESH_SECONDS,
+  type SupportAccessState,
+  type SupportAccessView,
+} from '../supportAccess.js';

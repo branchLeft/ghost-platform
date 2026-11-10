@@ -31,8 +31,11 @@ import {
   documentVersion,
   healthReading,
   moderationSetting,
+  supportAccessReading,
+  supportAccessRequest,
   tenantRegister,
 } from '../schema.js';
+import { deriveSupportAccessView, type SupportAccessView } from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
@@ -119,6 +122,40 @@ export class TenantDb {
     const rows = await this.run(scope, (tx) => tx.select().from(healthReading));
     const row = rows[0];
     return row ? deriveHealthView(row) : null;
+  }
+
+  /**
+   * The bound tenant's support-access state at `now`. With no reading, a
+   * stale one or one dated ahead, the answer is `unknown`; `closed` comes only
+   * from a fresh reading that says so. Row-level isolation limits the read to
+   * the bound tenant, and the tenant role cannot write it.
+   */
+  async ownSupportAccess(scope: TenantScope, now: Date): Promise<SupportAccessView> {
+    const rows = await this.run(scope, (tx) => tx.select().from(supportAccessReading));
+    return deriveSupportAccessView(rows[0] ?? null, now);
+  }
+
+  /**
+   * Records the bound tenant's request for support access: its own row, with
+   * the database's clock and no text. A second request while one is pending
+   * records nothing and returns false. The request opens nothing.
+   */
+  async requestSupportAccess(scope: TenantScope): Promise<boolean> {
+    const inserted = await this.run(scope, (tx) =>
+      tx
+        .insert(supportAccessRequest)
+        .values({ tenantId: scope.tenantId })
+        .onConflictDoNothing()
+        .returning({ tenantId: supportAccessRequest.tenantId })
+    );
+    return inserted.length > 0;
+  }
+
+  /** The bound tenant's pending request, or null when it has none. */
+  async ownSupportRequest(scope: TenantScope): Promise<{ requestedAt: Date } | null> {
+    const rows = await this.run(scope, (tx) => tx.select().from(supportAccessRequest));
+    const row = rows[0];
+    return row ? { requestedAt: row.requestedAt } : null;
   }
 
   /**

@@ -183,6 +183,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0006_demo_lifecycle_register',
       'applied migration 0007_demo_rebuild_extended',
       'applied migration 0008_tenant_name',
+      'applied migration 0009_support_access',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',

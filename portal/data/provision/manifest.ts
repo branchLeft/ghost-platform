@@ -110,6 +110,7 @@ const KIND = '0005_tenant_kind';
 const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
 const DEMO_REBUILD = '0007_demo_rebuild_extended';
 const TENANT_NAME = '0008_tenant_name';
+const SUPPORT_ACCESS = '0009_support_access';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -204,6 +205,31 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
       ],
     },
+    // TenantDb.ownSupportAccess reads; OwnerDb.recordSupportAccess inserts and,
+    // through ON CONFLICT DO UPDATE, updates. The tenant role holds SELECT
+    // alone, so nothing a tenant does can write what the page shows. Nothing
+    // deletes a reading.
+    {
+      kind: 'table',
+      identity: 'portal.support_access_reading',
+      since: SUPPORT_ACCESS,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
+      ],
+    },
+    // TenantDb.requestSupportAccess inserts the tenant's own row and
+    // ownSupportRequest reads it; OwnerDb.listSupportRequests reads. Nothing
+    // updates or deletes a request, and the table has no column that holds text.
+    {
+      kind: 'table',
+      identity: 'portal.support_access_request',
+      since: SUPPORT_ACCESS,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
+      ],
+    },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
     // and reads. Nothing updates or deletes a version, so what a tenant
     // accepted cannot change under it.
@@ -277,6 +303,8 @@ export function manifest(major: number, database: string): readonly ManifestObje
 export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }> = {
   'portal.tenant_register': { enabled: true, forced: false },
   'portal.health_reading': { enabled: true, forced: false },
+  'portal.support_access_reading': { enabled: true, forced: false },
+  'portal.support_access_request': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
@@ -342,6 +370,22 @@ export const POLICIES: readonly PolicyEntry[] = [
     'null'
   ),
   policy('portal.health_reading', 'tenant_isolation', HEALTH, '*', `(${BOUND})`, `(${BOUND})`),
+  policy(
+    'portal.support_access_reading',
+    'tenant_isolation',
+    SUPPORT_ACCESS,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  policy(
+    'portal.support_access_request',
+    'tenant_isolation',
+    SUPPORT_ACCESS,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
   policy(
     'portal.document_acceptance',
     'tenant_isolation',
@@ -451,6 +495,39 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'REFERENCES portal.tenant_register(tenant_id)',
       'index portal.health_reading_pkey CREATE UNIQUE INDEX health_reading_pkey ' +
         'ON portal.health_reading USING btree (tenant_id)',
+    ],
+  },
+  'portal.support_access_reading': {
+    since: SUPPORT_ACCESS,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column state text notnull=true ${PLAIN}`,
+      `column lane text notnull=false ${PLAIN}`,
+      `column granted_at timestamp with time zone notnull=false ${PLAIN}`,
+      `column deadline_at timestamp with time zone notnull=false ${PLAIN}`,
+      `column observed_at timestamp with time zone notnull=true ${PLAIN}`,
+      "constraint support_access_reading_lane_known CHECK ((lane = ANY (ARRAY['consented'::text, " +
+        "'incident'::text])))",
+      'constraint support_access_reading_pkey PRIMARY KEY (tenant_id)',
+      "constraint support_access_reading_state_known CHECK ((state = ANY (ARRAY['open'::text, " +
+        "'closed'::text, 'unknown'::text])))",
+      'constraint support_access_reading_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.support_access_reading_pkey CREATE UNIQUE INDEX support_access_reading_pkey ' +
+        'ON portal.support_access_reading USING btree (tenant_id)',
+    ],
+  },
+  'portal.support_access_request': {
+    since: SUPPORT_ACCESS,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default requested_at now()',
+      'constraint support_access_request_pkey PRIMARY KEY (tenant_id)',
+      'constraint support_access_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +
+        'ON portal.support_access_request USING btree (tenant_id)',
     ],
   },
   'portal.document_version': {

@@ -14,6 +14,7 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
+import { SUPPORT_ACCESS_STATES, SUPPORT_LANES } from './supportAccess.js';
 import { TENANT_KINDS } from './tenantKind.js';
 import { TENANT_NAME_PATTERN } from './tenantName.js';
 import {
@@ -115,6 +116,76 @@ export const healthReading = portal
         'health_reading_health_known',
         sql`${table.health} IN ('healthy', 'unhealthy', 'unknown')`
       ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * The latest support-access reading for each tenant: whether the support
+ * account on the tenant's own host is open, closed or unknown, with the clock
+ * of the grant when one is open. It carries no reason, no reference and no
+ * identity. Written by the owner role's collector and read by the tenant (its
+ * own row only) and the owner console. The tenant role holds `SELECT` alone,
+ * so the page can show access but nothing in the portal can open or close it.
+ */
+export const supportAccessReading = portal
+  .table(
+    'support_access_reading',
+    {
+      tenantId: uuid('tenant_id')
+        .primaryKey()
+        .references(() => tenantRegister.tenantId),
+      state: text('state').notNull(),
+      lane: text('lane'),
+      grantedAt: timestamp('granted_at', { withTimezone: true }),
+      deadlineAt: timestamp('deadline_at', { withTimezone: true }),
+      observedAt: timestamp('observed_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      check(
+        'support_access_reading_state_known',
+        sql`${table.state} IN (${sql.raw(sqlList(SUPPORT_ACCESS_STATES))})`
+      ),
+      check(
+        'support_access_reading_lane_known',
+        sql`${table.lane} IN (${sql.raw(sqlList(SUPPORT_LANES))})`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A tenant's request for support access: one row per tenant while it is
+ * that has asked, holding the tenant and the database-clock time and no text.
+ * The tenant role may insert its own row and read it; no role updates or
+ * deletes one. A request opens nothing: access
+ * is opened and closed on the tenant's host by the owner, and the portal holds
+ * no way to do either.
+ */
+export const supportAccessRequest = portal
+  .table(
+    'support_access_request',
+    {
+      tenantId: uuid('tenant_id')
+        .primaryKey()
+        .references(() => tenantRegister.tenantId),
+      requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
       pgPolicy('tenant_isolation', {
         as: 'permissive',
         for: 'all',

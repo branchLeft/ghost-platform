@@ -13,12 +13,28 @@ import {
 } from '../documents.js';
 import { eventsOf, hostnameOf, listDemos, listHostnames } from '../demoReads.js';
 import type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
-import { documentVersion, healthReading, tenantRegister } from '../schema.js';
+import {
+  documentVersion,
+  healthReading,
+  supportAccessReading,
+  supportAccessRequest,
+  tenantRegister,
+} from '../schema.js';
+import {
+  assertSupportReading,
+  type SupportAccessReading,
+  type SupportRequestView,
+} from '../supportAccess.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
 export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
+export {
+  InvalidSupportReadingError,
+  type SupportAccessReading,
+  type SupportRequestView,
+} from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
 import { parseTenantKind } from '../tenantKind.js';
 import { normaliseTenantName, TenantNameTakenError } from '../tenantName.js';
@@ -155,6 +171,44 @@ export class OwnerDb {
         tenantId: row.register.tenantId,
         health: row.reading ? deriveHealthView(row.reading) : null,
       }));
+    });
+  }
+
+  /**
+   * Replaces a tenant's support-access reading with what the host's read-only
+   * report said at `observedAt`. A state or lane outside the closed lists is
+   * refused before a statement runs, and the table refuses it again.
+   */
+  async recordSupportAccess(
+    tenantId: string,
+    reading: SupportAccessReading,
+    observedAt: Date
+  ): Promise<void> {
+    const id = parseTenantId(tenantId);
+    assertSupportReading(reading);
+    const values = {
+      state: reading.state,
+      lane: reading.lane,
+      grantedAt: reading.grantedAt,
+      deadlineAt: reading.deadline,
+      observedAt,
+    };
+    await this.run(async (tx) => {
+      await tx
+        .insert(supportAccessReading)
+        .values({ tenantId: id, ...values })
+        .onConflictDoUpdate({ target: supportAccessReading.tenantId, set: values });
+    });
+  }
+
+  /** Every pending support-access request, oldest first: the console's queue. It has no paging. */
+  async listSupportRequests(): Promise<SupportRequestView[]> {
+    return this.run(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(supportAccessRequest)
+        .orderBy(asc(supportAccessRequest.requestedAt), asc(supportAccessRequest.tenantId));
+      return rows.map((row) => ({ tenantId: row.tenantId, requestedAt: row.requestedAt }));
     });
   }
 

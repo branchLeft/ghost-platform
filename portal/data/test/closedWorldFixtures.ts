@@ -348,6 +348,39 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     expect: /extra M06: SELECT on table portal.hostname_register to portal_tenant/,
   },
   {
+    id: 'M06',
+    title: 'UPDATE on the support-access reading given to the tenant role',
+    apply: [[P, 'GRANT UPDATE ON portal.support_access_reading TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE ON portal.support_access_reading FROM portal_tenant']],
+    expect: /extra M06: UPDATE on table portal.support_access_reading to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the support-access requests given to the tenant role',
+    apply: [[P, 'GRANT DELETE ON portal.support_access_request TO portal_tenant']],
+    undo: [[P, 'REVOKE DELETE ON portal.support_access_request FROM portal_tenant']],
+    expect: /extra M06: DELETE on table portal.support_access_request to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE on the support-access requests given to the owner role',
+    apply: [[P, 'GRANT UPDATE ON portal.support_access_request TO portal_owner']],
+    undo: [[P, 'REVOKE UPDATE ON portal.support_access_request FROM portal_owner']],
+    expect: /extra M06: UPDATE on table portal.support_access_request to portal_owner/,
+  },
+  {
+    id: 'M20',
+    title: 'an extra policy on the support-access reading',
+    apply: [
+      [
+        P,
+        'CREATE POLICY open_all ON portal.support_access_reading FOR SELECT TO portal_tenant USING (true)',
+      ],
+    ],
+    undo: [[P, 'DROP POLICY open_all ON portal.support_access_reading']],
+    expect: /extra M20: policy open_all on portal.support_access_reading: cmd=r/,
+  },
+  {
     id: 'M01',
     title: 'the provisioner role allowed to bypass row security',
     apply: [[PG, 'ALTER ROLE portal_provisioner BYPASSRLS']],
