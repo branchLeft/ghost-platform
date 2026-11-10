@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 // The digest the image scan was run against. The Dockerfile must pin exactly
 // this digest, so the scan's findings describe the base that ships.
 const SCANNED_BASE_DIGEST =
-  'sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68';
+  'sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dockerfile = readFileSync(resolve(here, '../../Dockerfile'), 'utf8');
@@ -19,19 +19,26 @@ describe('Dockerfile base image', () => {
   it('pins the base by digest, not by tag alone', () => {
     const froms = fromLines(dockerfile);
     expect(froms).toHaveLength(1);
-    expect(froms[0]).toMatch(/^FROM node:[0-9.]+-bookworm-slim@sha256:[0-9a-f]{64}$/);
+    expect(froms[0]).toMatch(/^FROM node:[0-9.]+-alpine@sha256:[0-9a-f]{64}$/);
   });
 
   it('pins the digest the image scan was run against', () => {
     expect(fromLines(dockerfile)[0]).toBe(
-      `FROM node:26.13.0-bookworm-slim@${SCANNED_BASE_DIGEST}`,
+      `FROM node:26.13.0-alpine@${SCANNED_BASE_DIGEST}`,
     );
   });
 
-  it('upgrades the bundled npm before pnpm is installed', () => {
-    const npmAt = dockerfile.indexOf('RUN npm install --global npm@12.2.2');
+  it('upgrades zlib before the package manager is used', () => {
+    const zlibAt = dockerfile.indexOf('RUN apk upgrade --no-cache zlib');
     const pnpmAt = dockerfile.indexOf('RUN npm install --global pnpm@');
-    expect(npmAt).toBeGreaterThan(-1);
-    expect(pnpmAt).toBeGreaterThan(npmAt);
+    expect(zlibAt).toBeGreaterThan(-1);
+    expect(pnpmAt).toBeGreaterThan(zlibAt);
+  });
+
+  it('removes npm from the shipped image after pnpm is installed and used', () => {
+    const removeAt = dockerfile.indexOf('/usr/local/lib/node_modules/npm');
+    const pruneAt = dockerfile.indexOf('RUN pnpm prune --prod');
+    expect(removeAt).toBeGreaterThan(pruneAt);
+    expect(dockerfile.indexOf('USER node')).toBeGreaterThan(removeAt);
   });
 });
