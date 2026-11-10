@@ -218,8 +218,9 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
       ],
     },
-    // TenantDb.requestSupportAccess inserts the tenant's own open row and
-    // ownSupportRequest reads it; OwnerDb.listSupportRequests reads and
+    // TenantDb.requestSupportAccess inserts the tenant's own open row (one open
+    // per tenant, by a partial unique index) and ownSupportRequest reads the
+    // latest; OwnerDb.listSupportRequests reads and
     // markSupportRequestDealtWith updates the status. The tenant role holds no
     // UPDATE, so it cannot change its own status. Nothing deletes a request,
     // and the table has no column that holds text.
@@ -334,6 +335,22 @@ export const FUNCTIONS: Record<string, { since: string; fingerprint: string }> =
       'volatile=s secdef=false leakproof=false config=null',
   },
 };
+
+/**
+ * The indexes the manifest names that no constraint backs. Every other index
+ * on a manifest table is an extra (M25); an index named here is accepted as
+ * the catch-all's own, and its definition is still pinned line by line in
+ * `TABLE_SHAPES` (M21).
+ */
+export interface NamedIndex {
+  identity: string;
+  since: string;
+}
+
+export const NAMED_INDEXES: readonly NamedIndex[] = [
+  // One open support-access request per tenant; any number dealt with.
+  { identity: 'portal.support_access_request_one_open', since: SUPPORT_ACCESS },
+];
 
 /** The row-security policies, exactly (M20), as the server deparses them. */
 export interface PolicyEntry {
@@ -534,18 +551,23 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
   'portal.support_access_request': {
     since: SUPPORT_ACCESS,
     lines: [
+      `column request_id uuid notnull=true ${PLAIN}`,
       `column tenant_id uuid notnull=true ${PLAIN}`,
       `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
       `column status text notnull=true ${PLAIN}`,
+      'default request_id gen_random_uuid()',
       'default requested_at now()',
       "default status 'open'::text",
-      'constraint support_access_request_pkey PRIMARY KEY (tenant_id)',
+      'constraint support_access_request_pkey PRIMARY KEY (request_id)',
       "constraint support_access_request_status_known CHECK ((status = ANY (ARRAY['open'::text, " +
         "'dealt_with'::text])))",
       'constraint support_access_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
         '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.support_access_request_one_open CREATE UNIQUE INDEX ' +
+        'support_access_request_one_open ON portal.support_access_request USING btree ' +
+        "(tenant_id) WHERE (status = 'open'::text)",
       'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +
-        'ON portal.support_access_request USING btree (tenant_id)',
+        'ON portal.support_access_request USING btree (request_id)',
     ],
   },
   'portal.document_version': {

@@ -39,8 +39,8 @@ function statusLabel(status: string): string {
 /**
  * The tenant's support-access page: the state, the deadline while it is open,
  * the two placeholder lines saying who closes access and how the tenant stops
- * it at once, and either the one button that asks or the status word of the
- * request already made, with no time. The button posts nothing: it carries no
+ * it at once, and the one button that asks, or the status word of the latest
+ * request already made (with the button again once it is dealt with), no time. The button posts nothing: it carries no
  * field, so no text and no tenant id can travel with it.
  */
 export function renderSupportAccess(
@@ -54,10 +54,16 @@ export function renderSupportAccess(
       : access.deadline === null
         ? '<dt>SUPPORT_ACCESS_DEADLINE</dt><dd>SUPPORT_ACCESS_DEADLINE_UNKNOWN</dd>'
         : `<dt>SUPPORT_ACCESS_DEADLINE</dt><dd>${time(access.deadline)}</dd>`;
+  const button =
+    '<form method="post" action="/site-access/request"><button type="submit">SUPPORT_ACCESS_REQUEST_BUTTON</button></form>';
+  // The latest request's status only. The button returns once that request is
+  // dealt with; while one is open, or its status is not recognised, it stays away.
   const asked =
     request === null
-      ? '<form method="post" action="/site-access/request"><button type="submit">SUPPORT_ACCESS_REQUEST_BUTTON</button></form>'
-      : `<p>SUPPORT_ACCESS_REQUEST_SENT ${statusLabel(request.status)}</p>`;
+      ? button
+      : `<p>SUPPORT_ACCESS_REQUEST_SENT ${statusLabel(request.status)}</p>${
+          request.status === 'dealt_with' ? button : ''
+        }`;
   return (
     '<h1>SUPPORT_ACCESS_HEADING</h1><p>SUPPORT_ACCESS_INTRO</p>' +
     `<dl><dt>SUPPORT_ACCESS_STATE</dt><dd>${label}</dd>${deadline}</dl>` +

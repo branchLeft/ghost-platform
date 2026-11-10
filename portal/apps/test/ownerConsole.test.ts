@@ -134,13 +134,11 @@ describe('the owner console', () => {
   it('lists open requests first, then the ones dealt with', async () => {
     const browser = new Browser(app.origin);
     await browser.finish(issuer.issue(ownerToken()));
-    await fixture.adminDb
-      .insert(supportAccessRequest)
-      .values({
-        tenantId: TENANT_A,
-        requestedAt: new Date('2027-01-14T09:00:00Z'),
-        status: 'dealt_with',
-      });
+    await fixture.adminDb.insert(supportAccessRequest).values({
+      tenantId: TENANT_A,
+      requestedAt: new Date('2027-01-14T09:00:00Z'),
+      status: 'dealt_with',
+    });
     await fixture.adminDb
       .insert(supportAccessRequest)
       .values({ tenantId: TENANT_B, requestedAt: new Date('2027-01-14T10:00:00Z') });

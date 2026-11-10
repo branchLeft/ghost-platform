@@ -396,6 +396,46 @@ export const MORE_EXTRAS: readonly Tamper[] = [
   },
   {
     id: 'M21',
+    title: 'the one-open-request index dropped from the support-access requests',
+    apply: [[P, 'DROP INDEX portal.support_access_request_one_open']],
+    undo: [
+      [
+        P,
+        "CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id) WHERE status = 'open'",
+      ],
+    ],
+    expect:
+      /missing M21: portal.support_access_request index portal.support_access_request_one_open/,
+  },
+  {
+    id: 'M21',
+    title: 'the one-open-request index made plain unique on the support-access requests',
+    apply: [
+      [P, 'DROP INDEX portal.support_access_request_one_open'],
+      [
+        P,
+        'CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id)',
+      ],
+    ],
+    undo: [
+      [P, 'DROP INDEX portal.support_access_request_one_open'],
+      [
+        P,
+        "CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id) WHERE status = 'open'",
+      ],
+    ],
+    expect:
+      /missing M21: portal.support_access_request index portal.support_access_request_one_open/,
+  },
+  {
+    id: 'M21',
+    title: 'an extra index on the support-access requests',
+    apply: [[P, 'CREATE INDEX zz_extra ON portal.support_access_request (requested_at)']],
+    undo: [[P, 'DROP INDEX portal.zz_extra']],
+    expect: /extra M21: portal.support_access_request index portal.zz_extra/,
+  },
+  {
+    id: 'M21',
     title: 'the status check dropped from the support-access requests',
     apply: [
       [

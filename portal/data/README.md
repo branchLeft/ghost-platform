@@ -152,17 +152,22 @@ row, an older or future-dated one, and a state outside the closed list all come
 back `unknown` with no deadline. `closed` is returned only for a fresh reading
 that says `closed`, so a host that has stopped reporting never reads as closed.
 
-`portal.support_access_request` holds at most one row per tenant: the tenant id,
-the database-clock time and a `status` (`open` or `dealt_with`, default `open`,
-held by a CHECK), and no column that holds text. The tenant role may `INSERT`
-its own row (`TenantDb.requestSupportAccess`, which takes the tenant from the
-scope and ignores a repeat, including a repeat after the request was dealt
-with) and `SELECT` it; a restrictive insert policy makes the row it files
-`open`. The tenant role holds no `UPDATE`, so it cannot change its status. The
-owner role may `SELECT` (`OwnerDb.listSupportRequests`, open requests first and
-oldest first, no paging) and `UPDATE`: `OwnerDb.markSupportRequestDealtWith`
-sets `dealt_with` on an open request and nothing else. No role deletes a
-request, so a request is never withdrawn, and a dealt-with row stays. A request
+`portal.support_access_request` holds a tenant's requests: each row has its own
+id, the tenant id, the database-clock time and a `status` (`open` or
+`dealt_with`, default `open`, held by a CHECK), and no column that holds text.
+A partial unique index (`support_access_request_one_open`, on the tenant where
+the status is `open`) allows one open request per tenant and any number dealt
+with, kept as history. The tenant role may `INSERT` its own row
+(`TenantDb.requestSupportAccess`, which takes the tenant from the scope and
+ignores a repeat while one is open) and `SELECT` it; a restrictive insert
+policy makes the row it files `open`, and `TenantDb.ownSupportRequest` returns
+the latest. The tenant role holds no `UPDATE`, so it cannot change a status.
+The owner role may `SELECT` (`OwnerDb.listSupportRequests`, open requests first
+and oldest first, no paging) and `UPDATE`: `OwnerDb.markSupportRequestDealtWith`
+sets `dealt_with` on a tenant's open request and nothing else. No role deletes
+a request, so a request is never withdrawn and a dealt-with row stays. The
+provisioning manifest names the index (`NAMED_INDEXES`) and pins its definition.
+A request
 opens nothing: access
 is opened and closed on the tenant's host by the owner, and the portal holds no
 way to do either. Both tables are isolated like every tenant table; the

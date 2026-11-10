@@ -48,6 +48,13 @@ export const REQUEST_INSERT_ANY_STATUS: Loosening = {
   ],
 };
 
+export const REQUEST_OPEN_NOT_UNIQUE: Loosening = {
+  apply: [sql`DROP INDEX portal.support_access_request_one_open`],
+  restore: [
+    sql`CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id) WHERE status = 'open'`,
+  ],
+};
+
 /** Runs `probe` with one control removed, and puts it back whatever the probe does. */
 export async function whileLoosened(
   fixture: Fixture,
@@ -114,14 +121,10 @@ export async function requestRowText(fixture: Fixture): Promise<string[]> {
   return (result.rows as Array<{ row: string }>).map((row) => row.row);
 }
 
-/** Puts one tenant's request back to a status, as the administrator. */
-export async function setRequestStatus(
-  fixture: Fixture,
-  tenantId: string,
-  status: 'open' | 'dealt_with'
-): Promise<void> {
+/** Leaves one tenant with a single fresh open request, whatever history it had. */
+export async function resetRequest(fixture: Fixture, tenantId: string): Promise<void> {
   await fixture.adminDb
-    .update(supportAccessRequest)
-    .set({ status })
+    .delete(supportAccessRequest)
     .where(eq(supportAccessRequest.tenantId, tenantId));
+  await fixture.adminDb.insert(supportAccessRequest).values({ tenantId });
 }

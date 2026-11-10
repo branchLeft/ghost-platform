@@ -1,5 +1,5 @@
 {
-  "id": "c89883ce-5305-4707-a3d4-76a1c1f88c85",
+  "id": "00386d7e-02b2-481d-b5e5-1673bf9cd644",
   "prevId": "125d4049-8431-4def-9251-729b61c3b790",
   "version": "7",
   "dialect": "postgresql",
@@ -616,10 +616,17 @@
       "name": "support_access_request",
       "schema": "portal",
       "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
         "tenant_id": {
           "name": "tenant_id",
           "type": "uuid",
-          "primaryKey": true,
+          "primaryKey": false,
           "notNull": true
         },
         "requested_at": {
@@ -637,7 +644,24 @@
           "default": "'open'"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "support_access_request_one_open": {
+          "name": "support_access_request_one_open",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"portal\".\"support_access_request\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "support_access_request_tenant_id_tenant_register_tenant_id_fk": {
           "name": "support_access_request_tenant_id_tenant_register_tenant_id_fk",

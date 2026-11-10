@@ -16,11 +16,12 @@ import {
   READING_TENANT_WRITE,
   REQUEST_CHECK_OPEN,
   REQUEST_INSERT_ANY_STATUS,
+  REQUEST_OPEN_NOT_UNIQUE,
   REQUEST_TENANT_REWRITE,
   REQUEST_TENANT_STATUS_WRITE,
   columnsOf,
   privilegesOf,
-  setRequestStatus,
+  resetRequest,
   whileLoosened,
 } from './supportAccessAdmin.js';
 
@@ -64,6 +65,7 @@ async function refusedWith(attempt: Promise<unknown>): Promise<string | undefine
 
 const PERMISSION_DENIED = '42501';
 const CHECK_VIOLATION = '23514';
+const UNIQUE_VIOLATION = '23505';
 
 describe('deriveSupportAccessView: unknown, never closed, when the reading is not believed', () => {
   const fresh = { state: 'closed', deadlineAt: null, observedAt: T0 };
@@ -223,6 +225,7 @@ describe('the request: a row and nothing else', () => {
   it('holds a tenant and a time and no text of any kind', async () => {
     const columns = await columnsOf(fixture, 'support_access_request');
     expect(columns).toEqual([
+      { column_name: 'request_id', data_type: 'uuid' },
       { column_name: 'requested_at', data_type: 'timestamp with time zone' },
       { column_name: 'status', data_type: 'text' },
       { column_name: 'tenant_id', data_type: 'uuid' },
@@ -270,6 +273,21 @@ describe('the request: a row and nothing else', () => {
         tenant.run(bindTenant(TENANT_A), (tx) => tx.delete(schema.supportAccessRequest))
       )
     ).toBe(PERMISSION_DENIED);
+  });
+
+  it('refuses a second open row for a tenant at the table, whoever inserts it', async () => {
+    expect(
+      await refusedWith(
+        tenant.run(bindTenant(TENANT_A), (tx) =>
+          tx.insert(schema.supportAccessRequest).values({ tenantId: TENANT_A })
+        )
+      )
+    ).toBe(UNIQUE_VIOLATION);
+    expect(
+      await refusedWith(
+        fixture.adminDb.insert(schema.supportAccessRequest).values({ tenantId: TENANT_A })
+      )
+    ).toBe(UNIQUE_VIOLATION);
   });
 
   it('refuses a tenant filing its request already dealt with', async () => {
@@ -335,14 +353,14 @@ describe('the owner side', () => {
       [TENANT_B, 'open'],
       [TENANT_A, 'dealt_with'],
     ]);
-    await setRequestStatus(fixture, TENANT_A, 'open');
+    await resetRequest(fixture, TENANT_A);
   });
 
   it('marks a request dealt with once, and shows the tenant the word', async () => {
     expect(await owner.markSupportRequestDealtWith(TENANT_A)).toBe(true);
     expect(await owner.markSupportRequestDealtWith(TENANT_A)).toBe(false);
     expect((await tenant.ownSupportRequest(bindTenant(TENANT_A)))!.status).toBe('dealt_with');
-    await setRequestStatus(fixture, TENANT_A, 'open');
+    await resetRequest(fixture, TENANT_A);
   });
 
   it('marks nothing for a tenant with no request, or an id that is not one', async () => {
@@ -365,11 +383,48 @@ describe('the owner side', () => {
       .where(sql`${schema.supportAccessRequest.tenantId} = ${TENANT_B}`);
   });
 
-  it('keeps a dealt-with request: a tenant cannot file a second row, and nothing deletes one', async () => {
+  it('lets a tenant file a new request once the last is dealt with, and keeps the old row', async () => {
     expect(await owner.markSupportRequestDealtWith(TENANT_A)).toBe(true);
+    expect(await tenant.requestSupportAccess(bindTenant(TENANT_A))).toBe(true);
     expect(await tenant.requestSupportAccess(bindTenant(TENANT_A))).toBe(false);
+    expect((await tenant.ownSupportRequest(bindTenant(TENANT_A)))!.status).toBe('open');
+    const rows = await fixture.adminDb
+      .select()
+      .from(schema.supportAccessRequest)
+      .where(sql`${schema.supportAccessRequest.tenantId} = ${TENANT_A}`);
+    expect(rows.map((row) => row.status).sort()).toEqual(['dealt_with', 'open']);
+    await resetRequest(fixture, TENANT_A);
+  });
+
+  it('marks only the open request and leaves the history as it was', async () => {
+    await owner.markSupportRequestDealtWith(TENANT_A);
+    await tenant.requestSupportAccess(bindTenant(TENANT_A));
+    expect(await owner.markSupportRequestDealtWith(TENANT_A)).toBe(true);
+    const rows = await fixture.adminDb
+      .select()
+      .from(schema.supportAccessRequest)
+      .where(sql`${schema.supportAccessRequest.tenantId} = ${TENANT_A}`);
+    expect(rows.map((row) => row.status)).toEqual(['dealt_with', 'dealt_with']);
+    await resetRequest(fixture, TENANT_A);
+  });
+
+  it('shows the tenant the status of its latest request only', async () => {
+    await owner.markSupportRequestDealtWith(TENANT_A);
     expect((await tenant.ownSupportRequest(bindTenant(TENANT_A)))!.status).toBe('dealt_with');
-    await setRequestStatus(fixture, TENANT_A, 'open');
+    await tenant.requestSupportAccess(bindTenant(TENANT_A));
+    expect((await tenant.ownSupportRequest(bindTenant(TENANT_A)))!.status).toBe('open');
+    await resetRequest(fixture, TENANT_A);
+  });
+
+  it('lists a tenant’s open request ahead of its history and ahead of later-asked history', async () => {
+    await owner.markSupportRequestDealtWith(TENANT_A);
+    await tenant.requestSupportAccess(bindTenant(TENANT_A));
+    const queue = await owner.listSupportRequests();
+    expect(queue.map((row) => [row.tenantId, row.status])).toEqual([
+      [TENANT_A, 'open'],
+      [TENANT_A, 'dealt_with'],
+    ]);
+    await resetRequest(fixture, TENANT_A);
   });
 
   it('holds SELECT and UPDATE and no DELETE for the owner role on the queue', async () => {
@@ -497,7 +552,7 @@ describe('sabotage: each probe goes red when its control is removed', () => {
       );
       expect((await tenant.ownSupportRequest(bindTenant(TENANT_A)))!.status).toBe('dealt_with');
     });
-    await setRequestStatus(fixture, TENANT_A, 'open');
+    await resetRequest(fixture, TENANT_A);
     expect(
       await refusedWith(
         tenant.run(bindTenant(TENANT_A), (tx) =>
@@ -529,5 +584,26 @@ describe('sabotage: each probe goes red when its control is removed', () => {
         )
       )
     ).toBe(PERMISSION_DENIED);
+  });
+
+  it('without the partial index a tenant can hold two open requests', async () => {
+    await whileLoosened(fixture, REQUEST_OPEN_NOT_UNIQUE, async () => {
+      await tenant.run(bindTenant(TENANT_A), (tx) =>
+        tx.insert(schema.supportAccessRequest).values({ tenantId: TENANT_A })
+      );
+      const rows = await fixture.adminDb
+        .select()
+        .from(schema.supportAccessRequest)
+        .where(sql`${schema.supportAccessRequest.tenantId} = ${TENANT_A}`);
+      expect(rows).toHaveLength(2);
+      await resetRequest(fixture, TENANT_A);
+    });
+    expect(
+      await refusedWith(
+        tenant.run(bindTenant(TENANT_A), (tx) =>
+          tx.insert(schema.supportAccessRequest).values({ tenantId: TENANT_A })
+        )
+      )
+    ).toBe(UNIQUE_VIOLATION);
   });
 });

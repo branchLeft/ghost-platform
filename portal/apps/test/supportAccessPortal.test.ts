@@ -194,17 +194,29 @@ describe('the request button', () => {
     expect(rows.map((row) => row.status)).toEqual(['open']);
   });
 
-  it('shows the status word once the owner has dealt with the request, and still no button', async () => {
+  it('shows the status word once the owner has dealt with the request, with the button again', async () => {
     const browser = await signedIn(ORG_A);
     await post(browser, '/site-access/request');
     expect(await owner.markSupportRequestDealtWith(TENANT_A)).toBe(true);
     const page = await browser.request('/site-access');
     expect(page.body).toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
     expect(page.body).not.toContain('SUPPORT_REQUEST_STATUS_OPEN');
+    expect(page.body).toContain('<form method="post" action="/site-access/request">');
+  });
+
+  it('files a new open request after one is dealt with, and shows only the latest status', async () => {
+    const browser = await signedIn(ORG_A);
+    await post(browser, '/site-access/request');
+    await owner.markSupportRequestDealtWith(TENANT_A);
+    expect((await post(browser, '/site-access/request')).status).toBe(303);
+    const rows = await fixture.adminDb.select().from(supportAccessRequest);
+    expect(rows.map((row) => row.status).sort()).toEqual(['dealt_with', 'open']);
+    const page = await browser.request('/site-access');
+    expect(page.body).toContain('SUPPORT_REQUEST_STATUS_OPEN');
+    expect(page.body).not.toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
     expect(page.body).not.toContain('<form method="post" action="/site-access/request">');
     await post(browser, '/site-access/request');
-    const rows = await fixture.adminDb.select().from(supportAccessRequest);
-    expect(rows.map((row) => row.status)).toEqual(['dealt_with']);
+    expect(await fixture.adminDb.select().from(supportAccessRequest)).toHaveLength(2);
   });
 
   it('offers the tenant no way to mark its own request', async () => {

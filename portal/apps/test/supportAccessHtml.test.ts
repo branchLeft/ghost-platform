@@ -67,15 +67,17 @@ describe('renderSupportAccess', () => {
     expect(html).not.toContain('<button');
   });
 
-  it('shows a request dealt with as that word, and still no button', () => {
+  it('shows a request dealt with as that word and offers the one button again', () => {
     const html = renderSupportAccess(
       { state: 'closed', deadline: null },
       { requestedAt: ASKED, status: 'dealt_with' }
     );
     expect(html).toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
     expect(html).not.toContain('SUPPORT_REQUEST_STATUS_OPEN');
-    expect(html).not.toContain('<form');
-    expect(html).not.toContain('<button');
+    expect(html.match(/<form /g)).toHaveLength(1);
+    expect(html).toContain('<form method="post" action="/site-access/request">');
+    expect(html).not.toMatch(/<input|<textarea|<select/);
+    expect(html.match(/<button/g)).toHaveLength(1);
   });
 
   it('shows a status it does not know as neither word', () => {
@@ -85,6 +87,7 @@ describe('renderSupportAccess', () => {
     );
     expect(html).toContain('SUPPORT_REQUEST_STATUS_UNKNOWN');
     expect(html).not.toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
+    expect(html).not.toContain('<form');
   });
 
   it('offers no way to end access from the page, and points at the placeholders for how', () => {

@@ -12,6 +12,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { SUPPORT_ACCESS_STATES, SUPPORT_LANES, SUPPORT_REQUEST_STATUSES } from './supportAccess.js';
@@ -169,11 +170,11 @@ export const supportAccessReading = portal
   .enableRLS();
 
 /**
- * A tenant's request for support access: one row per tenant while it is
- * that has asked, holding the tenant, the database-clock time, a status
- * (`open`, then `dealt_with`) and no text. The tenant role may insert its own
- * open row and read it; only the owner role updates the status, and no role
- * deletes a row. A request opens nothing: access
+ * A tenant's request for support access, holding the tenant, the database-clock
+ * time, a status (`open`, then `dealt_with`) and no text. A tenant has at most
+ * one open request (a partial unique index) and any number dealt with, kept as
+ * history. The tenant role may insert its own open row and read its rows; only
+ * the owner role updates the status, and no role deletes a row. A request opens nothing: access
  * is opened and closed on the tenant's host by the owner, and the portal holds
  * no way to do either.
  */
@@ -181,13 +182,18 @@ export const supportAccessRequest = portal
   .table(
     'support_access_request',
     {
+      requestId: uuid('request_id').primaryKey().defaultRandom(),
       tenantId: uuid('tenant_id')
-        .primaryKey()
+        .notNull()
         .references(() => tenantRegister.tenantId),
       requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
       status: text('status').notNull().default('open'),
     },
     (table) => [
+      // One open request per tenant; any number dealt with stay as history.
+      uniqueIndex('support_access_request_one_open')
+        .on(table.tenantId)
+        .where(sql`${table.status} = 'open'`),
       check(
         'support_access_request_status_known',
         sql`${table.status} IN (${sql.raw(sqlList(SUPPORT_REQUEST_STATUSES))})`
