@@ -38,7 +38,11 @@ serves nothing until one arrives. It does **not** build:
   `VerdictClient` answering differently on a later call (`src/hold.js`
   polls for that). `Policy.decide` can still return `'flag'`, for the
   advisory/text route, and the adapter fails loudly rather than guessing
-  a behaviour if it ever sees one.
+  a behaviour if it ever sees one. The host's end of that channel, a
+  local socket, a durable queue and an inbound end the safety service dials,
+  is built in `verdict-host/` (`verdict-host/verdict-host.md`), with the
+  decorator's transport in `src/socket-verdict-transport.js`
+  (`src/verdict-socket.md`). The entry file does not pass that transport yet.
 - **An automated check for video, audio or arbitrary files.** PDQ is an
   image hash and no automated check for video or arbitrary files exists; it
   is not built here, and no frame sampling or fingerprinting is designed.

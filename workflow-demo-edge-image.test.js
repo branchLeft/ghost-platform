@@ -298,16 +298,16 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     [
       swap(
         WORKFLOW,
-        'permissions:\n  contents: read\n\njobs:',
-        'permissions:\n  contents: read\n  packages: write\n\njobs:'
+        'permissions:\n  contents: read\n\n',
+        'permissions:\n  contents: read\n  packages: write\n\n'
       ),
       'top-level',
     ],
     [
       swap(
         WORKFLOW,
-        'permissions:\n  contents: read\n\njobs:',
-        'permissions:\n  contents: read\n  id-token: write\n\njobs:'
+        'permissions:\n  contents: read\n\n',
+        'permissions:\n  contents: read\n  id-token: write\n\n'
       ),
       'not on the push job alone',
     ],
