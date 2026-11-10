@@ -134,3 +134,106 @@ test('the matcher refuses a workflow that mints with an unpinned ref or an extra
     MINT_USES
   );
 });
+
+// ---- the merge of the digest PR ----
+
+const WATCHER_DIR = path.join(import.meta.dirname, 'services', 'release-watcher', 'release_watcher');
+const MERGE_SRC = path.join(WATCHER_DIR, 'merge.py');
+const CLIENTS_SRC = path.join(WATCHER_DIR, 'clients.py');
+
+function mergeStep(text) {
+  const found = steps(text).filter((s) => /release_watcher\.merge/.test(s.body));
+  assert.equal(found.length, 1, 'exactly one step runs the merge');
+  return found[0];
+}
+
+function pythonBody(file) {
+  return stripCommentLines(fs.readFileSync(file, 'utf8'));
+}
+
+// The text of `def name(` up to the next def, so an order assertion reads one
+// function, not the whole module.
+function functionText(src, name) {
+  const start = src.indexOf(`def ${name}(`);
+  assert.notEqual(start, -1, `def ${name} exists`);
+  const next = src.slice(start + 1).search(/^(?:def|class) /m);
+  return next === -1 ? src.slice(start) : src.slice(start, start + 1 + next);
+}
+
+test('the merge step runs after the watcher and before the gauge is committed', () => {
+  const all = steps(readWorkflow());
+  const watcher = all.findIndex((s) => /release_watcher\.cli/.test(s.body));
+  const merge = all.findIndex((s) => /release_watcher\.merge/.test(s.body));
+  const gauge = all.findIndex((s) => /release-watcher: record poll/.test(s.body));
+  assert.ok(watcher !== -1 && merge !== -1 && gauge !== -1);
+  assert.ok(watcher < merge && merge < gauge);
+});
+
+test('the merge step runs only with a minted token and gets the App identity from variables', () => {
+  const step = mergeStep(readWorkflow());
+  assert.match(step.body, /if:\s*\$\{\{\s*steps\.app-token\.outputs\.token\s*!=\s*''\s*\}\}/);
+  assert.match(step.body, /RELEASE_WATCHER_TOKEN:\s*\$\{\{\s*steps\.app-token\.outputs\.token\s*\}\}/);
+  assert.match(step.body, /DIGEST_MACHINE_SLUG:\s*\$\{\{\s*vars\.DIGEST_MACHINE_SLUG\s*\}\}/);
+  assert.match(step.body, /DIGEST_MACHINE_LOGIN:\s*\$\{\{\s*vars\.DIGEST_MACHINE_LOGIN\s*\}\}/);
+  assert.match(step.body, /MINTED_APP_SLUG:\s*\$\{\{\s*steps\.app-token\.outputs\.app-slug\s*\}\}/);
+});
+
+test('the job timeout covers the merge wait', () => {
+  const timeout = Number(/timeout-minutes:\s*(\d+)/.exec(readWorkflow())[1]);
+  const wait = Number(/^TIMEOUT_SECONDS\s*=\s*(\d+)/m.exec(pythonBody(MERGE_SRC))[1]);
+  assert.ok(timeout * 60 > wait + 600, 'the job outlives the poll with room for the rest');
+});
+
+test('no admin, bypass or auto-merge anywhere in the workflow or the merge code', () => {
+  const forbidden = /--admin|--auto\b|allow_auto_merge|enable_auto_merge|enablePullRequestAutoMerge|autoMerge|bypass/i;
+  for (const [label, body] of [
+    ['workflow', readWorkflow()],
+    ['merge.py', pythonBody(MERGE_SRC)],
+    ['clients.py', pythonBody(CLIENTS_SRC)],
+  ]) {
+    assert.doesNotMatch(body, forbidden, `${label} must not use ${forbidden}`);
+    assert.doesNotMatch(body, /gh\s+pr\s+merge/, `${label} must not shell out to the gh merge command`);
+  }
+});
+
+test('the only merge method is squash and the merge is pinned to the checked head sha', () => {
+  const clients = pythonBody(CLIENTS_SRC);
+  const call = functionText(clients, 'merge_pull');
+  assert.match(call, /"merge_method":\s*"squash"/);
+  assert.match(call, /"sha":\s*sha/);
+  assert.doesNotMatch(call, /"merge_method":\s*"(?!squash)/);
+  assert.match(call, /def merge_pull\(self, number, sha\):/);
+});
+
+test('run() applies the identity, author, line-only and check gates before it calls merge_pull', () => {
+  const body = functionText(pythonBody(MERGE_SRC), 'run');
+  const order = [
+    'expected_author(env)',
+    'is_authored_by(pull, login)',
+    'verify_digest_only(',
+    'LINE_SCOPE_CHECK not in required',
+    'wait_for_checks(',
+    'github.merge_pull(',
+  ].map((needle) => {
+    const at = body.indexOf(needle);
+    assert.notEqual(at, -1, `run() contains ${needle}`);
+    return at;
+  });
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.equal(body.split('github.merge_pull(').length - 1, 1, 'one merge call');
+});
+
+test('the author gate needs the exact App bot login, and the line-scope check must be a plain success', () => {
+  const src = pythonBody(MERGE_SRC);
+  assert.match(functionText(src, 'expected_author'), /login = f"\{slug\}\[bot\]"/);
+  assert.match(functionText(src, 'is_authored_by'), /user\.get\("type"\) == "Bot"/);
+  assert.match(functionText(src, 'assess_checks'), /name == LINE_SCOPE_CHECK else PASSING/);
+  assert.match(src, /LINE_SCOPE_CHECK = "Digest-only line scope"/);
+});
+
+test('a merge failure is an error annotation and a failing exit, never swallowed', () => {
+  const body = functionText(pythonBody(MERGE_SRC), 'main');
+  assert.match(body, /except \(Refused, RuntimeError\) as failure:[\s\S]*::error::[\s\S]*return 1/);
+  assert.doesNotMatch(readWorkflow(), /continue-on-error/);
+  assert.doesNotMatch(readWorkflow(), /\|\|\s*true/);
+});

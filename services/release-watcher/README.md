@@ -66,6 +66,34 @@ The token asks for the least the watcher uses, on this repository only:
 Until the App exists the run warns and opens no PR. The poll still runs and the
 gauge is still written.
 
+## The digest merge
+
+After the watcher step, `python3 -m release_watcher.merge` merges the open
+digest PR, or leaves it open and fails the job. It merges only when all of these
+hold, each re-read live:
+
+- `DIGEST_MACHINE_SLUG` is set, the minted token belongs to that App, and
+  `DIGEST_MACHINE_LOGIN` (the variable the line-scope check reads) is exactly
+  `<slug>[bot]`. If it were not, that check would pass the PR unexamined.
+- The PR on the line's branch is authored by `<slug>[bot]` (type Bot), is not a
+  draft and targets `main`. Any other author is skipped with a warning.
+- Its diff is one modified `Dockerfile`, one hunk, one line replaced by one
+  line, both `FROM ghost:<stable tag>@sha256:<digest>` on the pinned major, and
+  the replaced line is the pin on `main`. A new major is never merged.
+- A ruleset on `main` requires `Digest-only line scope`, which has succeeded on
+  the head sha (reported by `github-actions`), and every other required check
+  has passed. The checks are polled every 30 seconds for at most 30 minutes.
+
+The call is one squash merge pinned to the head sha it checked, so a push in
+between is refused by GitHub. There is no admin or bypass flag, and the repo's
+auto-merge setting is neither read nor changed. A failed required check, a
+timeout, a refusal from GitHub or a diff that is more than the `FROM` line fails
+the job, leaves the PR open, and so leaves the poll-age gauge unwritten.
+
+The merge itself relies on the App being a bypass actor on the default-branch
+ruleset (it does not hold an approval), and on a second ruleset it cannot
+bypass that requires `Digest-only line scope`.
+
 ## Not wired yet (named follow-ups)
 
 - The poll-age gauge is not scraped by any monitor, so the stale-age alert
