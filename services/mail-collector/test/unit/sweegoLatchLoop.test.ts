@@ -8,6 +8,7 @@ import type { DrainTarget } from '../../src/descriptorTargets.js';
 import { createDrainClient } from '../../src/drainClient.js';
 import { createHealthState } from '../../src/health.js';
 import { createLogger } from '../../src/log.js';
+import { TargetSubmissionError } from '../../src/sendingTarget.js';
 import { createSweegoUsage, type SweegoUsage } from '../../src/sweegoUsage.js';
 import type { Throttle } from '../../src/throttle.js';
 import { FakeShimServer } from '../helpers/fakeShimServer.js';
@@ -160,10 +161,10 @@ describe('the allowance latch in the collector loop', () => {
     expect(usage.accountState().total).toBe(2);
   });
 
-  it('counts only what sweego accepted: a refused or ambiguous attempt uses none of the allowance', async () => {
+  it('counts nothing for an attempt sweego definitely refused', async () => {
     const { shim, baseUrl } = await newShim();
     const sweego = fakeClient();
-    sweego.behaviour = () => new Error('socket hang up');
+    sweego.behaviour = () => new TargetSubmissionError('refused', 'not-accepted');
     const usage = usageFor({ 'tenant-a': 1 });
     shim.enqueue(NEWSLETTER('news-1'));
     run({ targets: [tenant(baseUrl, 'tenant-a', 1)], usage, mx1: fakeClient(), sweego });
@@ -171,6 +172,71 @@ describe('the allowance latch in the collector loop', () => {
     await settle();
     expect(usage.accountState().total).toBe(0);
     expect(usage.allowanceReached('tenant-a')).toBe(false);
+  });
+
+  describe('an attempt that may have been taken', () => {
+    it('counts an ambiguous attempt against the tenant allowance and the account total', async () => {
+      const { shim, baseUrl } = await newShim();
+      const sweego = fakeClient();
+      sweego.behaviour = () => new Error('socket hang up');
+      const usage = usageFor({ 'tenant-a': 1 });
+      shim.enqueue(NEWSLETTER('news-1'));
+      run({ targets: [tenant(baseUrl, 'tenant-a', 1)], usage, mx1: fakeClient(), sweego });
+      await until(() => sweego.calls.length >= 1, 'a sweego try');
+      await settle();
+      expect(usage.accountState().total).toBe(1);
+      expect(usage.allowanceReached('tenant-a')).toBe(true);
+    });
+
+    it('does not count the message twice when a later attempt for it is accepted', async () => {
+      const { shim, baseUrl } = await newShim();
+      const sweego = fakeClient();
+      sweego.behaviour = () => new Error('socket hang up');
+      const usage = usageFor({ 'tenant-a': 10 });
+      shim.enqueue(NEWSLETTER('news-1'));
+      run({ targets: [tenant(baseUrl, 'tenant-a', 10)], usage, mx1: fakeClient(), sweego });
+      await until(() => sweego.calls.length >= 1, 'the ambiguous try');
+      await settle();
+      expect(usage.accountState().total).toBe(1);
+      sweego.behaviour = () => undefined;
+      shim.simulateLostAck();
+      await until(() => ackedIn(shim).length === 1, 'acked after the retry');
+      expect(sweego.calls).toEqual(['news-1', 'news-1']);
+      expect(usage.accountState().total).toBe(1);
+    });
+
+    it('keeps bulk off sweego once ambiguous attempts have used the account cap', async () => {
+      const { shim, baseUrl } = await newShim();
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      sweego.behaviour = (message) => (message.id === 'news-1' ? new Error('timeout') : undefined);
+      const usage = usageFor({ 'tenant-a': 50 }, 1);
+      shim.enqueue(NEWSLETTER('news-1'));
+      run({ targets: [tenant(baseUrl, 'tenant-a', 50)], usage, mx1, sweego });
+      await until(() => sweego.calls.length >= 1, 'the ambiguous try');
+      await settle();
+      shim.enqueue(NEWSLETTER('news-2'));
+      await until(() => ackedIn(shim).includes('news-2'), 'news-2 acked');
+      expect(mx1.calls).toEqual(['news-2']);
+      expect(sweego.calls).toEqual(['news-1']);
+    });
+  });
+
+  describe('a usage file that has vanished', () => {
+    it('sends bulk and login through mx1 only, because the counters can no longer be trusted', async () => {
+      const { shim, baseUrl } = await newShim();
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      usageFor({ 'tenant-a': 1000 }).begin('tenant-a').settle(true);
+      rmSync(statePath);
+      const usage = usageFor({ 'tenant-a': 1000 });
+      shim.enqueue(NEWSLETTER('news-1'));
+      shim.enqueue(LOGIN('login-1'));
+      run({ targets: [tenant(baseUrl, 'tenant-a', 1000)], usage, mx1, sweego });
+      await until(() => ackedIn(shim).length === 2, 'both acked');
+      expect(sweego.calls).toEqual([]);
+      expect(mx1.calls.sort()).toEqual(['login-1', 'news-1']);
+    });
   });
 
   it('keeps the latch across a restart: a new process sends the next newsletter through mx1', async () => {
@@ -260,6 +326,104 @@ describe('the allowance latch in the collector loop', () => {
       expect(sweego.calls).toEqual(['news-pinned']);
       expect(mx1.calls).toEqual(['news-fresh']);
       expect(usage.accountState().total).toBe(2);
+    });
+  });
+
+  describe('pinned retries and the account cap', () => {
+    it('holds a pinned message at the cap: not sent to sweego above it, not sent to mx1, not acked, and sent when the month rolls', async () => {
+      const { shim, baseUrl } = await newShim();
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      const usage = usageFor({ 'tenant-a': 50 }, 1);
+      usage.begin('tenant-a').settle(true);
+      expect(usage.accountCapReached()).toBe(true);
+      const sweegoPins = createSubmittedTracker(60_000);
+      sweegoPins.markSubmitted('news-pinned');
+      shim.enqueue(NEWSLETTER('news-pinned'));
+      run({ targets: [tenant(baseUrl, 'tenant-a', 50)], usage, mx1, sweego, sweegoPins });
+      await settle();
+      expect(sweego.calls).toEqual([]);
+      expect(mx1.calls).toEqual([]);
+      expect(ackedIn(shim)).toEqual([]);
+      expect(usage.accountState().total).toBe(1);
+
+      clock = Date.parse('2026-12-01T00:00:00.000Z');
+      shim.simulateLostAck();
+      await until(() => ackedIn(shim).length === 1, 'acked in the new month');
+      expect(sweego.calls).toEqual(['news-pinned']);
+      expect(mx1.calls).toEqual([]);
+    });
+
+    it('holds a pinned login message at the cap as well', async () => {
+      const { shim, baseUrl } = await newShim();
+      const sweego = fakeClient();
+      const mx1 = fakeClient();
+      const usage = usageFor({ 'tenant-a': 50 }, 1);
+      usage.begin('tenant-a').settle(true);
+      const sweegoPins = createSubmittedTracker(60_000);
+      sweegoPins.markSubmitted('login-pinned');
+      shim.enqueue(LOGIN('login-pinned'));
+      run({ targets: [tenant(baseUrl, 'tenant-a', 50)], usage, mx1, sweego, sweegoPins });
+      await settle();
+      expect(sweego.calls).toEqual([]);
+      expect(mx1.calls).toEqual([]);
+      expect(ackedIn(shim)).toEqual([]);
+    });
+
+    it('lets a backlog of pinned messages take only the places left under the cap', async () => {
+      const { shim, baseUrl } = await newShim();
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      const usage = usageFor({ 'tenant-a': 50 }, 3);
+      const sweegoPins = createSubmittedTracker(60_000);
+      for (const id of ['p-1', 'p-2', 'p-3', 'p-4', 'p-5']) {
+        sweegoPins.markSubmitted(id);
+        shim.enqueue(NEWSLETTER(id));
+      }
+      run({ targets: [tenant(baseUrl, 'tenant-a', 50)], usage, mx1, sweego, sweegoPins });
+      await until(() => ackedIn(shim).length === 3, 'three acked');
+      await settle();
+      expect(sweego.calls).toHaveLength(3);
+      expect(mx1.calls).toEqual([]);
+      expect(ackedIn(shim)).toHaveLength(3);
+      expect(usage.accountState().total).toBe(3);
+    });
+
+    it('counts a pinned retry in the same reservation as any other attempt: one in flight leaves no place for the next', async () => {
+      const { shim, baseUrl } = await newShim();
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const inner = sweego.deliver.bind(sweego);
+      sweego.deliver = async (message, targetId) => {
+        await inner(message, targetId);
+        await gate;
+      };
+      const usage = usageFor({ 'tenant-a': 50, 'tenant-b': 50 }, 1);
+      const sweegoPins = createSubmittedTracker(60_000);
+      const other = await newShim();
+      sweegoPins.markSubmitted('p-1');
+      sweegoPins.markSubmitted('p-2');
+      shim.enqueue(NEWSLETTER('p-1'));
+      run({
+        targets: [tenant(baseUrl, 'tenant-a', 50), tenant(other.baseUrl, 'tenant-b', 50)],
+        usage,
+        mx1,
+        sweego,
+        sweegoPins,
+      });
+      await until(() => sweego.calls.length === 1, 'p-1 in flight at sweego');
+      other.shim.enqueue(NEWSLETTER('p-2'));
+      await settle();
+      expect(sweego.calls).toEqual(['p-1']);
+      expect(ackedIn(other.shim)).toEqual([]);
+      expect(mx1.calls).toEqual([]);
+      release();
+      await until(() => ackedIn(shim).length === 1, 'p-1 acked');
+      expect(usage.accountState().total).toBe(1);
     });
   });
 

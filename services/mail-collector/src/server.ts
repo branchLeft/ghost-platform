@@ -5,6 +5,7 @@ import { createCollectorRuntime } from './collectorLoop.js';
 import { createSubmittedTracker, type SubmittedTracker } from './dedupe.js';
 import { DescriptorTargetStore } from './descriptorTargets.js';
 import { createDrainClient } from './drainClient.js';
+import { createDroppedOutcomes } from './droppedOutcomes.js';
 import { createDeliveryClient } from './deliveryClient.js';
 import { createHealthState } from './health.js';
 import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
@@ -144,8 +145,15 @@ const outcomes = config.outcomes
     }
   : undefined;
 
+// A recipient Sweego refuses for good is acked and dropped; this tells the
+// spool, on its existing outcome route, so Ghost shows the failure and the
+// address is suppressed. A spool that has not opted in answers 404: logged,
+// tried again, then given up on.
+const droppedOutcomes = createDroppedOutcomes({ client: drainClient, log });
+
 const runtime = createCollectorRuntime({
   outcomes,
+  droppedOutcomes,
   store,
   drainClient,
   deliveryClient,

@@ -8,6 +8,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
+import { markerAbsent, writeMarker } from './stateMarker.js';
 
 /**
  * Named `submitted`, not `delivered` -- LLD-6 M5: this tracker records
@@ -21,8 +22,9 @@ export interface SubmittedTracker {
   sweep(): void;
   readonly size: number;
   /**
-   * True while the state file could not be trusted: it was corrupt or
-   * unreadable when loaded, so ids it held are forgotten. Stays true for one
+   * True while the state file could not be trusted: it was corrupt, unreadable
+   * or has vanished (missing, though it was written before) when loaded, so ids
+   * it held are forgotten. Stays true for one
    * TTL after that, the time in which any forgotten id could still matter, and
    * survives a restart. A caller that must not act on a forgotten id holds the
    * message while this is set.
@@ -59,6 +61,9 @@ export function createSubmittedTracker(
   const { statePath, onError } = options;
   const submittedAt = new Map<string, number>();
   let lostAt: number | undefined;
+  // True once the marker beside the file is known to exist: written after the
+  // first successful save, or found at load. Without it a missing file is a first run.
+  let markerKnown = false;
 
   function report(error: unknown): void {
     onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -72,6 +77,13 @@ export function createSubmittedTracker(
       if ((error as { code?: unknown }).code !== 'ENOENT') {
         lostAt = now();
         report(error);
+        persist(path);
+      } else if (!markerAbsent(path)) {
+        // Written before, so not a first run: the file has vanished and the ids
+        // it held are forgotten. Recorded in the file, as for a corrupt one.
+        markerKnown = true;
+        lostAt = now();
+        report(new Error('dedupe state file is missing though it was written before'));
         persist(path);
       }
       return;
@@ -97,6 +109,8 @@ export function createSubmittedTracker(
       if (typeof parsed.lostAt === 'number' && Number.isFinite(parsed.lostAt)) {
         lostAt = parsed.lostAt;
       }
+      // A file from before the marker existed: write it now, so the file's later loss is seen.
+      writeMarkerOnce(path);
     } catch (error) {
       submittedAt.clear();
       lostAt = now();
@@ -132,6 +146,21 @@ export function createSubmittedTracker(
       } finally {
         closeSync(dirFd);
       }
+      writeMarkerOnce(path);
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  // After the file, not before: a crash between the two leaves a file with no
+  // marker (read as an upgrade at the next load), never a marker with no file.
+  function writeMarkerOnce(path: string): void {
+    if (markerKnown) {
+      return;
+    }
+    try {
+      writeMarker(path);
+      markerKnown = true;
     } catch (error) {
       report(error);
     }

@@ -497,6 +497,57 @@ describe('collector loop with the Sweego client', () => {
     });
   });
 
+  describe('a pin file that has vanished', () => {
+    it('holds a re-offered message, as for a corrupt file, rather than letting it reach mx1 or a second Sweego attempt', async () => {
+      const files = ['mx1-pins.json', 'sweego-pins.json', 'sweego-ambiguous.json'].map((name) =>
+        join(dir, name)
+      );
+      const trackers = (): SubmittedTracker[] =>
+        files.map((statePath) => createSubmittedTracker(60_000, Date.now, { statePath }));
+      const [mx1Pins, sweegoPins, sweegoAmbiguous] = trackers() as [
+        SubmittedTracker,
+        SubmittedTracker,
+        SubmittedTracker,
+      ];
+      const sweego = fakeClient();
+      sweego.behaviour = () => new SweegoSubmissionError('timeout');
+      shim.enqueue(LOGIN('login-1'));
+      start({ mx1: fakeClient(), sweego, mx1Pins, sweegoPins, sweegoAmbiguous });
+      await until(() => sweego.calls.length >= 1, 'first attempt');
+      await stop?.();
+      stop = undefined;
+
+      // An unmounted or wiped volume takes the files with it; the markers beside them stay.
+      for (const file of files) {
+        rmSync(file, { force: true });
+      }
+      const [mx1PinsAfter, sweegoPinsAfter, sweegoAmbiguousAfter] = trackers() as [
+        SubmittedTracker,
+        SubmittedTracker,
+        SubmittedTracker,
+      ];
+      const mx1 = fakeClient();
+      const recovered = fakeClient();
+      shim.simulateLostAck();
+      const second = start({
+        mx1,
+        sweego: recovered,
+        quota: { allowanceReached: () => true, accountCapReached: () => false },
+        mx1Pins: mx1PinsAfter,
+        sweegoPins: sweegoPinsAfter,
+        sweegoAmbiguous: sweegoAmbiguousAfter,
+      });
+      await until(
+        () => second.logLines.some((line) => line.includes('pin_state_lost_held')),
+        'message held'
+      );
+      await settle();
+      expect(mx1.calls).toEqual([]);
+      expect(recovered.calls).toEqual([]);
+      expect(acked()).toEqual([]);
+    });
+  });
+
   describe('a pin file that cannot be read', () => {
     it('holds a re-offered message rather than letting it reach mx1 or a second Sweego attempt', async () => {
       const files = ['mx1-pins.json', 'sweego-pins.json', 'sweego-ambiguous.json'].map((name) =>
