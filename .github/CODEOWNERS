@@ -109,13 +109,24 @@
 # Speckify config: the contract check's source and the publish target of the broker API package.
 /speckify.yaml                                   @branchLeft/branchleft-admin
 
-# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these six
+# Private-tenant plan register: the owner's attestation that the paid plan and
+# the dedicated private-CI runner exist. Only the owner changes it.
+/registers/private-tenant-plan.*                 @branchLeft/branchleft-admin
+
+# The floors file is a gate the standards job reads. It is listed here, with the
+# other gate files, and not in the shared tail below, because the tail must be
+# the template's own lines.
+/tools/floors.tsv        @branchLeft/branchleft-admin
+
+# SEC-5 image-scan exemptions: an agent must not approve its own exemption.
+/.image-scan-exemptions.json                     @branchLeft/branchleft-admin
+
+# branchLeft/standards templates/codeowners, synced whole (SYNC-1: these five
 # lines must be this file's final lines, in this order — GitHub applies the
 # LAST matching CODEOWNERS pattern regardless of specificity, so anything
 # after or between them would silently take ownership of an escape hatch).
 /.standardsignore        @branchLeft/branchleft-admin
 /.standards.mode         @branchLeft/branchleft-admin
 /.docs-lint*             @branchLeft/branchleft-admin
-/tools/floors.tsv        @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
 /.github/                @branchLeft/branchleft-admin

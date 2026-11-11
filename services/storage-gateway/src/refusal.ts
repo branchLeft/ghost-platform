@@ -61,6 +61,16 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'The storage service is busy. Try again.',
     status: 503,
   },
+  'body-too-large': {
+    code: 'body-too-large',
+    message: 'The upload is larger than this account allows.',
+    status: 413,
+  },
+  'body-incomplete': {
+    code: 'body-incomplete',
+    message: 'The upload ended before all of it arrived.',
+    status: 400,
+  },
 };
 
 /** The one refusal for a code. Messages never echo the bucket, key or folder. */
@@ -77,6 +87,8 @@ export function refusalBody(r: Refusal): string {
 function s3CodeFor(r: Refusal): string {
   if (r.code === 'upstream-throttled') return 'SlowDown';
   if (r.code === 'upstream-timeout') return 'RequestTimeout';
+  if (r.code === 'body-too-large') return 'EntityTooLarge';
+  if (r.code === 'body-incomplete') return 'IncompleteBody';
   if (r.status >= 500) return 'ServiceUnavailable';
   return r.status === 400 ? 'InvalidURI' : 'AccessDenied';
 }

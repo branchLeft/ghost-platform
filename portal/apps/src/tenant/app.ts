@@ -1,3 +1,4 @@
+import type { BlockList } from 'node:net';
 import {
   CALLBACK_PATH,
   createTokenVerifier,
@@ -29,6 +30,11 @@ export interface TenantPortalOptions {
   readonly sessionSeconds?: number;
   /** Receives one line per swallowed handler error: the step and the error name only. */
   readonly onError?: (line: string) => void;
+  /**
+   * The proxies whose `X-Forwarded-For` is believed. Given, `GET /login` and
+   * the callback are limited per client address; absent, they are not.
+   */
+  readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
 }
@@ -63,6 +69,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     projectId: options.projectId,
     redirectUri: `${options.publicOrigin}${CALLBACK_PATH}`,
     publicOrigin: options.publicOrigin,
+    cookiePrefix: 'portal',
     verifier,
     secureCookies: options.secureCookies,
     title: 'TENANT_PORTAL',
@@ -77,6 +84,9 @@ export function createTenantPortal(options: TenantPortalOptions) {
     fetch: options.fetch,
     sessionSeconds: options.sessionSeconds,
     onError: options.onError,
+    ...(options.trustedProxies === undefined
+      ? {}
+      : { clientLimit: { trustedProxies: options.trustedProxies } }),
     bind: ({ orgId }) => options.db.scopeForOrganisation(orgId),
     landing: async (scope) => {
       const own = await options.db.ownRegistration(scope);

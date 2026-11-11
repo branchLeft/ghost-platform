@@ -209,6 +209,17 @@ tenant data on stdout or stderr runs with `--log-driver none`: the dump,
 the scratch database, the status probe, the SQLite backup, the colour and
 the relay. `test/unit/logDriver.test.ts` asserts it for each.
 
+**The Docker engine must be 28 or newer.** The first thing a run does,
+before anything is created, is `startup()` in `containerRunner.ts`: it
+installs the signal cleanup, then asks the engine (the `Server` version, not
+the client's) for its version with `docker version`. An engine older than 28,
+a missing `docker`, a daemon that does not answer, or output that is not a
+version all refuse the run with `DockerEngineTooOldError`, naming the version
+seen and the floor. The check runs on the host the export runs on, at the
+first real export, so the engine version is observed there rather than read
+from a runbook. `test/unit/cli.test.ts` proves `main()` makes the call, and
+makes it before any `docker run`, `create`, `network`, `volume` or `compose`.
+
 **Cleanup.** Every resource the run creates registers a synchronous
 remover with `cleanup.ts`: the colour, the relay and its network, the dump
 container, the scratch container and its data, the run network, the volume
@@ -218,6 +229,18 @@ or SIGTERM the removers run before the process exits. If a remover throws,
 its label is written to stderr as `export-bundler: cleanup step failed on
 <SIGNAL>: <label>` and the process exits with code 70 instead of 130 or 143;
 a clean cleanup still exits 130 or 143.
+
+A `docker` client still in flight when the signal lands is a second hole: a
+`docker run` that has already sent its create to the daemon can land after the
+remover's `rm -f` found nothing. So every `docker` client the run spawns is
+tracked while it runs, and a signal SIGKILLs the tracked clients first, before
+any remover. When it killed any, the container removers (colour, relay, dump,
+scratch database) then keep removing until the container stays gone: `rm -f`,
+then up to ten reads of `docker inspect` 200 ms apart, repeating `rm -f`
+whenever the container shows up, and stopping after two absent reads in a row
+(about two seconds at most, and it never throws). With nothing in flight it is
+the single `rm -f` it always was. `docker compose config`, which creates
+nothing, is not tracked.
 
 ## The export colour sends nothing and schedules nothing: the second layer
 
@@ -247,7 +270,11 @@ far as Ghost 6.55's own settings allow, the colour acts on nothing:
   `backgroundJobs__clickTrackingLastSeenAtUpdater` are false, and the update
   check is off.
 - **Stripe:** `WEBHOOK_SECRET` (random per run) keeps Ghost's webhook manager
-  in local mode, so it never touches the tenant's Stripe webhook.
+  in local mode, so it never touches the tenant's Stripe webhook. The tenant's
+  Stripe keys live in the settings table, so they travel into the copy with
+  everything else and the colour boots with Stripe configured. See below for
+  what that does and does not reach.
+
 What Ghost still does on the colour's boot, with no setting to stop it, now
 happens to the copy only:
 - the member welcome-email poll;
@@ -257,8 +284,16 @@ happens to the copy only:
 - processing expired gifts;
 - reconciling the ActivityPub webhook rows.
 
-One effect still reaches outside the copy: the Stripe billing-portal
-configuration is registered with Stripe, as on any colour boot. The rows
+Nothing reaches outside the copy. Ghost tries to register a Stripe
+billing-portal configuration as it boots whenever Stripe keys are present, but
+the run network is `--internal`, so that call has no route off the host and
+fails: Ghost logs `An error occurred with our connection to Stripe.`, carries
+on, and was serving about seven seconds after it started (observed with a
+fake `sk_test_` key in the copy, on both the SQLite and the MySQL tier;
+`scripts/test-export-bundler.sh` seeds the key and keeps the assertion that the
+colour boots on it and cannot reach `api.stripe.com`). The colour's site URL
+must be `https://`, as every tenant's rendered one is: Ghost refuses to run
+Stripe on a plain `http://` URL. The rows
 those boot paths change on the copy (`emails`, `email_batches`,
 `welcome_email_automation_runs`, `automated_email_recipients`) are outside
 the table allowlist of Ghost's default content export, so the archive does

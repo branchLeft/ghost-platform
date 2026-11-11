@@ -15,6 +15,8 @@ const CODES: RefusalCode[] = [
   'upstream-timeout',
   'upstream-unavailable',
   'upstream-throttled',
+  'body-too-large',
+  'body-incomplete',
 ];
 
 describe('refusal', () => {
@@ -35,6 +37,13 @@ describe('refusal', () => {
     expect(refusalBody(refusal('operation-not-allowed'))).toContain('<Code>AccessDenied</Code>');
     expect(refusalBody(refusal('target-malformed'))).toContain('<Code>InvalidURI</Code>');
     expect(refusalBody(refusal('internal-error'))).toContain('<Code>ServiceUnavailable</Code>');
+  });
+
+  it('answers a body over the ceiling with 413 and one cut short with 400, in S3 terms', () => {
+    expect(refusal('body-too-large').status).toBe(413);
+    expect(refusalBody(refusal('body-too-large'))).toContain('<Code>EntityTooLarge</Code>');
+    expect(refusal('body-incomplete').status).toBe(400);
+    expect(refusalBody(refusal('body-incomplete'))).toContain('<Code>IncompleteBody</Code>');
   });
 
   it('answers the storage service being slow or busy with a status and code the SDK retries', () => {

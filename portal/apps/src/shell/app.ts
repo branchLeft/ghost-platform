@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TokenVerifier } from 'ghost-platform-identity/dist/index.js';
+import { createClientLimit, type ClientLimitOptions } from './clientLimit.js';
 import { cookieName, parseCookies, setCookie } from './cookies.js';
+import { portalErrorLine, type PortalErrorStep } from './errorLine.js';
 import { escapeHtml, renderPage, STYLESHEET, type NavItem } from './html.js';
 import { authorizeUrl, expiryOf, exchangeCode, newPkce, type OidcClient } from './oidc.js';
 import { PendingLoginSealer } from './pendingLogin.js';
@@ -12,9 +14,6 @@ const DEFAULT_SESSION_SECONDS = 3600;
 const TOKEN_EXCHANGE_TIMEOUT_MS = 5000;
 
 const MAX_FORM_BYTES = 4096;
-
-const SESSION_COOKIE = 'portal_session';
-const LOGIN_COOKIE = 'portal_login';
 
 const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'content-security-policy':
@@ -34,6 +33,14 @@ export interface ShellOptions<S> extends OidcClient {
   readonly verifier: TokenVerifier;
   /** The public origin, for example `https://portal.example`. Sign-in returns here. */
   readonly publicOrigin: string;
+  /**
+   * Names this application's cookies, `<prefix>_session` and `<prefix>_login`.
+   * Required, with no default: browsers do not isolate cookies by port, so on
+   * loopback development two applications share one jar and would replace each
+   * other's session if they shared names. The `__Host-` prefix protects only
+   * production, so every application takes its own.
+   */
+  readonly cookiePrefix: string;
   readonly title: string;
   readonly nav: readonly NavItem[];
   readonly signOutLabel: string;
@@ -71,6 +78,14 @@ export interface ShellOptions<S> extends OidcClient {
   readonly onError?: (line: string) => void;
   /** False only for local development over plain HTTP. */
   readonly secureCookies?: boolean;
+  /**
+   * A per-client limit on `GET /login` and the callback, keyed on the client
+   * address the trusted proxies vouch for and answered `429` with
+   * `retry-after`. Absent, nothing is limited: behind the edge the socket peer
+   * is the edge itself, so without a list of proxies to believe every visitor
+   * would share one bucket.
+   */
+  readonly clientLimit?: ClientLimitOptions;
 }
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => Promise<void>;
@@ -93,19 +108,20 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   const fetchImpl = options.fetch ?? fetch;
   const secure = options.secureCookies ?? true;
   const sessionSeconds = options.sessionSeconds ?? DEFAULT_SESSION_SECONDS;
-  const sessionName = cookieName(SESSION_COOKIE, secure);
-  const loginName = cookieName(LOGIN_COOKIE, secure);
+  const sessionName = cookieName(`${options.cookiePrefix}_session`, secure);
+  const loginName = cookieName(`${options.cookiePrefix}_login`, secure);
   const sessions = new ExpiringStore<SessionRecord<S>>(clock);
   // A pending sign-in travels in the browser's cookie, sealed, and is never
   // held here: an unauthenticated start must not use up capacity.
   const logins = new PendingLoginSealer();
   const spent = new SpentLogins(clock);
+  const clientLimit =
+    options.clientLimit === undefined ? undefined : createClientLimit(options.clientLimit);
 
-  function report(step: 'bind' | 'landing' | 'action' | 'handler', error: unknown): void {
+  function report(step: PortalErrorStep, error: unknown): void {
     if (options.onError === undefined) return;
-    const name = error instanceof Error ? error.name : typeof error;
     try {
-      options.onError(JSON.stringify({ event: 'portal.error', step, error: name }));
+      options.onError(portalErrorLine(step, error));
     } catch {
       // Nowhere left to report to.
     }
@@ -289,6 +305,20 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;
     if (!route) return text(response, 404, 'NOT_FOUND');
     if (route.method !== method) return text(response, 405, 'METHOD_NOT_ALLOWED');
+    // Counted before anything else is done for the request: no cookie is
+    // opened, no token endpoint is called and no cookie is set for a client
+    // that is over its limit.
+    if (clientLimit !== undefined && (path === '/login' || path === callbackPath)) {
+      const verdict =
+        path === '/login'
+          ? clientLimit.login(request, clock() * 1000)
+          : clientLimit.callback(request, clock() * 1000);
+      if (!verdict.allowed) {
+        return text(response, 429, 'RATE_LIMITED', {
+          'retry-after': String(verdict.retryAfterSeconds),
+        });
+      }
+    }
     try {
       await route.run();
     } catch (error) {

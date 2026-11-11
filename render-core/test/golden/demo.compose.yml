@@ -15,6 +15,7 @@ services:
   ghost-a:
     image: '${IMAGE}'
     restart: 'unless-stopped'
+    stop_grace_period: '60s'
     user: '30001:30001'
     init: true
     read_only: true
@@ -58,17 +59,18 @@ services:
       mail__options__host: 'mail-spool'
       mail__options__port: 2525
       mail__options__secure: false
-      mail__options__auth__user: 'demo-mail.example.test'
+      mail__options__auth__user: 'slot-30001.demo-mail.example.test'
       mail__options__connectionTimeout: 5000
       mail__options__greetingTimeout: 5000
       mail__options__socketTimeout: 10000
       mail__from: 'demo-1@demo-mail.example.test'
       bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
-      bulkEmail__mailgun__domain: 'demo-mail.example.test'
+      bulkEmail__mailgun__domain: 'slot-30001.demo-mail.example.test'
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
       hostSettings__limits__limitSocialWeb__disabled: true
+      hostSettings__limits__limitStripeConnect__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
@@ -100,6 +102,7 @@ services:
   ghost-b:
     image: '${IMAGE}'
     restart: 'unless-stopped'
+    stop_grace_period: '60s'
     user: '30001:30001'
     init: true
     read_only: true
@@ -143,17 +146,18 @@ services:
       mail__options__host: 'mail-spool'
       mail__options__port: 2525
       mail__options__secure: false
-      mail__options__auth__user: 'demo-mail.example.test'
+      mail__options__auth__user: 'slot-30001.demo-mail.example.test'
       mail__options__connectionTimeout: 5000
       mail__options__greetingTimeout: 5000
       mail__options__socketTimeout: 10000
       mail__from: 'demo-1@demo-mail.example.test'
       bulkEmail__mailgun__baseUrl: 'http://mail-spool:8080'
-      bulkEmail__mailgun__domain: 'demo-mail.example.test'
+      bulkEmail__mailgun__domain: 'slot-30001.demo-mail.example.test'
       hostSettings__limits__members__max: 50
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
       hostSettings__limits__limitSocialWeb__disabled: true
+      hostSettings__limits__limitStripeConnect__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864

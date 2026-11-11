@@ -47,6 +47,12 @@ def clock_is_synchronised() -> bool:
         return False
     return result.returncode == 0 and result.stdout.strip() == "yes"
 
+def _clean(name: str) -> str:
+    """A broker-supplied name made safe to echo: every character that is not
+    printable (newline, carriage return, other control and line-separator
+    characters) is written as a \\xNN escape, so a name cannot start a line."""
+    return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in name)
+
 
 def check_seams(
     broker_url: str,
@@ -55,21 +61,30 @@ def check_seams(
 ) -> None:
     """Refuses unless every slot's status reports both seam lists present and
     empty. Fails closed: an unreachable broker, a body that is not an object,
-    or a list that is missing is a refusal, never an assumption of clean."""
+    or a list that is missing is a refusal, never an assumption of clean.
+    Every offending slot is reported in the one refusal, so a single run names
+    every stand-in."""
     fetch = fetch or fetch_status
+    reasons: list[str] = []
+    if not slots:
+        raise GoLiveRefused("no slots to check, so nothing was verified")
     for slot in slots:
         try:
             status = fetch(broker_url, slot)
         except Exception as error:  # any failure to read is a refusal
-            raise GoLiveRefused(f"slot {slot}: broker status unreadable ({type(error).__name__})") from error
+            reasons.append(f"slot {slot}: broker status unreadable ({type(error).__name__})")
+            continue
         if not isinstance(status, dict):
-            raise GoLiveRefused(f"slot {slot}: broker status is not an object")
+            reasons.append(f"slot {slot}: broker status is not an object")
+            continue
         for key, why in (("notReal", "test stand-in loaded"), ("interim", "interim module loaded")):
             names = status.get(key)
             if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
-                raise GoLiveRefused(f"slot {slot}: broker status carries no usable {key} list")
-            if names:
-                raise GoLiveRefused(f"slot {slot}: {why}: {', '.join(sorted(names))}")
+                reasons.append(f"slot {slot}: broker status carries no usable {key} list")
+            elif names:
+                reasons.append(f"slot {slot}: {why}: {', '.join(_clean(n) for n in sorted(names))}")
+    if reasons:
+        raise GoLiveRefused("; ".join(reasons))
 
 
 def go_live(

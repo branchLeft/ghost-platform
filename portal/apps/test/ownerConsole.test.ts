@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CALLBACK_PATH } from 'ghost-platform-identity/dist/index.js';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import {
   createFixture,
@@ -91,6 +92,26 @@ describe('the owner console', () => {
     expect(page.body).toContain('VERSION_MISMATCH');
     expect(page.body).toContain('MISMATCH_SINCE');
     expect(page.body).toContain('2026-10-02');
+  });
+
+  // Browsers do not isolate cookies by port, so on loopback development the
+  // tenant portal and this console share one cookie jar. Each must keep to its
+  // own names, or signing in to one would replace the other's session. The
+  // tenant portal's names are asserted in tenantPortal.test.ts and
+  // loginStart.test.ts (`portal_session`, `portal_login`); this pins the
+  // console to a disjoint pair.
+  it('keeps its own cookie names, disjoint from the tenant portal', async () => {
+    const browser = new Browser(app.origin);
+    const state = await browser.begin();
+    expect(browser.cookie('console_login')).toBeDefined();
+    expect(browser.cookie('portal_login')).toBeUndefined();
+    const done = await browser.request(
+      `${CALLBACK_PATH}?code=${issuer.issue(ownerToken())}&state=${state}`
+    );
+    expect(done.status).toBe(302);
+    expect(browser.cookie('console_session')).toBeDefined();
+    expect(browser.cookie('portal_session')).toBeUndefined();
+    expect(browser.cookie('portal_login')).toBeUndefined();
   });
 
   it('sends an unsigned visitor to sign in', async () => {

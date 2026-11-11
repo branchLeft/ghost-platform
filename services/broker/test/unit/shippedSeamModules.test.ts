@@ -124,7 +124,7 @@ function fakeConfig(): BrokerConfig {
     drainPollTimeoutMs: 1000,
     healthCheckTimeoutMs: 1000,
     ghostReadyPollTimeoutMs: 1000,
-    healthPortBase: 9100,
+    healthPortBase: 10100,
     appPortBase: 9300,
     uidBase: 30001,
     processStartSeconds: 1_700_000_000,

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "names": [
+    { "name": "website", "kind": "infrastructure" },
+    { "name": "edge", "kind": "infrastructure" },
+    { "name": "db", "kind": "infrastructure" },
+    { "name": "monitoring", "kind": "infrastructure" },
+    { "name": "nextcloud1", "kind": "infrastructure" },
+    { "name": "mail-spool", "kind": "infrastructure" },
+    { "name": "blog", "kind": "tenant", "repo": "branchLeft/ghost-tenant-blog" }
+  ]
+}

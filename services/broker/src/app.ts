@@ -690,7 +690,10 @@ async function handleStatus(deps: BrokerDeps, slotParam: string): Promise<Status
   const state = await readSlotState(deps.stateDir, slot);
   const healthy =
     state.phase === 'running' && state.colour !== undefined
-      ? await deps.healthChecker.isHealthy(deps.healthPortBase + Number(slot))
+      ? await deps.healthChecker.isHealthy(
+          deps.healthPortBase + Number(slot),
+          slotPort(deps.appPortBase, slot, state.colour)
+        )
       : false;
   return reply(200, {
     slot,

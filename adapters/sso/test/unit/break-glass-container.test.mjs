@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPTS = path.resolve(HERE, '../../scripts');
-const WRAPPER = path.join(SCRIPTS, 'host/branchleft-break-glass.sh');
+const WRAPPER = path.join(SCRIPTS, 'host/branchleft-break-glass.py');
 const SERVICE = path.join(SCRIPTS, 'systemd/branchleft-break-glass-expire.service');
 const TIMER = path.join(SCRIPTS, 'systemd/branchleft-break-glass-expire.timer');
 const DRAIN_SIDECAR_DOCKERFILE = path.resolve(
@@ -85,28 +85,31 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(work, { recursive: true, force: true }));
 
 /**
- * Runs the real wrapper with a fake `docker` that records its argv (NUL
- * separated) and a fake `systemctl` that exits `timerExit`. Nothing here
- * starts a container.
+ * Runs the real wrapper, through its own shebang, with a fake `docker` that
+ * records its argv (NUL separated) and exits `dockerExit`, and a fake
+ * `systemctl` that exits `timerExit`. Nothing here starts a container.
  */
-function runWrapper(args, { timerExit = 0, withSystemctl = true } = {}) {
+function runWrapper(
+  args,
+  { timerExit = 0, withSystemctl = true, dockerExit = 0, systemctlBody } = {}
+) {
   const bin = path.join(work, 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const argvFile = path.join(work, 'docker-argv');
   const systemctlFile = path.join(work, 'systemctl-argv');
   fs.writeFileSync(
     path.join(bin, 'docker'),
-    `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\nexit ${dockerExit}\n`,
     { mode: 0o755 }
   );
   if (withSystemctl) {
     fs.writeFileSync(
       path.join(bin, 'systemctl'),
-      `#!/bin/sh\nprintf '%s\\0' "$@" > '${systemctlFile}'\nexit ${timerExit}\n`,
+      systemctlBody ?? `#!/bin/sh\nprintf '%s\\0' "$@" > '${systemctlFile}'\nexit ${timerExit}\n`,
       { mode: 0o755 }
     );
   }
-  const result = spawnSync('/bin/sh', [WRAPPER, ...args], {
+  const result = spawnSync(WRAPPER, args, {
     encoding: 'utf8',
     env: { PATH: `${bin}:/usr/bin:/bin` },
   });
@@ -216,6 +219,41 @@ describe('the host wrapper', () => {
     ]);
   });
 
+  it('gives the container the exit status of docker, as the exec did', () => {
+    const { result } = runWrapper(['status'], { dockerExit: 7 });
+    expect(result.status).toBe(7);
+  });
+
+  it('treats a systemctl that does not answer in time as inactive, and still runs the tool', () => {
+    const { result, docker } = runWrapper(['status'], {
+      systemctlBody: '#!/bin/sh\nexec sleep 60\n',
+    });
+    expect(result.status).toBe(0);
+    expect(parseRun(['docker', ...docker]).options).toContainEqual([
+      '-e',
+      'BL_EXPIRE_TIMER_STATE=inactive',
+    ]);
+  }, 30_000);
+
+  it('refuses to start anything, with no argument echoed, when docker cannot be run', () => {
+    const bin = path.join(work, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'systemctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const result = spawnSync(WRAPPER, ['grant', '--reason', 'secret-reason-text'], {
+      encoding: 'utf8',
+      env: { PATH: bin },
+    });
+    expect(result.status).toBe(127);
+    expect(result.stderr).toContain('docker');
+    expect(result.stderr).not.toContain('secret-reason-text');
+  });
+
+  it('is executable, and starts its interpreter with -I as the host installs it', () => {
+    const mode = fs.statSync(WRAPPER).mode & 0o777;
+    expect(mode & 0o111).not.toBe(0);
+    expect(fs.readFileSync(WRAPPER, 'utf8').split('\n')[0]).toBe('#!/usr/bin/python3 -I');
+  });
+
   it('passes no value from the caller environment into the container', () => {
     const bin = path.join(work, 'bin');
     fs.mkdirSync(bin, { recursive: true });
@@ -224,7 +262,7 @@ describe('the host wrapper', () => {
       mode: 0o755,
     });
     fs.writeFileSync(path.join(bin, 'systemctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    spawnSync('/bin/sh', [WRAPPER, 'status'], {
+    spawnSync(WRAPPER, ['status'], {
       env: {
         PATH: `${bin}:/usr/bin:/bin`,
         BL_EXPIRE_TIMER_STATE: 'forged',

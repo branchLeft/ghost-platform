@@ -56,6 +56,15 @@ command. Hostname and position are not the property that makes one of
 these wrong: it reads as an address (its trailing word is
 ip/ipv4/address/addr) and nothing has substituted it.
 
+One wording is exempt: `<app1-ipv4>`, the public address of app1. That
+address changes when the host is rebuilt, so it is never committed, and a
+runbook resolves it with `pulumi stack output app1PublicIpv4`. The exemption
+is keyed on that exact wording (`VARIABLE_PUBLIC_ADDRESS_PLACEHOLDERS`), not
+on the host, so app1's private address is still flagged as
+`<app1-private-ip>`, and a new spelling such as `<app1-public-ipv4>` is still
+flagged. A placeholder for app1's private address is a fixed-address
+placeholder, the same defect as one for edge1.
+
 ## `fixedHostLiterals`
 
 Bare IPv4 literals equal to a specific, known address this file pins in

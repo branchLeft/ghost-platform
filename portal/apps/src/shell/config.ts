@@ -1,4 +1,9 @@
 import { readFileSync } from 'node:fs';
+import type { BlockList } from 'node:net';
+import {
+  parseTrustedProxies,
+  type TrustedProxyFormatError,
+} from 'ghost-platform-request-guard/dist/index.js';
 
 export class ConfigError extends Error {
   constructor(message: string) {
@@ -81,6 +86,30 @@ export function requireEnv(
   const value = env[name];
   if (!nonEmpty(value)) throw new ConfigError(`${name} is not set`);
   return value;
+}
+
+/**
+ * The proxies whose `X-Forwarded-For` the application believes, from a
+ * comma-separated list of addresses and CIDR ranges. Unset or blank is no
+ * limiter at all (undefined). A value that is set must be usable: a malformed
+ * entry, or a list with no entry in it, stops the process at start rather than
+ * leave a limiter that keys every visitor on the edge's own address.
+ */
+export function parseTrustedProxyList(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string
+): BlockList | undefined {
+  const value = env[name];
+  if (value === undefined || value.trim() === '') return undefined;
+  if (!value.split(',').some((entry) => entry.trim() !== '')) {
+    throw new ConfigError(`${name} lists no address`);
+  }
+  try {
+    return parseTrustedProxies(value);
+  } catch (error) {
+    // The parser throws nothing but its own format error.
+    throw new ConfigError(`${name} is invalid: ${(error as TrustedProxyFormatError).message}`);
+  }
 }
 
 export const readText: FileReader = (path) => readFileSync(path, 'utf8');

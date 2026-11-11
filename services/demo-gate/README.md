@@ -38,10 +38,11 @@ and an unset value refuses to start rather than guessing.
 | `GATE_TRUSTED_PROXIES`           | no       | `` (none)     | Comma-separated addresses/CIDRs. `X-Forwarded-For` is honoured only from a listed peer, and only its rightmost entry. With none listed, the source is always the socket peer. **Required when `LISTEN_HOST` is a loopback address:** the gate refuses to start there with none listed (a catch, not a control: the peers there are host-local processes, the edge being the one this repo places, and with none trusted every visitor shares one source). See "A trusted-proxy list left empty" below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `GATE_COOKIE_TTL_SECONDS`        | no       | `43200` (12h) | Bounded `1`–`604800` (7d).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `GATE_CEILING_ATTEMPTS`          | no       | `10`          | Attempts per source (IPv6 /64, or the IPv4 address) per window before `429`. Bounded `1`–`1000`. Counts every attempt that reaches a derivation, right or wrong.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `GATE_CEILING_WINDOW_SECONDS`    | no       | `900`         | Shared by both ceilings below. Bounded `1`–`86400`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `GATE_CEILING_WINDOW_SECONDS`    | no       | `900`         | Shared by all three ceilings (the narrow, the broad and the malformed). Bounded `1`–`86400`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `GATE_CEILING_MAX_SOURCES`       | no       | `100000`      | Live per-source windows the narrow ceiling's table holds at once. Bounded `1`–`10000000`; a new source is refused once it's full rather than admitted uncounted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `GATE_CEILING_BROAD_ATTEMPTS`    | no       | `1000`        | A second, coarser ceiling: attempts per IPv6 /48 (or the same IPv4 address `GATE_CEILING_ATTEMPTS` already keys on) per window. Bounded `1`–`20000`. Catches a flood spread across many /64s inside one /48, which the narrow ceiling alone cannot see in aggregate. `login()` checks both ceilings before charging either, and charges both together only when both admit — a request either one would refuse costs neither, and creates no new narrow-table entry. **A client that can rotate through many /64s inside its own /48 can still exhaust that /48's own budget** — this tier bounds one /48's contribution to the narrow table, it does not make that /48's visitors immune to each other; `1000` trades off against the narrow table's own `100000` capacity (see `config.ts`'s comment for the reasoning behind the number). |
-| `GATE_CEILING_BROAD_MAX_SOURCES` | no       | `20000`       | Bounded `1`–`2000000`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `GATE_CEILING_BROAD_MAX_SOURCES` | no       | `20000`       | Bounded `1`–`2000000`. Also bounds the malformed ceiling's table, so tuning it moves both.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `GATE_CEILING_MALFORMED_ATTEMPTS` | no       | `60`          | Malformed requests per source (IPv6 /64, or the IPv4 address) per window before `429`: a wrong content type, an unreadable or oversized body, or an empty or over-long passphrase. Bounded `1`–`10000`. Charged only on those 400 paths, never on a well-formed attempt, so a flood cannot lock a valid login. Shares `GATE_CEILING_WINDOW_SECONDS`; its table is bounded by `GATE_CEILING_BROAD_MAX_SOURCES`. |
 | `GATE_ARGON2_MAX_CONCURRENT`     | no       | `3`           | Argon2id derivations allowed in flight at once, across every source together — bounds aggregate cost neither ceiling above does. Bounded `1`–`64`. **Keep this below the process's libuv threadpool size** (Node's own default is 4; `UV_THREADPOOL_SIZE` if it is ever changed) — `crypto.argon2` and `fs` share that pool, and `verify` runs on every forward_auth, so saturating the pool with derivations starves every page and asset behind the gate. Measured at the default cap of 4 (equal to the pool): a 112 ms median, 130 ms max added to `verify`'s own file reads under a full queue, against 0.3 ms/1.8 ms at a cap of 3.                                                                                                                                                                                                    |
 | `GATE_ARGON2_MAX_QUEUED`         | no       | `64`          | Waiters past the concurrency cap before a login is refused with `503` (the ceiling attempt it already spent is refunded, not left to count against it) rather than queued without limit. Bounded `1`–`10000`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `PORT`                           | no       | `8080`        | Bounded `1`–`65535`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -156,15 +157,8 @@ output, not the other way round.
 
 ## Resolving the request source
 
-`source.ts`'s `SourceResolver.resolve` decides who is asking, for the
-purpose of the attempt ceiling. The socket peer is the only fact about a
-request nobody on the far side can choose. `X-Forwarded-For` is read only
-when that peer is a configured trusted proxy -- the edge -- and then only
-its rightmost entry, which is the address the edge itself saw; anything to
-its left was written by the client. A trusted peer that sends no usable
-header yields no source at all, and the caller refuses rather than falling
-back to the proxy's own address, which would pool every visitor into one
-bucket.
+The attempt ceiling, the request-source resolver and their `peek`, sweep and
+overflow rules live in `../request-guard/README.md`, shared with the portal.
 
 ## A trusted-proxy list left empty
 
@@ -199,41 +193,6 @@ Two things address the gap; the second is the one that sets the value:
 Trust is by address: any process in the host's network namespace that can
 open the gate's port is a trusted peer and can set its own source with
 `X-Forwarded-For`. A visitor cannot.
-
-## `peek` and the reclaim sweep
-
-`ceiling.ts`'s `peek` gives the verdict `attempt` would give right now,
-without recording an attempt: no entry created for the key, no count
-incremented. It may still evict other sources' already-expired windows when
-the table looks full, the same reclaiming `attempt` itself does — without
-that, a table that once reached `maxSources` would refuse every source
-forever, since nothing else ever runs a sweep once every caller peeks before
-it ever calls `attempt`.
-
-For a caller checking more than one ceiling before deciding whether to
-charge any of them: peek every ceiling first, and only call `attempt` on
-ones that already peeked `allowed`, so a request refused by one ceiling
-never creates or charges an entry in another.
-
-`login()` charges both ceilings only once a request has passed every
-check that comes before a derivation. A request refused earlier -- wrong
-content type, unreadable or oversized body, empty or over-long passphrase
--- costs neither ceiling. Every request that reaches a derivation costs
-both, including an unknown host, an unleased slot or an untied lease,
-which derive against the decoy hash.
-
-## Why `attempt` and `peek` share one decision path
-
-`ceiling.ts`'s `attempt` and `peek` share the whole decision function, sweep
-included, so the two can never disagree about what "allowed" means. `peek`
-was the regression the sweep's old home (only inside `attempt`) caused: once
-a table held `maxSources` expired windows, `peek` refused every source
-forever, and `login()` never reaches `attempt` on a source `peek` has
-already refused, so nothing was left to reclaim them.
-
-The sweep is safe to run from a read-only call: it only ever deletes entries
-already treated as absent for every verdict, so evicting one changes no
-decision, only the table's own size.
 
 ## The broad ceiling's default of 1000
 
@@ -277,7 +236,7 @@ would hold more pending derivations than that.
 
 ## Why a derivation gate exists
 
-The per-source ceiling (`ceiling.ts`) limits attempts from one source over
+The per-source ceiling (`request-guard`'s `ceiling.ts`) limits attempts from one source over
 time, but places no limit on how many distinct sources can be
 mid-derivation together, and each derivation the slot's own hash allows can
 hold up to 256 MiB and run for as long as its parameters ask. A flood

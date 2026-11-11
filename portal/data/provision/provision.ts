@@ -11,8 +11,9 @@ import { scramVerifier } from './scram.js';
 
 // The statements the command writes. Each creates something absent, or
 // grants on an object created in the same transaction; none alters an object
-// that already existed. The one exception is a login's password, an input the
-// command rotates on every run.
+// that already existed. The exceptions are a login's password, an input the
+// command rotates on every run, and the owner of schema `public` in a database
+// the command has just created (`initOwnershipStatements`).
 
 const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
 
@@ -50,6 +51,17 @@ export async function createPrincipal(
   // that fails and is logged cannot disclose it.
   const secret = want.canLogin ? ` PASSWORD '${scramVerifier(password ?? '')}'` : '';
   await client.query(`CREATE ROLE ${ident(names[principal])} ${attributes.join(' ')}${secret}`);
+}
+
+/**
+ * What the administrator does to a database it has just created, owned by the
+ * migrator: before PostgreSQL 15 schema `public` belongs to the bootstrap
+ * superuser, so it is handed to the migrator, who then owns everything the
+ * migrations create there. From 15 it belongs to `pg_database_owner`, which is
+ * the migrator already. Run once, at init, by the administrator.
+ */
+export function initOwnershipStatements(names: Names, major: number): string[] {
+  return major < 15 ? [`ALTER SCHEMA public OWNER TO ${ident(names.migratorLogin)}`] : [];
 }
 
 /** Grants each login its one role, when either side was created on this run. */

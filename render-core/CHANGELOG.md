@@ -2,7 +2,87 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
-## Unreleased
+## 0.3.0
+
+**Each Ghost container gets a 60 second stop grace period.**
+
+- **Changed output:** every rendered `compose.yml` gains
+  `stop_grace_period: '60s'` on both `ghost-a` and `ghost-b`, from the new
+  constant `GHOST_STOP_GRACE_PERIOD`, so a stop no longer SIGKILLs Ghost after
+  Docker's 10 second default in the middle of a send batch. A demo, a paying
+  tenant and tenant zero all gain it. The mail spool is not a Ghost service
+  and is unchanged. The value is provisional, pending a measured batch.
+- `assertRuntimePosture()` refuses a Ghost service with no whole-seconds
+  `stop_grace_period`, so dropping the line fails the render. See
+  src/compose.md#the-stop-grace-period.
+
+**The mail spool's drain listener binds one fixed address, never every interface.**
+
+- **Changed output:** `renderMailSpoolStack()` renders `SHIM_DRAIN_HOST:
+  '10.231.200.2'` in the spool's `environment:`. The drain network gains
+  `ipam: {config: [{subnet: '10.231.200.0/29', gateway: '10.231.200.1'}]}`. The
+  service's `networks:` changes from a list to a map: the drain network carries
+  `ipv4_address: '10.231.200.2'`, and each tenant network carries
+  `aliases: ['mail-spool']`. The image line, the ports and every other key are
+  unchanged.
+- New exports `MAIL_SPOOL_DRAIN_SUBNET`, `MAIL_SPOOL_DRAIN_GATEWAY` and
+  `MAIL_SPOOL_DRAIN_ADDRESS`. `assertSpoolPosture()` now also refuses a drain
+  port with no host, a wildcard host, any host but the fixed address, an ipam
+  pool other than the fixed one, and an `ipv4_address` that differs from the host.
+- **Rollout:** move the rendered file and the mailgun-shim image digest together,
+  in one gated apply. A shim image built from at least ghost-platform 09a9f61
+  refuses to start from a file with no `SHIM_DRAIN_HOST`; an older image ignores
+  the host and keeps listening on every interface. Re-rendering with this
+  release against the old pinned image is safe but fixes nothing. A deployed
+  drain network was created without a fixed pool, so the gated apply has to
+  recreate it; that step is not exercised by this change. See
+  src/spool.md#the-drain-port.
+
+**A demo slot cannot connect a real Stripe account.**
+
+- **Changed output:** a demo's `environment:` gains
+  `hostSettings__limits__limitStripeConnect__disabled: true`, in both colours.
+  A paying tenant's output, and tenant zero's, are unchanged.
+  `tenantEnvironment()`'s descriptor argument must now carry `kind`.
+- **Rollout:** the key is only partial protection without the Ghost image's
+  Stripe overlay, and the overlay is inert without the key. Promote the
+  rebuilt Ghost image to the demo host first; only then publish this release
+  and roll the broker onto it. Never render the key onto an image that lacks
+  the overlay. Existing slots pick the key up when re-rendered and recreated.
+  See src/environment.md#stripe-connect-limit.
+
+**Each demo slot authenticates to the mail spool as its own credential domain.**
+
+- **Changed output:** a demo's `mail__options__auth__user` and
+  `bulkEmail__mailgun__domain` change from the shared `<demoMailDomain>` to
+  `slot-<uid>.<demoMailDomain>`. `mail__from`, `members_support_address` and DKIM
+  are unchanged. A paying tenant's output is unchanged.
+- New export `credentialDomainOf(identity, zones, uid)`. `tenantEnvironment()`'s
+  descriptor argument must now carry `uid`.
+- **Rollout:** a slot rendered with the new username before its spool row exists
+  gets 401 on every send. Before deploying a package carrying this change to a
+  demo host, register one row per slot with the shim CLI
+  (`register slot-<uid>.<demoMailDomain> --sender-domain <demoMailDomain>`) and
+  write each printed key into that slot's `/etc/branchleft/<slug>.env` as
+  `GHOST_BULK_EMAIL_API_KEY`. Remove the old shared `<demoMailDomain>` row
+  afterwards. See src/mail.md#credential-domain.
+
+**A registered tenant name is taken only by its own repository.**
+
+- **Breaking: `validate()` and `validateTenantStack()` refuse a registered
+  tenant name unless the caller says it runs in that name's repository.** They
+  take a new third argument, `options.claimantRepo`; omitted, tenant zero's
+  slug (`blog`) is refused for a tenant descriptor, and a demo descriptor is
+  refused it always. A caller that validates tenant zero must pass
+  `{ claimantRepo: 'branchLeft/ghost-tenant-blog' }`. An unregistered slug is
+  unaffected, and `render()` has no caller identity so it is unchanged.
+- `validateSlugAvailability(slug, claimant?)` takes the same check as an
+  optional second argument; without one, behaviour is as before.
+- New exports `TENANT_NAME_REGISTER`, `RegisteredName`, `SlugClaimant` and
+  `ValidateOptions`. `RESERVED_STACK_NAMES` is now derived from the register's
+  infrastructure entries, with the same six names as before. The block in
+  `naming.ts` is generated by `scripts/sync-tenant-name-register.py` from
+  `registers/tenant-names.json`; do not edit it by hand.
 
 **A paying tenant's scanner health export is switched on, into a volume of its own.**
 

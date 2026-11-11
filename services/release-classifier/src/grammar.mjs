@@ -1,6 +1,6 @@
 // A positive grammar over the syntax tree acorn builds. A file is fast-path only
 // if it is made entirely of the forms this walk accepts; the first node it does
-// not accept is the reason, and the file routes consent. The accepted forms are
+// not accept is the reason, and the file routes to refusal. The accepted forms are
 // listed in ../README.md, section "Fast-path grammar".
 
 import { parse } from 'acorn';
@@ -79,7 +79,7 @@ const LOCAL = Object.freeze({ kind: 'local' });
 // acorn is the only reader of syntax. The wrapper of a CommonJS module lets
 // `return` stand at the top, and parentheses stay nodes so `(a.b)()` is not `a.b()`.
 // A top-level `await` is read so its hits are reported; `vm.compileFunction`
-// refuses it, and the file routes consent as `syntax`.
+// refuses it, and the file routes to refusal as `syntax`.
 export function parseModule(source) {
   return parse(source, {
     ecmaVersion: 'latest',

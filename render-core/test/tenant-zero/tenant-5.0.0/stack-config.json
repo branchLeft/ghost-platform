@@ -1,0 +1,17 @@
+{
+  "slug": "blog",
+  "siteUrl": "https://blog.branchleft.co.uk",
+  "uid": 30001,
+  "hostPort": 8101,
+  "appHostPrivateIp": "10.20.1.100",
+  "imageRef": "ghcr.io/branchleft/ghost-tenant@sha256:a49a7d35feeb17eeb86a981dad2aa7c66a1e4bc1f8a07e4e4a1d4297a41c1cb5",
+  "databaseHost": "10.20.1.20",
+  "mediaEndpoint": "https://hel1.your-objectstorage.com",
+  "mediaRegion": "hel1",
+  "mailHost": "mx1.branchleft.co.uk",
+  "mailPort": 587,
+  "mailUser": "blog@branchleft.co.uk",
+  "mailFrom": "branchLeft blog <blog@branchleft.co.uk>",
+  "bulkEmailBaseUrl": "https://mx1.branchleft.co.uk:8443",
+  "bulkEmailDomain": "blog.branchleft.co.uk"
+}

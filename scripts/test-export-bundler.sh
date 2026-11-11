@@ -176,7 +176,9 @@ done
 printf "CREATE DATABASE %s; CREATE USER '%s'@'%%' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON %s.* TO '%s'@'%%';\n" \
     "$DB_NAME" "$DB_NAME" "$SECRET_SENTINEL" "$DB_NAME" "$DB_NAME" |
     docker exec -i "$LIVE_DB" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'
-LIVE_IP="$(docker inspect -f '{{.NetworkSettings.IPAddress}}' "$LIVE_DB")"
+# Docker 29 removed the top-level NetworkSettings.IPAddress; the per-network
+# field below exists on every engine this script runs against.
+LIVE_IP="$(docker inspect -f '{{.NetworkSettings.Networks.bridge.IPAddress}}' "$LIVE_DB")"
 echo "PASS: live MySQL up at $LIVE_IP, tenant schema $DB_NAME"
 echo
 
@@ -191,7 +193,7 @@ services:
     image: \${IMAGE}
     user: "1000:1000"
     environment:
-      url: http://127.0.0.1:2368
+      url: https://127.0.0.1:2368
       database__client: mysql
       database__connection__host: $LIVE_IP
       database__connection__port: "3306"
@@ -202,6 +204,15 @@ services:
       privacy__useUpdateCheck: "false"
       logging__transports: '["stdout"]'
       BRANCHLEFT_ALLOW_LOCAL_STORAGE: "true"
+      storage__images__adapter: ScanningStorageAdapter
+      storage__images__wraps: LocalImagesStorage
+      storage__images__quarantinePath: /var/lib/ghost/content/quarantine
+      storage__media__adapter: ScanningStorageAdapter
+      storage__media__wraps: LocalMediaStorage
+      storage__media__quarantinePath: /var/lib/ghost/content/quarantine
+      storage__files__adapter: ScanningStorageAdapter
+      storage__files__wraps: LocalFilesStorage
+      storage__files__quarantinePath: /var/lib/ghost/content/quarantine
       mail__transport: SMTP
       mail__options__host: mail.proof.invalid
       mail__options__port: "587"
@@ -245,6 +256,15 @@ docker run -d --name "$SEED_NAME" -p "127.0.0.1:$SEED_PORT:2368" \
     -e database__connection__ssl__rejectUnauthorized=false \
     -e privacy__useUpdateCheck=false \
     -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
+    -e storage__images__adapter=ScanningStorageAdapter \
+    -e storage__images__wraps=LocalImagesStorage \
+    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__media__adapter=ScanningStorageAdapter \
+    -e storage__media__wraps=LocalMediaStorage \
+    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
+    -e storage__files__adapter=ScanningStorageAdapter \
+    -e storage__files__wraps=LocalFilesStorage \
+    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
     "$GHOST_IMAGE" >/dev/null
 deadline=$(($(date +%s) + 240))
 seed_ready=false
@@ -291,6 +311,24 @@ else
     echo "FAIL: the support account was not created suspended"
     exit 1
 fi
+# A tenant with Stripe connected carries its keys in the settings table, so
+# they reach the scratch copy with everything else: the colour boots with
+# Stripe configured and no route to Stripe. Fake keys, written after the
+# seed Ghost is gone so nothing has ever called Stripe with them.
+FAKE_STRIPE_SECRET="sk_test_exportbundlerproof$RUN_ID"
+live_sql <<EOF
+UPDATE settings SET value = '$FAKE_STRIPE_SECRET' WHERE \`key\` = 'stripe_connect_secret_key';
+UPDATE settings SET value = 'pk_test_exportbundlerproof$RUN_ID' WHERE \`key\` = 'stripe_connect_publishable_key';
+UPDATE settings SET value = 'acct_exportbundlerproof' WHERE \`key\` = 'stripe_connect_account_id';
+UPDATE settings SET value = 'Export Bundler Proof' WHERE \`key\` = 'stripe_connect_display_name';
+UPDATE settings SET value = 'false' WHERE \`key\` = 'stripe_connect_livemode';
+EOF
+if [ "$(echo "SELECT COUNT(*) FROM settings WHERE \`key\` LIKE 'stripe_connect_%' AND value IS NOT NULL;" | live_sql)" = "5" ]; then
+    echo "PASS: seeded fake Stripe Connect settings (a sk_test_ key) on the live database"
+else
+    echo "FAIL: the fake Stripe settings were not seeded"
+    exit 1
+fi
 echo
 
 echo "--- building the export bundler ---"
@@ -313,6 +351,7 @@ run_bundler() {
         --flag-dir "$FLAG_DIR" \
         --audit-log "$AUDIT_DIR/audit.jsonl" \
         --loopback-port "$EXPORT_PORT" \
+        --erasure-date 2030-01-01 \
         "$@")
 }
 
@@ -534,6 +573,24 @@ s.on('error', (e) => done(e.code));
         echo "PASS: second layer: Ghost's database host is the copy, mail goes to the stub, bulk email to a refused sink, scheduler disabled"
     else
         fail "the export colour's own config is not isolated"
+    fi
+
+    # Stripe: the copy carries the tenant's Stripe keys (they live in the
+    # settings table), the colour booted with them -- it answered the health
+    # probe and the token prompt above -- and, on --internal, has no route to
+    # api.stripe.com. The export further down must still succeed.
+    stripe_in_copy="$(echo "SELECT value FROM settings WHERE \`key\` = 'stripe_connect_secret_key';" | scratch_sql)"
+    stripe_out="$(docker exec "$colour" node -e "
+const s = require('net').connect({ host: 'api.stripe.com', port: 443, timeout: 5000 });
+s.on('connect', () => { console.log('connected'); process.exit(0); });
+s.on('timeout', () => { console.log('timeout'); process.exit(0); });
+s.on('error', (e) => { console.log(e.code); process.exit(0); });
+" 2>&1 || true)"
+    echo "  Stripe key in the copy: $stripe_in_copy; api.stripe.com from the colour: $stripe_out"
+    if [ "$stripe_in_copy" = "$FAKE_STRIPE_SECRET" ] && [ "$stripe_out" != "connected" ]; then
+        echo "PASS: the colour booted on a copy that carries a Stripe key, and cannot reach api.stripe.com"
+    else
+        fail "the copy's Stripe key is not the seeded one, or the colour reached api.stripe.com"
     fi
 
     # The control: Ghost's boot-time automation poll and newsletter resume

@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  nodemailer: ^9.1.1
+  nodemailer: ^10.3.1
 
 importers:
 
@@ -17,9 +17,12 @@ importers:
       ghost-platform-portal-data:
         specifier: link:../data
         version: link:../data
+      ghost-platform-request-guard:
+        specifier: link:../../services/request-guard
+        version: link:../../services/request-guard
       nodemailer:
-        specifier: ^9.1.1
-        version: 9.1.1
+        specifier: ^10.3.1
+        version: 10.4.0
       pg:
         specifier: ^8.13.0
         version: 8.23.1
@@ -408,9 +411,9 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nodemailer@9.1.1:
-    resolution: {integrity: sha512-izw9mVKFix6YSnC9eLgV6g1opl9DUlRio9ZNcq+Wu9Ujn2UwF+8Nl0B8nz22kEC+CTZCvinkxwJ0DeFbb6NwcQ==}
-    engines: {node: '>=6.0.0'}
+  nodemailer@10.4.0:
+    resolution: {integrity: sha512-fyy6r4Q5euRJ9Qr3Cts9K7SZrfe9zmz9oLOYiAR02MEJRDRci+99y0OoYBYBgpLffOqkkjXrB/d26VfiMje/kA==}
+    engines: {node: '>=20.0.0'}
 
   obug@2.2.1:
     resolution: {integrity: sha512-XrsrhT5sybtKI6wakr2SPOlGZWWYbUXZ7a0jT8/QOeAPau+1X/bSegNe5YR75oJmEZQbKningirmGOEJCIk61Q==}
@@ -912,7 +915,7 @@ snapshots:
 
   nanoid@3.3.19: {}
 
-  nodemailer@9.1.1: {}
+  nodemailer@10.4.0: {}
 
   obug@2.2.1: {}
 
@@ -1003,7 +1006,7 @@ snapshots:
   smtp-server@3.19.13:
     dependencies:
       ipv6-normalize: 1.0.1
-      nodemailer: 9.1.1
+      nodemailer: 10.4.0
       punycode.js: 2.3.1
 
   source-map-js@1.2.2: {}

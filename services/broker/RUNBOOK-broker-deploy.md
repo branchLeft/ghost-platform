@@ -63,6 +63,36 @@ step; nothing here runs from CI (`services/broker/**`'s
 `.claude/delivery-paths.json` row is `not_merge_delivered`/`version_pin`,
 because no publish path exists yet either -- see "Delivery path" below).
 
+**Reach demo1 first.** Every `ssh` and `rsync` below uses `${DEMO1_IPV4}` and
+`${DEMO1_SSH_USER}`; set them once per terminal, each in its own paste. demo1
+is in the `branchLeft demos` Hetzner project, so the hcloud context must be that
+project's. List the contexts, then read the name of that project's context:
+
+```bash
+hcloud context list
+```
+
+```bash
+read -r HCLOUD_CONTEXT
+```
+
+```bash
+hcloud context use "${HCLOUD_CONTEXT}"
+```
+
+```bash
+DEMO1_IPV4=$(hcloud server ip demo1)
+```
+
+The login name is the `User` the old `demo1` alias carried in your
+`~/.ssh/config`; read it:
+
+```bash
+read -r DEMO1_SSH_USER
+```
+
+The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge.md`.
+
 1. **Pin Node.** On demo1 -- `dpkg`'s architecture name and nodejs.org's own
    tarball name disagree (`amd64` vs. `x64`), and the tarball is verified
    against Node's own published checksums before it is ever extracted:
@@ -108,10 +138,10 @@ because no publish path exists yet either -- see "Delivery path" below).
    cd services/broker
    pnpm install --frozen-lockfile
    pnpm run bundle
-   ssh demo1 'sudo mkdir -p /opt/branchleft/broker/releases'
+   ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" 'sudo mkdir -p /opt/branchleft/broker/releases'
    RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
-   rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
-   ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current"
+   rsync -a --chown=root:root -e 'ssh -i ~/.ssh/id_ed25519_hetzner' dist/bundle/ "${DEMO1_SSH_USER}@${DEMO1_IPV4}:/tmp/broker-release-${RELEASE}/"
+   ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current"
    ```
 
    `rsync -a` preserves the workstation's own uid/mode bits, so the `mv`
@@ -169,9 +199,9 @@ sees half-written files:
 ```bash
 cd services/broker && pnpm install --frozen-lockfile && pnpm run bundle
 RELEASE="$(date -u +%Y%m%dT%H%M%SZ)"
-rsync -a --chown=root:root dist/bundle/ "demo1:/tmp/broker-release-${RELEASE}/"
-ssh demo1 "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current && sudo systemctl restart branchleft-broker.service"
-ssh demo1 'curl -s http://127.0.0.1:8090/status/0'
+rsync -a --chown=root:root -e 'ssh -i ~/.ssh/id_ed25519_hetzner' dist/bundle/ "${DEMO1_SSH_USER}@${DEMO1_IPV4}:/tmp/broker-release-${RELEASE}/"
+ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" "sudo mv /tmp/broker-release-${RELEASE} /opt/branchleft/broker/releases/${RELEASE} && sudo ln -sfn /opt/branchleft/broker/releases/${RELEASE} /opt/branchleft/broker/current && sudo systemctl restart branchleft-broker.service"
+ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" 'curl -s http://127.0.0.1:8090/status/0'
 ```
 
 `Restart=on-failure` (the unit file) does not cover this step -- a restart
@@ -180,6 +210,155 @@ here is deliberate, not a crash recovery, so it stays an explicit
 Keep at least the previous two releases under `releases/` for a manual
 rollback (`ln -sfn` to the older directory, then restart); nothing here
 automates pruning them.
+
+## Release artifact and how to verify it
+
+`.github/workflows/broker-release.yml` builds the bundle in CI, signs it and
+publishes it as a GitHub Release. This section is the one home of that
+contract: the shared-infra `broker_deploy` role consumes it, and the hand
+build in the Install and Upgrade steps above stays only until that role
+replaces it.
+
+**What a release is.** A tag `broker-vX.Y.Z` whose `X.Y.Z` is the `version`
+in `services/broker/package.json`, cut as a signed, annotated tag on a commit
+on `main`. A tag `vX.Y.Z` or `render-core-vX.Y.Z` never starts the workflow.
+There is no manual trigger.
+A published release is never replaced; a fix ships as a new version.
+
+**What the tag check is.** Before anything is signed, the release job runs
+`release/check_release_tag.py`. It fails closed, and it refuses a tag that is
+not:
+
+1. named `broker-vMAJOR.MINOR.PATCH`, nothing more;
+2. the same version as `services/broker/package.json`;
+3. annotated (a tag object), not a lightweight pointer at a commit;
+4. signed, with a signature GitHub itself reports as verified;
+5. on a commit that is an ancestor of `origin/main`;
+6. on the commit this run built, so a tag moved or re-pushed between the build
+   job and the release job is refused.
+
+This is a guard against mistakes, not a control. It runs from the tagged
+commit's own copy of the script and the workflow, so a tag on a branch commit
+that edits them passes its own check, and the attestation records
+`refs/tags/<tag>`, not `main`. Nothing the verifier checks proves the tag is
+annotated, on `main`, or the only tag allowed. The controls are the tarball
+sha256 pinned in reviewed shared-infra code, and the consumer's check below
+that the attested commit is on `main`.
+
+**Why the bytes are the same every time.** `release/pack-release.sh` makes the
+tarball deterministic: the same bundle contents give the same bytes whatever
+the file times, the owner, the umask or the order the files were written in.
+That is what lets a reviewed digest in another repo pin a release, and what
+lets a pull request prove the packing without a tag (the workflow packs twice
+and compares). Members are the bundle's contents with no leading directory, so
+they unpack straight into a release directory. GNU tar is required (`--sort`,
+`--mtime`, `--owner`); the script refuses any other tar rather than pack
+differently. Tag runs, which sign, install without the pnpm cache; pull
+requests and branches keep it.
+
+**The three assets**, each fetchable anonymously, no token:
+
+| Asset                                 | What it is                                                                      |
+| ------------------------------------- | ------------------------------------------------------------------------------- |
+| `broker-bundle-X.Y.Z.tar.gz`          | `broker.mjs` and `plugins/*.mjs`, no leading directory, deterministic bytes     |
+| `broker-bundle-X.Y.Z.tar.gz.sha256`   | `sha256sum` output for the tarball                                              |
+| `broker-bundle-X.Y.Z.tar.gz.sigstore.json` | the GitHub artifact attestation (SLSA provenance) for the tarball          |
+
+Unpacked, the tree is what `broker_deploy_bundle_src` already expects.
+
+**Verify, from an empty directory.** Set `VERSION` to the version being
+deployed and `PINNED_SHA256` to the digest recorded for it in reviewed code
+(the role's pin, not the `.sha256` file from the release):
+
+```bash
+set -euo pipefail
+TAG="broker-v${VERSION}"
+BASE="https://github.com/branchLeft/ghost-platform/releases/download/${TAG}"
+curl -fsSLO "${BASE}/broker-bundle-${VERSION}.tar.gz"
+curl -fsSLO "${BASE}/broker-bundle-${VERSION}.tar.gz.sigstore.json"
+gh attestation trusted-root > trusted_root.jsonl
+gh attestation verify "broker-bundle-${VERSION}.tar.gz" \
+  --bundle "broker-bundle-${VERSION}.tar.gz.sigstore.json" \
+  --repo branchLeft/ghost-platform \
+  --signer-workflow branchLeft/ghost-platform/.github/workflows/broker-release.yml \
+  --source-ref "refs/tags/${TAG}" \
+  --deny-self-hosted-runners \
+  --custom-trusted-root trusted_root.jsonl \
+  --format json > verified.json
+echo "${PINNED_SHA256}  broker-bundle-${VERSION}.tar.gz" | sha256sum --check --strict
+```
+
+Both must pass. Change one byte of the tarball and the `gh attestation verify`
+line fails: that is the negative control.
+
+**Check the attested commit is on main.** The verify above proves where the
+bytes came from, not that the commit is on `main`. Read the source commit the
+attestation names from `verified.json` (the certificate's source digest), refuse
+anything that is not a 40-character sha before it goes into a URL (the whole
+value must match, so a value with a second line is refused), and ask the
+GitHub compare API, anonymously, how that commit relates to `main`. The branch
+is named in full, `refs/heads/main`, because a bare `main` can resolve to a tag
+of that name and the `release tags` ruleset does not stop one being pushed. The
+pass condition is `behind` or `identical`. Any other answer (`ahead`,
+`diverged`), an empty answer, a failed request or a malformed commit fails the
+deploy: it exits 1 and nothing is unpacked or installed.
+
+```bash
+set -euo pipefail
+SOURCE_COMMIT="$(jq -r '.[0].verificationResult.signature.certificate.sourceRepositoryDigest' verified.json)"
+if ! [[ "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "refusing: the attested source commit '${SOURCE_COMMIT}' is not a 40-hex sha" >&2
+  exit 1
+fi
+STATUS="$(curl -fsS "https://api.github.com/repos/branchLeft/ghost-platform/compare/refs/heads/main...${SOURCE_COMMIT}" | jq -r .status)"
+case "${STATUS}" in
+  behind | identical) ;;
+  *)
+    echo "refusing: ${SOURCE_COMMIT} is not on main (compare status '${STATUS}')" >&2
+    exit 1
+    ;;
+esac
+```
+
+The compare API is unauthenticated, which allows 60 requests per hour per
+address: ample for a deploy.
+
+**Not yet exercised.** Four things here have not been observed and the first
+consumer run proves three of them: `gh attestation verify --bundle ... --custom-trusted-root`
+working without a logged-in `gh`; `gh attestation trusted-root` working
+without a logged-in `gh`; and the JSON field that carries the source digest
+(`.[0].verificationResult.signature.certificate.sourceRepositoryDigest` above).
+The fourth is that `GITHUB_SHA` on an annotated-tag push is the commit and not
+the tag object, which the release workflow passes to the tag check as the commit
+being built. If it is the tag object the check fails closed: it refuses every
+release and signs nothing, so nothing unsafe ships. The first live tag shows
+which it is. If any one behaves differently, this section changes to match what
+was observed.
+
+**What this does and does not prove.** The attestation shows the commit the
+tag named when the run started, and which workflow run produced the bytes
+(`broker-release.yml` at `refs/tags/broker-vX.Y.Z`). It does not show the bytes
+are a clean build of that commit, who pushed the tag, or that the tag check
+was the one on `main`. The controls are the pinned digest, which makes
+reviewed code choose which release deploys, and the check above that the
+attested commit is on `main`. This is the same trust in GitHub that
+branchLeft/workspace#2483 accepted for merge signatures; moving to a key of
+our own later changes only the attest step and the flags above. The `release
+tags` repository ruleset covers `v[0-9]*.[0-9]*.[0-9]*` only, so until it also
+names `broker-v*` a `broker-v*` tag has no deletion or update protection; the
+digest pin is what keeps a moved tag from deploying.
+
+**Install from the release.** Unpack into a new release directory and swap
+`current` as in Upgrade above; never unpack over `current/`:
+
+```bash
+mkdir "broker-release-${VERSION}"
+tar -xzf "broker-bundle-${VERSION}.tar.gz" -C "broker-release-${VERSION}"
+```
+
+**Roll back** by pinning the previous version and its digest in the role and
+running it again. Older releases stay published, so the previous tarball and
+its attestation are still there to verify.
 
 ## Proof
 

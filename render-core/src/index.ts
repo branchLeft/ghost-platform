@@ -64,6 +64,7 @@ export {
   validateOwnerEmailSecret,
   validateTenantStack,
 } from './validate.js';
+export type { ValidateOptions } from './validate.js';
 
 export type { HashId, LeaseId, SlotLeaseRecord, SlotName } from './lease.js';
 export {
@@ -92,14 +93,17 @@ export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
-export { renderSendingAddress, sendingDomainOf } from './mail.js';
+export { credentialDomainOf, renderSendingAddress, sendingDomainOf } from './mail.js';
 export { renderDrainList } from './drain.js';
 export {
   MAIL_SPOOL_BASE_URL,
   MAIL_SPOOL_DATA_VOLUME,
+  MAIL_SPOOL_DRAIN_ADDRESS,
   MAIL_SPOOL_DRAIN_BIND_ADDRESS,
   MAIL_SPOOL_DRAIN_BRIDGE,
+  MAIL_SPOOL_DRAIN_GATEWAY,
   MAIL_SPOOL_DRAIN_NETWORK,
+  MAIL_SPOOL_DRAIN_SUBNET,
   MAIL_SPOOL_DRAIN_TOKEN_KEY,
   MAIL_SPOOL_HTTP_PORT,
   MAIL_SPOOL_SECRETS_PATH,
@@ -119,6 +123,7 @@ export {
   MAX_TENANT_SLUG_LENGTH,
   RESERVED_STACK_NAMES,
   TENANT_DB_PREFIX,
+  TENANT_NAME_REGISTER,
   adaptersVolumeName,
   composeUnitName,
   contentVolumeName,
@@ -131,6 +136,7 @@ export {
   validateDatabaseIdentity,
   validateSlugAvailability,
 } from './naming.js';
+export type { RegisteredName, SlugClaimant } from './naming.js';
 export { DEFAULT_RSS_BUDGET_MIB, DEFAULT_UPLOAD_CEILING_MIB, uploadLimits } from './runtime.js';
 export type { UploadLimits } from './runtime.js';
 export {

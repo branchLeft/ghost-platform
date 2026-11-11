@@ -1,0 +1,32 @@
+{
+  "name": "@branchleft/ghost-platform-deadmans-switch",
+  "version": "0.1.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../LICENSE",
+  "packageManager": "pnpm@11.28.11",
+  "description": "The estate's dead-man's switch for drain workers: pings Healthchecks once per period in which every expected target has completed a poll cycle, never on its own timer. Consumed by services/mail-collector through a relative link: dependency.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test:unit": "vitest run"
+  },
+  "devDependencies": {
+    "@branchleft/tsconfig": "^0.3.1",
+    "@types/node": "^26.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "4.1.11"
+  }
+}

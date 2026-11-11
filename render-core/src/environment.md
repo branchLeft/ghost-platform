@@ -107,10 +107,13 @@ as a `${GHOST_MAIL_PASSWORD:?…}` reference.
 renders Ghost's SMTP transport pointed at the spool by name
 (`MAIL_SPOOL_SERVICE`, `MAIL_SPOOL_SMTP_PORT`), never at a caller-supplied
 address, so the address Ghost dials and the listener the spool renders come
-from the same constants. The username is the tenant's sending domain, and the
+from the same constants. The username is the tenant's credential domain
+(`mail.ts#credentialDomainOf`: a paying tenant's own sending domain, a demo
+slot's `slot-<uid>.<demoMailDomain>`; see mail.md#credential-domain), and the
 password is the per-tenant key the bulk path already carries
 (`GHOST_BULK_EMAIL_API_KEY`): the spool's SMTP front door checks a submitter
-against the same key store as its Mailgun-shaped API. With mail disabled,
+against the same key store as its Mailgun-shaped API. The Mailgun route's
+`bulkEmail__mailgun__domain` is the same value as the username. With mail disabled,
 `queue` renders no transport at all, as before.
 
 With mail enabled, `queue` also renders three nodemailer timeouts into Ghost's
@@ -134,6 +137,21 @@ every cap, so Ghost locks the ActivityPub setting and the admin's Network tab
 is absent. It is unconditional, unlike the member and staff caps, which
 render only when set. `settings.ts` also turns `social_web` off, because a
 lock does not undo what an existing tenant already has.
+
+## Stripe connect limit
+
+`hostSettings__limits__limitStripeConnect__disabled` is `true` for a demo
+(`kind === 'demo'`) and absent for every other kind, so a paying tenant keeps
+Ghost's standard Stripe behaviour. Paid tiers stay visible on a demo; only
+connecting a real Stripe account is refused.
+
+On its own the key guards one write path (Ghost's Connect-token edit). The
+Ghost image's settings-model overlay
+(`adapters/stripe-connect-limit/ghost-core-overlay`) reads the same key and
+refuses every write path, direct key `PUT`s and the content importer included.
+The overlay is inert without the key, and the key is only partial protection
+without the overlay, so the image carrying the overlay must be live before a
+render carrying the key (see the changelog's rollout note).
 
 ## Scanner metrics export
 

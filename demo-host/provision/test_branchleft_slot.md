@@ -87,3 +87,11 @@ it runs against the right descriptor before docker is ever reached.
 `.github/workflows/demo-host-sudoers-ci.yml` re-proves the same shapes
 against a real broker account and real ownership; this class is the fast,
 hermetic form.
+
+## test_a_mount_point_inside_the_volume_is_refused_and_not_crossed
+
+The walk checks each subdirectory's `st_dev` against its volume's. A mount
+point inside the volume reports another device, so the reset must refuse
+and leave its contents alone. The test fakes `st_dev + 1` for that one
+descriptor, since a real mount needs root. `sabotage_branchleft_slot.py`
+disables the check in a scratch copy: the suite must go red, then green.

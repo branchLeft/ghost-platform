@@ -54,6 +54,19 @@ RUN apk add --no-cache patch \
     && apk del patch \
     && rm -rf /tmp/session-from-token-overlay
 
+# Ghost-core overlay (adapters/stripe-connect-limit/ghost-core-overlay/README.md):
+# one file, one change, so a demo slot cannot store a Stripe key by any route.
+# Inert unless the host limit limitStripeConnect is set, so this one image
+# still serves every tenant. Built like the layer above: the build fails if
+# a Ghost version bump moved the patched lines, or the result differs from
+# the pinned hash. `patch` is installed, used and removed in this one layer.
+COPY adapters/ghost-core-overlay/apply-patch.sh adapters/stripe-connect-limit/ghost-core-overlay/stripe-connect-limit.patch adapters/stripe-connect-limit/ghost-core-overlay/stripe-connect-limit.patched.sha256 /tmp/stripe-connect-limit-overlay/
+RUN apk add --no-cache patch \
+    && /tmp/stripe-connect-limit-overlay/apply-patch.sh /var/lib/ghost/current/core/server/models settings.js /tmp/stripe-connect-limit-overlay/stripe-connect-limit.patch /tmp/stripe-connect-limit-overlay/stripe-connect-limit.patched.sha256 \
+    && chown node:node /var/lib/ghost/current/core/server/models/settings.js \
+    && apk del patch \
+    && rm -rf /tmp/stripe-connect-limit-overlay
+
 # The scanning storage decorator (adapters/scanning-storage/README.md). It
 # goes into Ghost's own storage adapters directory, alongside the built-in
 # LocalImagesStorage/LocalMediaStorage/LocalFilesStorage/S3Storage it wraps
@@ -96,6 +109,31 @@ RUN cd /tmp/kalotyp \
     || (echo "ERROR: vendored Kalotyp no longer matches its pinned sha256 (vendor/kalotyp/kalotyp.sha256) -- re-vendor and re-pin it before rebuilding" >&2 && exit 1)
 COPY --chown=node:node vendor/kalotyp/kalotyp.js vendor/kalotyp/kalotyp.css vendor/kalotyp/LICENSE /var/lib/ghost/current/core/built/admin/assets/kalotyp/
 RUN rm -rf /tmp/kalotyp
+
+# The bundled themes and the curated fonts (themes/README.md). Every Ghost-
+# authored open-source theme without a technical blocker, each fetched at a
+# full commit SHA and checked against a pinned content hash, with its licence
+# file and copyright kept. The fonts are the open-licence set, fetched the same
+# way and served from each theme's own assets/platform-fonts/, so a font is
+# always a file on the tenant's origin. verify.mjs fails the build if a theme or
+# font differs from its pin, lacks its licence, or references any outside
+# origin. Casper and Source ship in the base image (digest-pinned above) and
+# are checked in place. Fetching needs the network, like `apk add` above; the
+# Node already in the base image runs it and nothing is installed. Seeded into
+# the content directory by the base image's entrypoint, theme by theme.
+COPY themes/fetch.mjs themes/verify.mjs themes/manifest.json /tmp/themes/
+COPY themes/lib/ /tmp/themes/lib/
+COPY themes/licences/ /tmp/themes/licences/
+RUN set -e \
+    && node /tmp/themes/fetch.mjs --out /tmp/themes-bundle \
+    && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \
+    && cp -R /tmp/themes-bundle/themes/. /var/lib/ghost/content.orig/themes/ \
+    && for theme in /var/lib/ghost/content.orig/themes/*; do \
+         mkdir -p "$theme/assets/platform-fonts" \
+         && cp -R /tmp/themes-bundle/fonts/. "$theme/assets/platform-fonts/" \
+         && chown -R node:node "$theme/"; \
+       done \
+    && rm -rf /tmp/themes /tmp/themes-bundle
 
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh

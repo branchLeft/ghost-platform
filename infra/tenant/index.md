@@ -24,51 +24,52 @@ Three steps outside Pulumi must have happened before the rendered stack will
 start, and each fails loudly if it has not: the tenant's database and account
 on `db1` (`provision_tenant_db.py`), the tenant's two named volumes on the app
 host (the `provisionScript` output), and the secrets file at
-`/etc/branchleft/<slug>.env` (the `secretsEnvFile` output, placed by an
-operator).
+`/etc/branchleft/<slug>.env` (rendered on the host from the
+`secretsEnvTemplate` output, see below).
 
-## GhostTenantSecrets
+## Secrets on the host
 
-The descriptor carries no secret by design, so the five secret values and
-the owner address arrive beside it. Which ones a tenant needs is not decided here: the render core's
-`secrets.env` template names them, from the descriptor's database, media,
-transport and mail choices.
+**The tenant stack holds no secret value.** Since 8.0.0 the component takes no
+`secrets` argument and exposes no secret output, so no credential reaches
+stack config, stack state or a stack output. A caller that still passes
+`secrets` is refused at construction, never dropped.
+
+The render core's `secrets.env` template names the keys a tenant needs, from
+the descriptor's database, media, transport and mail choices. The component
+exposes it as `secretsEnvTemplate` (key names with empty values) and the
+names alone as `secretKeys`, in template order. Both are plain outputs.
+
+The host fills it. `app/provision/render_tenant_secrets.py` takes the
+template and a JSON object of KEY to value on stdin and writes
+`/etc/branchleft/<slug>.env`, root-owned `0600`. It refuses a missing key, an
+extra key, an empty value, a control character (a newline in an
+`EnvironmentFile` value adds a variable rather than breaking one) and a
+malformed owner address. See `app/provision/render_tenant_secrets.md`. The
+fill logic has that one home; the component no longer carries a copy.
+
+`secrets-absent.test.ts` is the check that no secret is exposed: it plants
+sentinel values in the removed argument and in stack config, then searches
+every field, registered input and recorded output, and fails on any Pulumi
+secret marker or output key off its allowlist. It carries leaking stand-ins
+as control cases, so a silent all-clear is not possible. See
+`secrets-absent.md`.
 
 ## The owner address
 
 The owner's email address is a person's, and a tenant repository holds no
 personal data, so it is not in the descriptor this component takes
-(`TenantStackDescriptor`). It arrives as `secrets.ownerEmail`, which a tenant
-program reads with `config.requireSecret`. The render core's template names
-it as `GHOST_OWNER_EMAIL` for every paying tenant, so it is required like any
-other secret, and it reaches the host only in `secretsEnvFile`, a Pulumi
-secret. Compose never references the key, so no container receives it.
-
-Its shape is checked by `validateOwnerEmailSecret` inside the secret
-`Output`, at deploy time, and a refusal withholds the value. A descriptor
-that still carries `ownerEmail` is refused by `validateTenantStack` before
-anything is registered.
+(`TenantStackDescriptor`) and not in stack config either. The render core's
+template names it as `GHOST_OWNER_EMAIL` for every paying tenant, so it is
+required like any other secret, and it reaches the host only through
+`render_tenant_secrets.py`, which refuses an address with whitespace or no
+`@`. Compose never references the key, so no container receives it. A
+descriptor that still carries `ownerEmail` is refused by `validateTenantStack`
+before anything is registered.
 
 On the host, it is the `GHOST_OWNER_EMAIL` line in the secrets file that
 `provision-owner.mjs --secrets-file` reads
 (`adapters/sso/scripts/provision-owner.md`) when the owner account is
 created.
-
-## Secret coverage
-
-Checked before `super()`, against the template:
-
-- a key the template names with no matching input is refused;
-- an input supplied that the template does not name is refused, not dropped.
-  A dropped credential is a configuration mismatch nobody sees.
-
-## Filling the secrets file
-
-`fillSecretsTemplate` replaces each `KEY=` line of the render core's template
-with `KEY=<value>` and leaves every other line exactly as rendered, so the
-file's keys, order and header are the render core's. A value carrying a
-control character is refused: systemd reads an `EnvironmentFile` line by
-line, so a newline in a credential adds a variable rather than breaking one.
 
 ## GhostTenantIdentity
 
@@ -85,7 +86,7 @@ set: a raised cap is a safe reapply, as the Overview section of
 
 ## Constructor order
 
-The kind check, `validateTenantStack()`, `render()` and the secret-coverage check all run
+The removed-argument check, the kind check, `validateTenantStack()` and `render()` all run
 before `super()`, so an invalid descriptor never reaches the engine,
 registered or not.
 

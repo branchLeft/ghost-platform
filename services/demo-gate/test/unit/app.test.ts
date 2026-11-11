@@ -19,7 +19,6 @@ import {
   type GateDeps,
 } from '../../src/app.js';
 import { hashPassphrase, parseArgon2idHash, type Argon2idHash } from '../../src/argon2id.js';
-import { createAttemptCeiling } from '../../src/ceiling.js';
 import { COOKIE_NAME, signCookie } from '../../src/cookie.js';
 import {
   createDerivationGate,
@@ -32,7 +31,11 @@ import {
   type CurrentLease,
   type GatedHost,
 } from '../../src/slots.js';
-import { createSourceResolver, parseTrustedProxies } from '../../src/source.js';
+import {
+  createAttemptCeiling,
+  createSourceResolver,
+  parseTrustedProxies,
+} from 'ghost-platform-request-guard/dist/index.js';
 
 const FAST = { memoryKiB: 8192, passes: 1, parallelism: 1 };
 const KEY = Buffer.alloc(32, 3);
@@ -89,6 +92,7 @@ async function start(over: Partial<GateDeps> = {}): Promise<Harness> {
     signingKey: KEY,
     ceiling: createAttemptCeiling({ limit: 3, windowMs: 60_000, maxSources: 100 }),
     broadCeiling: createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 }),
+    malformedCeiling: createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 }),
     derivationGate: createDerivationGate(4, 64),
     sources: createSourceResolver(parseTrustedProxies('127.0.0.1')),
     cookieTtlSeconds: 3600,
@@ -620,6 +624,103 @@ describe('login', () => {
     expect(valid.status).toBe(303);
     expect(valid.headers['set-cookie']).toBeDefined();
     expect(calls).toBe(1);
+  });
+
+  it('a malformed flood is bounded and never locks a valid login', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createDerivationGate(4, 64);
+    let calls = 0;
+    const countingGate: DerivationGate = {
+      run: (fn) => {
+        calls += 1;
+        return inner.run(fn);
+      },
+    };
+    h = await start({
+      derivationGate: countingGate,
+      ceiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+      broadCeiling: createAttemptCeiling({ limit: 10, windowMs: 60_000, maxSources: 100 }),
+      malformedCeiling: createAttemptCeiling({ limit: 5, windowMs: 60_000, maxSources: 100 }),
+    });
+    const source = '203.0.113.1';
+    const malformedKinds: Array<() => Promise<Reply>> = [
+      () => login(PASSPHRASE, { source, contentType: 'application/json' }),
+      () => login('', { source }),
+      () => login('x'.repeat(257), { source }),
+      () =>
+        send(
+          'POST',
+          '/__gate/login',
+          {
+            host: HOST,
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-forwarded-for': source,
+          },
+          `passphrase=${'x'.repeat(4096)}`
+        ),
+    ];
+    // Twenty malformed POSTs from one source: five passes over the four
+    // kinds. The first five are answered 400, the rest refused with 429.
+    const flood = [0, 1, 2, 3, 4].flatMap(() => malformedKinds);
+    for (const [index, sendMalformed] of flood.entries()) {
+      const reply = await sendMalformed();
+      if (index < 5) {
+        expect(reply.status).toBe(400);
+      } else {
+        expect(reply.status).toBe(429);
+        expect(reply.headers['retry-after']).toBeDefined();
+      }
+    }
+    // The same source's valid login is admitted, and derives exactly once.
+    const valid = await login(PASSPHRASE, { source });
+    expect(valid.status).toBe(303);
+    expect(valid.headers['set-cookie']).toBeDefined();
+    expect(calls).toBe(1);
+    // The valid login is itself one charge on the main ceiling (limit 10),
+    // so nine wrong passphrases are admitted and the tenth is refused.
+    for (let i = 0; i < 9; i++) {
+      expect((await login('wrong', { source })).status).toBe(401);
+    }
+    expect((await login('wrong', { source })).status).toBe(429);
+  });
+
+  it('a valid login, and a wrong passphrase, never charge the malformed ceiling', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const inner = createAttemptCeiling({ limit: 100, windowMs: 60_000, maxSources: 100 });
+    let charged = 0;
+    h = await start({
+      malformedCeiling: {
+        ...inner,
+        attempt: (source, nowMs) => {
+          charged += 1;
+          return inner.attempt(source, nowMs);
+        },
+      },
+    });
+    const source = '203.0.113.2';
+    expect((await login(PASSPHRASE, { source })).status).toBe(303);
+    expect((await login('wrong', { source })).status).toBe(401);
+    expect(charged).toBe(0);
+    // The control: a malformed request is the one thing that charges it.
+    expect((await login('', { source })).status).toBe(400);
+    expect(charged).toBe(1);
+  });
+
+  it('a valid login still succeeds from a source the full malformed table cannot admit', async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    h = await start({
+      malformedCeiling: createAttemptCeiling({ limit: 5, windowMs: 60_000, maxSources: 2 }),
+    });
+    // Two other sources fill the malformed table to its limit.
+    expect((await login('', { source: '203.0.113.3' })).status).toBe(400);
+    expect((await login('', { source: '203.0.113.4' })).status).toBe(400);
+    // A third source's malformed request is refused for want of a table entry.
+    const third = '203.0.113.5';
+    expect((await login('', { source: third })).status).toBe(429);
+    // Its valid login is not a malformed request: it succeeds.
+    const valid = await login(PASSPHRASE, { source: third });
+    expect(valid.status).toBe(303);
+    expect(valid.headers['set-cookie']).toBeDefined();
   });
 
   it('ten wrong passphrases still lock the eleventh', async () => {

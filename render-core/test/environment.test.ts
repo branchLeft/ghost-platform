@@ -98,6 +98,30 @@ describe('tenantEnvironment() — social web lock', () => {
   });
 });
 
+// A demo must not connect a real Stripe account; a paying tenant must keep
+// Ghost's standard Stripe behaviour, so the key reaches a demo and no other kind.
+describe('tenantEnvironment() — Stripe connect limit', () => {
+  const KEY = 'hostSettings__limits__limitStripeConnect__disabled';
+
+  it('turns the limit on for a demo', () => {
+    expect(env(demoDescriptor())[KEY]).toBe(true);
+  });
+
+  it.each([
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+    ['tenant fixture', tenantDescriptor],
+  ] as const)('renders no Stripe limit key for a paying %s', (_label, fixture) => {
+    expect(env(fixture())).not.toHaveProperty(KEY);
+  });
+
+  it('renders no Stripe limit key anywhere in a paying tenant output, whatever its caps', () => {
+    const base = tenantDescriptor();
+    const descriptor = { ...base, limits: { ...base.limits, membersCap: null, staffCap: null } };
+    expect(Object.keys(env(descriptor)).filter((key) => /limitStripe/i.test(key))).toEqual([]);
+  });
+});
+
 describe('tenantEnvironment() — Ghost mail transport timeouts', () => {
   it.each([
     ['tenant', tenantDescriptor],

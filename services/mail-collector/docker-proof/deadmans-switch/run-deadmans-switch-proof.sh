@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live proof, local Docker sandbox: a real healthchecks/healthchecks
 # instance standing in for the hosted Healthchecks.io, and the real
-# built createDeadMansSwitch (dist/heartbeat.js) driving it -- the dead
+# built createDeadMansSwitch (the shared package's dist) driving it -- the dead
 # man's switch's own Done-means checklist, run against real processes
 # rather than mocks.
 #

@@ -20,12 +20,19 @@ on:
 # PR (and on every push to `main`, redundantly with registry-push.yml's own
 # build — see that file's header for why the rebuild there is accepted
 # rather than shared), nothing more.
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: docker build
     runs-on: ubuntu-latest
     # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min)
-    # before the break-glass image test, which adds about a minute locally.
+    # before the break-glass image test, which adds about 31 s.
     timeout-minutes: 20
 
     steps:
@@ -77,5 +84,35 @@ jobs:
       - name: Export re-import against the built image
         working-directory: services/export-bundler
         run: node --test test/image/*.test.mjs
+        env:
+          IMAGE: ghost-platform:ci
+
+      # Real Ghost sends a reader's magic link to a listener that never
+      # greets, a frozen spool as Ghost sees it. The request must fail inside
+      # the bound. A second Ghost without the timeouts must still be open at
+      # the bound (negative control). Needs no install -- Node built-ins only.
+      - name: Ghost send against a frozen mail spool
+        run: node --test scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs
+        env:
+          IMAGE: ghost-platform:ci
+
+      # A demo slot cannot store a Stripe key by any route (Connect token,
+      # direct key, content import), and a paired Ghost without the limit is
+      # not refused for its reason. The demo's environment is read from
+      # render-core's demo golden. Needs no install -- Node built-ins only.
+      - name: Stripe connect refusal against the built image
+        run: node --test adapters/stripe-connect-limit/test/image/*.test.mjs
+        env:
+          IMAGE: ghost-platform:ci
+
+      # Every bundled theme, activated in a real Ghost from the built image:
+      # it lists exactly the manifest's themes, each renders with no outside
+      # origin, its stylesheets and scripts answer, and the platform fonts are
+      # served from this origin with the pinned bytes. The pins and the
+      # origin scan already ran inside the image build (themes/verify.mjs); this
+      # is the same result observed at runtime. Needs no install -- Node
+      # built-ins only.
+      - name: Bundled themes and fonts against the built image
+        run: node --test themes/image/themes.image.test.mjs
         env:
           IMAGE: ghost-platform:ci
