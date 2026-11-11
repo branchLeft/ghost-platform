@@ -34,6 +34,22 @@ export {
   AGENT_BINARIES,
 } from './modelFreeEnvironment.js';
 export type { ModelFreeEnvironment } from './modelFreeEnvironment.js';
+export {
+  RESTORE_DRILL_MAX_AGE_MS,
+  UNATTENDED_MINOR_FLAG,
+  UNATTENDED_MINOR_ON,
+  decideUnattendedMinor,
+  restoreDrillMet,
+  unattendedMinorEnabled,
+} from './minorEligibility.js';
+export type {
+  MinorDecision,
+  MinorDecisionInput,
+  MinorRefusal,
+  RestoreDrillRecord,
+} from './minorEligibility.js';
+export { runUnattendedMinor } from './unattendedMinor.js';
+export type { UnattendedMinorRequest, UnattendedOutcome } from './unattendedMinor.js';
 export { runRelease } from './ringController.js';
 export type {
   Health,
