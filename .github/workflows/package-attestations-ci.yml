@@ -1,0 +1,51 @@
+name: Package attestations CI
+
+# The consumer check on the @branchleft packages this repository installs. It
+# reads every pnpm-lock.yaml and package-lock.json in the tree and fails unless
+# each locked @branchleft package is either listed as published before
+# attestation began or carries a signed build attestation from the repository,
+# workflow and ref the reviewed identity table names for it. The program, the
+# table and the rules live in branchLeft/github-workflows
+# (verify-package-attestations.md); this file holds no copy of them and passes
+# no identity of its own, because an identity supplied by the repository being
+# checked would let it vouch for itself.
+#
+# It is its own workflow, with no path filter, so a lockfile that arrives by any
+# route (a merge, a bot, a hand edit) meets it, and so no existing job changes.
+# The job holds the two read grants the action documents: contents to check out
+# the lockfiles, packages to download the tarball of a version that is not
+# listed (GitHub Packages answers 401 to an anonymous read). It writes nothing
+# and holds no secret: the action's token defaults to the run's own.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify package attestations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify package attestations
+        uses: branchLeft/github-workflows/.github/actions/verify-package-attestations@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1
