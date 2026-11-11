@@ -6,7 +6,7 @@
 # (a sabotage that changed nothing proves nothing). Needs render-core built.
 # The live-browser sabotages (policy removed, hashes removed, Stripe origin
 # removed) are in csp-regression-gate.sh --sabotage=... and
-# csp-checkout-gate.sh --sabotage=...; see their .md files.
+# csp-checkout-gate.py --sabotage=...; see their .md files.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"

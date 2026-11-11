@@ -1,9 +1,11 @@
 #!/bin/sh
 # Shared shell helpers for the live content-policy gates (POSIX sh, sourced,
 # never run). One home for the Ghost container's arguments and the readiness
-# wait, so csp-regression-gate.sh and csp-checkout-gate.sh cannot drift apart
-# on how the Ghost under test is configured. csp/proof/run-proof.sh predates
-# this file and keeps its own copy (a follow-up unifies it).
+# wait, so csp-regression-gate.sh and csp-checkout-gate.py cannot drift apart
+# on how the Ghost under test is configured (the Python one carries its own
+# copy of the arguments, and test_csp_checkout_gate.py fails if the two differ;
+# this file goes when csp-regression-gate.sh is ported). csp/proof/run-proof.sh
+# predates this file and keeps its own copy (a follow-up unifies it).
 
 wait_for() { # description, deadline-seconds, command...
     desc="$1"; secs="$2"; shift 2

@@ -21,7 +21,7 @@ stdin: the JSON `csp/proof/capture-checkout.mjs` prints, for a run that is
   frames and requests that would have followed never happen and the set comes
   out short; the next deploy then breaks on the origin that was hidden.
 
-The tool refuses a capture that is neither. `csp-checkout-gate.sh --derive` makes
+The tool refuses a capture that is neither. `csp-checkout-gate.py --derive` makes
 exactly this run.
 
 ## What it refuses

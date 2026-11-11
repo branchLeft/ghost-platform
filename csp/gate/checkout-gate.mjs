@@ -2,7 +2,7 @@
 // browser takes a signed-in member through the paid upgrade and the return from
 // checkout on a real Ghost behind the edge policy; this module is the verdict on
 // what it observed. Observation lives in csp/proof/capture-checkout.mjs; the
-// live runner is csp-checkout-gate.sh. The magic-link email round trip is NOT
+// live runner is csp-checkout-gate.py. The magic-link email round trip is NOT
 // judged here (it waits on the mail programme): the member signs in through the
 // sign-in link Ghost's Admin API issues.
 //

@@ -10,7 +10,7 @@ Stripe.
 
 ## What it runs
 
-`csp-checkout-gate.sh` (Docker, Chromium via `csp/proof`, render-core built):
+`csp-checkout-gate.py` (Docker, Chromium via `csp/proof`, render-core built):
 
 1. Starts the pinned Ghost image, a fake Stripe API (`csp/proof/fake-stripe.mjs`)
    and a Caddy origin whose `Content-Security-Policy` header is the value
@@ -69,3 +69,11 @@ and each derivation refusal and requires the tests to go red, then green.
 `render-core/test/edge.test.ts` pins the rendered policy to exactly the measured
 origins and carries source-mutation sabotage for the allowance, the origin-shape
 check and a stray origin.
+
+The runner itself is Python (`csp-checkout-gate.py`, standard library only).
+`python3 -m unittest discover -s csp/gate -p 'test_csp_checkout_gate.py' -v`
+runs it against recording fakes for docker, node and curl, so it needs no Docker
+or browser and runs in CI. The same file mutates the real source (a wrong exit
+code, a skipped refusal, a dropped cleanup, a swallowed failure) and requires
+the tests to go red for each. Arguments, environment variables, exit codes and
+output lines are those of the shell script it replaced.
