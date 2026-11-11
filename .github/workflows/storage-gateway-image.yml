@@ -7,9 +7,9 @@ name: Storage gateway image
 #
 # A pull request builds and checks only, with no credential. On push to `main`
 # (or a manual dispatch from `main`) a second job pushes the image to
-# ghcr.io/branchleft/storage-gateway tagged with the git SHA, reads the pushed
+# ghcr.io/branchleft/priv/storage-gateway tagged with the git SHA, reads the pushed
 # digest back from the image store, refuses to finish without a well-formed
-# sha256, and publishes `ghcr.io/branchleft/storage-gateway@sha256:...` as the
+# sha256, and publishes `ghcr.io/branchleft/priv/storage-gateway@sha256:...` as the
 # job's `image` output and in its summary. A tag can be re-pointed, a digest
 # cannot. There is deliberately no `latest` tag.
 #
@@ -142,7 +142,7 @@ jobs:
       digest: ${{ steps.digest.outputs.digest }}
 
     env:
-      IMAGE: ghcr.io/branchleft/storage-gateway
+      IMAGE: ghcr.io/branchleft/priv/storage-gateway
       IMAGE_TAG: ${{ github.sha }}
 
     steps:
@@ -237,7 +237,7 @@ jobs:
       id-token: write
       attestations: write
     env:
-      IMAGE: ghcr.io/branchleft/storage-gateway
+      IMAGE: ghcr.io/branchleft/priv/storage-gateway
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
