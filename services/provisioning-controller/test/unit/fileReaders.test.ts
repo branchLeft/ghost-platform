@@ -1,5 +1,5 @@
 import { chmod, symlink } from 'node:fs/promises';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   FileApprovalLedger,
   FileRegisterReader,
@@ -29,6 +29,16 @@ describe('readTrustedJson', () => {
     await expect(readTrustedJson(file)).rejects.toThrow('other users can write it');
     await chmod(file, 0o602);
     await expect(readTrustedJson(file)).rejects.toThrow('other users can write it');
+  });
+
+  it('refuses a file another user owns, because that user could rewrite it', async () => {
+    const file = await work.json('a.json', { ok: true });
+    const spy = vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1);
+    try {
+      await expect(readTrustedJson(file)).rejects.toThrow('it belongs to another user');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('refuses a symbolic link, a directory, a missing file and text that is not JSON', async () => {
