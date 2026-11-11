@@ -116,3 +116,34 @@ test('the check can fail: a job-level token and a token on a test step are both 
   ].join('\n');
   assert.ok(leaks(together).some((line) => /also runs a script/.test(line)));
 });
+
+// The suite's test rig loads two files from the scanning-storage adapter: the
+// verdict client and its fake transport. Both triggers must name them, or an
+// edit to either one would start no run of this suite.
+const SCANNING_FILES = [
+  'adapters/scanning-storage/src/production-verdict-client.js',
+  'adapters/scanning-storage/test/helpers/fake-verdict-transport.mjs',
+];
+
+// The path filter items under one trigger (`push:` or `pull_request:`).
+function triggerPaths(text, trigger) {
+  const lines = text.split('\n');
+  const at = lines.indexOf(`  ${trigger}:`);
+  assert.ok(at > -1, `the workflow has a ${trigger} trigger`);
+  const items = [];
+  for (const line of lines.slice(at + 1)) {
+    const item = line.match(/^ {6}- '([^']+)'$/);
+    if (item) items.push(item[1]);
+    else if (items.length > 0) break;
+  }
+  return items;
+}
+
+for (const trigger of ['push', 'pull_request']) {
+  test(`the ${trigger} trigger runs on the scanning-storage files the suite's rig loads`, () => {
+    const paths = triggerPaths(real, trigger);
+    for (const file of SCANNING_FILES) {
+      assert.ok(paths.includes(file), `the ${trigger} paths name ${file}`);
+    }
+  });
+}
