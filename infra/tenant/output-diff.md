@@ -55,6 +55,17 @@ decision.
   is never a descriptor field a tenant repository commits; it reaches the
   host only in the secrets file (index.md#the-owner-address). The secrets
   file gains `GHOST_OWNER_EMAIL`. 4.0.0 took no owner address at all.
+- **`stop-grace-period`**: each Ghost service gets a 60 second
+  `stop_grace_period`, so a stop does not kill Ghost in the middle of a send
+  batch (render core 0.3.0, `compose.md#the-stop-grace-period`).
+- **`scanner-metrics`**: a paying tenant's scanner health export is switched
+  on, into a volume of its own (render core 0.3.0). The six
+  `storage__<feature>__metrics*` keys, the `ghost-<slug>-metrics` volume on the
+  service and as an external volume, and the "three named volumes" wording of
+  the provision script's comment.
+- **`social-web-hidden`**: the Network tab is hidden on every tenant (render
+  core 0.3.0): `limitSocialWeb__disabled` in the environment and `social_web:
+  false` in the Ghost settings document.
 - **`secrets-host-render`**: the component no longer fills the secrets file
   (ws#1799). Its `secretsEnvTemplate` output is the render core's template,
   key names with empty values, and the host fills it

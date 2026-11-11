@@ -31,6 +31,9 @@ const DECISIONS = new Set([
   'render-core-artefact',
   'owner-address-secret',
   'secrets-host-render',
+  'stop-grace-period',
+  'scanner-metrics',
+  'social-web-hidden',
 ]);
 
 interface ReviewedEntry extends DiffEntry {
@@ -179,6 +182,8 @@ describe('tenant zero itself', () => {
       database: { ...tenantZeroEquivalent().database, name: 'ghost_blog', user: 'ghost_blog' },
       media: { ...tenantZeroEquivalent().media, bucket: 'branchleft-media-blog' },
     } as unknown as TenantStackDescriptor;
-    expect(validateTenantStack(tenantZero, TEST_ZONES)).toBe(tenantZero);
+    expect(
+      validateTenantStack(tenantZero, TEST_ZONES, { claimantRepo: 'branchLeft/ghost-tenant-blog' })
+    ).toBe(tenantZero);
   });
 });

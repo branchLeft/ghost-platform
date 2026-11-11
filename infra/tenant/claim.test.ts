@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { validateTenantStack } from '@branchleft/ghost-platform-render-core';
 import type { TenantStackDescriptor } from '@branchleft/ghost-platform-render-core';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { GhostTenant as GhostTenantClass } from './index';
@@ -130,6 +131,27 @@ describe('GhostTenant and the tenant-name claim', () => {
           zones: TEST_ZONES,
         })
     ).not.toThrow();
+  });
+});
+
+describe('GhostTenant tells the render core which repository it runs in', () => {
+  it('the render core refuses a registered name it is not told the repository for', () => {
+    expect(() => validateTenantStack(descriptorNamedBlog(), TEST_ZONES)).toThrow(
+      /registered to branchLeft\/ghost-tenant-blog/
+    );
+    expect(() =>
+      validateTenantStack(descriptorNamedBlog(), TEST_ZONES, { claimantRepo: TENANT_ZERO_REPO })
+    ).not.toThrow();
+  });
+
+  it('passes GITHUB_REPOSITORY on as claimantRepo, so tenant zero constructs', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', TENANT_ZERO_REPO);
+    expect(() => buildBlog('claimant-passed')).not.toThrow();
+  });
+
+  it('constructs tenant zero from the repository spelt in another case, as GitHub reports it', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', TENANT_ZERO_REPO.toLowerCase());
+    expect(() => buildBlog('claimant-lowercase')).not.toThrow();
   });
 });
 

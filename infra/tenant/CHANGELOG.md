@@ -2,6 +2,18 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## Unreleased
+
+- The render core pin moves from 0.2.0 to 0.4.0. 0.3.0 changes rendered output
+  (a Ghost stop grace period, a fixed mail-spool drain address, a Stripe
+  connect limit on demos, a scanner metrics volume on paying tenants, the
+  Network tab hidden) and 0.4.0 is additive; see the render core's changelog
+  for each rollout step. No `activeColour` and no `mail.route` is passed.
+- `GhostTenant` hands `GITHUB_REPOSITORY` to `validateTenantStack()` as
+  `claimantRepo`, as the render core now requires for a registered tenant
+  name. Behaviour is unchanged: a registered name from its own repository
+  constructs, any other repository or none is refused.
+
 ## 8.0.0
 
 **The tenant stack holds no secret value. The host renders the secrets file.**

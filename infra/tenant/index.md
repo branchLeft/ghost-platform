@@ -90,6 +90,12 @@ The removed-argument check, the kind check, `validateTenantStack()` and `render(
 before `super()`, so an invalid descriptor never reaches the engine,
 registered or not.
 
+The repository named by `GITHUB_REPOSITORY` is read once. It goes to
+`validateTenantNameClaim()` and, when set, to `validateTenantStack()` as
+`claimantRepo`, because the render core refuses a registered tenant name
+that is not told the repository it runs in. Unset, a registered name is
+refused by both checks; an unregistered name needs no repository.
+
 ## Constructor identity object
 
 Computed before `super()` and passed as its props rather than `{}`, then
