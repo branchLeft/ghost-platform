@@ -4,8 +4,8 @@
 
 Docker Hub rate-limits anonymous pulls per runner address, so this repo's CI
 must not pull third-party images from it. This script copies each image in
-`.github/image-mirror/images.json` to `ghcr.io/branchleft/mirror/<name>` by
-digest and proves the copy.
+`.github/image-mirror/images.json` to `ghcr.io/branchleft/mirror-private/<name>`
+by digest and proves the copy.
 
 For each entry it:
 
@@ -44,32 +44,15 @@ the list's validation.
 
 ## Visibility
 
-The mirror packages stay **private**, GitHub's default. The reason is Docker's
-Terms of Use (<https://www.docker.com/legal/docker-terms-service/>, effective
-2026-08-26), which say users "may redistribute Docker Images made available in
-Docker Hub at no cost, to third parties but solely when bundled with or
-incorporated into its own software products, and not on a standalone basis",
-and that other parties' images are "Third-Party Content subject to their
-corresponding terms and conditions". A public package of unmodified Docker Hub
-images is standalone redistribution, so the copy is kept private and used only
-by this repository's own workflows.
+The mirror packages are **private**. Reason (PRIN-1): the images are other parties' works under licences that set conditions on a public copy (the corresponding-source offer for the GPL-2.0 code in the mysql and percona-server images, notices and terms for the debian, alpine, pebble and AGPL-3.0 zitadel entries, and Docker's terms on standalone redistribution of Docker Hub images). Nothing in this repository meets those conditions, and `images.json` flags those entries `conditioned`. The private copy is for this organisation's own workflows and hosts. Secrecy is not the reason: the images are public upstream. A workflow cannot change a package's visibility; a first publish is private, and a public package cannot be made private again.
 
-What this does not establish. Secrecy is not the reason: the images are public
-upstream, so "no confidentiality exposure" answers a question that was not asked.
-The reason is the Docker terms above, no standalone redistribution to third
-parties. A fork of this public repository belongs to a third party, and GitHub's
-package documentation says that granting a public repository access to a private
-package can let its forks, and Dependabot, read it. Whether that applies to these
-packages has not been observed. It is not recorded as an accepted risk in
-`.claude/ACCEPTED-RISKS.md`. Whether to accept it, or to require it to be
-observed on the first run first, is the owner's decision; this change does not
-make it.
+Build artifacts, mirror copies and derived images alike, are private unless publishing one benefits the open-source community. This is a default for artifacts, not a rule about source, which stays public by default. The owner's words: "we are open-source first, source-available second. We don't need to make our build artifacts public unless they are beneficial to the open-source community."
 
-The consumers are this repository's workflows, pulling with `GITHUB_TOKEN`
-(`packages: read`) after a `docker login ghcr.io`. Hosts are not consumers:
-host stacks keep their Docker Hub references until the owner decides how a host
-would hold a pull credential. The upstream licences recorded in `images.json`
-are checked for this private CI copy only.
+The packages under the retired namespace `ghcr.io/branchleft/mirror/` were published public before this move and are not changed by this repository. They are not used by any reference in the tree.
+
+A fork of this public repository belongs to a third party, and GitHub's package documentation says that granting a public repository access to a private package can let its forks, and Dependabot, read it. Whether that applies to these packages has not been observed. It is not recorded as an accepted risk in `.claude/ACCEPTED-RISKS.md`. Whether to accept it, or to require it to be observed on the first run first, is the owner's decision; this change does not make it.
+
+The consumers are this repository's workflows, pulling with `GITHUB_TOKEN` (`packages: read`) after a `docker login ghcr.io`. Nothing is pulled anonymously. Hosts are not consumers in this change: host stacks keep their Docker Hub references until a later change gives each pulling host its own read-only key through `DOCKER_CONFIG`. The upstream licences recorded in `images.json` are checked for this private copy only.
 
 ## Local development (no credential)
 
@@ -86,7 +69,7 @@ one variable whose default is the public source:
 
 With `IMAGE_REGISTRY` unset, which is every local run, Docker pulls the public
 image by that digest. In CI the workflow sets
-`IMAGE_REGISTRY=ghcr.io/branchleft/mirror` (after a `docker login ghcr.io` with
+`IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private` (after a `docker login ghcr.io` with
 `GITHUB_TOKEN`), the same reference resolves to the mirror copy, and the digest
 guarantees the same bytes. A `docker build` takes the value from
 `--build-arg IMAGE_REGISTRY`, which reads it from the environment. The mirror

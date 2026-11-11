@@ -8,7 +8,8 @@ a released digest against a pinned one, drives one tenant's bump through
 backup, apply, verify and, on failure or abort, revert, and pages a
 person when it runs out of moves. It exercises no judgement of its own:
 every genuine decision (a major version, an irreversible migration, a
-failed gate) is somebody else's call, upstream of this module.
+failed gate) is settled upstream of this module by refusal, never by a
+person approving the release.
 
 ## What this module is, and is not
 
@@ -45,7 +46,10 @@ decide, and it has no model in its path (D37).
 
 1. **Pre-flight.** It refuses to run if the environment it is handed holds a
    model key or an agent binary is on its `PATH`. A major or irreversible
-   release (`route: 'consent'`) is held for the owner with no gate run.
+   release (`route: 'consent'`, the refused route) is refused with no gate
+   run and no bump, so tenants stay on the current version. The refusal is
+   raised as an operational alert and a filed work item by the hold sink the
+   caller injects (`RingControllerDependencies.hold`).
 2. **Gates.** The gates run once, on slot 0, and the report must be for the
    release digest. Any red gate, no gates at all, or another digest holds
    the release before any tenant is touched.
@@ -58,8 +62,9 @@ decide, and it has no model in its path (D37).
 5. **No ring 2 without MySQL.** The entry ring is not entered unless ring 0
    held a MySQL tenant that reached `done` and stayed healthy (U6).
 
-A red gate, a major release or a regression is a hold routed to a person,
-not a page. The only page is the state machine's own `failed-unsafe`.
+A red gate, a major release or a regression is a hold, not a page: tenants
+stay on the current version, and the hold is raised as an operational alert
+and a filed work item. No person approves a release to get past it. The only page is the state machine's own `failed-unsafe`.
 Everything reaching a host is injected (`RingControllerDependencies`), the
 clock included, so the tests drive whole releases against fakes and a fake
 clock. `package.json` declares no runtime dependencies, and a test asserts it.

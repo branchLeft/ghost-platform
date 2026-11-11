@@ -20,6 +20,8 @@ import sys
 from datetime import datetime
 from typing import Iterable, NamedTuple
 
+import gtid_snapshot
+
 # The exact comment mysqldump's `--source-data=2` writes: an *uncommented*
 # `CHANGE MASTER TO` (`--source-data=1`) would execute against whatever
 # --all-databases forbids running it against, which is why dump_nightly.py
@@ -124,6 +126,70 @@ def find_resume_point(lines: Iterable[str], *, tenant_database: str) -> tuple[st
     return log_file, position
 
 
+class RecoveryStart(NamedTuple):
+    """Where a replay starts: a binary-log file and position (a dump from
+    db1's bounded snapshot) or a GTID set (a lock-free dump, whose set is
+    exactly the transactions the dump holds). Exactly one form is set."""
+
+    log_file: str | None
+    position: int | None
+    gtid_set: str | None
+
+
+def find_recovery_start(lines: Iterable[str], *, tenant_database: str) -> RecoveryStart:
+    """Streams `lines` once for the dump's recovery position, in whichever
+    form it carries, and for the tenant's declaration. A dump with both forms
+    or neither is refused: the position must be one thing, read from one
+    place."""
+    comment: tuple[str, int] | None = None
+    scanner = gtid_snapshot.PurgedStatementScanner()
+    declared = False
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        if comment is None:
+            comment = _match_resume_comment(line)
+        try:
+            scanner.feed(line)
+        except gtid_snapshot.GtidError as exc:
+            raise ExtractError(str(exc)) from None
+        if not declared and _declares_database(line, tenant_database):
+            declared = True
+    try:
+        gtid_position = scanner.require_position()
+    except gtid_snapshot.NoGtidStatement:
+        gtid_position = None
+    except gtid_snapshot.GtidError as exc:
+        raise ExtractError(str(exc)) from None
+    if comment is not None and gtid_position is not None:
+        raise ExtractError(
+            "dump carries both a '-- CHANGE MASTER TO ...' comment and a GTID_PURGED statement: "
+            "the recovery position is ambiguous"
+        )
+    if comment is None and gtid_position is None:
+        raise ExtractError(
+            "dump has no '-- CHANGE MASTER TO ...' comment; was it taken with --source-data=2? "
+            "It has no GTID_PURGED statement either (--set-gtid-purged=ON)"
+        )
+    if not declared:
+        raise ExtractError(
+            f"tenant database {tenant_database!r} is not declared anywhere in the dump (no matching "
+            "CREATE DATABASE/USE) -- check --tenant-database for a typo, or that this is the right dump"
+        )
+    if gtid_position is not None:
+        return RecoveryStart(log_file=None, position=None, gtid_set=gtid_position)
+    assert comment is not None
+    return RecoveryStart(log_file=comment[0], position=comment[1], gtid_set=None)
+
+
+def parse_dump_recovery_start(dump_text: str, *, tenant_database: str) -> RecoveryStart:
+    return find_recovery_start(dump_text.splitlines(), tenant_database=tenant_database)
+
+
+def read_dump_recovery_start(path: str, *, tenant_database: str) -> RecoveryStart:
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return find_recovery_start(handle, tenant_database=tenant_database)
+
+
 def parse_dump_resume_point(dump_text: str, *, tenant_database: str) -> tuple[str, int]:
     """String-based convenience wrapper over find_resume_point, for a
     caller that already holds the dump in memory. The CLI path (main(),
@@ -184,16 +250,25 @@ def mysqlbinlog_argv(
     binlog_paths: list[str],
     *,
     database: str | None,
-    start_position: int,
+    start_position: int | None = None,
     stop_datetime: str | None = None,
+    exclude_gtids: str | None = None,
 ) -> list[str]:
     """Builds the mysqlbinlog invocation that scopes replay to one tenant.
     `database=None` builds the *unscoped* command, kept as a first-class
     option here rather than a separate code path to keep in sync.
+    The replay starts at `start_position` (file and position) or, for a
+    lock-free dump, skips every transaction in `exclude_gtids` (the dump's
+    own GTID set); exactly one is given.
     See extract_tenant_binlog.md#mysqlbinlog_argv."""
     if not binlog_paths:
         raise ExtractError("at least one binlog file is required")
-    argv = ["mysqlbinlog", f"--start-position={start_position}"]
+    if (start_position is None) == (exclude_gtids is None):
+        raise ExtractError("exactly one of start_position or exclude_gtids must be given")
+    if exclude_gtids is not None:
+        argv = ["mysqlbinlog", f"--exclude-gtids={exclude_gtids}", "--skip-gtids"]
+    else:
+        argv = ["mysqlbinlog", f"--start-position={start_position}"]
     if database is not None:
         argv.append(f"--database={database}")
     if stop_datetime is not None:
@@ -295,9 +370,10 @@ def extract_tenant_stream(
     binlog_paths: list[str],
     *,
     database: str | None,
-    start_position: int,
+    start_position: int | None = None,
     stop_datetime: str | None = None,
     run=subprocess.run,
+    exclude_gtids: str | None = None,
 ) -> bytes:
     """Returns the filtered SQL stream as bytes, whether or not it carries
     any event for `database` -- an empty (for this tenant) result is a
@@ -307,7 +383,11 @@ def extract_tenant_stream(
     stream applied to a restore host is worse than none, so this never
     returns partial stdout on failure."""
     argv = mysqlbinlog_argv(
-        binlog_paths, database=database, start_position=start_position, stop_datetime=stop_datetime
+        binlog_paths,
+        database=database,
+        start_position=start_position,
+        stop_datetime=stop_datetime,
+        exclude_gtids=exclude_gtids,
     )
     result = run(argv, capture_output=True, check=False, env=_child_env(TZ="UTC"))
     if result.returncode != 0:
@@ -419,6 +499,121 @@ def _replay_from_resume_point(
     )
 
 
+PREVIOUS_GTIDS_HEADER_PATTERN = re.compile(rb"^#[^\n]*[ \t]Previous-GTIDs[ \t]*$", re.MULTILINE)
+_PREVIOUS_GTIDS_LINE_PATTERN = re.compile(rb"^# ([0-9a-fA-F][0-9a-fA-F:,\-]*)[ \t]*$")
+
+# mysqlbinlog stops before the first event at or past this position. A
+# binlog's Format_description and Previous_gtids events are its first two,
+# a few hundred bytes in.
+_PREVIOUS_GTIDS_STOP_POSITION = 4096
+
+
+def parse_previous_gtids(sql: bytes) -> str | None:
+    """The canonical GTID set of the `Previous-GTIDs` event in mysqlbinlog's
+    output for one file: every transaction executed before that file began.
+    An event with no set under it is the empty set. None if the output has no
+    such event, which is what a binlog written with gtid_mode=OFF gives."""
+    header = PREVIOUS_GTIDS_HEADER_PATTERN.search(sql)
+    if header is None:
+        return None
+    lines = sql[header.end() :].split(b"\n")[1:]
+    parts: list[str] = []
+    for line in lines:
+        match = _PREVIOUS_GTIDS_LINE_PATTERN.match(line)
+        if match is None:
+            break
+        parts.append(match.group(1).decode())
+    return gtid_snapshot.normalise_gtid_set("".join(parts))
+
+
+def assert_binlogs_cover_gtid_set(first_binlog_path: str, dump_gtid_set: str, *, run=subprocess.run) -> None:
+    """Refuses a replay whose binlog range starts too late for the dump's
+    set. The transactions to replay are those in the log and not in the
+    dump's set. Those from before the first file are exactly that file's
+    Previous-GTIDs; if any is not in the dump's set, it is in neither the
+    dump nor the files given, and the restore would silently lack it. A first
+    file with no Previous-GTIDs event was not written with GTIDs, so
+    `--exclude-gtids` could not honour the set at all."""
+    result = run(
+        ["mysqlbinlog", f"--stop-position={_PREVIOUS_GTIDS_STOP_POSITION}", first_binlog_path],
+        capture_output=True,
+        check=False,
+        env=_child_env(TZ="UTC"),
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else result.stderr
+        raise ExtractError(f"mysqlbinlog exited {result.returncode} reading the first file's header: {stderr}")
+    previous = parse_previous_gtids(result.stdout)
+    if previous is None:
+        raise ExtractError(
+            f"{first_binlog_path!r} has no Previous-GTIDs event: it was not written with gtid_mode=ON, so the "
+            "dump's GTID set cannot say which of its transactions to skip"
+        )
+    try:
+        covered = gtid_snapshot.is_subset(gtid_snapshot.parse_gtid_set(previous), gtid_snapshot.parse_gtid_set(dump_gtid_set))
+    except gtid_snapshot.GtidError as exc:
+        raise ExtractError(str(exc)) from None
+    if not covered:
+        raise ExtractError(
+            f"binlog gap: {first_binlog_path!r} begins after transactions {previous!r} that the dump's set "
+            f"{dump_gtid_set!r} does not hold -- an earlier binlog file is missing from the list given, and "
+            "the replay would silently lack what it holds"
+        )
+
+
+def _replay_from_gtid_set(
+    *,
+    gtid_set: str,
+    binlog_paths: list[str],
+    tenant_database: str,
+    stop_datetime: str | None,
+    apply_socket_path: str | None,
+    apply_host: str | None,
+    apply_user: str,
+    apply_password: str,
+    run,
+    check_gap: bool = True,
+) -> ReplayResult:
+    """The replay for a lock-free dump: every file given, in order, with the
+    dump's own set skipped. No file or position is involved, so no file is
+    singled out: the gap check stands in for the resume file lookup."""
+    sorted_paths = sorted_binlog_paths(binlog_paths)
+    assert_contiguous(sorted_paths)
+    if check_gap:
+        assert_binlogs_cover_gtid_set(sorted_paths[0], gtid_set, run=run)
+    sql = extract_tenant_stream(
+        sorted_paths,
+        database=tenant_database,
+        exclude_gtids=gtid_set,
+        stop_datetime=stop_datetime,
+        run=run,
+    )
+    row_events, statements = count_tenant_events(sql, tenant_database)
+    apply_stream(
+        sql,
+        socket_path=apply_socket_path,
+        host=apply_host,
+        user=apply_user,
+        password=apply_password,
+        run=run,
+    )
+    return ReplayResult(
+        row_events=row_events,
+        statements=statements,
+        binlogs_end_at=binlogs_coverage_end(sorted_paths[-1], run=run),
+        sql=sql,
+    )
+
+
+def replay_from_start(start: RecoveryStart, *, check_gap: bool = True, **replay) -> ReplayResult:
+    """Replays from whichever position the dump carried. `replay` is the
+    keyword arguments both replays share."""
+    if start.gtid_set is not None:
+        return _replay_from_gtid_set(gtid_set=start.gtid_set, check_gap=check_gap, **replay)
+    assert start.log_file is not None and start.position is not None
+    return _replay_from_resume_point(log_file=start.log_file, position=start.position, **replay)
+
+
 def restore_point_in_time(
     *,
     dump_text: str,
@@ -430,14 +625,15 @@ def restore_point_in_time(
     apply_user: str,
     apply_password: str,
     run=subprocess.run,
+    check_gap: bool = True,
 ) -> ReplayResult:
-    """The end-to-end scoped replay: resume point (and tenant-declaration
+    """The end-to-end scoped replay: recovery position (and tenant-declaration
     check) from the dump, sort-then-contiguity check, filtered extract,
     always applied to the restore target (see ReplayResult)."""
-    log_file, position = parse_dump_resume_point(dump_text, tenant_database=tenant_database)
-    return _replay_from_resume_point(
-        log_file=log_file,
-        position=position,
+    start = parse_dump_recovery_start(dump_text, tenant_database=tenant_database)
+    return replay_from_start(
+        start,
+        check_gap=check_gap,
         binlog_paths=binlog_paths,
         tenant_database=tenant_database,
         stop_datetime=stop_datetime,
@@ -451,7 +647,17 @@ def restore_point_in_time(
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dump", required=True, help="Path to the decrypted --source-data=2 dump")
+    parser.add_argument(
+        "--dump",
+        required=True,
+        help="Path to the decrypted dump: a --source-data=2 dump or a lock-free --set-gtid-purged=ON dump",
+    )
+    parser.add_argument(
+        "--skip-gap-check",
+        action="store_true",
+        help="GTID dumps only: do not check that the first binlog file begins at or before the dump's GTID set. "
+        "An operator override; a missing earlier file then goes unnoticed",
+    )
     parser.add_argument("--tenant-database", required=True)
     parser.add_argument(
         "--stop-datetime",
@@ -472,10 +678,14 @@ def main(argv: list[str]) -> int:
         return 1
 
     try:
-        log_file, position = read_dump_resume_point(args.dump, tenant_database=args.tenant_database)
-        result = _replay_from_resume_point(
-            log_file=log_file,
-            position=position,
+        start = read_dump_recovery_start(args.dump, tenant_database=args.tenant_database)
+        if start.gtid_set is not None:
+            print(f"extract_tenant_binlog: replaying after the dump's GTID set {start.gtid_set}")
+            if args.skip_gap_check:
+                print("extract_tenant_binlog: WARNING: --skip-gap-check given; a missing earlier binlog file will not be noticed", file=sys.stderr)
+        result = replay_from_start(
+            start,
+            check_gap=not args.skip_gap_check,
             binlog_paths=args.binlog_paths,
             tenant_database=args.tenant_database,
             stop_datetime=args.stop_datetime,

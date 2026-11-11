@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - render-core/src/spool.ts
-      - demo-host/provision/branchleft_demo_egress.sh
+      - demo-host/provision/branchleft_demo_egress.py
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
       - scripts/mail-spool-proof/**
@@ -18,7 +18,7 @@ on:
     branches: [main]
     paths:
       - render-core/src/spool.ts
-      - demo-host/provision/branchleft_demo_egress.sh
+      - demo-host/provision/branchleft_demo_egress.py
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
       - scripts/mail-spool-proof/**
@@ -29,6 +29,12 @@ on:
 permissions:
   contents: read
   packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   spool-proof:

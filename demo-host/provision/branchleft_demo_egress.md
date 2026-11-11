@@ -1,4 +1,4 @@
-# branchleft_demo_egress.sh: demo container egress deny
+# branchleft_demo_egress.py: demo container egress deny
 
 This implements the owner's ruling `egress=a` of 2026-09-28: outbound traffic
 is denied for the demo containers only, and the host keeps NTP and its
@@ -69,14 +69,21 @@ exists today.
   to rewrite.
 - **Installed as** `/usr/local/sbin/branchleft-demo-egress`, and re-run by
   `branchleft-demo-egress.service` at every boot and every Docker restart.
-- **POSIX sh.** It runs on Debian's dash on the host and on busybox in its
-  container proof.
+- **Python 3, standard library only, no shell.** Its shebang is
+  `#!/usr/bin/python3 -I`, so the host needs `/usr/bin/python3`, as its other
+  root programs already do; `-I` ignores `PYTHON*` variables, the user site and
+  the working directory. Its container proof runs it with the Alpine `python3`
+  that the proof installs. Every
+  tool is called from an argument list, never through a shell. Each call has a
+  30-second limit: a call that hangs stops the program there, as a failed call
+  does, before any later step.
 
 ## Proof
 
-- `test_branchleft_demo_egress.py` runs the script against fake `iptables`,
-  `ip6tables`, their `-restore` tools and `hostname`, and asserts the exact
-  ruleset and the refusals.
+- `test_branchleft_demo_egress.py` runs the program as a subprocess against
+  fake `iptables`, `ip6tables` and their `-restore` tools, compares the ruleset
+  it writes byte for byte with `demo-egress-ruleset.golden`, and asserts the
+  refusals.
 - `scripts/test-demo-container-egress.sh` runs it against a real dockerd and
   real iptables, inside a privileged Docker-in-Docker container named
   `demo1`. Every "cannot reach" check has a control run before the policy,

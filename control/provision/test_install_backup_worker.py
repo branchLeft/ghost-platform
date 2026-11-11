@@ -190,6 +190,47 @@ class UnitsMatchTheInstallLayout(unittest.TestCase):
     def test_the_lock_bound_module_the_transport_loads_is_required(self) -> None:
         self.assertIn("db/provision/bounded_snapshot.py", ibw.REQUIRED_RELEASE_FILES)
 
+    def test_every_db_provision_module_the_transport_loads_by_path_is_required(self) -> None:
+        source = (SCRIPTS / "dial_in_transport.py").read_text()
+        loaded = set(re.findall(r'"db" / "provision" / "([a-z_]+\.py)"', source))
+        self.assertIn("gtid_snapshot.py", loaded)
+        for name in loaded:
+            self.assertIn(f"db/provision/{name}", ibw.REQUIRED_RELEASE_FILES)
+
+    def _stage(self, directory: pathlib.Path, *, leave_out: tuple[str, ...] = ()) -> pathlib.Path:
+        for rel in ibw.REQUIRED_RELEASE_FILES:
+            if rel in leave_out:
+                continue
+            target = directory / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((REPO_ROOT / rel).read_bytes())
+        return directory / "infra" / "provisioning" / "scripts"
+
+    def _run_staged(self, scripts: pathlib.Path, snapshot: str) -> subprocess.CompletedProcess:
+        code = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import dial_in_transport as d; "
+            "d.RemoteMysqldumpTransport(host='h', user='u', ssl_ca='c', snapshot=sys.argv[2])"
+        )
+        return subprocess.run(
+            [sys.executable, "-I", "-c", code, str(scripts), snapshot], capture_output=True, text=True, check=False
+        )
+
+    def test_a_staged_release_imports_the_transport_in_both_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = self._stage(pathlib.Path(tmp))
+            for mode in ("bounded", "gtid"):
+                result = self._run_staged(scripts, mode)
+                self.assertEqual(result.returncode, 0, (mode, result.stderr))
+
+    def test_bounded_mode_needs_no_gtid_module_but_gtid_mode_fails_loudly_without_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = self._stage(pathlib.Path(tmp), leave_out=("db/provision/gtid_snapshot.py",))
+            bounded = self._run_staged(scripts, "bounded")
+            self.assertEqual(bounded.returncode, 0, bounded.stderr)
+            gtid = self._run_staged(scripts, "gtid")
+            self.assertNotEqual(gtid.returncode, 0)
+            self.assertIn("gtid_snapshot.py is missing", gtid.stderr)
+
     def test_every_run_is_preceded_by_the_tenants_preflight(self) -> None:
         self.assertEqual(
             self.service["ExecStartPre"].split(),

@@ -134,8 +134,8 @@ test('the checker flags each regression, so a passing run means something', () =
   assert.ok(
     problems(
       sabotage(
-        '            exit 1\n          fi\n          echo "image=',
-        '            :\n          fi\n          echo "image='
+        '            exit 1\n          fi\n          echo "digest=',
+        '            :\n          fi\n          echo "digest='
       )
     ).includes('a malformed digest does not fail the job')
   );
