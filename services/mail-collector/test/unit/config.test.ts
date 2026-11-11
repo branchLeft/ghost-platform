@@ -142,7 +142,7 @@ describe('loadConfig', () => {
       const config = loadConfig(BASE_ENV);
       expect(config.sweego).toBeUndefined();
       expect(config.pinStateDir).toBeUndefined();
-      expect(config.pinTtlMs).toBe(7 * 24 * 60 * 60 * 1000);
+      expect(config.pinTtlMs).toBe(35 * 24 * 60 * 60 * 1000);
     });
 
     it('carries the credential file path and its own rate, with documented defaults', () => {
