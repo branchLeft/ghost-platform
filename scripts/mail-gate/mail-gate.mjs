@@ -98,14 +98,6 @@ async function drainUntil(port, token, done, deadline) {
   return seen;
 }
 
-/**
- * Runs the gate. Never throws: a setup failure is a failed check, so the caller
- * always gets { passed, durationMs, checks }, plus `logs` ({ ghost, spool }: the
- * last 200 lines of each container's log, redacted) when a check failed.
- * `transactionalHost` is the candidate's SMTP target (default: the spool);
- * `bulkBaseUrl` is its newsletter target. The controls point either elsewhere.
- * `siteUrl` is the address Ghost is told it lives at (default: the slot domain).
- */
 // The `docker run` argument list for the gate's spool. Pure, so the drain-host
 // test can check the arguments the gate really passes, not the text that builds them.
 export function spoolRunArgs({ spool, net, token, drainPort, spoolImage }) {
@@ -152,6 +144,14 @@ export function spoolRunArgs({ spool, net, token, drainPort, spoolImage }) {
   ];
 }
 
+/**
+ * Runs the gate. Never throws: a setup failure is a failed check, so the caller
+ * always gets { passed, durationMs, checks }, plus `logs` ({ ghost, spool }: the
+ * last 200 lines of each container's log, redacted) when a check failed.
+ * `transactionalHost` is the candidate's SMTP target (default: the spool);
+ * `bulkBaseUrl` is its newsletter target. The controls point either elsewhere.
+ * `siteUrl` is the address Ghost is told it lives at (default: the slot domain).
+ */
 export async function runMailGate({
   image,
   spoolImage = PINNED_SPOOL,
