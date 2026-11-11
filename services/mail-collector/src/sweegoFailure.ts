@@ -12,11 +12,11 @@ export type SweegoFailureReason =
   | 'auth'
   /** The credential file could not be read, or was empty. Nothing was taken. */
   | 'credential'
-  /** A 4xx at MAIL or RCPT. Nothing was taken. */
+  /** A 4xx at MAIL, RCPT or the DATA command. Nothing was taken. */
   | 'deferred'
-  /** A 5xx at MAIL: the relay refused the sender. Nothing was taken. */
+  /** A 5xx at MAIL or the DATA command: the relay refused the sender or the transaction. Nothing was taken. */
   | 'refused'
-  /** A 5xx at RCPT, or an envelope the client could not form: a bad address is bad everywhere. Terminal. */
+  /** A 5xx at RCPT, or an envelope the client could not form: a bad address is bad everywhere. The only terminal reason. */
   | 'recipient-rejected'
   /** A timeout once the session was past setup: the relay may have the message. */
   | 'timeout'
@@ -124,14 +124,21 @@ export function classifySweegoError(error: unknown): SweegoSubmissionError {
       );
     }
     case 'EENVELOPE':
-      if (command === 'MAIL FROM') {
-        return new SweegoSubmissionError(permanent ? 'refused' : 'deferred', smtpCode);
+      // An envelope the client refused to form (no recipient, a malformed
+      // address). The only case with no reply to read, and the only one besides
+      // a 5xx at RCPT that is a bad address.
+      if (command === 'API') {
+        return new SweegoSubmissionError('recipient-rejected');
       }
-      if (command === 'RCPT TO') {
-        return new SweegoSubmissionError(permanent ? 'recipient-rejected' : 'deferred', smtpCode);
+      if (smtpCode === undefined) {
+        return new SweegoSubmissionError('ambiguous');
       }
-      // An envelope the client refused to form (no recipient, a malformed address).
-      return new SweegoSubmissionError('recipient-rejected');
+      if (command === 'RCPT TO' && permanent) {
+        return new SweegoSubmissionError('recipient-rejected', smtpCode);
+      }
+      // A refusal at MAIL, RCPT (4xx) or the DATA command comes before any
+      // content is sent, so nothing was taken and the address is not at fault.
+      return new SweegoSubmissionError(permanent ? 'refused' : 'deferred', smtpCode);
     default:
       return new SweegoSubmissionError('ambiguous', smtpCode);
   }

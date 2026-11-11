@@ -61,6 +61,7 @@ function pinTracker(name: string): SubmittedTracker {
 }
 const mx1Pins = pinTracker('mx1-pins.json');
 const sweegoPins = pinTracker('sweego-pins.json');
+const sweegoAmbiguous = pinTracker('sweego-ambiguous.json');
 if (!config.pinStateDir) {
   log.warn('pins_not_persistent', {});
 }
@@ -145,6 +146,7 @@ const runtime = createCollectorRuntime({
   sweegoQuota: sweegoUsage,
   mx1Pins,
   sweegoPins,
+  sweegoAmbiguous,
   throttle,
   dedupe,
   health,

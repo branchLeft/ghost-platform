@@ -74,6 +74,24 @@ describe('classifySweegoError', () => {
       'recipient-rejected',
       'recipient-rejected',
     ],
+    [
+      'a 4xx reply to the DATA command',
+      { code: 'EENVELOPE', command: 'DATA', responseCode: 451 },
+      'deferred',
+      'not-accepted',
+    ],
+    [
+      'a 5xx reply to the DATA command',
+      { code: 'EENVELOPE', command: 'DATA', responseCode: 554 },
+      'refused',
+      'not-accepted',
+    ],
+    [
+      'an envelope refusal that names no step and no reply',
+      { code: 'EENVELOPE' },
+      'ambiguous',
+      'ambiguous',
+    ],
     ['a failed message', { code: 'EMESSAGE', responseCode: 554 }, 'ambiguous', 'ambiguous'],
     ['an error with no code', {}, 'ambiguous', 'ambiguous'],
   ];
