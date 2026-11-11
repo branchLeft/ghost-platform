@@ -83,6 +83,7 @@ describe('the allowance latch in the collector loop', () => {
       waitForToken: async () => {
         taken += 1;
       },
+      empty() {},
       reload() {},
       currentRate: () => 0,
     };
@@ -500,6 +501,7 @@ describe('the allowance latch in the collector loop', () => {
         reached = true;
         await waiting;
       },
+      empty() {},
       reload() {},
       currentRate: () => 0,
     };

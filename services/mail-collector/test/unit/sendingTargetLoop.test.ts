@@ -54,6 +54,7 @@ describe('collector loop with two sending targets', () => {
       waitForToken: async () => {
         tokens.taken += 1;
       },
+      empty() {},
       reload() {},
       currentRate: () => 0,
     };

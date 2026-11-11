@@ -24,6 +24,7 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_BULK_RAMP_PATH` | no (off) | Optional live-reloadable bulk ramp file. Unset, bulk runs at the bulk ceiling alone. See the bulk lanes section. |
 | `COLLECTOR_DEDUPE_TTL_MS` | no (default `3600000`) | How long a submitted message id is remembered, to recognise a re-offer caused by a lost ack. |
 | `COLLECTOR_DEDUPE_STATE_PATH` | no (off) | File, on a volume that outlives the container and is writable by the `node` user, the submitted ids are kept in. Unset, the ids live in memory only: a restart forgets them and the collector logs `dedupe_not_persistent` at start-up. |
+| `COLLECTOR_BULK_DEFERRAL_STATE_PATH` | no (beside `COLLECTOR_DEDUPE_STATE_PATH`, as `bulk-deferral.json`) | File the bulk deferral hold is kept in, so a restart during the hold does not forget it. With neither this nor the dedupe path set, the hold is memory-only. A missing file is no hold; a file that cannot be trusted starts a fresh hold. |
 | `COLLECTOR_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | yes / no (`587`) / yes / yes | mx1's authenticated SMTP submission endpoint. |
 | `COLLECTOR_SMTP_SECURE` | no (default `false`) | `true` for implicit TLS. |
 | `COLLECTOR_SWEEGO_SMTP_HOST` | no (off) | The Sweego relay host (`SWEEGO_RELAY_HOST`). Setting it turns the Sweego client on; the settings below are then required where marked, and set without it they fail start-up. |
@@ -150,6 +151,18 @@ arrive (bounded by the shim's lease length plus however long an ack can
 stay lost); the default in `config.ts` is an hour, comfortably past that.
 Within that TTL an id is submitted at most once; once its entry expires, a
 later re-offer of the same id would be submitted again.
+
+The loop marks each submitted id as awaiting its ack, and such an id is not
+swept at the TTL: it stays until the shim has taken it (`markAcked`, after a
+successful ack call, which then starts the plain TTL), or for 14 days at the
+most. A batch at a low ramp rate takes longer than the TTL (25 messages at 20
+per hour is over an hour), and an ack is sent only when the batch ends, so an
+id swept at the TTL would be sent again after a failed ack or a restart. The
+set of ids awaiting an ack is written to the state file too, so it survives a
+restart; a file written before this existed loads with every id treated as
+acked. This was chosen over raising the TTL because the longest batch depends
+on the shim's batch limit and the lowest ramp rate, neither of which this
+service owns.
 
 ### descriptorTargets DescriptorTargetStore
 
@@ -524,7 +537,21 @@ changes; a rewrite that does not parse keeps the last good schedule.
 
 A bulk submission that mx1 answers with `421 4.7.28` or `451 4.7.650`
 halves the bulk rate for at least 10 minutes. A second such reply inside
-that hold halves it again. The reduction clears once the hold passes.
+that hold halves it again. The reduction clears once the hold passes. The
+enhanced code counts only at the status code position of a reply line, so
+the same digits in an address or a URL do not match. The deferral also
+empties the bulk bucket, so the lower rate starts from nothing and a full
+bucket is never released at once. The hold is written to
+`COLLECTOR_BULK_DEFERRAL_STATE_PATH` (temp file, fsync, rename) and read back
+at start-up, so a restart inside the hold keeps the halved rate. A hold end
+later than one hold period from now is clamped to one period.
+
+`startedAt` must be a complete ISO-8601 instant with a date, a time and a
+zone, no later than five minutes ahead of the clock and no older than 366
+days. Anything else makes the whole file invalid, so a typo such as `11` or
+`2020` can never jump the ramp to its last step: the last good schedule is
+kept, or with none loaded bulk runs at 1 per hour, which is never above the
+first step.
 
 Limits, stated so they are not mistaken for guarantees:
 
@@ -551,6 +578,10 @@ reputation. This collector is the single egress point every spool's mail
 converges on, so it is the one place left that can still bound the real
 rate; the shim's bucket stays where it is, gating how much any one spool
 can hand over in a single drain, never the estate total.
+
+`messagesPerHour` from the constructor or the override file must be finite and
+positive. An Infinity or NaN is not adopted: the previous rate stays, or the
+default of 50 where there is none.
 
 Starts with exactly one grace token, not a full bucket and not zero, for
 the same reason the shim's own bucket does: zero would make the very
