@@ -25,7 +25,7 @@ export async function removeFileIfPresent(path: string): Promise<void> {
   await syncDirectory(dirname(path));
 }
 
-async function syncDirectory(dir: string): Promise<void> {
+export async function syncDirectory(dir: string): Promise<void> {
   const handle = await open(dir, 'r');
   try {
     await handle.sync();
