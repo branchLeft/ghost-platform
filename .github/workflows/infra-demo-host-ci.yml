@@ -199,7 +199,7 @@ jobs:
       - name: Decide whether the plan could cost money
         id: spend
         continue-on-error: true
-        uses: branchLeft/github-workflows/.github/actions/spend-gate@8435e9fb73a5ef015f19bc6803b98b1105c03540 # v1.0.23
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@ea6de91ba90ed9a3a988ae8ffa0e9d70dd42f691 # v1.0.19
         with:
           preview-json: preview.json
           working-directory: infra/demo-host
@@ -401,7 +401,7 @@ jobs:
       - name: Decide whether the plan could cost money
         id: spend
         continue-on-error: true
-        uses: branchLeft/github-workflows/.github/actions/spend-gate@8435e9fb73a5ef015f19bc6803b98b1105c03540 # v1.0.23
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@ea6de91ba90ed9a3a988ae8ffa0e9d70dd42f691 # v1.0.19
         with:
           preview-json: preview.json
           working-directory: infra/demo-host
