@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@branchleft/hetzner-host':
-        specifier: 0.2.0
-        version: 0.2.0(@pulumi/hcloud@1.41.0(typescript@5.9.3))(typescript@5.9.3)
+        specifier: 0.3.0
+        version: 0.3.0(@pulumi/hcloud@1.41.0(typescript@5.9.3))(typescript@5.9.3)
       '@pulumi/hcloud':
         specifier: 1.41.0
         version: 1.41.0(typescript@5.9.3)
@@ -33,8 +33,8 @@ importers:
 
 packages:
 
-  '@branchleft/hetzner-host@0.2.0':
-    resolution: {integrity: sha512-DA34qCrMORzpnEMY4TJP49Nn7fAAquVC03Aia5g11SldpAW6Wqagg3rnWgenowCbL4tjErmgzGKHaxc3a1woDw==, tarball: https://npm.pkg.github.com/download/@branchleft/hetzner-host/0.2.0/23783c36c85d54a28aeb4dfa07074ac2f059e5e1}
+  '@branchleft/hetzner-host@0.3.0':
+    resolution: {integrity: sha512-varO44yWdubDTQxts/AB4DLGBGYENBt89S+URNGAShMgOwLO/NuIxDdm3C+B765FYwqZfY041QUHx15O1EHZ7A==, tarball: https://npm.pkg.github.com/download/@branchleft/hetzner-host/0.3.0/58c2f6a20eeeca910c1249d3ebade9e87ce9d139}
     peerDependencies:
       '@pulumi/hcloud': 1.41.0
 
@@ -1283,7 +1283,7 @@ packages:
 
 snapshots:
 
-  '@branchleft/hetzner-host@0.2.0(@pulumi/hcloud@1.41.0(typescript@5.9.3))(typescript@5.9.3)':
+  '@branchleft/hetzner-host@0.3.0(@pulumi/hcloud@1.41.0(typescript@5.9.3))(typescript@5.9.3)':
     dependencies:
       '@pulumi/hcloud': 1.41.0(typescript@5.9.3)
       '@pulumi/pulumi': 3.258.0(typescript@5.9.3)
