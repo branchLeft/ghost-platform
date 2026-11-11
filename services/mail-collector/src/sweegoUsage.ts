@@ -110,6 +110,19 @@ export interface SweegoUsageOptions {
 const STATE_VERSION = 1;
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 
+/**
+ * The longest a message can be held at the account cap: the counters reset at
+ * the first instant of the next UTC calendar month (`roll`), so a hold ends at
+ * the end of the month it began in, and 31 days is the longest month.
+ */
+export const MAX_CAP_HOLD_MS = 31 * 24 * 60 * 60 * 1000;
+
+/** Slack beyond the longest hold, so a pin never ends on the same tick as the hold it covers. */
+export const PIN_TTL_MARGIN_MS = 4 * 24 * 60 * 60 * 1000;
+
+/** The pin TTL when none is configured: the longest hold plus the margin (35 days). */
+export const DEFAULT_PIN_TTL_MS = MAX_CAP_HOLD_MS + PIN_TTL_MARGIN_MS;
+
 /** The UTC calendar month of an instant, `YYYY-MM`. */
 export function utcMonthOf(ms: number): string {
   const at = new Date(ms);

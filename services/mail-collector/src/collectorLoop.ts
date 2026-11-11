@@ -20,7 +20,7 @@ import {
 } from './sendingTarget.js';
 import type { FailureCounter } from './submissionFailures.js';
 import { failureReasonOf } from './sweegoFailure.js';
-import type { SweegoUseCounter } from './sweegoUsage.js';
+import { DEFAULT_PIN_TTL_MS, type SweegoUseCounter } from './sweegoUsage.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
@@ -97,8 +97,9 @@ export interface CollectorRuntime {
 }
 
 const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
-// UNPROVEN: must outlast the shim's longest retry horizon; read it from the shim before the pin is made persistent.
-const DEFAULT_MX1_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// The shim re-offers an unacked row every SHIM_DRAIN_LEASE_SECONDS (30 s by default)
+// with no attempt cap and no maximum age, so the pin TTL alone bounds a held
+// message. It outlasts the longest cap hold: see ../README.md#dedupe-createsubmittedtracker.
 
 /**
  * Reconciles one drain-and-deliver loop per descriptor-named host on every
@@ -115,11 +116,15 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
-  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
-  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
-  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
   const servedByMx1Logged = new Set<string>();
+  // Pinned messages the last offer left held at the account cap. Their pins are
+  // never swept: a swept pin would let the message be decided afresh.
+  const heldAtCapIds = new Set<string>();
+  const isHeldAtCap = (id: string): boolean => heldAtCapIds.has(id);
 
   /**
    * Submits one message through the target the resolver names. `submitted`:
@@ -138,6 +143,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     message: WireMessage,
     target: DrainTarget
   ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop'> {
+    // Asked afresh on every offer: only a message the latest offer left held at
+    // the cap is protected from the pin sweep.
+    heldAtCapIds.delete(message.id);
     if (deps.enforceHeaderFrom) {
       const verdict = checkHeaderFrom(message, target.sendingDomain);
       if (!verdict.ok) {
@@ -211,6 +219,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         : resolveSendingTarget(route, context);
     };
     const heldAtCap = (): 'held' => {
+      heldAtCapIds.add(message.id);
       deps.log.warn('sweego_pinned_held_at_cap', { target: target.id, message: message.id });
       return 'held';
     };
@@ -515,8 +524,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       sweepTimer = setInterval(() => {
         deps.dedupe.sweep();
         mx1Pins.sweep();
-        sweegoPins.sweep();
-        sweegoAmbiguous.sweep();
+        sweegoPins.sweep(isHeldAtCap);
+        sweegoAmbiguous.sweep(isHeldAtCap);
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 

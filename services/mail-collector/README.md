@@ -38,7 +38,7 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_SWEEGO_ACCOUNT_CAP` | to use Sweego | Messages per UTC calendar month across every tenant together, held inside the Sweego plan (`SWEEGO_ACCOUNT_CAP`). A positive integer; no default. Unset, Sweego is treated as not configured: the collector logs `sweego_not_configured` and every message goes through mx1. |
 | `COLLECTOR_SWEEGO_USAGE_STATE_PATH` | to use Sweego | File, on a volume that outlives the container and is writable by the `node` user, the monthly counters are kept in (`SWEEGO_USAGE_STATE_PATH`). Unset, Sweego is treated as not configured, the same as an unset cap. |
 | `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up, so the rollout must set it before Sweego is enabled. |
-| `COLLECTOR_PIN_TTL_MS` | no (default `604800000`) | How long a pin is remembered. The 7 days are a placeholder, not a measured value: it must outlast the shim's longest retry horizon, which has not been read yet. |
+| `COLLECTOR_PIN_TTL_MS` | no (default `3024000000`, 35 days) | How long a pin is remembered, counted from the attempt that made it. It must outlast the longest hold at the Sweego account cap (31 days, the longest UTC month, `MAX_CAP_HOLD_MS` in `sweegoUsage.ts`), so the default adds four days. A value below 31 days (`2678400000`) is refused at start-up. The shim re-offers an unacked row every `SHIM_DRAIN_LEASE_SECONDS` (30 s; `services/mailgun-shim/src/config.ts`) with no attempt cap and no maximum age, and the drain contract sets none, so this TTL is the only time bound on a held pinned message. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 | `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
@@ -164,6 +164,12 @@ restart; a file written before this existed loads with every id treated as
 acked. This was chosen over raising the TTL because the longest batch depends
 on the shim's batch limit and the lowest ramp rate, neither of which this
 service owns.
+
+`sweep(keep)` takes an optional rule naming ids to leave alone however old they
+are. The loop passes it for the two Sweego pin trackers, naming each message its
+latest offer left held at the account cap, so a pin is never swept while its
+message is waiting on the cap (see the pin TTL in the Sweego submission section).
+The state-file format is unchanged.
 
 ### descriptorTargets DescriptorTargetStore
 
@@ -374,13 +380,15 @@ counter keyed by reason alone, for the signals that read it.
   held message is sent in the first poll after the boundary. The cap is a spend
   limit, so it wins over delivery: this hold is accepted, not shortened, because
   the only ways to shorten it are to send above the cap or to send through mx1
-  something Sweego may already have delivered. Nothing in this repo limits how long
-  the shim re-offers an unacked message, so within this repo no hold is cut short;
-  whether the sender gives up on a message that is still unsent after some days
-  is not readable here and has not been checked (UNPROVEN: read the sender's retry
-  limit; if it is under a month, a message held for the cap can be given up on
-  before the month ends). A test pins the bound: held at 23:59:59.999 UTC on the
-  last day, sent at 00:00:00.000 on the first.
+  something Sweego may already have delivered. The shim re-offers an unacked row
+  every `SHIM_DRAIN_LEASE_SECONDS` (30 s by default) with no attempt cap and no
+  maximum age, and the drain contract sets none, so nothing cuts a hold short and
+  the pin TTL is the only time bound on one. That is why the default
+  `COLLECTOR_PIN_TTL_MS` is 35 days (31 plus four) and start-up refuses less than
+  31 days, and why the pin sweep never drops the pin of a message held at the
+  cap. A test pins the bound: held at 23:59:59.999 UTC on the last day, sent at
+  00:00:00.000 on the first; another holds a pinned retry at the cap on day 8
+  and shows it stays pinned, uncounted a second time and unsent to mx1.
 - **A pin file that cannot be trusted.** The three pin files are written
   atomically, but if one is corrupt or unreadable at start-up its ids are lost.
   The same holds for a file that has vanished (missing though a first save was
@@ -396,8 +404,17 @@ counter keyed by reason alone, for the signals that read it.
   `COLLECTOR_PIN_STATE_DIR` a restart forgets every pin and ambiguity record, and
   with them the protection above (the collector logs `pins_not_persistent` at
   start-up); without `COLLECTOR_SWEEGO_USAGE_STATE_PATH` Sweego is not used at all.
-  Set all three before Sweego is enabled. The 7 day `COLLECTOR_PIN_TTL_MS` is a
-  placeholder until the shim's longest retry horizon has been read.
+  Set all three before Sweego is enabled. `COLLECTOR_PIN_TTL_MS` defaults to 35
+  days and start-up refuses less than 31 (see the variable's row). A pin
+  sweep, every `dedupeSweepMs`, drops a pin older than the TTL, except one for a
+  message the latest offer left held at the account cap
+  (`sweego_pinned_held_at_cap`): that pin is kept for as long as the message is
+  offered and held. The same bound is the length of the `stateLost` window, so
+  after a lost pin file a re-offered Sweego message nothing remembers is held for
+  up to 35 days instead of 7. `COLLECTOR_DEDUPE_TTL_MS` is not tied to the pin
+  TTL: a dedupe entry only has to outlast a lost ack (and an entry awaiting its ack
+  is kept up to 14 days regardless), and a pinned message held at the cap is not
+  in dedupe at all.
 
 ### sweegoUsage createSweegoUsage
 

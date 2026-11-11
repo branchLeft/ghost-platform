@@ -1,4 +1,5 @@
 import { dirname, join } from 'node:path';
+import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
 export interface CollectorConfig {
   port: number;
@@ -120,7 +121,7 @@ export interface CollectorConfig {
 
   /** Directory the per-message target pins are kept in, on a volume that outlives the process. Unset, a restart forgets them. */
   pinStateDir?: string;
-  /** How long a pin is remembered. Must outlast the shim's longest retry horizon. */
+  /** How long a pin is remembered. Never below the longest Sweego cap hold (`MAX_CAP_HOLD_MS`); `loadConfig` refuses a lower value. */
   pinTtlMs: number;
 
   /**
@@ -196,6 +197,21 @@ function shimSchemeEnv(env: CollectorEnv): string {
   return raw;
 }
 
+/**
+ * A pin that ends before the longest cap hold would let a message held at the
+ * cap be decided afresh (sent to Sweego again, or to mx1), so a TTL below that
+ * bound is refused at start-up rather than trusted.
+ */
+function pinTtlEnv(env: CollectorEnv): number {
+  const ttl = positiveIntEnv(env, 'COLLECTOR_PIN_TTL_MS', DEFAULT_PIN_TTL_MS);
+  if (ttl < MAX_CAP_HOLD_MS) {
+    throw new Error(
+      `COLLECTOR_PIN_TTL_MS is ${ttl} ms, below the longest Sweego cap hold of ${MAX_CAP_HOLD_MS} ms (31 days): a pinned message held at the cap would be decided afresh when its pin ended`
+    );
+  }
+  return ttl;
+}
+
 function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
@@ -225,7 +241,6 @@ function bulkDeferralStatePathEnv(env: CollectorEnv): string | undefined {
 
 const DEFAULT_SWEEGO_SMTP_PORT = 587;
 const DEFAULT_SWEEGO_TIMEOUT_MS = 20_000;
-const DEFAULT_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SWEEGO_PARTNERS = [
   'COLLECTOR_SWEEGO_SMTP_USER',
@@ -345,7 +360,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     },
     sweego: sweegoEnv(env),
     pinStateDir: env.COLLECTOR_PIN_STATE_DIR || undefined,
-    pinTtlMs: positiveIntEnv(env, 'COLLECTOR_PIN_TTL_MS', DEFAULT_PIN_TTL_MS),
+    pinTtlMs: pinTtlEnv(env),
     heartbeatUrl: requireEnv(env, 'COLLECTOR_HEARTBEAT_URL'),
     heartbeatFailureThreshold: positiveIntEnv(
       env,
