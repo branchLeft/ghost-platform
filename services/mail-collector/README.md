@@ -357,13 +357,30 @@ counter keyed by reason alone, for the signals that read it.
   address is still dropped. The attempt is counted against the tenant allowance and
   the account cap (see `sweegoUsage`), once per message however it ends later.
 - **A pinned message and the account cap.** A pinned retry goes to Sweego whatever
-  the tenant's allowance says, but it is counted in the same reservation as any
-  other attempt and the account cap holds for it: at the cap it is left unacked
-  (`sweego_pinned_held_at_cap`), never sent above the cap and never to mx1 (its
-  first attempt may have been taken). The cap is a spend limit, so it wins over
-  delivery: a held message waits for the next month, and if the spool's retry
-  horizon ends first the spool gives up on it. The overshoot past the cap is
-  therefore bounded by the messages in flight together, not by the pinned backlog.
+  the tenant's allowance says, and the account cap holds for it: at the cap it is
+  left unacked (`sweego_pinned_held_at_cap`), never sent above the cap and never to
+  mx1 (its first attempt may have been taken). A pinned retry of a message that
+  already holds a place (an earlier attempt ended ambiguous and was counted, or its
+  reserved place was recounted after a crash, see `sweegoUsage`) is the exception:
+  its place is already inside the count, so the cap does not hold it and the retry
+  reserves nothing more. Any other pinned retry is counted in the same reservation
+  as a first attempt. The overshoot past the cap is therefore bounded by the
+  messages in flight together, not by the pinned backlog, and a crash does not add
+  to it: every reservation is on disk before its send.
+- **How long a pinned retry can be held (decision recorded).** A hold at the cap
+  ends when the cap is lifted: at 00:00:00 UTC on the first of the next month, or
+  sooner if the owner raises the cap (a bigger plan). So the longest a message can
+  be held for the cap is the rest of the calendar month, at most 31 days, and the
+  held message is sent in the first poll after the boundary. The cap is a spend
+  limit, so it wins over delivery: this hold is accepted, not shortened, because
+  the only ways to shorten it are to send above the cap or to send through mx1
+  something Sweego may already have delivered. Nothing in this repo limits how long
+  the shim re-offers an unacked message, so within this repo no hold is cut short;
+  whether the sender gives up on a message that is still unsent after some days
+  is not readable here and has not been checked (UNPROVEN: read the sender's retry
+  limit; if it is under a month, a message held for the cap can be given up on
+  before the month ends). A test pins the bound: held at 23:59:59.999 UTC on the
+  last day, sent at 00:00:00.000 on the first.
 - **A pin file that cannot be trusted.** The three pin files are written
   atomically, but if one is corrupt or unreadable at start-up its ids are lost.
   The same holds for a file that has vanished (missing though a first save was
@@ -400,11 +417,32 @@ descriptor `mail.route: { primary: "sweego", sweegoAllowance: TENANT_ALLOWANCE }
   a month: the file keeps a digest of each message counted at an ambiguous end
   (never the id), and a later accept for it is not counted again. A lost ack is
   re-offered but skipped by the dedupe tracker, so it cannot count twice. A crash
-  between the accept and the write undercounts by one.
+  between the accept and the write undercounts by one (the dedupe mark is made
+  first, so the message is not sent twice for it).
 - **In flight counts.** The quota questions include attempts begun and not yet
   settled. The loop asks again after the Sweego throttle wait and begins in the
   same tick, so tenants with a message in flight together cannot take the total
   past the cap, and a latch that arrived during a throttle wait is honoured.
+- **A reservation is written before the send.** `begin` saves the state file, with
+  the place in an `inflight` list, before it returns, and the loop pins the message
+  and sends only after that. The save that settles the attempt (the count, or the
+  release of a refused attempt) also removes the place from the list, in one write.
+  A process that dies between the two leaves the place in the file, and the next
+  start counts it as used (`inflight-recounted`, once for each), because the send
+  may have been taken; the overshoot a crash can cause is therefore nil, where it
+  was the number of sends in the air. A message counted this way holds its place:
+  its retry is counted once, not twice. `begin` returns no slot when it cannot
+  save (the state is unreadable, vanished or corrupt, or the write fails): the
+  loop then logs `sweego_reservation_failed`, pins nothing, sends nothing and
+  leaves the message unacked for the next offer, which the resolver reads against
+  the latch as it stands.
+- **A message that holds its place.** `holdsPlace(messageId)` is true for a message
+  counted at an ambiguous end, or recounted after a crash, this month, and false
+  while the counters cannot be trusted. For such a pinned message the loop does
+  not ask the cap (its place is already inside the total, so the cap would hold a
+  message that has already been paid for), and `begin` hands back a slot that
+  reserves and counts nothing. The retry cannot take a second place, and it cannot
+  be held at cap minus one by its own count.
 - **The latch.** A tenant latches on the message that reaches its
   `sweegoAllowance` and stays latched until the month changes, even if the
   allowance is raised meanwhile (a descriptor can be stale; a raise takes effect
@@ -425,8 +463,11 @@ descriptor `mail.route: { primary: "sweego", sweegoAllowance: TENANT_ALLOWANCE }
   the stored counters changes nothing (`clock-behind-state`).
 - **State.** One file, rewritten whole and atomically (temp file, fsync, rename)
   on every change; it holds the month, a degraded flag, per-tenant counts and,
-  only while any exist, digests of the messages counted at an ambiguous end. No
-  message id, address or subject. A marker file beside it is written after the
+  only while any exist, digests of the messages counted at an ambiguous end
+  (`ambiguous`) and the places reserved and not yet settled (`inflight`, a list of
+  `{ tenant, digest }`, the digest absent when the attempt carried no message id).
+  `inflight` is new and optional: a file without it reads as no places in flight,
+  and a build from before it ignores it. No message id, address or subject. A marker file beside it is written after the
   first successful save (see [state markers](#state-markers)).
 - **Fail closed.** An unreadable or corrupt file (`state-unreadable`,
   `state-corrupt`) means usage is unknown: every tenant is latched and the cap
