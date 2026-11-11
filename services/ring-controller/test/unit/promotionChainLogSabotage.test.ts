@@ -146,7 +146,7 @@ describe('sabotage: verification', () => {
   it('without the canonical-form check a respaced entry verifies; the real one rejects it', async () => {
     await expectPair([skipCanonicalCheck], async (mod) => {
       const keys = makeKeys();
-      const spaced = forgeLine(keys, { seq: 0, prev: GENESIS }).replace('{', '{ ');
+      const spaced = forgeLine(keys, { seq: 0, prev: GENESIS }).replace(/^\{/, '{ ');
       return !mod.verifyChain(`${spaced}\n`, keys.publicKey).ok;
     });
   });

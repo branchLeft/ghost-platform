@@ -227,7 +227,7 @@ describe('tamper detection', () => {
 
   it('a right-signed entry that is not in the one canonical form fails verification', async () => {
     const { log, path, keys } = await setup();
-    const spaced = forgeLine(keys, { seq: 0, prev: GENESIS_HASH }).replace('{', '{ ');
+    const spaced = forgeLine(keys, { seq: 0, prev: GENESIS_HASH }).replace(/^\{/, '{ ');
     await writeFile(path, `${spaced}\n`);
 
     expect(await log.verify()).toEqual({ ok: false, code: 'non-canonical-entry', index: 0 });
@@ -235,7 +235,7 @@ describe('tamper detection', () => {
 
   it('a right-signed entry with an unknown extra field fails verification', async () => {
     const { log, path, keys } = await setup();
-    const line = forgeLine(keys, { seq: 0, prev: GENESIS_HASH }).replace('}', ',"extra":1}');
+    const line = forgeLine(keys, { seq: 0, prev: GENESIS_HASH }).replace(/\}$/, ',"extra":1}');
     await writeFile(path, `${line}\n`);
 
     expect(await log.verify()).toEqual({ ok: false, code: 'malformed-entry', index: 0 });
