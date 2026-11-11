@@ -4,152 +4,132 @@
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "portal.demo_request": {
-      "name": "demo_request",
+    "portal.connected_domain": {
+      "name": "connected_domain",
       "schema": "portal",
       "columns": {
-        "demo_id": {
-          "name": "demo_id",
-          "type": "uuid",
+        "fqdn": {
+          "name": "fqdn",
+          "type": "text",
           "primaryKey": true,
           "notNull": true
         },
-        "verified_subject": {
-          "name": "verified_subject",
-          "type": "text",
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "verified_address": {
-          "name": "verified_address",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "publication_name": {
-          "name": "publication_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "accent_colour": {
-          "name": "accent_colour",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "theme": {
-          "name": "theme",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "font": {
-          "name": "font",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "new_to_ghost": {
-          "name": "new_to_ghost",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "import_source": {
-          "name": "import_source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outlet_type": {
-          "name": "outlet_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "logo_hash": {
-          "name": "logo_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "consent_wording": {
-          "name": "consent_wording",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "explainer_wording": {
-          "name": "explainer_wording",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "submitted_at": {
-          "name": "submitted_at",
+        "connected_at": {
+          "name": "connected_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": true
         }
       },
       "indexes": {},
-      "foreignKeys": {},
+      "foreignKeys": {
+        "connected_domain_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "connected_domain_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "connected_domain",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "demo_request_verified_address_unique": {
-          "name": "demo_request_verified_address_unique",
-          "nullsNotDistinct": false,
-          "columns": ["verified_address"]
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"connected_domain\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"connected_domain\".\"tenant_id\" = public.bound_tenant()"
         }
       },
-      "policies": {},
       "checkConstraints": {
-        "demo_request_address_shape": {
-          "name": "demo_request_address_shape",
-          "value": "\"portal\".\"demo_request\".\"verified_address\" = lower(\"portal\".\"demo_request\".\"verified_address\") AND char_length(\"portal\".\"demo_request\".\"verified_address\") <= 254 AND \"portal\".\"demo_request\".\"verified_address\" ~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$'"
-        },
-        "demo_request_subject_length": {
-          "name": "demo_request_subject_length",
-          "value": "char_length(\"portal\".\"demo_request\".\"verified_subject\") BETWEEN 1 AND 255"
-        },
-        "demo_request_name_length": {
-          "name": "demo_request_name_length",
-          "value": "char_length(\"portal\".\"demo_request\".\"publication_name\") BETWEEN 1 AND 100"
-        },
-        "demo_request_description_length": {
-          "name": "demo_request_description_length",
-          "value": "\"portal\".\"demo_request\".\"description\" IS NULL OR char_length(\"portal\".\"demo_request\".\"description\") BETWEEN 1 AND 500"
-        },
-        "demo_request_colour_shape": {
-          "name": "demo_request_colour_shape",
-          "value": "\"portal\".\"demo_request\".\"accent_colour\" IS NULL OR \"portal\".\"demo_request\".\"accent_colour\" ~ '^#[0-9a-f]{6}$'"
-        },
-        "demo_request_choices_shape": {
-          "name": "demo_request_choices_shape",
-          "value": "(\"portal\".\"demo_request\".\"theme\" IS NULL OR \"portal\".\"demo_request\".\"theme\" ~ '^[a-z0-9-]{1,40}$') AND (\"portal\".\"demo_request\".\"font\" IS NULL OR \"portal\".\"demo_request\".\"font\" ~ '^[a-z0-9-]{1,40}$') AND \"portal\".\"demo_request\".\"outlet_type\" ~ '^[a-z0-9-]{1,40}$'"
-        },
-        "demo_request_import_source_length": {
-          "name": "demo_request_import_source_length",
-          "value": "\"portal\".\"demo_request\".\"import_source\" IS NULL OR char_length(\"portal\".\"demo_request\".\"import_source\") BETWEEN 1 AND 100"
-        },
-        "demo_request_logo_hash_shape": {
-          "name": "demo_request_logo_hash_shape",
-          "value": "\"portal\".\"demo_request\".\"logo_hash\" IS NULL OR \"portal\".\"demo_request\".\"logo_hash\" ~ '^[0-9a-f]{64}$'"
-        },
-        "demo_request_wording_length": {
-          "name": "demo_request_wording_length",
-          "value": "char_length(\"portal\".\"demo_request\".\"consent_wording\") BETWEEN 1 AND 2000 AND char_length(\"portal\".\"demo_request\".\"explainer_wording\") BETWEEN 1 AND 2000"
+        "connected_domain_fqdn_shape": {
+          "name": "connected_domain_fqdn_shape",
+          "value": "\"portal\".\"connected_domain\".\"fqdn\" ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$' AND length(\"portal\".\"connected_domain\".\"fqdn\") <= 253"
         }
       },
-      "isRLSEnabled": false
+      "isRLSEnabled": true
+    },
+    "portal.custom_domain_request": {
+      "name": "custom_domain_request",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fqdn": {
+          "name": "fqdn",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verification_token": {
+          "name": "verification_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "custom_domain_request_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "custom_domain_request_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "custom_domain_request",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "custom_domain_request_tenant_id_fqdn_pk": {
+          "name": "custom_domain_request_tenant_id_fqdn_pk",
+          "columns": ["tenant_id", "fqdn"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"custom_domain_request\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"custom_domain_request\".\"tenant_id\" = public.bound_tenant()"
+        }
+      },
+      "checkConstraints": {
+        "custom_domain_request_fqdn_shape": {
+          "name": "custom_domain_request_fqdn_shape",
+          "value": "\"portal\".\"custom_domain_request\".\"fqdn\" ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$' AND length(\"portal\".\"custom_domain_request\".\"fqdn\") <= 253"
+        },
+        "custom_domain_request_token_shape": {
+          "name": "custom_domain_request_token_shape",
+          "value": "\"portal\".\"custom_domain_request\".\"verification_token\" ~ '^[a-z2-7]{32}$'"
+        }
+      },
+      "isRLSEnabled": true
     },
     "portal.demo_state_event": {
       "name": "demo_state_event",
@@ -760,6 +740,153 @@
         }
       },
       "isRLSEnabled": true
+    },
+    "portal.demo_request": {
+      "name": "demo_request",
+      "schema": "portal",
+      "columns": {
+        "demo_id": {
+          "name": "demo_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "verified_subject": {
+          "name": "verified_subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verified_address": {
+          "name": "verified_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "publication_name": {
+          "name": "publication_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accent_colour": {
+          "name": "accent_colour",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "theme": {
+          "name": "theme",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "font": {
+          "name": "font",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "new_to_ghost": {
+          "name": "new_to_ghost",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "import_source": {
+          "name": "import_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outlet_type": {
+          "name": "outlet_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logo_hash": {
+          "name": "logo_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "consent_wording": {
+          "name": "consent_wording",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "explainer_wording": {
+          "name": "explainer_wording",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "demo_request_verified_address_unique": {
+          "name": "demo_request_verified_address_unique",
+          "nullsNotDistinct": false,
+          "columns": ["verified_address"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "demo_request_address_shape": {
+          "name": "demo_request_address_shape",
+          "value": "\"portal\".\"demo_request\".\"verified_address\" = lower(\"portal\".\"demo_request\".\"verified_address\") AND char_length(\"portal\".\"demo_request\".\"verified_address\") <= 254 AND \"portal\".\"demo_request\".\"verified_address\" ~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$'"
+        },
+        "demo_request_subject_length": {
+          "name": "demo_request_subject_length",
+          "value": "char_length(\"portal\".\"demo_request\".\"verified_subject\") BETWEEN 1 AND 255"
+        },
+        "demo_request_name_length": {
+          "name": "demo_request_name_length",
+          "value": "char_length(\"portal\".\"demo_request\".\"publication_name\") BETWEEN 1 AND 100"
+        },
+        "demo_request_description_length": {
+          "name": "demo_request_description_length",
+          "value": "\"portal\".\"demo_request\".\"description\" IS NULL OR char_length(\"portal\".\"demo_request\".\"description\") BETWEEN 1 AND 500"
+        },
+        "demo_request_colour_shape": {
+          "name": "demo_request_colour_shape",
+          "value": "\"portal\".\"demo_request\".\"accent_colour\" IS NULL OR \"portal\".\"demo_request\".\"accent_colour\" ~ '^#[0-9a-f]{6}$'"
+        },
+        "demo_request_choices_shape": {
+          "name": "demo_request_choices_shape",
+          "value": "(\"portal\".\"demo_request\".\"theme\" IS NULL OR \"portal\".\"demo_request\".\"theme\" ~ '^[a-z0-9-]{1,40}$') AND (\"portal\".\"demo_request\".\"font\" IS NULL OR \"portal\".\"demo_request\".\"font\" ~ '^[a-z0-9-]{1,40}$') AND \"portal\".\"demo_request\".\"outlet_type\" ~ '^[a-z0-9-]{1,40}$'"
+        },
+        "demo_request_import_source_length": {
+          "name": "demo_request_import_source_length",
+          "value": "\"portal\".\"demo_request\".\"import_source\" IS NULL OR char_length(\"portal\".\"demo_request\".\"import_source\") BETWEEN 1 AND 100"
+        },
+        "demo_request_logo_hash_shape": {
+          "name": "demo_request_logo_hash_shape",
+          "value": "\"portal\".\"demo_request\".\"logo_hash\" IS NULL OR \"portal\".\"demo_request\".\"logo_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "demo_request_wording_length": {
+          "name": "demo_request_wording_length",
+          "value": "char_length(\"portal\".\"demo_request\".\"consent_wording\") BETWEEN 1 AND 2000 AND char_length(\"portal\".\"demo_request\".\"explainer_wording\") BETWEEN 1 AND 2000"
+        }
+      },
+      "isRLSEnabled": false
     }
   },
   "enums": {},
