@@ -300,4 +300,5 @@ order.
 Not built here: persisting release and ring progress across a crash (each
 tenant already recovers on its own, but a tenant rehydrated in `done` has no
 controller left to close its bake window), and the real adapters (broker
-reconcile, health and gate runners, ring membership).
+reconcile, health and gate runners, the source of the ring assignments
+and of each tenant's engine).
