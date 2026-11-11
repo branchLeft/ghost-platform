@@ -12,6 +12,9 @@ export interface RelayBehaviour {
   authReply?: number;
   mailFromReply?: number;
   rcptReply?: number;
+  /** Refuse the DATA command itself, before any content is sent. */
+  dataCommandReply?: number;
+  /** Refuse at the end of DATA, after the content was sent. */
   dataReply?: number;
   /** Take the message body and never answer the end of DATA. */
   hangAfterData?: boolean;
@@ -25,6 +28,18 @@ export interface FakeRelay {
   /** Every login the relay saw, accepted or not. */
   logins: Array<{ user: string; pass: string }>;
   close(): Promise<void>;
+}
+
+/** The slice of smtp-server's connection the DATA wrapper uses; the package ships no type for it. */
+interface DataHandlerHolder {
+  handler_DATA(command: unknown, callback: () => void): void;
+  send(code: number, text: string): void;
+  session: SMTPServerSession;
+}
+
+interface ServerInternals {
+  connect(socket: unknown, socketOptions: unknown): void;
+  connections: Set<unknown>;
 }
 
 function refusal(code: number, text: string): Error {
@@ -95,6 +110,24 @@ export function startFakeSweegoRelay(user: string, pass: string): Promise<FakeRe
       });
     },
   });
+
+  // smtp-server has no hook for the reply to the DATA command, so wrap the
+  // handler of each connection it opens.
+  const internals = server as unknown as ServerInternals;
+  const connect = internals.connect.bind(server);
+  internals.connect = (socket, socketOptions) => {
+    connect(socket, socketOptions);
+    const connection = [...internals.connections].at(-1) as DataHandlerHolder;
+    const handler = connection.handler_DATA.bind(connection);
+    connection.handler_DATA = (command, callback) => {
+      const reply = relay.behaviour.dataCommandReply;
+      if (reply === undefined) {
+        return handler(command, callback);
+      }
+      connection.send(reply, `data refused for ${connection.session.envelope.rcptTo[0]?.address}`);
+      return callback();
+    };
+  };
 
   return new Promise((resolve, reject) => {
     server.on('error', reject);

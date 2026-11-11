@@ -111,6 +111,8 @@ describe('Sweego delivery client against a fake relay', () => {
     ['a 4xx at RCPT', { rcptReply: 450 }, 'deferred', 'not-accepted', 450],
     ['a 5xx at MAIL', { mailFromReply: 550 }, 'refused', 'not-accepted', 550],
     ['a 5xx at RCPT', { rcptReply: 550 }, 'recipient-rejected', 'recipient-rejected', 550],
+    ['a 4xx at the DATA command', { dataCommandReply: 451 }, 'deferred', 'not-accepted', 451],
+    ['a 5xx at the DATA command', { dataCommandReply: 554 }, 'refused', 'not-accepted', 554],
     ['a 4xx at the end of DATA', { dataReply: 451 }, 'ambiguous', 'ambiguous', 451],
     ['a 5xx at the end of DATA', { dataReply: 554 }, 'ambiguous', 'ambiguous', 554],
   ];

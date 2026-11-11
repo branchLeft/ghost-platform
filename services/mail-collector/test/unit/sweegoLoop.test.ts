@@ -82,6 +82,7 @@ describe('collector loop with the Sweego client', () => {
     drainClient?: DrainClient;
     sweegoPins?: SubmittedTracker;
     mx1Pins?: SubmittedTracker;
+    sweegoAmbiguous?: SubmittedTracker;
   }) {
     const store = createFakeTargetStore([
       { id: 'tenant-a', baseUrl, route: 'sweego', ...options.target },
@@ -102,6 +103,7 @@ describe('collector loop with the Sweego client', () => {
       sweegoFailures: failures,
       sweegoPins: options.sweegoPins,
       mx1Pins: options.mx1Pins,
+      sweegoAmbiguous: options.sweegoAmbiguous,
       throttle: mx1Throttle,
       dedupe: createSubmittedTracker(60_000),
       health: createHealthState(),
@@ -217,6 +219,8 @@ describe('collector loop with the Sweego client', () => {
       ['a 4xx at MAIL', { mailFromReply: 451 }, 'deferred'],
       ['a 4xx at RCPT', { rcptReply: 450 }, 'deferred'],
       ['a 5xx at MAIL', { mailFromReply: 550 }, 'refused'],
+      ['a 4xx at the DATA command', { dataCommandReply: 451 }, 'deferred'],
+      ['a 5xx at the DATA command', { dataCommandReply: 554 }, 'refused'],
     ];
 
     it.each(NOT_ACCEPTED)(
@@ -403,6 +407,144 @@ describe('collector loop with the Sweego client', () => {
       await until(() => acked().length === 1, 'acked');
       expect(sweego.calls).toEqual(['m-1']);
       expect(mx1.calls).toEqual(['m-1', 'm-1']);
+    });
+  });
+
+  describe('only a bad address is dropped', () => {
+    it.each([
+      ['a 4xx', { dataCommandReply: 451 }, 'deferred'],
+      ['a 5xx', { dataCommandReply: 554 }, 'refused'],
+    ] satisfies Array<[string, RelayBehaviour, CountedFailureReason]>)(
+      'holds bulk mail the relay refuses with %s at the DATA command, and sends it once the relay recovers',
+      async (_label, behaviour, reason) => {
+        relay.behaviour = behaviour;
+        const mx1 = fakeClient();
+        shim.enqueue(NEWSLETTER('news-1'));
+        const { failures } = start({ mx1, sweego: realSweego() });
+        await until(() => (failures.counts()[reason] ?? 0) >= 1, 'refusal counted');
+        await settle();
+        expect(acked()).toEqual([]);
+        expect(mx1.calls).toEqual([]);
+        expect(failures.counts()['recipient-rejected']).toBeUndefined();
+
+        relay.behaviour = {};
+        shim.simulateLostAck();
+        await until(() => acked().length === 1, 'acked after recovery');
+        expect(relay.accepted).toHaveLength(1);
+      }
+    );
+
+    it('never drops login mail on a temporary refusal: it falls back to mx1 and is delivered', async () => {
+      relay.behaviour = { dataCommandReply: 451 };
+      const mx1 = fakeClient();
+      shim.enqueue(LOGIN('login-1'));
+      const { failures } = start({ mx1, sweego: realSweego() });
+      await until(() => acked().length === 1, 'login acked');
+      expect(mx1.calls).toEqual(['login-1']);
+      expect(failures.counts()).toEqual({ deferred: 1 });
+    });
+  });
+
+  describe('a message that may already have been taken', () => {
+    it('does not fall login mail back to mx1 on a later definite failure after an ambiguous one', async () => {
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      sweego.behaviour = () => new SweegoSubmissionError('timeout');
+      shim.enqueue(LOGIN('login-1'));
+      start({ mx1, sweego });
+      await until(() => sweego.calls.length >= 1, 'first attempt');
+      sweego.behaviour = () => new SweegoSubmissionError('auth', 535);
+      shim.simulateLostAck();
+      await until(() => sweego.calls.length >= 2, 'second attempt');
+      await settle();
+      expect(mx1.calls).toEqual([]);
+      expect(acked()).toEqual([]);
+    });
+
+    it('still drops a bad address after an ambiguous attempt: it is bad wherever it is sent', async () => {
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      sweego.behaviour = () => new SweegoSubmissionError('timeout');
+      shim.enqueue(LOGIN('login-1'));
+      start({ mx1, sweego });
+      await until(() => sweego.calls.length >= 1, 'first attempt');
+      sweego.behaviour = () => new SweegoSubmissionError('recipient-rejected', 550);
+      shim.simulateLostAck();
+      await until(() => acked().length === 1, 'dropped and acked');
+      expect(mx1.calls).toEqual([]);
+    });
+
+    it('remembers the ambiguity across a restart', async () => {
+      const file = join(dir, 'sweego-ambiguous.json');
+      const tracker = (): SubmittedTracker =>
+        createSubmittedTracker(60_000, Date.now, { statePath: file });
+      const sweego = fakeClient();
+      sweego.behaviour = () => new SweegoSubmissionError('timeout');
+      shim.enqueue(LOGIN('login-1'));
+      start({ mx1: fakeClient(), sweego, sweegoAmbiguous: tracker() });
+      await until(() => sweego.calls.length >= 1, 'first attempt');
+      await stop?.();
+      stop = undefined;
+
+      const mx1 = fakeClient();
+      const again = fakeClient();
+      again.behaviour = () => new SweegoSubmissionError('auth', 535);
+      shim.simulateLostAck();
+      start({ mx1, sweego: again, sweegoAmbiguous: tracker() });
+      await until(() => again.calls.length >= 1, 'attempt after restart');
+      await settle();
+      expect(mx1.calls).toEqual([]);
+    });
+  });
+
+  describe('a pin file that cannot be read', () => {
+    it('holds a re-offered message rather than letting it reach mx1 or a second Sweego attempt', async () => {
+      const files = ['mx1-pins.json', 'sweego-pins.json', 'sweego-ambiguous.json'].map((name) =>
+        join(dir, name)
+      );
+      const trackers = (): SubmittedTracker[] =>
+        files.map((statePath) => createSubmittedTracker(60_000, Date.now, { statePath }));
+      const [mx1Pins, sweegoPins, sweegoAmbiguous] = trackers() as [
+        SubmittedTracker,
+        SubmittedTracker,
+        SubmittedTracker,
+      ];
+      const sweego = fakeClient();
+      sweego.behaviour = () => new SweegoSubmissionError('timeout');
+      shim.enqueue(LOGIN('login-1'));
+      start({ mx1: fakeClient(), sweego, mx1Pins, sweegoPins, sweegoAmbiguous });
+      await until(() => sweego.calls.length >= 1, 'first attempt');
+      await stop?.();
+      stop = undefined;
+
+      for (const file of files) {
+        writeFileSync(file, '{ this is not json');
+      }
+      const [mx1PinsAfter, sweegoPinsAfter, sweegoAmbiguousAfter] = trackers() as [
+        SubmittedTracker,
+        SubmittedTracker,
+        SubmittedTracker,
+      ];
+      // The allowance is now reached, so a message without its pin goes to mx1.
+      const mx1 = fakeClient();
+      const recovered = fakeClient();
+      shim.simulateLostAck();
+      const second = start({
+        mx1,
+        sweego: recovered,
+        quota: { allowanceReached: () => true, accountCapReached: () => false },
+        mx1Pins: mx1PinsAfter,
+        sweegoPins: sweegoPinsAfter,
+        sweegoAmbiguous: sweegoAmbiguousAfter,
+      });
+      await until(
+        () => second.logLines.some((line) => line.includes('pin_state_lost_held')),
+        'message held'
+      );
+      await settle();
+      expect(mx1.calls).toEqual([]);
+      expect(recovered.calls).toEqual([]);
+      expect(acked()).toEqual([]);
     });
   });
 });

@@ -36,6 +36,12 @@ export interface CollectorLoopDeps {
   mx1Pins?: SubmittedTracker;
   /** Ids whose first attempt was at Sweego; a retry stays on Sweego until the login fallback reaches mx1. Memory-only if unset. */
   sweegoPins?: SubmittedTracker;
+  /**
+   * Ids whose attempt at Sweego ended ambiguous (it may have been taken). Such
+   * a message never falls back to mx1 on a later definite failure: the first
+   * attempt may have been delivered. Memory-only if unset.
+   */
+  sweegoAmbiguous?: SubmittedTracker;
   /** Counts Sweego failures by reason class for the signals that read them. Counts nothing if unset. */
   sweegoFailures?: FailureCounter;
   throttle: Throttle;
@@ -82,6 +88,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeRunning = false;
   const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
   const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
   const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
   const servedByMx1Logged = new Set<string>();
 
@@ -107,6 +114,16 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     // the quota may have changed since, but an earlier attempt may have been
     // taken, so a retry elsewhere could send it twice.
     const pinnedToSweego = !reachedMx1 && sweegoPins.has(message.id);
+    // A pin file that could not be read has forgotten which targets saw which
+    // messages. A message offered before (drainCount above 1) and not found in
+    // any pin may have been taken by either target, so it is held, never sent
+    // on: a held message waits, a released one can be sent twice.
+    const pinStateLost = mx1Pins.stateLost || sweegoPins.stateLost || sweegoAmbiguous.stateLost;
+    const known = reachedMx1 || pinnedToSweego || sweegoAmbiguous.has(message.id);
+    if (pinStateLost && target.route === 'sweego' && message.drainCount > 1 && !known) {
+      deps.log.warn('pin_state_lost_held', { target: target.id, message: message.id });
+      return 'held';
+    }
     if (pinnedToSweego && !sweegoReady) {
       deps.log.warn('sweego_pinned_unavailable', { target: target.id, message: message.id });
       return 'held';
@@ -155,9 +172,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           deps.log.warn('recipient_rejected_dropped', { target: target.id, message: message.id });
           return 'dropped';
         }
+        // An attempt that may have been taken is remembered, and a later definite
+        // failure is then read as ambiguous too: falling back to mx1 would send
+        // a second copy of what the first attempt may have delivered.
+        if (kind === 'ambiguous') {
+          sweegoAmbiguous.markSubmitted(message.id);
+        }
         decision = resolveSendingTarget('sweego', {
           ...context,
-          failed: { target: 'sweego', kind },
+          failed: {
+            target: 'sweego',
+            kind: sweegoAmbiguous.has(message.id) ? 'ambiguous' : kind,
+          },
         });
       }
     } else if (target.route === 'sweego' && !servedByMx1Logged.has(target.id)) {
@@ -344,6 +370,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         deps.dedupe.sweep();
         mx1Pins.sweep();
         sweegoPins.sweep();
+        sweegoAmbiguous.sweep();
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 

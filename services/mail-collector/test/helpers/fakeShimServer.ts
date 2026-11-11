@@ -28,7 +28,6 @@ interface HeldRow extends QueuedMessage {
  */
 export class FakeShimServer {
   private rows = new Map<string, HeldRow>();
-  private nextDrainCount = 1;
   private server: Server | undefined;
   readonly drainRequests: number[] = [];
   readonly ackRequests: Array<{ id: string; drainCount: number }[]> = [];
@@ -45,12 +44,11 @@ export class FakeShimServer {
     this.rows.set(message.id, { ...message, drainCount: 0, state: 'queued' });
   }
 
-  /** Forces every currently-held row back to queued under a fresh drainCount, as if its lease had lapsed with no ack received. */
+  /** Forces every currently-held row back to queued, so its next claim carries a higher drainCount, as if its lease had lapsed with no ack received. */
   simulateLostAck(): void {
     for (const row of this.rows.values()) {
       if (row.state === 'held') {
         row.state = 'queued';
-        row.drainCount += 1;
       }
     }
   }
@@ -79,7 +77,8 @@ export class FakeShimServer {
       for (const row of this.rows.values()) {
         if (row.state === 'queued') {
           row.state = 'held';
-          row.drainCount = this.nextDrainCount++;
+          // Per row, like the real spool: the first claim is 1, a re-offer is higher.
+          row.drainCount += 1;
           const { state, ...wire } = row;
           void state;
           messages.push(wire);

@@ -31,8 +31,8 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_SWEEGO_MESSAGES_PER_HOUR` | with the host | Sweego's own send-rate ceiling (`SWEEGO_MESSAGES_PER_HOUR`), separate from `COLLECTOR_MESSAGES_PER_HOUR`. No default: the plan sets it. |
 | `COLLECTOR_SWEEGO_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override, `{"messagesPerHour": N}`, for the Sweego ceiling only. |
 | `COLLECTOR_SWEEGO_SMTP_TIMEOUT_MS` | no (default `20000`) | Bounds connecting, the greeting and every wait on the relay, so a down relay fails fast. |
-| `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up. |
-| `COLLECTOR_PIN_TTL_MS` | no (default `604800000`) | How long a pin is remembered. A placeholder: it must outlast the shim's longest retry horizon, which has not been read yet. |
+| `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up, so the rollout must set it before Sweego is enabled. |
+| `COLLECTOR_PIN_TTL_MS` | no (default `604800000`) | How long a pin is remembered. The 7 days are a placeholder, not a measured value: it must outlast the shim's longest retry horizon, which has not been read yet. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 | `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
@@ -254,8 +254,8 @@ anything that may have reached the relay's queue, and anything unplaced, is
 | `unreachable` | `not-accepted` | Connection refused, DNS failure, TLS or greeting failure, connect timeout |
 | `auth` | `not-accepted` | The relay refused the login |
 | `credential` | `not-accepted` | The credential file is unreadable or empty |
-| `deferred` | `not-accepted` | A 4xx at MAIL or RCPT |
-| `refused` | `not-accepted` | A 5xx at MAIL: the sender was refused, nothing taken |
+| `deferred` | `not-accepted` | A 4xx at MAIL, RCPT or the DATA command |
+| `refused` | `not-accepted` | A 5xx at MAIL or the DATA command: refused before any content, nothing taken |
 | `recipient-rejected` | `recipient-rejected` | A 5xx at RCPT, or an envelope the client could not form |
 | `timeout` | `ambiguous` | A timeout once the session was past setup |
 | `ambiguous` | `ambiguous` | A failure at or after DATA, a reset mid-session, anything unplaced |
@@ -274,10 +274,32 @@ counter keyed by reason alone, for the signals that read it.
   one exception: its mx1 attempt is pinned in `mx1Pins`, which takes over.
 - **The accept.** A Sweego accept marks the dedupe tracker, so a lost ack is only
   re-acked on the next offer and never re-sent.
-- **The terminal outcome.** A `recipient-rejected` failure is dropped: marked in
-  the dedupe tracker, acked, counted under `recipient-rejected`, and never retried
-  or sent to mx1. The spool is not told the failure was permanent (the outcome
-  path is opt-in per spool and mx1-shaped), so it shows the message as accepted.
+- **The terminal outcome.** Only a bad address is dropped: a 5xx at RCPT, or an
+  envelope the client cannot build. It is marked in the dedupe tracker, acked,
+  counted under `recipient-rejected`, and never retried or sent to mx1. Every
+  other refusal, a 4xx at any step and a 5xx at MAIL or the DATA command or after
+  DATA, is held and retried (login mail falls back to mx1 once, only when nothing
+  was taken) under its own counted reason. Known gap: the spool is not told a
+  dropped recipient failed for good (the outcome path is opt-in per spool and
+  mx1-shaped), so Ghost shows the message as accepted and the address is not
+  suppressed.
+- **An attempt that may have been taken.** When an attempt ends ambiguous
+  (a timeout, a failure after DATA, anything unplaced) the id is recorded in
+  `sweegoAmbiguous`. A later definite failure for the same message is then read as
+  ambiguous too, so login mail does not fall back to mx1 and arrive twice. A bad
+  address is still dropped.
+- **A pin file that cannot be trusted.** The three pin files are written
+  atomically, but if one is corrupt or unreadable at start-up its ids are lost.
+  The tracker records that (`stateLost`, kept in the file so a restart still knows)
+  for one pin TTL. In that time a message on a Sweego route that the shim is
+  offering again (`drainCount` above 1) and that no pin remembers is held
+  (`pin_state_lost_held`), never sent to mx1 or to a second Sweego attempt: a held
+  message waits, a released one can arrive twice. First offers are unaffected.
+- **Rollout.** `COLLECTOR_PIN_STATE_DIR` must be set before Sweego is enabled:
+  without it a restart forgets every pin and ambiguity record, and with them the
+  protection above (the collector logs `pins_not_persistent` at start-up). The
+  7 day `COLLECTOR_PIN_TTL_MS` is a placeholder until the shim's longest retry
+  horizon has been read.
 
 ### health HealthState
 
