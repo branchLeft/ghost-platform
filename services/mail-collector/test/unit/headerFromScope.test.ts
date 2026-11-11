@@ -113,6 +113,25 @@ describe('checkHeaderFrom: the header From must name exactly one mailbox in the 
       ).toEqual({ ok: false, reason: 'from-unreadable' });
     });
 
+    it.each([
+      'Sender ',
+      ' Sender',
+      'sender\r\n',
+      'SENDER\t',
+      'Return-Path\r\n',
+      ' return-path ',
+      'Resent-From\r',
+      '\tRESENT-FROM',
+      'Resent-Sender \r\n',
+    ])(
+      'a competing identity header whose key is padded or has a line break (%j) is refused',
+      (name) => {
+        expect(
+          checkHeaderFrom(message('hello@scope.example', { [name]: 'x@scope.example' }), SCOPE)
+        ).toEqual({ ok: false, reason: 'from-unreadable' });
+      }
+    );
+
     it('does not read a message with no headers object as carrying one', () => {
       expect(checkHeaderFrom({ from: 'hello@scope.example' } as never, SCOPE)).toEqual({
         ok: true,
