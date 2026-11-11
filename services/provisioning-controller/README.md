@@ -24,10 +24,13 @@ executes nothing and writes nothing.
 `executeOnboarding(approvalId, ports, options?)` runs that plan. Every call is
 a fresh start or a resume.
 
-- **Approval gate.** Checked before the run and again before every attempt of
-  every step (`src/gate.ts`). A revoked, narrowed or re-pointed approval stops
-  the run at the next step boundary: a `run-halted` record is appended, the
-  console is told, and the call throws the part 1 approval error.
+- **Approval gate.** All three scopes are checked once before the run, and each
+  step's own scope is checked before every attempt of that step (`src/gate.ts`).
+  A step runs while its own scope stands. Withdrawing a scope stops the run at
+  the first step that needs it. Revoking or re-pointing the whole approval stops
+  the run at the next step. Steps in scopes still granted continue. Each stop
+  appends a `run-halted` record, tells the console, and throws the part 1
+  approval error.
 - **Recorded state, before acting and after.** A `started` record is appended
   before a step is tried and a `complete` record before the next step starts.
   The store is append-only (`StateStore`); `FileStateStore` writes one JSON
