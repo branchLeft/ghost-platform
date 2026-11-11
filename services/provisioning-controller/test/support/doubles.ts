@@ -82,7 +82,11 @@ export class World {
   failFirst = new Map<string, number>();
   failAlways = new Set<string>();
   permanent = new Set<string>();
+  /** Per step key: the error every call throws. */
+  failWith = new Map<string, Error>();
   consoleFails = false;
+  /** The console accepts a report and never answers. */
+  consoleHangs = false;
   /** Runs after each host call completes, with the call count so far. */
   afterCall: ((count: number) => void) | undefined;
   /** Runs at the start of each host call, before it has any effect. */
@@ -98,6 +102,8 @@ export class World {
         if (this.permanent.has(request.key)) {
           throw new PermanentStepError('PERMANENT_PLACEHOLDER');
         }
+        const custom = this.failWith.get(request.key);
+        if (custom !== undefined) throw custom;
         if (this.failAlways.has(request.key)) throw new Error('HOST_DOWN_PLACEHOLDER');
         if (seen <= (this.failFirst.get(request.key) ?? 0)) {
           throw new Error('HOST_BUSY_PLACEHOLDER');
@@ -111,6 +117,7 @@ export class World {
     return {
       report: async (event) => {
         if (this.consoleFails) throw new Error('CONSOLE_DOWN_PLACEHOLDER');
+        if (this.consoleHangs) await new Promise<never>(() => undefined);
         this.events.push(event);
         this.completeAtReport.push(this.state.completeKeys());
       },

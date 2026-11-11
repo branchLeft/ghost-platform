@@ -38,6 +38,7 @@ export {
   RegisterEntryInvalidError,
   RegisterEntryMissingError,
   StateCorruptError,
+  StateFileUnsafeError,
   StateStoreUnreadableError,
   StateStoreWriteError,
 } from './errors.js';

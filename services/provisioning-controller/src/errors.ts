@@ -56,6 +56,14 @@ export class StateStoreWriteError extends Error {
   }
 }
 
+/** The state file is not one the store will read or write: a link, not a plain file, or open to others. */
+export class StateFileUnsafeError extends Error {
+  constructor(readonly problem: string) {
+    super(`The state file is not safe to use: ${problem}.`);
+    this.name = 'StateFileUnsafeError';
+  }
+}
+
 export class StateCorruptError extends Error {
   constructor(
     readonly line: number,

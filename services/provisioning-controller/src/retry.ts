@@ -21,6 +21,15 @@ export function resolveRetry(policy: RetryPolicy = DEFAULT_RETRY): RetryPolicy {
   return policy;
 }
 
+/** How long one console report may take before the run stops waiting for it. */
+export const DEFAULT_REPORT_TIMEOUT_MS = 2000;
+
+/** A whole number of milliseconds, at least 1: a bad value is refused, never clamped. */
+export function resolveReportTimeout(ms: number = DEFAULT_REPORT_TIMEOUT_MS): number {
+  if (!isCount(ms, 1)) throw new InvalidRunOptionsError(['reportTimeoutMs']);
+  return ms;
+}
+
 /** The wait after the given failed attempt (1-based): doubling, capped. */
 export const delayFor = (attempt: number, policy: RetryPolicy): number =>
   Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1));

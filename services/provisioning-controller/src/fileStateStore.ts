@@ -1,9 +1,25 @@
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { constants, type Stats } from 'node:fs';
+import { mkdir, open } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { StateCorruptError } from './errors.js';
+import { StateCorruptError, StateFileUnsafeError } from './errors.js';
 import { RUN_EVENTS, STEP_EVENTS, type StateRecord, type StateStore } from './executePorts.js';
 
 const NEWLINE = 0x0a;
+const OTHERS = 0o077;
+/** Never follow a link at the final path component. */
+const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
+const APPEND_FLAGS =
+  constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+
+type Handle = Awaited<ReturnType<typeof open>>;
+
+/** What makes an opened file unfit to hold the run's history, or undefined when it is fit. */
+function unsafeBecause(info: Stats): string | undefined {
+  if (!info.isFile()) return 'it is not a regular file';
+  if ((info.mode & OTHERS) !== 0) return 'its permissions let other users reach it';
+  return undefined;
+}
+
 const EVENTS: readonly string[] = [...STEP_EVENTS, ...RUN_EVENTS];
 
 const isString = (v: unknown): v is string => typeof v === 'string';
@@ -45,12 +61,18 @@ export class FileStateStore implements StateStore {
   constructor(private readonly path: string) {}
 
   async readAll(): Promise<readonly StateRecord[]> {
-    let text: string;
+    let file: Handle;
     try {
-      text = await readFile(this.path, 'utf8');
+      file = await this.openChecked(READ_FLAGS);
     } catch (e) {
       if ((e as { code?: string }).code === 'ENOENT') return [];
       throw e;
+    }
+    let text: string;
+    try {
+      text = await file.readFile('utf8');
+    } finally {
+      await file.close();
     }
     const lines = text.split('\n');
     lines.pop();
@@ -63,7 +85,7 @@ export class FileStateStore implements StateStore {
 
   async append(record: StateRecord): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-    const file = await open(this.path, 'a+', 0o600);
+    const file = await this.openChecked(APPEND_FLAGS, 0o600);
     try {
       const { size } = await file.stat();
       if (size > 0) await this.cutTornTail(file, size);
@@ -75,7 +97,33 @@ export class FileStateStore implements StateStore {
     }
   }
 
-  private async cutTornTail(file: Awaited<ReturnType<typeof open>>, size: number): Promise<void> {
+  /**
+   * Opens the file and judges the open handle, not the path, so nothing can be
+   * swapped in between the check and the use. A file the store created is
+   * private; one that already exists is refused when others can reach it,
+   * never quietly changed.
+   */
+  private async openChecked(flags: number, mode?: number): Promise<Handle> {
+    let file: Handle;
+    try {
+      file = await open(this.path, flags, mode);
+    } catch (e) {
+      if ((e as { code?: string }).code === 'ELOOP') {
+        throw new StateFileUnsafeError('it is a symbolic link');
+      }
+      throw e;
+    }
+    try {
+      const problem = unsafeBecause(await file.stat());
+      if (problem !== undefined) throw new StateFileUnsafeError(problem);
+    } catch (e) {
+      await file.close();
+      throw e;
+    }
+    return file;
+  }
+
+  private async cutTornTail(file: Handle, size: number): Promise<void> {
     const last = Buffer.alloc(1);
     await file.read(last, 0, 1, size - 1);
     if (last[0] === NEWLINE) return;

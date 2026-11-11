@@ -1,10 +1,21 @@
-import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   FileStateStore,
   StateCorruptError,
+  StateFileUnsafeError,
   StateStoreUnreadableError,
   executeOnboarding,
   type StateRecord,
@@ -45,9 +56,79 @@ describe('FileStateStore', () => {
   });
 
   it('writes a private file', async () => {
-    const { stat } = await import('node:fs/promises');
     await new FileStateStore(file).append(rec(1));
     expect((await stat(file)).mode & 0o077).toBe(0);
+  });
+
+  describe('refuses a state file it cannot trust', () => {
+    const seed = async (): Promise<void> => {
+      await new FileStateStore(file).append(rec(1));
+    };
+
+    it('refuses a symbolic link, to read or to append, and leaves the target alone', async () => {
+      await seed();
+      const link = join(dir, 'link.jsonl');
+      await symlink(file, link);
+      const before = await readFile(file, 'utf8');
+      await expect(new FileStateStore(link).readAll()).rejects.toBeInstanceOf(StateFileUnsafeError);
+      await expect(new FileStateStore(link).append(rec(2))).rejects.toBeInstanceOf(
+        StateFileUnsafeError
+      );
+      expect(await readFile(file, 'utf8')).toBe(before);
+    });
+
+    it('refuses a link that points nowhere, so an append cannot create the target through it', async () => {
+      await mkdir(dirname(file), { recursive: true });
+      const target = join(dir, 'created-through-link.jsonl');
+      await symlink(target, file);
+      await expect(new FileStateStore(file).append(rec(1))).rejects.toBeInstanceOf(
+        StateFileUnsafeError
+      );
+      await expect(stat(target)).rejects.toThrow();
+    });
+
+    it('refuses something that is not a regular file', async () => {
+      await mkdir(file, { recursive: true, mode: 0o700 });
+      await expect(new FileStateStore(file).readAll()).rejects.toBeInstanceOf(StateFileUnsafeError);
+    });
+
+    it.each([
+      ['0640', 0o640],
+      ['0604', 0o604],
+      ['0660', 0o660],
+      ['0666', 0o666],
+    ])(
+      'refuses a file that others can reach (mode %s), to read or to append, and does not change it',
+      async (_label, mode) => {
+        await seed();
+        await chmod(file, mode);
+        const before = await readFile(file, 'utf8');
+        await expect(new FileStateStore(file).readAll()).rejects.toBeInstanceOf(
+          StateFileUnsafeError
+        );
+        await expect(new FileStateStore(file).append(rec(2))).rejects.toBeInstanceOf(
+          StateFileUnsafeError
+        );
+        expect(await readFile(file, 'utf8')).toBe(before);
+        expect((await stat(file)).mode & 0o777).toBe(mode);
+      }
+    );
+
+    it('makes the executor run nothing when the file is unsafe', async () => {
+      await seed();
+      await chmod(file, 0o644);
+      const world = new World();
+      await expect(
+        executeOnboarding(APPROVAL.approvalId, world.ports(new FileStateStore(file)))
+      ).rejects.toBeInstanceOf(StateStoreUnreadableError);
+      expect(world.calls).toEqual([]);
+    });
+
+    it('accepts a file only its owner can reach', async () => {
+      await seed();
+      await chmod(file, 0o400);
+      expect(await new FileStateStore(file).readAll()).toEqual([rec(1)]);
+    });
   });
 
   it('ignores a write that never finished, and cuts it off before the next append', async () => {

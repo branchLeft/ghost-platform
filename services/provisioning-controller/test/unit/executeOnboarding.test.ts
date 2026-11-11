@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ApprovalRequiredError,
   ApprovalScopeError,
@@ -257,6 +257,54 @@ describe('executeOnboarding: retry', () => {
   });
 });
 
+describe('executeOnboarding: host error text', () => {
+  const target = key('create-database');
+  const SECRET = `ghp_${'Q'.repeat(36)}`;
+  const PASSWORD = 'hunter2zz';
+
+  it('keeps a secret-shaped value in a thrown error out of the state record and the console', async () => {
+    const world = new World();
+    world.failWith.set(
+      target,
+      new Error(`login rejected for ${SECRET} with password=${PASSWORD} on host-one`)
+    );
+    const result = await executeOnboarding(APPROVAL.approvalId, world.ports());
+
+    expect(result.status).toBe('stopped');
+    const written = JSON.stringify(world.state.records);
+    const reported = JSON.stringify(world.events);
+    for (const text of [written, reported]) {
+      expect(text).not.toContain(SECRET);
+      expect(text).not.toContain(PASSWORD);
+    }
+    const failed = world.state.records.find((r) => r.event === 'step-failed');
+    expect(failed?.reason).toContain('login rejected');
+    expect(failed?.reason).toContain('host-one');
+  });
+
+  it('redacts the text of a failed attempt that is retried, in record and report alike', async () => {
+    const world = new World();
+    world.failWith.set(target, new Error(`busy token=${SECRET}`));
+    await executeOnboarding(APPROVAL.approvalId, world.ports());
+    const attempt = world.state.records.find((r) => r.event === 'attempt-failed');
+    const retrying = world.events.find((e) => e.type === 'step-retrying');
+    expect(attempt?.reason).toBeDefined();
+    expect(retrying?.reason).toBeDefined();
+    expect(attempt?.reason).not.toContain(SECRET);
+    expect(retrying?.reason).not.toContain(SECRET);
+  });
+
+  it('does not let a secret straddle the 200-character cut', async () => {
+    const world = new World();
+    const lead = 'x '.repeat(90);
+    world.failWith.set(target, new Error(`${lead}${SECRET}`));
+    await executeOnboarding(APPROVAL.approvalId, world.ports());
+    const failed = world.state.records.find((r) => r.event === 'step-failed');
+    expect(failed?.reason).not.toContain('ghp_');
+    expect(failed?.reason).not.toContain('QQQQQ');
+  });
+});
+
 describe('executeOnboarding: a changed register', () => {
   it('refuses a step recorded complete under a different input digest, and never re-runs it', async () => {
     const world = new World();
@@ -278,6 +326,28 @@ describe('executeOnboarding: a changed register', () => {
 
     const again = await executeOnboarding(APPROVAL.approvalId, world.ports());
     expect(again.stoppedAt?.key).toBe(changed);
+    expect(world.calls).toHaveLength(callsBefore);
+  });
+});
+
+describe('executeOnboarding: a register that changes during a run', () => {
+  it('carries the whole run out on the plan it started with, and the next call catches the change', async () => {
+    const world = new World();
+    const plan = await planOnboarding(APPROVAL.approvalId, world.ports());
+    world.afterCall = (count) => {
+      if (count === 2) world.entry = { ...ENTRY, hostnames: ['host-three.example.invalid'] };
+    };
+    const first = await executeOnboarding(APPROVAL.approvalId, world.ports());
+    expect(first.status).toBe('complete');
+    for (const step of plan.steps) {
+      const call = world.calls.find((c) => c.request.key === step.key);
+      expect(call?.request.idempotencyKey).toBe(`${step.key}@${step.inputDigest}`);
+    }
+
+    const callsBefore = world.calls.length;
+    const next = await executeOnboarding(APPROVAL.approvalId, world.ports());
+    expect(next.status).toBe('stopped');
+    expect(next.stoppedAt?.reason).toBe('input-changed');
     expect(world.calls).toHaveLength(callsBefore);
   });
 });
@@ -366,6 +436,27 @@ describe('executeOnboarding: the approval gate', () => {
     expect(world.calls).toHaveLength(8);
   });
 
+  it('runs nothing when the ledger answers with a different approval than the one asked for', async () => {
+    const world = new World();
+    world.approval = { ...APPROVAL, approvalId: 'OTHER_APPROVAL_PLACEHOLDER' };
+    await expect(executeOnboarding(APPROVAL.approvalId, world.ports())).rejects.toBeInstanceOf(
+      ApprovalRequiredError
+    );
+    expect(world.calls).toEqual([]);
+    expect(world.state.records.map((r) => r.event)).toEqual(['run-halted']);
+  });
+
+  it('stops mid-run when the ledger starts answering with a different approval', async () => {
+    const world = new World();
+    world.afterCall = (count) => {
+      if (count === 2) world.approval = { ...APPROVAL, approvalId: 'OTHER_APPROVAL_PLACEHOLDER' };
+    };
+    await expect(executeOnboarding(APPROVAL.approvalId, world.ports())).rejects.toBeInstanceOf(
+      ApprovalRequiredError
+    );
+    expect(world.calls).toHaveLength(2);
+  });
+
   it('refuses to continue under an approval that now names another tenant', async () => {
     const world = new World();
     world.afterCall = (count) => {
@@ -376,6 +467,62 @@ describe('executeOnboarding: the approval gate', () => {
     );
     expect(world.calls).toHaveLength(2);
   });
+});
+
+describe('executeOnboarding: a console that never answers', () => {
+  it('stops waiting for a report after the timeout, so the run carries on and counts the loss', async () => {
+    const world = new World();
+    world.consoleHangs = true;
+    const result = await executeOnboarding(APPROVAL.approvalId, world.ports(), {
+      reportTimeoutMs: 5,
+    });
+    expect(result.status).toBe('complete');
+    expect(world.calls).toHaveLength(STEP_IDS.length);
+    expect(result.reportFailures).toBeGreaterThan(STEP_IDS.length);
+  }, 3000);
+
+  it('does not widen the revocation window: the next gate check still runs while the console hangs', async () => {
+    const world = new World();
+    world.consoleHangs = true;
+    world.afterCall = (count) => {
+      if (count === 3) world.approval = undefined;
+    };
+    await expect(
+      executeOnboarding(APPROVAL.approvalId, world.ports(), { reportTimeoutMs: 5 })
+    ).rejects.toBeInstanceOf(ApprovalRequiredError);
+    expect(world.calls).toHaveLength(3);
+  }, 3000);
+
+  it('applies a default timeout when none is given', async () => {
+    vi.useFakeTimers();
+    try {
+      const world = new World();
+      world.consoleHangs = true;
+      let finished = false;
+      void executeOnboarding(APPROVAL.approvalId, world.ports()).then(() => {
+        finished = true;
+      });
+      await vi.advanceTimersByTimeAsync(2000 * (STEP_IDS.length * 2 + 4));
+      expect(finished).toBe(true);
+      expect(world.calls).toHaveLength(STEP_IDS.length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])(
+    'rejects a report timeout of %s before touching anything',
+    async (ms) => {
+      const world = new World();
+      const err = await executeOnboarding(APPROVAL.approvalId, world.ports(), {
+        reportTimeoutMs: ms,
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(InvalidRunOptionsError);
+      expect((err as InvalidRunOptionsError).fields).toEqual(['reportTimeoutMs']);
+      expect(world.calls).toEqual([]);
+      expect(world.state.records).toEqual([]);
+    }
+  );
 });
 
 describe('executeOnboarding: the console', () => {
