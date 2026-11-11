@@ -8,7 +8,7 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm --dir ../../render-core run build && pnpm --dir ../request-guard run build && tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
