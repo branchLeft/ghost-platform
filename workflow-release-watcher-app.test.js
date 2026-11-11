@@ -12,7 +12,8 @@ const WORKFLOW = path.join(import.meta.dirname, '.github', 'workflows', 'release
 const MINT_ACTION = 'actions/create-github-app-token';
 // Pinned by commit sha; the trailing comment names the release the sha was
 // verified against (the release is more than two weeks old).
-const MINT_USES = /uses:\s*actions\/create-github-app-token@([0-9a-f]{40})\s+#\s+v\d+\.\d+\.\d+\s*$/m;
+const MINT_USES =
+  /uses:\s*actions\/create-github-app-token@([0-9a-f]{40})\s+#\s+v\d+\.\d+\.\d+\s*$/m;
 
 function stripCommentLines(text) {
   return text.replace(/^[ \t]*#.*$/gm, '');
@@ -141,7 +142,12 @@ test('the matcher refuses a workflow that mints with an unpinned ref or an extra
 
 // ---- the merge of the digest PR ----
 
-const WATCHER_DIR = path.join(import.meta.dirname, 'services', 'release-watcher', 'release_watcher');
+const WATCHER_DIR = path.join(
+  import.meta.dirname,
+  'services',
+  'release-watcher',
+  'release_watcher'
+);
 const MERGE_SRC = path.join(WATCHER_DIR, 'merge.py');
 const CLIENTS_SRC = path.join(WATCHER_DIR, 'clients.py');
 
@@ -176,7 +182,10 @@ test('the merge step runs after the watcher and before the gauge is committed', 
 test('the merge step runs only with a minted token and gets the App identity from variables', () => {
   const step = mergeStep(readWorkflow());
   assert.match(step.body, /if:\s*\$\{\{\s*steps\.app-token\.outputs\.token\s*!=\s*''\s*\}\}/);
-  assert.match(step.body, /RELEASE_WATCHER_TOKEN:\s*\$\{\{\s*steps\.app-token\.outputs\.token\s*\}\}/);
+  assert.match(
+    step.body,
+    /RELEASE_WATCHER_TOKEN:\s*\$\{\{\s*steps\.app-token\.outputs\.token\s*\}\}/
+  );
   assert.match(step.body, /DIGEST_MACHINE_SLUG:\s*\$\{\{\s*vars\.DIGEST_MACHINE_SLUG\s*\}\}/);
   assert.match(step.body, /DIGEST_MACHINE_LOGIN:\s*\$\{\{\s*vars\.DIGEST_MACHINE_LOGIN\s*\}\}/);
   assert.match(step.body, /MINTED_APP_SLUG:\s*\$\{\{\s*steps\.app-token\.outputs\.app-slug\s*\}\}/);
@@ -189,14 +198,19 @@ test('the job timeout covers the merge wait', () => {
 });
 
 test('no admin, bypass or auto-merge anywhere in the workflow or the merge code', () => {
-  const forbidden = /--admin|--auto\b|allow_auto_merge|enable_auto_merge|enablePullRequestAutoMerge|autoMerge|bypass/i;
+  const forbidden =
+    /--admin|--auto\b|allow_auto_merge|enable_auto_merge|enablePullRequestAutoMerge|autoMerge|bypass/i;
   for (const [label, body] of [
     ['workflow', readWorkflow()],
     ['merge.py', pythonBody(MERGE_SRC)],
     ['clients.py', pythonBody(CLIENTS_SRC)],
   ]) {
     assert.doesNotMatch(body, forbidden, `${label} must not use ${forbidden}`);
-    assert.doesNotMatch(body, /gh\s+pr\s+merge/, `${label} must not shell out to the gh merge command`);
+    assert.doesNotMatch(
+      body,
+      /gh\s+pr\s+merge/,
+      `${label} must not shell out to the gh merge command`
+    );
   }
 });
 
@@ -223,7 +237,10 @@ test('run() applies the identity, author, line-only and check gates before it ca
     assert.notEqual(at, -1, `run() contains ${needle}`);
     return at;
   });
-  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order
+  );
   assert.equal(body.split('github.merge_pull(').length - 1, 1, 'one merge call');
 });
 
