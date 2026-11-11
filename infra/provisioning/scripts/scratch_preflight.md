@@ -53,9 +53,12 @@ it never reads the tenant's live data.
    count, published post count, member count and newest post title must equal
    the manifest's. Ghost's install defaults, an empty restore, or a partial one
    all fail here.
-7. **Discard.** Whatever happened, the server, the network and the plaintext
-   are removed. Only a passing run asked to `keep` the server skips the
-   removal, and then its caller owns `ScratchMysql.discard()`.
+7. **Discard.** Whatever happened, an error nobody foresaw included, the
+   server, the network and the plaintext are removed. Only a passing run asked
+   to `keep` the server skips the removal, and then its caller owns
+   `ScratchMysql.discard()`. The server and the network are each tried whatever
+   the other did. A removal that fails (Docker answering nonzero for anything
+   but "not found", or breaking) turns the run into a refusal.
 
 `ok` is set only after step 6.
 
