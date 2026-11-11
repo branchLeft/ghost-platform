@@ -823,3 +823,18 @@ test('a new column that is required with no default is a schema change', () => {
   const nullable = `${HEAD}module.exports = createAddColumnMigration('posts', 'x', { type: 'string', nullable: true });`;
   assert.deepEqual(classifySource(nullable).schemaChange, []);
 });
+
+test('a definition with no nullable key is NOT NULL, so with no default it is a schema change', () => {
+  const noKey = `${HEAD}module.exports = createAddColumnMigration('posts', 'x', { type: 'string', maxlength: 191 });`;
+  assert.deepEqual(classifySource(noKey).schemaChange, ['add-required-column']);
+});
+
+test('a spread definition with no default is a schema change', () => {
+  const spread = `${HEAD}const base = { type: 'string' };\nmodule.exports = createAddColumnMigration('posts', 'x', { ...base });`;
+  assert.deepEqual(classifySource(spread).schemaChange, ['add-required-column']);
+});
+
+test('the options object is not the definition: a nullable definition stays reversible', () => {
+  const opts = `${HEAD}module.exports = createAddColumnMigration('posts', 'x', { type: 'string', nullable: true }, { algorithm: 'auto' });`;
+  assert.deepEqual(classifySource(opts).schemaChange, []);
+});

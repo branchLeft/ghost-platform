@@ -229,6 +229,16 @@ the previous image. That is read when its definition is an object literal in the
 (`add-required-column`); a definition held in a variable is not read, and the live check
 that boots the previous image on migrated data is the cover for it. A column whose type
 changed is not read here, and the live check is its cover too.
+
+Not read by `add-required-column`: a call through an alias (`const add = createAddColumnMigration`),
+and a definition held in a variable or passed in from a helper. Only the third argument
+(the definition) is read; the fourth (the options object) is not. The rule is a fail-closed
+reading of the definition: a spread, or a `nullable` that is not literally `true`, with no
+`defaultTo`, is a hit.
+
+Equal content in two different directories is not refused: a step between two tags whose
+trees hold the same migrations (a patch, or a minor bump that adds nothing) is read as it is,
+with 0 new files. Only the same directory passed for two tags is refused by the steps CLI.
 The range route above is unchanged by `rename-column` and `set-nullable`: those two are
 reported under `schemaChange` and do not move `route`.
 

@@ -324,6 +324,27 @@ test('a throwing getter on the record is a refusal, never a throw', () => {
   assert.equal(verdict.reason, REFUSAL.RECORD_UNREADABLE);
 });
 
+test('a hostile error value thrown while reading is a refusal, never a throw', () => {
+  const hostile = new Proxy(new Error('x'), {
+    getPrototypeOf() {
+      throw new Error('prototype trap');
+    },
+  });
+  const bad = oneStep('v6.66.0', 'v6.66.0', 'v6.67.0');
+  Object.defineProperty(bad, 'class', {
+    get() {
+      throw hostile;
+    },
+    enumerable: true,
+  });
+  let verdict;
+  assert.doesNotThrow(() => {
+    verdict = assertReleaseReversible(bad, { pinned: 'v6.66.0', target: 'v6.67.0' });
+  });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, REFUSAL.RECORD_UNREADABLE);
+});
+
 test('a Symbol in a hit is a refusal, never a throw', () => {
   const bad = oneStep('v6.66.0', 'v6.66.0', 'v6.67.0', {
     forwardOnly: [{ path: 'x.js', class: 'contracting', rule: Symbol('r') }],

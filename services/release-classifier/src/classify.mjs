@@ -87,22 +87,26 @@ const keyOf = (p) => {
   if (p.key.type === 'Identifier') return p.key.name;
   return isString(p.key) ? p.key.value : null;
 };
+// Ghost's addTableColumn makes a column NOT NULL unless `nullable` is own-property
+// `true`, so a definition with no `nullable` key is NOT NULL too. The definition is the
+// third argument of createAddColumnMigration(table, column, definition, options); the
+// options object is not read.
+const DEFINITION_ARG = 2;
 function addsRequiredColumn(call) {
-  return call.arguments.some((a) => {
-    if (a.type !== 'ObjectExpression') return false;
-    let nullable;
-    let hasDefault = false;
-    for (const p of a.properties) {
-      // A spread can hold a defaultTo or a nullable this reader cannot see: a spread is
-      // read as no default and no nullable, so it can only add to the refusal.
-      if (p.type !== 'Property') continue;
-      const k = keyOf(p);
-      if (k === 'defaultTo') hasDefault = true;
-      if (k === 'nullable') nullable = p.value;
-    }
-    const nullableTrue = nullable?.type === 'Literal' && nullable.value === true;
-    return nullable !== undefined && !nullableTrue && !hasDefault;
-  });
+  const def = call.arguments[DEFINITION_ARG];
+  if (def?.type !== 'ObjectExpression') return false;
+  let nullable;
+  let hasDefault = false;
+  for (const p of def.properties) {
+    // A spread can hold a defaultTo or a nullable this reader cannot see. A spread is read
+    // as absent, so it can only add to the refusal.
+    if (p.type !== 'Property') continue;
+    const k = keyOf(p);
+    if (k === 'defaultTo') hasDefault = true;
+    if (k === 'nullable') nullable = p.value;
+  }
+  const nullableTrue = nullable?.type === 'Literal' && nullable.value === true;
+  return !nullableTrue && !hasDefault;
 }
 function parseFolder(name) {
   const m = FOLDER_PATTERN.exec(name);

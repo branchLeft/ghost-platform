@@ -64,8 +64,18 @@ export function assertReleaseReversible(record, release) {
   try {
     return decide(record, release);
   } catch (err) {
-    if (err instanceof Unreadable) return refuse(REFUSAL.RECORD_UNREADABLE, err.message);
-    return refuse(REFUSAL.RECORD_UNREADABLE, 'the record could not be read');
+    return refuse(REFUSAL.RECORD_UNREADABLE, detailOf(err));
+  }
+}
+
+// The detail of a failure. Reading it can itself throw when the thrown value is hostile
+// (a Proxy whose prototype trap throws), so every read of it is guarded.
+const GENERIC_DETAIL = 'the record could not be read';
+function detailOf(err) {
+  try {
+    return err instanceof Unreadable ? err.message : GENERIC_DETAIL;
+  } catch {
+    return GENERIC_DETAIL;
   }
 }
 
