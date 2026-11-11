@@ -2,11 +2,16 @@ import { ApprovalRequiredError, ApprovalScopeError } from './errors.js';
 import type { ApprovalLedger, ApprovalScope, RecordedApproval } from './ports.js';
 
 /**
- * The approval gate. The executor calls it before the run and again before
- * every attempt of every step. A step runs while its own scope stands: a
- * withdrawn scope stops the run at the first step that needs it, and a revoked
- * or re-pointed approval stops it at the next step. Steps in scopes still
- * granted continue.
+ * The approval gate. The executor calls it once before the run, with all three
+ * scopes, and again before every attempt of each step that runs, with that
+ * step's scope alone. A scope is withdrawn when the recorded approval no longer
+ * lists it, and a narrowed approval is the same thing. Before the run, one
+ * withdrawn scope refuses the whole run before any step. During the run, the
+ * check at the next attempt of a step that needs the withdrawn scope throws, and
+ * the steps after that one do not run in that call, even those in scopes still
+ * granted. An approval that is revoked, or re-pointed at another tenant, is
+ * refused at the next check. Before the run there is no tenant to compare, so
+ * the run takes the tenant the ledger names when it starts.
  */
 export async function assertApproval(
   approvalId: string,
