@@ -1,17 +1,32 @@
-import type { SubmittedTracker } from './dedupe.js';
-import type { DrainClient } from './drainClient.js';
+import { createSubmittedTracker, type SubmittedTracker } from './dedupe.js';
+import type { DrainClient, WireMessage } from './drainClient.js';
 import type { DeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { HealthState } from './health.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
+import {
+  QUOTA_UNKNOWN,
+  failureKindOf,
+  mailClassOf,
+  resolveSendingTarget,
+  type SendingContext,
+  type SweegoQuota,
+} from './sendingTarget.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
   store: TargetStore;
   drainClient: DrainClient;
+  /** The mx1 delivery client: the only target delivered to when `sweegoDeliveryClient` is unset. */
   deliveryClient: DeliveryClient;
+  /** Unset until a Sweego client exists: a Sweego route is then served by mx1, exactly as before the route existed. */
+  sweegoDeliveryClient?: DeliveryClient;
+  /** Unset means unknown, which the resolver reads as "reached": nothing goes to Sweego. */
+  sweegoQuota?: SweegoQuota;
+  /** Ids whose submission has reached mx1; such a message is never offered to Sweego. Memory-only if unset. */
+  mx1Pins?: SubmittedTracker;
   throttle: Throttle;
   dedupe: SubmittedTracker;
   health: HealthState;
@@ -36,6 +51,8 @@ export interface CollectorRuntime {
 }
 
 const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
+// UNPROVEN: must outlast the shim's longest retry horizon; read it from the shim before the pin is made persistent.
+const DEFAULT_MX1_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Reconciles one drain-and-deliver loop per descriptor-named host on every
@@ -52,6 +69,86 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
+  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
+  const servedByMx1Logged = new Set<string>();
+
+  /**
+   * Submits one message through the target the resolver names. `submitted`:
+   * a target accepted it. `held`: left unacked for the shim to re-offer, and
+   * the rest of the batch carries on (Sweego said no, mx1 was not tried).
+   * `stop`: mx1 failed, so the rest of the batch is left too, as it always was.
+   * Sweego mail bypasses the estate throttle and never touches the mx1 health
+   * counter; mx1 mail does exactly what it did before a second target existed.
+   */
+  async function submit(
+    message: WireMessage,
+    target: DrainTarget
+  ): Promise<'submitted' | 'held' | 'stop'> {
+    const context: SendingContext = {
+      mailClass: mailClassOf(message.emailId),
+      demo: target.demo === true,
+      sweegoConfigured: deps.sweegoDeliveryClient !== undefined,
+      allowanceReached: quota.allowanceReached(target.id),
+      accountCapReached: quota.accountCapReached(),
+      reachedMx1: mx1Pins.has(message.id),
+    };
+    let decision = resolveSendingTarget(target.route, context);
+    if (decision === 'sweego') {
+      const sweego = deps.sweegoDeliveryClient;
+      if (sweego === undefined) {
+        // Not reachable while the resolver reads `sweegoConfigured`; a message
+        // is never marked submitted without a client having taken it.
+        deps.log.warn('sweego_client_missing', { target: target.id, message: message.id });
+        return 'held';
+      }
+      try {
+        await sweego.deliver(message, target.id);
+        deps.dedupe.markSubmitted(message.id);
+        deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
+        return 'submitted';
+      } catch (error) {
+        const kind = failureKindOf(error);
+        deps.log.warn('sweego_submission_failed', {
+          target: target.id,
+          message: message.id,
+          kind,
+          error: (error as Error).message,
+        });
+        decision = resolveSendingTarget(target.route, {
+          ...context,
+          failed: { target: 'sweego', kind },
+        });
+      }
+    } else if (target.route === 'sweego' && !servedByMx1Logged.has(target.id)) {
+      servedByMx1Logged.add(target.id);
+      deps.log.warn('sweego_route_served_by_mx1', { target: target.id });
+    }
+    if (decision !== 'mx1') {
+      // Left unacked: the shim re-offers it and the resolver is asked again.
+      return 'held';
+    }
+    await deps.throttle.waitForToken();
+    mx1Pins.markSubmitted(message.id);
+    try {
+      await deps.deliveryClient.deliver(message, target.id);
+    } catch (error) {
+      deps.health.recordFailure();
+      deps.log.warn('submission_failed', {
+        target: target.id,
+        message: message.id,
+        error: (error as Error).message,
+      });
+      return 'stop';
+    }
+    deps.health.recordSuccess();
+    deps.dedupe.markSubmitted(message.id);
+    // "submitted", not "delivered" -- see dedupe.ts's own doc comment (LLD-6
+    // M5): this only means the target's SMTP front accepted the message,
+    // never that it confirmed delivery to the recipient.
+    deps.log.info('submitted', { target: target.id, message: message.id });
+    return 'submitted';
+  }
 
   function findTarget(id: string): DrainTarget | undefined {
     return deps.store.targets.find((t) => t.id === id);
@@ -145,29 +242,17 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       const acks: Array<{ id: string; drainCount: number }> = [];
       for (const message of messages) {
         if (!deps.dedupe.has(message.id)) {
-          await deps.throttle.waitForToken();
-          try {
-            await deps.deliveryClient.deliver(message, initialTarget.id);
-          } catch (error) {
-            deps.health.recordFailure();
-            deps.log.warn('submission_failed', {
-              target: initialTarget.id,
-              message: message.id,
-              error: (error as Error).message,
-            });
+          const result = await submit(message, target);
+          if (result === 'stop') {
             // Leave this message and the rest of the batch unacked -- the
             // shim's lease lapses and re-offers them; nothing here has
             // been marked submitted, so a retry (here or on another
             // collector) still runs deliver() exactly once per id.
             break;
           }
-          deps.health.recordSuccess();
-          deps.dedupe.markSubmitted(message.id);
-          // "submitted", not "delivered" -- see dedupe.ts's own doc
-          // comment (LLD-6 M5): this only means mx1's SMTP front accepted
-          // the message, never that it confirmed delivery to the
-          // recipient.
-          deps.log.info('submitted', { target: initialTarget.id, message: message.id });
+          if (result === 'held') {
+            continue;
+          }
         } else {
           deps.log.info('resubmission_skipped', {
             target: initialTarget.id,
@@ -214,10 +299,10 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }, deps.descriptorRefreshMs);
       refreshTimer.unref?.();
 
-      sweepTimer = setInterval(
-        () => deps.dedupe.sweep(),
-        deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS
-      );
+      sweepTimer = setInterval(() => {
+        deps.dedupe.sweep();
+        mx1Pins.sweep();
+      }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 
       const outcomes = deps.outcomes;

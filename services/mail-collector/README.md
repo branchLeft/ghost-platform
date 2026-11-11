@@ -176,9 +176,39 @@ names `sweego` is malformed the same way. The shape check is this service's
 own, as for the rest of the descriptor, so it mirrors render-core's rule and
 does not import it.
 
-Nothing reads `route` yet: delivery still goes to the one mx1 submission
-target, so the drain output is byte-identical whatever the value
-(`test/unit/routeCarried.test.ts`).
+A demo target also carries `demo: true`, which the resolver reads (below). With
+no Sweego delivery client the drain output is byte-identical whatever `route`
+is (`test/unit/routeCarried.test.ts`).
+
+### sendingTarget resolveSendingTarget
+
+`resolveSendingTarget(route, context)` is pure and answers `mx1`, `sweego` or
+`hold` (leave the message unacked; the shim re-offers it). The loop in
+`collectorLoop.ts` asks it before each submission and, after a Sweego failure,
+asks again with the failure. The hard rules, in the order they apply:
+
+1. After a failure, the only edge is Sweego to mx1 (`FALLBACK_EDGES`), taken by
+   transactional mail (wire `emailId` null) after a definite non-acceptance
+   (`not-accepted`: connection refused, DNS, authentication, a 4xx at MAIL or
+   RCPT) and by nothing else. A recipient 5xx and an ambiguous failure (a timeout
+   after DATA, or any error that names no kind) hold the message; bulk always
+   holds. An unclassified error is ambiguous: a client says `not-accepted` only
+   by throwing `TargetSubmissionError`.
+2. A `mx1` route, a demo and any message that already reached mx1 go to mx1.
+   Nothing goes from mx1 to Sweego: `FALLBACK_EDGES` has no edge out of mx1, the
+   route has no field to say otherwise, `assertNoSweegoAfterMx1` is the last
+   guard, and the loop records every mx1 attempt in `mx1Pins` before it is made.
+3. No Sweego delivery client, an allowance reached or the account cap reached
+   sends the message to mx1 through the estate throttle. `sweegoQuota` unset is
+   read as reached, so nothing goes to Sweego until a counter is supplied.
+4. Otherwise Sweego, which bypasses the estate throttle and never touches the
+   mx1 health counter that gates the heartbeat.
+
+A message held for Sweego does not stop the rest of its batch (an mx1 failure
+still does). Nothing in `server.ts` supplies a Sweego client or a quota, so
+every route is served by mx1 today. `mx1Pins` is memory-only and its default TTL
+is a placeholder: the pin must outlast the shim's longest retry horizon and
+survive a restart before a Sweego client is wired.
 
 ### health HealthState
 

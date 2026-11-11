@@ -124,7 +124,7 @@ describe('the drain target carries the descriptor mail route', () => {
   });
 });
 
-describe('nothing reads the route: the drain output is byte-identical whatever it is', () => {
+describe('with no sweego delivery client the drain output is byte-identical whatever the route is', () => {
   const MESSAGES: QueuedMessage[] = ['m1', 'm2', 'm3'].map((id, index) => ({
     id,
     domain: 'tenant.example',
