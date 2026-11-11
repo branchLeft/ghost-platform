@@ -1,4 +1,11 @@
 import type { demoRequest } from './schema.js';
+import {
+  CURATED_FONTS,
+  CURATED_OUTLET_TYPES,
+  CURATED_THEMES,
+  isListed,
+  type CuratedChoice,
+} from './curatedLists.js';
 
 /**
  * The shapes the `demo_request` table enforces, held once so the table's
@@ -149,6 +156,18 @@ function shaped(field: string, value: unknown, pattern: RegExp, required: boolea
   return found;
 }
 
+/** A slug from a curated list: the right shape and a member of that list, nothing else. */
+function listed(
+  field: string,
+  value: unknown,
+  list: readonly CuratedChoice[],
+  required: boolean
+): string | null {
+  const found = shaped(field, value, SLUG, required);
+  if (found !== null && !isListed(list, found)) throw new InvalidDemoRequestError(field);
+  return found;
+}
+
 /**
  * Parses a submission into the row the table takes, or refuses it naming the
  * first field at fault. The table repeats every rule as a check, so a caller
@@ -169,11 +188,11 @@ export function parseDemoRequest(input: DemoRequestInput): NewDemoRequest {
     publicationName: text('publicationName', input.publicationName, NAME_MAX, true)!,
     description: text('description', input.description, DESCRIPTION_MAX, false),
     accentColour: shaped('accentColour', input.accentColour, COLOUR, false),
-    theme: shaped('theme', input.theme, SLUG, false),
-    font: shaped('font', input.font, SLUG, false),
+    theme: listed('theme', input.theme, CURATED_THEMES, false),
+    font: listed('font', input.font, CURATED_FONTS, false),
     newToGhost: input.newToGhost,
     importSource: text('importSource', input.importSource, IMPORT_SOURCE_MAX, false),
-    outletType: shaped('outletType', input.outletType, SLUG, true)!,
+    outletType: listed('outletType', input.outletType, CURATED_OUTLET_TYPES, true)!,
     logoHash: shaped('logoHash', input.logoHash, LOGO_HASH, false),
     consentWording: consent,
     explainerWording: explainer,
