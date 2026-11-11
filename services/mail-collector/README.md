@@ -27,6 +27,17 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_BULK_DEFERRAL_STATE_PATH` | no (beside `COLLECTOR_DEDUPE_STATE_PATH`, as `bulk-deferral.json`) | File the bulk deferral hold is kept in, so a restart during the hold does not forget it. With neither this nor the dedupe path set, the hold is memory-only. A missing file is no hold; a file that cannot be trusted starts a fresh hold. |
 | `COLLECTOR_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | yes / no (`587`) / yes / yes | mx1's authenticated SMTP submission endpoint. |
 | `COLLECTOR_SMTP_SECURE` | no (default `false`) | `true` for implicit TLS. |
+| `COLLECTOR_SWEEGO_SMTP_HOST` | no (off) | The Sweego relay host (`SWEEGO_RELAY_HOST`). Setting it turns the Sweego client on; the settings below are then required where marked, and set without it they fail start-up. |
+| `COLLECTOR_SWEEGO_SMTP_PORT` / `_SECURE` | no (`587` / `false`) | The relay port (`SWEEGO_RELAY_PORT`) and whether it is implicit TLS. With `_SECURE` false the client requires STARTTLS before it sends the credential. |
+| `COLLECTOR_SWEEGO_SMTP_USER` | with the host | The relay login name (`SWEEGO_RELAY_USER`). |
+| `COLLECTOR_SWEEGO_SMTP_PASS_FILE` | with the host | Path of the root-readable file on ops1 that holds the relay credential, and nothing else but an optional trailing newline. The value is never an environment variable: `COLLECTOR_SWEEGO_SMTP_PASS` is refused at start-up. |
+| `COLLECTOR_SWEEGO_MESSAGES_PER_HOUR` | with the host | Sweego's own send-rate ceiling (`SWEEGO_MESSAGES_PER_HOUR`), separate from `COLLECTOR_MESSAGES_PER_HOUR`. No default: the plan sets it. |
+| `COLLECTOR_SWEEGO_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override, `{"messagesPerHour": N}`, for the Sweego ceiling only. |
+| `COLLECTOR_SWEEGO_SMTP_TIMEOUT_MS` | no (default `20000`) | Bounds connecting, the greeting and every wait on the relay, so a down relay fails fast. |
+| `COLLECTOR_SWEEGO_ACCOUNT_CAP` | to use Sweego | Messages per UTC calendar month across every tenant together, held inside the Sweego plan (`SWEEGO_ACCOUNT_CAP`). A positive integer; no default. Unset, Sweego is treated as not configured: the collector logs `sweego_not_configured` and every message goes through mx1. |
+| `COLLECTOR_SWEEGO_USAGE_STATE_PATH` | to use Sweego | File, on a volume that outlives the container and is writable by the `node` user, the monthly counters are kept in (`SWEEGO_USAGE_STATE_PATH`). Unset, Sweego is treated as not configured, the same as an unset cap. |
+| `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up, so the rollout must set it before Sweego is enabled. |
+| `COLLECTOR_PIN_TTL_MS` | no (default `604800000`) | How long a pin is remembered. The 7 days are a placeholder, not a measured value: it must outlast the shim's longest retry horizon, which has not been read yet. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 | `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
@@ -185,15 +196,181 @@ draining while this is fixed upstream.
 
 Each `DrainTarget` carries `route`, read from the descriptor's optional
 `mail.route.primary` (`mx1` or `sweego`); a descriptor that names none means
-`mx1`. A route that is present but not exactly `{ primary: "mx1" | "sweego" }`
-makes the descriptor malformed, so that host is not drained, and a demo that
-names `sweego` is malformed the same way. The shape check is this service's
+`mx1`. A `sweego` route also carries `sweegoAllowance`, the tenant's messages
+per UTC month through Sweego, and the target carries it too. A route that is
+present but not exactly `{ primary: "mx1" }` or `{ primary: "sweego",
+sweegoAllowance: <positive integer> }` makes the descriptor malformed, so that
+host is not drained, and a demo that names `sweego` is malformed the same way. The shape check is this service's
 own, as for the rest of the descriptor, so it mirrors render-core's rule and
 does not import it.
 
-Nothing reads `route` yet: delivery still goes to the one mx1 submission
-target, so the drain output is byte-identical whatever the value
-(`test/unit/routeCarried.test.ts`).
+A demo target also carries `demo: true`, which the resolver reads (below). With
+no Sweego delivery client the drain output is byte-identical whatever `route`
+is (`test/unit/routeCarried.test.ts`).
+
+### sendingTarget resolveSendingTarget
+
+`resolveSendingTarget(route, context)` is pure and answers `mx1`, `sweego` or
+`hold` (leave the message unacked; the shim re-offers it). The loop in
+`collectorLoop.ts` asks it before each submission and, after a Sweego failure,
+asks again with the failure. The hard rules, in the order they apply:
+
+1. After a failure, the only edge is Sweego to mx1 (`FALLBACK_EDGES`), taken by
+   transactional mail (wire `emailId` null) after a definite non-acceptance
+   (`not-accepted`: connection refused, DNS, authentication, a 4xx at MAIL or
+   RCPT) and by nothing else. A recipient 5xx and an ambiguous failure (a timeout
+   after DATA, or any error that names no kind) hold the message; bulk always
+   holds. An unclassified error is ambiguous: a client says `not-accepted` only
+   by throwing `TargetSubmissionError`. The loop does not ask the resolver about a
+   recipient 5xx: it drops the message (see Sweego submission below).
+2. A `mx1` route, a demo and any message that already reached mx1 go to mx1.
+   Nothing goes from mx1 to Sweego: `FALLBACK_EDGES` has no edge out of mx1, the
+   route has no field to say otherwise, `assertNoSweegoAfterMx1` is the last
+   guard, and the loop records every mx1 attempt in `mx1Pins` before it is made.
+3. No Sweego delivery client, an allowance reached or the account cap reached
+   sends the message to mx1 through the estate throttle. `sweegoQuota` unset is
+   read as reached, so nothing goes to Sweego until a counter is supplied. The
+   loop supplies the allowance as reached only for bulk: login mail never
+   consults the tenant's latch, but the account cap holds for every class.
+4. Otherwise Sweego, which bypasses the estate throttle and never touches the
+   mx1 health counter that gates the heartbeat.
+
+A message held for Sweego does not stop the rest of its batch (an mx1 failure
+still does). `server.ts` builds the Sweego client and the counter only when
+`COLLECTOR_SWEEGO_SMTP_HOST`, `COLLECTOR_SWEEGO_ACCOUNT_CAP` and
+`COLLECTOR_SWEEGO_USAGE_STATE_PATH` are all set; with any one missing every
+route is served by mx1. The pins are kept under `COLLECTOR_PIN_STATE_DIR` when it is set;
+their TTL is a placeholder that must outlast the shim's longest retry horizon.
+
+### sweegoDeliveryClient createSweegoDeliveryClient
+
+Authenticated SMTP submission to the Sweego relay, tested against a local fake
+relay (`test/helpers/fakeSweegoRelay.ts`), never a real host. The credential is
+read from `COLLECTOR_SWEEGO_SMTP_PASS_FILE` for each message and passed to one
+transporter that lives for that message alone, so it is held nowhere else: not in
+config, not in the client, not in a pooled connection, not in the descriptor, the
+spool or a tenant host. The client requires STARTTLS (or implicit TLS) before it
+sends the credential; only a test against a fake relay with no TLS turns that off.
+
+Every failure is thrown as a `SweegoSubmissionError` whose message is built from
+a reason and the SMTP reply number only. The relay's own text, which can echo an
+address, and the underlying error are dropped, so no log line, exception, counter
+or metric can carry the credential, a recipient or a subject. A test greps all of
+them across every failure the fake relay can produce.
+
+The Sweego throttle (`sweegoThrottle`) is a second `createThrottle`, with its own
+rate and its own reload file. Sweego mail draws only on it, mx1 mail only on the
+estate throttle. A Sweego client supplied without a throttle is read as not
+configured.
+
+### sweegoFailure classifySweegoError
+
+Maps a nodemailer error onto the design's outcomes. Only a definite
+non-acceptance is `not-accepted`, which is what lets login mail fall back to mx1;
+anything that may have reached the relay's queue, and anything unplaced, is
+`ambiguous` and never falls back, so it cannot duplicate a message.
+
+| Reason | Kind | Cause |
+|---|---|---|
+| `unreachable` | `not-accepted` | Connection refused, DNS failure, TLS or greeting failure, connect timeout |
+| `auth` | `not-accepted` | The relay refused the login |
+| `credential` | `not-accepted` | The credential file is unreadable or empty |
+| `deferred` | `not-accepted` | A 4xx at MAIL, RCPT or the DATA command |
+| `refused` | `not-accepted` | A 5xx at MAIL or the DATA command: refused before any content, nothing taken |
+| `recipient-rejected` | `recipient-rejected` | A 5xx at RCPT, or an envelope the client could not form |
+| `timeout` | `ambiguous` | A timeout once the session was past setup |
+| `ambiguous` | `ambiguous` | A failure at or after DATA, a reset mid-session, anything unplaced |
+
+`unclassified` is the count label for a failure that no Sweego client classified.
+The loop records each failure in `sweegoFailures` (`submissionFailures.ts`), a
+counter keyed by reason alone, for the signals that read it.
+
+### collectorLoop Sweego submission
+
+- **The pin.** The first attempt at Sweego writes the message id to
+  `sweegoPins` before the attempt is made. A retry then stays on Sweego whatever
+  the route or the quota has since become, because the earlier attempt may have
+  been taken. If the process holds no Sweego client at that point the message is
+  held (`sweego_pinned_unavailable`), never sent to mx1. The login fallback is the
+  one exception: its mx1 attempt is pinned in `mx1Pins`, which takes over.
+- **The accept.** A Sweego accept marks the dedupe tracker, so a lost ack is only
+  re-acked on the next offer and never re-sent.
+- **The terminal outcome.** Only a bad address is dropped: a 5xx at RCPT, or an
+  envelope the client cannot build. It is marked in the dedupe tracker, acked,
+  counted under `recipient-rejected`, and never retried or sent to mx1. Every
+  other refusal, a 4xx at any step and a 5xx at MAIL or the DATA command or after
+  DATA, is held and retried (login mail falls back to mx1 once, only when nothing
+  was taken) under its own counted reason. Known gap: the spool is not told a
+  dropped recipient failed for good (the outcome path is opt-in per spool and
+  mx1-shaped), so Ghost shows the message as accepted and the address is not
+  suppressed.
+- **An attempt that may have been taken.** When an attempt ends ambiguous
+  (a timeout, a failure after DATA, anything unplaced) the id is recorded in
+  `sweegoAmbiguous`. A later definite failure for the same message is then read as
+  ambiguous too, so login mail does not fall back to mx1 and arrive twice. A bad
+  address is still dropped.
+- **A pin file that cannot be trusted.** The three pin files are written
+  atomically, but if one is corrupt or unreadable at start-up its ids are lost.
+  The tracker records that (`stateLost`, kept in the file so a restart still knows)
+  for one pin TTL. In that time a message on a Sweego route that the shim is
+  offering again (`drainCount` above 1) and that no pin remembers is held
+  (`pin_state_lost_held`), never sent to mx1 or to a second Sweego attempt: a held
+  message waits, a released one can arrive twice. First offers are unaffected.
+- **Rollout.** `COLLECTOR_PIN_STATE_DIR` must be set before Sweego is enabled:
+  without it a restart forgets every pin and ambiguity record, and with them the
+  protection above (the collector logs `pins_not_persistent` at start-up). The
+  7 day `COLLECTOR_PIN_TTL_MS` is a placeholder until the shim's longest retry
+  horizon has been read.
+
+### sweegoUsage createSweegoUsage
+
+The counter the resolver asks (`SweegoQuota`), and the one place the Sweego
+allowance and the account cap are enforced. Example settings, all
+placeholders: `COLLECTOR_SWEEGO_ACCOUNT_CAP=SWEEGO_ACCOUNT_CAP`,
+`COLLECTOR_SWEEGO_USAGE_STATE_PATH=SWEEGO_USAGE_STATE_PATH`, and in a tenant's
+descriptor `mail.route: { primary: "sweego", sweegoAllowance: TENANT_ALLOWANCE }`.
+
+- **What is counted.** Messages Sweego accepted, per tenant and in total, by UTC
+  calendar month (`YYYY-MM`, from an injectable clock). The loop calls `begin`
+  before an attempt and `settle(true)` after the accept, after the dedupe mark and
+  before the ack; any other end settles `false` and counts nothing. A lost ack is
+  re-offered but skipped by the dedupe tracker, so it cannot count twice. A crash
+  between the accept and the write undercounts by one.
+- **In flight counts.** The quota questions include attempts begun and not yet
+  settled. The loop asks again after the Sweego throttle wait and begins in the
+  same tick, so tenants with a message in flight together cannot take the total
+  past the cap, and a latch that arrived during a throttle wait is honoured.
+- **The latch.** A tenant latches on the message that reaches its
+  `sweegoAllowance` and stays latched until the month changes, even if the
+  allowance is raised meanwhile (a descriptor can be stale; a raise takes effect
+  next month). Its bulk then goes to mx1 through the estate (warm-up) throttle,
+  late and not lost. Login mail never consults the latch and keeps going to
+  Sweego; it is counted. The account cap is the plan's ceiling and holds for
+  every class: reaching the total latches every tenant, login mail included.
+  Unlike the tenant latch it is computed from the total, so raising the cap
+  (the owner's act, with a bigger plan) lifts it at the next start.
+- **Pin beats latch.** A message already pinned to Sweego keeps going there
+  after its tenant latched, or the cap was reached, and is counted. So a
+  tenant can end a month a few messages over its allowance (and the account a
+  few over the cap): only messages already attempted at Sweego before the latch.
+- **Rollover.** Every question reads the month from the clock, so a boundary
+  crossed while idle is seen on the next question: counters and latches start
+  at zero at 00:00:00 UTC on the first. A clock reading an earlier month than
+  the stored counters changes nothing (`clock-behind-state`).
+- **State.** One file, rewritten whole and atomically (temp file, fsync, rename)
+  on every change; it holds the month, a degraded flag and per-tenant counts,
+  nothing about any message.
+- **Fail closed.** An unreadable or corrupt file (`state-unreadable`,
+  `state-corrupt`) means usage is unknown: every tenant is latched and the cap
+  is read as reached until the month changes, written down as `degraded` so a
+  restart does not forget. A failed write (`state-write-failed`) latches
+  everyone until a write succeeds again. A missing file is a first run, not a
+  failure. Unset cap or file path: Sweego is not used at all.
+- **What it exposes.** `reasons()` counts events by label only (no tenant, no
+  address, no subject) and is logged as `sweego_usage` with the reason alone.
+  `tenantLatchState()` and `accountState()` are plain functions for the later
+  signals to read per-tenant latch state; nothing here builds a label from a
+  tenant.
 
 ### health HealthState
 

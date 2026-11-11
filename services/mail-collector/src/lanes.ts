@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { writeFileAtomic } from './atomicFile.js';
+import { writeFileAtomic } from './atomicWrite.js';
 import type { WireMessage } from './drainClient.js';
 import type { Logger } from './log.js';
 

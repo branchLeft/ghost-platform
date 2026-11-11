@@ -6,15 +6,18 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 **The descriptor can name a mail route.**
 
-- **Additive:** `mail.route` is an optional `{ primary: "mx1" | "sweego" }`.
+- **Additive:** `mail.route` is an optional
+  `{ primary: "mx1" | "sweego", sweegoAllowance?: integer }`.
   Absent means `mx1`, so every existing descriptor and every rendered
   artefact is unchanged. Any other value, a missing `primary` or an extra key
   is refused, and a demo whose route is `sweego` is refused as a tier
-  mismatch. The new types `MailRoute` and `MailRouteSpec` and the values
-  `MAIL_ROUTES`, `DEFAULT_MAIL_ROUTE` and `mailRouteOf` are exported. Nothing
-  reads the route yet. A consumer pinned to an earlier release refuses a
-  descriptor that carries one (an unknown key), so write the field only once
-  that consumer is upgraded. See src/mail.md#mail-route.
+  mismatch. `sweegoAllowance`, the tenant's messages per UTC month through
+  Sweego, is a positive integer required when `primary` is `sweego` and
+  refused when it is `mx1`. The new types `MailRoute` and `MailRouteSpec` and
+  the values `MAIL_ROUTES`, `MAX_SWEEGO_ALLOWANCE`, `DEFAULT_MAIL_ROUTE` and
+  `mailRouteOf` are exported. A consumer pinned to an earlier release refuses
+  a descriptor that carries one (an unknown key), so write the field only
+  once that consumer is upgraded. See src/mail.md#mail-route.
 
 **`render()` can render one running colour.**
 

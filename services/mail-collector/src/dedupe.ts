@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { writeFileAtomic } from './atomicFile.js';
+import { writeFileAtomic } from './atomicWrite.js';
 
 /**
  * Named `submitted`, not `delivered` -- LLD-6 M5: this tracker records
@@ -19,6 +19,14 @@ export interface SubmittedTracker {
   /** Drops entries older than the configured TTL. Called on a timer by the caller, not internally, so tests can drive it deterministically. */
   sweep(): void;
   readonly size: number;
+  /**
+   * True while the state file could not be trusted: it was corrupt or
+   * unreadable when loaded, so ids it held are forgotten. Stays true for one
+   * TTL after that, the time in which any forgotten id could still matter, and
+   * survives a restart. A caller that must not act on a forgotten id holds the
+   * message while this is set.
+   */
+  readonly stateLost: boolean;
 }
 
 export interface SubmittedTrackerOptions {
@@ -53,6 +61,7 @@ export function createSubmittedTracker(
   const { statePath, onError } = options;
   const submittedAt = new Map<string, number>();
   const awaitingAck = new Set<string>();
+  let lostAt: number | undefined;
 
   function report(error: unknown): void {
     onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -64,7 +73,9 @@ export function createSubmittedTracker(
       raw = readFileSync(path, 'utf8');
     } catch (error) {
       if ((error as { code?: unknown }).code !== 'ENOENT') {
+        lostAt = now();
         report(error);
+        persist(path);
       }
       return;
     }
@@ -73,6 +84,7 @@ export function createSubmittedTracker(
         version?: unknown;
         submitted?: unknown;
         awaitingAck?: unknown;
+        lostAt?: unknown;
       };
       if (
         parsed.version !== STATE_VERSION ||
@@ -94,10 +106,16 @@ export function createSubmittedTracker(
           }
         }
       }
+      if (typeof parsed.lostAt === 'number' && Number.isFinite(parsed.lostAt)) {
+        lostAt = parsed.lostAt;
+      }
     } catch (error) {
       submittedAt.clear();
       awaitingAck.clear();
+      lostAt = now();
       report(error);
+      // Recorded in the file, so a restart does not read the empty state as a clean one.
+      persist(path);
     }
   }
 
@@ -109,6 +127,7 @@ export function createSubmittedTracker(
           version: STATE_VERSION,
           submitted: Object.fromEntries(submittedAt),
           awaitingAck: [...awaitingAck],
+          ...(lostAt === undefined ? {} : { lostAt }),
         })
       );
     } catch (error) {
@@ -165,6 +184,9 @@ export function createSubmittedTracker(
     },
     get size(): number {
       return submittedAt.size;
+    },
+    get stateLost(): boolean {
+      return lostAt !== undefined && now() - lostAt < ttlMs;
     },
   };
 }

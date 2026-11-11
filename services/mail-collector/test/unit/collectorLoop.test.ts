@@ -942,7 +942,7 @@ describe('collector loop -- login and bulk lanes', () => {
     wrapDrain?: (inner: DrainClient) => DrainClient;
     dedupe?: SubmittedTracker;
   }) {
-    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl }]);
+    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]);
     const realDrain = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
     const drainClient = opts.wrapDrain ? opts.wrapDrain(realDrain) : realDrain;
     const real = createDeliveryClient({
