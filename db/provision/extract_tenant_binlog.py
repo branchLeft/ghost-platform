@@ -13,6 +13,7 @@ See extract_tenant_binlog.md for the full mechanics.
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import re
 import subprocess
@@ -37,6 +38,28 @@ SOURCE_DATA_PATTERN = re.compile(
 SECTION_RESUME_PATTERN = re.compile(
     r"^--\s*BRANCHLEFT-SECTION CHANGE MASTER TO MASTER_LOG_FILE='(?P<log_file>[^']+)',\s*MASTER_LOG_POS=(?P<position>\d+);\s*$"
 )
+
+# What a per-database replay cannot carry, because mysqlbinlog's --database
+# filter drops a statement with no governing `USE`: account statements (issued
+# by an admin session with no default database) and the creation of a database
+# the dump never declared. `restore_instance` replays these in one extra pass.
+ACCOUNT_STATEMENT_PATTERN = re.compile(
+    r"^(?:(?:CREATE|ALTER|DROP|RENAME)\s+(?:USER|ROLE)\b|(?:GRANT|REVOKE)\b|SET\s+(?:PASSWORD|DEFAULT\s+ROLE)\b)",
+    re.IGNORECASE,
+)
+CREATE_DATABASE_PATTERN = re.compile(
+    r"^CREATE\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:`(?P<quoted>(?:[^`]|``)+)`|(?P<bare>[A-Za-z0-9_$]+))",
+    re.IGNORECASE,
+)
+
+# The name a dump's own `CREATE DATABASE ... `name`` line declares.
+_DUMP_CREATE_DATABASE_PATTERN = re.compile(r"^CREATE DATABASE\b[^`]*`(?P<name>(?:[^`]|``)+)`")
+_DUMP_USE_PATTERN = re.compile(r"^USE `(?P<name>(?:[^`]|``)+)`;\s*$")
+
+_ACCOUNT_SET_LINE_PATTERN = re.compile(rb"^SET\s+(?:PASSWORD|DEFAULT\s+ROLE)\b", re.IGNORECASE)
+
+# Any mysqlbinlog event header ("#YYMMDD HH:MM:SS server id ...").
+_EVENT_HEADER_PATTERN = re.compile(rb"^#\d{6}[ \t]+\d{1,2}:\d{2}:\d{2} server id [^\n]*", re.MULTILINE)
 
 # A binlog's own on-disk name: some base ending in a dot, then mysqld's
 # zero-padded numeric sequence. Matched against the filename only (never a
@@ -492,19 +515,8 @@ class ReplayResult(NamedTuple):
     sql: bytes
 
 
-def _replay_from_resume_point(
-    *,
-    log_file: str,
-    position: int,
-    binlog_paths: list[str],
-    tenant_database: str,
-    stop_datetime: str | None,
-    apply_socket_path: str | None,
-    apply_host: str | None,
-    apply_user: str,
-    apply_password: str,
-    run,
-) -> ReplayResult:
+def _files_from(log_file: str, binlog_paths: list[str]) -> list[str]:
+    """The binlog files a replay starting in `log_file` reads, in order."""
     # Sorted before the resume file is located: a caller's list is not
     # guaranteed ascending, and slicing from an unsorted list would risk
     # silently dropping a later file that happened to be given earlier
@@ -518,7 +530,24 @@ def _replay_from_resume_point(
     resume_index = next((i for i, p in enumerate(sorted_paths) if p.endswith(log_file)), None)
     if resume_index is None:
         raise ExtractError(f"resume point names {log_file!r}, not found among the given binlog files")
-    ordered_paths = sorted_paths[resume_index:]
+    return sorted_paths[resume_index:]
+
+
+def _replay_from_resume_point(
+    *,
+    log_file: str,
+    position: int,
+    binlog_paths: list[str],
+    tenant_database: str,
+    stop_datetime: str | None,
+    apply_socket_path: str | None,
+    apply_host: str | None,
+    apply_user: str,
+    apply_password: str,
+    run,
+    skip_creation: bool = False,
+) -> ReplayResult:
+    ordered_paths = _files_from(log_file, binlog_paths)
 
     sql = extract_tenant_stream(
         ordered_paths,
@@ -527,6 +556,10 @@ def _replay_from_resume_point(
         stop_datetime=stop_datetime,
         run=run,
     )
+    if skip_creation:
+        # The database was created by the instance pass already; applying its
+        # own creation again would fail on a database that exists.
+        sql = without_database_creation(sql, tenant_database)
     row_events, statements = count_tenant_events(sql, tenant_database)
     # Always applied -- a stream with zero row events and zero statements
     # for this tenant is only session setup and positioning commands, a
@@ -695,6 +728,205 @@ def restore_point_in_time(
     )
 
 
+def _split_events(sql: bytes) -> tuple[bytes, list[bytes], bytes]:
+    """(everything before the first event header, one slice per event, the
+    closing `DELIMITER ;` lines mysqlbinlog ends with). Joined back together
+    the three pieces are the input."""
+    starts = [m.start() for m in _EVENT_HEADER_PATTERN.finditer(sql)]
+    if not starts:
+        return sql, [], b""
+    tail = sql.rfind(b"\nDELIMITER ;")
+    end = tail + 1 if tail >= starts[-1] else len(sql)
+    bounds = [*starts, end]
+    segments = [sql[a:b] for a, b in itertools.pairwise(bounds)]
+    return sql[: starts[0]], segments, sql[end:]
+
+
+def _query_statement(segment: bytes) -> str | None:
+    """The statement a Query event carries, with mysqlbinlog's own session
+    boilerplate removed; None for an event of any other type."""
+    header, _, body = segment.partition(b"\n")
+    if QUERY_EVENT_HEADER_PATTERN.search(header) is None:
+        return None
+    # `SET PASSWORD` and `SET DEFAULT ROLE` are statements, not session setup,
+    # though they begin like it.
+    kept = [
+        line.strip()
+        for line in body.split(b"\n")
+        if line.strip()
+        and (_ACCOUNT_SET_LINE_PATTERN.match(line.strip()) or not _BOILERPLATE_LINE_PATTERN.match(line.strip()))
+    ]
+    return b" ".join(kept).decode(errors="replace").strip()
+
+
+def _created_database(statement: str | None) -> str | None:
+    if statement is None:
+        return None
+    match = CREATE_DATABASE_PATTERN.match(statement)
+    if match is None:
+        return None
+    return match.group("quoted").replace("``", "`") if match.group("quoted") else match.group("bare")
+
+
+def _join(preamble: bytes, kept: list[bytes], closing: bytes) -> bytes:
+    return preamble + b"".join(segment if segment.endswith(b"\n") else segment + b"\n" for segment in kept) + closing
+
+
+def select_instance_statements(sql: bytes, *, declared: set[str]) -> tuple[bytes, list[str], int]:
+    """From an unfiltered, row-free mysqlbinlog stream, keeps only what a
+    per-database replay cannot carry: account statements, and the creation of
+    a database the dump does not declare. Returns the stream to apply, the
+    names of the new databases in creation order, and how many events were
+    kept. See extract_tenant_binlog.md#the-instance-pass."""
+    preamble, segments, closing = _split_events(sql)
+    kept: list[bytes] = []
+    new: list[str] = []
+    for segment in segments:
+        statement = _query_statement(segment)
+        if statement is None:
+            continue
+        created = _created_database(statement)
+        if created is not None:
+            if created in declared or created in new:
+                continue
+            new.append(created)
+            kept.append(segment)
+        elif ACCOUNT_STATEMENT_PATTERN.match(statement):
+            kept.append(segment)
+    return _join(preamble, kept, closing), new, len(kept)
+
+
+def without_database_creation(sql: bytes, database: str) -> bytes:
+    """`sql` without the event that creates `database`."""
+    preamble, segments, closing = _split_events(sql)
+    return _join(preamble, [seg for seg in segments if _created_database(_query_statement(seg)) != database], closing)
+
+
+class DumpIndex(NamedTuple):
+    """Every database a dump declares, each with the resume point of its own
+    section (or of the one bare comment), and the earliest resume point in the
+    dump: the first section's, which is where `mysql` was read."""
+
+    databases: dict[str, tuple[str, int]]
+    earliest: tuple[str, int]
+
+
+def index_dump(lines: Iterable[str]) -> DumpIndex:
+    """One pass over a dump. Refuses a dump with no resume point, with both
+    forms, or with a database ahead of every section comment."""
+    bare: tuple[str, int] | None = None
+    section: tuple[str, int] | None = None
+    first_section: tuple[str, int] | None = None
+    declared: dict[str, tuple[str, int] | None] = {}
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        if bare is None:
+            bare = _match_resume_comment(line)
+        found = SECTION_RESUME_PATTERN.match(line)
+        if found is not None:
+            section = (found.group("log_file"), int(found.group("position")))
+            first_section = first_section or section
+            continue
+        named = _DUMP_CREATE_DATABASE_PATTERN.match(line) or _DUMP_USE_PATTERN.match(line)
+        if named is not None:
+            declared.setdefault(named.group("name").replace("``", "`"), section)
+    if bare is not None and first_section is not None:
+        raise ExtractError("dump carries both a bare '-- CHANGE MASTER TO ...' comment and per-section resume points: the recovery position is ambiguous")
+    earliest = first_section or bare
+    if earliest is None:
+        raise ExtractError("dump has no resume point (neither a section nor a bare '-- CHANGE MASTER TO ...' comment); an instance restore needs one")
+    if not declared:
+        raise ExtractError("dump declares no database")
+    databases: dict[str, tuple[str, int]] = {}
+    for name, position in declared.items():
+        resolved = position if first_section is not None else bare
+        if resolved is None:
+            raise ExtractError(f"database {name!r} is declared before any section resume point: the dump is malformed")
+        databases[name] = resolved
+    return DumpIndex(databases=databases, earliest=earliest)
+
+
+class InstanceRestore(NamedTuple):
+    """What `restore_instance` applied: the instance pass's event count, the
+    databases it created, and each database's own replay."""
+
+    instance_events: int
+    new_databases: tuple[str, ...]
+    replays: dict[str, ReplayResult]
+
+
+def restore_instance(
+    *,
+    dump_path: str,
+    binlog_paths: list[str],
+    stop_datetime: str | None = None,
+    apply_socket_path: str | None = None,
+    apply_host: str | None = None,
+    apply_user: str,
+    apply_password: str,
+    run=subprocess.run,
+) -> InstanceRestore:
+    """The instance-level point-in-time replay for a dump taken a schema at a
+    time. Three steps, in this order:
+
+    1. The instance pass, from the dump's earliest resume point (where `mysql`
+       was read): account statements, and the creation of every database the
+       dump does not declare. Nothing here is in the dump, so each is applied
+       once and in order.
+    2. Each declared database, from its own section's resume point.
+    3. Each database the instance pass created, from the same earliest point,
+       without its creation event.
+
+    A replay filtered by `--database` drops a statement with no `USE`, which
+    is every account statement, and cannot start a database the dump never
+    declared: this is why 1 and 3 exist. See extract_tenant_binlog.md."""
+    with open(dump_path, encoding="utf-8", errors="replace") as handle:
+        index = index_dump(handle)
+    earliest_file, earliest_position = index.earliest
+    replay = {
+        "binlog_paths": binlog_paths,
+        "stop_datetime": stop_datetime,
+        "apply_socket_path": apply_socket_path,
+        "apply_host": apply_host,
+        "apply_user": apply_user,
+        "apply_password": apply_password,
+        "run": run,
+    }
+
+    ordered = _files_from(earliest_file, binlog_paths)
+    argv = residual_argv(ordered, start_position=earliest_position, stop_datetime=stop_datetime)
+    result = run(argv, capture_output=True, check=False, env=_child_env(TZ="UTC"))
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace") if isinstance(result.stderr, bytes) else result.stderr
+        raise ExtractError(f"mysqlbinlog exited {result.returncode}: {stderr}")
+    stream, new_databases, kept = select_instance_statements(result.stdout, declared=set(index.databases))
+    if kept:
+        apply_stream(
+            stream, socket_path=apply_socket_path, host=apply_host, user=apply_user, password=apply_password, run=run
+        )
+
+    replays: dict[str, ReplayResult] = {}
+    for name in sorted(index.databases):
+        log_file, position = index.databases[name]
+        replays[name] = _replay_from_resume_point(log_file=log_file, position=position, tenant_database=name, **replay)
+    for name in new_databases:
+        replays[name] = _replay_from_resume_point(
+            log_file=earliest_file, position=earliest_position, tenant_database=name, skip_creation=True, **replay
+        )
+    return InstanceRestore(instance_events=kept, new_databases=tuple(new_databases), replays=replays)
+
+
+def residual_argv(binlog_paths: list[str], *, start_position: int, stop_datetime: str | None = None) -> list[str]:
+    """The unfiltered, row-free mysqlbinlog command the instance pass reads:
+    `--base64-output=DECODE-ROWS` without `--verbose` prints statements and no
+    row events, so nothing here is as large as the binary log."""
+    argv = ["mysqlbinlog", f"--start-position={start_position}", "--base64-output=DECODE-ROWS"]
+    if stop_datetime is not None:
+        argv.append(f"--stop-datetime={stop_datetime}")
+    argv.extend(binlog_paths)
+    return argv
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -708,7 +940,13 @@ def main(argv: list[str]) -> int:
         help="GTID dumps only: do not check that the first binlog file begins at or before the dump's GTID set. "
         "An operator override; a missing earlier file then goes unnoticed",
     )
-    parser.add_argument("--tenant-database", required=True)
+    parser.add_argument("--tenant-database", default=None)
+    parser.add_argument(
+        "--all-databases",
+        action="store_true",
+        help="Instance-level restore of a dump taken a schema at a time: account statements and databases created "
+        "since the dump first, then every declared database from its own section's position. Instead of --tenant-database",
+    )
     parser.add_argument(
         "--stop-datetime",
         default=None,
@@ -726,6 +964,30 @@ def main(argv: list[str]) -> int:
     if not password:
         print(f"extract_tenant_binlog: {args.apply_password_env} must be set", file=sys.stderr)
         return 1
+    if args.all_databases == (args.tenant_database is not None):
+        print("extract_tenant_binlog: give exactly one of --tenant-database and --all-databases", file=sys.stderr)
+        return 1
+    if args.all_databases:
+        try:
+            restored = restore_instance(
+                dump_path=args.dump,
+                binlog_paths=args.binlog_paths,
+                stop_datetime=args.stop_datetime,
+                apply_socket_path=args.apply_socket,
+                apply_host=args.apply_host,
+                apply_user=args.apply_user,
+                apply_password=password,
+                run=subprocess.run,
+            )
+        except (ExtractError, OSError) as exc:
+            print(f"extract_tenant_binlog: {exc}", file=sys.stderr)
+            return 1
+        print(f"extract_tenant_binlog: instance pass applied {restored.instance_events} account or database-creation events")
+        for name in restored.new_databases:
+            print(f"extract_tenant_binlog: created {name!r}, not in the dump, and replayed it from the dump's earliest position")
+        for name, outcome in restored.replays.items():
+            print(f"extract_tenant_binlog: {name!r}: {outcome.row_events} row events, {outcome.statements} statements")
+        return 0
 
     try:
         start = read_dump_recovery_start(args.dump, tenant_database=args.tenant_database)

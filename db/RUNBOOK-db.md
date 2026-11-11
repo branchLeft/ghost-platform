@@ -620,30 +620,72 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
      mysql --host <scratch-host> -uroot < dump.sql
    unset MYSQL_PWD
    ```
-   Then replay the binlogs up to the target timestamp **once for every
-   database the dump declares**, each from its own resume point. db1's
+   Then replay the binlogs to the target timestamp with one command. db1's
    nightly dump is taken one schema at a time, and each section opens with
-   its own `-- BRANCHLEFT-SECTION CHANGE MASTER TO ...` line: there is no
-   single position to start every database from, and replaying from one
-   schema's position would apply events another schema's section already
-   holds. `db/provision/extract_tenant_binlog.py` reads the right position
-   for the database it is told to replay (the command is under "The replay,
-   one database at a time" below). List the databases the dump declares, and run that
-   command for each, with the same `--stop-datetime`, which is **UTC**:
-   ```bash
-   grep -oE '^USE `[^`]+`' dump.sql
-   ```
-   `mysql` and `sys` are in the list: they sit in the first section and
-   take its position. A database whose events are not wanted back (a
-   tenant restored on its own) is simply left out.
-5. Confirm a row known to have changed after the dump and before the target
-   timestamp is present, and that nothing after the target timestamp is.
+   its own `-- BRANCHLEFT-SECTION CHANGE MASTER TO ...` line, so no single
+   `--start-position` is right for every database. `--all-databases` does
+   what that needs, in this order:
+   1. **The instance pass**, from the first section's position (where
+      `mysql` was read): every account statement (`CREATE`/`ALTER`/`DROP
+      USER`, `GRANT`, `REVOKE`, `SET PASSWORD`, roles) and the creation of
+      every database the dump does not declare. A per-database replay cannot
+      carry either: mysqlbinlog's `--database` filter drops a statement with
+      no `USE`, which is every account statement an admin session issues,
+      and a database created after the dump is in no section to start from.
+      Nothing in this pass is in the dump, because the dump's `mysql` is at
+      that same position, so each statement is applied once and in order.
+   2. **Each declared database** (the `USE` names in the dump, once each),
+      from its own section's position.
+   3. **Each database step 1 created**, from the first section's position,
+      without its creation event (step 1 applied it; applying it twice
+      fails on a database that exists).
 
-**The replay, one database at a time.** Run once for every database in
-step 4, it brings back every tenant's post-dump writes together -- the
-instance-level scenario Drill A proves -- and run for one database alone it
-is the recovery for "we deleted forty posts yesterday", where every *other*
-tenant's writes since the dump must stay out of the restored database.
+   Read the scratch-host root password into the shell, as above, and give
+   every binlog shipped since the dump, in order. **`--stop-datetime` is
+   UTC**:
+   ```bash
+   read -rs MYSQL_PWD; export MYSQL_PWD
+   python3 db/provision/extract_tenant_binlog.py \
+     --dump dump.sql \
+     --all-databases \
+     --stop-datetime="<target timestamp, UTC>" \
+     --apply-host <scratch-host> \
+     --apply-user root \
+     mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...]
+   unset MYSQL_PWD
+   ```
+   It prints one line for the instance pass, one for each database it
+   created, and one per database replayed. A single tenant whose events are
+   wanted back on its own is restored with the one-database command below
+   instead.
+5. Confirm a row known to have changed after the dump and before the target
+   timestamp is present, and that nothing after the target timestamp is. Then
+   confirm nothing the binlogs created is missing: list every database and
+   account the shipped binlogs created, and the ones the restored server has,
+   and read the first lists against the second. A name in the first and not
+   the second is either dropped later in the binlogs (check) or lost:
+   ```bash
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     mysqlbinlog --base64-output=DECODE-ROWS mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...] \
+     | grep -oE "^CREATE (DATABASE|SCHEMA) (IF NOT EXISTS )?`?[A-Za-z0-9_$]+" | sort -u
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     mysqlbinlog --base64-output=DECODE-ROWS mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...] \
+     | grep -oE "^CREATE USER (IF NOT EXISTS )?'[^']+'@'[^']+'" | sort -u
+   read -rs MYSQL_PWD; export MYSQL_PWD
+   docker run --rm -e MYSQL_PWD "$RECOVERY_IMAGE" \
+     mysql --host <scratch-host> -uroot -N -e 'SHOW DATABASES; SELECT CONCAT("CREATE USER ", QUOTE(user), "@", QUOTE(host)) FROM mysql.user'
+   unset MYSQL_PWD
+   ```
+   The binlogs are read from their start, so this also catches a database
+   created in the seconds between the nightly run's schema listing and its
+   first snapshot, which the instance pass (it starts at the first snapshot)
+   cannot see.
+
+**The replay, one database at a time.** Step 4's `--all-databases` brings
+back every tenant's post-dump writes together -- the instance-level scenario
+Drill A proves. `--tenant-database <tenant>` instead is the recovery for "we
+deleted forty posts yesterday", where every *other* tenant's writes since the
+dump must stay out of the restored database.
 `db/provision/extract_tenant_binlog.py` reads the resume point of the
 section that declares the database (the bare `--source-data=2` comment, for
 a dump taken that way), so the position does not have to be copied out of

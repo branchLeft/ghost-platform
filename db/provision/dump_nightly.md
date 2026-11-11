@@ -67,8 +67,11 @@ works exactly as before, and `extract_tenant_binlog.py` reads that tenant's
 own position (the section that declares the schema). A host-loss restore
 (load the dump, no binlogs) still brings back every schema in one file under
 one object key, with `mysql` and `sys` included. An instance-level
-point-in-time restore replays the binary logs once per database, each from
-its own position and to the same stop time (`db/RUNBOOK-db.md`, Drill A).
+point-in-time restore is `extract_tenant_binlog.py --all-databases`
+(`db/RUNBOOK-db.md`, Drill A): an instance pass for the account statements
+and the databases created since the dump, which no per-database replay can
+carry, then each database from its own position, all to the same stop time.
+extract_tenant_binlog.md#the-instance-pass says why it is safe to apply.
 
 Changed: the schemas are no longer all at one instant. Each is consistent
 with itself and with its own position; nothing relates one tenant's snapshot
