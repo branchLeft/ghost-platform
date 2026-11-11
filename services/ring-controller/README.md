@@ -221,9 +221,15 @@ first and refuses, writing nothing, when the chain or a signature does not
 verify. Tests: `test/unit/promotionChainLog.test.ts`, and a sabotage pair for
 each check in `test/unit/promotionChainLogSabotage.test.ts`. The format, what
 it detects and the one thing it cannot detect alone (removal of the last
-entries, closed by a head held elsewhere) are in `src/README.md`. The key
-file, the role that makes it and the call from `runRelease` are not built
-here yet.
+entries, closed by a head held elsewhere) are in `src/README.md`.
+
+`runRelease` records each member before it stops that member's old colour
+(`recordPromotion`), and holds the release when a record cannot be written.
+`src/signingKeyFile.ts` loads the key from a file only the service account
+can read, and `src/promotionRecorder.ts` keeps the recorded head beside the
+log; the permission model, the four path variables and what the head does and
+does not anchor are in `src/README.md`. The role that makes the key and the
+copy kept off the host are not built here.
 
 ## What this module deliberately does not build
 
