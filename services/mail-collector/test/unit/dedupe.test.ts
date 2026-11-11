@@ -111,3 +111,47 @@ describe('createSubmittedTracker with a state file', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 });
+
+describe('createSubmittedTracker stateLost', () => {
+  let dir: string;
+  let statePath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'collector-state-lost-'));
+    statePath = join(dir, 'state.json');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('is false for a tracker with no state file yet, and for a memory-only one', () => {
+    expect(createSubmittedTracker(1000).stateLost).toBe(false);
+    expect(createSubmittedTracker(1000, () => 0, { statePath }).stateLost).toBe(false);
+  });
+
+  it('is true when the state file is corrupt, and for a restart after that', () => {
+    writeFileSync(statePath, '{ not json');
+    const tracker = createSubmittedTracker(1000, () => 0, { statePath, onError: () => {} });
+    expect(tracker.stateLost).toBe(true);
+    // The empty state was written back; a restart must not read it as a clean one.
+    expect(createSubmittedTracker(1000, () => 0, { statePath }).stateLost).toBe(true);
+  });
+
+  it('is true when the state file cannot be read', () => {
+    mkdirSync(statePath);
+    const tracker = createSubmittedTracker(1000, () => 0, { statePath, onError: () => {} });
+    expect(tracker.stateLost).toBe(true);
+  });
+
+  it('ends one TTL after the loss, when no forgotten id could still matter', () => {
+    let now = 5000;
+    writeFileSync(statePath, '{ not json');
+    const tracker = createSubmittedTracker(1000, () => now, { statePath, onError: () => {} });
+    expect(tracker.stateLost).toBe(true);
+    now = 5999;
+    expect(tracker.stateLost).toBe(true);
+    now = 6000;
+    expect(tracker.stateLost).toBe(false);
+  });
+});

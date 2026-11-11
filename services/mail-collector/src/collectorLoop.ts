@@ -15,6 +15,8 @@ import {
   type SendingContext,
   type SweegoQuota,
 } from './sendingTarget.js';
+import type { FailureCounter } from './submissionFailures.js';
+import { failureReasonOf } from './sweegoFailure.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
@@ -24,10 +26,25 @@ export interface CollectorLoopDeps {
   deliveryClient: DeliveryClient;
   /** Unset until a Sweego client exists: a Sweego route is then served by mx1, exactly as before the route existed. */
   sweegoDeliveryClient?: DeliveryClient;
+  /**
+   * Sweego's own throttle, separate from `throttle` (mx1's). A Sweego client
+   * without one is read as not configured: nothing is sent to Sweego unthrottled.
+   */
+  sweegoThrottle?: Throttle;
   /** Unset means unknown, which the resolver reads as "reached": nothing goes to Sweego. */
   sweegoQuota?: SweegoQuota;
   /** Ids whose submission has reached mx1; such a message is never offered to Sweego. Memory-only if unset. */
   mx1Pins?: SubmittedTracker;
+  /** Ids whose first attempt was at Sweego; a retry stays on Sweego until the login fallback reaches mx1. Memory-only if unset. */
+  sweegoPins?: SubmittedTracker;
+  /**
+   * Ids whose attempt at Sweego ended ambiguous (it may have been taken). Such
+   * a message never falls back to mx1 on a later definite failure: the first
+   * attempt may have been delivered. Memory-only if unset.
+   */
+  sweegoAmbiguous?: SubmittedTracker;
+  /** Counts Sweego failures by reason class for the signals that read them. Counts nothing if unset. */
+  sweegoFailures?: FailureCounter;
   /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
   throttle: Throttle;
   /** Optional login lane: its own bucket, so sign-in mail never spends bulk tokens. */
@@ -76,55 +93,104 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
   const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
   const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
   const servedByMx1Logged = new Set<string>();
 
   /**
    * Submits one message through the target the resolver names. `submitted`:
-   * a target accepted it. `held`: left unacked for the shim to re-offer, and
-   * the rest of the batch carries on (Sweego said no, mx1 was not tried).
-   * `stop`: mx1 failed, so the rest of the batch is left too, as it always was.
-   * Sweego mail bypasses the estate throttle and never touches the mx1 health
-   * counter; mx1 mail does exactly what it did before a second target existed.
+   * a target accepted it. `dropped`: Sweego refused the recipient for good, so
+   * the message is acked and counted, never retried. `held`: left unacked for
+   * the shim to re-offer, and the rest of the batch carries on (Sweego said
+   * no, mx1 was not tried). `stop`: mx1 failed, so the rest of the batch is
+   * left too, as it always was. Sweego mail spends Sweego's own throttle,
+   * never mx1's, and never touches the mx1 health counter; mx1 mail does
+   * exactly what it did before a second target existed.
    */
   async function submit(
     message: WireMessage,
     target: DrainTarget
-  ): Promise<'submitted' | 'held' | 'stop'> {
+  ): Promise<'submitted' | 'dropped' | 'held' | 'stop'> {
     const lane = laneOf(message);
+    const sweego = deps.sweegoDeliveryClient;
+    const sweegoThrottle = deps.sweegoThrottle;
+    const sweegoReady = sweego !== undefined && sweegoThrottle !== undefined;
+    const reachedMx1 = mx1Pins.has(message.id);
+    // A message whose first attempt was at Sweego stays there: the route and
+    // the quota may have changed since, but an earlier attempt may have been
+    // taken, so a retry elsewhere could send it twice.
+    const pinnedToSweego = !reachedMx1 && sweegoPins.has(message.id);
+    // A pin file that could not be read has forgotten which targets saw which
+    // messages. A message offered before (drainCount above 1) and not found in
+    // any pin may have been taken by either target, so it is held, never sent
+    // on: a held message waits, a released one can be sent twice.
+    const pinStateLost = mx1Pins.stateLost || sweegoPins.stateLost || sweegoAmbiguous.stateLost;
+    const known = reachedMx1 || pinnedToSweego || sweegoAmbiguous.has(message.id);
+    if (pinStateLost && target.route === 'sweego' && message.drainCount > 1 && !known) {
+      deps.log.warn('pin_state_lost_held', { target: target.id, message: message.id });
+      return 'held';
+    }
+    if (pinnedToSweego && !sweegoReady) {
+      deps.log.warn('sweego_pinned_unavailable', { target: target.id, message: message.id });
+      return 'held';
+    }
     const context: SendingContext = {
       mailClass: mailClassOf(message.emailId),
       demo: target.demo === true,
-      sweegoConfigured: deps.sweegoDeliveryClient !== undefined,
-      allowanceReached: quota.allowanceReached(target.id),
-      accountCapReached: quota.accountCapReached(),
-      reachedMx1: mx1Pins.has(message.id),
+      sweegoConfigured: sweegoReady,
+      allowanceReached: pinnedToSweego ? false : quota.allowanceReached(target.id),
+      accountCapReached: pinnedToSweego ? false : quota.accountCapReached(),
+      reachedMx1,
     };
-    let decision = resolveSendingTarget(target.route, context);
+    let decision = resolveSendingTarget(pinnedToSweego ? 'sweego' : target.route, context);
     if (decision === 'sweego') {
-      const sweego = deps.sweegoDeliveryClient;
-      if (sweego === undefined) {
+      if (!sweegoReady) {
         // Not reachable while the resolver reads `sweegoConfigured`; a message
         // is never marked submitted without a client having taken it.
         deps.log.warn('sweego_client_missing', { target: target.id, message: message.id });
         return 'held';
       }
+      await sweegoThrottle.waitForToken();
+      // Before the attempt, not after the accept: an attempt that times out
+      // may still have been taken.
+      sweegoPins.markSubmitted(message.id);
       try {
         await sweego.deliver(message, target.id);
+        // Without this a lost ack re-sends the message to Sweego.
         deps.dedupe.markSubmitted(message.id);
         deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
         return 'submitted';
       } catch (error) {
         const kind = failureKindOf(error);
+        const reason = failureReasonOf(error);
+        deps.sweegoFailures?.record(reason);
         deps.log.warn('sweego_submission_failed', {
           target: target.id,
           message: message.id,
           kind,
+          reason,
           error: (error as Error).message,
         });
-        decision = resolveSendingTarget(target.route, {
+        if (kind === 'recipient-rejected') {
+          // Terminal: a bad address is bad everywhere. Marked so a lost ack
+          // is only re-acked on the next offer, never sent or retried.
+          deps.dedupe.markSubmitted(message.id);
+          deps.log.warn('recipient_rejected_dropped', { target: target.id, message: message.id });
+          return 'dropped';
+        }
+        // An attempt that may have been taken is remembered, and a later definite
+        // failure is then read as ambiguous too: falling back to mx1 would send
+        // a second copy of what the first attempt may have delivered.
+        if (kind === 'ambiguous') {
+          sweegoAmbiguous.markSubmitted(message.id);
+        }
+        decision = resolveSendingTarget('sweego', {
           ...context,
-          failed: { target: 'sweego', kind },
+          failed: {
+            target: 'sweego',
+            kind: sweegoAmbiguous.has(message.id) ? 'ambiguous' : kind,
+          },
         });
       }
     } else if (target.route === 'sweego' && !servedByMx1Logged.has(target.id)) {
@@ -236,6 +302,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       // changed, so paying for it once per target per poll costs nothing
       // on the common path.
       deps.throttle.reload();
+      deps.sweegoThrottle?.reload();
 
       let messages;
       try {
@@ -326,6 +393,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       sweepTimer = setInterval(() => {
         deps.dedupe.sweep();
         mx1Pins.sweep();
+        sweegoPins.sweep();
+        sweegoAmbiguous.sweep();
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 

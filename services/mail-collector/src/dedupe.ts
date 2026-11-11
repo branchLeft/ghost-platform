@@ -20,6 +20,14 @@ export interface SubmittedTracker {
   /** Drops entries older than the configured TTL. Called on a timer by the caller, not internally, so tests can drive it deterministically. */
   sweep(): void;
   readonly size: number;
+  /**
+   * True while the state file could not be trusted: it was corrupt or
+   * unreadable when loaded, so ids it held are forgotten. Stays true for one
+   * TTL after that, the time in which any forgotten id could still matter, and
+   * survives a restart. A caller that must not act on a forgotten id holds the
+   * message while this is set.
+   */
+  readonly stateLost: boolean;
 }
 
 export interface SubmittedTrackerOptions {
@@ -50,6 +58,7 @@ export function createSubmittedTracker(
 ): SubmittedTracker {
   const { statePath, onError } = options;
   const submittedAt = new Map<string, number>();
+  let lostAt: number | undefined;
 
   function report(error: unknown): void {
     onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -61,12 +70,18 @@ export function createSubmittedTracker(
       raw = readFileSync(path, 'utf8');
     } catch (error) {
       if ((error as { code?: unknown }).code !== 'ENOENT') {
+        lostAt = now();
         report(error);
+        persist(path);
       }
       return;
     }
     try {
-      const parsed = JSON.parse(raw) as { version?: unknown; submitted?: unknown };
+      const parsed = JSON.parse(raw) as {
+        version?: unknown;
+        submitted?: unknown;
+        lostAt?: unknown;
+      };
       if (
         parsed.version !== STATE_VERSION ||
         typeof parsed.submitted !== 'object' ||
@@ -79,9 +94,15 @@ export function createSubmittedTracker(
           submittedAt.set(id, at);
         }
       }
+      if (typeof parsed.lostAt === 'number' && Number.isFinite(parsed.lostAt)) {
+        lostAt = parsed.lostAt;
+      }
     } catch (error) {
       submittedAt.clear();
+      lostAt = now();
       report(error);
+      // Recorded in the file, so a restart does not read the empty state as a clean one.
+      persist(path);
     }
   }
 
@@ -95,6 +116,7 @@ export function createSubmittedTracker(
       const body = JSON.stringify({
         version: STATE_VERSION,
         submitted: Object.fromEntries(submittedAt),
+        ...(lostAt === undefined ? {} : { lostAt }),
       });
       const fd = openSync(tmp, 'w', 0o600);
       try {
@@ -144,6 +166,9 @@ export function createSubmittedTracker(
     },
     get size(): number {
       return submittedAt.size;
+    },
+    get stateLost(): boolean {
+      return lostAt !== undefined && now() - lostAt < ttlMs;
     },
   };
 }

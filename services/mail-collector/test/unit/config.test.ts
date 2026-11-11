@@ -102,4 +102,63 @@ describe('loadConfig', () => {
     const config = loadConfig({ ...BASE_ENV, COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD: '10' });
     expect(config.heartbeatFailureThreshold).toBe(10);
   });
+
+  describe('the Sweego relay', () => {
+    const SWEEGO_ENV = {
+      ...BASE_ENV,
+      COLLECTOR_SWEEGO_SMTP_HOST: 'SWEEGO_RELAY_HOST',
+      COLLECTOR_SWEEGO_SMTP_USER: 'SWEEGO_RELAY_USER',
+      COLLECTOR_SWEEGO_SMTP_PASS_FILE: '/etc/collector/sweego-credential',
+      COLLECTOR_SWEEGO_MESSAGES_PER_HOUR: '120',
+    };
+
+    it('is absent, with its pin settings at their defaults, unless the host is set', () => {
+      const config = loadConfig(BASE_ENV);
+      expect(config.sweego).toBeUndefined();
+      expect(config.pinStateDir).toBeUndefined();
+      expect(config.pinTtlMs).toBe(7 * 24 * 60 * 60 * 1000);
+    });
+
+    it('carries the credential file path and its own rate, with documented defaults', () => {
+      expect(loadConfig(SWEEGO_ENV).sweego).toEqual({
+        host: 'SWEEGO_RELAY_HOST',
+        port: 587,
+        secure: false,
+        user: 'SWEEGO_RELAY_USER',
+        passFile: '/etc/collector/sweego-credential',
+        messagesPerHour: 120,
+        throttleConfigPath: undefined,
+        timeoutMs: 20000,
+      });
+    });
+
+    it.each([
+      'COLLECTOR_SWEEGO_SMTP_USER',
+      'COLLECTOR_SWEEGO_SMTP_PASS_FILE',
+      'COLLECTOR_SWEEGO_MESSAGES_PER_HOUR',
+    ])('throws when the host is set but %s is missing', (name) => {
+      expect(() => loadConfig({ ...SWEEGO_ENV, [name]: undefined })).toThrow(new RegExp(name));
+    });
+
+    it.each([['0'], ['-3'], ['plenty']])(
+      'refuses %s as the Sweego rate: the plan sets it, so there is no fallback',
+      (value) => {
+        expect(() =>
+          loadConfig({ ...SWEEGO_ENV, COLLECTOR_SWEEGO_MESSAGES_PER_HOUR: value })
+        ).toThrow(/COLLECTOR_SWEEGO_MESSAGES_PER_HOUR/);
+      }
+    );
+
+    it('refuses a Sweego setting without the host, rather than ignoring it', () => {
+      expect(() =>
+        loadConfig({ ...BASE_ENV, COLLECTOR_SWEEGO_SMTP_PASS_FILE: '/etc/collector/credential' })
+      ).toThrow(/COLLECTOR_SWEEGO_SMTP_HOST/);
+    });
+
+    it('refuses the credential as a value', () => {
+      expect(() => loadConfig({ ...SWEEGO_ENV, COLLECTOR_SWEEGO_SMTP_PASS: 'a-value' })).toThrow(
+        /read from a file/
+      );
+    });
+  });
 });

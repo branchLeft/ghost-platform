@@ -1,7 +1,8 @@
+import { join } from 'node:path';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createCollectorRuntime } from './collectorLoop.js';
-import { createSubmittedTracker } from './dedupe.js';
+import { createSubmittedTracker, type SubmittedTracker } from './dedupe.js';
 import { DescriptorTargetStore } from './descriptorTargets.js';
 import { createDrainClient } from './drainClient.js';
 import { createDeliveryClient } from './deliveryClient.js';
@@ -10,6 +11,8 @@ import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch
 import { createLogger } from './log.js';
 import { createDirectoryDsnMailbox } from './dsnMailbox.js';
 import { createOutcomeRunner } from './outcomeRunner.js';
+import { createFailureCounter } from './submissionFailures.js';
+import { createSweegoDeliveryClient } from './sweegoDeliveryClient.js';
 import { createThrottle } from './throttle.js';
 import { createBulkCap } from './lanes.js';
 
@@ -56,6 +59,42 @@ if (!config.dedupeStatePath) {
   log.warn('dedupe_not_persistent', {});
 }
 
+// A restart must not forget which target a message first went to: the pin
+// has to outlast the shim's retry horizon, so it lives on a volume.
+function pinTracker(name: string): SubmittedTracker {
+  return createSubmittedTracker(config.pinTtlMs, Date.now, {
+    ...(config.pinStateDir ? { statePath: join(config.pinStateDir, name) } : {}),
+    onError: (error) => log.warn('pin_state_error', { error: error.message }),
+  });
+}
+const mx1Pins = pinTracker('mx1-pins.json');
+const sweegoPins = pinTracker('sweego-pins.json');
+const sweegoAmbiguous = pinTracker('sweego-ambiguous.json');
+if (!config.pinStateDir) {
+  log.warn('pins_not_persistent', {});
+}
+
+// Present only when the relay is configured. The client reads the credential
+// from its file for each message; nothing here holds the value.
+const sweegoDeliveryClient = config.sweego
+  ? createSweegoDeliveryClient({
+      host: config.sweego.host,
+      port: config.sweego.port,
+      secure: config.sweego.secure,
+      user: config.sweego.user,
+      passFile: config.sweego.passFile,
+      timeoutMs: config.sweego.timeoutMs,
+    })
+  : undefined;
+const sweegoThrottle = config.sweego
+  ? createThrottle({
+      configPath: config.sweego.throttleConfigPath,
+      messagesPerHour: config.sweego.messagesPerHour,
+      log,
+    })
+  : undefined;
+const sweegoFailures = createFailureCounter();
+
 const health = createHealthState();
 
 // Ping only once every host the descriptor currently names has reported a
@@ -91,6 +130,12 @@ const runtime = createCollectorRuntime({
   store,
   drainClient,
   deliveryClient,
+  sweegoDeliveryClient,
+  sweegoThrottle,
+  sweegoFailures,
+  mx1Pins,
+  sweegoPins,
+  sweegoAmbiguous,
   throttle,
   loginThrottle,
   bulkCap,
@@ -122,6 +167,7 @@ function shutdown(signal: string): void {
   server.close(() => {
     void runtime.stop().then(() => {
       deliveryClient.close();
+      sweegoDeliveryClient?.close();
       log.info('worker_lifecycle', { event: 'shutdown_complete' });
       process.exit(0);
     });
