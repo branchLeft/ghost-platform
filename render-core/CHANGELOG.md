@@ -2,6 +2,18 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## Unreleased
+
+**`render()` can render one running colour.**
+
+- **Additive:** `render(descriptor, zones, themeCsp, { activeColour })` and
+  `renderComposeStack({ ..., activeColour })` take an optional `'a'` or `'b'`.
+  When given, `compose.yml` carries only that colour's Ghost service and the
+  idle colour is omitted. When absent, every artefact is byte-identical to
+  0.3.0. A value other than `'a'` or `'b'` is refused. The new type `Colour`
+  and interface `RenderOptions` are exported. See
+  src/compose.md#one-running-colour.
+
 ## 0.3.0
 
 **Each Ghost container gets a 60 second stop grace period.**
