@@ -301,3 +301,39 @@ Not built here: persisting release and ring progress across a crash (each
 tenant already recovers on its own, but a tenant rehydrated in `done` has no
 controller left to close its bake window), and the real adapters (broker
 reconcile, health and gate runners, ring membership).
+
+## promotionChainLog.ts
+
+The controller's own record of which slot took which release, kept apart
+from anything a person or another service can write to.
+
+- **Format.** One JSON object per line, fixed key order, no whitespace:
+  `version`, `seq`, `at`, `promotion`, `slot`, `digest`, `prev`,
+  `signature`. `seq` counts from zero. `prev` is the SHA-256 of the previous
+  entry's exact line, or sixty-four zeros for the first. `signature` is
+  Ed25519 (`node:crypto`, no dependency) over a domain tag plus the seven
+  fields before it. A line that is not byte-for-byte the one serialisation
+  is refused, so a respaced entry cannot pass as the original.
+- **One entry per slot per promotion.** A second entry for the same
+  `promotion` and `slot` is refused at append and fails verification.
+- **Append verifies first.** `append` reads the whole file and verifies it
+  from the first byte before it writes, and refuses (a `ChainRefusedError`
+  with a code) on any failure, writing nothing. It also signs, then checks
+  its own signature against the public half, so a private key that is not the
+  one the committed public half belongs to is refused before a byte is
+  written. The file is opened for append, synced, and the directory synced
+  when the file is new. Appends inside one process are queued; the process
+  lock keeps it to one process.
+- **What it detects.** An altered field (signature), a removed or reordered
+  entry (sequence and hash link), an entry from another log (hash link), an
+  entry signed by another key, a half-written last line, an extra or missing
+  field.
+- **What it cannot detect alone.** Removing the *last* entries leaves a
+  shorter chain that is still valid. `verify({ head })` closes that when the
+  caller holds the head (`seq` and hash) from somewhere else; where that
+  anchor lives is not decided here.
+- **A half-written last line** (a crash inside the append) makes the log
+  refuse every later append until a person looks at it. That is deliberate:
+  gluing onto it would hide the break.
+- **Not here.** Reading the key from disk, the role that makes it, and wiring
+  `append` into `runRelease`.

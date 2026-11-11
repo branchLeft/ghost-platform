@@ -203,6 +203,19 @@ ever proceeds, even when both are called in the same tick -- otherwise a
 bake-window close and a post-`done` health-regression revert could race
 to stop or revert the same colour.
 
+## Promotion record
+
+`src/promotionChainLog.ts` is the controller's own append-only record of
+every slot promotion: one Ed25519-signed entry per slot per promotion, each
+carrying the hash of the entry before it. `append` verifies the whole file
+first and refuses, writing nothing, when the chain or a signature does not
+verify. Tests: `test/unit/promotionChainLog.test.ts`, and a sabotage pair for
+each check in `test/unit/promotionChainLogSabotage.test.ts`. The format, what
+it detects and the one thing it cannot detect alone (removal of the last
+entries, closed by a head held elsewhere) are in `src/README.md`. The key
+file, the role that makes it and the call from `runRelease` are not built
+here yet.
+
 ## What this module deliberately does not build
 
 Resolved by a recorded owner ruling: the controller never undoes a
