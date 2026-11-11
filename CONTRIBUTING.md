@@ -46,7 +46,7 @@ pip install pre-commit   # or: brew install pre-commit
 pre-commit install
 ```
 
-`pnpm install` at the root runs `pre-commit install` for you outside CI.
+`pnpm install` at the root runs `pre-commit install` for you outside CI and outside a linked worktree: worktrees share the main clone's hooks directory, so install the hook from the main clone and the worktrees pick it up.
 
 If a hook fails it usually auto-fixes the issue (Prettier, whitespace) — re-stage and commit again. Lint failures you fix yourself.
 
