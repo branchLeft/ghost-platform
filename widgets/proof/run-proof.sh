@@ -21,11 +21,56 @@ ORIGIN="http://localhost:${HOST_PORT}"
 # One row per pinned override -- must match widgets/pins.json's envVar list.
 OVERRIDES="portal__url sodoSearch__url sodoSearch__styles announcementBar__url comments__url adminToolbar__url signupForm__url"
 
+# Removes one container or network if it exists. A removal that fails is
+# reported on stderr and returned as failure, never hidden.
+remove_if_present() { # kind (container|network), name
+    kind="$1"; name="$2"
+    if [ "$kind" = container ]; then
+        present="$(docker ps -aq --filter "name=^${name}\$")" \
+            || { echo "could not list container $name" >&2; return 1; }
+    else
+        present="$(docker network ls -q --filter "name=^${name}\$")" \
+            || { echo "could not list network $name" >&2; return 1; }
+    fi
+    [ -n "$present" ] || return 0
+    if [ "$kind" = container ]; then
+        docker rm -f "$name" >/dev/null || { echo "could not remove container $name" >&2; return 1; }
+    else
+        docker network rm "$name" >/dev/null || { echo "could not remove network $name" >&2; return 1; }
+    fi
+}
+
+# Removes what a killed run left behind. Names carry the dead run's PID, so
+# no later run would ever find them by name.
+sweep_stale() {
+    stale_c="$(docker ps -aq --filter "name=^widgets-proof-")" \
+        || { echo "FAILED: could not list stale containers" >&2; exit 1; }
+    for c in $stale_c; do
+        docker rm -f "$c" >/dev/null || { echo "FAILED: could not remove stale container $c" >&2; exit 1; }
+    done
+    stale_n="$(docker network ls -q --filter "name=^widgets-proof-")" \
+        || { echo "FAILED: could not list stale networks" >&2; exit 1; }
+    for n in $stale_n; do
+        docker network rm "$n" >/dev/null || { echo "FAILED: could not remove stale network $n" >&2; exit 1; }
+    done
+}
+
 cleanup() {
-    docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1 || true
-    docker network rm "$NET" >/dev/null 2>&1 || true
+    rc=$?
+    failed=0
+    remove_if_present container "$GHOST_NAME" || failed=1
+    remove_if_present container "$ORIGIN_NAME" || failed=1
+    remove_if_present network "$NET" || failed=1
+    if [ "$failed" -eq 1 ]; then
+        echo "CLEANUP FAILED: this run's containers or network may be left behind" >&2
+        [ "$rc" -eq 0 ] && rc=1
+    fi
+    exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+sweep_stale
 
 echo "== Building images =="
 docker build -q -t widgets-proof-ghost:local . >/dev/null
@@ -119,7 +164,13 @@ run_pass() {
     start_ghost "$omit"
     start_origin
     if run_capture "$label"; then status=0; else status=1; fi
-    docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1
+    pass_failed=0
+    remove_if_present container "$GHOST_NAME" || pass_failed=1
+    remove_if_present container "$ORIGIN_NAME" || pass_failed=1
+    if [ "$pass_failed" -eq 1 ]; then
+        echo "CLEANUP FAILED: pass $label left its containers behind" >&2
+        status=1
+    fi
     return $status
 }
 

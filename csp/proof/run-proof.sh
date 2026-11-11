@@ -15,11 +15,56 @@ ORIGIN_NAME="csp-proof-origin-$$"
 HOST_PORT=4310
 ORIGIN="http://localhost:${HOST_PORT}"
 
+# Removes one container or network if it exists. A removal that fails is
+# reported on stderr and returned as failure, never hidden.
+remove_if_present() { # kind (container|network), name
+    kind="$1"; name="$2"
+    if [ "$kind" = container ]; then
+        present="$(docker ps -aq --filter "name=^${name}\$")" \
+            || { echo "could not list container $name" >&2; return 1; }
+    else
+        present="$(docker network ls -q --filter "name=^${name}\$")" \
+            || { echo "could not list network $name" >&2; return 1; }
+    fi
+    [ -n "$present" ] || return 0
+    if [ "$kind" = container ]; then
+        docker rm -f "$name" >/dev/null || { echo "could not remove container $name" >&2; return 1; }
+    else
+        docker network rm "$name" >/dev/null || { echo "could not remove network $name" >&2; return 1; }
+    fi
+}
+
+# Removes what a killed run left behind. Names carry the dead run's PID, so
+# no later run would ever find them by name.
+sweep_stale() {
+    stale_c="$(docker ps -aq --filter "name=^csp-proof-")" \
+        || { echo "FAILED: could not list stale containers" >&2; exit 1; }
+    for c in $stale_c; do
+        docker rm -f "$c" >/dev/null || { echo "FAILED: could not remove stale container $c" >&2; exit 1; }
+    done
+    stale_n="$(docker network ls -q --filter "name=^csp-proof-")" \
+        || { echo "FAILED: could not list stale networks" >&2; exit 1; }
+    for n in $stale_n; do
+        docker network rm "$n" >/dev/null || { echo "FAILED: could not remove stale network $n" >&2; exit 1; }
+    done
+}
+
 cleanup() {
-    docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" >/dev/null 2>&1 || true
-    docker network rm "$NET" >/dev/null 2>&1 || true
+    rc=$?
+    failed=0
+    remove_if_present container "$GHOST_NAME" || failed=1
+    remove_if_present container "$ORIGIN_NAME" || failed=1
+    remove_if_present network "$NET" || failed=1
+    if [ "$failed" -eq 1 ]; then
+        echo "CLEANUP FAILED: this run's containers or network may be left behind" >&2
+        [ "$rc" -eq 0 ] && rc=1
+    fi
+    exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+sweep_stale
 
 echo "== Building render-core (the proof renders through its built output) =="
 ( cd render-core && ${PNPM:-pnpm} install --frozen-lockfile >/dev/null && ${PNPM:-pnpm} run build >/dev/null )
@@ -65,7 +110,7 @@ start_ghost() {
 
 # $1: CSP_HEADER_NAME, $2: CSP_HEADER_VALUE
 start_origin() {
-    docker rm -f "$ORIGIN_NAME" >/dev/null 2>&1 || true
+    remove_if_present container "$ORIGIN_NAME" || { echo "FAILED: origin container could not be replaced" >&2; exit 1; }
     docker run -d --name "$ORIGIN_NAME" --network "$NET" \
         -p "${HOST_PORT}:8080" \
         -e "GHOST_UPSTREAM=${GHOST_NAME}:2368" \
