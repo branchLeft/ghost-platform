@@ -15,6 +15,8 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { TENANT_KINDS } from './tenantKind.js';
+import { TENANT_NAME_PATTERN } from './tenantName.js';
+import { CUSTOM_DOMAIN_FQDN_PATTERN, VERIFICATION_TOKEN_PATTERN } from './customDomain.js';
 import {
   DEMO_STATES,
   LABEL_PATTERN,
@@ -40,8 +42,9 @@ const sqlList = (values: readonly string[]): string => values.map((v) => `'${v}'
  * organisation id and its kind (a real tenant or a demo slot). A tenant reads
  * its own row and holds no write privilege on it, so it cannot change its own
  * kind; the owner role bypasses row security by attribute. The kind has no
- * default: a row that names none is refused, never guessed. The policies are
- * explained in the package README.
+ * default: a row that names none is refused, never guessed. A real tenant's
+ * sign-up name is held here, unique, and nowhere in any repository. The
+ * policies are explained in the package README.
  */
 export const tenantRegister = portal
   .table(
@@ -51,11 +54,20 @@ export const tenantRegister = portal
       zitadelOrgId: text('zitadel_org_id').notNull().unique(),
       createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
       kind: text('kind').notNull(),
+      tenantName: text('tenant_name'),
     },
     (table) => [
       check(
         'tenant_register_kind_known',
         sql`${table.kind} IN (${sql.raw(sqlList(TENANT_KINDS))})`
+      ),
+      // The name a customer signed up under, in its stored (normalised) form.
+      // Null for a demo slot. Unique, so a second sign-up under a taken name is
+      // refused by the table even to a statement that skips the code.
+      unique('tenant_register_tenant_name_unique').on(table.tenantName),
+      check(
+        'tenant_register_tenant_name_shape',
+        sql`${table.tenantName} ~ ${sql.raw(`'${TENANT_NAME_PATTERN}'`)}`
       ),
       pgPolicy('tenant_isolation', {
         as: 'permissive',
@@ -255,6 +267,80 @@ export const moderationSetting = portal
       check(
         'moderation_setting_sensitivity_known',
         sql`${table.sensitivity} IN (${sql.raw(sqlList(SENSITIVITIES))})`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+const FQDN_SHAPE = sql.raw(`'${CUSTOM_DOMAIN_FQDN_PATTERN}'`);
+
+/**
+ * A domain a real tenant has asked to connect, not yet proven: one row per
+ * tenant and domain, holding the one-time token its verification record must
+ * carry. Nothing here is served. A request is not unique across tenants, so an
+ * unproven request never blocks the domain's real owner. Isolated like every
+ * tenant table; the row goes when the domain is connected or removed.
+ */
+export const customDomainRequest = portal
+  .table(
+    'custom_domain_request',
+    {
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      fqdn: text('fqdn').notNull(),
+      verificationToken: text('verification_token').notNull(),
+      requestedAt: timestamp('requested_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      primaryKey({ columns: [table.tenantId, table.fqdn] }),
+      check(
+        'custom_domain_request_fqdn_shape',
+        sql`${table.fqdn} ~ ${FQDN_SHAPE} AND length(${table.fqdn}) <= 253`
+      ),
+      check(
+        'custom_domain_request_token_shape',
+        sql`${table.verificationToken} ~ ${sql.raw(`'${VERIFICATION_TOKEN_PATTERN}'`)}`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A domain that was checked (it pointed at the edge and carried its record) and
+ * connected: the only rows the edge may serve. The domain is the key, so it is
+ * connected to one tenant at a time, and a second tenant's connection is
+ * refused by the table even to a statement that skips the code. Isolated like
+ * every tenant table; deleting the row is how a tenant disconnects the domain.
+ */
+export const connectedDomain = portal
+  .table(
+    'connected_domain',
+    {
+      fqdn: text('fqdn').primaryKey(),
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      connectedAt: timestamp('connected_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      check(
+        'connected_domain_fqdn_shape',
+        sql`${table.fqdn} ~ ${FQDN_SHAPE} AND length(${table.fqdn}) <= 253`
       ),
       pgPolicy('tenant_isolation', {
         as: 'permissive',

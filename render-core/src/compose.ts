@@ -5,7 +5,7 @@
  * See compose.md.
  */
 
-import { validatePrivateIpV4 } from './brand.js';
+import { FieldValidationError, validatePrivateIpV4 } from './brand.js';
 import type { ResourceCaps, TenantDescriptor } from './descriptor.js';
 import type { UploadLimits } from './runtime.js';
 import { METRICS_MOUNT_PATH } from './environment.js';
@@ -20,6 +20,16 @@ export const GHOST_CONTAINER_PORT = 2368;
  * must carry this header or Ghost answers with a redirect `wget` cannot
  * follow, forever. */
 const HEALTHCHECK_FORWARDED_PROTO = 'X-Forwarded-Proto: https';
+
+/**
+ * How long a `stop` of a Ghost container waits before Docker sends SIGKILL.
+ * Docker's own default is 10 seconds, too short to let an in-flight send
+ * batch finish. This first value is a provisional assumption: the issue names
+ * no batch duration, so 60 seconds is six times Docker's default. It is to be
+ * replaced by the value the two-instance harness measures. See
+ * compose.md#the-stop-grace-period.
+ */
+export const GHOST_STOP_GRACE_PERIOD = '60s';
 
 const CONTENT_MOUNT_PATH = '/var/lib/ghost/content';
 const ADAPTERS_MOUNT_PATH = `${CONTENT_MOUNT_PATH}/adapters`;
@@ -57,9 +67,29 @@ export interface ComposeStackArgs {
   /** The host spool's internal network for this tenant, non-null exactly
    * when mail is enabled. See compose.md#the-mail-network. */
   readonly mailNetwork: string | null;
+  /**
+   * Optional. When present, only this colour's Ghost service is rendered and
+   * the idle colour is omitted from the document; when absent, both colours
+   * are rendered, exactly as before. See compose.md#one-running-colour.
+   */
+  readonly activeColour?: Colour;
 }
 
-type Colour = 'a' | 'b';
+/** The two slot colours a blue/green deploy swaps between. */
+export type Colour = 'a' | 'b';
+
+const COLOURS: readonly Colour[] = ['a', 'b'];
+
+function coloursToRender(activeColour: Colour | undefined): readonly Colour[] {
+  if (activeColour === undefined) return COLOURS;
+  if (!COLOURS.includes(activeColour)) {
+    throw new FieldValidationError(
+      'activeColour',
+      `activeColour must be "a" or "b" when given, got ${JSON.stringify(activeColour)}.`
+    );
+  }
+  return [activeColour];
+}
 
 /** The address every published port binds to — see the module doc
  * comment's "Load-bearing" note. */
@@ -87,6 +117,7 @@ function ghostService(
   return {
     image: '${IMAGE}',
     restart: 'unless-stopped',
+    stop_grace_period: GHOST_STOP_GRACE_PERIOD,
     // Distinct per tenant, never reused — the one control that separates
     // one tenant's data from another's on a shared host.
     user: `${args.uid}:${args.uid}`,
@@ -151,10 +182,12 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
 
   return {
     name: stackName(args.slug),
-    services: {
-      'ghost-a': ghostService(args, 'a', content, adapters, metrics),
-      'ghost-b': ghostService(args, 'b', content, adapters, metrics),
-    },
+    services: Object.fromEntries(
+      coloursToRender(args.activeColour).map((colour) => [
+        `ghost-${colour}`,
+        ghostService(args, colour, content, adapters, metrics),
+      ])
+    ),
     ...(args.mailNetwork
       ? { networks: { [args.mailNetwork]: { name: args.mailNetwork, external: true } } }
       : {}),
@@ -313,6 +346,10 @@ export function assertRuntimePosture(
       at('must set `memswap_limit` equal to `mem_limit`, or swap is unbounded');
     }
     if (typeof service.cpus !== 'string') at('must set `cpus`');
+    const grace = service.stop_grace_period;
+    if (typeof grace !== 'string' || !/^\d+s$/.test(grace)) {
+      at('must set `stop_grace_period` to whole seconds, or a stop kills Ghost mid-batch');
+    }
 
     const logging = service.logging as Record<string, YamlValue> | undefined;
     const loggingOptions = logging?.options as Record<string, YamlValue> | undefined;

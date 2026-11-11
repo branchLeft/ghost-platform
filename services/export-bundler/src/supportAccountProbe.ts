@@ -117,7 +117,11 @@ export function createDockerStatusProbe(
         stdout = await withEnvFile(
           env,
           (envFile) =>
-            runDocker(dockerCommand, buildStatusProbeArgs({ ...template, envFile }, identity)),
+            runDocker(
+              dockerCommand,
+              buildStatusProbeArgs({ ...template, envFile }, identity),
+              registry
+            ),
           registry
         );
       } catch (err) {

@@ -4,6 +4,65 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**`render()` can render one running colour.**
+
+- **Additive:** `render(descriptor, zones, themeCsp, { activeColour })` and
+  `renderComposeStack({ ..., activeColour })` take an optional `'a'` or `'b'`.
+  When given, `compose.yml` carries only that colour's Ghost service and the
+  idle colour is omitted. When absent, every artefact is byte-identical to
+  0.3.0. A value other than `'a'` or `'b'` is refused. The new type `Colour`
+  and interface `RenderOptions` are exported. See
+  src/compose.md#one-running-colour.
+
+## 0.3.0
+
+**Each Ghost container gets a 60 second stop grace period.**
+
+- **Changed output:** every rendered `compose.yml` gains
+  `stop_grace_period: '60s'` on both `ghost-a` and `ghost-b`, from the new
+  constant `GHOST_STOP_GRACE_PERIOD`, so a stop no longer SIGKILLs Ghost after
+  Docker's 10 second default in the middle of a send batch. A demo, a paying
+  tenant and tenant zero all gain it. The mail spool is not a Ghost service
+  and is unchanged. The value is provisional, pending a measured batch.
+- `assertRuntimePosture()` refuses a Ghost service with no whole-seconds
+  `stop_grace_period`, so dropping the line fails the render. See
+  src/compose.md#the-stop-grace-period.
+
+**The mail spool's drain listener binds one fixed address, never every interface.**
+
+- **Changed output:** `renderMailSpoolStack()` renders `SHIM_DRAIN_HOST:
+  '10.231.200.2'` in the spool's `environment:`. The drain network gains
+  `ipam: {config: [{subnet: '10.231.200.0/29', gateway: '10.231.200.1'}]}`. The
+  service's `networks:` changes from a list to a map: the drain network carries
+  `ipv4_address: '10.231.200.2'`, and each tenant network carries
+  `aliases: ['mail-spool']`. The image line, the ports and every other key are
+  unchanged.
+- New exports `MAIL_SPOOL_DRAIN_SUBNET`, `MAIL_SPOOL_DRAIN_GATEWAY` and
+  `MAIL_SPOOL_DRAIN_ADDRESS`. `assertSpoolPosture()` now also refuses a drain
+  port with no host, a wildcard host, any host but the fixed address, an ipam
+  pool other than the fixed one, and an `ipv4_address` that differs from the host.
+- **Rollout:** move the rendered file and the mailgun-shim image digest together,
+  in one gated apply. A shim image built from at least ghost-platform 09a9f61
+  refuses to start from a file with no `SHIM_DRAIN_HOST`; an older image ignores
+  the host and keeps listening on every interface. Re-rendering with this
+  release against the old pinned image is safe but fixes nothing. A deployed
+  drain network was created without a fixed pool, so the gated apply has to
+  recreate it; that step is not exercised by this change. See
+  src/spool.md#the-drain-port.
+
+**A demo slot cannot connect a real Stripe account.**
+
+- **Changed output:** a demo's `environment:` gains
+  `hostSettings__limits__limitStripeConnect__disabled: true`, in both colours.
+  A paying tenant's output, and tenant zero's, are unchanged.
+  `tenantEnvironment()`'s descriptor argument must now carry `kind`.
+- **Rollout:** the key is only partial protection without the Ghost image's
+  Stripe overlay, and the overlay is inert without the key. Promote the
+  rebuilt Ghost image to the demo host first; only then publish this release
+  and roll the broker onto it. Never render the key onto an image that lacks
+  the overlay. Existing slots pick the key up when re-rendered and recreated.
+  See src/environment.md#stripe-connect-limit.
+
 **Each demo slot authenticates to the mail spool as its own credential domain.**
 
 - **Changed output:** a demo's `mail__options__auth__user` and

@@ -306,7 +306,7 @@ export async function startTestBroker(options: TestBrokerOptions = {}): Promise<
     realTraffic,
     emailBatchChecker,
     ghostReadyPollTimeoutMs: 300,
-    healthPortBase: 9100,
+    healthPortBase: 10100,
     appPortBase: 9300,
     uidBase: 30001,
     slotDirBase,

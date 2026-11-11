@@ -129,8 +129,8 @@ export interface CredentialRecord {
    */
   readonly createdAt: string;
   /**
-   * The most body bytes one request may carry, in MiB. Absent means the
-   * default (128). A value that is not a positive whole number is refused.
+   * The most body bytes one request may carry, in MiB. Absent is refused,
+   * never defaulted, as is a value that is not a positive whole number.
    */
   readonly uploadCeilingMib?: number;
 }

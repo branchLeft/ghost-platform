@@ -5,6 +5,8 @@ infra/tenant/dist
 infra/tenant/*.tgz
 services/*/dist
 services/*/coverage
+deadmans-switch/dist
+deadmans-switch/coverage
 adapters/sso/coverage
 adapters/sso/ghost-core-overlay/derived
 adapters/scanning-storage/coverage

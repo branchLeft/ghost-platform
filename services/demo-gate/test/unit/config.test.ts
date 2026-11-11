@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
-import { createSourceResolver } from '../../src/source.js';
+import { createSourceResolver } from 'ghost-platform-request-guard/dist/index.js';
 
 const KEY = Buffer.alloc(32, 1);
 const base = {
@@ -27,6 +27,7 @@ describe('loadConfig', () => {
       ceilingMaxSources: 100_000,
       ceilingBroadLimit: 1000,
       ceilingBroadMaxSources: 20_000,
+      ceilingMalformedLimit: 60,
       // Below the libuv threadpool's own default size (4) -- see
       // config.ts's comment for the measurement this default is chosen
       // from.
@@ -54,6 +55,7 @@ describe('loadConfig', () => {
       GATE_CEILING_MAX_SOURCES: '5',
       GATE_CEILING_BROAD_ATTEMPTS: '40',
       GATE_CEILING_BROAD_MAX_SOURCES: '50',
+      GATE_CEILING_MALFORMED_ATTEMPTS: '7',
       GATE_ARGON2_MAX_CONCURRENT: '2',
       GATE_ARGON2_MAX_QUEUED: '8',
     });
@@ -66,6 +68,7 @@ describe('loadConfig', () => {
       ceilingMaxSources: 5,
       ceilingBroadLimit: 40,
       ceilingBroadMaxSources: 50,
+      ceilingMalformedLimit: 7,
       argon2MaxConcurrent: 2,
       argon2MaxQueued: 8,
     });
@@ -82,6 +85,15 @@ describe('loadConfig', () => {
   it('refuses a signing key shorter than 32 bytes', () => {
     expect(() => load(base, Buffer.alloc(31))).toThrow(/at least 32 bytes/);
   });
+
+  it.each(['0', '-1', '1.5', 'ten', '10001'])(
+    'refuses a malformed-attempt limit of %j',
+    (value) => {
+      expect(() =>
+        load({ ...base, GATE_TRUSTED_PROXIES: EDGE, GATE_CEILING_MALFORMED_ATTEMPTS: value })
+      ).toThrow(/GATE_CEILING_MALFORMED_ATTEMPTS/);
+    }
+  );
 
   it.each(['0', '-1', '1.5', 'ten', '604801'])('refuses a cookie TTL of %j', (value) => {
     expect(() =>

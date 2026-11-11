@@ -208,7 +208,7 @@ export function loadConfig(
     drainPollTimeoutMs: positiveInteger(env, 'BROKER_DRAIN_POLL_TIMEOUT_MS', 30_000, 120_000),
     healthCheckTimeoutMs: positiveInteger(env, 'BROKER_HEALTH_TIMEOUT_MS', 2_000, 30_000),
     ghostReadyPollTimeoutMs: positiveInteger(env, 'BROKER_GHOST_READY_TIMEOUT_MS', 30_000, 300_000),
-    healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 9100, 65000),
+    healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 10100, 65000),
     appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', 9300, 65000),
     uidBase: positiveInteger(env, 'BROKER_UID_BASE', 30001, 65000),
     processStartSeconds: Math.floor(Date.now() / 1000),

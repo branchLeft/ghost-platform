@@ -77,7 +77,7 @@ export {
   validateSlotName,
 } from './lease.js';
 
-export type { Artefact } from './render.js';
+export type { Artefact, RenderOptions } from './render.js';
 export {
   render,
   renderSecretsTemplate,
@@ -98,9 +98,12 @@ export { renderDrainList } from './drain.js';
 export {
   MAIL_SPOOL_BASE_URL,
   MAIL_SPOOL_DATA_VOLUME,
+  MAIL_SPOOL_DRAIN_ADDRESS,
   MAIL_SPOOL_DRAIN_BIND_ADDRESS,
   MAIL_SPOOL_DRAIN_BRIDGE,
+  MAIL_SPOOL_DRAIN_GATEWAY,
   MAIL_SPOOL_DRAIN_NETWORK,
+  MAIL_SPOOL_DRAIN_SUBNET,
   MAIL_SPOOL_DRAIN_TOKEN_KEY,
   MAIL_SPOOL_HTTP_PORT,
   MAIL_SPOOL_SECRETS_PATH,
@@ -115,6 +118,7 @@ export {
 } from './spool.js';
 export type { MailSpoolStackArgs } from './spool.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
+export type { Colour } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {
   MAX_TENANT_SLUG_LENGTH,

@@ -1,5 +1,5 @@
 // What a fast-path migration may call, and where it may import from. Anything
-// not named here routes consent. Each entry states what it does to data; the
+// not named here routes to refusal. Each entry states what it does to data; the
 // reasons are the only support for trusting an entry, so keep them honest.
 
 // Fail-closed allowlist of callable names. Each entry gives its reason.
@@ -76,7 +76,7 @@ export const MIGRATION_WRAPPERS = Object.freeze([
 // A function named so, or held under a key so named, is a migration function too.
 export const MIGRATION_ENTRY_NAMES = Object.freeze(['up', 'down']);
 
-// Modules a fast-path file may require. Any other path routes consent.
+// Modules a fast-path file may require. Any other path routes to refusal.
 export const KNOWN_MODULES = Object.freeze({
   '../../utils': 'Ghost migration helpers; each helper used is checked by name',
   '@tryghost/logging': 'logging only',

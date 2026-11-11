@@ -6,7 +6,7 @@ import { DescriptorTargetStore } from './descriptorTargets.js';
 import { createDrainClient } from './drainClient.js';
 import { createDeliveryClient } from './deliveryClient.js';
 import { createHealthState } from './health.js';
-import { createDeadMansSwitch } from './heartbeat.js';
+import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import { createLogger } from './log.js';
 import { createDirectoryDsnMailbox } from './dsnMailbox.js';
 import { createOutcomeRunner } from './outcomeRunner.js';

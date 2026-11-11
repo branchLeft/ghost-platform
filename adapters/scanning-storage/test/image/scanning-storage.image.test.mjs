@@ -350,6 +350,12 @@ class S3MockDouble {
     return res.status === 200;
   }
 
+  // The Content-Type header a visitor's browser is sent for this key.
+  async objectContentType(key) {
+    const res = await fetch(`${this.base}/${this.bucket}/${key}`);
+    return res.headers.get('content-type');
+  }
+
   stop() {
     dockerOk('rm', '-f', '-v', this.name);
   }
@@ -1029,6 +1035,14 @@ describe('the hold branch, against a real Ghost', () => {
           await double.objectExists(key),
           true,
           'promotion is a write: the bucket now holds the object'
+        );
+        // Promotion goes through S3Storage.saveRaw, which sends no
+        // ContentType itself (content-type.md): without the stamp this is
+        // application/octet-stream and the logo or favicon is a broken image.
+        assert.equal(
+          await double.objectContentType(key),
+          'image/png',
+          'a promoted object must be served with its image type'
         );
       } finally {
         if (ghost) ghost.stop();

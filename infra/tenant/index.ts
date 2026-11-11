@@ -12,7 +12,6 @@ import {
   secretsEnvPath,
   stackDirectory,
   stackName,
-  validateOwnerEmailSecret,
   validateTenantStack,
   type Artefact,
   type TenantStackDescriptor,
@@ -20,35 +19,13 @@ import {
 } from '@branchleft/ghost-platform-render-core';
 import { validateTenantNameClaim } from './naming';
 
-/**
- * The secret values this tenant's `/etc/branchleft/<slug>.env` carries. The
- * descriptor holds no secret by design, so they arrive here, beside it. Which
- * of them are required is decided by the render core's `secrets.env`
- * template, never by this component. See index.md#ghosttenantsecrets.
- */
-export interface GhostTenantSecrets {
-  /** The password `db/provision/provision_tenant_db.py` printed once. */
-  databasePassword?: pulumi.Input<string>;
-  /** This tenant's Object Storage key pair, allowlisted to its own bucket. */
-  s3AccessKeyId?: pulumi.Input<string>;
-  s3SecretAccessKey?: pulumi.Input<string>;
-  /** The SMTP submission password, for an `smtp` transport. */
-  mailPassword?: pulumi.Input<string>;
-  /** The bulk-mail API key, when the descriptor enables mail. */
-  bulkEmailApiKey?: pulumi.Input<string>;
-  /** The owner's email address. A person's address, so never a descriptor
-   * field: see index.md#the-owner-address. */
-  ownerEmail?: pulumi.Input<string>;
-}
-
 export interface GhostTenantArgs {
   /** The paying tenant's descriptor, as the render core defines it, without
-   * `ownerEmail`: that arrives in `secrets`. A demo descriptor is refused:
-   * demos are reconciled by the broker. */
+   * `ownerEmail`: that reaches the host in the secrets file. A demo descriptor
+   * is refused: demos are reconciled by the broker. */
   descriptor: TenantStackDescriptor;
   /** The zones `validateTenantStack()` and `render()` check hostnames and mail against. */
   zones: ZoneConfig;
-  secrets: GhostTenantSecrets;
   /** Applied on `db1` by the provisioning script; recorded in the identity so
    * the tenant's configured cap is visible in its own stack. Defaults to 10. */
   maxUserConnections?: number;
@@ -74,15 +51,6 @@ export interface GhostTenantIdentity {
 
 const DEFAULT_MAX_USER_CONNECTIONS = 10;
 
-type SecretField = keyof typeof SECRET_ENV_KEYS;
-
-/** The `GhostTenantSecrets` field each secrets-file key is filled from. */
-const SECRET_FIELD_BY_KEY = new Map<string, SecretField>(
-  (Object.entries(SECRET_ENV_KEYS) as [SecretField, string][]).map(([field, key]) => [key, field])
-);
-
-// eslint-disable-next-line no-control-regex -- refusing control characters is the point
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 const TEMPLATE_KEY_LINE = /^([A-Z][A-Z0-9_]*)=$/;
 
 function artefactContent(artefacts: readonly Artefact[], path: string): string {
@@ -102,75 +70,10 @@ export function requiredSecretKeys(template: string): string[] {
 }
 
 /**
- * Refuses, before anything is registered, a secret the template needs but was
- * not supplied, and a secret supplied that the template does not name. See
- * index.md#secret-coverage.
- */
-export function assertSecretCoverage(
-  slug: string,
-  required: readonly string[],
-  secrets: GhostTenantSecrets
-): void {
-  for (const key of required) {
-    const field = SECRET_FIELD_BY_KEY.get(key);
-    if (field === undefined) {
-      throw new Error(
-        `GhostTenant: the render core names a secret "${key}" for "${slug}" that this component ` +
-          `has no input for.`
-      );
-    }
-    if (secrets[field] === undefined) {
-      throw new Error(`GhostTenant: "${slug}" needs secrets.${field} (${key}); none was supplied.`);
-    }
-  }
-  for (const [field, value] of Object.entries(secrets) as [SecretField, unknown][]) {
-    if (value !== undefined && !required.includes(SECRET_ENV_KEYS[field])) {
-      throw new Error(
-        `GhostTenant: secrets.${field} was supplied for "${slug}", but its descriptor needs no ` +
-          `such secret. Refused rather than dropped, so a configuration mismatch is visible.`
-      );
-    }
-  }
-}
-
-/**
- * Fills each `KEY=` line of the render core's template with its value and
- * leaves every other line exactly as rendered. See
- * index.md#filling-the-secrets-file.
- */
-export function fillSecretsTemplate(
-  slug: string,
-  template: string,
-  values: ReadonlyMap<string, string>
-): string {
-  return template
-    .split('\n')
-    .map((line) => {
-      const key = TEMPLATE_KEY_LINE.exec(line)?.[1];
-      if (key === undefined) {
-        return line;
-      }
-      const value = values.get(key);
-      if (value === undefined) {
-        throw new Error(`GhostTenant: no value for ${key} in the secrets file for "${slug}".`);
-      }
-      if (CONTROL_CHARACTER.test(value)) {
-        throw new Error(
-          `GhostTenant: the ${key} for "${slug}" contains a control character. A newline in an ` +
-            `EnvironmentFile value adds a line rather than breaking one, so it can set any ` +
-            `variable in the container's environment.`
-        );
-      }
-      return `${key}=${value}`;
-    })
-    .join('\n');
-}
-
-/**
  * One paying Ghost tenant on a shared app host. Every artefact comes from the
  * render core's `render(descriptor)`; this component validates, registers
- * and exposes them, and fills the secrets file with the values the
- * descriptor never carries. It declares no cloud resources.
+ * and exposes them. It holds no secret value and exposes none: the secrets
+ * file is rendered on the host. It declares no cloud resources.
  * See index.md#ghosttenant.
  */
 export class GhostTenant extends pulumi.ComponentResource {
@@ -202,14 +105,24 @@ export class GhostTenant extends pulumi.ComponentResource {
   public readonly edgeRequestBodyMaxSize: string;
   /** The rendered Ghost settings document, as JSON. */
   public readonly ghostSettings: string;
-  /** The exact content of `/etc/branchleft/<slug>.env`. A Pulumi secret. */
-  public readonly secretsEnvFile: pulumi.Output<string>;
+  /** The render core's `secrets.env` text: key names with empty values, never
+   * a value. The host fills it; see `app/provision/render_tenant_secrets.py`. */
+  public readonly secretsEnvTemplate: string;
+  /** The `KEY` names `secretsEnvTemplate` lists, in its order. */
+  public readonly secretKeys: string[];
   /** See `GhostTenantIdentity`. */
   public readonly identity: pulumi.Output<GhostTenantIdentity>;
 
   constructor(name: string, args: GhostTenantArgs, opts?: pulumi.ComponentResourceOptions) {
     // Everything that can refuse runs before super(), so an invalid
     // descriptor never reaches the engine. See index.md#constructor-order.
+    // A removed argument is refused, never dropped, and never echoed.
+    if ('secrets' in (args as unknown as Record<string, unknown>)) {
+      throw new Error(
+        'GhostTenant: the "secrets" argument was removed in 8.0.0. A tenant stack holds no ' +
+          'secret value; the host renders the secrets file. See index.md#secrets-on-the-host.'
+      );
+    }
     if (args.descriptor.kind !== 'tenant') {
       throw new Error(
         `GhostTenant: descriptor.kind must be "tenant", got "${args.descriptor.kind}". A demo ` +
@@ -224,8 +137,7 @@ export class GhostTenant extends pulumi.ComponentResource {
     const slug = descriptor.slug;
 
     const secretsTemplate = artefactContent(artefacts, 'secrets.env');
-    const required = requiredSecretKeys(secretsTemplate);
-    assertSecretCoverage(slug, required, args.secrets);
+    const secretKeys = requiredSecretKeys(secretsTemplate);
 
     const rendered = JSON.parse(artefactContent(artefacts, 'identity.json')) as Omit<
       GhostTenantIdentity,
@@ -270,26 +182,8 @@ export class GhostTenant extends pulumi.ComponentResource {
     ).requestBodyMaxSize;
     this.ghostSettings = artefactContent(artefacts, 'ghost-settings.json');
 
-    const values = required.map((key) =>
-      pulumi.output(
-        args.secrets[SECRET_FIELD_BY_KEY.get(key) as SecretField] as pulumi.Input<string>
-      )
-    );
-    // Checked on the resolved value, inside the secret, at deploy time:
-    // the refusal withholds the value. See index.md#the-owner-address.
-    const ownerIndex = required.indexOf(SECRET_ENV_KEYS.ownerEmail);
-    this.secretsEnvFile = pulumi.secret(
-      pulumi.all(values).apply((resolved) => {
-        if (ownerIndex !== -1) {
-          validateOwnerEmailSecret(resolved[ownerIndex]);
-        }
-        return fillSecretsTemplate(
-          slug,
-          secretsTemplate,
-          new Map(required.map((key, index) => [key, resolved[index]]))
-        );
-      })
-    );
+    this.secretsEnvTemplate = secretsTemplate;
+    this.secretKeys = secretKeys;
 
     this.identity = pulumi.output(identity);
 
@@ -307,7 +201,8 @@ export class GhostTenant extends pulumi.ComponentResource {
       ghostSettings: this.ghostSettings,
       mediaBucket: this.mediaBucket,
       mediaPublicBaseUrl: this.mediaPublicBaseUrl,
-      secretsEnvFile: this.secretsEnvFile,
+      secretsEnvTemplate: this.secretsEnvTemplate,
+      secretKeys: this.secretKeys,
     });
   }
 }

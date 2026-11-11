@@ -82,7 +82,20 @@ portal/data/test/hba*.ts
 infra/provisioning/scripts/restore_drill.py
 infra/provisioning/scripts/test_restore_drill.py
 
+# The pre-swap scratch-copy gate: decrypts a backup, imports it into a throwaway
+# server and reads back what it restored, never the tenant's live database.
+infra/provisioning/scripts/scratch_preflight.py
+infra/provisioning/scripts/test_scratch_preflight.py
+
 # Backup and restore check for the control host's Nextcloud stack: pg_dump,
 # a restore into a throwaway server, and count queries, never row reads.
 control/provision/nextcloud_backup.py
 control/provision/test_nextcloud_backup.py
+
+# Test fixture: builds the throwaway portal database, its roles, logins and
+# grants through the provisioning command, then adds test-only roles and grants.
+portal/data/test/helpers.ts
+
+# Test of the tenant register's write policy: grants and revokes the tenant
+# role's write privileges as an administrator, and undoes them after each case.
+portal/data/test/registerWrites.test.ts

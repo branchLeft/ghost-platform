@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Usage: node src/cli.mjs --from v6.55.0 --to v6.69.0 --versions <dir>
 // <dir> is Ghost's migrations/versions directory from the TARGET tag's source.
-// Exit 0 = fast-path, 2 = the consent verdict, 1 = an error (usage, read, or an
+// Exit 0 = fast-path, 2 = the refused verdict (route `consent`), 1 = an error (usage, read, or an
 // unexpected tree). Exit 1 is never a verdict and never fast-path.
 
 import { readdirSync, readFileSync } from 'node:fs';

@@ -24,6 +24,11 @@ const target = {
       name: 'portal_provisioner_login',
       reaches: ['portal_provisioner_login', 'portal_provisioner'],
     },
+    {
+      // The migrator is a member of no role: it reaches itself alone.
+      name: 'portal_migrator_login',
+      reaches: ['portal_migrator_login'],
+    },
   ],
 };
 
@@ -35,6 +40,7 @@ describe('the static pg_hba rule', () => {
       rule(3, ['portal_tenant_login'], ['portal']),
       rule(4, ['portal_owner_login'], ['portal']),
       rule(8, ['portal_provisioner_login'], ['portal']),
+      rule(9, ['portal_migrator_login'], ['portal']),
       rule(5, ['postgres'], ['postgres', 'zitadel', 'portal']),
       rule(6, ['all'], ['all'], 'reject'),
       rule(7, ['all'], ['all'], 'reject'),
@@ -67,6 +73,12 @@ describe('the static pg_hba rule', () => {
       ['+portal_owner_login'],
       ['all'],
       /portal_owner_login \(as \+portal_owner_login\)/,
+    ],
+    [
+      'the migrator login to another database',
+      ['portal_migrator_login'],
+      ['postgres'],
+      /portal_migrator_login \(as portal_migrator_login\) reach database postgres/,
     ],
     ['a regular expression', ['/^portal'], ['postgres'], /\(as \/\^portal\)/],
     ['an included file', ['@users'], ['postgres'], /\(as @users\)/],

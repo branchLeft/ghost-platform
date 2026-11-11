@@ -20,7 +20,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import backup_recipients as br
 import backup_worker as bw
-from dial_in_transport import DialInTransport, LocalProcessTransport, RemoteMysqldumpTransport
+from dial_in_transport import (
+    DialInTransport,
+    LocalProcessTransport,
+    RemoteMysqldumpTransport,
+    snapshot_mode_from_env,
+)
 
 
 class NightlyLoopAlreadyRunning(Exception):
@@ -188,10 +193,12 @@ def _report_line(outcome: TenantOutcome) -> str:
         hold = outcome.result.lock_hold_seconds
         wait_text = f"{wait:.3f}s" if wait is not None else "unmeasured"
         hold_text = f"{hold:.3f}s" if hold is not None else "unmeasured"
+        position = outcome.result.recovery_gtid_set
+        position_text = f", recovery position {position}" if position is not None else ""
         return (
             f"nightly_dump_loop: {outcome.tenant}: ok, lock wait {wait_text}, hold {hold_text}, "
             f"{outcome.result.lock_aborts} aborted lock attempt(s), "
-            f"stored to {list(outcome.result.copies_written)}"
+            f"stored to {list(outcome.result.copies_written)}{position_text}"
         )
     return f"nightly_dump_loop: {outcome.tenant}: FAILED: {outcome.error}"
 
@@ -245,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
             user=bw._require_env("BACKUP_WORKER_MYSQL_USER"),
             ssl_ca=bw._require_env("BACKUP_WORKER_MYSQL_SSL_CA"),
             port=int(os.environ.get("BACKUP_WORKER_DB_PORT", "3306")),
+            snapshot=snapshot_mode_from_env(os.environ),
         )
 
     mysql_pwd = bw._require_env("DB_DUMP_MYSQL_PWD")

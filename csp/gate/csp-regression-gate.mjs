@@ -14,8 +14,9 @@ import { fileURLToPath } from 'node:url';
 /**
  * `run` is capture-csp.mjs's JSON. Returns failure strings; empty = holds.
  * Holds only when: the injected script did not run, Portal's sign-in form
- * rendered with its email field, and the sole violation is the attack
- * (an inline script blocked by script-src).
+ * rendered with its email field, the sole violation is the attack
+ * (an inline script blocked by script-src), and an uploaded script did not
+ * run because the edge refused it.
  */
 export function judgeRegression(run) {
   const failures = [];
@@ -33,6 +34,21 @@ export function judgeRegression(run) {
     failures.push(
       `expected exactly one violation, the attack; got ${violations.length}: ${JSON.stringify(violations)}` +
         (violations.length > 1 ? " (Ghost's own inline blocks are blocked too)" : '')
+    );
+  }
+  // The uploaded-script attack: `script-src 'self'` allows a
+  // .js the tenant uploaded, so the policy alone cannot stop it; the edge
+  // refuses the file (403). Both must hold: the script did not run, and the
+  // edge, not a missing file, is why (a 404 means the attack was not planted).
+  if (run.uploadedScriptRan !== false) {
+    failures.push(
+      run.uploadedScriptRan === true
+        ? 'the uploaded script ran'
+        : 'the uploaded-script attack was not exercised'
+    );
+  } else if (run.uploadedScriptStatus !== 403) {
+    failures.push(
+      `the uploaded script was not refused by the edge (status ${run.uploadedScriptStatus})`
     );
   }
   return failures;

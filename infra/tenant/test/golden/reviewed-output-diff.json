@@ -453,7 +453,7 @@
   {
     "change": "added",
     "path": "secrets.comment.2",
-    "after": "# rewrite this file. render() names the keys this tenant needs below —",
+    "after": "# rewrite this file. render() names the keys this tenant needs below \u2014",
     "decision": "single-renderer"
   },
   {
@@ -463,9 +463,44 @@
     "decision": "single-renderer"
   },
   {
+    "change": "changed",
+    "path": "secrets.GHOST_BULK_EMAIL_API_KEY",
+    "before": "PLACEHOLDER_BULK_KEY",
+    "after": "",
+    "decision": "secrets-host-render"
+  },
+  {
+    "change": "changed",
+    "path": "secrets.GHOST_DB_PASSWORD",
+    "before": "PLACEHOLDER_DB_PASSWORD",
+    "after": "",
+    "decision": "secrets-host-render"
+  },
+  {
+    "change": "changed",
+    "path": "secrets.GHOST_MAIL_PASSWORD",
+    "before": "PLACEHOLDER_MAIL_PASSWORD",
+    "after": "",
+    "decision": "secrets-host-render"
+  },
+  {
     "change": "added",
     "path": "secrets.GHOST_OWNER_EMAIL",
-    "after": "owner@zero.platform-domain.example.test",
+    "after": "",
     "decision": "owner-address-secret"
+  },
+  {
+    "change": "changed",
+    "path": "secrets.GHOST_S3_ACCESS_KEY_ID",
+    "before": "PLACEHOLDER_S3_KEY_ID",
+    "after": "",
+    "decision": "secrets-host-render"
+  },
+  {
+    "change": "changed",
+    "path": "secrets.GHOST_S3_SECRET_ACCESS_KEY",
+    "before": "PLACEHOLDER_S3_SECRET",
+    "after": "",
+    "decision": "secrets-host-render"
   }
 ]

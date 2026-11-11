@@ -68,33 +68,18 @@ pnpm add @branchleft/ghost-platform-tenant
 ```ts
 import { GhostTenant } from '@branchleft/ghost-platform-tenant';
 
-const config = new pulumi.Config();
-
-const tenant = new GhostTenant('example-news', {
-  slug: 'example-news',
-  siteUrl: 'https://news.example.org',
-  uid: 30001,
-  appHostPrivateIp: '10.20.1.100',
-  hostPort: 2369,
-  database: {
-    host: '10.20.1.20',
-    password: config.requireSecret('databasePassword'),
-  },
-  // The bucket and the public base URL are not here: they are derived from
-  // the slug, so no stack holds a value that could name another tenant's
-  // bucket. This tenant's media is `branchleft-media-example-news`, served
-  // from `https://hel1.your-objectstorage.com/branchleft-media-example-news`.
-  media: {
-    endpoint: 'https://hel1.your-objectstorage.com',
-    region: 'hel1',
-    accessKeyId: config.requireSecret('mediaAccessKeyId'),
-    secretAccessKey: config.requireSecret('mediaSecretAccessKey'),
-  },
-});
+// `descriptor` is the render core's `TenantStackDescriptor`, committed in the
+// tenant's own repository, and `zones` its `ZoneConfig`. Neither carries a
+// secret, and nor does the component: the credentials are not stack config,
+// stack state or a stack output.
+const tenant = new GhostTenant('example-news', { descriptor, zones });
 
 export const composeFile = tenant.composeFile;
-export const secretsEnvFile = tenant.secretsEnvFile;
-export const provisionVolumes = tenant.hostProvisioningCommand;
+export const provisionScript = tenant.provisionScript;
+// Key names with empty values. The app host fills the file, mode 0600, with
+// app/provision/render_tenant_secrets.py.
+export const secretsEnvTemplate = tenant.secretsEnvTemplate;
+export const secretKeys = tenant.secretKeys;
 ```
 
 `slug` must start with a lowercase letter and contain only lowercase letters,
@@ -110,7 +95,12 @@ tenant, and a `tenant` name (tenant zero's `blog`) only to a repository other
 than its own. `GhostTenant` reads the claimant from `GITHUB_REPOSITORY` and,
 unset, refuses a registered tenant name. Copies in the packages are generated
 by `scripts/sync-tenant-name-register.py` and checked in CI; see
-`infra/tenant/naming.md`.
+`infra/tenant/naming.md`. Customer tenant names are deliberately not in the
+register, which is public: the control plane refuses a taken name when it accepts
+the sign-up (`portal/data/README.md`), `provision-tenant.yml` stops when the
+tenant's own repository already exists, and CI fails if a customer name reaches
+the register or a published package
+(`scripts/assert-register-holds-no-customer-names.js`).
 
 `uid` is required rather than derived: it is host state, allocated against
 what is already claimed on that host, and a value computed from the slug would
@@ -138,6 +128,36 @@ is what demonstrates the image honours `$PORT`. It waits for a strict
 HTTP-200 response rather than a TCP connect: Ghost holds the port open
 while it runs migrations, so a connect check passes long before the site
 actually serves.
+
+### Published images are signed
+
+Every push to `main` publishes `ghcr.io/branchleft/ghost-tenant`
+(`registry-push.yml`). `ghcr.io/branchleft/portal-apps` (`portal-apps-image.yml`)
+is published by a push to `main` that changes `portal/`, `services/identity/` or
+`services/request-guard/`,
+or by a manual dispatch. Each push that publishes signs the pushed digest with a
+keyless GitHub artifact attestation (SLSA build provenance, Sigstore
+public-good). Before it signs, the publish workflow scans the pushed digest with
+`branchLeft/github-workflows`' `image-scan.yml` (Grype, failing on any critical
+or high finding no valid exemption covers); an image that fails the scan is
+never signed. This repository has no exemption file: a finding with no fix goes
+through the exemption route there, never a lowered threshold. The signing
+step, and the check that it verifies and that a wrong identity is rejected, is
+that repository's `attest-and-verify-image` action; both are pinned to its
+`v1.1.0` release and no copy lives here. To verify an image yourself, name it
+by digest:
+
+```sh
+./scripts/verify-image-attestation.sh ghcr.io/branchleft/ghost-tenant@sha256:<64 hex> \
+  branchLeft/ghost-platform \
+  branchLeft/ghost-platform/.github/workflows/registry-push.yml
+```
+
+The signer workflow is `registry-push.yml` for `ghost-tenant` and
+`portal-apps-image.yml` for `portal-apps`; the source ref is always
+`refs/heads/main`. Exit 0 means verified. Add `--bundle-from-oci` to read the
+signed bundle from the registry instead of the GitHub API. `scripts/verify-image-attestation.md`
+has the detail.
 
 ## Environment variables
 

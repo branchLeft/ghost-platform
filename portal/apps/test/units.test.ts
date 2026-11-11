@@ -2,7 +2,13 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, parseOrigin, parseOutputs, parsePort } from '../src/shell/config.js';
+import {
+  ConfigError,
+  parseOrigin,
+  parseOutputs,
+  parsePort,
+  parseTrustedProxyList,
+} from '../src/shell/config.js';
 import { cookieName, parseCookies, setCookie } from '../src/shell/cookies.js';
 import { escapeHtml, renderPage } from '../src/shell/html.js';
 import { renderDocuments } from '../src/shell/documentsHtml.js';
@@ -62,6 +68,50 @@ describe('configuration', () => {
     expect(config.ownerOrgId).toBe('org-owner');
     expect(config.secureCookies).toBe(false);
     expect(config.port).toBe(8081);
+  });
+
+  it('leaves sign-in unlimited unless a list of trusted proxies is set, per application', () => {
+    const tenantEnv = {
+      PORTAL_OUTPUTS_FILE: '/outputs.json',
+      PORTAL_PUBLIC_ORIGIN: 'https://portal.example.test',
+      PORTAL_ISSUER_URL: 'https://id.example.test',
+      PORTAL_DATABASE_URL_FILE: '/db-url',
+    };
+    const consoleEnv = {
+      CONSOLE_OUTPUTS_FILE: '/outputs.json',
+      CONSOLE_PUBLIC_ORIGIN: 'https://console.example.test',
+      CONSOLE_ISSUER_URL: 'https://id.example.test',
+      CONSOLE_DATABASE_URL_FILE: '/db-url',
+    };
+    expect(loadTenantConfig(tenantEnv, read).trustedProxies).toBeUndefined();
+    expect(loadConsoleConfig(consoleEnv, read).trustedProxies).toBeUndefined();
+    // Each application reads only its own variable.
+    expect(
+      loadTenantConfig({ ...tenantEnv, CONSOLE_TRUSTED_PROXIES: '192.0.2.1' }, read).trustedProxies
+    ).toBeUndefined();
+    expect(
+      loadConsoleConfig({ ...consoleEnv, PORTAL_TRUSTED_PROXIES: '192.0.2.1' }, read).trustedProxies
+    ).toBeUndefined();
+
+    const tenant = loadTenantConfig({ ...tenantEnv, PORTAL_TRUSTED_PROXIES: '192.0.2.1' }, read);
+    expect(tenant.trustedProxies?.check('192.0.2.1', 'ipv4')).toBe(true);
+    expect(tenant.trustedProxies?.check('192.0.2.2', 'ipv4')).toBe(false);
+    const owner = loadConsoleConfig(
+      { ...consoleEnv, CONSOLE_TRUSTED_PROXIES: '10.0.0.0/8, 2001:db8::1' },
+      read
+    );
+    expect(owner.trustedProxies?.check('10.9.9.9', 'ipv4')).toBe(true);
+    expect(owner.trustedProxies?.check('2001:db8::1', 'ipv6')).toBe(true);
+  });
+
+  it('stops at start on a trusted-proxy list that is malformed or names no address', () => {
+    expect(parseTrustedProxyList({}, 'X')).toBeUndefined();
+    expect(parseTrustedProxyList({ X: '   ' }, 'X')).toBeUndefined();
+    expect(() => parseTrustedProxyList({ X: 'not-an-address' }, 'X')).toThrow(ConfigError);
+    expect(() => parseTrustedProxyList({ X: '192.0.2.1, 10.0.0.0/99' }, 'X')).toThrow(
+      'X is invalid'
+    );
+    expect(() => parseTrustedProxyList({ X: ' , ' }, 'X')).toThrow('X lists no address');
   });
 
   it('refuses a missing variable, a bad origin and a bad port', () => {

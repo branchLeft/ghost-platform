@@ -76,6 +76,44 @@ const PRINCIPALS: readonly Principal[] = [
   'tenantLogin',
   'ownerLogin',
   'provisionerLogin',
+  'migratorLogin',
+];
+
+/**
+ * Who is looking. A superuser reads every catalog the check needs. The
+ * migrator is not one, so a handful of reads are replaced by what a non-
+ * superuser may read, and what cannot be observed from there is named in the
+ * result rather than skipped.
+ */
+export type Vantage = 'superuser' | 'migrator';
+
+/** A mechanism, or part of one, the check could not observe from its vantage. */
+export interface Unobserved {
+  mechanism: string;
+  text: string;
+}
+
+/** What the check cannot observe as a non-superuser, one line per mechanism. */
+const UNOBSERVED_AS_MIGRATOR: readonly Unobserved[] = [
+  {
+    mechanism: 'M01',
+    text:
+      'whether a login holds a password, and its verifier shape: pg_authid is readable by a ' +
+      'superuser alone and pg_roles masks every password',
+  },
+  {
+    mechanism: 'M27',
+    text:
+      'shared_preload_libraries and session_preload_libraries (superuser or pg_read_all_settings ' +
+      'only) and pg_file_settings, the values written to a file or by ALTER SYSTEM that the next ' +
+      'reload applies (superuser only)',
+  },
+  {
+    mechanism: 'M28',
+    text:
+      'the loaded pg_hba rules and the files they came from (pg_hba_file_rules and pg_stat_file ' +
+      'are superuser only); the migrator is probed by logging in to every other database instead',
+  },
 ];
 
 /** The checkpoint of a fully provisioned database: every principal, every migration. */
@@ -114,9 +152,25 @@ interface Scope {
   roleNames: string[];
   /** `roleOids` with PUBLIC (0). */
   withPublic: number[];
-  administrator: string;
-  administratorIsSuperuser: boolean;
+  vantage: Vantage;
+  /** Whether the connection is to the portal database, where `pg_database_owner` means something. */
+  inPortalDatabase: boolean;
+  /** The manifest's migrator, which owns the database and what the migrations make. */
+  migrator: string;
+  migratorOid: number | null;
+  /**
+   * The principals in scope that may own what the manifest names: the migrator,
+   * and `pg_database_owner`, which owns schema `public` from PostgreSQL 15 and
+   * is in scope while the migrator owns the database it is connected to.
+   */
+  mayOwnOids: number[];
+  /** The database's owner as the server has it now, if the database exists. */
+  databaseOwner: string | null;
+  databaseOwnerIsSuperuser: boolean;
   bootstrap: string;
+  bootstrapIsSuperuser: boolean;
+  /** Who owns schema `public` now. */
+  publicOwner: string | null;
   ownerDefaults: Record<string, string[]>;
   databaseOid: number | null;
 }
@@ -156,20 +210,37 @@ async function scopeOf(client: ClientBase, checkpoint: Checkpoint): Promise<Scop
     'SELECT oid::int AS oid, pg_get_userbyid(datdba) AS owner FROM pg_database WHERE datname = $1',
     [checkpoint.database]
   );
-  const me = await rows<{ name: string; superuser: boolean; bootstrap: string }>(
+  const me = await rows<{
+    superuser: boolean;
+    bootstrap: string;
+    bootstrapSuper: boolean;
+    portal: boolean;
+  }>(
     client,
-    `SELECT current_user AS name, (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
-            AS superuser, pg_get_userbyid(10) AS bootstrap`
+    `SELECT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS superuser,
+            pg_get_userbyid(10) AS bootstrap,
+            (SELECT rolsuper FROM pg_roles WHERE oid = 10) AS "bootstrapSuper",
+            current_database() = $1 AS portal`,
+    [checkpoint.database]
   );
-  const administrator = database[0]?.owner ?? me[0]!.name;
+  const migrator = checkpoint.names.migratorLogin;
+  const migratorOid = await rows<{ oid: number }>(
+    client,
+    'SELECT oid::int AS oid FROM pg_roles WHERE rolname = $1',
+    [migrator]
+  );
   const superuser = await rows<{ s: boolean }>(
     client,
     'SELECT coalesce((SELECT rolsuper FROM pg_roles WHERE rolname = $1), false) AS s',
-    [administrator]
+    [database[0]?.owner ?? '']
+  );
+  const publicSchema = await rows<{ owner: string }>(
+    client,
+    "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'public'"
   );
   const ownerDefaults: Record<string, string[]> = {};
   for (const kind of ['d', 'n', 'r', 's', 'f']) {
-    for (const owner of [administrator, 'pg_database_owner', me[0]!.bootstrap]) {
+    for (const owner of [migrator, 'pg_database_owner', me[0]!.bootstrap]) {
       const found = await rows<{ p: string }>(
         client,
         `SELECT x.privilege_type AS p FROM pg_roles o,
@@ -185,9 +256,18 @@ async function scopeOf(client: ClientBase, checkpoint: Checkpoint): Promise<Scop
     roleOids,
     roleNames: reach.map((row) => row.rolname),
     withPublic: [0, ...roleOids],
-    administrator,
-    administratorIsSuperuser: superuser[0]!.s,
+    vantage: me[0]!.superuser ? 'superuser' : 'migrator',
+    inPortalDatabase: me[0]!.portal,
+    migrator,
+    migratorOid: migratorOid[0]?.oid ?? null,
+    mayOwnOids: reach
+      .filter((row) => row.rolname === migrator || row.rolname === 'pg_database_owner')
+      .map((row) => row.oid),
+    databaseOwner: database[0]?.owner ?? null,
+    databaseOwnerIsSuperuser: superuser[0]!.s,
     bootstrap: me[0]!.bootstrap,
+    bootstrapIsSuperuser: me[0]!.bootstrapSuper,
+    publicOwner: publicSchema[0]?.owner ?? null,
     ownerDefaults,
     databaseOid: database[0]?.oid ?? null,
   };
@@ -201,10 +281,23 @@ const KIND_ACL: Record<string, string> = {
   function: 'f',
 };
 
-function ownerOf(object: ManifestObject, scope: Scope): string {
+function ownerOf(object: ManifestObject, scope: Scope, checkpoint: Checkpoint): string {
   if (object.ownedBy === 'pg_database_owner') return 'pg_database_owner';
   if (object.ownedBy === 'bootstrap') return scope.bootstrap;
-  return scope.administrator;
+  // Before PostgreSQL 15 the command hands schema `public` to the migrator
+  // just after it creates the database, as a separate step. A run that stopped
+  // between the two leaves an empty database whose `public` is still the
+  // bootstrap superuser's, and the next run finishes it: the one window in
+  // which either owner is the expected one.
+  if (
+    object.kind === 'schema' &&
+    object.identity === 'public' &&
+    checkpoint.databaseState === 'created-empty' &&
+    scope.publicOwner === scope.bootstrap
+  ) {
+    return scope.bootstrap;
+  }
+  return scope.migrator;
 }
 
 /** The whole ACL the manifest gives `object`, owner's own entries included. */
@@ -214,7 +307,7 @@ function expectedAcl(
   scope: Scope,
   grants = object.grants
 ): string[] {
-  const owner = ownerOf(object, scope);
+  const owner = ownerOf(object, scope, checkpoint);
   const out: string[] = [];
   const kind = KIND_ACL[object.kind]!;
   for (const privilege of scope.ownerDefaults[`${kind}:${owner}`] ?? []) {
@@ -302,15 +395,27 @@ async function manifestAcls(
   return out;
 }
 
-async function roleAttributes(client: ClientBase, checkpoint: Checkpoint): Promise<Observation> {
+async function roleAttributes(
+  client: ClientBase,
+  checkpoint: Checkpoint,
+  scope: Scope
+): Promise<Observation> {
+  // pg_authid, where the password verifier is, is readable by a superuser
+  // alone. A non-superuser reads the same attributes from pg_roles, which
+  // masks every password, so it can say nothing about one (named in the result).
+  const passwords = scope.vantage === 'superuser';
   const found = await rows<Record<string, unknown>>(
     client,
     `SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin,
             rolreplication, rolbypassrls, rolconnlimit, rolvaliduntil::text AS validuntil,
-            CASE WHEN rolpassword IS NULL THEN 'none'
+            ${
+              passwords
+                ? `CASE WHEN rolpassword IS NULL THEN 'none'
                  WHEN rolpassword ~ '^SCRAM-SHA-256\\$[0-9]+:[A-Za-z0-9+/=]+\\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$'
-                 THEN 'scram' ELSE 'other' END AS password
-       FROM pg_authid WHERE rolname = ANY($1) ORDER BY rolname`,
+                 THEN 'scram' ELSE 'other' END`
+                : 'NULL::text'
+            } AS password
+       FROM ${passwords ? 'pg_authid' : 'pg_roles'} WHERE rolname = ANY($1) ORDER BY rolname`,
     [PRINCIPALS.map((p) => checkpoint.names[p])]
   );
   const text = (r: Record<string, unknown>): string =>
@@ -318,7 +423,8 @@ async function roleAttributes(client: ClientBase, checkpoint: Checkpoint): Promi
     `createrole=${String(r['rolcreaterole'])} createdb=${String(r['rolcreatedb'])} ` +
     `login=${String(r['rolcanlogin'])} replication=${String(r['rolreplication'])} ` +
     `bypassrls=${String(r['rolbypassrls'])} connlimit=${String(r['rolconnlimit'])} ` +
-    `validuntil=${String(r['validuntil'])} password=${String(r['password'])}`;
+    `validuntil=${String(r['validuntil'])}` +
+    (passwords ? ` password=${String(r['password'])}` : '');
   const expected = PRINCIPALS.filter((p) => checkpoint.present.has(p)).map((p) => {
     const want = ROLE_ATTRIBUTES[p];
     return text({
@@ -377,6 +483,15 @@ async function membership(
     );
     expectedReach.push(`${checkpoint.names[login]} reaches ${checkpoint.names[role]}`);
     expectedReach.push(`${checkpoint.names[role]} is reached by ${checkpoint.names[login]}`);
+  }
+  // Whoever owns the database is a member of `pg_database_owner` there. That
+  // is the migrator, and it reaches nothing else.
+  if (
+    scope.inPortalDatabase &&
+    checkpoint.present.has('migratorLogin') &&
+    scope.databaseOwner === checkpoint.names.migratorLogin
+  ) {
+    expectedReach.push(`${checkpoint.names.migratorLogin} reaches pg_database_owner`);
   }
   const present = PRINCIPALS.filter((p) => checkpoint.present.has(p)).map(
     (p) => checkpoint.names[p]
@@ -466,6 +581,7 @@ async function ownership(
   inDatabase: boolean
 ): Promise<Observation[]> {
   const actual: string[] = [];
+  const permitted: string[] = [];
   const refs = AUTHID_REFERENCES[checkpoint.major] ?? {};
   for (const [column, mechanism] of Object.entries(refs)) {
     if (mechanism !== 'M18') continue;
@@ -484,6 +600,24 @@ async function ownership(
       [scope.roleOids]
     );
     actual.push(...found.map((r) => r.text));
+    // What the migrator may own in this database: the objects the manifest
+    // names and the ones that follow from them (a table's indexes, its
+    // sequences, its row type), by the same rules the catch-all uses.
+    const rule = DERIVED[table];
+    if (inDatabase && !shared[0]?.s && rule !== undefined) {
+      const allowed = await rows<{ text: string }>(
+        client,
+        `${DERIVED_WITH}
+         SELECT pg_get_userbyid(c.${col}) || ' owns ' || (o).type || ' ' || coalesce((o).identity, '?') AS text
+           FROM m, pg_catalog.${table} c, pg_identify_object('pg_catalog.${table}'::regclass, c.oid, 0) o
+          WHERE c.${col} = ANY($5::oid[]) AND (${rule})`,
+        [...derivedParams(checkpoint), scope.mayOwnOids]
+      );
+      permitted.push(...allowed.map((r) => r.text));
+    }
+  }
+  if (scope.migratorOid !== null && isExpected(databaseObject(checkpoint), checkpoint)) {
+    permitted.push(`${scope.migrator} owns database ${checkpoint.database}`);
   }
   const deps = await rows<{ text: string }>(
     client,
@@ -498,13 +632,27 @@ async function ownership(
     [scope.roleOids, scope.databaseOid ?? -1, inDatabase]
   );
   actual.push(...deps.map((r) => r.text));
-  const owners: Observation = { mechanism: 'M18', actual, expected: [] };
+  // The one principal that owns anything is the migrator, and only what the
+  // manifest gives it; any other object a portal principal owns is an extra.
+  const owners: Observation = { mechanism: 'M18', actual, expected: permitted };
+  // The database's owner is the migrator and holds no superuser; the cluster's
+  // bootstrap role is a superuser, as every server has it.
   const admin: Observation = {
     mechanism: 'M18',
     actual: [
-      `administrator ${scope.administrator} superuser=${String(scope.administratorIsSuperuser)}`,
+      ...(scope.databaseOwner === null
+        ? []
+        : [
+            `database owner ${scope.databaseOwner} superuser=${String(scope.databaseOwnerIsSuperuser)}`,
+          ]),
+      `bootstrap superuser ${scope.bootstrap} superuser=${String(scope.bootstrapIsSuperuser)}`,
     ],
-    expected: [`administrator ${scope.administrator} superuser=true`],
+    expected: [
+      ...(isExpected(databaseObject(checkpoint), checkpoint)
+        ? [`database owner ${scope.migrator} superuser=false`]
+        : []),
+      `bootstrap superuser ${scope.bootstrap} superuser=true`,
+    ],
   };
   const manifestOwners: string[] = [];
   const expectedOwners: string[] = [];
@@ -522,7 +670,7 @@ async function ownership(
       manifestOwners.push(`${object.kind} ${object.identity} is owned by ${row.o}`);
     if (isExpected(object, checkpoint)) {
       expectedOwners.push(
-        `${object.kind} ${object.identity} is owned by ${ownerOf(object, scope)}`
+        `${object.kind} ${object.identity} is owned by ${ownerOf(object, scope, checkpoint)}`
       );
     }
   }
@@ -588,22 +736,35 @@ async function clusterSubscriptions(client: ClientBase, scope: Scope): Promise<O
   return { mechanism: 'M23', actual: found.map((r) => r.text), expected: [] };
 }
 
-async function serverSettings(client: ClientBase): Promise<Observation> {
-  const names = Object.keys(SETTINGS);
+/**
+ * The settings only a superuser (or pg_read_all_settings) may read: a
+ * non-superuser cannot observe them, and says so rather than leaving them out.
+ */
+const SUPERUSER_ONLY_SETTINGS: readonly string[] = [
+  'shared_preload_libraries',
+  'session_preload_libraries',
+];
+
+async function serverSettings(client: ClientBase, scope: Scope): Promise<Observation> {
+  const all = Object.keys(SETTINGS);
+  const superuser = scope.vantage === 'superuser';
+  const names = superuser ? all : all.filter((n) => !SUPERUSER_ONLY_SETTINGS.includes(n));
   const live = await rows<{ text: string }>(
     client,
     `SELECT 'setting ' || n || ' = ' || current_setting(n) AS text FROM unnest($1::text[]) n`,
     [names]
   );
   // A value written by ALTER SYSTEM or into a file is applied on the next
-  // reload; the file's view catches it before then.
-  const files = await rows<{ name: string; setting: string; text: string }>(
-    client,
-    `SELECT name, setting, 'file setting ' || name || ' = ' || coalesce(setting, '') || ' in '
+  // reload; the file's view catches it before then. Only a superuser reads it.
+  const files = superuser
+    ? await rows<{ name: string; setting: string; text: string }>(
+        client,
+        `SELECT name, setting, 'file setting ' || name || ' = ' || coalesce(setting, '') || ' in '
             || coalesce(sourcefile, '?') || ':' || coalesce(sourceline::text, '?') AS text
        FROM pg_file_settings WHERE name = ANY($1)`,
-    [names]
-  );
+        [names]
+      )
+    : [];
   const pending = files.filter((row) => row.setting !== SETTINGS[row.name]).map((r) => r.text);
   return {
     mechanism: 'M27',
@@ -620,7 +781,7 @@ async function clusterObservations(
   inDatabase: boolean
 ): Promise<Observation[]> {
   return [
-    await roleAttributes(client, checkpoint),
+    await roleAttributes(client, checkpoint, scope),
     ...(await membership(client, checkpoint, scope)),
     await settings(client, scope),
     await otherDatabases(client, checkpoint, scope),
@@ -628,7 +789,7 @@ async function clusterObservations(
     ...(await ownership(client, checkpoint, scope, inDatabase)),
     ...(await mentions(client, checkpoint, scope, inDatabase)),
     await clusterSubscriptions(client, scope),
-    await serverSettings(client),
+    await serverSettings(client, scope),
   ];
 }
 
@@ -730,14 +891,17 @@ async function largeObjects(client: ClientBase): Promise<Observation> {
   return { mechanism: 'M13', actual: found.map((r) => r.text), expected: [] };
 }
 
-async function foreignData(client: ClientBase): Promise<Observation> {
+async function foreignData(client: ClientBase, scope: Scope): Promise<Observation> {
+  // pg_user_mapping is superuser only; pg_user_mappings lists the same
+  // mappings, with their options hidden from a non-superuser.
+  const mappings = scope.vantage === 'superuser' ? 'pg_user_mapping' : 'pg_user_mappings';
   const found = await rows<{ text: string }>(
     client,
     `SELECT 'foreign-data wrapper ' || fdwname AS text FROM pg_foreign_data_wrapper
      UNION ALL SELECT 'foreign server ' || srvname FROM pg_foreign_server
      UNION ALL SELECT 'user mapping for ' || CASE WHEN umuser = 0 THEN 'PUBLIC'
                                                   ELSE pg_get_userbyid(umuser) END
-       FROM pg_user_mapping`
+       FROM ${mappings}`
   );
   return { mechanism: 'M15', actual: found.map((r) => r.text), expected: [] };
 }
@@ -884,30 +1048,64 @@ const IDENTIFY_AS: Record<string, string> = {
   pg_largeobject_metadata: 'pg_largeobject',
 };
 
-async function catchAll(client: ClientBase, checkpoint: Checkpoint): Promise<Observation> {
+/** The `m` CTE the DERIVED rules read, over the parameters `derivedParams` gives. */
+const DERIVED_WITH = `WITH m AS (SELECT ARRAY(SELECT to_regclass(r) FROM unnest($1::text[]) r)::oid[] AS rels,
+                         ARRAY(SELECT to_regprocedure(f) FROM unnest($2::text[]) f)::oid[] AS funcs,
+                         $3::text[] AS schemas, $4::text[] AS pols)`;
+
+function derivedParams(checkpoint: Checkpoint): [string[], string[], string[], string[]] {
   const expected = expectedObjects(checkpoint);
-  const rels = relationList(checkpoint);
-  const funcs = expected.filter((o) => o.kind === 'function').map((o) => o.identity);
-  const schemas = expected.filter((o) => o.kind === 'schema').map((o) => o.identity);
-  const pols = POLICIES.filter((p) => checkpoint.applied.includes(p.since)).map(
-    (p) => `${p.table}:${p.name}`
-  );
-  const catalogs = await rows<{ relname: string }>(
+  return [
+    relationList(checkpoint),
+    expected.filter((o) => o.kind === 'function').map((o) => o.identity),
+    expected.filter((o) => o.kind === 'schema').map((o) => o.identity),
+    POLICIES.filter((p) => checkpoint.applied.includes(p.since)).map((p) => `${p.table}:${p.name}`),
+  ];
+}
+
+/** The manifest's database object: the one owned by the migrator and named for the database. */
+function databaseObject(checkpoint: Checkpoint): ManifestObject {
+  return manifest(checkpoint.major, checkpoint.database).find((o) => o.kind === 'database')!;
+}
+
+/**
+ * Catalogs a non-superuser cannot read, and the readable view that carries the
+ * same rows' identities. Any other catalog it cannot read stops the check: a
+ * catalog skipped without a word would be an all-clear for nothing.
+ */
+const READABLE_INSTEAD: Record<string, string> = {
+  pg_user_mapping: '(SELECT umid AS oid FROM pg_catalog.pg_user_mappings)',
+};
+
+async function catchAll(
+  client: ClientBase,
+  checkpoint: Checkpoint,
+  scope: Scope
+): Promise<Observation> {
+  const [rels, funcs, schemas, pols] = derivedParams(checkpoint);
+  const catalogs = await rows<{ relname: string; readable: boolean }>(
     client,
-    `SELECT c.relname FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'oid'
+    `SELECT c.relname, has_table_privilege(c.oid, 'SELECT') AS readable
+       FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'oid'
       WHERE c.relnamespace = 'pg_catalog'::regnamespace AND c.relkind = 'r' AND NOT c.relisshared
       ORDER BY 1`
   );
   const unclassified: string[] = [];
-  for (const { relname } of catalogs) {
+  for (const { relname, readable } of catalogs) {
     const rule = DERIVED[relname] ?? 'false';
+    let source = `pg_catalog.${relname}`;
+    if (!readable) {
+      const instead = READABLE_INSTEAD[relname];
+      if (scope.vantage === 'superuser' || instead === undefined) {
+        throw new Error(`the check cannot read pg_catalog.${relname}`);
+      }
+      source = instead;
+    }
     const found = await rows<{ text: string }>(
       client,
-      `WITH m AS (SELECT ARRAY(SELECT to_regclass(r) FROM unnest($1::text[]) r)::oid[] AS rels,
-                         ARRAY(SELECT to_regprocedure(f) FROM unnest($2::text[]) f)::oid[] AS funcs,
-                         $3::text[] AS schemas, $4::text[] AS pols)
+      `${DERIVED_WITH}
        SELECT '${relname} ' || coalesce((o).type, '?') || ' ' || coalesce((o).identity, c.oid::text) AS text
-         FROM m, pg_catalog.${relname} c,
+         FROM m, ${source} c,
               LATERAL pg_identify_object('pg_catalog.${IDENTIFY_AS[relname] ?? relname}'::regclass, c.oid, 0) o
         WHERE c.oid >= 16384 AND NOT (${rule})`,
       [rels, funcs, schemas, pols]
@@ -1011,14 +1209,14 @@ async function databaseObservations(
     await typeAcls(client, checkpoint),
     await baselineDrift(client, scope, checkpoint.major, 'pg_language'),
     await largeObjects(client),
-    await foreignData(client),
+    await foreignData(client, scope),
     await defaultAcls(client),
     await policies(client, checkpoint),
     await tableShapes(client, checkpoint),
     await eventTriggers(client),
     await publications(client),
     await extensions(client),
-    await catchAll(client, checkpoint),
+    await catchAll(client, checkpoint, scope),
     await baselineDrift(client, scope, checkpoint.major),
   ];
 }
@@ -1034,13 +1232,38 @@ export async function checkAgainstManifest(
   checkpoint: Checkpoint,
   inDatabase: boolean
 ): Promise<Difference[]> {
+  return (await inspectManifest(client, checkpoint, inDatabase)).differences;
+}
+
+export interface Inspection {
+  differences: Difference[];
+  /** Who looked: a superuser, or the migrator, who cannot read everything. */
+  vantage: Vantage;
+  /** One line per mechanism the vantage could not observe; empty for a superuser. */
+  unobserved: Unobserved[];
+}
+
+/**
+ * `checkAgainstManifest` with its vantage. From a non-superuser the check reads
+ * what a non-superuser may and names, per mechanism, what it could not
+ * observe, so a narrower look is never a silent one.
+ */
+export async function inspectManifest(
+  client: ClientBase,
+  checkpoint: Checkpoint,
+  inDatabase: boolean
+): Promise<Inspection> {
   const scope = await scopeOf(client, checkpoint);
   const observations = [
     ...(await clusterObservations(client, checkpoint, scope, inDatabase)),
     ...(await manifestAcls(client, checkpoint, scope, inDatabase)),
     ...(inDatabase ? await databaseObservations(client, checkpoint, scope) : []),
   ];
-  return differences(observations);
+  return {
+    differences: differences(observations),
+    vantage: scope.vantage,
+    unobserved: scope.vantage === 'superuser' ? [] : [...UNOBSERVED_AS_MIGRATOR],
+  };
 }
 
 /** Everything the check reads, as one comparable value: proof that a refusal wrote nothing. */

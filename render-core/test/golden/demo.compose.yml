@@ -15,6 +15,7 @@ services:
   ghost-a:
     image: '${IMAGE}'
     restart: 'unless-stopped'
+    stop_grace_period: '60s'
     user: '30001:30001'
     init: true
     read_only: true
@@ -69,6 +70,7 @@ services:
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
       hostSettings__limits__limitSocialWeb__disabled: true
+      hostSettings__limits__limitStripeConnect__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
@@ -100,6 +102,7 @@ services:
   ghost-b:
     image: '${IMAGE}'
     restart: 'unless-stopped'
+    stop_grace_period: '60s'
     user: '30001:30001'
     init: true
     read_only: true
@@ -154,6 +157,7 @@ services:
       hostSettings__limits__staff__max: 1
       security__allowWebhookInternalIPs: false
       hostSettings__limits__limitSocialWeb__disabled: true
+      hostSettings__limits__limitStripeConnect__disabled: true
       theme__uploadLimits__compressedBytes: 33554432
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864

@@ -1,0 +1,71 @@
+name: Mail gate CI
+
+# Proves the mail gate (scripts/mail-gate/) on every pull request, and push to
+# main, that touches it: the green case (a correct image sends a magic link and a newsletter
+# through its spool and passes), and two red controls (a misrouted
+# transactional host, then a misrouted newsletter base URL, each of which the
+# gate must refuse). registry-push.yml runs the gate itself on `main`; this
+# job is what proves the gate can fail before that matters.
+#
+# Credential-free: the pinned spool lives on GHCR, so this run uses a local
+# stand-in spool built from the repo (scripts/mail-gate/spool-standin). It
+# requests no token and no secret, and pushes nothing.
+
+on:
+  # Push to main is the backstop for a change that lands another way.
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/mail-gate/**'
+      - 'test-support/image-harness.mjs'
+      - 'adapters/scanning-storage/test/helpers/docker-ghost.mjs'
+      - '.github/workflows/registry-push.yml'
+      - '.github/workflows/mail-gate-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/mail-gate/**'
+      - 'test-support/image-harness.mjs'
+      - 'adapters/scanning-storage/test/helpers/docker-ghost.mjs'
+      - '.github/workflows/registry-push.yml'
+      - '.github/workflows/mail-gate-ci.yml'
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  mail-gate:
+    name: Mail gate green and red controls
+    runs-on: ubuntu-latest
+    # Three Ghost boots beside a spool, after the image build.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+
+      - name: Stand-in and log redactor (no Docker)
+        run: node --test scripts/mail-gate/spool-standin/standin.test.mjs scripts/mail-gate/mail-gate-logs.test.mjs scripts/mail-gate/mail-gate-throttle.test.mjs scripts/mail-gate/mail-gate-drain-host.test.mjs
+
+      - name: Build the candidate image
+        run: docker build --tag ghost-platform:ci .
+
+      - name: Build the stand-in spool
+        run: docker build --tag spool-standin:ci scripts/mail-gate/spool-standin
+
+      - name: Mail gate test (green, and both red controls)
+        run: node --test scripts/mail-gate/mail-gate.test.mjs
+        env:
+          MAIL_GATE_IMAGE: ghost-platform:ci
+          MAIL_GATE_SPOOL_IMAGE: spool-standin:ci

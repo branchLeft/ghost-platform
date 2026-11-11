@@ -4,14 +4,15 @@
 // never repairs. A migration that adds an object needs an entry here, or the
 // migration-sync test fails before the migration can reach a server.
 
-/** The six principals, by the part each plays. */
+/** The seven principals, by the part each plays. */
 export type Principal =
   | 'tenantRole'
   | 'ownerRole'
   | 'provisionerRole'
   | 'tenantLogin'
   | 'ownerLogin'
-  | 'provisionerLogin';
+  | 'provisionerLogin'
+  | 'migratorLogin';
 export type Grantee = Principal | 'PUBLIC';
 
 export const TENANT_ROLE = 'portal_tenant';
@@ -25,12 +26,14 @@ export interface Names {
   tenantLogin: string;
   ownerLogin: string;
   provisionerLogin: string;
+  migratorLogin: string;
 }
 
 export function principalNames(
   tenantLogin: string,
   ownerLogin: string,
-  provisionerLogin: string
+  provisionerLogin: string,
+  migratorLogin: string
 ): Names {
   return {
     tenantRole: TENANT_ROLE,
@@ -39,6 +42,7 @@ export function principalNames(
     tenantLogin,
     ownerLogin,
     provisionerLogin,
+    migratorLogin,
   };
 }
 
@@ -57,9 +61,17 @@ export const ROLE_ATTRIBUTES: Record<Principal, RoleAttributes> = {
   tenantLogin: { canLogin: true, bypassRls: false },
   ownerLogin: { canLogin: true, bypassRls: false },
   provisionerLogin: { canLogin: true, bypassRls: false },
+  // Owns the portal database and everything the migrations create, and applies
+  // them. A login like the others: no superuser, no BYPASSRLS, no CREATEROLE,
+  // no CREATEDB, no REPLICATION, and a member of no role. The database's
+  // privileges below it are its own as owner; nothing else on the server is.
+  migratorLogin: { canLogin: true, bypassRls: false },
 };
 
-/** Each login is a member of exactly one role (M02). */
+/**
+ * Each login but the migrator is a member of exactly one role (M02). The
+ * migrator is a member of none: its reach is itself.
+ */
 export const MEMBERSHIPS: readonly (readonly [Principal, Principal])[] = [
   ['tenantLogin', 'tenantRole'],
   ['ownerLogin', 'ownerRole'],
@@ -76,8 +88,8 @@ export interface Grant {
 /**
  * One object the manifest manages. `since` is the migration that creates it,
  * or `init` for what the command itself sets up on a new database. `grants`
- * is the whole ACL beyond the owner's own entries. `ownedBy` is
- * `administrator` (the superuser that owns the database) unless stated.
+ * is the whole ACL beyond the owner's own entries. `ownedBy` is `migrator`
+ * (the non-superuser login that owns the database) unless stated.
  */
 export interface ManifestObject {
   kind: ObjectKind;
@@ -85,7 +97,7 @@ export interface ManifestObject {
   identity: string;
   since: string;
   grants: readonly Grant[];
-  ownedBy?: 'administrator' | 'pg_database_owner' | 'bootstrap';
+  ownedBy?: 'migrator' | 'pg_database_owner' | 'bootstrap';
 }
 
 export const INIT = 'init';
@@ -97,19 +109,23 @@ const MODERATION = '0004_moderation_setting';
 const KIND = '0005_tenant_kind';
 const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
 const DEMO_REBUILD = '0007_demo_rebuild_extended';
+const TENANT_NAME = '0008_tenant_name';
+const CUSTOM_DOMAIN = '0009_custom_domain';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
  * rule per server version. Before PostgreSQL 15 it is owned by the bootstrap
- * superuser and PUBLIC holds CREATE, which the command revokes; from 15 it is
- * owned by `pg_database_owner` and PUBLIC holds USAGE alone.
+ * superuser and PUBLIC holds CREATE; the command hands it to the migrator once,
+ * when it initialises the database, and revokes PUBLIC's CREATE. From 15 it is
+ * owned by `pg_database_owner`, the migrator while the migrator owns the
+ * database, and PUBLIC holds USAGE alone.
  */
 export function publicSchema(major: number): ManifestObject {
   return {
     kind: 'schema',
     identity: 'public',
     since: INIT,
-    ownedBy: major >= 15 ? 'pg_database_owner' : 'bootstrap',
+    ownedBy: major >= 15 ? 'pg_database_owner' : 'migrator',
     grants: [
       { grantee: 'PUBLIC', privileges: ['USAGE'] },
       // The policies call public.bound_*() as the invoking role.
@@ -132,7 +148,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
       ],
     },
     publicSchema(major),
-    // The migration history, administrator only.
+    // The migration history, the migrator only.
     { kind: 'schema', identity: 'drizzle', since: FIRST, grants: [] },
     { kind: 'table', identity: 'drizzle.__drizzle_migrations', since: FIRST, grants: [] },
     {
@@ -221,6 +237,25 @@ export function manifest(major: number, database: string): readonly ManifestObje
       since: MODERATION,
       grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
     },
+    // TenantDb.requestCustomDomain inserts and reads the tenant's own requests,
+    // connectCustomDomain deletes the request it turns into a connection and
+    // removeCustomDomain deletes one. Nothing updates a request. The owner role
+    // reads nothing here yet.
+    {
+      kind: 'table',
+      identity: 'portal.custom_domain_request',
+      since: CUSTOM_DOMAIN,
+      grants: [{ grantee: 'tenantRole', privileges: ['DELETE', 'INSERT', 'SELECT'] }],
+    },
+    // TenantDb.connectCustomDomain inserts and customDomains reads the tenant's
+    // own connections; removeCustomDomain deletes one. Nothing updates a
+    // connection. The owner role reads nothing here yet.
+    {
+      kind: 'table',
+      identity: 'portal.connected_domain',
+      since: CUSTOM_DOMAIN,
+      grants: [{ grantee: 'tenantRole', privileges: ['DELETE', 'INSERT', 'SELECT'] }],
+    },
     // ProvisionerDb appends events and reads the latest to decide the next;
     // OwnerDb.listDemos and demoHistory read. No role updates or deletes an
     // event: the history is the record, and the tenant role holds nothing.
@@ -265,6 +300,8 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
+  'portal.custom_domain_request': { enabled: true, forced: false },
+  'portal.connected_domain': { enabled: true, forced: false },
   'portal.demo_state_event': { enabled: false, forced: false },
   'portal.hostname_register': { enabled: false, forced: false },
   'portal.hostname_retirement': { enabled: false, forced: false },
@@ -343,6 +380,22 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`,
     `(${BOUND})`
   ),
+  policy(
+    'portal.custom_domain_request',
+    'tenant_isolation',
+    CUSTOM_DOMAIN,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  policy(
+    'portal.connected_domain',
+    'tenant_isolation',
+    CUSTOM_DOMAIN,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
 ];
 
 /**
@@ -368,6 +421,9 @@ export interface TableShape {
 }
 
 const PLAIN = 'generated=- identity=-';
+
+/** The domain-name check as the server deparses it; written out so the manifest pins the text, not an import. */
+const FQDN_REGEX = '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$';
 
 export const TABLE_SHAPES: Record<string, TableShape> = {
   'drizzle.__drizzle_migrations': {
@@ -404,6 +460,18 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
           `column kind text notnull=true ${PLAIN}`,
           "constraint tenant_register_kind_known CHECK ((kind = ANY (ARRAY['REAL'::text, " +
             "'DEMO'::text])))",
+        ],
+      },
+      // The customer's sign-up name: nullable (a demo has none), unique, and a slug.
+      {
+        since: TENANT_NAME,
+        lines: [
+          `column tenant_name text notnull=false ${PLAIN}`,
+          'constraint tenant_register_tenant_name_unique UNIQUE (tenant_name)',
+          'constraint tenant_register_tenant_name_shape CHECK ((tenant_name ~ ' +
+            "'^[a-z][a-z0-9-]{1,24}[a-z0-9]$'::text))",
+          'index portal.tenant_register_tenant_name_unique CREATE UNIQUE INDEX ' +
+            'tenant_register_tenant_name_unique ON portal.tenant_register USING btree (tenant_name)',
         ],
       },
     ],
@@ -493,6 +561,37 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
         'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
         'USING btree (tenant_id, check_id)',
+    ],
+  },
+  'portal.custom_domain_request': {
+    since: CUSTOM_DOMAIN,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column fqdn text notnull=true ${PLAIN}`,
+      `column verification_token text notnull=true ${PLAIN}`,
+      `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      `constraint custom_domain_request_fqdn_shape CHECK (((fqdn ~ '${FQDN_REGEX}'::text) AND (length(fqdn) <= 253)))`,
+      'constraint custom_domain_request_tenant_id_fqdn_pk PRIMARY KEY (tenant_id, fqdn)',
+      'constraint custom_domain_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      "constraint custom_domain_request_token_shape CHECK ((verification_token ~ '^[a-z2-7]{32}$'::text))",
+      'index portal.custom_domain_request_tenant_id_fqdn_pk CREATE UNIQUE INDEX ' +
+        'custom_domain_request_tenant_id_fqdn_pk ON portal.custom_domain_request ' +
+        'USING btree (tenant_id, fqdn)',
+    ],
+  },
+  'portal.connected_domain': {
+    since: CUSTOM_DOMAIN,
+    lines: [
+      `column fqdn text notnull=true ${PLAIN}`,
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column connected_at timestamp with time zone notnull=true ${PLAIN}`,
+      `constraint connected_domain_fqdn_shape CHECK (((fqdn ~ '${FQDN_REGEX}'::text) AND (length(fqdn) <= 253)))`,
+      'constraint connected_domain_pkey PRIMARY KEY (fqdn)',
+      'constraint connected_domain_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.connected_domain_pkey CREATE UNIQUE INDEX connected_domain_pkey ON ' +
+        'portal.connected_domain USING btree (fqdn)',
     ],
   },
   'portal.demo_state_event': {

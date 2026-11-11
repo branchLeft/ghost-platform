@@ -21,7 +21,17 @@ export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenant
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 import { parseTenantId } from '../tenantId.js';
 import { parseTenantKind } from '../tenantKind.js';
+import { normaliseTenantName, TenantNameTakenError } from '../tenantName.js';
+import { readDatabaseError, UNIQUE_VIOLATION } from '../databaseError.js';
 import type { TenantRegistration } from '../tenant/session.js';
+
+export { InvalidTenantNameError, TenantNameTakenError } from '../tenantName.js';
+
+/** A tenant being registered: the register row, plus the name it signed up under. */
+export interface NewTenantRegistration extends TenantRegistration {
+  /** Absent for a demo slot, which has no customer name. */
+  tenantName?: string;
+}
 
 /**
  * The owner console's cross-tenant reads and the register's writes. A
@@ -49,15 +59,35 @@ export class OwnerDb {
    * strictly before the insert: an absent or unrecognised one is refused with
    * `InvalidTenantKindError`, never defaulted, and the table refuses it again
    * if this check is ever bypassed. Only this role can write a kind.
+   *
+   * This is the point where a sign-up is accepted, so it is where a taken name
+   * is refused. A name, when given, is normalised the way the tenant's slug is
+   * (`InvalidTenantNameError` if it is not a slug) and stored; a second tenant
+   * under the same normalised name is refused with `TenantNameTakenError`. The
+   * refusal comes from the table's unique constraint, so two sign-ups racing
+   * for one name cannot both win, and it carries no name.
    */
-  async registerTenant(registration: TenantRegistration): Promise<void> {
+  async registerTenant(registration: NewTenantRegistration): Promise<void> {
     const tenantId = parseTenantId(registration.tenantId);
     const kind = parseTenantKind(registration.kind);
-    await this.run(async (tx) => {
-      await tx
-        .insert(tenantRegister)
-        .values({ tenantId, zitadelOrgId: registration.zitadelOrgId, kind });
-    });
+    const tenantName =
+      registration.tenantName === undefined ? null : normaliseTenantName(registration.tenantName);
+    try {
+      await this.run(async (tx) => {
+        await tx
+          .insert(tenantRegister)
+          .values({ tenantId, zitadelOrgId: registration.zitadelOrgId, kind, tenantName });
+      });
+    } catch (error) {
+      const refused = readDatabaseError(error);
+      if (
+        refused?.code === UNIQUE_VIOLATION &&
+        refused.constraint === 'tenant_register_tenant_name_unique'
+      ) {
+        throw new TenantNameTakenError();
+      }
+      throw error;
+    }
   }
 
   async listTenants(): Promise<TenantRegistration[]> {

@@ -1,0 +1,250 @@
+name: Snapshot proof (native x86_64)
+
+# The full un-sabotaged snapshot-locking proof, run on a native x86_64 runner.
+# db1 is x86_64; the Mac runs this proof under amd64 emulation, so this is the
+# run that matches the hosts. Path-filtered to the proof and what it loads.
+# The unit tests for the same code run in repo-tooling-ci.yml on every push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'db/provision/snapshot_probe*'
+      - 'db/provision/replication_client_probe*'
+      - 'db/provision/percona_snapshot_probe*'
+      - 'db/provision/prove-snapshot-locking.sh'
+      - 'db/provision/prove-replication-client.sh'
+      - 'db/provision/prove-percona-snapshot.sh'
+      - 'db/provision/bounded_snapshot.py'
+      - 'db/provision/extract_tenant_binlog.py'
+      - 'db/RUNBOOK-db.md'
+      - 'db/stack/conf.d/branchleft.cnf'
+      - '.github/workflows/snapshot-proof-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'db/provision/snapshot_probe*'
+      - 'db/provision/replication_client_probe*'
+      - 'db/provision/percona_snapshot_probe*'
+      - 'db/provision/prove-snapshot-locking.sh'
+      - 'db/provision/prove-replication-client.sh'
+      - 'db/provision/prove-percona-snapshot.sh'
+      - 'db/provision/bounded_snapshot.py'
+      - 'db/provision/extract_tenant_binlog.py'
+      - 'db/RUNBOOK-db.md'
+      - 'db/stack/conf.d/branchleft.cnf'
+      - '.github/workflows/snapshot-proof-ci.yml'
+
+# Read-only. No secrets are used: the proof runs on local throwaway containers.
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  snapshot-proof:
+    name: Snapshot locking proof, native x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Confirm the runner is x86_64
+        run: |
+          arch="$(uname -m)"
+          echo "runner architecture: $arch"
+          test "$arch" = x86_64
+
+      # The one digest db/RUNBOOK-db.md pins, pulled by digest before the proof
+      # starts, so a pull failure is visible here rather than inside the proof.
+      - name: Pull the pinned mysql digest
+        run: |
+          pins="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/RUNBOOK-db.md must pin exactly one mysql:8.0 digest, found: $pins" >&2
+            exit 1
+          fi
+          docker pull "$pins"
+
+      # The proof exits 0 only when controls 1 to 5 pass and control 6 is
+      # recorded. Each control's measured values and its PASS or FAIL line are
+      # in this log, including control 2's worst and baseline statements.
+      - name: Run the proof, un-sabotaged
+        run: db/provision/prove-snapshot-locking.sh
+
+      # Whether REPLICATION CLIENT alone gives coordinates consistent with the
+      # snapshot. Exits 0 only when all three controls pass; exit 3 means
+      # BACKUP_ADMIN is needed after all. The log has each control's PASS or
+      # FAIL line and each round's coordinates.
+      - name: Run the REPLICATION CLIENT proof, un-sabotaged
+        run: db/provision/prove-replication-client.sh
+
+      # Each red case must exit 1: the control sees the failure. Exit 2 means
+      # it stayed green, so the control could not have failed. The probe's log
+      # is printed before it is judged, and it must name the control that went
+      # red (and, for a lock held on the other schema, the mechanism), so a red
+      # for another reason is not taken for this one. Every red case runs even
+      # when an earlier step failed: a flaky green step must not leave the run
+      # saying nothing about whether the controls can fail. Each costs about one
+      # to one and a half minutes, which the job's timeout is sized for.
+      - name: Red case, coordinates read before the lock
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-coordinates-before-lock.log"
+          SABOTAGE=coordinates-before-lock db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, coordinates read after the unlock
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-coordinates-after-unlock.log"
+          SABOTAGE=coordinates-after-unlock db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, BACKUP_ADMIN held as well
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-backup-admin-grant.log"
+          SABOTAGE=backup-admin-grant db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      # The Percona Server proof (percona_snapshot_probe.md). The candidate
+      # image is the one digest prove-percona-snapshot.sh pins, pulled by digest
+      # first so a pull failure shows here. The red cases come before the
+      # green run: the first two run on db1's stock Oracle MySQL, the two GTID
+      # cases on the Percona candidate; each must exit 1, and exit 2 means the
+      # control stayed green so could not have failed.
+      - name: Pull the pinned Percona digest
+        run: |
+          pins="$(grep -oE 'percona/percona-server@sha256:[0-9a-f]{64}' db/provision/prove-percona-snapshot.sh | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/provision/prove-percona-snapshot.sh must pin exactly one Percona digest, found: $pins" >&2
+            exit 1
+          fi
+          docker pull "$pins"
+
+      - name: Red case, a commit forced between the snapshot and the coordinates, no lock
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-percona-commit-before-coordinates.log"
+          PROOF_SOURCE=stock SABOTAGE=commit-before-coordinates db/provision/prove-percona-snapshot.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, the retired global-lock dump under a long reader
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-percona-global-lock.log"
+          PROOF_SOURCE=stock SABOTAGE=global-lock db/provision/prove-percona-snapshot.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      # The seeding set changed by exactly one transaction of one tenant: the
+      # oracle that reads the source's binary log must see it, as a duplicated
+      # row (one dropped from the set) or a lost one (one added to it).
+      - name: Red case, one transaction dropped from the GTID set the replica is seeded with
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-percona-gtid-drop-one.log"
+          PROOF_SOURCE=percona SABOTAGE=gtid-drop-one db/provision/prove-percona-snapshot.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      - name: Red case, one transaction added to the GTID set the replica is seeded with
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-percona-gtid-extra-one.log"
+          PROOF_SOURCE=percona SABOTAGE=gtid-extra-one db/provision/prove-percona-snapshot.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+
+      # Exits 0 only when controls 1 to 5 pass and control 6 is recorded; exit
+      # 3 means the candidate is inadequate. The log has each control's
+      # measured values and the oracle's count of committed rows lost or
+      # duplicated, read from the source's own binary log.
+      - name: Run the Percona proof, un-sabotaged
+        run: db/provision/prove-percona-snapshot.sh
+
+      # Control 2, the retired path: its FLUSH TABLES waits for the long reader
+      # and the other schema's writes queue behind it for about ten seconds.
+      # Controls 2 and 3 both go red under it in the snapshot probe.
+      - name: Red case, the old path stalls the other schema (snapshot probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-old-path-snapshot.log"
+          SABOTAGE=old-path db/provision/prove-snapshot-locking.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log" | grep -F 'exceeds the 100.0 ms limit'
+          grep -F 'RED control 3,' "$log"
+
+      - name: Red case, the old path stalls the other tenant (REPLICATION CLIENT probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-old-path-replication.log"
+          SABOTAGE=old-path db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log" | grep -F 'exceeds the 100.0 ms limit'
+
+      # Control 2, a real lock: LOCK TABLES other.posts READ held for 500 ms in a
+      # separate session, mid-window. The red line names the control and the
+      # mechanism. The un-sabotaged steps above are the green: the same
+      # scenario, the lock never taken.
+      - name: Red case, a lock held on the other schema (snapshot probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-other-lock-snapshot.log"
+          SABOTAGE=other-lock db/provision/prove-snapshot-locking.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log"
+          grep -F 'held lock on other.posts (injected hold, 500 ms)' "$log"
+
+      - name: Red case, a lock held on the other tenant (REPLICATION CLIENT probe)
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-other-lock-replication.log"
+          SABOTAGE=other-lock db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 2,' "$log"
+          grep -F 'held lock on other.posts (injected hold, 500 ms)' "$log"

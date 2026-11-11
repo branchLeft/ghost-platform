@@ -1207,8 +1207,35 @@ class VolumeEmptyingResetTests(unittest.TestCase):
         self.assertEqual(self._reset(), 1)
         self.assertIn("refused", self.stderr)
 
+    def test_a_mount_point_inside_the_volume_is_refused_and_not_crossed(self):
+        # The subdirectory reports another device, as a mount would.
+        mounted = self.data / "mounted"
+        mounted.mkdir()
+        (mounted / "keep.txt").write_text("visitor data")
+        real_open = os.open
+        real_fstat = os.fstat
+        mounted_fds: set[int] = set()
 
-_NEEDS_TIMEOUT = unittest.skipUnless(shutil.which("timeout"), "needs GNU coreutils timeout")
+        def open_child(name, flags, *args, **kwargs):
+            fd = real_open(name, flags, *args, **kwargs)
+            if name == "mounted":
+                mounted_fds.add(fd)
+            return fd
+
+        def fstat_child(fd):
+            if fd in mounted_fds:
+                return SimpleNamespace(st_dev=real_fstat(fd).st_dev + 1)
+            return real_fstat(fd)
+
+        with mock.patch("branchleft_slot.os.open", side_effect=open_child), mock.patch(
+            "branchleft_slot.os.fstat", side_effect=fstat_child
+        ):
+            self.assertEqual(self._reset(), 1, self.stderr)
+        self.assertIn("mount point", self.stderr)
+        self.assertEqual((mounted / "keep.txt").read_text(), "visitor data")
+
+
+_NEEDS_TIMEOUT =unittest.skipUnless(shutil.which("timeout"), "needs GNU coreutils timeout")
 
 
 def _process_is_gone(pid: int) -> bool:

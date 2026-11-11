@@ -142,7 +142,7 @@ Expected: `exit 0`. Compare it with the live policy; the expected result is no
 difference at all, and any difference is a stop:
 
 ```bash
-NORM_DIR=$(mktemp -d); AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=fsn1 aws --endpoint-url https://fsn1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-tenant-backups --query Policy --output text | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))' > "$NORM_DIR/live-policy.norm"; python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$POLICY_FILE" > "$NORM_DIR/new-policy.norm"; diff "$NORM_DIR/live-policy.norm" "$NORM_DIR/new-policy.norm" && echo "policies identical"; rm -rf "$NORM_DIR"
+NORM_DIR=$(mktemp -d); AWS_ACCESS_KEY_ID="$PROBE_OPERATOR_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$PROBE_OPERATOR_SECRET_ACCESS_KEY" AWS_DEFAULT_REGION=fsn1 aws --endpoint-url https://fsn1.your-objectstorage.com s3api get-bucket-policy --bucket branchleft-tenant-backups --query Policy --output text | jq -S -c . > "${NORM_DIR}/live-policy.norm"; jq -S -c . "${POLICY_FILE}" > "${NORM_DIR}/new-policy.norm"; diff "${NORM_DIR}/live-policy.norm" "${NORM_DIR}/new-policy.norm" && echo "policies identical"; rm -rf "${NORM_DIR}"
 ```
 
 `$NORM_DIR` is removed at the end of this command, whatever the diff says.

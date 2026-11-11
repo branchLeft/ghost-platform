@@ -58,8 +58,8 @@ class PortArithmeticTests(unittest.TestCase):
         self.assertEqual(rde.slot_app_port("3", "b"), 9307)
 
     def test_slot_health_port_matches_slotPorts_ts_formula(self):
-        self.assertEqual(rde.slot_health_port("0"), 9100)
-        self.assertEqual(rde.slot_health_port("6"), 9106)
+        self.assertEqual(rde.slot_health_port("0"), 10100)
+        self.assertEqual(rde.slot_health_port("6"), 10106)
 
     def test_slot_app_port_rejects_a_colour_outside_the_closed_set(self):
         with self.assertRaises(ValueError):
@@ -104,6 +104,30 @@ class CrossCheckAgainstSlotPortsTsTests(unittest.TestCase):
             self.assertEqual(rde.slot_app_port(slot, "a"), entry["a"], f"slot {slot!r} colour a")
             self.assertEqual(rde.slot_app_port(slot, "b"), entry["b"], f"slot {slot!r} colour b")
             self.assertEqual(rde.slot_health_port(slot), entry["health"], f"slot {slot!r} health")
+
+
+class SlotHealthPortClearOfExporterTests(unittest.TestCase):
+    """A slot's health port is on the host's own loopback, so a port that
+    is also an exporter's default collides with it the moment that
+    exporter runs on the same host (node_exporter on demo1).
+    The fixture names the exporter ports this estate runs; no slot's
+    health port may be one of them."""
+
+    def _known_exporter_ports(self) -> set[int]:
+        with open(GOLDEN_PORTS_PATH, encoding="utf-8") as handle:
+            return set(json.load(handle)["knownExporterPorts"])
+
+    def test_the_known_exporter_ports_include_node_exporters_default(self):
+        self.assertIn(9100, self._known_exporter_ports())
+
+    def test_no_slot_health_port_is_a_known_exporter_port(self):
+        known = self._known_exporter_ports()
+        for slot in rde.SLOT_NAMES:
+            self.assertNotIn(
+                rde.slot_health_port(slot),
+                known,
+                f"slot {slot!r} health port {rde.slot_health_port(slot)} is an exporter's default",
+            )
 
 
 class SnippetNameTests(unittest.TestCase):

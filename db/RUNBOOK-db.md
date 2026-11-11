@@ -24,9 +24,25 @@ Base-provision it first, exactly as shared-infra's
 jump host. That is a platform-owner-only step (root SSH); this repo's own
 PR states the exact command. Confirm it completed before anything below:
 
+**Select the hcloud project first.** The lookups below ask hcloud, so its active context
+must be the one for the project that holds the server. Which of your contexts that is
+is not recorded here. List them, read the name, then select it, each as its own paste:
+
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+hcloud context list
+```
+
+```bash
+read -r HCLOUD_CONTEXT
+```
+
+```bash
+hcloud context use "${HCLOUD_CONTEXT}"
+```
+
+```bash
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" '
   systemctl is-active fail2ban unattended-upgrades docker &&
@@ -111,8 +127,8 @@ page that states it.
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@"$DB1_PRIVATE_IP":/opt/branchleft/db
@@ -191,8 +207,8 @@ All three commands run against `db1`, which has no public address -- the same
 `$JUMP` hop through `edge1` as every other remote command in this file:
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d'
@@ -254,8 +270,8 @@ that match by hand, the same jump-host pattern as every other command in
 this runbook:
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'cat /etc/branchleft/db.image.env'
 ```
@@ -312,8 +328,8 @@ nothing to fall back to. Do all four before restarting anything.
    compose file is what stops requiring `EXPORTER_DATA_SOURCE_NAME`.
 
    ```bash
-   EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-   DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+   EDGE1_IPV4=$(hcloud server ip edge1)
+   DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
    JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
    scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
    scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@"$DB1_PRIVATE_IP":/opt/branchleft/db
@@ -365,8 +381,8 @@ nothing to fall back to. Do all four before restarting anything.
 Only then:
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'systemctl restart branchleft-compose@db && docker ps --filter label=com.docker.compose.project=db --format "{{.Names}}\t{{.Status}}"'
@@ -554,7 +570,7 @@ action; there is no reviewed path to it. Same step as `RUNBOOK-edge.md`
 2. Resolve it to a digest:
    ```bash
    docker buildx imagetools inspect ghcr.io/branchleft/db-recovery:<that sha> \
-     --format '{{json .Manifest}}' | python3 -c "import json, sys; print(json.load(sys.stdin)['digest'])"
+     --format '{{json .Manifest}}' | jq -r '.digest'
    ```
 3. Open a PR replacing the `RECOVERY_IMAGE=...` line above with
    the real value (`RECOVERY_IMAGE=ghcr.io/branchleft/db-recovery@sha256:<the

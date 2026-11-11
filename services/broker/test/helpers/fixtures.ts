@@ -17,14 +17,14 @@ import { slotAllocation } from '../../src/slotPorts.js';
 const DIGEST = 'a'.repeat(64);
 
 // The test harness's own fixed allocation (`testBroker.ts`'s `BrokerDeps`):
-// uidBase 30001, appPortBase 9300, healthPortBase 9100. `demoDescriptor()`'s
+// uidBase 30001, appPortBase 9300, healthPortBase 10100. `demoDescriptor()`'s
 // own default (slot "0") is exactly this base, so it matches slot "0" with
 // no override; `descriptorForSlot` computes the same allocation for any
 // other slot, so a fixture reconciled onto slot N never trips item 1's
 // mismatch refusal by construction.
 const UID_BASE = 30001;
 const APP_PORT_BASE = 9300;
-const HEALTH_PORT_BASE = 9100;
+const HEALTH_PORT_BASE = 10100;
 
 /** RFC 2606 example domains, matching `render-core/test/fixtures.ts`'s own convention. */
 export const TEST_ZONES: ZoneConfig = {
@@ -46,7 +46,7 @@ export function demoDescriptor(overrides: Partial<TenantDescriptor> = {}): Tenan
     // bases -- see `UID_BASE`/`APP_PORT_BASE`/`HEALTH_PORT_BASE` above.
     // `descriptorForSlot` computes the equivalent for any other slot.
     uid: 30001 as TenantUid,
-    ports: { a: 9300 as Port, b: 9301 as Port, health: 9100 as Port },
+    ports: { a: 9300 as Port, b: 9301 as Port, health: 10100 as Port },
     appHostIp: '10.20.1.50' as PrivateIpV4,
     database: { kind: 'sqlite', path: '/data/demo-1/ghost.db' },
     media: { kind: 'local', path: '/data/demo-1/content', resize: false, srcsets: false },

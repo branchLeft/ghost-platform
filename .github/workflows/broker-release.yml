@@ -8,9 +8,10 @@ name: Broker release
 #
 # Signing is keyless: the attestation is a SLSA provenance statement signed
 # for this workflow's own identity, so no key or secret is stored anywhere.
-# It proves WHERE the bytes came from (this workflow, at this tag, from this
-# commit). It does not prove who pushed the tag. The consumer closes that by
-# pinning the tarball's sha256 in reviewed code.
+# It shows the commit the tag named when the run started, and which workflow
+# run produced the bytes. It does not show the bytes are a clean build, or who
+# pushed the tag. The consumer's control is pinning the tarball's sha256 in
+# reviewed code.
 #
 # Two jobs, privileges split:
 #   build    reads only. Installs, type-checks, tests, bundles, packs. Every
@@ -44,6 +45,12 @@ on:
 permissions:
   contents: read
   packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -175,6 +182,10 @@ jobs:
           else
             echo '{}' > "${RUNNER_TEMP}/tag.json"
           fi
+          # Unexercised: that GITHUB_SHA on an annotated-tag push is the commit
+          # and not the tag object. If it is the tag object this check fails
+          # closed (it refuses the release and signs nothing). The first live
+          # tag shows which it is; the runbook is updated to match then.
           python3 -I services/broker/release/check_release_tag.py \
             --tag "${GITHUB_REF_NAME}" \
             --ref-json "${RUNNER_TEMP}/ref.json" \

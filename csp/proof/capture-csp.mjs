@@ -12,6 +12,9 @@ import { chromium } from 'playwright';
 
 const ORIGIN = process.env.PROOF_ORIGIN || 'http://localhost:4310';
 const LABEL = process.env.PROOF_LABEL || 'run';
+// Both set by csp-regression-gate.sh from upload-attack.mjs; unset elsewhere.
+const UPLOAD_POST_PATH = process.env.PROOF_UPLOAD_POST_PATH || '';
+const UPLOAD_SCRIPT_PATH = process.env.PROOF_UPLOAD_SCRIPT_PATH || '';
 
 async function main() {
   const browser = await chromium.launch();
@@ -58,6 +61,26 @@ async function main() {
   const injectedScriptRan = await page.evaluate(() => Boolean(window.__injectedRan));
   const cspViolations = await page.evaluate(() => window.__cspViolations ?? []);
 
+  // The uploaded-script attack (upload-attack.mjs): a post
+  // whose HTML card loads a tenant-uploaded .js. Observed on its own page, so
+  // its violations never mix with the home page's, which the gate judges as
+  // exactly one. null means the run did not exercise it.
+  let uploadedScriptRan = null;
+  let uploadedScriptStatus = null;
+  if (UPLOAD_POST_PATH && UPLOAD_SCRIPT_PATH) {
+    const postPage = await context.newPage();
+    postPage.on('response', (response) => {
+      if (new URL(response.url()).pathname === UPLOAD_SCRIPT_PATH) {
+        uploadedScriptStatus = response.status();
+      }
+    });
+    await postPage.goto(`${ORIGIN}${UPLOAD_POST_PATH}`, {
+      waitUntil: 'networkidle',
+      timeout: 30000,
+    });
+    uploadedScriptRan = await postPage.evaluate(() => Boolean(window.__uploadedRan));
+  }
+
   await browser.close();
 
   const result = {
@@ -67,6 +90,8 @@ async function main() {
     portalSignInForm,
     emailFields,
     cspViolations,
+    uploadedScriptRan,
+    uploadedScriptStatus,
   };
   console.log(JSON.stringify(result, null, 2));
 }

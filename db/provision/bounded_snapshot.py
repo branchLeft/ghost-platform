@@ -59,6 +59,19 @@ _UNKNOWN_THREAD_ERROR = "ERROR 1094"
 _STDERR_TAIL_LINES = 40
 
 
+# Where the position is read, under the lock. `log_status` needs BACKUP_ADMIN
+# and SELECT on that table; `master_status` (SHOW MASTER STATUS) needs only
+# REPLICATION CLIENT. The default is the one both nightly paths use today.
+COORDINATES_LOG_STATUS = "log_status"
+COORDINATES_MASTER_STATUS = "master_status"
+COORDINATE_SOURCES = (COORDINATES_LOG_STATUS, COORDINATES_MASTER_STATUS)
+
+_COORDINATE_SQL = {
+    COORDINATES_LOG_STATUS: "SELECT LOCAL FROM performance_schema.log_status;",
+    COORDINATES_MASTER_STATUS: "SHOW MASTER STATUS;",
+}
+
+
 class SnapshotError(Exception):
     """No consistent snapshot was taken. `aborted_attempts` counts the
     attempts given up on a bound, so a caller can report them even when
@@ -211,6 +224,9 @@ class _StderrTail:
         return "\n".join(self._lines)
 
 
+StderrTail = _StderrTail  # public name: gtid_snapshot drains its dump the same way
+
+
 class _LineReader:
     """A child's stdout as lines, read on a thread so every read can carry
     a deadline."""
@@ -345,6 +361,28 @@ def parse_log_status(lines: Sequence[str]) -> tuple[str, int]:
     return log_file, position
 
 
+def parse_master_status(lines: Sequence[str]) -> tuple[str, int]:
+    """`SHOW MASTER STATUS` gives one row: file, position, two filter lists
+    and the executed GTID set. The set may run over several lines, so only
+    the first line is read, and only its first two fields."""
+    if not lines:
+        raise _Fatal("SHOW MASTER STATUS returned no row: is log_bin off?")
+    fields = lines[0].split("\t")
+    try:
+        log_file = fields[0]
+        position = int(fields[1])
+    except (IndexError, ValueError) as exc:
+        raise _Fatal(f"SHOW MASTER STATUS gave no binary-log position: {lines[0]!r}") from exc
+    if not log_file:
+        raise _Fatal("SHOW MASTER STATUS names no binary log: is log_bin off?")
+    return log_file, position
+
+
+def read_coordinates(source: str, lines: Sequence[str]) -> tuple[str, int]:
+    """The binary-log file and position from the answer to `_COORDINATE_SQL`."""
+    return parse_master_status(lines) if source == COORDINATES_MASTER_STATUS else parse_log_status(lines)
+
+
 @dataclasses.dataclass
 class StartedDump:
     """mysqldump, running inside its own consistent snapshot. The caller
@@ -393,6 +431,7 @@ def _attempt(
     dump_args: Sequence[str],
     limits: Limits,
     clock: Callable[[], float],
+    coordinates: str = COORDINATES_LOG_STATUS,
 ) -> tuple[StartedDump, SnapshotReport]:
     coordinator = _Coordinator(factory, clock)
     connection_id: int | None = None
@@ -426,8 +465,8 @@ def _attempt(
         try:
             if _parse_tables(coordinator.ask(list_tables_sql(schemas), hold_deadline)) != tables:
                 raise _Abort("the set of tables changed while the lock was requested")
-            log_file, position = parse_log_status(
-                coordinator.ask("SELECT LOCAL FROM performance_schema.log_status;", hold_deadline)
+            log_file, position = read_coordinates(
+                coordinates, coordinator.ask(_COORDINATE_SQL[coordinates], hold_deadline)
             )
             process = factory.spawn(
                 "mysqldump", ["-v", *dump_args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
@@ -482,16 +521,25 @@ def take_bounded_snapshot(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = lambda message: None,
+    coordinates: str = COORDINATES_LOG_STATUS,
 ) -> tuple[StartedDump, SnapshotReport]:
     """Retries an attempt that gave up on a bound, after a back-off, up to
     `limits.max_attempts`; then raises `SnapshotError`. Any other failure
-    raises at once. Nothing is written anywhere before success."""
+    raises at once. Nothing is written anywhere before success. `coordinates`
+    names where the position is read (COORDINATE_SOURCES)."""
+    if coordinates not in COORDINATE_SOURCES:
+        raise ValueError(f"coordinates must be one of {COORDINATE_SOURCES}, not {coordinates!r}")
     aborted = 0
     reasons: list[str] = []
     for attempt in range(1, limits.max_attempts + 1):
         try:
             dump, report = _attempt(
-                factory=factory, schemas=schemas, dump_args=dump_args, limits=limits, clock=clock
+                factory=factory,
+                schemas=schemas,
+                dump_args=dump_args,
+                limits=limits,
+                clock=clock,
+                coordinates=coordinates,
             )
         except _Abort as exc:
             aborted += 1

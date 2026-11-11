@@ -32,7 +32,11 @@ Exit 2 is a usage error or an unreadable or invalid register.
 
 ## Not covered
 
-The register is written by hand. A tenant created by hand and not yet entered in
-it is not refused. A package already released carries the copy it was released
-with until the next release. The register is public: customer tenant names must
-not be entered until the owner says where they live.
+The register is written by hand and holds tenant zero and the infrastructure
+names only. Customer tenant names are deliberately absent: they live in the
+control plane, which refuses a taken name when it accepts the sign-up
+(`portal/data/README.md`), and `provision-tenant.yml` stops when the tenant's own
+repository already exists.
+`scripts/assert-register-holds-no-customer-names.js` fails CI if one is entered.
+A package already released carries the copy it was released with until the next
+release.

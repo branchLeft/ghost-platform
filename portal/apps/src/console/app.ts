@@ -1,3 +1,4 @@
+import type { BlockList } from 'node:net';
 import {
   CALLBACK_PATH,
   createTokenVerifier,
@@ -25,6 +26,11 @@ export interface OwnerConsoleOptions {
   readonly sessionSeconds?: number;
   /** Receives one line per swallowed handler error: the step and the error name only. */
   readonly onError?: (line: string) => void;
+  /**
+   * The proxies whose `X-Forwarded-For` is believed. Given, `GET /login` and
+   * the callback are limited per client address; absent, they are not.
+   */
+  readonly trustedProxies?: BlockList;
 }
 
 /**
@@ -49,6 +55,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     projectId: options.projectId,
     redirectUri: `${options.publicOrigin}${CALLBACK_PATH}`,
     publicOrigin: options.publicOrigin,
+    cookiePrefix: 'console',
     verifier,
     secureCookies: options.secureCookies,
     title: 'OWNER_CONSOLE',
@@ -58,6 +65,9 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     fetch: options.fetch,
     sessionSeconds: options.sessionSeconds,
     onError: options.onError,
+    ...(options.trustedProxies === undefined
+      ? {}
+      : { clientLimit: { trustedProxies: options.trustedProxies } }),
     bind: async () => true,
     landing: async () => {
       const tenants = await options.db.listHealth();

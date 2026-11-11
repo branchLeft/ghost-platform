@@ -35,8 +35,10 @@ export function uniqueName(prefix) {
   return `${prefix}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-export function createNetwork(name) {
-  docker('network', 'create', '--label', LABEL, name);
+// `subnet` (CIDR, optional) gives the network a fixed address range, for a
+// container that must be started with `--ip`.
+export function createNetwork(name, subnet) {
+  docker('network', 'create', '--label', LABEL, ...(subnet ? ['--subnet', subnet] : []), name);
 }
 
 export function removeNetwork(name) {
@@ -143,11 +145,14 @@ export class GhostContainer {
     });
   }
 
-  static async #start(image, env, { network, volumes = [] }) {
+  // `siteUrl` is the address Ghost is told it lives at (its `url` setting) and
+  // the origin the harness sends; the default is the in-container address. The
+  // mail gate passes its slot's domain.
+  static async #start(image, env, { network, volumes = [], siteUrl = SITE_URL }) {
     const port = await reservePort();
     const name = uniqueName('contract-ghost');
     const fullEnv = {
-      url: SITE_URL,
+      url: siteUrl,
       database__client: 'sqlite3',
       database__connection__filename: '/var/lib/ghost/content/data/ghost.db',
       privacy__useUpdateCheck: 'false',
@@ -171,14 +176,15 @@ export class GhostContainer {
       ...volumeArgs,
       image
     );
-    const ghost = new GhostContainer(name, port);
+    const ghost = new GhostContainer(name, port, siteUrl);
     docker('start', name);
     ghost.booted = await ghost.waitForHome();
     return ghost;
   }
 
-  constructor(name, port) {
+  constructor(name, port, siteUrl = SITE_URL) {
     this.name = name;
+    this.siteUrl = siteUrl;
     this.base = `http://localhost:${port}`;
   }
 
@@ -209,7 +215,7 @@ export class GhostContainer {
   async setupOwner() {
     const res = await fetch(`${this.base}/ghost/api/admin/authentication/setup/`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: SITE_URL },
+      headers: { 'content-type': 'application/json', origin: this.siteUrl },
       body: JSON.stringify({
         setup: [{ name: 'Owner', email: OWNER_EMAIL, password: OWNER_PASSWORD, blogTitle: 'Site' }],
       }),
@@ -220,7 +226,7 @@ export class GhostContainer {
   async login() {
     const res = await fetch(`${this.base}/ghost/api/admin/session/`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', origin: SITE_URL },
+      headers: { 'content-type': 'application/json', origin: this.siteUrl },
       body: JSON.stringify({ username: OWNER_EMAIL, password: OWNER_PASSWORD }),
     });
     assert.equal(res.status, 201, `login: ${await res.text()}`);
@@ -242,7 +248,7 @@ export class GhostContainer {
     }
     const res = await fetch(`${this.base}/ghost/api/admin/${endpoint}`, {
       method,
-      headers: { origin: SITE_URL, cookie: this.cookie },
+      headers: { origin: this.siteUrl, cookie: this.cookie },
       body: form,
     });
     const text = await res.text();
@@ -258,7 +264,7 @@ export class GhostContainer {
   async json(method, endpoint, payload) {
     const res = await fetch(`${this.base}/ghost/api/admin/${endpoint}`, {
       method,
-      headers: { origin: SITE_URL, cookie: this.cookie, 'content-type': 'application/json' },
+      headers: { origin: this.siteUrl, cookie: this.cookie, 'content-type': 'application/json' },
       body: payload === undefined ? undefined : JSON.stringify(payload),
     });
     const text = await res.text();
@@ -273,7 +279,7 @@ export class GhostContainer {
 
   async get(endpoint) {
     const res = await fetch(`${this.base}/ghost/api/admin/${endpoint}`, {
-      headers: { origin: SITE_URL, cookie: this.cookie },
+      headers: { origin: this.siteUrl, cookie: this.cookie },
     });
     const text = await res.text();
     let body = null;

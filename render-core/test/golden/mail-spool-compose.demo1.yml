@@ -33,20 +33,36 @@ services:
     environment:
       PORT: 8080
       SHIM_DRAIN_PORT: 8081
+      SHIM_DRAIN_HOST: '10.231.200.2'
       SMTP_LISTEN_PORT: 2525
       SHIM_DB_PATH: '/data/spool.sqlite'
       SHIM_DRAIN_TOKEN: '${SHIM_DRAIN_TOKEN:?set SHIM_DRAIN_TOKEN in /etc/branchleft/mail-spool.env}'
     ports:
       - '127.0.0.1:8095:8081'
     networks:
-      - 'branchleft-mail-spool-drain'
-      - 'branchleft-mail-30001'
-      - 'branchleft-mail-30002'
-      - 'branchleft-mail-30003'
-      - 'branchleft-mail-30004'
-      - 'branchleft-mail-30005'
-      - 'branchleft-mail-30006'
-      - 'branchleft-mail-30007'
+      branchleft-mail-spool-drain:
+        ipv4_address: '10.231.200.2'
+      branchleft-mail-30001:
+        aliases:
+          - 'mail-spool'
+      branchleft-mail-30002:
+        aliases:
+          - 'mail-spool'
+      branchleft-mail-30003:
+        aliases:
+          - 'mail-spool'
+      branchleft-mail-30004:
+        aliases:
+          - 'mail-spool'
+      branchleft-mail-30005:
+        aliases:
+          - 'mail-spool'
+      branchleft-mail-30006:
+        aliases:
+          - 'mail-spool'
+      branchleft-mail-30007:
+        aliases:
+          - 'mail-spool'
     volumes:
       - 'branchleft-mail-spool-data:/data'
     healthcheck:
@@ -66,6 +82,10 @@ networks:
     driver_opts:
       com.docker.network.bridge.name: 'br-mailspool'
       com.docker.network.bridge.enable_ip_masquerade: 'false'
+    ipam:
+      config:
+        - subnet: '10.231.200.0/29'
+          gateway: '10.231.200.1'
   branchleft-mail-30001:
     name: 'branchleft-mail-30001'
     internal: true
