@@ -39,6 +39,8 @@ export type {
   GateSpec,
   HostnameSpec,
   LimitsSpec,
+  MailRoute,
+  MailRouteSpec,
   MailSpec,
   MediaSpec,
   PortTriple,
@@ -77,7 +79,7 @@ export {
   validateSlotName,
 } from './lease.js';
 
-export type { Artefact } from './render.js';
+export type { Artefact, RenderOptions } from './render.js';
 export {
   render,
   renderSecretsTemplate,
@@ -93,7 +95,15 @@ export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
-export { credentialDomainOf, renderSendingAddress, sendingDomainOf } from './mail.js';
+export {
+  credentialDomainOf,
+  DEFAULT_MAIL_ROUTE,
+  MAIL_ROUTES,
+  MAX_SWEEGO_ALLOWANCE,
+  mailRouteOf,
+  renderSendingAddress,
+  sendingDomainOf,
+} from './mail.js';
 export { renderDrainList } from './drain.js';
 export {
   MAIL_SPOOL_BASE_URL,
@@ -118,6 +128,7 @@ export {
 } from './spool.js';
 export type { MailSpoolStackArgs } from './spool.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
+export type { Colour } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {
   MAX_TENANT_SLUG_LENGTH,

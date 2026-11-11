@@ -2,6 +2,33 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## 0.4.0
+
+**The descriptor can name a mail route.**
+
+- **Additive:** `mail.route` is an optional
+  `{ primary: "mx1" | "sweego", sweegoAllowance?: integer }`.
+  Absent means `mx1`, so every existing descriptor and every rendered
+  artefact is unchanged. Any other value, a missing `primary` or an extra key
+  is refused, and a demo whose route is `sweego` is refused as a tier
+  mismatch. `sweegoAllowance`, the tenant's messages per UTC month through
+  Sweego, is a positive integer required when `primary` is `sweego` and
+  refused when it is `mx1`. The new types `MailRoute` and `MailRouteSpec` and
+  the values `MAIL_ROUTES`, `MAX_SWEEGO_ALLOWANCE`, `DEFAULT_MAIL_ROUTE` and
+  `mailRouteOf` are exported. A consumer pinned to an earlier release refuses
+  a descriptor that carries one (an unknown key), so write the field only
+  once that consumer is upgraded. See src/mail.md#mail-route.
+
+**`render()` can render one running colour.**
+
+- **Additive:** `render(descriptor, zones, themeCsp, { activeColour })` and
+  `renderComposeStack({ ..., activeColour })` take an optional `'a'` or `'b'`.
+  When given, `compose.yml` carries only that colour's Ghost service and the
+  idle colour is omitted. When absent, every artefact is byte-identical to
+  0.3.0. A value other than `'a'` or `'b'` is refused. The new type `Colour`
+  and interface `RenderOptions` are exported. See
+  src/compose.md#one-running-colour.
+
 ## 0.3.0
 
 **Each Ghost container gets a 60 second stop grace period.**

@@ -6,6 +6,26 @@ import type { Logger } from './log.js';
 export interface DrainTarget {
   readonly id: string;
   readonly baseUrl: string;
+  /** The sending target the descriptor names for this host's mail (`mx1` when it names none). Read only by the resolver in sendingTarget.ts. */
+  readonly route: MailRoute;
+  /** The host's Sweego messages per UTC month: present exactly when `route` is `sweego`, as a positive integer. */
+  readonly sweegoAllowance?: number;
+  /** Set (true) only for a demo host, which never sends through Sweego. Absent for a tenant. */
+  readonly demo?: true;
+}
+
+/** The sending targets a descriptor's `mail.route.primary` may name. Mirrors render-core's `MailRoute`; this service keeps its own shape check rather than import render-core. */
+export type MailRoute = 'mx1' | 'sweego';
+
+const MAIL_ROUTES: readonly string[] = ['mx1', 'sweego'];
+const DEFAULT_MAIL_ROUTE: MailRoute = 'mx1';
+// Mirrors render-core's MAX_SWEEGO_ALLOWANCE; a sanity ceiling, not a plan size.
+const MAX_SWEEGO_ALLOWANCE = 100_000_000;
+
+/** What a descriptor's `mail.route` says: the target, and the allowance that goes with `sweego`. */
+interface ReadRoute {
+  readonly route: MailRoute;
+  readonly sweegoAllowance?: number;
 }
 
 /**
@@ -99,6 +119,48 @@ function hasValidShapeForDraining(value: unknown): value is {
   return true;
 }
 
+/**
+ * `mx1` when the descriptor carries no `mail.route`; otherwise the named
+ * target, or `undefined` when the route is present but not exactly
+ * `{ primary: "mx1" }` or `{ primary: "sweego", sweegoAllowance: <positive
+ * integer> }`, or when a demo names `sweego`. An undefined result makes the
+ * descriptor malformed, so the host is not drained rather than guessed at.
+ * See ../README.md#descriptortargets-mail-route.
+ */
+function readMailRoute(kind: 'demo' | 'tenant', raw: object): ReadRoute | undefined {
+  const mail = (raw as { mail?: unknown }).mail;
+  if (typeof mail !== 'object' || mail === null || !('route' in mail) || mail.route === undefined) {
+    return { route: DEFAULT_MAIL_ROUTE };
+  }
+  const route = mail.route;
+  if (typeof route !== 'object' || route === null || Array.isArray(route)) {
+    return undefined;
+  }
+  const { primary, sweegoAllowance } = route as { primary?: unknown; sweegoAllowance?: unknown };
+  const keys = Object.keys(route);
+  if (
+    typeof primary !== 'string' ||
+    keys.some((key) => key !== 'primary' && key !== 'sweegoAllowance')
+  ) {
+    return undefined;
+  }
+  if (!MAIL_ROUTES.includes(primary) || (kind === 'demo' && primary !== 'mx1')) {
+    return undefined;
+  }
+  if (primary === 'mx1') {
+    return sweegoAllowance === undefined && keys.length === 1 ? { route: 'mx1' } : undefined;
+  }
+  if (
+    typeof sweegoAllowance !== 'number' ||
+    !Number.isSafeInteger(sweegoAllowance) ||
+    sweegoAllowance <= 0 ||
+    sweegoAllowance > MAX_SWEEGO_ALLOWANCE
+  ) {
+    return undefined;
+  }
+  return { route: 'sweego', sweegoAllowance };
+}
+
 function isLive(expiresAt: string | null, nowMs: number): boolean {
   if (expiresAt === null) {
     return true;
@@ -188,6 +250,11 @@ export class DescriptorTargetStore implements TargetStore {
         this.log.warn('descriptor_malformed', { file });
         continue;
       }
+      const mailRoute = readMailRoute(raw.kind, raw);
+      if (mailRoute === undefined) {
+        this.log.warn('descriptor_malformed', { file });
+        continue;
+      }
       if (!isLive(raw.expiresAt, nowMs)) {
         continue;
       }
@@ -209,6 +276,11 @@ export class DescriptorTargetStore implements TargetStore {
       next.push({
         id: raw.slug,
         baseUrl: `${this.shimScheme}://${raw.appHostIp}:${this.shimPort}`,
+        route: mailRoute.route,
+        ...(mailRoute.sweegoAllowance === undefined
+          ? {}
+          : { sweegoAllowance: mailRoute.sweegoAllowance }),
+        ...(raw.kind === 'demo' ? { demo: true as const } : {}),
       });
     }
     this.current = next;

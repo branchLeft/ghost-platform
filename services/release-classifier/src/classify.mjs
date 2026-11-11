@@ -50,6 +50,14 @@ export const CONSTRAINT_RULES = Object.freeze([
   { name: 'drop-constraint', names: ['dropIndex', 'dropUnique', 'dropForeign'] },
 ]);
 
+// Changes an existing column in place. The old image reads the old name or the old
+// nullability, so a database restore is the only way back. Not part of the whole-range
+// route above (its rollback runs); read by the per-step classifier in steps.mjs.
+export const SCHEMA_CHANGE_RULES = Object.freeze([
+  { name: 'rename-column', names: ['createRenameColumnMigration'] },
+  { name: 'set-nullable', names: ['createSetNullableMigration'] },
+]);
+
 // Raw SQL spelled in a string or template. Destructive wherever it appears.
 export const SQL_RULES = Object.freeze([
   { name: 'raw-drop-table', pattern: /\bDROP\s+TABLE\b/i },
@@ -92,6 +100,7 @@ for (const [cls, rules] of [
   ['destructive', DESTRUCTIVE_RULES],
   ['contracting', CONTRACTING_RULES],
   ['constraint', CONSTRAINT_RULES],
+  ['schemaChange', SCHEMA_CHANGE_RULES],
 ]) {
   for (const rule of rules) {
     for (const name of rule.names) {
@@ -166,6 +175,7 @@ function scan(program, source) {
     destructive: new Set(),
     contracting: new Set(),
     constraint: new Set(),
+    schemaChange: new Set(),
   };
   const record = (name) => {
     for (const { cls, rule } of NAME_TABLE.get(name) ?? []) found[cls].add(rule);
@@ -275,6 +285,7 @@ export function classifySource(source) {
     destructive: [],
     contracting: [],
     constraint: [],
+    schemaChange: [],
     unclassified: [],
   };
   const text = String(source);
@@ -310,7 +321,7 @@ export function classifySource(source) {
     out.unclassified.push('non-ascii-identifier');
     return out;
   }
-  for (const cls of ['irreversible', 'destructive', 'contracting', 'constraint']) {
+  for (const cls of ['irreversible', 'destructive', 'contracting', 'constraint', 'schemaChange']) {
     out[cls].push(...result.found[cls]);
   }
   if (result.noopRollback) out.destructive.push('noop-rollback');
@@ -348,6 +359,7 @@ export function classifyRange({ from, to, migrations, folders }) {
     destructive: [],
     contracting: [],
     constraint: [],
+    schemaChange: [],
     unclassified: [],
   };
   let filesInRange = 0;
@@ -361,6 +373,7 @@ export function classifyRange({ from, to, migrations, folders }) {
     collect(out, 'destructive', m.path, file.destructive);
     collect(out, 'contracting', m.path, file.contracting);
     collect(out, 'constraint', m.path, file.constraint);
+    collect(out, 'schemaChange', m.path, file.schemaChange);
     collect(
       out,
       'unclassified',

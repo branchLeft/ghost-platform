@@ -182,3 +182,36 @@ class GitHubApi:
 
     def update_pull(self, number, title, body):
         return self._call("PATCH", f"pulls/{number}", body={"title": title, "body": body})
+
+    def pull_files(self, number):
+        """The files a pull request changes, with their patches (at most 100)."""
+        return self._call("GET", f"pulls/{number}/files?per_page=100")
+
+    def required_status_contexts(self, branch):
+        """Every context a ruleset on this branch requires, from all rulesets."""
+        contexts = []
+        for rule in self._call("GET", f"rules/branches/{branch}?per_page=100"):
+            if rule.get("type") != "required_status_checks":
+                continue
+            for entry in rule.get("parameters", {}).get("required_status_checks", []):
+                contexts.append(entry["context"])
+        return contexts
+
+    def check_runs(self, sha):
+        """The latest check run per name on a commit, all pages."""
+        runs = []
+        page = 1
+        while True:
+            body = self._call("GET", f"commits/{sha}/check-runs?filter=latest&per_page=100&page={page}")
+            batch = body.get("check_runs", [])
+            runs.extend(batch)
+            if not batch or len(runs) >= body.get("total_count", 0):
+                return runs
+            page += 1
+
+    def merge_pull(self, number, sha):
+        """Squash-merge at exactly this head sha: GitHub refuses if the head has moved.
+
+        The method is fixed here on purpose: no caller can pick another.
+        """
+        return self._call("PUT", f"pulls/{number}/merge", body={"merge_method": "squash", "sha": sha})

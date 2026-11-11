@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path';
+
 export interface CollectorConfig {
   port: number;
   /** Directory of tenant/demo descriptor JSON files -- the only source of the drain list. */
@@ -57,12 +59,23 @@ export interface CollectorConfig {
   messagesPerHour: number;
   /** Optional live-reloadable override, same `{ "messagesPerHour": N }` shape the shim's own throttle reads. */
   throttleConfigPath?: string;
+  /** The login lane's own ceiling, in messages/hour. Login mail never spends bulk tokens. */
+  loginMessagesPerHour: number;
+  /** Optional live-reloadable bulk ramp (see lanes.ts). Unset, bulk runs at the estate ceiling alone. */
+  bulkRampPath?: string;
 
   /** How long a delivered message id is remembered, so a re-offer caused by a lost ack is recognised and never redelivered. Comfortably longer than any realistic lease-lapse-and-re-offer horizon. */
   dedupeTtlMs: number;
 
   /** File on a volume that outlives the process, holding the submitted ids. Unset, a restart forgets them and a re-offered id is submitted again. */
   dedupeStatePath?: string;
+
+  /**
+   * File the bulk deferral hold is kept in, so a restart during the hold does
+   * not forget it. Defaults to a file beside `dedupeStatePath`; with neither
+   * set the hold is memory-only.
+   */
+  bulkDeferralStatePath?: string;
 
   smtp: {
     host: string;
@@ -71,6 +84,38 @@ export interface CollectorConfig {
     user: string;
     pass: string;
   };
+
+  /**
+   * The Sweego relay. Absent unless COLLECTOR_SWEEGO_SMTP_HOST is set. Holds
+   * the path of the credential file and never the credential itself.
+   */
+  sweego?: {
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    /** Root-readable file holding the relay credential. Read per message by the Sweego client. */
+    passFile: string;
+    /** Sweego's own send-rate ceiling, separate from `messagesPerHour`. No default: the plan sets it. */
+    messagesPerHour: number;
+    /** Optional live-reloadable override for the Sweego ceiling, same shape as `throttleConfigPath`. */
+    throttleConfigPath?: string;
+    /** Bounds connecting and every wait on the relay. */
+    timeoutMs: number;
+    /**
+     * Messages per UTC calendar month across every tenant together, set from
+     * the Sweego plan. No default: unset, Sweego is treated as not configured
+     * and every message goes through mx1.
+     */
+    accountCap?: number;
+    /** File the monthly counters are kept in, on a volume that outlives the process. Unset, Sweego is treated as not configured too. */
+    usageStatePath?: string;
+  };
+
+  /** Directory the per-message target pins are kept in, on a volume that outlives the process. Unset, a restart forgets them. */
+  pinStateDir?: string;
+  /** How long a pin is remembered. Must outlast the shim's longest retry horizon. */
+  pinTtlMs: number;
 
   /**
    * The estate's dead-man's-switch ping URL (Healthchecks.io, or the local
@@ -127,9 +172,11 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 40_000;
 const DEFAULT_DRAIN_RETRY_BACKOFF_MS = 2_000;
 const DEFAULT_EMPTY_POLL_BACKOFF_MS = 250;
 const DEFAULT_MESSAGES_PER_HOUR = 50;
+const DEFAULT_LOGIN_MESSAGES_PER_HOUR = 3600;
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_OUTCOMES_POLL_MS = 30_000;
 const DEFAULT_SHIM_SCHEME = 'http';
+const DEFAULT_BULK_DEFERRAL_STATE_FILE = 'bulk-deferral.json';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
 
 function shimSchemeEnv(env: CollectorEnv): string {
@@ -158,6 +205,85 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
     returnPath,
     dsnDir,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
+  };
+}
+
+function bulkDeferralStatePathEnv(env: CollectorEnv): string | undefined {
+  if (env.COLLECTOR_BULK_DEFERRAL_STATE_PATH) {
+    return env.COLLECTOR_BULK_DEFERRAL_STATE_PATH;
+  }
+  return env.COLLECTOR_DEDUPE_STATE_PATH
+    ? join(dirname(env.COLLECTOR_DEDUPE_STATE_PATH), DEFAULT_BULK_DEFERRAL_STATE_FILE)
+    : undefined;
+}
+
+const DEFAULT_SWEEGO_SMTP_PORT = 587;
+const DEFAULT_SWEEGO_TIMEOUT_MS = 20_000;
+const DEFAULT_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+const SWEEGO_PARTNERS = [
+  'COLLECTOR_SWEEGO_SMTP_USER',
+  'COLLECTOR_SWEEGO_SMTP_PASS_FILE',
+  'COLLECTOR_SWEEGO_MESSAGES_PER_HOUR',
+  'COLLECTOR_SWEEGO_ACCOUNT_CAP',
+  'COLLECTOR_SWEEGO_USAGE_STATE_PATH',
+] as const;
+
+function accountCapEnv(env: CollectorEnv): number | undefined {
+  const raw = env.COLLECTOR_SWEEGO_ACCOUNT_CAP;
+  if (!raw) {
+    return undefined;
+  }
+  const cap = Number(raw);
+  if (!Number.isSafeInteger(cap) || cap <= 0) {
+    throw new Error('COLLECTOR_SWEEGO_ACCOUNT_CAP must be a positive integer');
+  }
+  return cap;
+}
+
+/**
+ * True only when the relay, the account-wide cap and the counter file are all
+ * set. Any one missing and Sweego is not used at all: with no cap or nothing
+ * to count in, nothing could hold the total inside the plan.
+ */
+export function sweegoUsable(
+  sweego: CollectorConfig['sweego']
+): sweego is NonNullable<CollectorConfig['sweego']> &
+  Required<Pick<NonNullable<CollectorConfig['sweego']>, 'accountCap' | 'usageStatePath'>> {
+  return sweego?.accountCap !== undefined && sweego.usageStatePath !== undefined;
+}
+
+function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
+  // The credential is a file path, never a value: refuse a value outright so
+  // it cannot end up in the process environment.
+  if (env.COLLECTOR_SWEEGO_SMTP_PASS !== undefined) {
+    throw new Error(
+      'The Sweego credential is read from a file: set COLLECTOR_SWEEGO_SMTP_PASS_FILE to its path, never the value'
+    );
+  }
+  const host = env.COLLECTOR_SWEEGO_SMTP_HOST;
+  if (!host) {
+    const stray = SWEEGO_PARTNERS.find((name) => env[name]);
+    if (stray) {
+      throw new Error(`${stray} is set but COLLECTOR_SWEEGO_SMTP_HOST is not`);
+    }
+    return undefined;
+  }
+  const messagesPerHour = Number(requireEnv(env, 'COLLECTOR_SWEEGO_MESSAGES_PER_HOUR'));
+  if (!Number.isFinite(messagesPerHour) || messagesPerHour <= 0) {
+    throw new Error('COLLECTOR_SWEEGO_MESSAGES_PER_HOUR must be a positive number');
+  }
+  return {
+    host,
+    port: positiveIntEnv(env, 'COLLECTOR_SWEEGO_SMTP_PORT', DEFAULT_SWEEGO_SMTP_PORT),
+    secure: env.COLLECTOR_SWEEGO_SMTP_SECURE === 'true',
+    user: requireEnv(env, 'COLLECTOR_SWEEGO_SMTP_USER'),
+    passFile: requireEnv(env, 'COLLECTOR_SWEEGO_SMTP_PASS_FILE'),
+    messagesPerHour,
+    throttleConfigPath: env.COLLECTOR_SWEEGO_THROTTLE_CONFIG_PATH || undefined,
+    timeoutMs: positiveIntEnv(env, 'COLLECTOR_SWEEGO_SMTP_TIMEOUT_MS', DEFAULT_SWEEGO_TIMEOUT_MS),
+    accountCap: accountCapEnv(env),
+    usageStatePath: env.COLLECTOR_SWEEGO_USAGE_STATE_PATH || undefined,
   };
 }
 
@@ -194,8 +320,15 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     ),
     messagesPerHour: positiveIntEnv(env, 'COLLECTOR_MESSAGES_PER_HOUR', DEFAULT_MESSAGES_PER_HOUR),
     throttleConfigPath: env.COLLECTOR_THROTTLE_CONFIG_PATH,
+    loginMessagesPerHour: positiveIntEnv(
+      env,
+      'COLLECTOR_LOGIN_MESSAGES_PER_HOUR',
+      DEFAULT_LOGIN_MESSAGES_PER_HOUR
+    ),
+    bulkRampPath: env.COLLECTOR_BULK_RAMP_PATH || undefined,
     dedupeTtlMs: positiveIntEnv(env, 'COLLECTOR_DEDUPE_TTL_MS', DEFAULT_DEDUPE_TTL_MS),
     dedupeStatePath: env.COLLECTOR_DEDUPE_STATE_PATH || undefined,
+    bulkDeferralStatePath: bulkDeferralStatePathEnv(env),
     smtp: {
       host: requireEnv(env, 'COLLECTOR_SMTP_HOST'),
       port: positiveIntEnv(env, 'COLLECTOR_SMTP_PORT', 587),
@@ -203,6 +336,9 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       user: requireEnv(env, 'COLLECTOR_SMTP_USER'),
       pass: requireEnv(env, 'COLLECTOR_SMTP_PASS'),
     },
+    sweego: sweegoEnv(env),
+    pinStateDir: env.COLLECTOR_PIN_STATE_DIR || undefined,
+    pinTtlMs: positiveIntEnv(env, 'COLLECTOR_PIN_TTL_MS', DEFAULT_PIN_TTL_MS),
     heartbeatUrl: requireEnv(env, 'COLLECTOR_HEARTBEAT_URL'),
     heartbeatFailureThreshold: positiveIntEnv(
       env,
