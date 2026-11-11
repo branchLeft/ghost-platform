@@ -83,6 +83,7 @@ describe('collector loop with the Sweego client', () => {
     sweegoPins?: SubmittedTracker;
     mx1Pins?: SubmittedTracker;
     sweegoAmbiguous?: SubmittedTracker;
+    dedupe?: SubmittedTracker;
   }) {
     const store = createFakeTargetStore([
       { id: 'tenant-a', baseUrl, route: 'sweego', ...options.target },
@@ -105,7 +106,7 @@ describe('collector loop with the Sweego client', () => {
       mx1Pins: options.mx1Pins,
       sweegoAmbiguous: options.sweegoAmbiguous,
       throttle: mx1Throttle,
-      dedupe: createSubmittedTracker(60_000),
+      dedupe: options.dedupe ?? createSubmittedTracker(60_000),
       health: createHealthState(),
       log: createLogger((line) => logLines.push(line)),
       descriptorRefreshMs: 50,
@@ -545,6 +546,92 @@ describe('collector loop with the Sweego client', () => {
       expect(mx1.calls).toEqual([]);
       expect(recovered.calls).toEqual([]);
       expect(acked()).toEqual([]);
+    });
+  });
+  describe('a batch longer than the dedupe TTL', () => {
+    const TTL_MS = 60 * 60 * 1000;
+    const STEP_MS = 40 * 60 * 1000; // one Sweego token every 40 minutes: three messages take two hours
+
+    /** A Sweego bucket whose wait moves a fake clock and never really sleeps. */
+    function slowSweegoBucket(clock: { ms: number }): Throttle {
+      return {
+        ...countingThrottle(),
+        waitForToken: async () => {
+          clock.ms += STEP_MS;
+        },
+      };
+    }
+
+    function lossyFirstAck(): { drainClient: DrainClient; attempts: () => number } {
+      const real = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+      let attempts = 0;
+      return {
+        attempts: () => attempts,
+        drainClient: {
+          drain: real.drain,
+          ack: async (target, acks, signal) => {
+            attempts += 1;
+            if (attempts === 1) {
+              throw new Error('ack lost');
+            }
+            return real.ack(target, acks, signal);
+          },
+        },
+      };
+    }
+
+    it('does not resend ids sent early in the batch when the ack fails and the sweep has run', async () => {
+      const clock = { ms: 0 };
+      const dedupe = createSubmittedTracker(TTL_MS, () => clock.ms);
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      for (const id of ['news-1', 'news-2', 'news-3']) {
+        shim.enqueue(NEWSLETTER(id));
+      }
+      const ack = lossyFirstAck();
+      start({
+        mx1,
+        sweego,
+        sweegoThrottle: slowSweegoBucket(clock),
+        drainClient: ack.drainClient,
+        dedupe,
+      });
+      await until(() => ack.attempts() === 1, 'first ack lost');
+      expect(clock.ms).toBeGreaterThan(TTL_MS); // the batch really did outlast the TTL
+      dedupe.sweep(); // the sweep the runtime runs on its own timer
+      shim.simulateLostAck(); // the lease lapses and all three are re-offered
+      await until(() => acked().length === 3, 'all three acked on the re-offer');
+      await settle();
+      expect([...sweego.calls].sort()).toEqual(['news-1', 'news-2', 'news-3']);
+      expect(mx1.calls).toEqual([]);
+    });
+
+    it('does not offer a dropped recipient-rejected id again when its ack fails and the sweep has run', async () => {
+      const clock = { ms: 0 };
+      const dedupe = createSubmittedTracker(TTL_MS, () => clock.ms);
+      const mx1 = fakeClient();
+      const sweego = fakeClient();
+      sweego.behaviour = (message) =>
+        message.id === 'news-1' ? new SweegoSubmissionError('recipient-rejected', 550) : undefined;
+      for (const id of ['news-1', 'news-2', 'news-3']) {
+        shim.enqueue(NEWSLETTER(id));
+      }
+      const ack = lossyFirstAck();
+      start({
+        mx1,
+        sweego,
+        sweegoThrottle: slowSweegoBucket(clock),
+        drainClient: ack.drainClient,
+        dedupe,
+      });
+      await until(() => ack.attempts() === 1, 'first ack lost');
+      expect(clock.ms).toBeGreaterThan(TTL_MS);
+      dedupe.sweep();
+      shim.simulateLostAck();
+      await until(() => acked().length === 3, 'all three acked on the re-offer');
+      await settle();
+      expect(sweego.calls.filter((id) => id === 'news-1')).toEqual(['news-1']);
+      expect(mx1.calls).toEqual([]);
     });
   });
 });

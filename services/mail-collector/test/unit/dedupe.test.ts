@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createSubmittedTracker } from '../../src/dedupe.js';
+import { createSubmittedTracker, MAX_AWAITING_ACK_MS } from '../../src/dedupe.js';
 
 describe('createSubmittedTracker', () => {
   it('has() is false before markSubmitted and true after', () => {
@@ -32,6 +32,60 @@ describe('createSubmittedTracker', () => {
     now = 100;
     tracker.sweep();
     expect(tracker.has('m1')).toBe(true);
+  });
+});
+
+describe('ids submitted and awaiting an ack', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  it('survives past the TTL until the ack lands, so a batch longer than the TTL cannot resend', () => {
+    let now = 0;
+    const tracker = createSubmittedTracker(HOUR, () => now);
+    tracker.markSubmitted('first-of-batch', true);
+    now = 3 * HOUR; // the batch outlasted the TTL at a low ramp rate
+    tracker.sweep();
+    expect(tracker.has('first-of-batch')).toBe(true);
+  });
+
+  it('expires on the normal TTL once acked, counted from the ack', () => {
+    let now = 0;
+    const tracker = createSubmittedTracker(HOUR, () => now);
+    tracker.markSubmitted('m1', true);
+    now = 3 * HOUR;
+    tracker.markAcked(['m1']);
+    now = 3 * HOUR + HOUR - 1;
+    tracker.sweep();
+    expect(tracker.has('m1')).toBe(true);
+    now = 3 * HOUR + HOUR + 1;
+    tracker.sweep();
+    expect(tracker.has('m1')).toBe(false);
+  });
+
+  it('is evicted after the hard bound even if no ack ever lands', () => {
+    let now = 0;
+    const tracker = createSubmittedTracker(HOUR, () => now);
+    tracker.markSubmitted('lost', true);
+    now = MAX_AWAITING_ACK_MS - 1;
+    tracker.sweep();
+    expect(tracker.has('lost')).toBe(true);
+    now = MAX_AWAITING_ACK_MS + 1;
+    tracker.sweep();
+    expect(tracker.has('lost')).toBe(false);
+  });
+
+  it('an id marked without the awaiting flag keeps the plain TTL behaviour', () => {
+    let now = 0;
+    const tracker = createSubmittedTracker(HOUR, () => now);
+    tracker.markSubmitted('plain');
+    now = HOUR + 1;
+    tracker.sweep();
+    expect(tracker.has('plain')).toBe(false);
+  });
+
+  it('markAcked ignores an id it never saw', () => {
+    const tracker = createSubmittedTracker(HOUR, () => 0);
+    expect(() => tracker.markAcked(['never-seen'])).not.toThrow();
+    expect(tracker.size).toBe(0);
   });
 });
 
@@ -109,6 +163,28 @@ describe('createSubmittedTracker with a state file', () => {
     expect(() => tracker.markSubmitted('m1')).not.toThrow();
     expect(tracker.has('m1')).toBe(true);
     expect(errors.length).toBeGreaterThan(0);
+  });
+  it('an id awaiting an ack survives a restart past the TTL, and not once it is acked', () => {
+    const HOUR = 60 * 60 * 1000;
+    let now = 0;
+    const first = createSubmittedTracker(HOUR, () => now, { statePath });
+    first.markSubmitted('sent-before-restart', true);
+    first.markSubmitted('acked-before-restart', true);
+    first.markAcked(['acked-before-restart']);
+    now = 3 * HOUR;
+    const restarted = createSubmittedTracker(HOUR, () => now, { statePath });
+    restarted.sweep();
+    expect(restarted.has('sent-before-restart')).toBe(true);
+    expect(restarted.has('acked-before-restart')).toBe(false);
+  });
+
+  it('a file written before awaiting-ack existed loads, its ids treated as acked', () => {
+    mkdirSync(join(dir, 'nested'));
+    writeFileSync(statePath, JSON.stringify({ version: 1, submitted: { old: 0 } }));
+    const tracker = createSubmittedTracker(500, () => 1000, { statePath });
+    expect(tracker.has('old')).toBe(true);
+    tracker.sweep();
+    expect(tracker.has('old')).toBe(false);
   });
 });
 

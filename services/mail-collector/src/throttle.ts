@@ -20,6 +20,8 @@ export interface Throttle {
   tryTake(): boolean;
   /** Resolves once a token is available, having consumed it. Rejects if `signal` aborts first. */
   waitForToken(signal?: AbortSignal): Promise<void>;
+  /** Empties the bucket. Tokens then accrue from now at the effective rate, so a rate cut (a deferral) is never met by a full bucket. */
+  empty(): void;
   /** Re-reads configPath if its mtime changed since the last reload; a no-op otherwise. */
   reload(): void;
   currentRate(): number;
@@ -28,6 +30,11 @@ export interface Throttle {
 const DEFAULT_MESSAGES_PER_HOUR = 50;
 const SECONDS_PER_HOUR = 3600;
 const POLL_INTERVAL_MS = 250;
+
+/** A rate worth running at: finite and positive. Infinity and NaN (a hand-edited file can parse to either) would lift or break the ceiling. */
+function isUsableRate(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
 
 /**
  * The estate-wide token bucket, in messages/hour -- the shim's own
@@ -40,7 +47,9 @@ const POLL_INTERVAL_MS = 250;
  */
 export function createThrottle(opts: ThrottleOptions): Throttle {
   const now = opts.now ?? (() => Date.now() / 1000);
-  let messagesPerHour = opts.messagesPerHour > 0 ? opts.messagesPerHour : DEFAULT_MESSAGES_PER_HOUR;
+  let messagesPerHour = isUsableRate(opts.messagesPerHour)
+    ? opts.messagesPerHour
+    : DEFAULT_MESSAGES_PER_HOUR;
   let tokens = Math.min(1, messagesPerHour);
   let lastRefillAt = now();
   let lastMtimeMs: number | undefined;
@@ -68,6 +77,11 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
     return false;
   }
 
+  function empty(): void {
+    tokens = 0;
+    lastRefillAt = now();
+  }
+
   function reload(): void {
     if (!opts.configPath) {
       return;
@@ -89,7 +103,7 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
       const raw = JSON.parse(readFileSync(opts.configPath, 'utf8')) as {
         messagesPerHour?: unknown;
       };
-      if (typeof raw.messagesPerHour === 'number' && raw.messagesPerHour > 0) {
+      if (isUsableRate(raw.messagesPerHour)) {
         if (raw.messagesPerHour !== messagesPerHour) {
           opts.log?.info('throttle_reload', {
             previousRate: messagesPerHour,
@@ -105,6 +119,7 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
 
   return {
     tryTake,
+    empty,
     reload,
     currentRate() {
       return effectiveRate(now());

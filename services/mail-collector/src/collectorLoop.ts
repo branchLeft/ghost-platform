@@ -193,7 +193,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         if (kind === 'recipient-rejected') {
           // Terminal: a bad address is bad everywhere. Marked so a lost ack
           // is only re-acked on the next offer, never sent or retried.
-          deps.dedupe.markSubmitted(message.id);
+          deps.dedupe.markSubmitted(message.id, true);
           deps.log.warn('recipient_rejected_dropped', { target: target.id, message: message.id });
           return 'dropped';
         }
@@ -215,7 +215,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         // Without this a lost ack re-sends the message to Sweego. Marked
         // before the count, so a crash between the two undercounts by one
         // rather than sending the message twice.
-        deps.dedupe.markSubmitted(message.id);
+        deps.dedupe.markSubmitted(message.id, true);
         slot?.settle(true);
         deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
         return 'submitted';
@@ -237,6 +237,10 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       deps.health.recordFailure();
       if (lane === 'bulk' && deps.bulkCap && isBulkDeferral(error)) {
         deps.bulkCap.recordDeferral();
+        // The halved rate must not meet a full bucket: empty it, so the lower
+        // rate starts from nothing and no burst follows the deferral. Only
+        // this mx1 branch reaches the cap; the Sweego path never does.
+        throttleFor('bulk').empty();
         deps.log.warn('bulk_deferred', { target: target.id, message: message.id });
       }
       deps.log.warn('submission_failed', {
@@ -247,7 +251,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       return 'stop';
     }
     deps.health.recordSuccess();
-    deps.dedupe.markSubmitted(message.id);
+    // Awaiting its ack: a batch at a low ramp rate can outlast the TTL, and
+    // the id must not be swept before the shim has taken it.
+    deps.dedupe.markSubmitted(message.id, true);
     // "submitted", not "delivered" -- see dedupe.ts's own doc comment (LLD-6
     // M5): this only means the target's SMTP front accepted the message,
     // never that it confirmed delivery to the recipient.
@@ -383,15 +389,17 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
 
       if (acks.length > 0) {
         try {
-          await deps.drainClient.ack(target, acks);
+          const result = await deps.drainClient.ack(target, acks);
+          deps.dedupe.markAcked([...result.acked, ...result.alreadyHandled]);
         } catch (error) {
           deps.log.warn('ack_failed', {
             target: initialTarget.id,
             error: (error as Error).message,
           });
           // The ack is lost, not the submission: dedupe already holds
-          // every id acks contains, so the next re-offer (once the lease
-          // lapses) is recognised and only re-acked, never resubmitted.
+          // every id acks contains, and keeps it past the TTL until an ack
+          // lands, so the next re-offer (once the lease lapses) is
+          // recognised and only re-acked, never resubmitted.
         }
       }
 

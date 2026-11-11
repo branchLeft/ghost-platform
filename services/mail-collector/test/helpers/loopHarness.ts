@@ -42,6 +42,7 @@ export function countingThrottle(): Throttle & { readonly taken: number } {
     waitForToken: async () => {
       taken += 1;
     },
+    empty() {},
     reload() {},
     currentRate: () => 0,
     get taken(): number {
