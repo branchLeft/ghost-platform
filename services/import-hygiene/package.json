@@ -1,0 +1,22 @@
+{
+  "name": "ghost-platform-import-hygiene",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "packageManager": "pnpm@11.28.11",
+  "description": "Import hygiene rules for a member list: consent record, free list check, first-send plan and hard-bounce stop. A library and a CLI; not wired into the member importer.",
+  "type": "module",
+  "bin": {
+    "import-hygiene": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
