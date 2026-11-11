@@ -27,7 +27,12 @@ const store = new DescriptorTargetStore({
   shimPort: config.shimPort,
   maxStalenessMs: config.descriptorMaxStalenessMs,
   log,
+  ...(config.demoMailDomain ? { demoMailDomain: config.demoMailDomain } : {}),
 });
+if (!config.demoMailDomain) {
+  // Only a demo host is affected: its mail is held until the domain is set.
+  log.warn('demo_mail_domain_not_set', {});
+}
 
 const bulkCap = createBulkCap({
   rampPath: config.bulkRampPath,
@@ -165,6 +170,7 @@ const runtime = createCollectorRuntime({
   sweegoDeliveryClient,
   sweegoThrottle,
   sweegoFailures,
+  enforceHeaderFrom: true,
   sweegoQuota: sweegoUsage,
   mx1Pins,
   sweegoPins,

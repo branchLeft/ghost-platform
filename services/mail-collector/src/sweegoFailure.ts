@@ -23,8 +23,15 @@ export type SweegoFailureReason =
   /** A failure at or after DATA, or any failure that could not be placed: the relay may have the message. */
   | 'ambiguous';
 
+/**
+ * Why the collector itself refused or held a message before any target saw it
+ * (the header From check, on either target). See ../README.md#header-from-scope.
+ */
+export type HeaderFromFailureReason =
+  'from-out-of-scope' | 'from-unreadable' | 'from-scope-unknown';
+
 /** A failure that no Sweego client classified (a test double, or a bug): counted, never trusted. */
-export type CountedFailureReason = SweegoFailureReason | 'unclassified';
+export type CountedFailureReason = SweegoFailureReason | HeaderFromFailureReason | 'unclassified';
 
 const KIND_OF_REASON: Readonly<Record<SweegoFailureReason, SubmissionFailureKind>> = {
   unreachable: 'not-accepted',

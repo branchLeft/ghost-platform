@@ -41,6 +41,12 @@ export interface CollectorConfig {
    * not this story.
    */
   drainToken: string;
+  /**
+   * The platform's shared demo mail domain: the one domain a demo host's mail
+   * may be sent from (a demo descriptor carries a local part only). Unset, the
+   * mail of every demo host is held, never sent.
+   */
+  demoMailDomain?: string;
   /** Client-side timeout for one GET /drain call -- must exceed the shim's own holdMs (~30s) or every long-poll would be treated as a failure. */
   drainTimeoutMs: number;
   /** How long to back off after a failed GET/POST to a target before retrying it. */
@@ -302,6 +308,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       DEFAULT_DESCRIPTOR_MAX_STALENESS_MS
     ),
     shimScheme: shimSchemeEnv(env),
+    demoMailDomain: env.COLLECTOR_DEMO_MAIL_DOMAIN || undefined,
     shimPort: positiveIntEnv(env, 'COLLECTOR_SHIM_PORT', DEFAULT_SHIM_PORT),
     // No default: an empty or guessable token defeats the drain endpoint's
     // one credential check, the same reasoning as the shim's own

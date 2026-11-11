@@ -74,7 +74,8 @@ describe('the drain target carries the descriptor mail route', () => {
     expect(files.length).toBeGreaterThan(0);
     for (const file of files) {
       const body = JSON.parse(readFileSync(join(COMMITTED_DESCRIPTORS, file), 'utf8')) as object;
-      expect('mail' in body, file).toBe(false);
+      // They carry a sending identity (the header From check needs one), never a route.
+      expect('route' in ((body as { mail?: object }).mail ?? {}), file).toBe(false);
     }
     const store = storeOver(COMMITTED_DESCRIPTORS);
     await store.refresh();

@@ -6,6 +6,7 @@ import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { DroppedOutcomes } from './droppedOutcomes.js';
 import type { HealthState } from './health.js';
 import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
+import { checkHeaderFrom } from './headerFromScope.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
 import {
@@ -55,8 +56,18 @@ export interface CollectorLoopDeps {
    * Unset, the spool is not told and shows the message as accepted.
    */
   droppedOutcomes?: DroppedOutcomes;
-  /** Counts Sweego failures by reason class for the signals that read them. Counts nothing if unset. */
+  /**
+   * Counts failures by reason class for the signals that read them: Sweego
+   * failures, and the header From refusals on either target. Counts nothing if unset.
+   */
   sweegoFailures?: FailureCounter;
+  /**
+   * Checks each message's header From against its host's sending domain before
+   * any target sees it, on both targets. `server.ts` always sets it; it is
+   * optional only so the test doubles that build deps by hand need not.
+   * See ../README.md#header-from-scope.
+   */
+  enforceHeaderFrom?: boolean;
   /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
   throttle: Throttle;
   /** Optional login lane: its own bucket, so sign-in mail never spends bulk tokens. */
@@ -113,7 +124,10 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   /**
    * Submits one message through the target the resolver names. `submitted`:
    * a target accepted it. `dropped`: Sweego refused the recipient for good, so
-   * the message is acked and counted, never retried. `held`: left unacked for
+   * the message is acked and counted, never retried. `refused`: its header From
+   * is not in its host's scope, so it is acked and counted the same way but
+   * never reported to the spool as a bounce (that would suppress an innocent
+   * recipient). `held`: left unacked for
    * the shim to re-offer, and the rest of the batch carries on (Sweego said
    * no, mx1 was not tried). `stop`: mx1 failed, so the rest of the batch is
    * left too, as it always was. Sweego mail spends Sweego's own throttle,
@@ -123,7 +137,25 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   async function submit(
     message: WireMessage,
     target: DrainTarget
-  ): Promise<'submitted' | 'dropped' | 'held' | 'stop'> {
+  ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop'> {
+    if (deps.enforceHeaderFrom) {
+      const verdict = checkHeaderFrom(message, target.sendingDomain);
+      if (!verdict.ok) {
+        deps.sweegoFailures?.record(verdict.reason);
+        // The line names a reason and a message id only: no host, address,
+        // subject or domain.
+        deps.log.warn('header_from_refused', { message: message.id, reason: verdict.reason });
+        if (verdict.reason === 'from-scope-unknown') {
+          // Nothing is wrong with the message: its host has no sending domain
+          // to check against yet. Left unacked, the spool re-offers it.
+          return 'held';
+        }
+        // Permanent, and the same ending as a dropped recipient: marked so a
+        // lost ack is only re-acked on the next offer, never sent or retried.
+        deps.dedupe.markSubmitted(message.id, true);
+        return 'refused';
+      }
+    }
     const lane = laneOf(message);
     const sweego = deps.sweegoDeliveryClient;
     const sweegoThrottle = deps.sweegoThrottle;
