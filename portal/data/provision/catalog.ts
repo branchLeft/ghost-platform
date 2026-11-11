@@ -9,7 +9,9 @@ import {
   ROW_SECURITY,
   SETTINGS,
   TABLE_SHAPES,
+  grantsAt,
   manifest,
+  rowSecurityEnabled,
   type ManifestObject,
   type Names,
   type Principal,
@@ -387,7 +389,7 @@ async function manifestAcls(
     const grants =
       checkpoint.databaseState === 'created-empty' && object.since === INIT
         ? createdEmptyGrants(object, checkpoint.major)
-        : object.grants;
+        : grantsAt(object, checkpoint.applied);
     out.push({
       mechanism: ACL_MECHANISM[object.kind]!,
       actual,
@@ -708,17 +710,19 @@ async function mentions(
   for (const object of expectedObjects(checkpoint)) {
     if (!inDatabase && object.kind !== 'database') continue;
     const grants =
-      checkpoint.databaseState === 'created-empty' && object.since === INIT ? [] : object.grants;
+      checkpoint.databaseState === 'created-empty' && object.since === INIT
+        ? []
+        : grantsAt(object, checkpoint.applied);
     for (const grant of grants) {
       if (grant.grantee === 'PUBLIC' || !checkpoint.present.has(grant.grantee)) continue;
       expected.push(`a ${object.kind} ${object.identity} -> ${checkpoint.names[grant.grantee]}`);
     }
   }
-  if (inDatabase && checkpoint.present.has('tenantRole')) {
+  if (inDatabase) {
     for (const policy of POLICIES) {
-      if (checkpoint.applied.includes(policy.since)) {
+      if (checkpoint.applied.includes(policy.since) && checkpoint.present.has(policy.role)) {
         expected.push(
-          `r policy ${policy.name} on ${policy.table} -> ${checkpoint.names.tenantRole}`
+          `r policy ${policy.name} on ${policy.table} -> ${checkpoint.names[policy.role]}`
         );
       }
     }
@@ -837,7 +841,8 @@ async function rowSecurity(client: ClientBase, checkpoint: Checkpoint): Promise<
     .filter((t) => present.has(t))
     .map((t) => {
       const want = ROW_SECURITY[t]!;
-      return `row security on ${t}: enabled=${String(want.enabled)} forced=${String(want.forced)}`;
+      const enabled = rowSecurityEnabled(want, checkpoint.applied);
+      return `row security on ${t}: enabled=${String(enabled)} forced=${String(want.forced)}`;
     });
   return { mechanism: 'M08', actual: found.map((r) => r.text), expected };
 }

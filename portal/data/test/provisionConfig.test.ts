@@ -12,8 +12,20 @@ import {
   sqlState,
   type ProvisionConfig,
 } from '../provision/provisionPortal.js';
-import { createPrincipal, grantStatements, ident, rotatePassword } from '../provision/provision.js';
-import { manifest, principalNames } from '../provision/manifest.js';
+import {
+  addedGrantStatements,
+  createPrincipal,
+  grantStatements,
+  ident,
+  rotatePassword,
+} from '../provision/provision.js';
+import {
+  ROW_SECURITY,
+  grantsAt,
+  manifest,
+  principalNames,
+  rowSecurityEnabled,
+} from '../provision/manifest.js';
 import { scramVerifier } from '../provision/scram.js';
 
 // The command's inputs, its redaction and its connections, without a server.
@@ -459,6 +471,51 @@ describe('the statements the command writes', () => {
       'REVOKE ALL ON FUNCTION public.bound_tenant() FROM PUBLIC',
       'GRANT EXECUTE ON FUNCTION public.bound_tenant() TO "portal_tenant"',
     ]);
+  });
+
+  it('gives the bound-address function to the front door role alone', () => {
+    const fn = manifest(14, 'portal').find((o) => o.identity === 'public.bound_address()')!;
+    expect(grantStatements(fn, names, 14)).toEqual([
+      'REVOKE ALL ON FUNCTION public.bound_address() FROM PUBLIC',
+      'GRANT EXECUTE ON FUNCTION public.bound_address() TO "portal_prospect"',
+    ]);
+  });
+
+  it("grants what a later migration added only for that migration, and never at the object's own", () => {
+    const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
+    const status = '0011_demo_request_status_read';
+    expect(addedGrantStatements(table, status, names)).toEqual([
+      'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"',
+    ]);
+    expect(addedGrantStatements(table, '0010_demo_request', names)).toEqual([]);
+    expect(grantStatements(table, names, 14)).not.toContain(
+      'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"'
+    );
+    const plain = manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!;
+    expect(addedGrantStatements(plain, status, names)).toEqual([]);
+    // PUBLIC is never granted by name.
+    const withPublic = {
+      ...table,
+      added: [{ since: status, grants: [{ grantee: 'PUBLIC' as const, privileges: ['SELECT'] }] }],
+    };
+    expect(addedGrantStatements(withPublic, status, names)).toEqual([]);
+  });
+
+  it('expects an added grant and row security only once the migration that makes them is applied', () => {
+    const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
+    const status = '0011_demo_request_status_read';
+    const held = grantsAt(table, ['0010_demo_request']);
+    const done = grantsAt(table, ['0010_demo_request', status]);
+    expect(held.find((g) => g.grantee === 'prospectRole')!.privileges).toEqual(['INSERT']);
+    expect(done.filter((g) => g.grantee === 'prospectRole').flatMap((g) => g.privileges)).toEqual([
+      'INSERT',
+      'SELECT',
+    ]);
+    const want = ROW_SECURITY['portal.demo_request']!;
+    expect(rowSecurityEnabled(want, ['0010_demo_request'])).toBe(false);
+    expect(rowSecurityEnabled(want, ['0010_demo_request', status])).toBe(true);
+    expect(rowSecurityEnabled({ enabled: false, forced: false }, [status])).toBe(false);
+    expect(rowSecurityEnabled({ enabled: true, forced: false }, [])).toBe(true);
   });
 
   it('grants DELETE only on the two custom-domain tables and no UPDATE on the register', () => {

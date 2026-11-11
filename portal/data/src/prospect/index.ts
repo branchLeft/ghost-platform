@@ -1,12 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
-import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
 import {
   DemoRequestExistsError,
   DemoRequestIdTakenError,
+  deriveOwnRequestView,
   parseDemoRequest,
+  parseVerifiedAddress,
   type DemoRequestInput,
+  type OwnRequestView,
 } from '../demoRequest.js';
 import { demoRequest } from '../schema.js';
 
@@ -15,15 +18,17 @@ export {
   DemoRequestIdTakenError,
   InvalidDemoRequestError,
   type DemoRequestInput,
+  type OwnRequestView,
 } from '../demoRequest.js';
 
 /**
- * The front door's only write path: a separate entry point on purpose, used by
- * the internet-facing prospect application alone. The pool it takes is
- * connected as a login that is a member of `portal_prospect` alone, a role
- * that can insert a request and can neither read, update nor delete anything
- * (see the README). It holds no tenant, no register and no signing key. The
- * time of a request is the database's clock and is never taken from a caller.
+ * The front door's path: a separate entry point on purpose, used by the
+ * internet-facing prospect application alone. The pool it takes is connected
+ * as a login that is a member of `portal_prospect` alone, a role that can
+ * insert a request, can read the one row whose address the transaction has
+ * bound, and can neither update nor delete anything (see the README). It holds
+ * no tenant, no register and no signing key. The time of a request is the
+ * database's clock and is never taken from a caller.
  */
 export class ProspectDb {
   private readonly db: PortalDb;
@@ -68,6 +73,29 @@ export class ProspectDb {
         throw error;
       }
       return { demoId };
+    });
+  }
+
+  /**
+   * The request recorded for the signed-in address, or undefined when there is
+   * none. The address is bound to the transaction and the table's row policy
+   * does the filtering: no `WHERE` here chooses the row, so a statement that
+   * forgot one still sees this address's row and no other.
+   *
+   * @throws InvalidDemoRequestError when the address is not one the table could hold
+   */
+  async ownRequest(verifiedAddress: string): Promise<OwnRequestView | undefined> {
+    const address = parseVerifiedAddress(verifiedAddress);
+    return this.run(async (tx) => {
+      await bind(tx, 'portal.prospect_address', address);
+      const [found] = await tx
+        .select({
+          demoId: demoRequest.demoId,
+          publicationName: demoRequest.publicationName,
+          submittedAt: demoRequest.submittedAt,
+        })
+        .from(demoRequest);
+      return found === undefined ? undefined : deriveOwnRequestView(found);
     });
   }
 }

@@ -20,7 +20,7 @@ import {
 } from './catalog.js';
 import { SUPPORTED_MAJORS } from './catalogSnapshot.js';
 import { hbaProblems, probeOtherDatabases } from './hba.js';
-import { manifest, principalNames, type Names, type Principal } from './manifest.js';
+import { STATUS_READ, manifest, principalNames, type Names, type Principal } from './manifest.js';
 import {
   appliedMigrations,
   readMigrations,
@@ -28,6 +28,7 @@ import {
   type Migration,
 } from './migrations.js';
 import {
+  addedGrantStatements,
   createPrincipal,
   grantMemberships,
   grantStatements,
@@ -389,10 +390,13 @@ async function expectOutcome(
  * rests on: the tenant login can reach the tenant role and not the owner
  * role, the owner login the reverse, the provisioner login reaches its role
  * alone and can read but neither update nor delete what it writes, the prospect
- * login reaches its role alone and can insert a request and do nothing else, and a
+ * login reaches its role alone and can insert a request and read its own and
+ * nothing else, and a
  * tenant-role read with no tenant bound fails instead of returning rows. A behavioural smoke test after the
  * check has passed, not the control. `tables` names the portal tables the
- * applied migrations have made; by default, all of them.
+ * applied migrations have made; by default, all of them. `readsOwnRow` is
+ * whether the migration that lets the front door read its own request is in:
+ * without it the front door's read is refused, as it was.
  */
 export async function verifyBoundary(
   config: ProvisionConfig,
@@ -400,7 +404,8 @@ export async function verifyBoundary(
     ...Object.keys(PORTAL_TABLES),
     ...Object.keys(PROVISIONER_TABLES),
     ...Object.keys(PROSPECT_TABLES),
-  ]
+  ],
+  readsOwnRow = true
 ): Promise<void> {
   const present = tables
     .filter((name) => name in PORTAL_TABLES)
@@ -535,10 +540,24 @@ export async function verifyBoundary(
           },
           true
         );
-        await expectOutcome(pool, `prospect reads ${name}`, PERMISSION_DENIED, async (tx) => {
-          await asProspect(tx);
-          await probe.read(tx);
-        });
+        if (readsOwnRow) {
+          // Rolled back: the probe row goes with it.
+          await expectOutcome(
+            pool,
+            `prospect reads only its own row of ${name}`,
+            'ok',
+            async (tx) => {
+              await asProspect(tx);
+              await probe.readOwnRowOnly(tx);
+            },
+            true
+          );
+        } else {
+          await expectOutcome(pool, `prospect reads ${name}`, PERMISSION_DENIED, async (tx) => {
+            await asProspect(tx);
+            await probe.readBeforeStatus(tx);
+          });
+        }
         await expectOutcome(pool, `prospect updates ${name}`, PERMISSION_DENIED, async (tx) => {
           await asProspect(tx);
           await probe.update(tx);
@@ -637,30 +656,54 @@ const PROVISIONER_TABLES: Record<string, ProvisionerProbe> = {
 
 interface ProspectProbe {
   insert: (tx: Tx) => Promise<unknown>;
-  read: (tx: Tx) => Promise<unknown>;
+  /** Inserts a row, then reads: nothing bound sees nothing, another address sees nothing, its own sees it. */
+  readOwnRowOnly: (tx: Tx) => Promise<unknown>;
+  /** The read before the status migration: refused for want of a privilege. */
+  readBeforeStatus: (tx: Tx) => Promise<unknown>;
   update: (tx: Tx) => Promise<unknown>;
   remove: (tx: Tx) => Promise<unknown>;
 }
 
+const PROBE_ADDRESS = 'probe@probe.invalid';
+const PROBE_REQUEST = {
+  demoId: PROBE_TENANT,
+  verifiedSubject: 'probe',
+  verifiedAddress: PROBE_ADDRESS,
+  publicationName: 'probe',
+  newToGhost: true,
+  outletType: 'probe',
+  consentWording: 'probe',
+  explainerWording: 'probe',
+};
+
+/** How many requests the front door sees with `address` bound, or with nothing bound when null. */
+async function requestsSeen(tx: Tx, address: string | null): Promise<number> {
+  if (address !== null) await bind(tx, 'portal.prospect_address', address);
+  return (await tx.select({ demoId: demoRequest.demoId }).from(demoRequest)).length;
+}
+
 /**
  * The tables the front door writes. The insert is a valid request, rolled back
- * by the smoke test; the read, update and delete must each be refused for want
- * of a privilege, before any row is looked at.
+ * by the smoke test; the read must show the request to its own address and to
+ * no other, and the update and delete must each be refused for want of a
+ * privilege, before any row is looked at.
  */
 const PROSPECT_TABLES: Record<string, ProspectProbe> = {
   'portal.demo_request': {
-    insert: (tx) =>
-      tx.insert(demoRequest).values({
-        demoId: PROBE_TENANT,
-        verifiedSubject: 'probe',
-        verifiedAddress: 'probe@probe.invalid',
-        publicationName: 'probe',
-        newToGhost: true,
-        outletType: 'probe',
-        consentWording: 'probe',
-        explainerWording: 'probe',
-      }),
-    read: (tx) => tx.select({ demoId: demoRequest.demoId }).from(demoRequest),
+    insert: (tx) => tx.insert(demoRequest).values(PROBE_REQUEST),
+    readOwnRowOnly: async (tx) => {
+      await tx.insert(demoRequest).values(PROBE_REQUEST);
+      const seen = [
+        ['nothing bound', await requestsSeen(tx, null), 0],
+        ['another address bound', await requestsSeen(tx, 'other@probe.invalid'), 0],
+        ['its own address bound', await requestsSeen(tx, PROBE_ADDRESS), 1],
+      ] as const;
+      for (const [when, got, want] of seen) {
+        if (got !== want)
+          throw new Error(`the front door saw ${got} requests, want ${want}, with ${when}`);
+      }
+    },
+    readBeforeStatus: (tx) => tx.select({ demoId: demoRequest.demoId }).from(demoRequest),
     update: (tx) =>
       tx
         .update(demoRequest)
@@ -952,6 +995,11 @@ async function applyInPortal(
                 await client.query(statement);
               }
             }
+            for (const object of objects) {
+              for (const statement of addedGrantStatements(object, migration.tag, names)) {
+                await client.query(statement);
+              }
+            }
             log(`applied migration ${migration.tag}`);
           });
           const final: State = {
@@ -1125,7 +1173,8 @@ export async function provisionPortal(
       ...Object.keys(PROSPECT_TABLES),
     ].filter((name) =>
       manifest(14, config.database).some((o) => o.identity === name && tags.includes(o.since))
-    )
+    ),
+    tags.includes(STATUS_READ)
   );
   log('boundary verified');
 }

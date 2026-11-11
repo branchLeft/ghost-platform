@@ -188,6 +188,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0008_tenant_name',
       'applied migration 0009_custom_domain',
       'applied migration 0010_demo_request',
+      'applied migration 0011_demo_request_status_read',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -284,7 +285,7 @@ describe('--migrate-only on a real server', () => {
     expect(rows!.rows[0].n).toBe(0);
   });
 
-  it('adds the demo request table to a server that has the lifecycle, with the front door insert-only', async () => {
+  it('adds the demo request table to a server that has the lifecycle, with the front door insert-only, then its status read', async () => {
     const all = readMigrations();
     const index = all.findIndex((m) => m.tag === '0010_demo_request');
     expect(index).toBeGreaterThan(0);
@@ -293,24 +294,44 @@ describe('--migrate-only on a real server', () => {
     expect(before.code).toBe(0);
     const table = "SELECT to_regclass('portal.demo_request') AS t";
     expect((await admin(PROV_DB, table))[0]!.rows[0].t).toBeNull();
+    // Held at the request table: insert only for the front door, row security
+    // off, and no bound-address function yet. The server verifies as it is.
+    const held = await run({ migrations: all.slice(0, index + 1) });
+    expect(held.err).toEqual([]);
+    expect(held.code).toBe(0);
+    const state = `SELECT has_table_privilege('portal_prospect', 'portal.demo_request', 'INSERT') AS i,
+              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
+              has_table_privilege('portal_provisioner', 'portal.demo_request', 'SELECT') AS p,
+              (SELECT relrowsecurity FROM pg_class WHERE oid = 'portal.demo_request'::regclass) AS rls,
+              to_regprocedure('public.bound_address()') IS NOT NULL AS fn,
+              (SELECT count(*)::int FROM pg_policy WHERE polrelid = 'portal.demo_request'::regclass) AS policies`;
+    expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
+      i: true,
+      s: false,
+      p: true,
+      rls: false,
+      fn: false,
+      policies: 0,
+    });
     const result = await migrate();
     expect(result.err).toEqual([]);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('applied migration 0010_demo_request');
+    expect(result.out).toContain('applied migration 0011_demo_request_status_read');
     expect((await admin(PROV_DB, table))[0]!.rows[0].t).toBe('portal.demo_request');
-    const [grants] = await admin(
-      PROV_DB,
-      `SELECT has_table_privilege('portal_prospect', 'portal.demo_request', 'INSERT') AS i,
-              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
-              has_table_privilege('portal_provisioner', 'portal.demo_request', 'SELECT') AS p`
-    );
-    expect(grants!.rows[0]).toEqual({ i: true, s: false, p: true });
+    expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
+      i: true,
+      s: true,
+      p: true,
+      rls: true,
+      fn: true,
+      policies: 3,
+    });
     // Widening the front door's grant is a difference the post-check names.
-    await admin(PROV_DB, 'GRANT SELECT ON portal.demo_request TO portal_prospect');
+    await admin(PROV_DB, 'GRANT UPDATE ON portal.demo_request TO portal_prospect');
     const widened = await migrate();
     expect(widened.code).toBe(1);
     expect(widened.err.join('\n')).toMatch(
-      /extra M06: SELECT on table portal\.demo_request to portal_prospect/
+      /extra M06: UPDATE on table portal\.demo_request to portal_prospect/
     );
   });
 
