@@ -52,8 +52,10 @@ export function problems(source) {
   const grantsWrite = /:\s*write(-all)?\s*$|^\s*permissions:\s*write-all/m;
   if (grantsWrite.test(top)) found.push('top-level permissions grant a write scope');
   for (const [name, job] of Object.entries(parseJobs(source))) {
-    if (name !== 'push' && grantsWrite.test(job.text)) {
-      found.push(`job ${name} holds a write permission; only push may`);
+    // The attest job holds the signing and registry-bundle grants, and runs
+    // only after the push and the scan jobs have succeeded.
+    if (!['push', 'attest'].includes(name) && grantsWrite.test(job.text)) {
+      found.push(`job ${name} holds a write permission; only push and attest may`);
     }
   }
   if (!/packages:\s*write/.test(push.text)) found.push('push job lacks packages: write');
