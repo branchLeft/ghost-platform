@@ -166,9 +166,10 @@ export function checkHeaderFrom(
     return { ok: false, reason: 'from-scope-unknown' };
   }
   for (const name of Object.keys(message.headers ?? {})) {
-    // Trimmed and case-folded: nodemailer trims and capitalises a key before it
-    // sends it, so a padded or line-broken spelling reaches the wire as the name.
-    if (COMPETING_IDENTITY_HEADERS.has(name.trim().toLowerCase())) {
+    // Stripped and case-folded the way nodemailer's _normalizeHeaderKey folds a key:
+    // it removes whitespace, C0 controls, DEL and colons anywhere in the key, then
+    // lower-cases it. Any spelling that reaches the wire as a competing name is refused.
+    if (COMPETING_IDENTITY_HEADERS.has(name.replace(/[\s\x00-\x20\x7f:]/g, '').toLowerCase())) {
       return { ok: false, reason: 'from-unreadable' };
     }
   }
