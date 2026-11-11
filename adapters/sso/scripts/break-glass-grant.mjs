@@ -12,6 +12,7 @@ import { createEngine, DOCKER_TIMEOUT_MS } from './docker-engine.mjs';
 import {
   ActiveExistingRowError,
   provisionSupportAccountViaEngine,
+  SUSPENDED_STATUS,
 } from './provision-support-account.mjs';
 
 export { DOCKER_TIMEOUT_MS };
@@ -66,11 +67,12 @@ export function parseGrantArgs(argv) {
   const allowed = {
     grant: { needs: ['lane', 'tenant', 'reason', 'reference'], may: ['identity'] },
     revoke: { needs: ['tenant', 'reason'], may: [] },
+    provision: { needs: ['tenant'], may: ['identity'] },
     expire: { needs: [], may: [] },
     status: { needs: [], may: [] },
   }[command];
   if (!allowed) {
-    throw new GrantRefusedError('the command must be grant, revoke, expire or status');
+    throw new GrantRefusedError('the command must be grant, revoke, provision, expire or status');
   }
   const extra = Object.keys(flags).filter(
     (name) => !allowed.needs.includes(name) && !allowed.may.includes(name)
@@ -225,6 +227,8 @@ export function defaultDeps({ env = process.env, ...engineOptions } = {}) {
     findContainer: (tenant) => findTenantContainer(tenant, engine),
     run: (request) => runInContainer(request, engine),
     recreate: ({ container, identity }) => recreateIfDeleted({ container, identity }, engine),
+    provision: ({ container, identity }) =>
+      provisionSupportAccountViaEngine({ container, email: identity }, engine),
     betweenPurges: async () => {},
   };
 }
@@ -571,6 +575,44 @@ async function refuseIfRevokedWhileActivating(deps, tenant, container, written) 
 }
 
 /**
+ * Creates the tenant's support account, suspended, in the tenant's own
+ * database: the account named by the tenant's own config, nothing typed. It
+ * opens no grant and starts no clock. An existing suspended account is left
+ * as it is, and one that is not suspended is refused rather than reported as
+ * provisioned. See break-glass-grant.md#provision.
+ */
+export async function provision({ tenant, identity }, deps = defaultDeps()) {
+  const container = await deps.findContainer(tenant);
+  const configured = (await deps.run({ container, action: 'identity', expect: identity })).identity;
+  let result;
+  try {
+    result = await deps.provision({ container, identity: configured });
+  } catch (error) {
+    if (error instanceof ActiveExistingRowError) {
+      throw new GrantRefusedError(
+        `the support account for ${tenant} exists and is not suspended, so it was left as it is; ` +
+          'close any open grant with revoke'
+      );
+    }
+    throw error;
+  }
+  if (result.status !== SUSPENDED_STATUS) {
+    throw new Error(
+      `the support account for ${tenant} is not suspended after provisioning (status ${result.status})`
+    );
+  }
+  const done = {
+    tenant,
+    identity: configured,
+    created: result.created === true,
+    repaired: result.repaired === true,
+    status: result.status,
+  };
+  record(deps, { event: 'provisioned', ...done, at: iso(deps.now()) });
+  return done;
+}
+
+/**
  * Closes the tenant's configured support account: suspend and purge, wait,
  * suspend and purge again, then the closing record. Needs no state file, and
  * runs whatever the account's status: a session made while active survives a
@@ -666,6 +708,7 @@ export async function main(argv, deps = defaultDeps(), stdout = process.stdout) 
   let result;
   if (args.command === 'grant') result = await grant(args, deps);
   else if (args.command === 'revoke') result = await revoke(args, deps);
+  else if (args.command === 'provision') result = await provision(args, deps);
   else if (args.command === 'status') result = status(deps);
   else result = await expire(deps);
   stdout.write(`${JSON.stringify(result)}\n`);

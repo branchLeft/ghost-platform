@@ -18,6 +18,7 @@ stop on the owner's behalf. The host steps are in `ghost-platform-docs`,
 branchleft-break-glass grant --lane consented|incident --tenant <slug> \
   --reason <one line> --reference <one line> [--identity <support email>]
 branchleft-break-glass revoke --tenant <slug> --reason <one line>
+branchleft-break-glass provision --tenant <slug> [--identity <support email>]
 branchleft-break-glass status
 ```
 
@@ -48,6 +49,25 @@ configured value, `grant` refuses before it writes anything, so a mistyped or
 wrong email can never activate or suspend a tenant's own staff, the Owner or
 any other account. A tenant with no configured `supportIdentity` is refused
 outright. `revoke` and `expire` take no identity at all.
+
+## provision
+
+Creates the tenant's support account when the tenant is created. The host has
+no Node, so this is the route to `provision-support-account.mjs` there: the same
+container step, through the Docker Engine socket, for the account named in the
+tenant's own config. Run it once the tenant's first deploy is serving, because
+the account is written into Ghost's own tables.
+
+- The account is always created suspended (`inactive`), as an Administrator,
+  with a password hash nobody knows. There is no flag for any other status.
+- Run again, it changes nothing when the account is there and suspended, and
+  repairs the one partial shape an interrupted create leaves.
+- An account that exists and is not suspended is refused, and left exactly as
+  it is: it may be a live grant, or the tenant's own un-suspend. It is never
+  reported as provisioned. A result that is not `inactive` is an error too.
+- It opens no grant: no clock, no state file, and it does not need the expire
+  timer. It appends one `provisioned` line to the records.
+- `--identity` is the same optional cross-check as for `grant`.
 
 ## The lanes
 

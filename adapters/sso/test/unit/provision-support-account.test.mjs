@@ -197,6 +197,9 @@ describe('provisionSupportAccountViaEngine', () => {
       'PROVISION_SUPPORT_NOW',
     ]);
     expect(request.cmd.slice(0, 2)).toEqual(['node', '-e']);
+    const writtenStatuses = [...request.cmd[2].matchAll(/\bstatus:\s*'([^']*)'/g)].map((m) => m[1]);
+    expect(writtenStatuses.length).toBeGreaterThan(0);
+    expect(new Set(writtenStatuses)).toEqual(new Set([SUSPENDED_STATUS]));
     expect(request.cmd[2]).not.toContain('x@example.com');
   });
 
