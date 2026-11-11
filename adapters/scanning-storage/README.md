@@ -125,31 +125,16 @@ Every file in the tree is checked, not only those named like images: the
 served directory returns almost any extension, so the name proves nothing.
 `saveRaw()` on the theme storage is declined outright; no Ghost code calls it.
 
-**A refused re-upload leaves the installed theme alone, and that is the
-shim's doing, not Ghost's.** Ghost's `setFromZip` moves an existing theme
-aside to a backup directory *before* it calls `save()`, and its own restore
-after a failed save is not awaited, so the `finally` that removes the backup
-races it, so any failed save can leave the theme it was replacing with files
-missing (a gate that refused inside `save()` did exactly that, intermittently,
-in a replay against a real Ghost). Nothing hands the
-shim the extracted tree before that move, so the shim holds the move itself:
-`rename(<name>, <name>_<24 hex>)` is recorded, not performed, and `save()`
-performs it only after the tree has been screened clean. A refusal moves
-nothing, so there is nothing to restore. Any other rename, Ghost's restore
-among them, passes straight through.
-
-**A copy that fails after a clean screen puts the replaced theme back.**
-Ghost's restore only renames when the theme name is absent, so a copy that
-stopped part way (the name is present, half written) is never restored at all,
-and the backup is then removed. The shim puts the theme back itself: when it
-moved an installed theme aside and the copy it performed then fails, it
-removes the partial directory and moves the backup back, awaited, before the
-error leaves `save()`, so what Ghost does next finds the installed theme in
-place. If that put-back fails too, the installed theme is in the kept backup
-`<name>_<24 hex>`, not in place: the live name holds a partial theme or none,
-the backup must be renamed back by hand, and the delete Ghost makes for it is
-declined and logged. A failure after the copy succeeded (loading or
-activating the theme) is Ghost's own behaviour, unchanged.
+**A refused re-upload leaves the installed theme alone, and that is Ghost's
+flow, which the gate relies on.** Ghost's `setFromZip` copies the extracted
+tree in under a staging name with `save()` first; only after that succeeds does
+it move the installed theme aside to a backup directory and move the staging
+copy into place, awaiting its own restore if a step fails. The gate screens
+inside that first `save()`, so a refusal happens before anything has moved and
+there is nothing to restore. Any other `rename` or `delete` passes straight
+through. (Older Ghost moved the installed theme aside before calling `save()`,
+and the gate held that move; re-read `setFromZip` before trusting this on a
+Ghost upgrade, see the overlay README.)
 
 This holds for one upload of a theme name at a time. Ghost does not serialise
 uploads of one name, so two overlapping uploads of the same name can still
@@ -516,10 +501,10 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 ```sh
 pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.55.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.76.0 in Docker
 ```
 
-The image test (`test/image/`) drives a real Ghost 6.55.0 container through
+The image test (`test/image/`) drives a real Ghost 6.76.0 container through
 the real adapter manager: a refused upload (415, typed error, quarantined by
 digest, nothing in the served tree), a clean upload, post creation, the
 public site, the admin API and an on-demand resize -- all still working
