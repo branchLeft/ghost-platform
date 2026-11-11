@@ -336,5 +336,97 @@ from anything a person or another service can write to.
 - **A half-written last line** (a crash inside the append) makes the log
   refuse every later append until a person looks at it. That is deliberate:
   gluing onto it would hide the break.
-- **Not here.** Reading the key from disk, the role that makes it, and wiring
-  `append` into `runRelease`.
+- **Not here.** The role that makes the key. Reading it, keeping the head
+  and the call from `runRelease` are in the next three sections.
+
+## signingKeyFile.ts
+
+Reads the record-signing keys from files. The private key is a PKCS8 PEM
+Ed25519 key; the committed public half is an SPKI PEM Ed25519 key.
+
+**The permission model for the private key file.** It must be a regular
+file, reached without following a symlink, owned by the uid the controller
+runs as (the `ring-controller` account), with no group or other permission
+bit set: `0400`, or `0600`. The loader opens the file with `O_NOFOLLOW`, then
+checks type, owner, mode and size on the opened descriptor, and only then
+reads and parses it. Any other file is refused before it is read.
+
+- **Why not a root-only `0400` file.** The account cannot open it, so the
+  controller could never sign; the loader reports `not-permitted`.
+- **Why not root-owned `0440` with the service group.** It gives the key to
+  every member of that group, and needs a group the role must create and keep
+  right. The controller holds the key in memory to sign with it, so a
+  root-owned file buys no isolation from the controller itself.
+- **What the model protects.** Other local accounts, and a bug elsewhere on
+  the host that reads files it should not. A planted file is refused for its
+  owner, so the directory's own mode is a second line, not the first.
+- **What it does not protect.** A compromise of the controller account or of
+  root. The signature proves the record was made by something that held the
+  key, not by a step isolated from the controller. The independent anchor is
+  the copy kept off the host, which is not built here.
+- **Two ways to meet it, both accepted unchanged.** The role writes the file
+  owned by the account at `0400`, in a directory only that account can write;
+  or the unit loads a root-only source file through a systemd credential and
+  points the variable at the delivered copy, which the loader then checks like
+  any other file. The role decides, after reading the owner and mode systemd
+  gives that copy on the host.
+
+Every refusal is a `KeyFileError` with a code and the path. Its message never
+carries file content, and the loader writes to no log. `loadPublicKeyFile`
+refuses a file holding a private key: Node would derive the public half from
+it, and the signer-key check would then compare a key with itself.
+
+## promotionRecorder.ts
+
+The recorder is the log plus the recorded head. `record` does, in order: read
+the log and verify it from its first byte, compare it with the head file,
+append one signed entry, read the log back, write the new head atomically
+(`atomicFile.ts`: temp file, fsync, rename, fsync the directory). One record at
+a time.
+
+- **What the head is for.** Removing the last entries of the log leaves a
+  shorter chain that still verifies. The head file keeps the last sequence
+  number and hash, so a shorter or rewritten log is refused rather than
+  continued. This guards the log against loss and rollback by itself. Someone
+  who can write both files can rewrite both; the independent anchor is the copy
+  kept off the host, which is not built here.
+- **Agreement rule.** The log must verify, the entry at the recorded sequence
+  number must still hash to the recorded hash, and the log may be at most one
+  entry longer than the head. One longer is a crash between the append and the
+  head write, and is healed by writing the head. A missing head is accepted
+  only beside a log of at most one entry, for the same reason. Anything else
+  is refused (`log-behind-head`, `log-ahead-of-head`, `head-missing`,
+  `head-malformed`) and nothing is appended.
+- **Head write failure.** The append has happened, the call throws
+  `head-write-failed`, and no further entry is appended until the head can be
+  written.
+- **Configuration.** `createPromotionRecorderFromEnv(env, now)` reads four
+  absolute paths, none with a default, and refuses to start if one is unset or
+  relative:
+
+  | Variable                                | Holds                                                    |
+  | --------------------------------------- | -------------------------------------------------------- |
+  | `RING_CONTROLLER_PROMOTION_LOG_FILE`    | The promotion log. Owned by the account, mode `0600`.    |
+  | `RING_CONTROLLER_PROMOTION_HEAD_FILE`   | The recorded head, beside the log. Mode `0600`.          |
+  | `RING_CONTROLLER_RECORD_SIGNING_KEY_FILE` | The private key, as above.                             |
+  | `RING_CONTROLLER_RECORD_PUBLIC_KEY_FILE`  | The committed public half, SPKI PEM.                   |
+
+  `env` is passed in; nothing here reads the process environment.
+
+## ringController.ts: recording
+
+`runRelease` calls `recordPromotion` once per member after the ring has
+baked clean and before that member's old colour is stopped. The record names
+the promotion (the release digest), the slot (the member's tenant id) and the
+digest. Stopping the old colour is the last step that can be undone by a flag
+change, so the record is durable first.
+
+A record that cannot be written holds the release as `promotion-record-failed`
+at that ring, naming the tenant. The member stays in `done` with its old
+colour running, nothing later is touched, and no member is reverted: failing to
+write is not evidence that the tenant regressed, the same as a failed probe.
+Members already recorded and closed stay so. A recorder that is not wired holds
+the same way. A tenant id the log refuses (outside `A-Z a-z 0-9 . _ : -`, 128
+characters) or a digest it refuses holds the release too, before anything is
+stopped. A second run of the same digest is refused by the log's one entry per
+slot per promotion.
