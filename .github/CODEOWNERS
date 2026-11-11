@@ -105,6 +105,10 @@
 # Gate set: the six image gates that judge a candidate's digest.
 /gate-set/                                       @branchLeft/branchleft-admin
 
+# Promotion attestation: the workflow that signs a candidate digest's verdict, and the scripts it runs.
+/promote/                                        @branchLeft/branchleft-admin
+/.github/workflows/promote-candidate.yml         @branchLeft/branchleft-admin
+
 # Upgrade gates: release classifier's fail-closed allowlist, ring controller's backup-then-apply.
 /services/release-classifier/src/                @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
