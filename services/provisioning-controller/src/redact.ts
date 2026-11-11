@@ -1,17 +1,42 @@
 /** What a removed value is replaced with. */
 export const REDACTED = '[redacted]';
 
-const SECRET_FIELD =
-  '[\\w.-]*(?:secret|token|passw(?:or)?d|pwd|api[_-]?key|credential|authorization|private[_-]?key|access[_-]?key)[\\w.-]*';
+const SECRET_WORD =
+  '(?:secret|token|passw(?:or)?d|passphrase|pwd|api[_-]?key|credential|authorization|private[_-]?key|access[_-]?key)';
+const SECRET_FIELD = `[\\w.-]*${SECRET_WORD}[\\w.-]*`;
+const VALUE = '"[^"]*"|\'[^\']*\'|[^\\s,;]+';
+/** Auth schemes that stand before the credential in an Authorization header. */
+const AUTH_SCHEME = '(?:bearer|basic|token|digest|negotiate|apikey|bot)';
 
 /** Each rule keeps what the reader needs (a field name, a scheme) and drops the value. */
 const RULES: readonly (readonly [RegExp, string])[] = [
   [/-----BEGIN [A-Z ]*-----[\s\S]*?(?:-----END [A-Z ]*-----|$)/g, REDACTED],
   [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]*@/gi, `$1${REDACTED}@`],
-  [/\b(bearer|basic)\s+[\w.~+/=-]{8,}/gi, `$1 ${REDACTED}`],
+  // An Authorization header or JSON key: keep the scheme word, drop the credential after it.
   [
-    new RegExp(`\\b(${SECRET_FIELD})(\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s,;]+)`, 'gi'),
+    new RegExp(
+      `\\b(authorization["']?\\s*[=:]\\s*["']?)(${AUTH_SCHEME}[ \\t]+)?[^\\s,;"'}]+`,
+      'gi'
+    ),
     `$1$2${REDACTED}`,
+  ],
+  [/\b(bearer|basic)\s+[\w.~+/=-]{8,}/gi, `$1 ${REDACTED}`],
+  // A command-line flag whose value is the next word: --password hunter2.
+  [new RegExp(`(--[\\w-]*${SECRET_WORD}[\\w-]*[ \\t]+)(?!-)(${VALUE})`, 'gi'), `$1${REDACTED}`],
+  // A field name, then an optional closing quote (JSON, Python repr), a separator and a value.
+  // (An Authorization scheme already followed by [redacted] is left as the rule above wrote it.)
+  [
+    new RegExp(
+      `\\b(${SECRET_FIELD})(["']?\\s*[=:]\\s*)(?!${AUTH_SCHEME}[ \\t]+\\[redacted\\])(${VALUE})`,
+      'gi'
+    ),
+    `$1$2${REDACTED}`,
+  ],
+  // A secret word with no separator: only when the next word looks like a credential
+  // (six or more characters with a digit), so "invalid token" and "token expired" stay readable.
+  [
+    new RegExp(`\\b(${SECRET_FIELD}[ \\t]+)(?=[\\w.~+/=-]*\\d)[\\w.~+/=-]{6,}`, 'gi'),
+    `$1${REDACTED}`,
   ],
   [
     /gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*/g,

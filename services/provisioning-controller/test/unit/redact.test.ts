@@ -39,6 +39,60 @@ describe('redactSecrets', () => {
     expect(out).toContain(REDACTED);
   });
 
+  it.each([
+    ['a JSON password', '{"password":"hunter2"}', 'hunter2'],
+    ['a JSON token', '{"token":"abc12345"}', 'abc12345'],
+    ['a JSON camelCase api key', '{"apiKey":"k3y-short"}', 'k3y-short'],
+    ['a JSON client secret', '{"client_secret":"s3cr3tvalue"}', 's3cr3tvalue'],
+    ['a JSON value after a space', '{"password": "hunter2"}', 'hunter2'],
+    [
+      'a JSON secret inside a longer body',
+      '{"error":"denied","token":"abc12345","step":3}',
+      'abc12345',
+    ],
+    ['a Python-repr password', "{'password': 'hunter2'}", 'hunter2'],
+    ['a flag with a space', 'ssh failed: --password hunter2', 'hunter2'],
+    ['a flag with a space and a token', 'run --token abc12345 --verbose', 'abc12345'],
+    ['a flag with a quoted value', 'run --password "has spaces inside"', 'has spaces inside'],
+    ['a flag with an equals sign', 'run --password=hunter2', 'hunter2'],
+    ['a secret word with no separator', 'invalid token abc12345def', 'abc12345def'],
+    ['a passphrase field', 'unlock with passphrase=hunter2', 'hunter2'],
+    ['a JSON passphrase', '{"passphrase":"hunter2"}', 'hunter2'],
+    ['an Authorization Token header', 'Authorization: Token abcdef123456', 'abcdef123456'],
+    ['an Authorization Bearer header', 'Authorization: Bearer abcdef123456', 'abcdef123456'],
+    ['an Authorization Basic header', 'authorization: Basic abcdef123456', 'abcdef123456'],
+    ['a JSON Authorization header', '{"Authorization":"Token abcdef123456"}', 'abcdef123456'],
+  ])('removes %s', (_name, text, secret) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+  });
+
+  it('keeps the field name and the shape around a JSON secret', () => {
+    expect(redactSecrets('{"token":"abc12345","step":3}')).toBe(`{"token":${REDACTED},"step":3}`);
+  });
+
+  it('keeps the scheme of an Authorization header so the reader can see what failed', () => {
+    expect(redactSecrets('Authorization: Token abcdef123456')).toBe(
+      `Authorization: Token ${REDACTED}`
+    );
+  });
+
+  it.each([
+    'token expired for host-one.example.invalid (step 3)',
+    'the password policy rejected the request',
+    'passphrase required',
+    'invalid token',
+    'bad token format at step 3',
+    'run --verbose --timeout 30 --retries 3',
+    '{"status":"failed","step":3,"host":"host-one.example.invalid"}',
+    "{'status': 'failed', 'step': 3}",
+    'Authorization header missing',
+    'HTTP 401 Unauthorized from https://host-one.example.invalid/v1/things',
+  ])('leaves %j readable', (text) => {
+    expect(redactSecrets(text)).toBe(text);
+  });
+
   it('leaves an ordinary diagnostic readable', () => {
     const text = 'ConnectionError: connect ECONNREFUSED host-one.example.invalid:5432 (step 3)';
     expect(redactSecrets(text)).toBe(text);
