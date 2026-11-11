@@ -3,7 +3,7 @@
 ## What this does
 
 Holds the demo-edge image to the pins written in `services/demo-edge/Dockerfile`.
-The Dockerfile is the only home of the pins: Caddy `2.11.4` (spelled three times,
+The Dockerfile is the only home of the pins: Caddy `2.11.9` (spelled three times,
 in the builder tag, the `xcaddy build` argument and the final tag), the two base
 image digests, and the Hetzner DNS module `github.com/caddy-dns/hetzner/v2`
 `v2.0.1`. There is no second pins file to drift from it.
