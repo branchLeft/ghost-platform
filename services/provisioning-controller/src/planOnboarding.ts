@@ -19,7 +19,9 @@ export async function planOnboarding(
   ports: PlanPorts
 ): Promise<OnboardingPlan> {
   const approval = await ports.approvals.find(approvalId);
-  if (approval === undefined) throw new ApprovalRequiredError(approvalId);
+  if (approval === undefined || approval.approvalId !== approvalId) {
+    throw new ApprovalRequiredError(approvalId);
+  }
 
   const missing = APPROVAL_SCOPES.filter((s) => !approval.scopes.includes(s));
   if (missing.length > 0) throw new ApprovalScopeError(approvalId, missing);

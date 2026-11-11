@@ -13,7 +13,9 @@ export async function assertApproval(
   tenantId?: string
 ): Promise<RecordedApproval> {
   const approval = await ledger.find(approvalId);
-  if (approval === undefined) throw new ApprovalRequiredError(approvalId);
+  if (approval === undefined || approval.approvalId !== approvalId) {
+    throw new ApprovalRequiredError(approvalId);
+  }
   if (tenantId !== undefined && approval.tenantId !== tenantId) {
     throw new ApprovalRequiredError(approvalId);
   }

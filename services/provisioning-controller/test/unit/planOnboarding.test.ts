@@ -56,6 +56,17 @@ describe('planOnboarding', () => {
     expect(ports.reads).toEqual([]);
   });
 
+  it('is refused when the ledger answers with a different approval than the one asked for', async () => {
+    const ports = doubles({
+      approval: { ...APPROVAL, approvalId: 'OTHER_APPROVAL_PLACEHOLDER' },
+      entry: ENTRY,
+    });
+    await expect(planOnboarding('APPROVAL_ID_PLACEHOLDER', ports)).rejects.toBeInstanceOf(
+      ApprovalRequiredError
+    );
+    expect(ports.reads).toEqual([]);
+  });
+
   it('is refused when the approval leaves out any part of the one approval', async () => {
     const scopes: ApprovalScope[] = ['setup'];
     const ports = doubles({ approval: { ...APPROVAL, scopes }, entry: ENTRY });

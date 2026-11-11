@@ -112,6 +112,12 @@ export interface RetryPolicy {
 
 export interface RunOptions {
   readonly retry?: RetryPolicy;
+  /**
+   * The longest the run waits for one console report before counting it lost
+   * and going on (default 2000). A slow console must not stretch the time
+   * between the approval check and the host call.
+   */
+  readonly reportTimeoutMs?: number;
 }
 
 export type StopReason = 'step-failed' | 'input-changed';

@@ -45,8 +45,20 @@ a fresh start or a resume.
   `PermanentStepError`, a `step-failed` record carries the reason and the run
   stops. Calling again retries with fresh attempts.
 - **Console.** Progress is reported after the matching record is durable. It
-  carries identifiers, counts and a reason, never inputs. A report that fails
-  does not stop the run; `reportFailures` counts them.
+  carries identifiers, counts and a reason, never inputs. A report that fails,
+  or that takes longer than `reportTimeoutMs` (default 2000), does not stop the
+  run; `reportFailures` counts them. The wait is bounded so a slow console
+  cannot stretch the time between the approval check and the host call.
+- **Host error text.** Only the first 200 characters of a host's error message
+  are kept, after anything shaped like a secret (tokens, key blocks, URL
+  passwords, values of secret-named fields, long opaque runs) is replaced with
+  `[redacted]` (`src/redact.ts`). This is a backstop: adapters still must not
+  put secret values in errors, and the first real adapter needs its own test.
+- **State file.** `FileStateStore` creates the file private (0600) and refuses,
+  on read and on append, a symbolic link, anything that is not a regular file,
+  and a file other users can reach (`StateFileUnsafeError`).
+- **Approval id.** The ledger's answer must carry the approval id that was asked
+  for; any other answer is treated as no approval.
 
 Ports (`src/executePorts.ts`): `hosts` (one `HostEntryPoint` per entry point,
 given only the step's inputs, returns nothing), `state`, `console`, `clock`,
@@ -54,5 +66,11 @@ plus part 1's `approvals` and `register` reads. No step in the plan writes the
 register, so there is no register write port.
 
 Known limits: one executor per state file is assumed (there is no lock); a
-missing state file reads as an empty history; host error messages end up in
-the state file and the console, so adapters must keep secret values out of them.
+missing state file reads as an empty history; the state file has no integrity
+check beyond its permissions (anyone who can write it as the same user can
+append `complete` records, and a keyed check would need a secret this package
+does not hold); the plan is computed once per call, so a register change during
+a run reaches no step until the next call, where the digest check refuses any
+step already complete under different inputs; the approval check and the host
+call are never atomic, so a revocation that lands between them is seen at the
+next check.

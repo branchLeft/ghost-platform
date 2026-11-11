@@ -18,13 +18,19 @@ import { orderSteps } from './order.js';
 import { planOnboarding } from './planOnboarding.js';
 import type { PlannedStep } from './plan.js';
 import { APPROVAL_SCOPES, type ApprovalScope } from './ports.js';
-import { delayFor, resolveRetry } from './retry.js';
+import { redactSecrets } from './redact.js';
+import { delayFor, resolveReportTimeout, resolveRetry } from './retry.js';
 import { completedDigests } from './state.js';
+
+const REASON_LIMIT = 200;
+/** Wider than the reason limit, so redaction sees a secret whole before the cut. */
+const REASON_SCAN = 4000;
 
 const describeError = (e: unknown): string => {
   const name = e instanceof Error ? e.name : 'Error';
   const message = e instanceof Error ? e.message : String(e);
-  return `${name}: ${message}`.replace(/\p{Cc}+/gu, ' ').slice(0, 200);
+  const flat = `${name}: ${message}`.replace(/\p{Cc}+/gu, ' ').slice(0, REASON_SCAN);
+  return redactSecrets(flat).slice(0, REASON_LIMIT);
 };
 
 /**
@@ -41,6 +47,7 @@ export async function executeOnboarding(
   options: RunOptions = {}
 ): Promise<RunResult> {
   const retry = resolveRetry(options.retry);
+  const reportTimeoutMs = resolveReportTimeout(options.reportTimeoutMs);
   let tenantId: string | undefined;
   let reportFailures = 0;
 
@@ -66,10 +73,20 @@ export async function executeOnboarding(
       ...(tenantId !== undefined && { tenantId }),
       ...extra,
     };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const lost = new Promise<'lost'>((resolve) => {
+      timer = setTimeout(() => resolve('lost'), reportTimeoutMs);
+    });
     try {
-      await ports.console.report(event);
+      const sent = (async () => {
+        await ports.console.report(event);
+        return 'sent' as const;
+      })();
+      if ((await Promise.race([sent, lost])) === 'lost') reportFailures += 1;
     } catch {
       reportFailures += 1;
+    } finally {
+      clearTimeout(timer);
     }
   };
 
