@@ -188,6 +188,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       tryTake: () => real.tryTake(),
       waitForToken: (signal) => real.waitForToken(signal),
       currentRate: () => real.currentRate(),
+      empty: () => real.empty(),
       reload() {
         reloads += 1;
         if (reloads === 1) {
@@ -901,9 +902,12 @@ describe('collector loop -- login and bulk lanes', () => {
     loginThrottle?: Throttle;
     bulkCap?: BulkCap;
     wrapDelivery?: (inner: DeliveryClient) => DeliveryClient;
+    wrapDrain?: (inner: DrainClient) => DrainClient;
+    dedupe?: SubmittedTracker;
   }) {
     const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl }]);
-    const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+    const realDrain = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+    const drainClient = opts.wrapDrain ? opts.wrapDrain(realDrain) : realDrain;
     const real = createDeliveryClient({
       host: '127.0.0.1',
       port: sink.port,
@@ -919,7 +923,7 @@ describe('collector loop -- login and bulk lanes', () => {
       throttle: opts.throttle,
       loginThrottle: opts.loginThrottle,
       bulkCap: opts.bulkCap,
-      dedupe: createSubmittedTracker(60_000),
+      dedupe: opts.dedupe ?? createSubmittedTracker(60_000),
       health: createHealthState(),
       log: createLogger(() => {}),
       descriptorRefreshMs: 50,
@@ -1054,5 +1058,92 @@ describe('collector loop -- login and bulk lanes', () => {
     expect(bulkCap.rateFor(3600, Date.now())).toBe(3600);
     await runtime.stop();
     deliveryClient.close();
+  });
+  it('DEFERRAL BURST: a full bucket at 100 per hour, halved to 50 by a deferral, releases nothing at once', async () => {
+    let clockSec = 0;
+    const bulkCap = createBulkCap({ now: () => clockSec * 1000 });
+    const throttle = createThrottle({
+      messagesPerHour: 100,
+      now: () => clockSec,
+      rateFor: (configured, nowMs) => bulkCap.rateFor(configured, nowMs),
+    });
+    clockSec += 3600; // the bucket is full when the first bulk message arrives
+    let deferred = false;
+    const deferOnce = (inner: DeliveryClient): DeliveryClient => ({
+      deliver: async (msg, targetId) => {
+        if (!deferred) {
+          deferred = true;
+          const reply = '421 4.7.28 Unusual rate, slow down';
+          throw Object.assign(new Error(reply), { responseCode: 421, response: reply });
+        }
+        return inner.deliver(msg, targetId);
+      },
+      close: () => inner.close(),
+    });
+    shim.enqueue(message('bulk-1', { emailId: 'campaign-1' }));
+    const { runtime, deliveryClient } = runtimeFor({
+      throttle,
+      bulkCap,
+      wrapDelivery: deferOnce,
+    });
+    runtime.start();
+    await waitUntil(() => bulkCap.rateFor(100, clockSec * 1000) === 50);
+    await new Promise((r) => setTimeout(r, 50)); // let the loop finish handling the deferral
+    let burst = 0;
+    while (throttle.tryTake() && burst < 200) {
+      burst += 1;
+    }
+    expect(burst).toBe(0);
+    await runtime.stop();
+    deliveryClient.close();
+  });
+
+  it('LONG BATCH: ids sent in a batch longer than the dedupe TTL are not resent when the ack fails', async () => {
+    const TTL_MS = 60 * 60 * 1000;
+    const STEP_MS = 40 * 60 * 1000; // one bulk token every 40 minutes: three messages take two hours
+    let clockMs = 0;
+    const dedupe = createSubmittedTracker(TTL_MS, () => clockMs);
+    const slowBucket: Throttle = {
+      tryTake: () => true,
+      waitForToken: async () => {
+        clockMs += STEP_MS; // the fake clock moves, nothing really sleeps
+      },
+      reload: () => {},
+      currentRate: () => 1.5,
+      empty: () => {},
+    };
+    for (const id of ['bulk-1', 'bulk-2', 'bulk-3']) {
+      shim.enqueue(message(id, { emailId: 'campaign-1' }));
+    }
+    let ackAttempts = 0;
+    const lossyAck = (inner: DrainClient): DrainClient => ({
+      drain: (target, signal) => inner.drain(target, signal),
+      ack: async (target, acks, signal) => {
+        ackAttempts += 1;
+        if (ackAttempts === 1) {
+          throw new Error('simulated lost ack');
+        }
+        return inner.ack(target, acks, signal);
+      },
+    });
+    const { runtime, deliveryClient } = runtimeFor({
+      throttle: slowBucket,
+      wrapDrain: lossyAck,
+      dedupe,
+    });
+    runtime.start();
+    await sink.waitForCount(3, 2000);
+    await waitUntil(() => ackAttempts === 1);
+    expect(clockMs).toBeGreaterThan(TTL_MS); // the batch really did outlast the TTL
+    dedupe.sweep(); // the sweep the runtime runs on its own timer
+    shim.simulateLostAck(); // the lease lapses and all three are re-offered
+    await waitUntil(() => shim.ackRequests.length === 1);
+    await runtime.stop();
+    deliveryClient.close();
+    expect(sink.messages.map((m) => m.envelopeTo[0]).sort()).toEqual([
+      'reader-bulk-1@example.com',
+      'reader-bulk-2@example.com',
+      'reader-bulk-3@example.com',
+    ]);
   });
 });

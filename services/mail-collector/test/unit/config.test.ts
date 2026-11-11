@@ -23,6 +23,7 @@ describe('loadConfig', () => {
     expect(config.bulkRampPath).toBeUndefined();
     expect(config.dedupeTtlMs).toBe(3600000);
     expect(config.dedupeStatePath).toBeUndefined();
+    expect(config.bulkDeferralStatePath).toBeUndefined();
     expect(config.smtp).toEqual({
       host: 'mx1.example.internal',
       port: 587,
@@ -33,6 +34,31 @@ describe('loadConfig', () => {
     expect(config.shimScheme).toBe('http');
     expect(config.heartbeatFailureThreshold).toBe(5);
     expect(config.outcomes).toBeUndefined();
+  });
+
+  describe('bulkDeferralStatePath', () => {
+    it('sits beside the dedupe state file when only that is set', () => {
+      expect(
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_DEDUPE_STATE_PATH: '/var/lib/collector/submitted.json',
+        }).bulkDeferralStatePath
+      ).toBe('/var/lib/collector/bulk-deferral.json');
+    });
+
+    it('is the explicit path when one is set', () => {
+      expect(
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_DEDUPE_STATE_PATH: '/var/lib/collector/submitted.json',
+          COLLECTOR_BULK_DEFERRAL_STATE_PATH: '/var/lib/other/deferral.json',
+        }).bulkDeferralStatePath
+      ).toBe('/var/lib/other/deferral.json');
+    });
+
+    it('is unset when neither is set: the hold is then memory-only', () => {
+      expect(loadConfig(BASE_ENV).bulkDeferralStatePath).toBeUndefined();
+    });
   });
 
   describe('outcomes', () => {

@@ -1,3 +1,5 @@
+import { dirname, join } from 'node:path';
+
 export interface CollectorConfig {
   port: number;
   /** Directory of tenant/demo descriptor JSON files -- the only source of the drain list. */
@@ -68,6 +70,13 @@ export interface CollectorConfig {
   /** File on a volume that outlives the process, holding the submitted ids. Unset, a restart forgets them and a re-offered id is submitted again. */
   dedupeStatePath?: string;
 
+  /**
+   * File the bulk deferral hold is kept in, so a restart during the hold does
+   * not forget it. Defaults to a file beside `dedupeStatePath`; with neither
+   * set the hold is memory-only.
+   */
+  bulkDeferralStatePath?: string;
+
   smtp: {
     host: string;
     port: number;
@@ -135,6 +144,7 @@ const DEFAULT_LOGIN_MESSAGES_PER_HOUR = 3600;
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_OUTCOMES_POLL_MS = 30_000;
 const DEFAULT_SHIM_SCHEME = 'http';
+const DEFAULT_BULK_DEFERRAL_STATE_FILE = 'bulk-deferral.json';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
 
 function shimSchemeEnv(env: CollectorEnv): string {
@@ -164,6 +174,15 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
     dsnDir,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
+}
+
+function bulkDeferralStatePathEnv(env: CollectorEnv): string | undefined {
+  if (env.COLLECTOR_BULK_DEFERRAL_STATE_PATH) {
+    return env.COLLECTOR_BULK_DEFERRAL_STATE_PATH;
+  }
+  return env.COLLECTOR_DEDUPE_STATE_PATH
+    ? join(dirname(env.COLLECTOR_DEDUPE_STATE_PATH), DEFAULT_BULK_DEFERRAL_STATE_FILE)
+    : undefined;
 }
 
 export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
@@ -207,6 +226,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     bulkRampPath: env.COLLECTOR_BULK_RAMP_PATH || undefined,
     dedupeTtlMs: positiveIntEnv(env, 'COLLECTOR_DEDUPE_TTL_MS', DEFAULT_DEDUPE_TTL_MS),
     dedupeStatePath: env.COLLECTOR_DEDUPE_STATE_PATH || undefined,
+    bulkDeferralStatePath: bulkDeferralStatePathEnv(env),
     smtp: {
       host: requireEnv(env, 'COLLECTOR_SMTP_HOST'),
       port: positiveIntEnv(env, 'COLLECTOR_SMTP_PORT', 587),

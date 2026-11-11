@@ -1,13 +1,5 @@
-import {
-  closeSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  writeSync,
-} from 'node:fs';
-import { dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { writeFileAtomic } from './atomicFile.js';
 
 /**
  * Named `submitted`, not `delivered` -- LLD-6 M5: this tracker records
@@ -16,7 +8,14 @@ import { dirname } from 'node:path';
  */
 export interface SubmittedTracker {
   has(id: string): boolean;
-  markSubmitted(id: string): void;
+  /**
+   * `awaitingAck` keeps the id past the TTL until `markAcked` names it (or
+   * MAX_AWAITING_ACK_MS passes): a batch can outlast the TTL at a low rate,
+   * and an id swept before its ack lands would be sent again.
+   */
+  markSubmitted(id: string, awaitingAck?: boolean): void;
+  /** The shim has taken these ids: they expire on the plain TTL, counted from now. */
+  markAcked(ids: readonly string[]): void;
   /** Drops entries older than the configured TTL. Called on a timer by the caller, not internally, so tests can drive it deterministically. */
   sweep(): void;
   readonly size: number;
@@ -35,6 +34,9 @@ export interface SubmittedTrackerOptions {
 
 const STATE_VERSION = 1;
 
+/** The most an id may wait for its ack before it is dropped anyway, so an id the shim never acknowledges cannot be held forever. */
+export const MAX_AWAITING_ACK_MS = 14 * 24 * 60 * 60 * 1000;
+
 /**
  * Turns the shim's at-least-once drain into at-most-one submission at mx1
  * per id for as long as its entry lives (bounded by a TTL): a re-offer is
@@ -50,6 +52,7 @@ export function createSubmittedTracker(
 ): SubmittedTracker {
   const { statePath, onError } = options;
   const submittedAt = new Map<string, number>();
+  const awaitingAck = new Set<string>();
 
   function report(error: unknown): void {
     onError?.(error instanceof Error ? error : new Error(String(error)));
@@ -66,7 +69,11 @@ export function createSubmittedTracker(
       return;
     }
     try {
-      const parsed = JSON.parse(raw) as { version?: unknown; submitted?: unknown };
+      const parsed = JSON.parse(raw) as {
+        version?: unknown;
+        submitted?: unknown;
+        awaitingAck?: unknown;
+      };
       if (
         parsed.version !== STATE_VERSION ||
         typeof parsed.submitted !== 'object' ||
@@ -79,37 +86,31 @@ export function createSubmittedTracker(
           submittedAt.set(id, at);
         }
       }
+      // Absent in a file written before ids could wait for an ack: those load as acked.
+      if (Array.isArray(parsed.awaitingAck)) {
+        for (const id of parsed.awaitingAck) {
+          if (typeof id === 'string' && submittedAt.has(id)) {
+            awaitingAck.add(id);
+          }
+        }
+      }
     } catch (error) {
       submittedAt.clear();
+      awaitingAck.clear();
       report(error);
     }
   }
 
-  // Write-to-temp, fsync, rename, fsync the directory: a crash at any point
-  // leaves either the previous complete file or the new complete one, never
-  // a torn file that would load as empty and forget every id.
   function persist(path: string): void {
     try {
-      mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.tmp`;
-      const body = JSON.stringify({
-        version: STATE_VERSION,
-        submitted: Object.fromEntries(submittedAt),
-      });
-      const fd = openSync(tmp, 'w', 0o600);
-      try {
-        writeSync(fd, body);
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(tmp, path);
-      const dirFd = openSync(dirname(path), 'r');
-      try {
-        fsyncSync(dirFd);
-      } finally {
-        closeSync(dirFd);
-      }
+      writeFileAtomic(
+        path,
+        JSON.stringify({
+          version: STATE_VERSION,
+          submitted: Object.fromEntries(submittedAt),
+          awaitingAck: [...awaitingAck],
+        })
+      );
     } catch (error) {
       report(error);
     }
@@ -123,18 +124,38 @@ export function createSubmittedTracker(
     has(id: string): boolean {
       return submittedAt.has(id);
     },
-    markSubmitted(id: string): void {
+    markSubmitted(id: string, awaiting = false): void {
       submittedAt.set(id, now());
+      if (awaiting) {
+        awaitingAck.add(id);
+      } else {
+        awaitingAck.delete(id);
+      }
       if (statePath) {
         persist(statePath);
       }
     },
+    markAcked(ids: readonly string[]): void {
+      let changed = false;
+      for (const id of ids) {
+        if (submittedAt.has(id)) {
+          submittedAt.set(id, now());
+          awaitingAck.delete(id);
+          changed = true;
+        }
+      }
+      if (changed && statePath) {
+        persist(statePath);
+      }
+    },
     sweep(): void {
-      const cutoff = now() - ttlMs;
+      const nowMs = now();
       let evicted = false;
       for (const [id, at] of submittedAt) {
-        if (at < cutoff) {
+        const bound = awaitingAck.has(id) ? MAX_AWAITING_ACK_MS : ttlMs;
+        if (at < nowMs - bound) {
           submittedAt.delete(id);
+          awaitingAck.delete(id);
           evicted = true;
         }
       }

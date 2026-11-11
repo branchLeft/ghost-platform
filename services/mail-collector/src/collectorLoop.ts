@@ -172,6 +172,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
             deps.health.recordFailure();
             if (lane === 'bulk' && deps.bulkCap && isBulkDeferral(error)) {
               deps.bulkCap.recordDeferral();
+              // The halved rate must not meet a full bucket: empty it, so the
+              // lower rate starts from nothing and no burst follows the deferral.
+              throttleFor('bulk').empty();
               deps.log.warn('bulk_deferred', { target: initialTarget.id, message: message.id });
             }
             deps.log.warn('submission_failed', {
@@ -186,7 +189,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
             break;
           }
           deps.health.recordSuccess();
-          deps.dedupe.markSubmitted(message.id);
+          // Awaiting its ack: a batch at a low ramp rate can outlast the TTL,
+          // and the id must not be swept before the shim has taken it.
+          deps.dedupe.markSubmitted(message.id, true);
           // "submitted", not "delivered" -- see dedupe.ts's own doc
           // comment (LLD-6 M5): this only means mx1's SMTP front accepted
           // the message, never that it confirmed delivery to the
@@ -203,15 +208,17 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
 
       if (acks.length > 0) {
         try {
-          await deps.drainClient.ack(target, acks);
+          const result = await deps.drainClient.ack(target, acks);
+          deps.dedupe.markAcked([...result.acked, ...result.alreadyHandled]);
         } catch (error) {
           deps.log.warn('ack_failed', {
             target: initialTarget.id,
             error: (error as Error).message,
           });
           // The ack is lost, not the submission: dedupe already holds
-          // every id acks contains, so the next re-offer (once the lease
-          // lapses) is recognised and only re-acked, never resubmitted.
+          // every id acks contains, and keeps it past the TTL until an ack
+          // lands, so the next re-offer (once the lease lapses) is
+          // recognised and only re-acked, never resubmitted.
         }
       }
 

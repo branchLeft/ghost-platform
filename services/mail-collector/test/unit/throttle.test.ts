@@ -110,6 +110,63 @@ describe('createThrottle', () => {
     });
   });
 
+  describe('empty()', () => {
+    it('leaves no tokens to take, and refills from now at the current rate', () => {
+      let now = 0;
+      const throttle = createThrottle({ messagesPerHour: 3600, now: () => now });
+      now += 3600; // a full bucket
+      throttle.empty();
+      expect(throttle.tryTake()).toBe(false);
+      now += 1; // one second at 3600 per hour
+      expect(throttle.tryTake()).toBe(true);
+      expect(throttle.tryTake()).toBe(false);
+    });
+
+    it('stops the burst a deferral would otherwise release: a full bucket at 100, halved to 50', () => {
+      let now = 0;
+      let rate = 100;
+      const throttle = createThrottle({
+        messagesPerHour: 100,
+        now: () => now,
+        rateFor: () => rate,
+      });
+      now += 3600; // the bucket fills to 100
+      rate = 50; // a deferral halves the rate
+      throttle.empty();
+      let burst = 0;
+      while (throttle.tryTake()) {
+        burst += 1;
+      }
+      expect(burst).toBe(0);
+    });
+  });
+
+  describe('a non-finite rate', () => {
+    it('is not adopted from the constructor: the default applies', () => {
+      expect(createThrottle({ messagesPerHour: Infinity }).currentRate()).toBe(50);
+      expect(createThrottle({ messagesPerHour: NaN }).currentRate()).toBe(50);
+    });
+
+    it('is not adopted from the config file: the previous rate stays', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'collector-throttle-nonfinite-'));
+      try {
+        const configPath = join(dir, 'throttle.json');
+        // JSON.parse turns 1e999 into Infinity, as a hand-edited file can.
+        writeFileSync(configPath, '{"messagesPerHour": 1e999}');
+        const throttle = createThrottle({ messagesPerHour: 7, configPath });
+        throttle.reload();
+        expect(throttle.currentRate()).toBe(7);
+        let taken = 0;
+        while (throttle.tryTake() && taken < 1000) {
+          taken += 1;
+        }
+        expect(taken).toBeLessThan(1000); // an Infinity rate would never run dry
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('reload()', () => {
     let dir: string;
     let configPath: string;

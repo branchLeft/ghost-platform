@@ -24,7 +24,12 @@ const store = new DescriptorTargetStore({
   log,
 });
 
-const bulkCap = createBulkCap({ rampPath: config.bulkRampPath, log });
+const bulkCap = createBulkCap({
+  rampPath: config.bulkRampPath,
+  ...(config.bulkDeferralStatePath ? { deferralStatePath: config.bulkDeferralStatePath } : {}),
+  onStateError: (error) => log.warn('bulk_deferral_state_error', { error: error.message }),
+  log,
+});
 
 const throttle = createThrottle({
   configPath: config.throttleConfigPath,
