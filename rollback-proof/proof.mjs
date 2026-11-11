@@ -17,10 +17,12 @@ export const REQUIRED_CHECKS = Object.freeze([
 ]);
 
 /**
- * What gates a candidate. The new image must boot on the old data and take a
- * write: a candidate that is broken itself is never deployed.
+ * What gates a candidate: red refuses it. The new image must boot on the old
+ * data and take a write, and the data must survive (a seeded post that is gone
+ * is lost data, broken behaviour, not a missing way back). A candidate that is
+ * broken itself is never deployed.
  */
-const GATE_CHECKS = Object.freeze(['new-boots']);
+const GATE_CHECKS = Object.freeze(['new-boots', 'data-intact']);
 /**
  * The rollback test. Upgrades are forward-only: the way back is the pre-upgrade
  * backup, so a red here is a warning that says so, not a refusal.
@@ -271,15 +273,20 @@ function recompute(record) {
   const hitsFor = (name) => checks.filter((c) => c?.name === name);
   const oldBoot = hitsFor('old-boots-on-migrated')[0];
   const cascade = oldBoot?.ok === false && oldBoot.detail !== 'not run';
+  const warn = (name, detail) => warnings.push({ check: name, detail, route: RESTORE_ROUTE });
   for (const name of REQUIRED_CHECKS) {
     const hits = hitsFor(name);
+    const unrun = hits[0]?.detail === 'not run';
+    // The checks after the old image's boot cannot run when it did not boot.
+    const cascaded = unrun && cascade && name !== 'schema-contract';
     if (hits.length === 0) reasons.push(`required check ${name} is missing`);
     else if (hits.length > 1) reasons.push(`check ${name} is recorded ${hits.length} times`);
     else if (hits[0].ok === true) continue;
+    else if (cascaded) warn(name, hits[0].detail);
     else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);
-    else if (hits[0].detail === 'not run' && !(cascade && name !== 'schema-contract'))
+    else if (unrun)
       reasons.push(`${name} did not run although the old image booted: the record is unfinished`);
-    else warnings.push({ check: name, detail: hits[0].detail, route: RESTORE_ROUTE });
+    else warn(name, hits[0].detail);
   }
   for (const c of checks) {
     if (!REQUIRED_CHECKS.includes(c?.name)) reasons.push(`unknown check ${String(c?.name)}`);

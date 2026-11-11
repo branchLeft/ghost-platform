@@ -3,7 +3,7 @@ name: Rollback proof
 # Upgrades are forward-only: the way back is the pre-upgrade backup. The proof
 # tries the old Ghost image on data the new image has already migrated; a way
 # back that is red is a warning that names restore-from-backup, not a refusal.
-# A new image that does not boot or take a write is still refused.
+# A new image that does not boot or take a write, and lost data, are still refused.
 # rollback-proof/README.md has the checks and the exit codes.
 #
 # Three shapes of run:

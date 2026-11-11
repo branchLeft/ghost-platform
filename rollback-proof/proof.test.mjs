@@ -89,6 +89,8 @@ describe('a candidate the old image can still serve', () => {
   });
 });
 
+// The rollback checks; `data-intact` is a gate check, warned about only when it
+// could not run because the old image did not boot.
 const ROLLBACK_STEPS = [
   'schema-contract',
   'old-boots-on-migrated',
@@ -164,15 +166,23 @@ describe('a candidate the old image cannot serve is warned about, not refused', 
     assert.equal(byName(record, 'session-survives').ok, false);
     assert.equal(record.outcome, 'warned');
   });
+});
 
-  it('warns when a post the old image seeded is gone after the migration', async () => {
+describe('a candidate that is itself broken is still refused', () => {
+  it('refuses when a post the old image seeded is gone after the migration: lost data is broken behaviour', async () => {
     const { record } = await run({
       [OLD]: oldImage,
       [NEW]: { schema: oldSchema, onBoot: (w) => w.posts.delete('rollback-proof-seed') },
     });
     assert.equal(byName(record, 'data-intact').ok, false);
     assert.match(byName(record, 'data-intact').detail, /rollback-proof-seed is missing/);
-    assert.equal(record.outcome, 'warned');
+    assert.equal(record.outcome, 'refused');
+    assert.equal(record.ok, false);
+    assert.ok(
+      verifyReport(record, { oldImage: OLD, newImage: NEW }).some((r) =>
+        /data-intact is red/.test(r)
+      )
+    );
   });
 
   it('does not trust "renders" when a never-published page also answers 200', async () => {
@@ -182,10 +192,9 @@ describe('a candidate the old image cannot serve is warned about, not refused', 
     );
     assert.equal(byName(record, 'data-intact').ok, false);
     assert.match(byName(record, 'data-intact').detail, /never-published control/);
+    assert.equal(record.outcome, 'refused');
   });
-});
 
-describe('a candidate that is itself broken is still refused', () => {
   it('refuses a new image that does not boot, and never tries the way back', async () => {
     const { record, ops } = await run({
       [OLD]: oldImage,

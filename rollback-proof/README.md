@@ -32,8 +32,8 @@ old image against migrated data, which is the operation nobody had run.
 
 ## The checks
 
-Every one of these is recorded once. `new-boots` is the gate: red refuses the
-candidate. The other seven are the rollback test: red is a warning.
+Every one of these is recorded once. `new-boots` and `data-intact` are the gate: red
+refuses the candidate. The other six are the rollback test: red is a warning.
 
 | Check                   | Class    | Red when                                                            |
 | ----------------------- | -------- | ------------------------------------------------------------------- |
@@ -42,12 +42,14 @@ candidate. The other seven are the rollback test: red is a warning.
 | `old-boots-on-migrated` | rollback | the old image does not answer 200 on the migrated database          |
 | `session-survives`      | rollback | an owner session opened before the upgrade no longer authenticates  |
 | `sign-in`               | rollback | a fresh owner sign-in fails                                         |
-| `data-intact`           | rollback | the seed post or the new image's post is missing or does not render |
+| `data-intact`           | gate     | the seed post or the new image's post is missing or does not render |
 | `publish`               | rollback | a post published on the old image does not render                   |
 | `member-create`         | rollback | a member cannot be created                                          |
 
-`data-intact` carries its own control: a page that was never published must not
-answer 200, or "renders" would prove nothing. A check that did not run is
+`data-intact` is a gate because lost data after an upgrade is broken behaviour,
+not a missing way back. It carries its own control: a page that was never
+published must not answer 200, or "renders" would prove nothing. A check that
+did not run is
 recorded red with the detail `not run`. That is a warning only when the old
 image did not boot on the migrated data (the checks after it cannot run). Any
 other `not run`, a missing, repeated or unknown check, a record for another

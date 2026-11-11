@@ -130,8 +130,14 @@ export const CASES = [
   [
     'half-applied: a rollback check that did not run, with the old image booted, is only a warning',
     'proof.mjs',
-    "else if (hits[0].detail === 'not run' && !(cascade && name !== 'schema-contract'))",
-    'else if (false)',
+    'else if (unrun)\n',
+    'else if (false)\n',
+  ],
+  [
+    'gate: lost data after the upgrade is only a warning',
+    'proof.mjs',
+    "Object.freeze(['new-boots', 'data-intact'])",
+    "Object.freeze(['new-boots'])",
   ],
   [
     'half-applied: findings next to a green schema check are ignored',
@@ -154,8 +160,8 @@ export const CASES = [
   [
     'restore route: a warning is recorded without it',
     'proof.mjs',
-    'else warnings.push({ check: name, detail: hits[0].detail, route: RESTORE_ROUTE });',
-    'else warnings.push({ check: name, detail: hits[0].detail });',
+    'warnings.push({ check: name, detail, route: RESTORE_ROUTE })',
+    'warnings.push({ check: name, detail })',
   ],
   [
     'warning: the log lines leave out the rollback route',
