@@ -265,6 +265,13 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
 
   function persist(): void {
     try {
+      // A latch written where the marker is absent (a replaced volume) goes
+      // marker first: a file latched with no marker reads as the owner's
+      // clearing at the next start, and a marker with no file reads as lost.
+      if (vanished && !markerKnown && markerAbsent(statePath)) {
+        writeMarker(statePath, witness);
+        markerKnown = true;
+      }
       writeFileAtomic(
         statePath,
         JSON.stringify({
@@ -277,8 +284,8 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
           ...(inflight.size > 0 ? { inflight: [...inflight] } : {}),
         })
       );
-      // After the file: a crash between the two leaves a file with no marker,
-      // read as an upgrade at the next load, never a marker with no file.
+      // Otherwise after the file: a crash between the two leaves a file with no
+      // marker, read as an upgrade at the next load, never a marker with no file.
       if (!markerKnown) {
         writeMarker(statePath, witness);
         markerKnown = true;

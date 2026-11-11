@@ -234,6 +234,81 @@ describe('state witness', () => {
     });
   });
 
+  describe('a latch written onto a replaced volume, with a write failing or the process dying part way', () => {
+    // Each fault stops one of the three writes of the first save on the empty volume:
+    // the witness, the marker, or the state file. The disk is then what a crash at
+    // that point would leave; the next start must still read the volume as lost.
+    const faults: Record<string, () => StateWitness> = {
+      'the witness write fails': () => ({ ...witnessOf(), write: failWrite }),
+      'the process dies after the witness is written, before the marker': () => {
+        const real = witnessOf();
+        return {
+          probe: (path) => real.probe(path),
+          write: (path) => {
+            real.write(path);
+            failWrite();
+          },
+        };
+      },
+      'the marker write fails': () => {
+        mkdirSync(`${markerOf()}.tmp`, { recursive: true });
+        return witnessOf();
+      },
+      'the state file write fails': () => {
+        mkdirSync(`${statePath}.tmp`, { recursive: true });
+        return witnessOf();
+      },
+    };
+
+    function failWrite(): never {
+      throw new Error('injected write failure');
+    }
+
+    function replaceAndOpenWith(fault: string): SweegoUsage {
+      open().begin('tenant-a')!.settle(true);
+      replaceStateVolume();
+      return open(faults[fault]!());
+    }
+
+    function clearFaults(): void {
+      rmSync(`${markerOf()}.tmp`, { recursive: true, force: true });
+      rmSync(`${statePath}.tmp`, { recursive: true, force: true });
+    }
+
+    it.each(Object.keys(faults))('keeps the latch across a restart when %s', (fault) => {
+      const first = replaceAndOpenWith(fault);
+      expect(first.begin('tenant-a')).toBeUndefined();
+      expect(first.reasons()['state-write-failed']).toBeGreaterThanOrEqual(1);
+      clearFaults();
+      const restarted = open();
+      expect(restarted.accountCapReached()).toBe(true);
+      expect(restarted.allowanceReached('tenant-a')).toBe(true);
+      expect(restarted.begin('tenant-a')).toBeUndefined();
+      expect(restarted.accountState().vanished).toBe(true);
+    });
+
+    it.each(Object.keys(faults))(
+      'keeps the latch through a crash loop, then a good start, when %s',
+      (fault) => {
+        replaceAndOpenWith(fault);
+        open(faults[fault]!());
+        open(faults[fault]!());
+        clearFaults();
+        expect(open().accountCapReached()).toBe(true);
+        expect(open().accountCapReached()).toBe(true);
+        expect(readFileSync(markerOf(), 'utf8')).toBe('initialised witnessed\n');
+      }
+    );
+
+    it('still lets the owner clear the latch by deleting the marker once it is fully written', () => {
+      replaceAndOpenWith('the marker write fails');
+      clearFaults();
+      expect(open().accountCapReached()).toBe(true);
+      rmSync(markerOf());
+      expect(open().accountCapReached()).toBe(false);
+    });
+  });
+
   describe('the submitted-id and pin trackers', () => {
     const idsPath = (): string => join(stateDir, 'pins.json');
     const track = (witness: StateWitness | undefined, errors: string[] = []) =>
