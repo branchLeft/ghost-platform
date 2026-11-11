@@ -56,19 +56,28 @@ its row exists gets 401 on every send.
 ## Mail route
 
 `mail.route` says which sending target the mail collector uses for a host's
-drained mail: `{ primary: "mx1" | "sweego" }`. It is optional, and an absent
-route means `mx1`, so every descriptor written before the field existed means
-exactly what it always did. `mailRouteOf` is the one place that default lives.
+drained mail: `{ primary: "mx1" | "sweego", sweegoAllowance?: integer }`. It is
+optional, and an absent route means `mx1`, so every descriptor written before
+the field existed means exactly what it always did. `mailRouteOf` is the one
+place that default lives.
 
-- **Strict.** The object takes `primary` and nothing else. A bare string, an
-  unknown target, a fallback or exception key, or a missing `primary` is
-  refused by `validate()` as a malformed field. There is no field that could
-  name a fallback: the collector's fallback is fixed in its code.
+- **Strict.** The object takes `primary` and `sweegoAllowance` and nothing
+  else. A bare string, an unknown target, a fallback or exception key, or a
+  missing `primary` is refused by `validate()` as a malformed field. There is
+  no field that could name a fallback: the collector's fallback is fixed in
+  its code.
+- **The allowance.** `sweegoAllowance` is the tenant's messages per UTC
+  calendar month through Sweego, a positive integer of at most
+  `MAX_SWEEGO_ALLOWANCE`. It is required when `primary` is `sweego` and
+  refused when it is `mx1`, so a route never carries a number nothing counts
+  against. The collector counts against it and latches the tenant at 100
+  percent until month end.
 - **A demo stays on mx1.** A demo whose route is `sweego` is refused as a tier
   mismatch, the same way a demo carrying a DKIM selector is.
 - **Nothing reads it yet.** `render()` emits no artefact that mentions the
   route, so a tenant host receives byte-identical output whatever its value
-  (`test/mailRoute.test.ts`). The collector carries it on its drain target
-  and does not act on it.
-- **No credential, host or allowance.** A per-tenant allowance is added beside
-  `primary` when something counts against it; this change adds none.
+  (`test/mailRoute.test.ts`). The collector reads the route and the allowance
+  from the descriptor; the counts themselves are collector state, never
+  descriptor data.
+- **No credential or host.** The allowance is a plain number. The plan size
+  and the account-wide cap are not descriptor fields.

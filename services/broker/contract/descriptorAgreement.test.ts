@@ -193,7 +193,10 @@ describe('the gate agrees with render-core validate() on every descriptor, both 
     ],
     ['tenant', TENANT],
     ['tenant, mx1 route', setAt(TENANT, ['mail', 'route'], { primary: 'mx1' })],
-    ['tenant, sweego route', setAt(TENANT, ['mail', 'route'], { primary: 'sweego' })],
+    [
+      'tenant, sweego route',
+      setAt(TENANT, ['mail', 'route'], { primary: 'sweego', sweegoAllowance: 100 }),
+    ],
     ['tenant, break-glass enabled', { ...TENANT, breakGlass: BREAK_GLASS }],
     [
       'tenant, code injection granted',

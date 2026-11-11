@@ -89,6 +89,14 @@ export interface CollectorConfig {
     throttleConfigPath?: string;
     /** Bounds connecting and every wait on the relay. */
     timeoutMs: number;
+    /**
+     * Messages per UTC calendar month across every tenant together, set from
+     * the Sweego plan. No default: unset, Sweego is treated as not configured
+     * and every message goes through mx1.
+     */
+    accountCap?: number;
+    /** File the monthly counters are kept in, on a volume that outlives the process. Unset, Sweego is treated as not configured too. */
+    usageStatePath?: string;
   };
 
   /** Directory the per-message target pins are kept in, on a volume that outlives the process. Unset, a restart forgets them. */
@@ -193,7 +201,33 @@ const SWEEGO_PARTNERS = [
   'COLLECTOR_SWEEGO_SMTP_USER',
   'COLLECTOR_SWEEGO_SMTP_PASS_FILE',
   'COLLECTOR_SWEEGO_MESSAGES_PER_HOUR',
+  'COLLECTOR_SWEEGO_ACCOUNT_CAP',
+  'COLLECTOR_SWEEGO_USAGE_STATE_PATH',
 ] as const;
+
+function accountCapEnv(env: CollectorEnv): number | undefined {
+  const raw = env.COLLECTOR_SWEEGO_ACCOUNT_CAP;
+  if (!raw) {
+    return undefined;
+  }
+  const cap = Number(raw);
+  if (!Number.isSafeInteger(cap) || cap <= 0) {
+    throw new Error('COLLECTOR_SWEEGO_ACCOUNT_CAP must be a positive integer');
+  }
+  return cap;
+}
+
+/**
+ * True only when the relay, the account-wide cap and the counter file are all
+ * set. Any one missing and Sweego is not used at all: with no cap or nothing
+ * to count in, nothing could hold the total inside the plan.
+ */
+export function sweegoUsable(
+  sweego: CollectorConfig['sweego']
+): sweego is NonNullable<CollectorConfig['sweego']> &
+  Required<Pick<NonNullable<CollectorConfig['sweego']>, 'accountCap' | 'usageStatePath'>> {
+  return sweego?.accountCap !== undefined && sweego.usageStatePath !== undefined;
+}
 
 function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
   // The credential is a file path, never a value: refuse a value outright so
@@ -224,6 +258,8 @@ function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
     messagesPerHour,
     throttleConfigPath: env.COLLECTOR_SWEEGO_THROTTLE_CONFIG_PATH || undefined,
     timeoutMs: positiveIntEnv(env, 'COLLECTOR_SWEEGO_SMTP_TIMEOUT_MS', DEFAULT_SWEEGO_TIMEOUT_MS),
+    accountCap: accountCapEnv(env),
+    usageStatePath: env.COLLECTOR_SWEEGO_USAGE_STATE_PATH || undefined,
   };
 }
 

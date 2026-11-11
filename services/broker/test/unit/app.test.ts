@@ -684,7 +684,10 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
   it('refuses a demo descriptor whose mail route is sweego, before any side effect', async () => {
     broker = await startTestBroker();
     const base = demoDescriptor();
-    const bad = { ...base, mail: { ...base.mail, route: { primary: 'sweego' } } };
+    const bad = {
+      ...base,
+      mail: { ...base.mail, route: { primary: 'sweego', sweegoAllowance: 100 } },
+    };
     const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
     expect(res.status).toBe(400);
     expect(JSON.stringify(await res.json())).toContain('mail.route');

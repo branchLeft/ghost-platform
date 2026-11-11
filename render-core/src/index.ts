@@ -99,6 +99,7 @@ export {
   credentialDomainOf,
   DEFAULT_MAIL_ROUTE,
   MAIL_ROUTES,
+  MAX_SWEEGO_ALLOWANCE,
   mailRouteOf,
   renderSendingAddress,
   sendingDomainOf,

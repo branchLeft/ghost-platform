@@ -107,13 +107,16 @@ export interface MailSpec {
 export type MailRoute = 'mx1' | 'sweego';
 
 /**
- * A strict object, not a bare string, so a later field (an allowance) can
- * be added beside `primary` without renaming anything. It carries no
- * credential, no host and no fallback target: the fallback is fixed in the
- * collector's code and has no descriptor field. See mail.md#mail-route.
+ * A strict object, not a bare string, so a field can sit beside `primary`
+ * without renaming anything. It carries no credential, no host and no
+ * fallback target: the fallback is fixed in the collector's code and has no
+ * descriptor field. `sweegoAllowance` is the tenant's messages per UTC
+ * calendar month through Sweego, present exactly when `primary` is `sweego`.
+ * See mail.md#mail-route.
  */
 export interface MailRouteSpec {
   readonly primary: MailRoute;
+  readonly sweegoAllowance?: number;
 }
 
 /**

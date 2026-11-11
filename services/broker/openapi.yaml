@@ -815,13 +815,20 @@ components:
         Which sending target the mail collector uses for this host's drained
         mail. Optional on `MailSpec`: an absent route means `mx1`. A `demo`
         descriptor whose route is `sweego` is refused by render-core's own
-        validator, which this wire shape does not duplicate. Nothing reads
-        the route yet.
+        validator, which this wire shape does not duplicate. So is the
+        pairing of `sweegoAllowance` with the route: render-core requires it
+        when `primary` is `sweego` and refuses it when `primary` is `mx1`.
       required: [primary]
       properties:
         primary:
           type: string
           enum: [mx1, sweego]
+        sweegoAllowance:
+          type: integer
+          minimum: 1
+          maximum: 100000000
+          description: >-
+            The tenant's messages per UTC calendar month through Sweego.
       additionalProperties: false
     HostnameSpec:
       description: >-
