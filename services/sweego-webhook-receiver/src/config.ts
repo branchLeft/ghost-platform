@@ -17,8 +17,24 @@ export interface Config {
   keepAliveTimeoutMs: number;
 }
 
-const WILDCARD_HOSTS = new Set(['', '0.0.0.0', '::', '[::]', '0']);
+/** What the URL parser makes of every spelling of the IPv4 and IPv6 unspecified address. */
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '[::]', '[::ffff:0:0]']);
 const MIN_DRAIN_TOKEN_CHARS = 32;
+
+/**
+ * True for any spelling of an all-interfaces address: `::0`, the expanded
+ * IPv6 form, the IPv4-mapped form, and the short IPv4 forms such as `0`, `0.0`
+ * and `0x0`. The WHATWG URL parser reduces each of those to one canonical host.
+ */
+function isWildcard(value: string): boolean {
+  const bare = value.startsWith('[') ? value.slice(1, -1) : value;
+  const literal = bare.includes(':') ? `[${bare}]` : bare;
+  try {
+    return WILDCARD_HOSTS.has(new URL(`http://${literal}`).hostname);
+  } catch {
+    return false;
+  }
+}
 
 function required(env: Env, name: string): string {
   const value = env[name];
@@ -39,7 +55,7 @@ function port(env: Env, name: string): number {
 
 function privateHost(env: Env, name: string): string {
   const value = required(env, name);
-  if (WILDCARD_HOSTS.has(value)) {
+  if (isWildcard(value)) {
     throw new Error(`${name} must be a specific address, never a wildcard`);
   }
   return value;

@@ -67,10 +67,32 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env, read)).toThrow(name);
   });
 
-  it.each(['0.0.0.0', '::', ''])('refuses the wildcard address %j for either listener', (host) => {
+  it.each([
+    '0.0.0.0',
+    '::',
+    '',
+    '::0',
+    '0::0',
+    '0:0:0:0:0:0:0:0',
+    '[::0]',
+    '::ffff:0.0.0.0',
+    '::ffff:0:0',
+    '0',
+    '00',
+    '0x0',
+    '0.0',
+    '0.0.0.00',
+  ])('refuses the wildcard address %j for either listener', (host) => {
     expect(() => loadConfig({ ...base, WEBHOOK_HOST: host }, read)).toThrow();
     expect(() => loadConfig({ ...base, WEBHOOK_DRAIN_HOST: host }, read)).toThrow();
   });
+
+  it.each(['10.0.0.5', '::1', 'fd00::5', '127.0.0.1', 'edge.internal'])(
+    'accepts the specific address %j',
+    (host) => {
+      expect(loadConfig({ ...base, WEBHOOK_HOST: host }, read).host).toBe(host);
+    }
+  );
 
   it.each(['0', '70000', 'abc', '80.5'])('refuses port %j', (value) => {
     expect(() => loadConfig({ ...base, WEBHOOK_PORT: value }, read)).toThrow('port');
