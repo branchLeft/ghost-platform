@@ -1,36 +1,8 @@
 #!/usr/bin/env node
 // The checkout half of the content-policy proof: one real headless Chromium
-// takes a member through the paid upgrade and the return from checkout on a
-// real Ghost behind the edge policy, and reports what it observed. It sets no
-// policy (the origin in front of Ghost does) and renders no verdict
-// (csp/gate/checkout-gate.mjs does).
-//
-// The flow, each step recorded only when it really happened:
-//   1. create a free member through the Admin API and follow the sign-in link
-//      Ghost's Admin API issues for it (NOT the magic-link email: that round
-//      trip waits on the mail programme and is not proven here)
-//   2. confirm Ghost now serves a member session
-//   3. open Portal's plan chooser, pick the paid plan, and land on the hosted
-//      checkout page (csp/proof/fake-stripe.mjs, its own origin)
-//   4. pay with Stripe's published test card and come back to ?stripe=success
-//   5. confirm the member is paid, from Ghost's own Admin API
-//
-// Violations come from EVERY frame (Portal is an iframe), through a context
-// binding rather than a per-page array, so a blocked script inside Portal's
-// frame cannot hide.
-//
-// Stripe.js. By default js.stripe.com is answered by a stub through Playwright
-// routing. A request the policy blocks never reaches routing (Chromium checks
-// the source list first), so the browser's own matching is still what is
-// tested. CSP_STRIPE_REAL_JS=1 drops the stub and loads the real Stripe.js
-// over the internet; that needs no account and no secret.
-//
-// Real test mode (PROOF_REAL_TEST_MODE=1, set by csp-checkout-gate.sh when the
-// owner opts in): the checkout page is Stripe's own (checkout.stripe.com),
-// Stripe.js is always the real one, and the card typed is checked against the
-// published test card before the browser starts. A violation counts only when
-// the tenant's own document raised it; Stripe's pages answer to Stripe's
-// policy. Everything this process prints goes through redactSecrets.
+// takes a member through the paid upgrade and back from checkout, and reports
+// what it observed. It sets no policy and renders no verdict.
+// The flow and the frame and Stripe.js notes: csp/proof/run-proof.md (checkout section).
 import { chromium } from 'playwright';
 import {
   PUBLISHED_TEST_CARD,
