@@ -3,7 +3,7 @@ import { Router as createRouter } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { requireDrainToken } from '../drainAuth.js';
 import type { DrainWake } from '../drainWake.js';
-import { resolveRecipientTokens } from '../mailgunFields.js';
+import { dropUnresolvedListUnsubscribeEntries, resolveRecipientTokens } from '../mailgunFields.js';
 import type { Logger } from '../log.js';
 import type { AckRequest, DrainedRecipient, OutcomeRequest, ShimStore } from '../store.js';
 import type { Throttle } from '../throttle.js';
@@ -46,6 +46,13 @@ function toWireMessage(row: DrainedRecipient): WireMessage {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(row.payload.headers)) {
     if (name === 'Reply-To' || name === 'Sender') {
+      continue;
+    }
+    if (name === 'List-Unsubscribe') {
+      const kept = dropUnresolvedListUnsubscribeEntries(resolveRecipientTokens(value, vars));
+      if (kept !== '') {
+        headers[name] = kept;
+      }
       continue;
     }
     headers[name] = resolveRecipientTokens(value, vars);
