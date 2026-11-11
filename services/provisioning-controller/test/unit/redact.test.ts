@@ -79,6 +79,42 @@ describe('redactSecrets', () => {
   });
 
   it.each([
+    ['an escaped quote inside a JSON value', '{"password":"ab\\"SECRETX9"}', 'SECRETX9'],
+    ['an escaped quote inside a Python-repr value', "{'password': 'ab\\'SECRETX9'}", 'SECRETX9'],
+    ['an escaped backslash before the tail', '{"password":"ab\\\\SECRETX9"}', 'SECRETX9'],
+    ['a value ending in an escaped quote', '{"token":"SECRETX9\\""}', 'SECRETX9'],
+    ['an escaped quote in a quoted flag value', 'run --password "ab\\"SECRETX9"', 'SECRETX9'],
+    ['an Authorization Hmac header', 'Authorization: Hmac abcdef123456', 'abcdef123456'],
+    ['an Authorization OAuth header', 'Authorization: OAuth abcdef123456', 'abcdef123456'],
+  ])('removes %s', (_name, text, secret) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+  });
+
+  it('removes a whole escaped JSON value and keeps what follows it', () => {
+    expect(redactSecrets('{"password":"ab\\"SECRETX9","step":3}')).toBe(
+      `{"password":${REDACTED},"step":3}`
+    );
+  });
+
+  it('keeps the scheme of an Authorization Hmac or OAuth header', () => {
+    expect(redactSecrets('Authorization: Hmac abcdef123456')).toBe(
+      `Authorization: Hmac ${REDACTED}`
+    );
+    expect(redactSecrets('Authorization: OAuth abcdef123456')).toBe(
+      `Authorization: OAuth ${REDACTED}`
+    );
+  });
+
+  it('stays fast on a long run of dashes', () => {
+    const text = '-'.repeat(50_000);
+    const started = performance.now();
+    redactSecrets(text);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it.each([
     'token expired for host-one.example.invalid (step 3)',
     'the password policy rejected the request',
     'passphrase required',
