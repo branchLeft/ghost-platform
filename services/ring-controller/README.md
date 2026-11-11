@@ -70,6 +70,45 @@ clock included, so the tests drive whole releases against fakes and a fake
 clock. `package.json` declares no runtime dependencies, and a test asserts it.
 The narrative is in `src/README.md`.
 
+## Unattended minors: the decision, switched off
+
+`src/minorEligibility.ts` is a pure function, `decideUnattendedMinor`, that
+says whether a release may reach tenants with no person in the loop, and
+`src/unattendedMinor.ts` is the thin entry (`runUnattendedMinor`) that asks it
+and then hands an eligible release to `runRelease` unchanged. Nothing calls
+that entry yet, and the flag is off, so this changes no behaviour.
+
+A release is eligible only when all of these hold, checked in this order:
+
+1. **The flag is on.** `RING_CONTROLLER_UNATTENDED_MINOR` in the environment
+   handed to the controller, exactly the word `on`. Absent, empty or any other
+   text (`true`, `1`, `ON`) is off. Off returns `declined`: nothing runs and
+   nothing is raised, because an off switch is not an incident.
+2. **Both versions are plain `X.Y.Z` tags.** A pre-release, a build suffix or
+   anything else is unreadable and refused, as an unreadable version is
+   treated as a major elsewhere in the upgrade path.
+3. **It is not a major.** A higher major is refused even when the route says
+   `fast-path`, so a mislabelled route cannot carry a major through.
+4. **It is newer than the running version, in the same major.**
+5. **The route is `fast-path`.** The release classifier's refusal stands.
+6. **A restore drill has passed recently.** The caller supplies the drill's
+   latest record (`passed` or `failed`, and when it finished). A missing,
+   failed, future-dated or non-finite record is unmet, as is one older than
+   `RESTORE_DRILL_MAX_AGE_MS` (eight days, since the drill is weekly).
+
+The rollback route under the owner's forward-only ruling is a restore of the
+backup taken just before a tenant's bump, never an automatic migration down.
+That is why the drill is a precondition and not a courtesy: while it has not
+passed, the controller refuses every release even with the flag on, and the
+refusal is a hold (an operational alert and a filed work item, the same sink
+as every other hold), not a page. A refusal maps onto the existing hold
+reasons (`consent-required` for a major or a consent route) plus two new ones,
+`restore-drill-unmet` and `version-not-eligible`.
+
+What this does not do: read the drill's record from wherever it is kept, read
+the running version from the fleet, or enable anything. Those are the wiring
+the caller supplies, and switching the flag on waits on the drill passing.
+
 ## Running this: one long-lived process, not a pipeline job
 
 This runs as a single, long-lived controller process, not as a scheduled
