@@ -9,7 +9,7 @@ not in one of these forms:
   `<public namespace>/<name>` is the public source of that digest in
   `.github/image-mirror/images.json`. With `IMAGE_REGISTRY` unset (every local
   build) Docker pulls the public image by digest with no credential. CI sets
-  `IMAGE_REGISTRY=ghcr.io/branchleft/mirror`, which selects the mirror copy of
+  `IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private`, which selects the mirror copy of
   the same digest. The default is inline, not one shared variable, because each
   image has its own public namespace.
 - `ghcr.io/branchleft/<name>:<tag>@sha256:<digest>`, an image this repo publishes,
@@ -31,12 +31,13 @@ variable form, against the list.
   address or with a port, and a `ghcr.io` path outside `branchleft/`.
 - `tag-only`: a reference with no digest, with or without a tag.
 - `no-tag`: a digest with no tag. The form requires `<name>:<tag>@sha256:<digest>`.
-- `hard-coded-mirror`: a literal `ghcr.io/branchleft/mirror/...` reference, which
+- `hard-coded-mirror`: a literal `ghcr.io/branchleft/mirror-private/...` reference, or
+  one under the retired `ghcr.io/branchleft/mirror/...` namespace, which
   would break a local build because it has no public default.
 - `bad-default`: a variable form that is malformed, or whose default is not the
   public source of the digest on the list.
 - `bad-override`: a workflow sets `IMAGE_REGISTRY` to anything other than
-  `ghcr.io/branchleft/mirror`.
+  `ghcr.io/branchleft/mirror-private`.
 - `override-no-permission`: a workflow sets `IMAGE_REGISTRY` to the mirror without
   `packages: read` (or `write`, or `read-all`/`write-all`) at workflow level or in
   the job that sets it. A comment does not grant it.

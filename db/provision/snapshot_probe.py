@@ -1008,8 +1008,11 @@ class LockSampler(threading.Thread):
         f"WHERE t.PROCESSLIST_USER = '{MOVER}';"
     )
 
-    def __init__(self, server: Server) -> None:
+    def __init__(self, server: Server, user: str | Sequence[str] = MOVER) -> None:
         super().__init__(daemon=True)
+        # The default is the class's own SQL, which a subclass may override;
+        # another account, or several, gets the same query for them.
+        self.sql = self.SQL if user == MOVER else self.sql_for(user)
         self.rows: set[tuple[str, str, str]] = set()
         self.samples = 0
         self.table_lock_samples = 0
@@ -1017,10 +1020,22 @@ class LockSampler(threading.Thread):
         self._halt = threading.Event()
         self._session = server.session()
 
+    @staticmethod
+    def sql_for(user: str | Sequence[str]) -> str:
+        users = [user] if isinstance(user, str) else list(user)
+        if not users or any(not re.fullmatch(r"\w+", name) for name in users):
+            raise ValueError(f"unexpected account names {users!r}")
+        quoted = ", ".join(f"'{name}'" for name in users)
+        return (
+            "SELECT ml.OBJECT_TYPE, ml.LOCK_TYPE, ml.LOCK_STATUS "
+            "FROM performance_schema.metadata_locks ml JOIN performance_schema.threads t ON t.THREAD_ID = ml.OWNER_THREAD_ID "
+            f"WHERE t.PROCESSLIST_USER IN ({quoted});"
+        )
+
     def run(self) -> None:
         try:
             while not self._halt.is_set():
-                lines, _ = self._session.run(self.SQL)
+                lines, _ = self._session.run(self.sql)
                 self.samples += 1
                 rows = {tuple(line.split("\t")) for line in lines}
                 self.rows |= rows
@@ -1149,16 +1164,16 @@ def wait_caught_up(replica: Server, log_file: str, position: int, timeout: float
     return f"replica did not reach {log_file}:{position} in {timeout:.0f}s (at {status.get('Relay_Source_Log_File')}:{status.get('Exec_Source_Log_Pos')})"
 
 
-def table_sums(server: Server) -> dict[str, tuple[int, int | None]]:
+def table_sums(server: Server, schema: str = BLOG) -> dict[str, tuple[int, int | None]]:
     tables = [
         row[0]
         for row in server.query(
-            f"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{BLOG}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME;"
+            f"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{schema}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME;"
         )
     ]
     if not tables:
         return {}
-    sql = "".join(f"SELECT COUNT(*) FROM {BLOG}.`{t}`; CHECKSUM TABLE {BLOG}.`{t}`;\n" for t in tables)
+    sql = "".join(f"SELECT COUNT(*) FROM {schema}.`{t}`; CHECKSUM TABLE {schema}.`{t}`;\n" for t in tables)
     lines = server.run(sql).stdout.splitlines()
     sums: dict[str, tuple[int, int | None]] = {}
     for table, (count, checksum) in zip(tables, zip(lines[0::2], lines[1::2], strict=True), strict=True):
