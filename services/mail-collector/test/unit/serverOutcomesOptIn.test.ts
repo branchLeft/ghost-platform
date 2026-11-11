@@ -66,7 +66,13 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     const shimUrl = await shim.listen();
     writeFileSync(
       join(dir, 'tenant-a.json'),
-      JSON.stringify({ kind: 'tenant', slug: 'tenant-a', appHostIp: '127.0.0.1', expiresAt: null })
+      JSON.stringify({
+        kind: 'tenant',
+        slug: 'tenant-a',
+        appHostIp: '127.0.0.1',
+        expiresAt: null,
+        mail: { identity: { kind: 'tenant', domain: 'tenant-a.example', dkimSelector: 'sel' } },
+      })
     );
     shim.enqueue({
       id: '4cfbf575-9efc-4508-bc4f-e0f9314e4844',

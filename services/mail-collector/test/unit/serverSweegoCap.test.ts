@@ -81,7 +81,10 @@ describe('dist/server.js -- the Sweego account cap and counter file are required
         slug: 'tenant-a',
         appHostIp: '127.0.0.1',
         expiresAt: null,
-        mail: { route: { primary: 'sweego', sweegoAllowance: 5 } },
+        mail: {
+          identity: { kind: 'tenant', domain: 'tenant-a.example', dkimSelector: 'sel' },
+          route: { primary: 'sweego', sweegoAllowance: 5 },
+        },
       })
     );
     shim.enqueue({
