@@ -19,6 +19,8 @@ describe('loadConfig', () => {
     expect(config.shimPort).toBe(8080);
     expect(config.drainTimeoutMs).toBe(40000);
     expect(config.messagesPerHour).toBe(50);
+    expect(config.loginMessagesPerHour).toBe(3600);
+    expect(config.bulkRampPath).toBeUndefined();
     expect(config.dedupeTtlMs).toBe(3600000);
     expect(config.dedupeStatePath).toBeUndefined();
     expect(config.smtp).toEqual({

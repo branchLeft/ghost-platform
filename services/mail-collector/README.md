@@ -19,7 +19,9 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DRAIN_RETRY_BACKOFF_MS` | no (default `2000`) | Backoff after a failed drain/ack call to one host before retrying it. |
 | `COLLECTOR_EMPTY_POLL_BACKOFF_MS` | no (default `250`) | Backoff after a `GET /drain` that answered with zero messages, before polling that host again. |
 | `COLLECTOR_MESSAGES_PER_HOUR` | no (default `50`) | The estate-wide send-rate ceiling, moved here from the shim's per-spool bucket. |
-| `COLLECTOR_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override file, `{"messagesPerHour": N}`. |
+| `COLLECTOR_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override file, `{"messagesPerHour": N}`. This is the bulk lane's ceiling. |
+| `COLLECTOR_LOGIN_MESSAGES_PER_HOUR` | no (default `3600`) | The login (transactional) lane's own ceiling. Login mail never spends bulk tokens. |
+| `COLLECTOR_BULK_RAMP_PATH` | no (off) | Optional live-reloadable bulk ramp file. Unset, bulk runs at the bulk ceiling alone. See the bulk lanes section. |
 | `COLLECTOR_DEDUPE_TTL_MS` | no (default `3600000`) | How long a submitted message id is remembered, to recognise a re-offer caused by a lost ack. |
 | `COLLECTOR_DEDUPE_STATE_PATH` | no (off) | File, on a volume that outlives the container and is writable by the `node` user, the submitted ids are kept in. Unset, the ids live in memory only: a restart forgets them and the collector logs `dedupe_not_persistent` at start-up. |
 | `COLLECTOR_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | yes / no (`587`) / yes / yes | mx1's authenticated SMTP submission endpoint. |
@@ -364,6 +366,45 @@ promise the caller could accidentally await, because awaiting a slow or
 hung ping request inside the collector's own poll loop would make the
 switch's own liveness check the next thing that wedges the worker it is
 meant to protect.
+
+### bulk and login lanes (lanes.ts)
+
+Two lanes share the drain loop. Login (transactional) mail is a wire
+message with no `emailId`; bulk mail carries one. The loop delivers each
+batch's login messages before its bulk ones, and each lane spends its own
+bucket: login the `COLLECTOR_LOGIN_MESSAGES_PER_HOUR` bucket, bulk the
+estate throttle below.
+
+The bulk rate is the lower of the configured ceiling and a ramp file
+(`COLLECTOR_BULK_RAMP_PATH`), shaped as data:
+
+```json
+{ "startedAt": "2026-11-11T00:00:00.000Z",
+  "steps": [ { "afterDays": 0, "messagesPerHour": 20 },
+             { "afterDays": 7, "messagesPerHour": 100 } ] }
+```
+
+The rate is the last step whose `afterDays` has passed. Before `startedAt`,
+the first step applies. A configured ramp that is missing or invalid runs
+bulk at 1 per hour: late, not lost. The file is re-read when its mtime
+changes; a rewrite that does not parse keeps the last good schedule.
+
+A bulk submission that mx1 answers with `421 4.7.28` or `451 4.7.650`
+halves the bulk rate for at least 10 minutes. A second such reply inside
+that hold halves it again. The reduction clears once the hold passes.
+
+Limits, stated so they are not mistaken for guarantees:
+
+- A login message that arrives while a bulk batch is being worked waits for
+  that batch to finish: the shim's drain has no class filter, so the
+  collector cannot claim login rows past the bulk ones already leased to it.
+  Lowering the wait needs a class-aware claim on the shim, a change outside
+  this service.
+- The collector sees only mx1's own replies. Receiver-side deferrals sit in
+  mx1's queue and never reach this process. Per-destination caps belong in
+  mx1's settings, not here.
+- The ramp's evidence gate (rising only on clean bounce and complaint
+  numbers) is not enforced by code: whoever edits the file applies it.
 
 ### throttle token bucket
 

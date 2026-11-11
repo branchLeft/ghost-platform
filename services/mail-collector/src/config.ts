@@ -57,6 +57,10 @@ export interface CollectorConfig {
   messagesPerHour: number;
   /** Optional live-reloadable override, same `{ "messagesPerHour": N }` shape the shim's own throttle reads. */
   throttleConfigPath?: string;
+  /** The login lane's own ceiling, in messages/hour. Login mail never spends bulk tokens. */
+  loginMessagesPerHour: number;
+  /** Optional live-reloadable bulk ramp (see lanes.ts). Unset, bulk runs at the estate ceiling alone. */
+  bulkRampPath?: string;
 
   /** How long a delivered message id is remembered, so a re-offer caused by a lost ack is recognised and never redelivered. Comfortably longer than any realistic lease-lapse-and-re-offer horizon. */
   dedupeTtlMs: number;
@@ -151,6 +155,7 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 40_000;
 const DEFAULT_DRAIN_RETRY_BACKOFF_MS = 2_000;
 const DEFAULT_EMPTY_POLL_BACKOFF_MS = 250;
 const DEFAULT_MESSAGES_PER_HOUR = 50;
+const DEFAULT_LOGIN_MESSAGES_PER_HOUR = 3600;
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_OUTCOMES_POLL_MS = 30_000;
 const DEFAULT_SHIM_SCHEME = 'http';
@@ -260,6 +265,12 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     ),
     messagesPerHour: positiveIntEnv(env, 'COLLECTOR_MESSAGES_PER_HOUR', DEFAULT_MESSAGES_PER_HOUR),
     throttleConfigPath: env.COLLECTOR_THROTTLE_CONFIG_PATH,
+    loginMessagesPerHour: positiveIntEnv(
+      env,
+      'COLLECTOR_LOGIN_MESSAGES_PER_HOUR',
+      DEFAULT_LOGIN_MESSAGES_PER_HOUR
+    ),
+    bulkRampPath: env.COLLECTOR_BULK_RAMP_PATH || undefined,
     dedupeTtlMs: positiveIntEnv(env, 'COLLECTOR_DEDUPE_TTL_MS', DEFAULT_DEDUPE_TTL_MS),
     dedupeStatePath: env.COLLECTOR_DEDUPE_STATE_PATH || undefined,
     smtp: {
