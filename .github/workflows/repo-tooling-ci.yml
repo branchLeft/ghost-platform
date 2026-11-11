@@ -102,6 +102,13 @@ jobs:
       - name: CSP script-hash derivation tests
         run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
 
+      # The Stripe checkout proof's pieces that need no Docker or browser: the
+      # fake Stripe API (it must refuse non-test keys and cards), the paid-site
+      # setup's live-key refusal, and the payment-origin derivation. node:test
+      # and node built-ins only.
+      - name: CSP payments tests
+        run: node --test csp/derive/derive-payment-origins.test.mjs csp/proof/*.test.mjs
+
       # The bundled themes and fonts (themes/README.md): the outside-origin
       # scanner, the licence manifest and the bundle verifier, each with its red
       # cases. The fetch itself needs the network and runs in the image build.

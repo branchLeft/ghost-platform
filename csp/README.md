@@ -33,6 +33,17 @@ demo-gate) keeps compiling and keeps rendering the report-only policy
 exactly as before — wiring a real, derived value through a running service
 is the harness's job (LLD-3), which does not exist in this repo yet.
 
+**Stripe** — a paid Ghost loads `https://js.stripe.com/v3/` on every page, which
+the policy above blocks. The origins a paid site needs are *measured* by
+`derive/derive-payment-origins.mjs` (a report-only run against the real
+Stripe.js) into `render-core/src/payments-origins.json`, and
+`renderEdgeSiteBlock` adds them only when given an explicit
+`{ kind: 'stripe' }` (default `none`; not a descriptor field, same rule as
+`ThemeCsp`). `gate/csp-checkout-gate.sh` proves it live: a member checks out
+with Stripe's test card and the paid state shows, with zero violations in any
+frame, and `--sabotage=no-stripe-origin` must go red. See
+`gate/csp-checkout-gate.md` for what it does and does not prove.
+
 **`proof/`** — the live proof LLD-5's own "Done means" asks for: a real
 pinned Ghost, this repo's self-hosted widget bundles (`widgets/`, so Portal
 never reaches a third-party origin), a real Caddy in front, and a real
