@@ -2,7 +2,7 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
-## Unreleased
+## 0.4.0
 
 **The descriptor can name a mail route.**
 
