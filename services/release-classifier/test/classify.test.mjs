@@ -810,3 +810,16 @@ test('an empty folder in range is the fast path; no folder in range is refused',
     );
   }
 });
+
+test('a new column that is required with no default is a schema change', () => {
+  const required = `${HEAD}module.exports = createAddColumnMigration('posts', 'x', { type: 'string', nullable: false });`;
+  const r = classifySource(required);
+  assert.deepEqual(r.schemaChange, ['add-required-column']);
+  assert.deepEqual(r.unclassified, []);
+
+  const withDefault = `${HEAD}module.exports = createAddColumnMigration('posts', 'x', { type: 'string', nullable: false, defaultTo: 'a' });`;
+  assert.deepEqual(classifySource(withDefault).schemaChange, []);
+
+  const nullable = `${HEAD}module.exports = createAddColumnMigration('posts', 'x', { type: 'string', nullable: true });`;
+  assert.deepEqual(classifySource(nullable).schemaChange, []);
+});

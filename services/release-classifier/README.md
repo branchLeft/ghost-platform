@@ -207,7 +207,8 @@ steps and `unclassified` files in total.
 - `forward-only`: any new file hits a class of the range classifier (irreversible,
   destructive, contracting or constraint), changes a column in place (`rename-column`
   for `createRenameColumnMigration`, `set-nullable` for `createSetNullableMigration`),
-  or the step is a major bump. The name-based rules are the same as above; every hit
+  adds a column that is not nullable and has no default (`add-required-column`, read when
+  the definition is an object literal), or the step is a major bump. The name-based rules are the same as above; every hit
   is listed, so a gate can read why.
 - `unclassified`: no forward-only hit, but a new file was refused or a known one is gone.
   Reversible is not established.
@@ -219,12 +220,15 @@ refuses on unreadable files reads it there. The worst class over the steps order
 reversible, then unclassified, then forward-only.
 
 Exit 0 is every step reversible. Exit 2 is any other class. Exit 1 is an error (usage,
-an unreadable tree, tags out of order, fewer than two releases): nothing is classified.
+an unreadable tree, tags out of order, fewer than two releases, two trees with no migration, the same directory
+passed for two tags): nothing is classified.
 A caller must treat any non-zero exit as not reversible.
 
-What a step class does not say: a new column that is required and has no default also
-breaks the previous image, and a column whose type changed, and neither is read here.
-The live check that boots the previous image on migrated data is the cover for those.
+What a step class does not say: a new column that is required and has no default breaks
+the previous image. That is read when its definition is an object literal in the call
+(`add-required-column`); a definition held in a variable is not read, and the live check
+that boots the previous image on migrated data is the cover for it. A column whose type
+changed is not read here, and the live check is its cover too.
 The range route above is unchanged by `rename-column` and `set-nullable`: those two are
 reported under `schemaChange` and do not move `route`.
 
@@ -233,6 +237,13 @@ reported under `schemaChange` and do not move `route`.
 The gate reads the record the step classifier printed and the upgrade about to be
 applied, and answers accepted or refused. It has no approving route and no consent
 route: a record that is not plainly reversible is refused.
+
+The gate reads each step's own tags: a step must move forward, its `majorBump` must agree
+with its tags (a record may not call a major bump minor), and tags are plain `v?MAJOR.MINOR.PATCH`
+read as written, with no padding. An impossible record is `record-unreadable`. A tag given
+as `6.65.0` against a record of `v6.65.0` is refused as `release-mismatch`: that is safe,
+and a CI caller passes the tag exactly as the record holds it. The gate never throws: a
+record that cannot be read, including a getter that throws, is a refusal.
 
     node src/steps-cli.mjs --release v6.65.0=<dir> --release v6.66.0=<dir> > record.json
     node src/gate-cli.mjs --record record.json --pinned v6.65.0 --target v6.66.0
