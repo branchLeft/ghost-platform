@@ -4,6 +4,7 @@ import type { DeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch'
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { HealthState } from './health.js';
+import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
 import type { Throttle } from './throttle.js';
@@ -12,7 +13,12 @@ export interface CollectorLoopDeps {
   store: TargetStore;
   drainClient: DrainClient;
   deliveryClient: DeliveryClient;
+  /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
   throttle: Throttle;
+  /** Optional login lane: its own bucket, so sign-in mail never spends bulk tokens. */
+  loginThrottle?: Throttle;
+  /** Optional: a receiving-side deferral on a bulk submission halves the bulk rate for a hold period. */
+  bulkCap?: BulkCap;
   dedupe: SubmittedTracker;
   health: HealthState;
   /**
@@ -55,6 +61,17 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
 
   function findTarget(id: string): DrainTarget | undefined {
     return deps.store.targets.find((t) => t.id === id);
+  }
+
+  function throttleFor(lane: Lane): Throttle {
+    return lane === 'login' ? (deps.loginThrottle ?? deps.throttle) : deps.throttle;
+  }
+
+  function inLaneOrder<T extends { emailId: string | null }>(batch: readonly T[]): T[] {
+    return [
+      ...batch.filter((m) => laneOf(m) === 'login'),
+      ...batch.filter((m) => laneOf(m) === 'bulk'),
+    ];
   }
 
   function reconcile(): void {
@@ -143,13 +160,20 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }
 
       const acks: Array<{ id: string; drainCount: number }> = [];
-      for (const message of messages) {
+      // Login mail first, so a batch that mixes it with a bulk backlog never
+      // makes sign-in mail wait for bulk tokens. Each lane spends its own bucket.
+      for (const message of inLaneOrder(messages)) {
+        const lane = laneOf(message);
         if (!deps.dedupe.has(message.id)) {
-          await deps.throttle.waitForToken();
+          await throttleFor(lane).waitForToken();
           try {
             await deps.deliveryClient.deliver(message, initialTarget.id);
           } catch (error) {
             deps.health.recordFailure();
+            if (lane === 'bulk' && deps.bulkCap && isBulkDeferral(error)) {
+              deps.bulkCap.recordDeferral();
+              deps.log.warn('bulk_deferred', { target: initialTarget.id, message: message.id });
+            }
             deps.log.warn('submission_failed', {
               target: initialTarget.id,
               message: message.id,

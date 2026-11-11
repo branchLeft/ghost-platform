@@ -75,6 +75,41 @@ describe('createThrottle', () => {
     await expect(pending).rejects.toThrow('cancelled');
   });
 
+  describe('rateFor', () => {
+    it('refills at the rate rateFor returns, not the configured one', () => {
+      let now = 0;
+      const throttle = createThrottle({
+        messagesPerHour: 3600,
+        now: () => now,
+        rateFor: () => 10,
+      });
+      throttle.tryTake(); // the grace token
+      now += 3600; // one hour at the effective 10 per hour
+      let taken = 0;
+      while (throttle.tryTake()) {
+        taken += 1;
+      }
+      expect(taken).toBe(10);
+      expect(throttle.currentRate()).toBe(10);
+    });
+
+    it('is given the configured rate and the current time in milliseconds', () => {
+      let now = 5;
+      const seen: Array<[number, number]> = [];
+      const throttle = createThrottle({
+        messagesPerHour: 77,
+        now: () => now,
+        rateFor: (configured, nowMs) => {
+          seen.push([configured, nowMs]);
+          return configured;
+        },
+      });
+      now += 1;
+      throttle.tryTake();
+      expect(seen[0]).toEqual([77, 6000]);
+    });
+  });
+
   describe('reload()', () => {
     let dir: string;
     let configPath: string;
