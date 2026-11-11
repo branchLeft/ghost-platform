@@ -48,8 +48,7 @@ dump. `settings` is not reachable by that path and carries on the order of
 a hundred rows seeded by every install's default-settings fixture, with no
 migration in the tree that truncates it wholesale.
 
-`db1`'s own `dump_nightly.py` is untouched by this file and keeps running
-exactly as it does today.
+`db1`'s own `dump_nightly.py` is untouched by this file.
 
 ## floor-check
 

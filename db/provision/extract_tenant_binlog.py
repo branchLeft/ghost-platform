@@ -30,6 +30,14 @@ SOURCE_DATA_PATTERN = re.compile(
     r"^--\s*CHANGE MASTER TO MASTER_LOG_FILE='(?P<log_file>[^']+)',\s*MASTER_LOG_POS=(?P<position>\d+);\s*$"
 )
 
+# The nightly dump of db1 is taken one schema at a time, each section opening
+# with its own resume point in this form (dump_nightly.section_comment). It is
+# deliberately not the bare form above, so a reader that only knows the bare
+# one finds none and refuses.
+SECTION_RESUME_PATTERN = re.compile(
+    r"^--\s*BRANCHLEFT-SECTION CHANGE MASTER TO MASTER_LOG_FILE='(?P<log_file>[^']+)',\s*MASTER_LOG_POS=(?P<position>\d+);\s*$"
+)
+
 # A binlog's own on-disk name: some base ending in a dot, then mysqld's
 # zero-padded numeric sequence. Matched against the filename only (never a
 # directory prefix), so where the decrypted files happen to sit on disk
@@ -95,35 +103,80 @@ def _declares_database(line: str, tenant_database: str) -> bool:
     )
 
 
+class _ResumeScanner:
+    """One pass over a dump's lines, finding the recovery position that
+    governs one database. The dump carries it in one of two forms: a single
+    bare comment for the whole dump, or one section comment per dumped
+    section, in which case the database takes the latest section comment
+    before the line that declares it."""
+
+    def __init__(self, tenant_database: str) -> None:
+        self._tenant = tenant_database
+        self.bare: tuple[str, int] | None = None
+        self._section: tuple[str, int] | None = None
+        self._first_section: tuple[str, int] | None = None
+        self._sections_seen = False
+        self.declared = False
+        self.declared_in: tuple[str, int] | None = None
+
+    def feed(self, line: str) -> None:
+        if self.bare is None:
+            self.bare = _match_resume_comment(line)
+        section = SECTION_RESUME_PATTERN.match(line)
+        if section is not None:
+            self._section = (section.group("log_file"), int(section.group("position")))
+            self._first_section = self._first_section or self._section
+            self._sections_seen = True
+        if not self.declared and _declares_database(line, self._tenant):
+            self.declared = True
+            self.declared_in = self._section
+
+    def resume_point(self) -> tuple[str, int] | None:
+        """The (file, position) that governs the database, or None if the dump
+        carries no file and position at all. Raises if it carries both forms,
+        or if the database sits in front of every section comment."""
+        if self.bare is not None and self._sections_seen:
+            raise ExtractError(
+                "dump carries both a bare '-- CHANGE MASTER TO ...' comment and per-section resume points: "
+                "the recovery position is ambiguous"
+            )
+        if not self._sections_seen:
+            return self.bare
+        if not self.declared:
+            # No database to place: the caller refuses with the typo message.
+            return self._first_section
+        if self.declared_in is None:
+            raise ExtractError(
+                f"tenant database {self._tenant!r} is declared before any section resume point in the dump: "
+                "the dump is malformed, and its position cannot be known"
+            )
+        return self.declared_in
+
+
 def find_resume_point(lines: Iterable[str], *, tenant_database: str) -> tuple[str, int]:
     """Streams `lines` once -- a file handle or any other line iterator,
     never a string this caller must first hold whole in memory -- looking
-    for both the dump's `--source-data=2` resume comment and a declaration
-    of the named tenant's database. Raises ExtractError naming whichever is
-    missing once `lines` is exhausted: a `--tenant-database` typo that
-    matches no database the dump actually carries is refused here, before
-    a single mysqlbinlog call, rather than producing an extract that
-    replays nothing while reporting success.
+    for the dump's resume point for the named tenant (one bare
+    `--source-data=2` comment, or the section comment of the section that
+    declares the tenant) and for a declaration of the tenant's database.
+    Raises ExtractError naming whichever is missing once `lines` is
+    exhausted: a `--tenant-database` typo that matches no database the dump
+    actually declares is refused here, before a single mysqlbinlog call,
+    rather than producing an extract that replays nothing while reporting
+    success.
     """
-    log_file: str | None = None
-    position: int | None = None
-    declared = False
+    scanner = _ResumeScanner(tenant_database)
     for raw_line in lines:
-        line = raw_line.rstrip("\n")
-        if log_file is None:
-            found = _match_resume_comment(line)
-            if found is not None:
-                log_file, position = found
-        if not declared and _declares_database(line, tenant_database):
-            declared = True
-    if log_file is None or position is None:
+        scanner.feed(raw_line.rstrip("\n"))
+    resume = scanner.resume_point()
+    if resume is None:
         raise ExtractError("dump has no '-- CHANGE MASTER TO ...' comment; was it taken with --source-data=2?")
-    if not declared:
+    if not scanner.declared:
         raise ExtractError(
             f"tenant database {tenant_database!r} is not declared anywhere in the dump (no matching "
             "CREATE DATABASE/USE) -- check --tenant-database for a typo, or that this is the right dump"
         )
-    return log_file, position
+    return resume
 
 
 class RecoveryStart(NamedTuple):
@@ -141,25 +194,22 @@ def find_recovery_start(lines: Iterable[str], *, tenant_database: str) -> Recove
     form it carries, and for the tenant's declaration. A dump with both forms
     or neither is refused: the position must be one thing, read from one
     place."""
-    comment: tuple[str, int] | None = None
-    scanner = gtid_snapshot.PurgedStatementScanner()
-    declared = False
+    scanner = _ResumeScanner(tenant_database)
+    gtid_scanner = gtid_snapshot.PurgedStatementScanner()
     for raw_line in lines:
         line = raw_line.rstrip("\n")
-        if comment is None:
-            comment = _match_resume_comment(line)
+        scanner.feed(line)
         try:
-            scanner.feed(line)
+            gtid_scanner.feed(line)
         except gtid_snapshot.GtidError as exc:
             raise ExtractError(str(exc)) from None
-        if not declared and _declares_database(line, tenant_database):
-            declared = True
     try:
-        gtid_position = scanner.require_position()
+        gtid_position = gtid_scanner.require_position()
     except gtid_snapshot.NoGtidStatement:
         gtid_position = None
     except gtid_snapshot.GtidError as exc:
         raise ExtractError(str(exc)) from None
+    comment = scanner.resume_point()
     if comment is not None and gtid_position is not None:
         raise ExtractError(
             "dump carries both a '-- CHANGE MASTER TO ...' comment and a GTID_PURGED statement: "
@@ -170,7 +220,7 @@ def find_recovery_start(lines: Iterable[str], *, tenant_database: str) -> Recove
             "dump has no '-- CHANGE MASTER TO ...' comment; was it taken with --source-data=2? "
             "It has no GTID_PURGED statement either (--set-gtid-purged=ON)"
         )
-    if not declared:
+    if not scanner.declared:
         raise ExtractError(
             f"tenant database {tenant_database!r} is not declared anywhere in the dump (no matching "
             "CREATE DATABASE/USE) -- check --tenant-database for a typo, or that this is the right dump"

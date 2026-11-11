@@ -230,6 +230,71 @@ class FindResumePointTests(unittest.TestCase):
             os.unlink(path)
 
 
+# A nightly dump taken one schema at a time: each section opens with its own
+# resume point, and the databases it declares are governed by that one.
+# `mysql` rides in the first section, as the nightly dump puts it.
+DUMP_IN_SECTIONS = """\
+-- BRANCHLEFT-SECTION CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000003', MASTER_LOG_POS=1653;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `tenant_a` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;
+USE `tenant_a`;
+CREATE TABLE `posts` (...);
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `mysql` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;
+USE `mysql`;
+-- BRANCHLEFT-SECTION CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000004', MASTER_LOG_POS=90;
+CREATE DATABASE /*!32312 IF NOT EXISTS*/ `tenant_b` /*!40100 DEFAULT CHARACTER SET utf8mb4 */;
+USE `tenant_b`;
+CREATE TABLE `posts` (...);
+"""
+
+
+class SectionedDumpResumePointTests(unittest.TestCase):
+    def test_each_database_resumes_from_the_section_that_declares_it(self):
+        for tenant, expected in (
+            ("tenant_a", ("mysql-bin.000003", 1653)),
+            ("mysql", ("mysql-bin.000003", 1653)),
+            ("tenant_b", ("mysql-bin.000004", 90)),
+        ):
+            with self.subTest(tenant=tenant):
+                self.assertEqual(etb.parse_dump_resume_point(DUMP_IN_SECTIONS, tenant_database=tenant), expected)
+                self.assertEqual(
+                    etb.parse_dump_recovery_start(DUMP_IN_SECTIONS, tenant_database=tenant),
+                    etb.RecoveryStart(expected[0], expected[1], None),
+                )
+
+    def test_a_database_the_dump_does_not_declare_is_refused(self):
+        with self.assertRaisesRegex(etb.ExtractError, "not declared"):
+            etb.parse_dump_recovery_start(DUMP_IN_SECTIONS, tenant_database="tenant_c")
+
+    def test_a_database_declared_before_any_section_comment_is_refused(self):
+        text = "USE `tenant_a`;\n" + DUMP_IN_SECTIONS
+        with self.assertRaisesRegex(etb.ExtractError, "before any"):
+            etb.parse_dump_recovery_start(text, tenant_database="tenant_a")
+
+    def test_a_dump_with_both_forms_is_ambiguous(self):
+        text = "-- CHANGE MASTER TO MASTER_LOG_FILE='mysql-bin.000001', MASTER_LOG_POS=4;\n" + DUMP_IN_SECTIONS
+        with self.assertRaisesRegex(etb.ExtractError, "ambiguous"):
+            etb.parse_dump_recovery_start(text, tenant_database="tenant_b")
+        with self.assertRaisesRegex(etb.ExtractError, "ambiguous"):
+            etb.parse_dump_resume_point(text, tenant_database="tenant_b")
+
+    def test_sections_and_a_gtid_set_are_ambiguous(self):
+        text = "SET @@GLOBAL.GTID_PURGED=/*!80000 '+'*/ 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee:1-5';\n" + DUMP_IN_SECTIONS
+        with self.assertRaisesRegex(etb.ExtractError, "ambiguous"):
+            etb.parse_dump_recovery_start(text, tenant_database="tenant_b")
+
+    def test_the_bare_form_is_unchanged_and_the_section_form_is_not_the_bare_form(self):
+        self.assertIsNone(etb.SOURCE_DATA_PATTERN.match(DUMP_IN_SECTIONS.splitlines()[0]))
+        self.assertEqual(
+            etb.parse_dump_resume_point(DUMP_WITH_RESUME_POINT, tenant_database="tenant_b"), ("mysql-bin.000003", 1653)
+        )
+
+    def test_a_reader_of_only_the_bare_form_finds_none_in_a_sectioned_dump(self):
+        # Fail closed: the shape every earlier reader looks for is absent.
+        self.assertFalse(
+            [line for line in DUMP_IN_SECTIONS.splitlines() if etb.SOURCE_DATA_PATTERN.match(line)]
+        )
+
+
 class AssertContiguousTests(unittest.TestCase):
     def test_single_file_is_always_fine(self):
         etb.assert_contiguous(["mysql-bin.000003"])  # must not raise

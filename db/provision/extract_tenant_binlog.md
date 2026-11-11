@@ -54,7 +54,15 @@ reads either (`find_recovery_start`, returning a `RecoveryStart`):
 
 - **File and position**: the `-- CHANGE MASTER TO MASTER_LOG_FILE=...,
   MASTER_LOG_POS=...;` comment the bounded snapshot writes. Replay starts at
-  that position in that file (above).
+  that position in that file (above). db1's nightly dump is taken one schema
+  at a time and carries one such comment per section, in the form
+  `-- BRANCHLEFT-SECTION CHANGE MASTER TO ...` (`dump_nightly.section_comment`).
+  The position for a database is that of the latest section comment before
+  the line that declares it, so a database dumped in the first section and one
+  dumped in the fifth each start from their own. Both forms in one dump, or a
+  database declared before any section comment, are refused: the position is
+  one thing, read from one place. The section form is not matched by the bare
+  pattern, so a reader that predates it finds no comment and refuses.
 - **GTID set**: the `SET @@GLOBAL.GTID_PURGED=...` statement of a lock-free
   dump (`gtid_snapshot.md`): exactly the transactions the dump holds. No file
   or position is involved. Replay runs every given file with

@@ -25,21 +25,67 @@ next scheduled one rather than resumed.
 
 ## The snapshot
 
-The dump's first line is the binary-log resume point, in the commented
-form `--source-data=2` used to write and the PITR restore drill reads:
-`-- CHANGE MASTER TO MASTER_LOG_FILE='…', MASTER_LOG_POS=…;`.
-`--source-data` itself is no longer passed: it takes
-`FLUSH TABLES WITH READ LOCK`, and a flush stuck behind any tenant's long
-query stalls writers on that query's table for as long as the query runs,
-even after the flush is killed or times out. The snapshot and its
-position come from `bounded_snapshot.py` instead: `LOCK TABLES … READ` on
-every base table of every user schema, with the wait bounded by the
-server, the hold bounded by this script, abort and retry, and a loud
-failure after the last retry. See bounded_snapshot.md.
+The dump is taken one user schema at a time, in name order. Each schema's
+snapshot comes from `bounded_snapshot.py`: `LOCK TABLES … READ` on that
+schema's base tables and no others, with the wait bounded by the server, the
+hold bounded by this script, abort and retry, and a loud failure after the
+last retry. See bounded_snapshot.md. Under the lock it reads the binary-log
+position and opens `mysqldump --single-transaction --databases <schema>`,
+then unlocks; the next schema's snapshot starts when that dump has finished.
+`FLUSH TABLES WITH READ LOCK` is never taken: `--source-data` is no longer
+passed because it takes it, and a flush stuck behind any tenant's long query
+stalls writers on that query's table for as long as the query runs, even
+after the flush is killed or times out.
 
-The lock covers user schemas only. `mysql` and `sys` are still dumped
-from the same snapshot; only an account change made in the instant of the
-hold falls outside the position.
+**No lock names tables of two schemas.** One statement over every schema made
+every tenant wait for the slowest one, and a retry for any tenant's timeout
+re-locked all of them. Now a tenant's tables are locked once per attempt, and
+an attempt is repeated only for that tenant's own contention. What this does
+not remove: a multi-table write transaction of the schema being locked that
+holds a later table and asks for an earlier one is still the deadlock victim
+(error 1213) of that schema's own `LOCK TABLES`, because the server locks in
+name order and rolls the transaction back, not the lock request. That
+exposure is bounded (one schema, up to the attempt limit in
+bounded_snapshot.md) and not zero. Removing it needs a snapshot that takes no
+table lock at all.
+
+Each section opens with its own resume point, ahead of the schema's dump:
+`-- BRANCHLEFT-SECTION CHANGE MASTER TO MASTER_LOG_FILE='…', MASTER_LOG_POS=…;`.
+It is not the bare `-- CHANGE MASTER TO …` comment `--source-data=2` wrote, so
+a reader that only knows the bare form finds none and refuses, instead of
+replaying every schema from the first schema's position. The first section
+also carries `mysql`, `sys` and any user schema with no base table, which are
+never locked (they have nothing a tenant writes, or nothing to lock), so
+those are governed by the first section's position, as they were by the one
+position before.
+
+### What a restore can rely on
+
+Kept: every user schema's dump is a consistent snapshot at the binary-log
+position written in front of it, so point-in-time recovery of one tenant
+works exactly as before, and `extract_tenant_binlog.py` reads that tenant's
+own position (the section that declares the schema). A host-loss restore
+(load the dump, no binlogs) still brings back every schema in one file under
+one object key, with `mysql` and `sys` included. An instance-level
+point-in-time restore replays the binary logs once per database, each from
+its own position and to the same stop time (`db/RUNBOOK-db.md`, Drill A).
+
+Changed: the schemas are no longer all at one instant. Each is consistent
+with itself and with its own position; nothing relates one tenant's snapshot
+to another's, and no tenant's data spans two schemas. A replay from one
+position over every schema, as the single header allowed, would now apply
+events a later section already holds, which is why the one shared comment is
+gone.
+
+A schema that no longer exists when its turn comes is left out and named on
+stderr, but only after the server confirms it is gone; a schema that merely
+cannot be locked fails the whole run, as one that could not be locked always
+did. A schema created after the run listed them is not in that night's dump,
+as one created after a single snapshot never was.
+
+The lock covers user schemas only. `mysql` and `sys` are still dumped from
+the first section's snapshot; only an account change made in the instant of
+the hold falls outside the position.
 
 The `backup` account needs `LOCK TABLES` (already granted) and
 `BACKUP_ADMIN`, and no longer needs `RELOAD`. Until db1's grant is
@@ -60,7 +106,9 @@ Each run writes `dump_nightly_lock_bound.prom` to `DB_DUMP_METRICS_DIR`
 metric names the control host's worker publishes, under
 `tenant="db1-all-databases"`: `backup_worker_lock_wait_seconds`,
 `backup_worker_lock_hold_seconds` and the cumulative
-`backup_worker_lock_aborts_total`, which a failed run still advances.
+`backup_worker_lock_aborts_total`, which a failed run still advances. With
+one snapshot per schema, the two gauges are the worst single schema's wait and
+hold in the run, and the counter adds up every schema's aborted attempts.
 Writing is best-effort: a metrics failure never fails the dump.
 
 ### Run status

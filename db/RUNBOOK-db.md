@@ -449,8 +449,8 @@ CREATE USER 'exporter'@'localhost' IDENTIFIED BY '<matches EXPORTER_MYSQL_PWD>';
 GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'localhost';
 GRANT SELECT ON performance_schema.* TO 'exporter'@'localhost';
 
--- dump_nightly.py: enough to run mysqldump --all-databases --single-transaction
--- under bounded_snapshot.py's table locks (LOCK TABLES) and read the
+-- dump_nightly.py: enough to run mysqldump --single-transaction, one schema
+-- at a time, under bounded_snapshot.py's table locks (LOCK TABLES) and read the
 -- position from performance_schema.log_status (BACKUP_ADMIN), plus
 -- SELECT @@server_uuid. No RELOAD: this account cannot take a global
 -- read lock.
@@ -611,37 +611,45 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
    docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      age -d -i age-private-key.txt -o mysql-bin.NNNNNN "binlogs/<server-uuid>/db1-mysql-bin.NNNNNN.age"
    ```
-4. Load the dump, then replay binlog events up to the target timestamp,
-   both through the recovery image's own `mysql`/`mysqlbinlog` -- `MYSQL_PWD`
-   rather than an interactive `-p` because stdin here is already the piped
-   dump/binlog stream, the same reason step 3's admin bootstrap above uses
-   it. The dump's header (from `--source-data=2`) names the exact
-   `MASTER_LOG_FILE`/`MASTER_LOG_POS` to resume from. **`--stop-datetime` is
-   UTC** -- pick the target timestamp in UTC (step 1) and pass `-e TZ=UTC`
-   to the `mysqlbinlog` container, since it otherwise evaluates the cutoff
-   in whichever timezone the container's own default happens to be in:
+4. Load the dump through the recovery image's own `mysql` -- `MYSQL_PWD`
+   rather than an interactive `-p` because stdin here is the piped dump, the
+   same reason step 3's admin bootstrap above uses it:
    ```bash
    read -rs MYSQL_PWD; export MYSQL_PWD
    docker run --rm -i -e MYSQL_PWD -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      mysql --host <scratch-host> -uroot < dump.sql
-   docker run --rm -i -e MYSQL_PWD -e TZ=UTC -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
-     bash -c 'mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp, UTC>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot'
    unset MYSQL_PWD
    ```
+   Then replay the binlogs up to the target timestamp **once for every
+   database the dump declares**, each from its own resume point. db1's
+   nightly dump is taken one schema at a time, and each section opens with
+   its own `-- BRANCHLEFT-SECTION CHANGE MASTER TO ...` line: there is no
+   single position to start every database from, and replaying from one
+   schema's position would apply events another schema's section already
+   holds. `db/provision/extract_tenant_binlog.py` reads the right position
+   for the database it is told to replay (the command is under "The replay,
+   one database at a time" below). List the databases the dump declares, and run that
+   command for each, with the same `--stop-datetime`, which is **UTC**:
+   ```bash
+   grep -oE '^USE `[^`]+`' dump.sql
+   ```
+   `mysql` and `sys` are in the list: they sit in the first section and
+   take its position. A database whose events are not wanted back (a
+   tenant restored on its own) is simply left out.
 5. Confirm a row known to have changed after the dump and before the target
    timestamp is present, and that nothing after the target timestamp is.
 
-**Scoping the replay to one tenant.** Step 4 above brings back every
-tenant's post-dump writes together -- correct for the instance-level
-scenario Drill A proves, wrong for "we deleted forty posts yesterday", where
-every *other* tenant's writes since the dump must stay out of the restored
-database. `db/provision/extract_tenant_binlog.py` replaces step 4's raw
-`mysqlbinlog | mysql` pipe with a scoped equivalent for that case: it reads
-the dump's own `--source-data=2` resume point, so the position does not
-have to be copied out of the dump header by hand, adds mysqlbinlog's own
-`--database=<tenant>` row-event filter to the replay, and always runs
-`mysqlbinlog` with `TZ=UTC` itself -- **`--stop-datetime` below is UTC**,
-the same as step 4's.
+**The replay, one database at a time.** Run once for every database in
+step 4, it brings back every tenant's post-dump writes together -- the
+instance-level scenario Drill A proves -- and run for one database alone it
+is the recovery for "we deleted forty posts yesterday", where every *other*
+tenant's writes since the dump must stay out of the restored database.
+`db/provision/extract_tenant_binlog.py` reads the resume point of the
+section that declares the database (the bare `--source-data=2` comment, for
+a dump taken that way), so the position does not have to be copied out of
+the dump by hand, adds mysqlbinlog's own `--database=<tenant>` row-event
+filter to the replay, and always runs `mysqlbinlog` with `TZ=UTC` itself --
+**`--stop-datetime` below is UTC**.
 
 Read the scratch-host root password into the shell rather than typing it on
 the command line, where it would land in shell history. The script's own
