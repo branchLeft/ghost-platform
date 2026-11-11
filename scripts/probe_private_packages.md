@@ -39,13 +39,24 @@ is probed and printed as `DERIVED-INVENTORY <served|private|gone|unknown>`, with
 a summary line, and none fails the run. An unknown answer is printed, never
 dropped.
 
-The retired public namespace (<owner>/mirror/<name>, see scripts/mirror-images.md)
-is probed and reported as an inventory. GitHub cannot make a public package
-private again, so those stay public until the owner deletes them; served, now
-private or gone is each reported and none fails the run.
+The retired public namespaces are probed and reported as an inventory, each row
+printed `LEGACY-PUBLIC <served|refused|missing|unknown> <repo>`:
+
+- `<owner>/mirror/<name>`, for every name in the mirror list;
+- `<owner>/mirror-private/<name>`, for every name in the frozen "retired_private"
+  list in private-packages.json. The mirror first wrote there and the packages
+  were created public, not private as intended; the namespace was abandoned for
+  `mirror-private2` rather than reused.
+
+See scripts/mirror-images.md. GitHub cannot make a public package private again,
+so those stay public until the owner deletes them; served, now private, gone or
+unknown is each reported and none fails the run. The "retired_private" list may
+be absent; when present it must be a non-empty list of package names with no
+repeats. Its names may repeat the current mirror names, since the same images
+were published under both namespaces.
 
 Exit 0: every mirror package refused (401) and the control served, whatever the
-derived inventory says.
+derived inventory and the retired namespaces say.
 Exit 1: a mirror package served, missing or unknown, or the control not served.
 Exit 2: a list is unreadable or inconsistent with the mirror list, including an
-unreadable or repeated derived name.
+unreadable or repeated derived or retired_private name.

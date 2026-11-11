@@ -1,7 +1,7 @@
 name: Image mirror
 
 # Copies every third-party image in .github/image-mirror/images.json to
-# ghcr.io/branchleft/mirror-private/<name> by digest, then reads each back and checks
+# ghcr.io/branchleft/mirror-private2/<name> by digest, then reads each back and checks
 # the manifest bytes hash to the listed digest. Docker Hub rate-limits
 # anonymous pulls per runner address, so the mirror gives CI a copy it can read
 # with the run's own token; this is the only job that touches the upstream

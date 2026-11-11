@@ -19,8 +19,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REAL_IMAGES = REPO_ROOT / ".github" / "image-mirror" / "images.json"
 REAL_LIST = REPO_ROOT / ".github" / "image-mirror" / "private-packages.json"
 CONTROL = "branchleft/ghost-tenant"
-MIRROR_GHOST = "branchleft/mirror-private/ghost"
+MIRROR_GHOST = "branchleft/mirror-private2/ghost"
 LEGACY_GHOST = "branchleft/mirror/ghost"
+# The namespace the mirror wrote to before mirror-private2: published public by
+# mistake, informational only, never a failure.
+RETIRED_PRIVATE_GHOST = "branchleft/mirror-private/ghost"
 DERIVED_RECOVERY = "branchleft/db-recovery"
 
 
@@ -37,6 +40,11 @@ def real_private_repos() -> set[str]:
 def real_legacy_repos() -> set[str]:
     images = json.loads(REAL_IMAGES.read_text())
     return {f"branchleft/mirror/{entry['name']}" for entry in images["images"]}
+
+
+def real_retired_private_repos() -> set[str]:
+    private = json.loads(REAL_LIST.read_text())
+    return {f"branchleft/mirror-private/{name}" for name in private["retired_private"]}
 
 
 def scope_repo(path: str) -> str:
@@ -144,8 +152,10 @@ class RealFilesTest(unittest.TestCase):
         self.assertIn(f"[{MIRROR_GHOST!r}]", out)
         self.assertNotIn(f"'{DERIVED_RECOVERY}'", out)
 
-    def test_probes_the_current_names_and_the_retired_public_set(self) -> None:
-        registry = FakeRegistry(served={CONTROL} | real_legacy_repos())
+    def test_probes_the_current_names_and_the_retired_public_sets(self) -> None:
+        registry = FakeRegistry(
+            served={CONTROL} | real_legacy_repos() | real_retired_private_repos()
+        )
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 0, out)
         probed = {
@@ -155,19 +165,60 @@ class RealFilesTest(unittest.TestCase):
         }
         self.assertIn(MIRROR_GHOST, probed)
         self.assertIn(LEGACY_GHOST, probed)
+        self.assertIn(RETIRED_PRIVATE_GHOST, probed)
         self.assertIn(DERIVED_RECOVERY, probed)
         self.assertEqual(
-            probed, {CONTROL} | real_private_repos() | real_legacy_repos()
+            probed,
+            {CONTROL}
+            | real_private_repos()
+            | real_legacy_repos()
+            | real_retired_private_repos(),
         )
         self.assertIn(f"LEGACY-PUBLIC served {LEGACY_GHOST}", out)
+        self.assertIn(f"LEGACY-PUBLIC served {RETIRED_PRIVATE_GHOST}", out)
 
     def test_retired_public_packages_served_or_gone_do_not_fail_the_run(self) -> None:
         # GitHub cannot make a public package private; the owner deletes them later.
-        for served in (real_legacy_repos(), set()):
+        both = real_legacy_repos() | real_retired_private_repos()
+        for served in (real_legacy_repos(), real_retired_private_repos(), both, set()):
             registry = FakeRegistry(served={CONTROL} | served)
             code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
             self.assertEqual(code, 0, out)
             self.assertIn("PRIVATE PROBE OK", out)
+
+    def test_retired_private_namespace_row_is_reported_whatever_its_state(self) -> None:
+        # Public (not yet deleted), private, deleted, and an unknown answer: each
+        # is printed as a LEGACY-PUBLIC row and none turns the run red.
+        states = {
+            "served": FakeRegistry(served={CONTROL, RETIRED_PRIVATE_GHOST}),
+            "refused": FakeRegistry(
+                served={CONTROL},
+                existing=real_private_repos() | {RETIRED_PRIVATE_GHOST},
+            ),
+            "missing": FakeRegistry(served={CONTROL}),
+            "unknown": FakeRegistry(
+                served={CONTROL}, token_500={RETIRED_PRIVATE_GHOST}
+            ),
+        }
+        for verdict, registry in states.items():
+            code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+            self.assertEqual(code, 0, f"{verdict}: {out}")
+            self.assertIn(f"LEGACY-PUBLIC {verdict} {RETIRED_PRIVATE_GHOST}", out)
+            self.assertIn("PRIVATE PROBE OK", out)
+
+    def test_a_current_name_served_is_red_with_the_retired_ones_gone(self) -> None:
+        registry = FakeRegistry(served={CONTROL, MIRROR_GHOST})
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"LEGACY-PUBLIC missing {RETIRED_PRIVATE_GHOST}", out)
+        self.assertIn("PRIVATE PROBE FAILED", out)
+
+    def test_the_retired_private_list_is_the_nineteen_published_names(self) -> None:
+        # A record of what was published under the retired namespace: frozen, it
+        # does not grow when the mirror list does.
+        private = json.loads(REAL_LIST.read_text())
+        self.assertEqual(len(private["retired_private"]), 19)
+        self.assertEqual(len(set(private["retired_private"])), 19)
 
     def test_red_when_the_control_is_not_served(self) -> None:
         registry = FakeRegistry(served=set())
@@ -185,14 +236,14 @@ class EmptyNamespaceTest(unittest.TestCase):
         registry = FakeRegistry(served={CONTROL}, existing=set())
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
-        self.assertIn("missing branchleft/mirror-private/ghost", out)
+        self.assertIn("missing branchleft/mirror-private2/ghost", out)
         self.assertIn("DERIVED-INVENTORY gone branchleft/db-recovery", out)
         self.assertIn("PRIVATE PROBE FAILED", out)
         self.assertNotIn("PRIVATE PROBE OK", out)
 
     def test_red_when_the_packages_are_only_in_the_old_namespace(self) -> None:
-        # The packages moved to mirror-private; the old namespace is all that exists.
-        existing = real_private_repos() - {MIRROR_GHOST} | {LEGACY_GHOST}
+        # The packages moved to mirror-private2; the old namespaces are all that exist.
+        existing = real_private_repos() - {MIRROR_GHOST} | {LEGACY_GHOST, RETIRED_PRIVATE_GHOST}
         registry = FakeRegistry(served={CONTROL}, existing=existing)
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
@@ -307,7 +358,7 @@ class ListValidationTest(unittest.TestCase):
     def images(
         self,
         tmp: Path,
-        registry: str = "branchleft.example/branchleft/mirror-private",
+        registry: str = "branchleft.example/branchleft/mirror-private2",
         names: tuple[str, ...] = ("ghost",),
     ) -> Path:
         data = {"registry": registry, "images": [{"name": n} for n in names]}
@@ -393,6 +444,40 @@ class ListValidationTest(unittest.TestCase):
                 listing = self.write(tmp, "private.json", data)
                 code, _ = run_probe(images, listing, FakeRegistry(served={CONTROL}))
                 self.assertEqual(code, 2, repr(derived))
+
+    def test_retired_private_list_unreadable_is_a_list_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            for retired in ([], "ghost", ["Bad Name"], ["ghost", "ghost"]):
+                data = {
+                    "mirror": ["ghost"],
+                    "derived": ["db-recovery"],
+                    "control": "ghost-tenant",
+                    "retired_private": retired,
+                }
+                listing = self.write(tmp, "private.json", data)
+                code, _ = run_probe(images, listing, FakeRegistry(served={CONTROL}))
+                self.assertEqual(code, 2, repr(retired))
+
+    def test_retired_private_name_may_repeat_a_current_name(self) -> None:
+        # The same 19 names exist under both namespaces; that is not a repeat.
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            data = {
+                "mirror": ["ghost"],
+                "derived": ["db-recovery"],
+                "control": "ghost-tenant",
+                "retired_private": ["ghost"],
+            }
+            listing = self.write(tmp, "private.json", data)
+            registry = FakeRegistry(
+                served={CONTROL}, existing={"branchleft/mirror-private2/ghost"}
+            )
+            code, out = run_probe(images, listing, registry)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"LEGACY-PUBLIC missing {RETIRED_PRIVATE_GHOST}", out)
 
     def test_token_without_a_token_field_is_unknown(self) -> None:
         self.assertIsNone(probe.read_token(b"not json"))

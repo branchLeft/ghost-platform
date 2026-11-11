@@ -28,9 +28,11 @@ PACKAGE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 # Only 401 says "exists, not public". 403 and 404 say "no such package".
 REFUSED_STATUS = 401
 MISSING_STATUSES = frozenset({403, 404})
-# The namespace the mirror used before it moved to mirror-private. Its packages
-# were published public and are not changed by this repository.
+# The namespaces the mirror wrote to before mirror-private2. Their packages were
+# published public and are not changed by this repository; they are reported,
+# never failed on (scripts/probe_private_packages.md).
 LEGACY_PUBLIC_NAMESPACE = "mirror"
+RETIRED_PRIVATE_NAMESPACE = "mirror-private"
 TIMEOUT_SECONDS = 30.0
 
 
@@ -117,6 +119,7 @@ class PrivateList:
     mirror: list[str]
     derived: list[str]
     control: str
+    retired_private: list[str]
 
 
 def load_private_list(list_path: Path) -> PrivateList:
@@ -136,7 +139,22 @@ def load_private_list(list_path: Path) -> PrivateList:
         raise ProbeListError("a package name appears more than once")
     if control in everything:
         raise ProbeListError("the control must not be in the private list")
-    return PrivateList(mirror=mirror, derived=derived, control=control)
+    # Absent means no retired-namespace rows; present, it must be a clean list.
+    # The same names may appear under the current namespace, so it is not part
+    # of the repeat check above.
+    retired_private = (
+        _names(data["retired_private"], "retired_private")
+        if "retired_private" in data
+        else []
+    )
+    if len(set(retired_private)) != len(retired_private):
+        raise ProbeListError("a retired_private name appears more than once")
+    return PrivateList(
+        mirror=mirror,
+        derived=derived,
+        control=control,
+        retired_private=retired_private,
+    )
 
 
 def _names(value: object, key: str) -> list[str]:
@@ -248,6 +266,13 @@ def run(images_path: Path, list_path: Path, transport: Transport) -> int:
             transport, host, f"{owner}/{LEGACY_PUBLIC_NAMESPACE}/{name}"
         )
         print(f"LEGACY-PUBLIC {legacy.verdict.value} {legacy.repo}: {legacy.detail}")
+    # The previous private-looking namespace, created public by mistake: the same
+    # inventory, from its own frozen list of what was published there.
+    for name in private.retired_private:
+        retired = check_package(
+            transport, host, f"{owner}/{RETIRED_PRIVATE_NAMESPACE}/{name}"
+        )
+        print(f"LEGACY-PUBLIC {retired.verdict.value} {retired.repo}: {retired.detail}")
     if failed:
         print(
             f"PRIVATE PROBE FAILED: {len(failed)} package(s) readable, missing or unknown: {failed}"
