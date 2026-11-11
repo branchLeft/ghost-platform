@@ -71,17 +71,21 @@ function fixture(files) {
 const manifest = (deps, extra = {}) =>
   JSON.stringify({ name: 'x', packageManager: 'pnpm@11.17.0', ...extra, dependencies: deps });
 
-test('starts on pull_request alone, never pull_request_target', () => {
+test('starts on pull_request and push to main, never pull_request_target', () => {
   const on = body.match(/^on:\n((?:[ \t]+.*\n|\n)+)/m);
   assert.ok(on, 'has an on: block');
   const triggers = [...on[1].matchAll(/^ {2}([A-Za-z_]+):/gm)].map((m) => m[1]);
-  assert.deepEqual(triggers, ['pull_request']);
+  assert.deepEqual(triggers, ['pull_request', 'push']);
   assert.doesNotMatch(body, /pull_request_target/);
-  assert.match(on[1], /'\*\*\/package\.json'/);
+  assert.match(on[1], /push:\n {4}branches: \[main\]\n/);
+  assert.equal(on[1].match(/'\*\*\/package\.json'/g).length, 2);
 });
 
 test('both jobs skip a pull request from a fork', () => {
-  const guard = 'github.event.pull_request.head.repo.full_name == github.repository';
+  // A push event only ever comes from this repository; the second clause is
+  // the guard a pull request must pass, and the one a fork fails.
+  const guard =
+    "github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')";
   assert.ok(jobText('select').includes(`if: ${guard}`));
   const refresh = jobText('refresh');
   assert.match(refresh, /needs: select/);

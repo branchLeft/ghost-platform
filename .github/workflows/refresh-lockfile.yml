@@ -10,8 +10,8 @@ name: Refresh stale lockfile (artifact only)
 # branch commits the artifact as an ordinary signed commit, so the push starts
 # the pull request's checks on the real head.
 #
-# `pull_request` only, never `pull_request_target`: the job runs the pull
-# request's own files. A pull request from a fork is skipped by the `if:` on
+# `pull_request` (plus a push to `main`, below), never `pull_request_target`:
+# the job runs the pull request's own files. A pull request from a fork is skipped by the `if:` on
 # both jobs and in any case receives a read-only token with no package access.
 # A pull request opened by Dependabot is skipped too: its token cannot read the
 # registry and the run would only be noise. See README-refresh-lockfile.md for
@@ -21,6 +21,13 @@ name: Refresh stale lockfile (artifact only)
 # pass through `env:`, and the project list is data read by a script.
 on:
   pull_request:
+    paths:
+      - '**/package.json'
+  # The same check on `main` (standards CI-3): a push that changes a package.json
+  # is compared with the commit before it, so a lockfile that reached `main`
+  # stale is reported there too.
+  push:
+    branches: [main]
     paths:
       - '**/package.json'
 
@@ -38,7 +45,7 @@ jobs:
     name: Find changed pnpm projects
     # Same-repository pull requests only. Evaluated on the event payload, not on
     # anything the pull request's files can change.
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     # Observed: not yet run. A checkout, one git diff and one script.
     timeout-minutes: 5
@@ -54,15 +61,15 @@ jobs:
       - name: Checkout the pull request head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Select the changed pnpm projects that consume @branchleft packages
         id: select
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           git diff -z --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
@@ -90,7 +97,7 @@ jobs:
       - name: Checkout the pull request head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Confirm the project has an .nvmrc

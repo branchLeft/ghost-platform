@@ -33,8 +33,10 @@ file does not touch `generate-lockfile.yml`.
 
 ## Untrusted code
 
-- `pull_request` only, never `pull_request_target`. The job runs the pull
-  request's own files, so it must never have the base repository's secrets.
+- `pull_request`, never `pull_request_target`. The job runs the pull request's
+  own files, so it must never have the base repository's secrets. It also runs
+  on a push to `main` that changes a `package.json` (standards CI-3), comparing
+  with the commit before; that event only ever comes from this repository.
 - A pull request from a fork is skipped by the `if:` on the first job (the
   second needs it) and receives a read-only token with no package access in any
   case. A Dependabot pull request is skipped too.
