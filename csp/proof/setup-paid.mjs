@@ -10,8 +10,15 @@
 // reach a Ghost this proof configures. The keys are synthetic strings made up
 // per run by the gate -- Ghost only validates their shape (`sk_test_` plus
 // alphanumerics) -- and the Stripe it talks to is csp/proof/fake-stripe.mjs.
+// In the opt-in real test mode they are the owner's own test-mode keys instead.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { assertLocalTenant, redactSecrets, secretValues } from './real-test-mode.mjs';
+
+// Set by the gate when the owner's real Stripe test-mode keys are in play: the
+// keys may then only be sent to the local disposable tenant, and nothing this
+// script prints may carry one.
+const REAL_TEST_MODE = process.env.PROOF_REAL_TEST_MODE === '1';
 
 const ORIGIN = process.env.PROOF_ORIGIN || 'http://localhost:4321';
 const COOKIE = process.env.PROOF_SESSION_COOKIE;
@@ -46,6 +53,7 @@ async function call(path, method, body) {
 
 async function main() {
   assertTestKeys(SECRET_KEY, PUBLISHABLE_KEY);
+  if (REAL_TEST_MODE) assertLocalTenant(ORIGIN);
   if (!COOKIE) throw new Error('PROOF_SESSION_COOKIE is required (setup-content.mjs prints it)');
 
   await call('/ghost/api/admin/settings/', 'PUT', {
@@ -90,7 +98,8 @@ const launchedDirectly = (() => {
 
 if (launchedDirectly) {
   main().catch((err) => {
-    console.error(err.message || err);
+    const message = err.message || err;
+    console.error(REAL_TEST_MODE ? redactSecrets(message, secretValues(process.env)) : message);
     process.exit(1);
   });
 }

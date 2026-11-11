@@ -24,16 +24,33 @@
 // the source list first), so the browser's own matching is still what is
 // tested. CSP_STRIPE_REAL_JS=1 drops the stub and loads the real Stripe.js
 // over the internet; that needs no account and no secret.
+//
+// Real test mode (PROOF_REAL_TEST_MODE=1, set by csp-checkout-gate.sh when the
+// owner opts in): the checkout page is Stripe's own (checkout.stripe.com),
+// Stripe.js is always the real one, and the card typed is checked against the
+// published test card before the browser starts. A violation counts only when
+// the tenant's own document raised it; Stripe's pages answer to Stripe's
+// policy. Everything this process prints goes through redactSecrets.
 import { chromium } from 'playwright';
+import {
+  PUBLISHED_TEST_CARD,
+  assertLocalTenant,
+  assertPublishedTestCard,
+  isTenantViolation,
+  redactSecrets,
+  secretValues,
+} from './real-test-mode.mjs';
 
 const ORIGIN = process.env.PROOF_ORIGIN || 'http://localhost:4321';
 const STRIPE = process.env.PROOF_STRIPE_URL || 'http://localhost:4322';
 const COOKIE = process.env.PROOF_SESSION_COOKIE || '';
 const LABEL = process.env.PROOF_LABEL || 'checkout';
-const REAL_STRIPE_JS = process.env.CSP_STRIPE_REAL_JS === '1';
+const REAL_MODE = process.env.PROOF_REAL_TEST_MODE === '1';
+const REAL_STRIPE_JS = process.env.CSP_STRIPE_REAL_JS === '1' || REAL_MODE;
 const EMAIL = process.env.PROOF_MEMBER_EMAIL || 'checkout-member@example.test';
 // Stripe's published success test card. Nothing else is ever typed.
 const TEST_CARD = '4242 4242 4242 4242';
+const scrub = (text) => (REAL_MODE ? redactSecrets(text, secretValues(process.env)) : text);
 
 const STRIPE_JS_STUB = 'window.Stripe=function(){return{}};window.__stripeStubLoaded=true;';
 // Not the `iframe[src*="portal"]` fallback capture-csp.mjs carries: with the real
@@ -60,7 +77,41 @@ async function admin(path, method, body) {
   return res.json();
 }
 
+// Stripe's hosted Checkout page. UNVERIFIED against the live page: these
+// locators are the ones Stripe's public docs and test fixtures use, with a
+// label fallback for each; the owner's first run is what verifies them.
+async function payOnStripe(page, card, result) {
+  const expiryYear = String((new Date().getFullYear() + 3) % 100).padStart(2, '0');
+  await page
+    .getByPlaceholder('1234 1234 1234 1234')
+    .or(page.getByLabel('Card number'))
+    .first()
+    .fill(card);
+  result.cardTyped = card;
+  await page
+    .getByPlaceholder('MM / YY')
+    .or(page.getByLabel(/expir/i))
+    .first()
+    .fill(`12 / ${expiryYear}`);
+  await page.getByPlaceholder('CVC').or(page.getByLabel('CVC')).first().fill('123');
+  const name = page
+    .getByPlaceholder('Full name on card')
+    .or(page.getByLabel(/name on card|cardholder/i));
+  if (await name.count()) await name.first().fill('Checkout Member');
+  const postcode = page.getByLabel(/zip|postal code|postcode/i);
+  if (await postcode.count()) await postcode.first().fill('12345');
+  await page
+    .getByTestId('hosted-payment-submit-button')
+    .or(page.getByRole('button', { name: /^(pay|subscribe)/i }))
+    .first()
+    .click();
+}
+
 async function main() {
+  if (REAL_MODE) {
+    assertLocalTenant(ORIGIN);
+    assertPublishedTestCard(process.env.CSP_STRIPE_TEST_CARD ?? PUBLISHED_TEST_CARD);
+  }
   const result = {
     label: LABEL,
     realStripeJs: REAL_STRIPE_JS,
@@ -74,6 +125,10 @@ async function main() {
     failedAt: null,
     error: null,
   };
+  if (REAL_MODE) {
+    result.mode = 'real-test-mode';
+    result.foreignViolations = 0;
+  }
   if (!COOKIE) {
     console.error(
       'capture-checkout: PROOF_SESSION_COOKIE is required (setup-content.mjs prints it)'
@@ -84,7 +139,11 @@ async function main() {
   const context = await browser.newContext();
 
   await context.exposeBinding('__reportCsp', (source, violation) => {
-    result.violations.push({ ...violation, frame: source.frame.url() });
+    if (REAL_MODE && !isTenantViolation(violation, ORIGIN)) {
+      result.foreignViolations += 1;
+      return;
+    }
+    result.violations.push({ ...violation, frame: scrub(source.frame.url()) });
   });
   await context.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) => {
@@ -141,19 +200,45 @@ async function main() {
     const choosePlan = plans.getByRole('button', { name: 'Continue' });
     await choosePlan.waitFor({ timeout: 15000 });
     await Promise.all([
-      page.waitForURL(`${STRIPE}/c/pay/**`, { timeout: 30000 }),
+      page.waitForURL(REAL_MODE ? /^https:\/\/checkout\.stripe\.com\// : `${STRIPE}/c/pay/**`, {
+        timeout: 30000,
+      }),
       choosePlan.click(),
     ]);
-    await page.locator('#fake-checkout').waitFor({ timeout: 10000 });
+    if (REAL_MODE) {
+      const hosted = new URL(page.url());
+      result.checkoutHost = hosted.hostname;
+      result.checkoutSessionIsTest = hosted.pathname.includes('/cs_test_');
+      if (!result.checkoutSessionIsTest) {
+        throw new Error(
+          'refusing to type a card: the checkout session is not a Stripe test-mode session'
+        );
+      }
+      await page
+        .getByPlaceholder('1234 1234 1234 1234')
+        .or(page.getByLabel('Card number'))
+        .first()
+        .waitFor({ timeout: 30000 });
+    } else {
+      await page.locator('#fake-checkout').waitFor({ timeout: 10000 });
+    }
     result.checkoutOpened = true;
     step('checkout-opened');
 
-    // 4. Pay with the published test card; the fake redirects to success_url.
-    await page.locator('#cardnumber').fill(TEST_CARD);
-    await Promise.all([
-      page.waitForURL(/[?&]stripe=success/, { timeout: 30000 }),
-      page.locator('#pay').click(),
-    ]);
+    // 4. Pay with the published test card; the fake (or, in real test mode,
+    // Stripe's own page) redirects to success_url.
+    if (REAL_MODE) {
+      await Promise.all([
+        page.waitForURL(/[?&]stripe=success/, { timeout: 60000 }),
+        payOnStripe(page, PUBLISHED_TEST_CARD, result),
+      ]);
+    } else {
+      await page.locator('#cardnumber').fill(TEST_CARD);
+      await Promise.all([
+        page.waitForURL(/[?&]stripe=success/, { timeout: 30000 }),
+        page.locator('#pay').click(),
+      ]);
+    }
     await page.waitForLoadState('networkidle');
     result.returnedFromCheckout = true;
     step('returned-from-checkout');
@@ -166,15 +251,20 @@ async function main() {
         const m = body.members?.[0];
         return m && m.status === 'paid' ? m : null;
       },
-      { timeoutMs: 30000 }
+      { timeoutMs: REAL_MODE ? 60000 : 30000 }
     ).catch(() => null);
     result.paid = Boolean(member);
+    if (REAL_MODE) {
+      // The tenant's own member state, never anything the checkout page says.
+      result.paidSource = 'tenant-member-state';
+      result.tenantMemberStatus = member ? member.status : 'not-paid';
+    }
     if (member) step('paid');
     await page.waitForTimeout(1500); // let any deferred reports land
   } catch (err) {
     result.failedAt =
       result.steps.length === 0 ? 'start' : `after ${result.steps[result.steps.length - 1]}`;
-    result.error = String(err.message || err).split('\n')[0];
+    result.error = scrub(String(err.message || err).split('\n')[0]);
     if (process.env.PROOF_DEBUG === '1') {
       // What the visitor was looking at when it stopped, for whoever debugs it.
       for (const frame of page.frames()) {
@@ -187,17 +277,19 @@ async function main() {
           .evaluateAll((els) => els.map((e) => `${e.innerText.trim()}|${e.className}`))
           .catch(() => []);
         console.error(
-          `[debug] frame ${frame.url()}\n${text.slice(0, 600)}\nbuttons: ${JSON.stringify(buttons)}`
+          scrub(
+            `[debug] frame ${frame.url()}\n${text.slice(0, 600)}\nbuttons: ${JSON.stringify(buttons)}`
+          )
         );
       }
     }
   }
 
   await browser.close();
-  console.log(JSON.stringify(result, null, 2));
+  console.log(scrub(JSON.stringify(result, null, 2)));
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(REAL_MODE ? scrub(String(err.stack || err)) : err);
   process.exit(2);
 });

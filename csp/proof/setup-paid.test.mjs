@@ -46,3 +46,24 @@ test('the CLI refuses a live key before contacting Ghost', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /refusing: the Stripe secret key must be a sk_test_ key/);
 });
+
+// Real test mode: the owner's keys may only be sent to the local disposable
+// tenant. The origin is not local, so the refusal must come before any request
+// (an unroutable port would otherwise surface as a network error).
+test('in real test mode the CLI refuses a non-local tenant before contacting it', () => {
+  const cli = fileURLToPath(new URL('./setup-paid.mjs', import.meta.url));
+  const r = spawnSync(process.execPath, [cli], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PROOF_REAL_TEST_MODE: '1',
+      PROOF_ORIGIN: 'https://tenant.example.com',
+      PROOF_SESSION_COOKIE: 'x=y',
+      PROOF_STRIPE_SECRET_KEY: 'sk_test_abc123XYZ',
+      PROOF_STRIPE_PUBLISHABLE_KEY: 'pk_test_abc123XYZ',
+    },
+  });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /local disposable tenant/);
+  assert.ok(!r.stderr.includes('abc123XYZ'));
+});

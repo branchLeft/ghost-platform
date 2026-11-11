@@ -5,15 +5,19 @@
 # cannot reach from a laptop without an account. Usage, modes and what it does
 # NOT prove: csp-checkout-gate.md.
 set -e
+# Never trace: real test mode holds Stripe keys in this shell's environment.
+set +x
 
 SABOTAGE=""
 DERIVE=""
+HELP=""
 IMAGE=""
 for arg in "$@"; do
     case "$arg" in
         --sabotage=no-stripe-origin) SABOTAGE="${arg#--sabotage=}" ;;
         --sabotage=*) echo "unknown sabotage: $arg" >&2; exit 2 ;;
         --derive) DERIVE=1 ;;
+        --help|-h) HELP=1 ;;
         *) IMAGE="$arg" ;;
     esac
 done
@@ -21,6 +25,30 @@ done
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/csp/gate/lib.sh"
+
+# The opt-in real Stripe TEST-mode switch (csp/gate/csp-checkout-gate.md). Every
+# refusal lives in csp/proof/real-test-mode.mjs; with the switch unset nothing
+# below it is read and the fake Stripe runs exactly as before.
+REAL=""
+case "${CSP_STRIPE_REAL_TEST_MODE:-}" in
+    "") ;;
+    1) REAL=1 ;;
+    *) echo "CSP_STRIPE_REAL_TEST_MODE must be 1 (or unset for the fake Stripe)" >&2; exit 2 ;;
+esac
+if [ -n "$HELP" ]; then
+    node csp/proof/real-test-mode.mjs help
+    exit 0
+fi
+if [ -n "$REAL" ] && [ -n "$DERIVE" ]; then
+    echo "--derive needs no keys and measures the real Stripe.js: run it without CSP_STRIPE_REAL_TEST_MODE" >&2
+    exit 2
+fi
+if [ -n "$REAL" ]; then
+    # Before anything starts: the keys' shapes, a local tenant, the test card.
+    node csp/proof/real-test-mode.mjs preflight --origin "http://localhost:${CSP_CHECKOUT_PORT:-4321}" || exit 2
+    PROOF_REAL_TEST_MODE=1
+    export PROOF_REAL_TEST_MODE
+fi
 
 if [ -n "$DERIVE" ] && [ "${CSP_STRIPE_REAL_JS:-}" != "1" ]; then
     echo "--derive measures the origins the REAL Stripe.js needs: run it with CSP_STRIPE_REAL_JS=1" >&2
@@ -53,6 +81,13 @@ rand() { LC_ALL=C tr -dc 'a-zA-Z0-9' </dev/urandom | head -c 24; }
 STRIPE_SECRET_KEY="sk_test_$(rand)"
 STRIPE_PUBLISHABLE_KEY="pk_test_$(rand)"
 WEBHOOK_SECRET="whsec_$(rand)"
+if [ -n "$REAL" ]; then
+    # The owner's own test-mode values replace the synthetic ones, in this
+    # shell's variables only: never an argument, never echoed.
+    STRIPE_SECRET_KEY="$STRIPE_TEST_SECRET_KEY"
+    STRIPE_PUBLISHABLE_KEY="$STRIPE_TEST_PUBLISHABLE_KEY"
+    WEBHOOK_SECRET="$STRIPE_TEST_WEBHOOK_SECRET"
+fi
 
 if [ -z "$IMAGE" ]; then
     IMAGE="csp-gate-ghost:local"
@@ -61,6 +96,16 @@ fi
 docker build -q -f csp/proof/Dockerfile -t csp-gate-origin:local . >/dev/null
 docker network create "$NET" >/dev/null
 
+if [ -n "$REAL" ]; then
+    # No fake: Ghost's Stripe client keeps its default host, Stripe's own API.
+    # WEBHOOK_SECRET is passed by name, so the value is read from this shell's
+    # environment and is not in any argument list. Stripe reaches the tenant's
+    # webhook route through the owner's `stripe listen` (printed by preflight).
+    export WEBHOOK_SECRET
+    ghost_start "$GHOST_NAME" "$NET" "$ORIGIN" "$IMAGE" \
+        -e stripeDirect=true \
+        -e WEBHOOK_SECRET
+else
 # The fake runs on the Ghost image's own node, so nothing new is pulled and it
 # is reachable by container name on the private network. Its port is published
 # on loopback only.
@@ -82,6 +127,7 @@ ghost_start "$GHOST_NAME" "$NET" "$ORIGIN" "$IMAGE" \
     -e STRIPE_API_PORT=12111 \
     -e STRIPE_API_PROTOCOL=http \
     -e "WEBHOOK_SECRET=$WEBHOOK_SECRET"
+fi
 wait_for "Ghost" 90 docker exec "$GHOST_NAME" wget -q -O /dev/null http://127.0.0.1:2368/
 
 start_origin() { # header name, header value
@@ -94,7 +140,9 @@ start_origin() { # header name, header value
 }
 
 start_origin "X-Csp-Gate-Marker" "none"
-wait_for "fake Stripe" 30 curl -sf -o /dev/null "http://localhost:${STRIPE_PORT}/__state"
+if [ -z "$REAL" ]; then
+    wait_for "fake Stripe" 30 curl -sf -o /dev/null "http://localhost:${STRIPE_PORT}/__state"
+fi
 eval "$(PROOF_ORIGIN="$ORIGIN" node csp/proof/setup-content.mjs)"
 PROOF_ORIGIN="$ORIGIN" PROOF_SESSION_COOKIE="$SESSION_COOKIE" \
     PROOF_STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY" PROOF_STRIPE_PUBLISHABLE_KEY="$STRIPE_PUBLISHABLE_KEY" \

@@ -108,5 +108,87 @@ prove "derive/unmapped-directive-ignored" "$DERIVE" \
 prove "derive/check-never-compares" "$DERIVE" \
     "if (committed !== text) {" "if (false) {"
 
+# The checkout gate's real Stripe test-mode rules (the owner's opt-in run).
+TESTS="$HERE/checkout-gate.test.mjs"
+prove "checkout-real/fake-capture-accepted-as-real" checkout-gate.mjs \
+    "if (realMode && !capturedReal) {" "if (false) {"
+prove "checkout-real/real-capture-accepted-as-fake" checkout-gate.mjs \
+    "} else if (!realMode && capturedReal) {" "} else if (false) {"
+prove "checkout-real/stub-stripe-js-accepted" checkout-gate.mjs \
+    "if (run.realStripeJs !== true) {" "if (false) {"
+prove "checkout-real/non-stripe-host-accepted" checkout-gate.mjs \
+    "if (run.checkoutHost !== 'checkout.stripe.com') {" "if (false) {"
+prove "checkout-real/live-session-accepted" checkout-gate.mjs \
+    "if (run.checkoutSessionIsTest !== true) {" "if (false) {"
+prove "checkout-real/other-card-accepted" checkout-gate.mjs \
+    "if (run.cardTyped !== PUBLISHED_TEST_CARD) {" "if (false) {"
+prove "checkout-real/paid-source-unchecked" checkout-gate.mjs \
+    "run.paidSource !== 'tenant-member-state' || " ""
+prove "checkout-real/tenant-member-status-unchecked" checkout-gate.mjs \
+    " || run.tenantMemberStatus !== 'paid'" ""
+prove "checkout-real/steps-unchecked" checkout-gate.mjs \
+    "if (!Array.isArray(run.steps) || run.steps.join(',') !== STEPS.join(',')) {" "if (false) {"
+prove "checkout-real/switch-not-read" checkout-gate.mjs \
+    "process.env.CSP_STRIPE_REAL_TEST_MODE === '1'" "false"
+
+# The real test-mode switch itself (csp/proof/real-test-mode.mjs and the gate
+# script's wiring of it): each refusal, and the rule that no key is ever shown.
+TESTS="$HERE/../proof/real-test-mode.test.mjs"
+REAL="../proof/real-test-mode.mjs"
+node --test "$TESTS" >/dev/null 2>&1 && echo "BASELINE real-test-mode: GREEN" || { echo "BASELINE real-test-mode: RED"; exit 1; }
+prove "real-mode/unset-key-accepted" "$REAL" \
+    "if (typeof value !== 'string' || value === '') {" "if (false) {"
+prove "real-mode/key-shape-unchecked" "$REAL" \
+    "} else if (!rule.pattern.test(value)) {" "} else if (false) {"
+prove "real-mode/live-secret-key-accepted" "$REAL" \
+    'pattern: /^sk_test_[A-Za-z0-9]+$/,' 'pattern: /^sk_(?:test|live)_[A-Za-z0-9]+$/,'
+prove "real-mode/restricted-key-accepted" "$REAL" \
+    'pattern: /^sk_test_[A-Za-z0-9]+$/,' 'pattern: /^(?:sk|rk)_test_[A-Za-z0-9]+$/,'
+prove "real-mode/live-publishable-key-accepted" "$REAL" \
+    'pattern: /^pk_test_[A-Za-z0-9]+$/,' 'pattern: /^pk_(?:test|live)_[A-Za-z0-9]+$/,'
+prove "real-mode/webhook-shape-loosened" "$REAL" \
+    'pattern: /^whsec_[A-Za-z0-9]+$/,' 'pattern: /^whsec_.*$/,'
+prove "real-mode/non-local-tenant-accepted" "$REAL" \
+    "|| !LOCAL_HOSTS.has(url.hostname) ||" "||"
+prove "real-mode/https-or-portless-tenant-accepted" "$REAL" \
+    "url.protocol !== 'http:' || " ""
+prove "real-mode/other-card-accepted" "$REAL" \
+    "if (digits !== PUBLISHED_TEST_CARD.replaceAll(' ', '')) {" "if (false) {"
+prove "real-mode/preflight-skips-tenant-check" "$REAL" \
+    "url = assertLocalTenant(origin);" "url = new URL(origin);"
+prove "real-mode/preflight-skips-card-check" "$REAL" \
+    "assertPublishedTestCard(env.CSP_STRIPE_TEST_CARD);" "void 0;"
+prove "real-mode/key-value-echoed-in-refusal" "$REAL" \
+    '; it must be ${rule.shape}`' '; it must be ${rule.shape} (got ${value})`'
+prove "real-mode/redaction-of-known-values-removed" "$REAL" \
+    "out = out.split(secret).join('[REDACTED]')" "void secret"
+prove "real-mode/redaction-of-key-shapes-removed" "$REAL" \
+    "out = out.replace(pattern, '[REDACTED]');" "void pattern;"
+prove "real-mode/checkout-url-fragment-kept" "$REAL" \
+    "'\$1#[REDACTED]'" "'\$\$&'"
+prove "real-mode/stripe-side-violation-counted-as-tenant" "$REAL" \
+    "return document.origin === new URL(tenantOrigin).origin;" "return true;"
+prove "real-mode/unplaceable-violation-not-counted" "$REAL" \
+    "if (document.protocol !== 'http:' && document.protocol !== 'https:') return true;" "if (false) return true;"
+GATE_SH="../gate/csp-checkout-gate.sh"
+prove "real-mode/shell-preflight-skipped" "$GATE_SH" \
+    "node csp/proof/real-test-mode.mjs preflight" "true"
+prove "real-mode/shell-trace-left-on" "$GATE_SH" \
+    "set +x
+" ":
+"
+prove "real-mode/shell-webhook-secret-in-argv" "$GATE_SH" \
+    "-e WEBHOOK_SECRET
+else" "-e \"WEBHOOK_SECRET=\$WEBHOOK_SECRET\"
+else"
+prove "real-mode/shell-still-starts-the-fake" "$GATE_SH" \
+    'if [ -n "$REAL" ]; then
+    # No fake' 'if false; then
+    # No fake'
+prove "real-mode/shell-owner-keys-not-used" "$GATE_SH" \
+    'STRIPE_SECRET_KEY="$STRIPE_TEST_SECRET_KEY"' 'STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"'
+prove "real-mode/shell-derive-allowed-with-keys" "$GATE_SH" \
+    'if [ -n "$REAL" ] && [ -n "$DERIVE" ]; then' 'if false; then'
+
 [ "$FAIL" -eq 0 ] && echo "ALL SABOTAGES DETECTED" || echo "SABOTAGE PROOF FAILED"
 exit "$FAIL"

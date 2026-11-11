@@ -15,15 +15,63 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PUBLISHED_TEST_CARD } from '../proof/real-test-mode.mjs';
+
+const REAL_MODE = 'real-test-mode';
+const STEPS = [
+  'member-created',
+  'sign-in-link-followed',
+  'member-session',
+  'checkout-opened',
+  'returned-from-checkout',
+  'paid',
+];
+
+// What the owner's run against Stripe's own test-mode page must add to the
+// fake's rules. Violations are the tenant's only (the capture drops the ones
+// Stripe's page raised under Stripe's own policy), and the shared rule below
+// counts them.
+function judgeRealMode(run) {
+  const failures = [];
+  if (run.realStripeJs !== true) {
+    failures.push('the real Stripe.js did not load (the stub proves nothing about Stripe)');
+  }
+  if (run.checkoutHost !== 'checkout.stripe.com') {
+    failures.push("the visitor never reached Stripe's own hosted page (checkout.stripe.com)");
+  }
+  if (run.checkoutSessionIsTest !== true) {
+    failures.push('the checkout was not a Stripe test-mode session');
+  }
+  if (run.cardTyped !== PUBLISHED_TEST_CARD) {
+    failures.push("the card typed was not Stripe's published test card");
+  }
+  if (run.paidSource !== 'tenant-member-state' || run.tenantMemberStatus !== 'paid') {
+    failures.push("paid was not confirmed by the tenant's own member state");
+  }
+  if (!Array.isArray(run.steps) || run.steps.join(',') !== STEPS.join(',')) {
+    failures.push(`the steps were not exactly ${STEPS.join(',')}`);
+  }
+  return failures;
+}
 
 /**
  * `run` is capture-checkout.mjs's JSON. Returns failure strings; empty = holds.
  * Holds only when the whole flow completed, the member really is paid, Stripe's
  * script really loaded (so a clean report is not a page that never asked), and
- * no frame reported a single violation.
+ * no frame reported a single violation. `realMode` is the owner's opt-in run
+ * against a real Stripe test-mode account: the capture must then be a real-mode
+ * capture and meet judgeRealMode's extra rules; the two kinds never cross.
  */
-export function judgeCheckout(run) {
+export function judgeCheckout(run, { realMode = false } = {}) {
   const failures = [];
+  const capturedReal = run.mode === REAL_MODE;
+  if (realMode && !capturedReal) {
+    failures.push('real test mode was requested but this is not a real test-mode capture');
+  } else if (!realMode && capturedReal) {
+    failures.push('a real test-mode capture judged without the real-mode rules');
+  } else if (realMode) {
+    failures.push(...judgeRealMode(run));
+  }
   if (run.failedAt || run.error) {
     failures.push(
       `the flow stopped (${run.failedAt ?? 'at an unknown step'}): ${run.error ?? 'no error recorded'}`
@@ -60,11 +108,12 @@ export function judgeCheckout(run) {
 
 async function main() {
   const run = JSON.parse(readFileSync(0, 'utf-8'));
-  const failures = judgeCheckout(run);
+  const realMode = process.env.CSP_STRIPE_REAL_TEST_MODE === '1';
+  const failures = judgeCheckout(run, { realMode });
   for (const f of failures) console.error(`CSP CHECKOUT GATE RED: ${f}`);
   if (failures.length === 0) {
     console.log(
-      `CSP CHECKOUT GATE GREEN: steps=${run.steps.join(',')} violations=0 realStripeJs=${run.realStripeJs}`
+      `CSP CHECKOUT GATE GREEN${realMode ? ' (real Stripe test mode)' : ''}: steps=${run.steps.join(',')} violations=0 realStripeJs=${run.realStripeJs}`
     );
   }
   process.exitCode = failures.length === 0 ? 0 : 1;
