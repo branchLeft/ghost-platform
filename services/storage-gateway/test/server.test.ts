@@ -59,7 +59,7 @@ describe('the gateway service', () => {
     const seen = rig.upstream.seen.slice(before);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.method).toBe('PUT');
-    expect(seen[0]?.url).toBe(OBJECT(tenant.folder, 'photo.png').replace(/^/, ''));
+    expect(seen[0]?.url).toBe(OBJECT(tenant.folder, 'photo.png'));
     expect(seen[0]?.sha256).toBe(sha256Hex(body));
     const authorization = String(seen[0]?.headers.authorization);
     expect(authorization).toContain(`Credential=${UPSTREAM_KEY_ID}/`);
