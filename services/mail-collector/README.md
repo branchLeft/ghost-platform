@@ -168,6 +168,20 @@ on this rather than booting with an ambiguous host list, while
 directory-read failure gets — a pre-existing, unambiguous set keeps
 draining while this is fixed upstream.
 
+### descriptorTargets mail route
+
+Each `DrainTarget` carries `route`, read from the descriptor's optional
+`mail.route.primary` (`mx1` or `sweego`); a descriptor that names none means
+`mx1`. A route that is present but not exactly `{ primary: "mx1" | "sweego" }`
+makes the descriptor malformed, so that host is not drained, and a demo that
+names `sweego` is malformed the same way. The shape check is this service's
+own, as for the rest of the descriptor, so it mirrors render-core's rule and
+does not import it.
+
+Nothing reads `route` yet: delivery still goes to the one mx1 submission
+target, so the drain output is byte-identical whatever the value
+(`test/unit/routeCarried.test.ts`).
+
 ### health HealthState
 
 Whether the estate's dead-man's switch should keep hearing from this

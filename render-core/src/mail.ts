@@ -5,8 +5,19 @@
  */
 
 import type { TenantUid } from './brand.js';
-import type { SendingIdentitySpec } from './descriptor.js';
+import type { MailRoute, MailSpec, SendingIdentitySpec } from './descriptor.js';
 import type { ZoneConfig } from './validate.js';
+
+/** Every value `mail.route.primary` may take; anything else is refused by `validate()`. */
+export const MAIL_ROUTES: readonly MailRoute[] = ['mx1', 'sweego'];
+
+/** What an absent `mail.route` means. */
+export const DEFAULT_MAIL_ROUTE: MailRoute = 'mx1';
+
+/** The sending target a descriptor's mail uses: its `route.primary`, or `mx1` when it carries no route. See mail.md#mail-route. */
+export function mailRouteOf(mail: Pick<MailSpec, 'route'>): MailRoute {
+  return mail.route?.primary ?? DEFAULT_MAIL_ROUTE;
+}
 
 /**
  * The fixed local part every paying tenant sends member mail from. Not a

@@ -29,20 +29,20 @@ describe('drainClient', () => {
       headers: {},
     });
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
-    const messages = await client.drain({ id: 'tenant-a', baseUrl });
+    const messages = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({ id: 'm1', drainCount: 1 });
   });
 
   it('drain() returns an empty array when nothing is queued', async () => {
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
-    const messages = await client.drain({ id: 'tenant-a', baseUrl });
+    const messages = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
     expect(messages).toEqual([]);
   });
 
   it('drain() throws on a 401 from the wrong token', async () => {
     const client = createDrainClient({ drainToken: 'wrong-token', drainTimeoutMs: 5000 });
-    await expect(client.drain({ id: 'tenant-a', baseUrl })).rejects.toThrow('401');
+    await expect(client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' })).rejects.toThrow('401');
   });
 
   it('ack() reports acked ids and clears them from the shim', async () => {
@@ -58,13 +58,13 @@ describe('drainClient', () => {
       headers: {},
     });
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
-    const [message] = await client.drain({ id: 'tenant-a', baseUrl });
-    const result = await client.ack({ id: 'tenant-a', baseUrl }, [
+    const [message] = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
+    const result = await client.ack({ id: 'tenant-a', baseUrl, route: 'mx1' }, [
       { id: message!.id, drainCount: message!.drainCount },
     ]);
     expect(result.acked).toEqual(['m1']);
 
-    const secondDrain = await client.drain({ id: 'tenant-a', baseUrl });
+    const secondDrain = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
     expect(secondDrain).toEqual([]);
   });
 
@@ -81,9 +81,9 @@ describe('drainClient', () => {
       headers: {},
     });
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
-    const [first] = await client.drain({ id: 'tenant-a', baseUrl });
+    const [first] = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
     shim.simulateLostAck();
-    const [second] = await client.drain({ id: 'tenant-a', baseUrl });
+    const [second] = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
     expect(second!.id).toBe(first!.id);
     expect(second!.drainCount).toBeGreaterThan(first!.drainCount);
   });
@@ -91,7 +91,10 @@ describe('drainClient', () => {
   it('drain() accepts an external signal alongside its own timeout', async () => {
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
     const controller = new AbortController();
-    const messages = await client.drain({ id: 'tenant-a', baseUrl }, controller.signal);
+    const messages = await client.drain(
+      { id: 'tenant-a', baseUrl, route: 'mx1' },
+      controller.signal
+    );
     expect(messages).toEqual([]);
   });
 
@@ -99,13 +102,15 @@ describe('drainClient', () => {
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
     const controller = new AbortController();
     controller.abort(new Error('caller cancelled'));
-    await expect(client.drain({ id: 'tenant-a', baseUrl }, controller.signal)).rejects.toThrow();
+    await expect(
+      client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' }, controller.signal)
+    ).rejects.toThrow();
   });
 
   it('ack() throws on a non-2xx response', async () => {
     const client = createDrainClient({ drainToken: 'wrong-token', drainTimeoutMs: 5000 });
     await expect(
-      client.ack({ id: 'tenant-a', baseUrl }, [{ id: 'm1', drainCount: 1 }])
+      client.ack({ id: 'tenant-a', baseUrl, route: 'mx1' }, [{ id: 'm1', drainCount: 1 }])
     ).rejects.toThrow('401');
   });
 
@@ -122,10 +127,10 @@ describe('drainClient', () => {
       headers: {},
     });
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
-    const [first] = await client.drain({ id: 'tenant-a', baseUrl });
+    const [first] = await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
     shim.simulateLostAck();
-    await client.drain({ id: 'tenant-a', baseUrl });
-    const result = await client.ack({ id: 'tenant-a', baseUrl }, [
+    await client.drain({ id: 'tenant-a', baseUrl, route: 'mx1' });
+    const result = await client.ack({ id: 'tenant-a', baseUrl, route: 'mx1' }, [
       { id: first!.id, drainCount: first!.drainCount },
     ]);
     expect(result.unknown).toEqual(['m1']);
@@ -135,7 +140,7 @@ describe('drainClient', () => {
   it('reportOutcomes() posts the outcomes with the bearer token and returns the shim answer', async () => {
     shim.outcomesEnabled = true;
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
-    const result = await client.reportOutcomes({ id: 'tenant-a', baseUrl }, [
+    const result = await client.reportOutcomes({ id: 'tenant-a', baseUrl, route: 'mx1' }, [
       { id: 'm1', drainCount: 1, outcome: 'delivered' },
     ]);
     expect(result.recorded).toEqual(['m1']);
@@ -145,14 +150,14 @@ describe('drainClient', () => {
   it('reportOutcomes() rejects (404) against a spool that has not opted in, and (401) on the wrong token', async () => {
     const client = createDrainClient({ drainToken: token, drainTimeoutMs: 5000 });
     await expect(
-      client.reportOutcomes({ id: 'tenant-a', baseUrl }, [
+      client.reportOutcomes({ id: 'tenant-a', baseUrl, route: 'mx1' }, [
         { id: 'm1', drainCount: 1, outcome: 'delivered' },
       ])
     ).rejects.toThrow('404');
     shim.outcomesEnabled = true;
     const bad = createDrainClient({ drainToken: 'wrong', drainTimeoutMs: 5000 });
     await expect(
-      bad.reportOutcomes({ id: 'tenant-a', baseUrl }, [
+      bad.reportOutcomes({ id: 'tenant-a', baseUrl, route: 'mx1' }, [
         { id: 'm1', drainCount: 1, outcome: 'delivered' },
       ])
     ).rejects.toThrow('401');
