@@ -55,6 +55,21 @@ sweep_stale() {
     done
 }
 
+# Set to 0 by any failed removal. A green verdict requires it to stay 1.
+CLEANUP_OK=1
+
+# Removes one pass's containers. A failure is recorded in CLEANUP_OK and
+# reported; it never changes the pass's own result.
+remove_pass() { # label
+    pass_clean=1
+    remove_if_present container "$GHOST_NAME" || pass_clean=0
+    remove_if_present container "$ORIGIN_NAME" || pass_clean=0
+    if [ "$pass_clean" -eq 0 ]; then
+        echo "CLEANUP FAILED: pass $1 left its containers behind" >&2
+        CLEANUP_OK=0
+    fi
+}
+
 cleanup() {
     rc=$?
     failed=0
@@ -164,13 +179,7 @@ run_pass() {
     start_ghost "$omit"
     start_origin
     if run_capture "$label"; then status=0; else status=1; fi
-    pass_failed=0
-    remove_if_present container "$GHOST_NAME" || pass_failed=1
-    remove_if_present container "$ORIGIN_NAME" || pass_failed=1
-    if [ "$pass_failed" -eq 1 ]; then
-        echo "CLEANUP FAILED: pass $label left its containers behind" >&2
-        status=1
-    fi
+    remove_pass "$label"
     return $status
 }
 
@@ -198,8 +207,9 @@ echo "== Summary =="
 echo "GREEN-1 (baseline):        $([ "$GREEN1_STATUS" -eq 0 ] && echo PASS || echo FAIL)"
 echo "RED (one pass per override, all want FAIL): $([ "$ALL_RED_OK" -eq 1 ] && echo 'all FAILED as expected (every override proven)' || echo 'AT LEAST ONE PASSED -- sabotage undetected for that override')"
 echo "GREEN-2 (restored):        $([ "$GREEN2_STATUS" -eq 0 ] && echo PASS || echo FAIL)"
+echo "CLEANUP (every pass removed its containers): $([ "$CLEANUP_OK" -eq 1 ] && echo PASS || echo FAIL)"
 
-if [ "$GREEN1_STATUS" -eq 0 ] && [ "$ALL_RED_OK" -eq 1 ] && [ "$GREEN2_STATUS" -eq 0 ]; then
+if [ "$GREEN1_STATUS" -eq 0 ] && [ "$ALL_RED_OK" -eq 1 ] && [ "$GREEN2_STATUS" -eq 0 ] && [ "$CLEANUP_OK" -eq 1 ]; then
     echo
     echo "PROOF OK: the network assertion is green only when every override is in place, and removing any single one of the 7 pinned overrides is independently caught."
     exit 0

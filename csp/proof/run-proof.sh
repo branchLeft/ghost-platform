@@ -49,13 +49,20 @@ sweep_stale() {
     done
 }
 
+# Set to 0 by any failed removal. A green verdict requires it to stay 1.
+CLEANUP_OK=1
+CLEANUP_RAN=0
+remove_run() {
+    CLEANUP_RAN=1
+    remove_if_present container "$GHOST_NAME" || CLEANUP_OK=0
+    remove_if_present container "$ORIGIN_NAME" || CLEANUP_OK=0
+    remove_if_present network "$NET" || CLEANUP_OK=0
+}
+
 cleanup() {
     rc=$?
-    failed=0
-    remove_if_present container "$GHOST_NAME" || failed=1
-    remove_if_present container "$ORIGIN_NAME" || failed=1
-    remove_if_present network "$NET" || failed=1
-    if [ "$failed" -eq 1 ]; then
+    [ "$CLEANUP_RAN" -eq 1 ] || remove_run
+    if [ "$CLEANUP_OK" -eq 0 ]; then
         echo "CLEANUP FAILED: this run's containers or network may be left behind" >&2
         [ "$rc" -eq 0 ] && rc=1
     fi
@@ -259,7 +266,8 @@ echo "ROW D (sabotage: mode flag ignored):    $([ "$ROW_D_CAUGHT" -eq 1 ] && ech
 echo "ROW E (sabotage: hash dropped):      $([ "$ROW_E_CAUGHT" -eq 1 ] && echo 'RED as expected' || echo 'FAIL -- sabotage undetected')"
 echo "ROW B restored:                         $([ "$ROW_B2_OK" -eq 1 ] && echo PASS || echo FAIL)"
 
-if [ "$ROW_A_OK" -eq 1 ] && [ "$ROW_B_OK" -eq 1 ] && [ "$ROW_D_CAUGHT" -eq 1 ] && [ "$ROW_E_CAUGHT" -eq 1 ] && [ "$ROW_B2_OK" -eq 1 ]; then
+remove_run
+if [ "$ROW_A_OK" -eq 1 ] && [ "$ROW_B_OK" -eq 1 ] && [ "$ROW_D_CAUGHT" -eq 1 ] && [ "$ROW_E_CAUGHT" -eq 1 ] && [ "$ROW_B2_OK" -eq 1 ] && [ "$CLEANUP_OK" -eq 1 ]; then
     echo
     echo "PROOF OK: the strict content policy render-core renders, with a real derived hash set, blocks the injected script while Portal's sign-in form still renders -- and dropping the hashes (or ignoring the fail-soft mode flag) is independently caught."
     exit 0

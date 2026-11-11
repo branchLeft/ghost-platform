@@ -25,6 +25,8 @@ import time
 STATE = os.environ["STUB_STATE"]
 LOG = os.environ["STUB_LOG"]
 FAIL_RM = os.environ.get("STUB_FAIL_RM") == "1"
+FAIL_RM_RED = os.environ.get("STUB_FAIL_RM_RED") == "1"
+LABEL = STATE + ".label"
 
 
 def load():
@@ -70,7 +72,8 @@ if name == "docker":
         sys.exit(0)
     if cmd == "rm" or (cmd == "network" and args[1:2] == ["rm"]):
         names = args[2:] if cmd == "network" else [a for a in args[1:] if not a.startswith("-")]
-        if FAIL_RM:
+        last_label = open(LABEL).read() if os.path.exists(LABEL) else ""
+        if FAIL_RM or (FAIL_RM_RED and last_label.startswith("RED")):
             print("Error: removal refused by stub", file=sys.stderr)
             sys.exit(1)
         save([n for n in load() if n not in names])
@@ -78,6 +81,9 @@ if name == "docker":
     sys.exit(0)
 
 if name == "node":
+    if os.environ.get("PROOF_LABEL"):
+        with open(LABEL, "w") as f:
+            f.write(os.environ["PROOF_LABEL"])
     time.sleep(float(os.environ.get("STUB_NODE_SLEEP", "0")))
 sys.exit(0)
 """
@@ -95,17 +101,18 @@ class Harness:
         self.state = Path(tmp) / "state"
         self.log = Path(tmp) / "log"
 
-    def env(self, fail_rm=False, node_sleep=0):
+    def env(self, fail_rm=False, node_sleep=0, fail_rm_red=False):
         e = dict(os.environ)
         e["PATH"] = f"{self.bin}{os.pathsep}{e['PATH']}"
         e["STUB_STATE"] = str(self.state)
         e["STUB_LOG"] = str(self.log)
         e["PNPM"] = str(self.bin / "pnpm")
         e["STUB_NODE_SLEEP"] = str(node_sleep)
-        if fail_rm:
-            e["STUB_FAIL_RM"] = "1"
-        else:
-            e.pop("STUB_FAIL_RM", None)
+        for key, on in (("STUB_FAIL_RM", fail_rm), ("STUB_FAIL_RM_RED", fail_rm_red)):
+            if on:
+                e[key] = "1"
+            else:
+                e.pop(key, None)
         return e
 
     def seed(self, names):
@@ -223,6 +230,15 @@ class WidgetsProof(ProofCleanupTests):
 
     def test_term_runs_cleanup(self):
         self.assert_term_cleans_up(WIDGETS_SCRIPT, "widgets-proof")
+
+    def test_red_pass_with_refused_removal_is_not_proof_ok(self):
+        # Every capture passes, so each sabotage pass is undetected; the RED
+        # passes' removals are refused. The run must not claim a proof.
+        self.h.seed([])
+        r = self.h.run(WIDGETS_SCRIPT, fail_rm_red=True)
+        self.assertIn("CLEANUP FAILED", r.stderr)
+        self.assertNotIn("PROOF OK", r.stdout)
+        self.assertNotEqual(r.returncode, 0)
 
 
 if __name__ == "__main__":
