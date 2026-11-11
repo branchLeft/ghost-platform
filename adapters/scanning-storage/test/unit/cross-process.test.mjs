@@ -65,7 +65,7 @@ function startActor(role) {
   const exited = new Promise((resolve) => {
     child.on('exit', (code) => resolve({ code, stderr }));
   });
-  return { exited };
+  return { exited, child };
 }
 
 async function waitForAny(files, timeoutMs = 15_000) {
@@ -132,6 +132,45 @@ describe('a refusal sealed in one process while another sweeps the same orphaned
     (_name, order) => runInterleaving('sweep', order),
     30_000
   );
+});
+
+// A releaser dies with the bytes moved aside, a hold in a third process lands
+// its sidecar, and a start-up sweep in a fourth finds the aside copy. The
+// sidecar is written by the test, standing in for that hold.
+async function leaveAsideThenSweep({ sidecarLands }) {
+  const releaser = startActor('release');
+  await waitForAny(['release.at0']);
+  await fs.writeFile(path.join(controlDir, 'release.go0'), '');
+  await waitForAny(['release.at1']);
+  releaser.child.kill('SIGKILL');
+  await releaser.exited;
+  expect(await fs.readdir(quarantinePath)).toEqual([expect.stringContaining(RELEASING_INFIX)]);
+
+  if (sidecarLands) {
+    await fs.writeFile(
+      path.join(quarantinePath, `${DIGEST}.holds.json`),
+      JSON.stringify({ owners: { 'owner-a': ['a.png'] } })
+    );
+  }
+
+  const sweeper = startActor('sweep-aside');
+  await waitForAny(['sweep-aside.at0']);
+  await fs.writeFile(path.join(controlDir, 'sweep-aside.go0'), '');
+  const { code, stderr } = await sweeper.exited;
+  expect(code, stderr).toBe(0);
+  return fs.readdir(quarantinePath);
+}
+
+describe('a hold landing its sidecar while a start-up sweep finds a dead releaser’s aside copy', () => {
+  it('restores the bytes beside the sidecar', async () => {
+    const names = await leaveAsideThenSweep({ sidecarLands: true });
+    expect(names.sort()).toEqual([DIGEST, `${DIGEST}.holds.json`].sort());
+    await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
+  });
+
+  it('still deletes the aside copy when no hold and no record names the digest', async () => {
+    expect(await leaveAsideThenSweep({ sidecarLands: false })).toEqual([]);
+  });
 });
 
 describe('a process killed between a hold writing its bytes and its sidecar', () => {
