@@ -52,3 +52,23 @@ are shim work that consumes this key.
 `/etc/branchleft/<slug>.env` as `GHOST_BULK_EMAIL_API_KEY` before deploying a
 build that carries this change. A slot rendered with the new username before
 its row exists gets 401 on every send.
+
+## Mail route
+
+`mail.route` says which sending target the mail collector uses for a host's
+drained mail: `{ primary: "mx1" | "sweego" }`. It is optional, and an absent
+route means `mx1`, so every descriptor written before the field existed means
+exactly what it always did. `mailRouteOf` is the one place that default lives.
+
+- **Strict.** The object takes `primary` and nothing else. A bare string, an
+  unknown target, a fallback or exception key, or a missing `primary` is
+  refused by `validate()` as a malformed field. There is no field that could
+  name a fallback: the collector's fallback is fixed in its code.
+- **A demo stays on mx1.** A demo whose route is `sweego` is refused as a tier
+  mismatch, the same way a demo carrying a DKIM selector is.
+- **Nothing reads it yet.** `render()` emits no artefact that mentions the
+  route, so a tenant host receives byte-identical output whatever its value
+  (`test/mailRoute.test.ts`). The collector carries it on its drain target
+  and does not act on it.
+- **No credential, host or allowance.** A per-tenant allowance is added beside
+  `primary` when something counts against it; this change adds none.
