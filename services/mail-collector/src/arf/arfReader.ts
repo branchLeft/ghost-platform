@@ -228,18 +228,36 @@ function readPart(text: string): Part | null {
   return { type: ct.type, headers, body };
 }
 
-/** Removes RFC 5322 comments. Null if parentheses do not balance. */
+/** Removes RFC 5322 comments in one pass. Null if parentheses do not balance. */
 function stripComments(value: string): string | null {
-  let out = value;
-  for (;;) {
-    const next = out.replace(/\([^()]*\)/g, ' ');
-    if (next === out) {
-      break;
+  let out = '';
+  let depth = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    const c = value[i]!;
+    if (depth === 0) {
+      if (c === ')') {
+        return null;
+      }
+      if (c === '(') {
+        depth = 1;
+        out += ' ';
+      } else {
+        out += c;
+      }
+    } else if (c === '\\') {
+      // A quoted-pair inside a comment: the next character is text, never a boundary.
+      i += 1;
+    } else if (c === '(') {
+      depth += 1;
+    } else if (c === ')') {
+      depth -= 1;
     }
-    out = next;
   }
-  return /[()]/.test(out) ? null : out;
+  return depth === 0 ? out : null;
 }
+
+/** The raw first token of a header value, before any space, semicolon or comment. Empty if the value opens with one of those. */
+const leadingToken = (raw: string): string => /^[^\s;(]*/.exec(raw)![0].toLowerCase();
 
 /** One plain address from a header value, or null for a list, a group, a comment, or a quoted local part. */
 function singleAddress(value: string): string | null {
@@ -286,6 +304,12 @@ function trustedDkimPasses(headers: Headers, trustedId: string): string[] | null
   let matched = 0;
   const domains: string[] = [];
   for (const raw of values(headers, 'authentication-results')) {
+    // A header that names another host up front is not ours: skip it before any stripping.
+    // A header that names another host up front is not ours: skip it before any stripping.
+    const token = leadingToken(raw);
+    if (token !== '' && token !== trustedId) {
+      continue;
+    }
     const value = stripComments(raw);
     if (value === null) {
       return null;

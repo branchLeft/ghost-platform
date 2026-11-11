@@ -45,8 +45,9 @@ malformed configuration at construction. A report is accepted only when the one
 `Authentication-Results` header carrying `trustedAuthservId` (the id our own
 receiving MTA stamps) shows `dkim=pass` for a signing domain that is, or is under,
 a configured source's domain, and the visible `From` is that domain or under it.
-Comments in that header are stripped before it is read; a second header carrying
-our id, an unbalanced comment, a failed or neutral result, a look-alike domain, or
+Comments are stripped in one pass before a header is read. A header whose first token
+names another host is skipped without stripping. A second header carrying our id, an
+unbalanced comment in our header, a failed or neutral result, a look-alike domain, or
 an unaligned `From` all reject.
 
 ## Turning it on

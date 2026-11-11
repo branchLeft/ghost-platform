@@ -475,6 +475,43 @@ describe('arfReader: spoofed reports fail closed', () => {
   });
 });
 
+describe('arfReader: a sender-added Authentication-Results cannot stall the reader', () => {
+  const DEPTH = 100_000;
+  const BUDGET_MS = 1000;
+  // Added after the Content-Type line, so the report type stays inside the head gate.
+  const withExtra = (value: string): string =>
+    swap(
+      full(),
+      'boundary="part-boundary-01"\n',
+      `boundary="part-boundary-01"\nAuthentication-Results: ${value}\n`
+    );
+  const nested = (inner: string): string => `${'('.repeat(DEPTH)}${inner}${')'.repeat(DEPTH)}`;
+
+  it.each([
+    ['a foreign host name, then a deeply nested comment', `evil.example ${nested('x')}`],
+    ['a deeply nested comment, then a foreign host name', `${nested('x')} evil.example`],
+  ])('reads the report within budget when a sender adds %s', (_name, value) => {
+    const raw = withExtra(value);
+    const started = performance.now();
+    const result = read(raw, RECEIVED);
+    const elapsed = performance.now() - started;
+    expect(reasonOf(result)).toBe('ok');
+    expect(elapsed).toBeLessThan(BUDGET_MS);
+  });
+
+  it('skips a sender-added header for another host without stripping it, so its bad comment cannot refuse a good report', () => {
+    expect(verdict(withExtra('evil.example (unbalanced'))).toBe('ok');
+  });
+
+  it('reads an escaped parenthesis inside a comment as text, not as the end of the comment', () => {
+    expect(verdict(swap(full(), '(2048-bit key)', '(2048-bit \\) key)'))).toBe('ok');
+  });
+
+  it('reads nested comments in our own header as one comment', () => {
+    expect(verdict(swap(full(), '(2048-bit key)', '(2048 (bit) key)'))).toBe('ok');
+  });
+});
+
 describe('arfReader: missing and doubled fields fail closed', () => {
   it.each(['Version: 1\n', 'Feedback-Type: abuse\n', 'User-Agent: ExampleFBL/1.0\n'])(
     'rejects a report without %j',
