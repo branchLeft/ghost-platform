@@ -11,11 +11,13 @@ import assert from 'node:assert/strict';
 import { GhostAdmin } from './ghost-admin.mjs';
 import { GhostContainer } from './ghost-container.mjs';
 import {
+  NAMED_IMAGE,
   NAMED_MEMBERS,
   NAMED_POSTS,
   NAMED_TAGS,
   NAMED_SETTINGS,
   PARTS,
+  dropImageFromContent,
   dropPostFromContent,
   exportParts,
   importParts,
@@ -104,7 +106,7 @@ describe('an export, re-imported into a fresh Ghost', { timeout: 900_000 }, () =
     }
   });
 
-  it('every named post, tag, member and setting survives the re-import', async () => {
+  it('every named post, tag, member, image and setting survives the re-import', async () => {
     const target = await freshGhost('owner-target@example.test', 'TARGET_PLACEHOLDER_TITLE');
     try {
       await importParts(target.admin, exported);
@@ -126,6 +128,24 @@ describe('an export, re-imported into a fresh Ghost', { timeout: 900_000 }, () =
       await settle(target.admin);
       const failures = await verifyNamedItems(target.admin);
       assert.deepEqual(failures, ['content: post named-post-draft is missing']);
+    } finally {
+      await discard(target);
+    }
+  });
+
+  it('SABOTAGE: an export that lost the named image is caught, naming that image and no other', async () => {
+    const target = await freshGhost('owner-noimage@example.test', 'NOIMAGE_PLACEHOLDER_TITLE');
+    try {
+      const lossy = {
+        ...exported,
+        content: dropImageFromContent(exported.content, 'named-post-published'),
+      };
+      await importParts(target.admin, lossy);
+      await settle(target.admin);
+      const failures = await verifyNamedItems(target.admin);
+      assert.deepEqual(failures, [
+        `content: post named-post-published lost its image ${NAMED_IMAGE}`,
+      ]);
     } finally {
       await discard(target);
     }

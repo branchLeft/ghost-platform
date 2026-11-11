@@ -127,7 +127,7 @@ export class GhostAdmin {
   }
 
   async listPosts() {
-    return (await this.json('/posts/?limit=all&fields=slug,title,status&formats=html&include=tags'))
+    return (await this.json('/posts/?limit=all&fields=slug,title,status,feature_image&formats=html&include=tags'))
       .posts;
   }
 
