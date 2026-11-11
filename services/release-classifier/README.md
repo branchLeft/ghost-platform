@@ -228,6 +228,40 @@ The live check that boots the previous image on migrated data is the cover for t
 The range route above is unchanged by `rename-column` and `set-nullable`: those two are
 reported under `schemaChange` and do not move `route`.
 
+## Release gate
+
+The gate reads the record the step classifier printed and the upgrade about to be
+applied, and answers accepted or refused. It has no approving route and no consent
+route: a record that is not plainly reversible is refused.
+
+    node src/steps-cli.mjs --release v6.65.0=<dir> --release v6.66.0=<dir> > record.json
+    node src/gate-cli.mjs --record record.json --pinned v6.65.0 --target v6.66.0
+
+`assertReleaseReversible(record, { pinned, target })` in `src/gate.mjs` is the same check
+as a pure function, for a caller that holds the record in memory. It accepts only when
+all of these hold, and otherwise returns `{ ok: false, reason, detail }` with one reason:
+
+- `record-unreadable`: not an object, not schema `release-reversibility/v1`, an unknown
+  class, a missing or malformed list, a bad file count.
+- `release-mismatch`: the record's pinned release, or the release it ends at, is not the
+  one being applied, or the release given has no plain pinned and target tags.
+- `chain-broken`: no steps, or a step that does not start where the one before ended.
+- `forward-only`: any step lists a forward-only hit or a major bump, or the record or a
+  step says forward-only. This covers contracting and destructive migrations.
+- `unclassified`: any step lists an unread file, or the record or a step says
+  unclassified, or the unread file count is above zero.
+
+The record's own `class` is never trusted alone. Each step's lists are read, and both must
+agree on reversible. A record whose top-level class says reversible while a step lists a
+hit is refused.
+
+Exit 0 is accepted. Exit 2 is a refusal, including a record file that cannot be read or
+parsed. Exit 1 is a usage error and is never an acceptance: a caller treats any non-zero
+exit as refused.
+
+Not here: signing the verdict as an attestation on the image digest, and running this
+where the upgrade is applied. This is the check those steps call.
+
 ## Tests
 
     pnpm test
