@@ -632,3 +632,35 @@ describe('receiveBody: a bad ceiling fails closed', () => {
     ]);
   });
 });
+
+describe('receiveBody: a bad spool threshold fails closed', () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5, 2 ** 53])(
+    'refuses a spool threshold of %s as internal-error before reading any byte',
+    async (thresholdBytes) => {
+      let reads = 0;
+      const source = new Readable({
+        read() {
+          reads += 1;
+          this.push(reads <= 3 ? Buffer.alloc(10) : null);
+        },
+      });
+      const result = await receiveBody(source, options({ thresholdBytes }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.refusal.code).toBe('internal-error');
+        expect(result.refusal.status).toBe(503);
+      }
+      expect(reads).toBe(0);
+      expect(source.destroyed).toBe(true);
+      expect(await spoolFiles()).toEqual([]);
+    }
+  );
+
+  it('accepts a spool threshold equal to the ceiling', async () => {
+    const body = await accepted(sourceOf(bytesOf(1000), 100), {
+      ceilingBytes: 1000,
+      thresholdBytes: 1000,
+    });
+    expect(body.size).toBe(1000);
+  });
+});

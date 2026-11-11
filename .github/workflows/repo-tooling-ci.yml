@@ -204,12 +204,30 @@ jobs:
           python3 scripts/assert-slug-pattern-consistency.py --self-test
           python3 scripts/assert-slug-pattern-consistency.py
 
+      # The Mollie test-charge script must refuse any key that is not a test
+      # key before a network call, and its workflow must stay dispatch-only,
+      # behind the production environment, with the key bound to one step.
+      # The HTTP layer is a fake; nothing reaches Mollie.
+      - name: Mollie test-charge script and workflow tests
+        run: python3 -m unittest discover -s scripts -p 'test_mollie_test_charge.py' -v
+
       # generate-lockfile.yml trusts this gate to keep its `workflow_dispatch`
       # input from reaching the filesystem or a shell as anything other than
       # `services/<name>` or `adapters/<name>` -- self-tested here, on every
       # push, rather than only when someone remembers to run it by hand.
       - name: Lockfile package_dir allow-list self-test
         run: python3 scripts/assert-lockfile-package-dir.py --self-test
+
+      # Every pnpm workspace that consumes a @branchleft package must exclude
+      # that scope from minimumReleaseAge, so our own fresh releases install in
+      # CI. Third-party packages keep the default cutoff. The check reads the
+      # tree on every push; its self-test proves the matcher still fails a bare
+      # consumer.
+      - name: Release-age exclude self-test
+        run: python3 scripts/assert-release-age-exclude.py --self-test
+
+      - name: Release-age exclude across consuming workspaces
+        run: python3 scripts/assert-release-age-exclude.py .
 
       # The comparison that keeps the broker's committed generated code equal to
       # what Speckify generates runs in speckify.yml, where Speckify has run.

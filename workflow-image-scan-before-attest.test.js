@@ -30,6 +30,7 @@ const PUBLISHERS = {
   'drain-sidecar-image.yml': 'ghcr.io/branchleft/drain-sidecar',
   'recovery-image.yml': 'ghcr.io/branchleft/db-recovery',
   'storage-gateway-image.yml': 'ghcr.io/branchleft/priv/storage-gateway',
+  'percona-image.yml': 'ghcr.io/branchleft/percona-server',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes

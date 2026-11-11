@@ -132,6 +132,17 @@ export type LimitsSpec = {
 };
 
 /**
+ * Which sending target the mail collector uses for this host's drained mail. Optional on `MailSpec`: an absent route means `mx1`. A `demo` descriptor whose route is `sweego` is refused by render-core's own validator, which this wire shape does not duplicate. So is the pairing of `sweegoAllowance` with the route: render-core requires it when `primary` is `sweego` and refuses it when `primary` is `mx1`.
+ */
+export type MailRouteSpec = {
+    primary: 'mx1' | 'sweego';
+    /**
+     * The tenant's messages per UTC calendar month through Sweego.
+     */
+    sweegoAllowance?: number;
+};
+
+/**
  * Whether mail is enabled, and the two ceilings (per-slot, per-estate) this schema carries but never itself enforces -- counting sent mail against them is the mail spool's job.
  */
 export type MailSpec = {
@@ -139,6 +150,7 @@ export type MailSpec = {
     enabled: boolean;
     estateCeiling: number;
     identity: SendingIdentitySpec;
+    route?: MailRouteSpec;
 };
 
 export type MediaHashItem = {

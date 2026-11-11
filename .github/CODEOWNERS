@@ -102,6 +102,9 @@
 /widgets/verify-pins.test.mjs                    @branchLeft/branchleft-admin
 /vendor/kalotyp/verify-kalotyp.test.mjs          @branchLeft/branchleft-admin
 
+# Gate set: the six image gates that judge a candidate's digest.
+/gate-set/                                       @branchLeft/branchleft-admin
+
 # Upgrade gates: release classifier's fail-closed allowlist, ring controller's backup-then-apply.
 /services/release-classifier/src/                @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin

@@ -4,7 +4,7 @@
 
 Docker Hub rate-limits anonymous pulls per runner address, so this repo's CI
 must not pull third-party images from it. This script copies each image in
-`.github/image-mirror/images.json` to `ghcr.io/branchleft/mirror-private/<name>`
+`.github/image-mirror/images.json` to `ghcr.io/branchleft/mirror-private2/<name>`
 by digest and proves the copy.
 
 For each entry it:
@@ -44,11 +44,11 @@ the list's validation.
 
 ## Visibility
 
-The mirror packages are **private**. Reason (PRIN-1): the images are other parties' works under licences that set conditions on a public copy (the corresponding-source offer for the GPL-2.0 code in the mysql and percona-server images, notices and terms for the debian, alpine, pebble and AGPL-3.0 zitadel entries, and Docker's terms on standalone redistribution of Docker Hub images). Nothing in this repository meets those conditions, and `images.json` flags those entries `conditioned`. The private copy is for this organisation's own workflows and hosts. Secrecy is not the reason: the images are public upstream. A workflow cannot change a package's visibility; a first publish is private, and a public package cannot be made private again.
+The mirror packages are **private**. Reason (PRIN-1): the images are other parties' works under licences that set conditions on a public copy (the corresponding-source offer for the GPL-2.0 code in the mysql and percona-server images, notices and terms for the debian, alpine, pebble and AGPL-3.0 zitadel entries, and Docker's terms on standalone redistribution of Docker Hub images). Nothing in this repository meets those conditions, and `images.json` flags those entries `conditioned`. The private copy is for this organisation's own workflows and hosts. Secrecy is not the reason: the images are public upstream. A workflow cannot change a package's visibility. A first publish is private only while the organisation's package-creation setting does not allow public packages; the probe fails the run if a package is readable anonymously. A public package cannot be made private again.
 
 Build artifacts, mirror copies and derived images alike, are private unless publishing one benefits the open-source community. This is a default for artifacts, not a rule about source, which stays public by default. The owner's words: "we are open-source first, source-available second. We don't need to make our build artifacts public unless they are beneficial to the open-source community."
 
-The packages under the retired namespace `ghcr.io/branchleft/mirror/` were published public before this move and are not changed by this repository. They are not used by any reference in the tree.
+The packages under the retired namespaces `ghcr.io/branchleft/mirror/` and `ghcr.io/branchleft/mirror-private/` were published public before this move and are not changed by this repository. The second was meant to be private; its packages were created public, which GitHub cannot reverse, so the mirror writes to a namespace that has never held a package, `mirror-private2`, and never reuses the retired names. They are not used by any reference in the tree (the reference guard refuses a literal pin to either), and the probe reports each as `LEGACY-PUBLIC` until the owner deletes them.
 
 A fork of this public repository belongs to a third party, and GitHub's package documentation says that granting a public repository access to a private package can let its forks, and Dependabot, read it. Whether that applies to these packages has not been observed. It is not recorded as an accepted risk in `.claude/ACCEPTED-RISKS.md`. Whether to accept it, or to require it to be observed on the first run first, is the owner's decision; this change does not make it.
 
@@ -69,7 +69,7 @@ one variable whose default is the public source:
 
 With `IMAGE_REGISTRY` unset, which is every local run, Docker pulls the public
 image by that digest. In CI the workflow sets
-`IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private` (after a `docker login ghcr.io` with
+`IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private2` (after a `docker login ghcr.io` with
 `GITHUB_TOKEN`), the same reference resolves to the mirror copy, and the digest
 guarantees the same bytes. A `docker build` takes the value from
 `--build-arg IMAGE_REGISTRY`, which reads it from the environment. The mirror
