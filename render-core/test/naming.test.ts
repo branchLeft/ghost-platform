@@ -8,6 +8,7 @@ import type { Port } from '../src/brand.js';
 import {
   MAX_TENANT_SLUG_LENGTH,
   RESERVED_STACK_NAMES,
+  TENANT_NAME_REGISTER,
   adaptersVolumeName,
   composeUnitName,
   contentVolumeName,
@@ -23,8 +24,8 @@ import {
 } from '../src/naming.js';
 import { MAIL_SPOOL_STACK } from '../src/spool.js';
 import { render } from '../src/render.js';
-import { validate } from '../src/validate.js';
-import { TEST_ZONES, tenantDescriptor } from './fixtures.js';
+import { validate, validateTenantStack } from '../src/validate.js';
+import { TEST_ZONES, demoDescriptor, tenantDescriptor } from './fixtures.js';
 
 const slug = 'my-tenant' as Slug;
 
@@ -134,6 +135,20 @@ describe('naming.ts', () => {
   });
 });
 
+const TENANT_ZERO_REPO = 'branchLeft/ghost-tenant-blog';
+// A template-generated duplicate runs in a repository of its own.
+const DUPLICATE_REPO = 'branchLeft/ghost-tenant-someone-else';
+
+function blogDescriptor() {
+  const base = tenantDescriptor();
+  return {
+    ...base,
+    slug: 'blog' as Slug,
+    database: { ...base.database, name: 'ghost_blog', user: 'ghost_blog' },
+    media: { ...base.media, bucket: 'branchleft-media-blog' },
+  } as typeof base;
+}
+
 describe('the reserved list and tenant zero', () => {
   const EXPECTED_RESERVED = ['website', 'edge', 'db', 'monitoring', 'nextcloud1', 'mail-spool'];
 
@@ -142,19 +157,12 @@ describe('the reserved list and tenant zero', () => {
     expect(RESERVED_STACK_NAMES).not.toContain('blog');
   });
 
-  it('accepts the tenant-zero slug "blog" (control case)', () => {
+  it('accepts the tenant-zero slug "blog" when no claimant is named (control case)', () => {
     expect(() => validateSlugAvailability('blog' as Slug)).not.toThrow();
   });
 
-  it('validates and renders a descriptor slugged "blog"', () => {
-    const base = tenantDescriptor();
-    const blog = {
-      ...base,
-      slug: 'blog' as Slug,
-      database: { ...base.database, name: 'ghost_blog', user: 'ghost_blog' },
-      media: { ...base.media, bucket: 'branchleft-media-blog' },
-    } as typeof base;
-    const validated = validate(blog, TEST_ZONES);
+  it("validates and renders tenant zero's descriptor from tenant zero's own repository", () => {
+    const validated = validate(blogDescriptor(), TEST_ZONES, { claimantRepo: TENANT_ZERO_REPO });
     const artefacts = render(validated, TEST_ZONES);
     expect(artefacts).toHaveLength(7);
     expect(artefacts.some((a) => a.content.includes('ghost-blog-content'))).toBe(true);
@@ -178,27 +186,96 @@ describe('the reserved list and tenant zero', () => {
   });
 });
 
-describe('agreement with infra/tenant/naming.ts', () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const tenantSource = readFileSync(join(here, '../../infra/tenant/naming.ts'), 'utf-8');
-
-  function tenantReserved(source: string): string[] {
-    const body = /RESERVED_STACK_NAMES: readonly string\[\] = \[([^\]]*)\]/.exec(source)?.[1];
-    if (body === undefined) throw new Error('infra/tenant RESERVED_STACK_NAMES not found');
-    return [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] as string);
-  }
-
-  it("reserves infra/tenant's names plus mail-spool and nothing else", () => {
-    const tenant = tenantReserved(tenantSource);
-    expect(tenant.length).toBeGreaterThan(0);
-    expect(new Set(RESERVED_STACK_NAMES)).toEqual(new Set([...tenant, MAIL_SPOOL_STACK]));
+describe('registered tenant names and the claimant', () => {
+  it('refuses a registered tenant name to a demo', () => {
+    expect(() => validateSlugAvailability('blog' as Slug, { kind: 'demo' })).toThrow(
+      FieldValidationError
+    );
+    expect(() => validateSlugAvailability('blog' as Slug, { kind: 'demo' })).toThrow(
+      /registered to branchLeft\/ghost-tenant-blog/
+    );
   });
 
-  it('notices a name added to infra/tenant alone (control case)', () => {
-    const drifted = tenantSource.replace("'nextcloud1',", "'nextcloud1',\n  'extra-stack',");
-    expect(tenantReserved(drifted)).toContain('extra-stack');
-    expect(new Set(RESERVED_STACK_NAMES)).not.toEqual(
-      new Set([...tenantReserved(drifted), MAIL_SPOOL_STACK])
+  it('refuses a registered tenant name to a tenant in another repository, or none', () => {
+    const duplicate = { kind: 'tenant', repo: DUPLICATE_REPO } as const;
+    expect(() => validateSlugAvailability('blog' as Slug, duplicate)).toThrow(/registered to/);
+    expect(() =>
+      validateSlugAvailability('blog' as Slug, { kind: 'tenant', repo: undefined })
+    ).toThrow(/registered to/);
+  });
+
+  it("accepts a registered tenant name for that name's own repository, in any letter case", () => {
+    for (const repo of [TENANT_ZERO_REPO, TENANT_ZERO_REPO.toLowerCase()]) {
+      expect(() =>
+        validateSlugAvailability('blog' as Slug, { kind: 'tenant', repo })
+      ).not.toThrow();
+    }
+  });
+
+  it('control: an unregistered slug is accepted for a demo and for any tenant repository', () => {
+    expect(() => validateSlugAvailability('demo-1' as Slug, { kind: 'demo' })).not.toThrow();
+    expect(() =>
+      validateSlugAvailability('demo-1' as Slug, { kind: 'tenant', repo: DUPLICATE_REPO })
+    ).not.toThrow();
+  });
+
+  it('control: infrastructure names are refused to every claimant, including the owner repo', () => {
+    for (const claimant of [
+      { kind: 'demo' },
+      { kind: 'tenant', repo: TENANT_ZERO_REPO },
+    ] as const) {
+      expect(() => validateSlugAvailability('website' as Slug, claimant)).toThrow(/is reserved/);
+    }
+  });
+
+  it('validate() refuses a demo descriptor slugged "blog" (the broker path)', () => {
+    const demo = { ...demoDescriptor(), slug: 'blog' as Slug };
+    expect(() => validate(demo, TEST_ZONES)).toThrow(/registered to/);
+    // Control: the same descriptor under an unregistered slug validates.
+    expect(() => validate(demoDescriptor(), TEST_ZONES)).not.toThrow();
+  });
+
+  it('validate() and validateTenantStack() refuse a duplicate of tenant zero', () => {
+    expect(() => validate(blogDescriptor(), TEST_ZONES)).toThrow(/registered to/);
+    expect(() => validate(blogDescriptor(), TEST_ZONES, { claimantRepo: DUPLICATE_REPO })).toThrow(
+      /registered to/
     );
+    const stack: Record<string, unknown> = { ...blogDescriptor() };
+    delete stack['ownerEmail'];
+    expect(() =>
+      validateTenantStack(stack as never, TEST_ZONES, { claimantRepo: DUPLICATE_REPO })
+    ).toThrow(/registered to/);
+    expect(() =>
+      validateTenantStack(stack as never, TEST_ZONES, { claimantRepo: TENANT_ZERO_REPO })
+    ).not.toThrow();
+  });
+});
+
+describe('agreement with registers/tenant-names.json', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = join(here, '../..');
+  const register = JSON.parse(
+    readFileSync(join(repoRoot, 'registers/tenant-names.json'), 'utf-8')
+  ) as { names: { name: string; kind: string; repo?: string }[] };
+
+  it('holds every name of the register file, with the same kind and repo', () => {
+    expect(TENANT_NAME_REGISTER.map((entry) => ({ ...entry }))).toEqual(register.names);
+  });
+
+  it('reserves exactly the infrastructure entries', () => {
+    const infrastructure = register.names.filter((entry) => entry.kind === 'infrastructure');
+    expect([...RESERVED_STACK_NAMES]).toEqual(infrastructure.map((entry) => entry.name));
+  });
+
+  it("carries the same generated block as infra/tenant's naming.ts", () => {
+    const block = (path: string): string => {
+      const text = readFileSync(join(repoRoot, path), 'utf-8');
+      const start = text.indexOf('// BEGIN GENERATED FROM registers/tenant-names.json');
+      const end = text.indexOf('// END GENERATED FROM registers/tenant-names.json');
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      return text.slice(start, end);
+    };
+    expect(block('render-core/src/naming.ts')).toBe(block('infra/tenant/naming.ts'));
   });
 });

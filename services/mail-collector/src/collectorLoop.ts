@@ -1,6 +1,6 @@
 import type { SubmittedTracker } from './dedupe.js';
 import type { DrainClient } from './drainClient.js';
-import type { DeadMansSwitch } from './heartbeat.js';
+import type { DeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { HealthState } from './health.js';

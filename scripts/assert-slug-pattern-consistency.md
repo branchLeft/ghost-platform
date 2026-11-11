@@ -25,6 +25,18 @@ reach into the sibling tenant-template repository, whose own CI instead
 executes this repository's *published* `@branchleft/ghost-platform-tenant`
 package and checks its behaviour against that template's copy directly.
 
+## Where the probes come from
+
+`RESERVED_PROBES` is every `infrastructure` name in
+`registers/tenant-names.json`, and `TENANT_PROBES` every `tenant` name in it
+(tenant zero's `blog`). The first set must be refused by every copy that
+implements a reserved-name refusal; the second must be accepted by every
+copy, because a slug-level rule that reserved it would refuse the one tenant
+that legitimately holds it (who may claim it is a separate check, in the
+component). A register that cannot be read stops the script, never narrows
+the probes. `--self-test` includes a copy that refuses a tenant name and
+shows the script reports it.
+
 ## Reserved-name probe scope
 
 `db/provision/naming.py` is deliberately not checked against

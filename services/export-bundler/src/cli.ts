@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
-import { createDockerContainerRunner, type VolumeMount } from './containerRunner.js';
+import { createDockerContainerRunner, startup, type VolumeMount } from './containerRunner.js';
 import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
@@ -13,7 +13,7 @@ import { runExport } from './exportRunner.js';
 import { createPromptedTokenSource } from './operatorToken.js';
 import { createDockerStatusProbe } from './supportAccountProbe.js';
 import { parseSupportGrant, type SupportGrant } from './supportGrant.js';
-import { installSignalCleanup, processCleanup } from './cleanup.js';
+import { processCleanup, type SignalTarget } from './cleanup.js';
 import { createMysqlScratch, createSqliteScratch, databaseTargetOf } from './scratchDatabase.js';
 import { isolateExportColour } from './colourIsolation.js';
 import {
@@ -104,10 +104,19 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   };
 }
 
-async function main(argv: readonly string[]): Promise<void> {
-  // First: a Ctrl-C at any later point removes whatever the run has created
-  // (colour, scratch copy, network, env files) before the process exits.
-  installSignalCleanup();
+/** Seams for a test: a fake `docker`, and a stand-in for `process` as the signal source. */
+export interface MainDeps {
+  readonly dockerCommand?: string;
+  readonly signalTarget?: SignalTarget;
+}
+
+export async function main(argv: readonly string[], deps: MainDeps = {}): Promise<void> {
+  const dockerCommand = deps.dockerCommand ?? 'docker';
+  // First, before anything that can create a resource: a Ctrl-C at any later
+  // point removes whatever the run has created (colour, scratch copy, network,
+  // env files) before the process exits, and a Docker engine older than 28 is
+  // refused. test/unit/cli.test.ts proves this call is made and made first.
+  await startup({ dockerCommand, signalTarget: deps.signalTarget });
   const opts = parseArgs(argv);
 
   let descriptorJson: unknown;
@@ -119,13 +128,16 @@ async function main(argv: readonly string[]): Promise<void> {
   const descriptor = parseDescriptorFacts(descriptorJson);
   const slug = descriptor.slug;
   const runtime = parseComposeConfig(
-    await loadComposeConfig({
-      composeFile: join(opts.stackDir ?? `/opt/branchleft/${slug}`, 'compose.yml'),
-      envFiles: [
-        opts.secretsEnv ?? `/etc/branchleft/${slug}.env`,
-        opts.imageEnv ?? `/etc/branchleft/${slug}.image.env`,
-      ],
-    })
+    await loadComposeConfig(
+      {
+        composeFile: join(opts.stackDir ?? `/opt/branchleft/${slug}`, 'compose.yml'),
+        envFiles: [
+          opts.secretsEnv ?? `/etc/branchleft/${slug}.env`,
+          opts.imageEnv ?? `/etc/branchleft/${slug}.image.env`,
+        ],
+      },
+      dockerCommand
+    )
   );
   const ageRecipient = bindTenant(descriptor, runtime, opts.ageRecipient);
 
@@ -142,37 +154,50 @@ async function main(argv: readonly string[]): Promise<void> {
   const liveDatabase = databaseTargetOf(runtime.env);
   const scratch =
     liveDatabase.kind === 'mysql'
-      ? createMysqlScratch({
-          runId: colourId,
-          live: liveDatabase,
-          liveUser: runtime.env.database__connection__user ?? '',
-          livePassword: runtime.env.database__connection__password ?? '',
-          liveUsesTls: Object.keys(runtime.env).some((k) =>
-            k.startsWith('database__connection__ssl')
-          ),
-        })
-      : createSqliteScratch({
-          runId: colourId,
-          image: runtime.image,
-          tenantVolumes: volumes,
-          live: liveDatabase,
-          owner: runtime.user,
-        });
+      ? createMysqlScratch(
+          {
+            runId: colourId,
+            live: liveDatabase,
+            liveUser: runtime.env.database__connection__user ?? '',
+            livePassword: runtime.env.database__connection__password ?? '',
+            liveUsesTls: Object.keys(runtime.env).some((k) =>
+              k.startsWith('database__connection__ssl')
+            ),
+          },
+          { dockerCommand }
+        )
+      : createSqliteScratch(
+          {
+            runId: colourId,
+            image: runtime.image,
+            tenantVolumes: volumes,
+            live: liveDatabase,
+            owner: runtime.user,
+          },
+          { dockerCommand }
+        );
 
   const container = { user: runtime.user, volumes };
   const result = await runExport(
     {
       drainFlags: createDrainFlagStore(opts.flagDir),
       readDrainFlag: (id) => createFileDrainFlag(flagPathFor(opts.flagDir, id)),
-      supportAccount: createDockerStatusProbe({ ...container, image: runtime.image }, runtime.env),
+      supportAccount: createDockerStatusProbe(
+        { ...container, image: runtime.image },
+        runtime.env,
+        dockerCommand
+      ),
       scratch,
-      containerRunner: createDockerContainerRunner({
-        ...container,
-        containerName: colourId,
-        image: runtime.image,
-        loopbackPort: opts.loopbackPort,
-        network: null,
-      }),
+      containerRunner: createDockerContainerRunner(
+        {
+          ...container,
+          containerName: colourId,
+          image: runtime.image,
+          loopbackPort: opts.loopbackPort,
+          network: null,
+        },
+        dockerCommand
+      ),
       probe: createHttpGhostProbe(2000),
       exportClient: createHttpGhostExportClient(
         createPromptedTokenSource(

@@ -216,3 +216,88 @@ of `recoverFromApplying` entirely, aborting the whole startup recovery
 sweep for every other tenant still waiting behind this one --
 including one sitting in `failed-unsafe` with `pageSent: false`, whose
 one page would then never go out.
+
+## rings.ts
+
+`RING_ORDER` is slot 0's canaries, then the demos, then entry, then
+professional (LLD-4 §04/§06b). The order is the safety property: a fault
+meets the fewest and most forgiving tenants first. It is a frozen constant
+and no argument to `runRelease` can reorder it. The bake times are the
+opposite: incidental, supplied by the caller as a `RingBakeConfig`
+(`DEFAULT_BAKE_MS` holds the 15, 15, 30 and 30 minute starting values), and
+validated before anything is touched. A ring with no `bakeMs` is a
+configuration error, not a zero.
+
+`MYSQL_CANARY_RING` and `MYSQL_GATED_RING` name the U6 rule: no tenant of
+the entry ring is bumped unless the first ring held a MySQL tenant that
+reached `done` and passed its bake.
+
+## gates.ts
+
+`assertGatesGreen` is pure. The gates run once, on slot 0 (LLD-3), against
+the digest of an already-published image. The report must name that same
+digest, because a green report for some other build says nothing about this
+one. An empty result list is not green either: a gate runner that ran
+nothing must not read as a pass. A report for another digest is checked
+first, so its results are never read as if they applied.
+
+## modelFreeEnvironment.ts
+
+D37: no model, no agent and no token budget anywhere in the promotion path.
+The check works in both directions. A controller that can promote with every
+model key absent, and that also refuses to run when one is present, cannot
+quietly start depending on a model.
+
+The deny-list is documented as exported constants: any `*_API_KEY`, any
+`ANTHROPIC_`, `OPENAI_` or `CLAUDE_CODE_` variable, and an agent binary
+(`claude`) resolvable through the `PATH` it is given. Names are matched
+ignoring case. A listed variable whose value is `undefined` is absent. The
+error names the variable or binary and never a value, because it reaches
+logs and the hold sink. The function reads only the environment passed to
+it. Nothing in `src/` reads the process environment, so a test can hand it
+any environment and a real child process can hand it its own.
+
+## ringController.ts
+
+`runRelease` is the whole sequencer: pre-flight, gates, then each ring in
+order.
+
+- **Pre-flight.** The environment check runs first. A release whose route
+  is not `fast-path` (a major version, an irreversible migration) is held
+  as `consent-required` with no gate run and no bump. Nobody consents to it:
+  the route is decided upstream, and the release is refused, so tenants stay
+  on the current version.
+- **Hold, not page.** A red gate, a refused route or a regression is a
+  hold: tenants stay on the current version, and the hold is raised as an
+  operational alert and a filed work item. The only page is the
+  one the state machine already raises for `failed-unsafe`. The `hold` sink
+  is separate from `BumpDependencies.page` so the written register of what
+  may page is untouched.
+- **Serial.** Members of a ring are bumped one at a time. A member that
+  does not reach `done` (or whose bump throws) stops the release, later
+  members are never touched, and nothing is undone fleet-wide. One shared
+  `ApplyLock`, created by the caller and handed to every machine
+  `newBump` builds, is the structural backstop beneath this loop.
+- **Bake.** The window opens when the ring's last member reaches `done`, so
+  every member soaks the whole time. An empty ring opens it on entry and
+  waits it out all the same: the decision was bake, then advance.
+- **Not the timer alone.** Each pass reads every member's health and
+  reported errors, never stopping at the first healthy one, and a last pass
+  runs at or after the window's end. A tenant is healthy only if it says so
+  and reports the release digest read from the running instance. A probe
+  that throws blocks the ring (`probe-failed`) but reverts nothing, because
+  failing to look is not evidence of a regression. Reported errors are read
+  since the ring started.
+- **Regression.** Each tenant with affirmative evidence of trouble gets the
+  state machine's own `abortAfterDone()`, a flag change back to the old
+  colour. Others in the ring are left as they are. No old colour has been
+  stopped, so every revert is still only a flag change.
+- **Advance.** Only when the window has elapsed, the last pass was clean and
+  no errors were reported does the ring's old colours get stopped
+  (`closeBakeWindow()`, serially) and the next ring begin. A close that
+  throws or ends anywhere but `closed` holds the release as `bump-not-done`.
+
+Not built here: persisting release and ring progress across a crash (each
+tenant already recovers on its own, but a tenant rehydrated in `done` has no
+controller left to close its bake window), and the real adapters (broker
+reconcile, health and gate runners, ring membership).

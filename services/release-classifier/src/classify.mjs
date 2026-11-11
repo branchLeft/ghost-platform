@@ -9,8 +9,8 @@ import { checkGrammar, FLAG_KEY, parseModule } from './grammar.mjs';
 
 export { KNOWN_CALLS } from './allowlist.mjs';
 
-// Open owner rulings. Each class is routed by one constant, and consent is the
-// safe default until the owner rules.
+// Open owner rulings on classification. Each class is routed by one constant, and
+// the refused route (`consent`) is the safe default until the owner rules.
 export const CONTRACTING_ROUTE = 'consent';
 export const CONSTRAINT_ROUTE = 'consent';
 
@@ -18,13 +18,13 @@ export const CONSTRAINT_ROUTE = 'consent';
 // passed by reference, aliased, destructured, optionally chained or used as a
 // property name. A string that spells one is data, not a hit.
 
-// Hard consent: Ghost's flag (see FLAG_KEY), a helper that sets it, or the dropTables wrapper.
+// Refused: Ghost's flag (see FLAG_KEY), a helper that sets it, or the dropTables wrapper.
 export const IRREVERSIBLE_RULES = Object.freeze([
   { name: 'helper', names: ['createIrreversibleMigration'] },
   { name: 'wrapper', names: ['dropTables'] },
 ]);
 
-// Hard consent: data or structure removed with no way back from the migration.
+// Refused: data or structure removed with no way back from the migration.
 // Also by node elsewhere: `del` not called with no argument, and `truncate`.
 export const DESTRUCTIVE_RULES = Object.freeze([
   { name: 'delete-table', names: ['deleteTable'] },
@@ -184,7 +184,7 @@ function scan(program, source) {
           if (bareDel.has(n)) found.contracting.add('data-delete');
           else found.destructive.add('del-with-argument');
         }
-        // A non-ASCII or escaped identifier is not read: the file routes consent.
+        // A non-ASCII or escaped identifier is not read: the file routes to refusal.
         if (/[^\x00-\x7f]|\\/.test(source.slice(n.start, n.end))) foreign = true;
         break;
       case 'UnaryExpression':

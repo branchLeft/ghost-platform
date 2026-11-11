@@ -18,13 +18,16 @@ export const OTHER_DB = 'portal_prov_other';
 export const TENANT = 'portal_prov_tenant';
 export const OWNER = 'portal_prov_owner';
 export const PROVISIONER = 'portal_prov_provisioner';
+export const MIGRATOR = 'portal_prov_migrator';
 export const TENANT_PW = 'tenant-secret-9f2c41';
 export const OWNER_PW = 'owner-secret-77ab03';
 export const PROVISIONER_PW = 'provisioner-secret-5d19e8';
+export const MIGRATOR_PW = 'migrator-secret-3b8e72';
 
 export function provConfig(): ProvisionConfig {
   return {
     adminUrl: testUrl('postgres'),
+    migratorUrl: '',
     database: PROV_DB,
     tenantLogin: TENANT,
     tenantPassword: TENANT_PW,
@@ -32,7 +35,16 @@ export function provConfig(): ProvisionConfig {
     ownerPassword: OWNER_PW,
     provisionerLogin: PROVISIONER,
     provisionerPassword: PROVISIONER_PW,
+    migratorLogin: MIGRATOR,
+    migratorPassword: MIGRATOR_PW,
   };
+}
+
+/** The migrator's connection URL, with its password in it as `--migrate-only` reads it. */
+export function migratorUrl(login: string = MIGRATOR, password: string = MIGRATOR_PW): string {
+  const url = new URL(testUrl(PROV_DB, login));
+  url.password = password;
+  return url.toString();
 }
 
 export interface Run {
@@ -44,13 +56,14 @@ export interface Run {
 /** The command's whole behaviour, in process, from its file inputs. */
 export async function run(
   options: ProvisionOptions = {},
-  passwords: { tenant?: string; owner?: string; provisioner?: string } = {}
+  passwords: { tenant?: string; owner?: string; provisioner?: string; migrator?: string } = {}
 ): Promise<Run> {
   const files: Record<string, string> = {
     admin: testUrl('postgres'),
     tenant: passwords.tenant ?? TENANT_PW,
     owner: passwords.owner ?? OWNER_PW,
     provisioner: passwords.provisioner ?? PROVISIONER_PW,
+    migrator: passwords.migrator ?? MIGRATOR_PW,
   };
   const out: string[] = [];
   const err: string[] = [];
@@ -60,10 +73,12 @@ export async function run(
       PORTAL_TENANT_PASSWORD_FILE: 'tenant',
       PORTAL_OWNER_PASSWORD_FILE: 'owner',
       PORTAL_PROVISIONER_PASSWORD_FILE: 'provisioner',
+      PORTAL_MIGRATOR_PASSWORD_FILE: 'migrator',
       PORTAL_DATABASE_NAME: PROV_DB,
       PORTAL_TENANT_LOGIN: TENANT,
       PORTAL_OWNER_LOGIN: OWNER,
       PORTAL_PROVISIONER_LOGIN: PROVISIONER,
+      PORTAL_MIGRATOR_LOGIN: MIGRATOR,
     },
     [],
     { out: (line) => out.push(line), err: (line) => err.push(line) },
@@ -100,6 +115,7 @@ export async function resetServer(): Promise<void> {
       TENANT,
       OWNER,
       PROVISIONER,
+      MIGRATOR,
       'portal_tenant',
       'portal_owner',
       'portal_provisioner',
@@ -133,7 +149,7 @@ export async function stateSnapshot(): Promise<string[]> {
     const checkpoint = checkpointFor(
       major,
       PROV_DB,
-      principalNames(TENANT, OWNER, PROVISIONER),
+      principalNames(TENANT, OWNER, PROVISIONER, MIGRATOR),
       readMigrations().map((m) => m.tag)
     );
     return await snapshot(client, checkpoint);

@@ -1,4 +1,4 @@
-import { OTHER_DB, OWNER, PROV_DB, PROVISIONER, TENANT } from './provisionSetup.js';
+import { MIGRATOR, OTHER_DB, OWNER, PROV_DB, PROVISIONER, TENANT } from './provisionSetup.js';
 
 // One "extra" per mechanism on the design note's closed list, each applied to
 // a correctly provisioned database, and one "missing" per ACL family. Each
@@ -304,7 +304,7 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     apply: [[P, 'ALTER TABLE portal.health_reading OWNER TO portal_owner']],
     // The new owner's grants merge into its owner entry, so they are re-made.
     undo: [
-      [P, 'ALTER TABLE portal.health_reading OWNER TO postgres'],
+      [P, `ALTER TABLE portal.health_reading OWNER TO ${MIGRATOR}`],
       [P, 'GRANT INSERT, SELECT, UPDATE ON portal.health_reading TO portal_owner'],
     ],
     expect: /extra M18: portal_owner owns table portal.health_reading/,
@@ -360,6 +360,71 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     apply: [[PG, `GRANT portal_owner TO ${PROVISIONER}`]],
     undo: [[PG, `REVOKE portal_owner FROM ${PROVISIONER}`]],
     expect: new RegExp(`extra M02: ${PROVISIONER} is a member of portal_owner`),
+  },
+  // The migrator owns the database and applies the migrations, so it is held
+  // to the manifest as tightly as the logins that only read and write.
+  {
+    id: 'M01',
+    title: 'the migrator login made a superuser',
+    apply: [[PG, `ALTER ROLE ${MIGRATOR} SUPERUSER`]],
+    undo: [[PG, `ALTER ROLE ${MIGRATOR} NOSUPERUSER`]],
+    expect: new RegExp(`extra M01: role ${MIGRATOR}: superuser=true`),
+  },
+  {
+    id: 'M01',
+    title: 'the migrator login allowed to bypass row security',
+    apply: [[PG, `ALTER ROLE ${MIGRATOR} BYPASSRLS`]],
+    undo: [[PG, `ALTER ROLE ${MIGRATOR} NOBYPASSRLS`]],
+    expect: new RegExp(`extra M01: role ${MIGRATOR}: .*bypassrls=true`),
+  },
+  {
+    id: 'M01',
+    title: 'the migrator login given CREATEROLE',
+    apply: [[PG, `ALTER ROLE ${MIGRATOR} CREATEROLE`]],
+    undo: [[PG, `ALTER ROLE ${MIGRATOR} NOCREATEROLE`]],
+    expect: new RegExp(`extra M01: role ${MIGRATOR}: .*createrole=true`),
+  },
+  {
+    id: 'M02',
+    title: 'the migrator login a member of a portal role',
+    apply: [[PG, `GRANT portal_tenant TO ${MIGRATOR}`]],
+    undo: [[PG, `REVOKE portal_tenant FROM ${MIGRATOR}`]],
+    expect: new RegExp(`extra M02: ${MIGRATOR} is a member of portal_tenant`),
+  },
+  {
+    id: 'M18',
+    title: 'the portal database owned by the administrator again',
+    apply: [[PG, `ALTER DATABASE ${P} OWNER TO postgres`]],
+    // Changing the owner rewrites the ACL; handing it back restores it.
+    undo: [[PG, `ALTER DATABASE ${P} OWNER TO ${MIGRATOR}`]],
+    expect: new RegExp(`extra M18: database ${P} is owned by postgres`),
+  },
+  {
+    id: 'M18',
+    title: 'another database owned by the migrator login',
+    apply: [[PG, `ALTER DATABASE ${O} OWNER TO ${MIGRATOR}`]],
+    undo: [[PG, `ALTER DATABASE ${O} OWNER TO postgres`]],
+    expect: new RegExp(`extra M18: ${MIGRATOR} owns database ${O}`),
+  },
+  {
+    id: 'M18',
+    title: 'an object the manifest does not name, owned by the migrator login',
+    apply: [
+      [P, 'CREATE TABLE public.stray (id integer)'],
+      [P, `ALTER TABLE public.stray OWNER TO ${MIGRATOR}`],
+    ],
+    undo: [[P, 'DROP TABLE public.stray']],
+    expect: new RegExp(`extra M18: ${MIGRATOR} owns table public.stray`),
+  },
+  {
+    id: 'M28',
+    title: 'a pg_hba rule letting the migrator login reach another database',
+    apply: [],
+    undo: [],
+    hba: (original) => `host postgres ${MIGRATOR} 192.0.2.0/24 scram-sha-256\n${original}`,
+    expect: new RegExp(
+      `extra M28: pg_hba rule at .*:1 lets ${MIGRATOR} \\(as ${MIGRATOR}\\) reach database postgres`
+    ),
   },
   {
     id: 'M21',

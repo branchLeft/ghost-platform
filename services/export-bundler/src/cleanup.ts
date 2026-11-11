@@ -1,4 +1,7 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
+
+/** What the registry needs of a spawned `docker` client: to see it is alive, and to kill it. */
+export type TrackedChild = Pick<ChildProcess, 'kill' | 'exitCode' | 'signalCode'>;
 
 /**
  * Everything a run creates -- the export colour, the scratch database, its
@@ -7,10 +10,18 @@ import { execFileSync } from 'node:child_process';
  * SIGINT or SIGTERM every remover still registered runs before the process
  * exits: a signal handler that exits first leaves a second Ghost and a copy
  * of the tenant's database running with nothing to stop them.
+ *
+ * A `docker` client still in flight when the signal lands is a second hole:
+ * its `create` can reach the daemon after the remover's `rm -f` has already
+ * found nothing to remove. So runAll() kills every tracked client first, and
+ * records that it did, which tells the container removers to keep removing
+ * until the container stays gone (dockerRemoveUntilGoneSync).
  */
 export class CleanupRegistry {
   readonly #steps = new Map<number, { label: string; step: () => void }>();
+  readonly #children = new Set<TrackedChild>();
   #next = 0;
+  #killedInFlight = 0;
 
   register(label: string, step: () => void): () => void {
     const id = this.#next++;
@@ -20,13 +31,40 @@ export class CleanupRegistry {
     };
   }
 
+  /** Tracks a spawned docker client until it exits; call the result on exit. */
+  trackChild(child: TrackedChild): () => void {
+    this.#children.add(child);
+    return () => {
+      this.#children.delete(child);
+    };
+  }
+
   get labels(): readonly string[] {
     return [...this.#steps.values()].map((s) => s.label);
   }
 
-  /** Newest first, every step attempted; returns the labels that threw. */
+  /** How many still-running docker clients the last runAll() killed. */
+  get killedInFlight(): number {
+    return this.#killedInFlight;
+  }
+
+  /**
+   * First SIGKILLs every tracked client still running, then runs the steps
+   * newest first, every step attempted; returns the labels that threw.
+   */
   runAll(): readonly string[] {
     const failed: string[] = [];
+    let killed = 0;
+    for (const child of this.#children) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      try {
+        if (child.kill('SIGKILL')) killed += 1;
+      } catch {
+        // Already gone between the check and the kill.
+      }
+    }
+    this.#children.clear();
+    this.#killedInFlight = killed;
     const steps = [...this.#steps.entries()].reverse();
     this.#steps.clear();
     for (const [, { label, step }] of steps) {
@@ -42,9 +80,9 @@ export class CleanupRegistry {
 
 export const processCleanup = new CleanupRegistry();
 
-type SignalName = 'SIGINT' | 'SIGTERM';
+export type SignalName = 'SIGINT' | 'SIGTERM';
 
-interface SignalTarget {
+export interface SignalTarget {
   on(signal: SignalName, handler: () => void): unknown;
   removeListener(signal: SignalName, handler: () => void): unknown;
 }
@@ -105,4 +143,55 @@ export function dockerRemoveSync(argv: readonly string[], dockerCommand = 'docke
     env: { PATH: process.env.PATH ?? '' },
     stdio: 'ignore',
   });
+}
+
+const GONE_POLLS = 10;
+const GONE_POLL_MS = 200;
+const GONE_CONSECUTIVE_ABSENT = 2;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `docker rm` of a container, then -- only when runAll() killed a docker
+ * client that was still in flight -- keeps removing it until it stays gone.
+ * A killed `docker run` may already have sent its create to the daemon, so
+ * the container can appear after the first `rm -f` found nothing. Bounded at
+ * 10 reads 200 ms apart (about 2 s), stops after 2 absent reads in a row,
+ * repeats `rm -f` whenever the container shows up, and never throws. With
+ * nothing killed this is exactly one `rm`, as before.
+ */
+export function dockerRemoveUntilGoneSync(
+  name: string,
+  dockerCommand: string,
+  registry: CleanupRegistry,
+  rmFlag = '-f'
+): void {
+  const remove = () => {
+    try {
+      dockerRemoveSync(['rm', rmFlag, name], dockerCommand);
+    } catch {
+      // Already gone, or never created.
+    }
+  };
+  remove();
+  if (registry.killedInFlight === 0) return;
+  let absent = 0;
+  for (let read = 0; read < GONE_POLLS; read += 1) {
+    let present = true;
+    try {
+      dockerRemoveSync(['inspect', '--type', 'container', name], dockerCommand);
+    } catch {
+      present = false;
+    }
+    if (present) {
+      absent = 0;
+      remove();
+    } else {
+      absent += 1;
+      if (absent >= GONE_CONSECUTIVE_ABSENT) return;
+    }
+    if (read < GONE_POLLS - 1) sleepSync(GONE_POLL_MS);
+  }
 }

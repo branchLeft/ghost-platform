@@ -25,6 +25,7 @@ on:
     paths:
       - 'services/broker/**'
       - 'render-core/**'
+      - 'registers/**'
       - 'demo-host/provision/**'
       - '.github/workflows/broker-ci.yml'
 
@@ -34,6 +35,12 @@ on:
 permissions:
   contents: read
   packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -81,3 +88,11 @@ jobs:
 
       - name: Test
         run: pnpm run coverage
+
+      # The release packing and the tag check broker-release.yml relies on.
+      # Neither needs the bundle: the pack test builds its own fixture.
+      - name: Release packing is deterministic
+        run: bash release/test-pack-release.sh
+
+      - name: Release tag check self-test
+        run: python3 -I release/check_release_tag.py --self-test

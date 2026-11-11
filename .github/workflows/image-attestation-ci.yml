@@ -1,0 +1,77 @@
+name: Image attestation CI
+
+# Proves the attestation verify and wrong-identity checks against a stub gh,
+# and lints the image workflows: each scans the pushed digest, then calls the
+# shared attest action. A real scan and attestation only run in the publish
+# workflows on main; see scripts/verify-image-attestation.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/verify-image-attestation.sh
+      - scripts/prove-wrong-identity-rejected.sh
+      - scripts/test-verify-image-attestation.sh
+      - workflow-image-attestation.test.js
+      - workflow-image-scan-before-attest.test.js
+      - .github/workflows/registry-push.yml
+      - .github/workflows/portal-apps-image.yml
+      - .github/workflows/demo-edge-image.yml
+      - .github/workflows/mail-collector-image.yml
+      - .github/workflows/drain-sidecar-image.yml
+      - .github/workflows/recovery-image.yml
+      - .github/workflows/image-attestation-ci.yml
+      - scripts/probe-tokenless-attestation.sh
+      - scripts/resolve-published-image.sh
+      - scripts/test-probe-tokenless-attestation.sh
+      - .github/workflows/image-attestation-tokenless.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/verify-image-attestation.sh
+      - scripts/prove-wrong-identity-rejected.sh
+      - scripts/test-verify-image-attestation.sh
+      - workflow-image-attestation.test.js
+      - workflow-image-scan-before-attest.test.js
+      - .github/workflows/registry-push.yml
+      - .github/workflows/portal-apps-image.yml
+      - .github/workflows/demo-edge-image.yml
+      - .github/workflows/mail-collector-image.yml
+      - .github/workflows/drain-sidecar-image.yml
+      - .github/workflows/recovery-image.yml
+      - .github/workflows/image-attestation-ci.yml
+      - scripts/probe-tokenless-attestation.sh
+      - scripts/resolve-published-image.sh
+      - scripts/test-probe-tokenless-attestation.sh
+      - .github/workflows/image-attestation-tokenless.yml
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify-script:
+    name: verify script and workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the verify script test
+        run: ./scripts/test-verify-image-attestation.sh
+
+      # Plain node:test, no dependency to install.
+      - name: Run the token-less probe test
+        run: ./scripts/test-probe-tokenless-attestation.sh
+
+      - name: Lint the image workflows and their scan and attest jobs
+        run: node --test workflow-image-attestation.test.js workflow-image-scan-before-attest.test.js

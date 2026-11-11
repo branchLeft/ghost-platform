@@ -7,9 +7,12 @@ import { uploadLimits } from '../src/runtime.js';
 import {
   MAIL_SPOOL_BASE_URL,
   MAIL_SPOOL_DATA_VOLUME,
+  MAIL_SPOOL_DRAIN_ADDRESS,
   MAIL_SPOOL_DRAIN_BRIDGE,
   MAIL_SPOOL_DRAIN_CONTAINER_PORT,
+  MAIL_SPOOL_DRAIN_GATEWAY,
   MAIL_SPOOL_DRAIN_NETWORK,
+  MAIL_SPOOL_DRAIN_SUBNET,
   MAIL_SPOOL_HTTP_PORT,
   MAIL_SPOOL_SERVICE,
   MAIL_SPOOL_SMTP_PORT,
@@ -66,6 +69,16 @@ function okDocument(): Doc {
   return structuredClone(mailSpoolDocument(demoHostArgs())) as Doc;
 }
 
+/**
+ * The container ports a service publishes, whatever the host side says. The
+ * exact check for "only the drain listener is published": an entry's last
+ * `:`-separated field, minus any `/proto`, as a number.
+ */
+function publishedContainerPorts(service: Rec): number[] {
+  const ports = Array.isArray(service.ports) ? service.ports : [];
+  return ports.map((entry) => Number(/(\d+)(?:\/\w+)?$/.exec(String(entry))?.[1]));
+}
+
 function postureOf(document: Doc): () => void {
   return () => assertSpoolPosture(document, DRAIN_PORT);
 }
@@ -84,8 +97,12 @@ describe('renderMailSpoolStack()', () => {
     const document = mailSpoolDocument(demoHostArgs());
     const service = spoolService(document);
     const expected = DEMO_SLOT_UIDS.map(mailSpoolNetworkName);
-    expect(service.networks).toEqual([MAIL_SPOOL_DRAIN_NETWORK, ...expected]);
+    expect(Object.keys(service.networks as Rec)).toEqual([MAIL_SPOOL_DRAIN_NETWORK, ...expected]);
+    expect((service.networks as Rec)[MAIL_SPOOL_DRAIN_NETWORK]).toEqual({
+      ipv4_address: MAIL_SPOOL_DRAIN_ADDRESS,
+    });
     for (const name of expected) {
+      expect((service.networks as Rec)[name]).toEqual({ aliases: [MAIL_SPOOL_SERVICE] });
       expect(networksOf(document)[name]).toEqual({ name, internal: true });
     }
     expect(networksOf(document)[MAIL_SPOOL_DRAIN_NETWORK]).toEqual({
@@ -95,7 +112,16 @@ describe('renderMailSpoolStack()', () => {
         'com.docker.network.bridge.name': MAIL_SPOOL_DRAIN_BRIDGE,
         'com.docker.network.bridge.enable_ip_masquerade': 'false',
       },
+      ipam: { config: [{ subnet: MAIL_SPOOL_DRAIN_SUBNET, gateway: MAIL_SPOOL_DRAIN_GATEWAY }] },
     });
+  });
+
+  it('gives the drain network one fixed pool, and the spool a fixed address inside it', () => {
+    expect(MAIL_SPOOL_DRAIN_SUBNET).toBe('10.231.200.0/29');
+    expect(MAIL_SPOOL_DRAIN_GATEWAY).toBe('10.231.200.1');
+    expect(MAIL_SPOOL_DRAIN_ADDRESS).toBe('10.231.200.2');
+    const environment = spoolService(mailSpoolDocument(demoHostArgs())).environment as Rec;
+    expect(environment.SHIM_DRAIN_HOST).toBe(MAIL_SPOOL_DRAIN_ADDRESS);
   });
 
   it('keeps the drain bridge name inside demo1 egress policy match and the kernel interface-name limit', () => {
@@ -114,7 +140,22 @@ describe('renderMailSpoolStack()', () => {
     expect(MAIL_SPOOL_DRAIN_CONTAINER_PORT).not.toBe(MAIL_SPOOL_HTTP_PORT);
     expect(environment.PORT).toBe(MAIL_SPOOL_HTTP_PORT);
     expect(environment.SHIM_DRAIN_PORT).toBe(MAIL_SPOOL_DRAIN_CONTAINER_PORT);
-    expect(service.ports).not.toContain(expect.stringContaining(`:${MAIL_SPOOL_HTTP_PORT}`));
+    // Exactly the drain listener is published: not "no entry contains :8080",
+    // which a strict-equality toContain on an array can never fail.
+    expect(publishedContainerPorts(service)).toEqual([MAIL_SPOOL_DRAIN_CONTAINER_PORT]);
+  });
+
+  it('CONTROL for the exact check: a document that publishes the mail API port is reported, and the old assertion stayed green on it', () => {
+    const document = okDocument();
+    spoolService(document).ports = [`127.0.0.1:${DRAIN_PORT}:${MAIL_SPOOL_HTTP_PORT}`];
+    const service = spoolService(document);
+    // RED: the exact check reports the mail API port.
+    expect(publishedContainerPorts(service)).toEqual([MAIL_SPOOL_HTTP_PORT]);
+    expect(publishedContainerPorts(service)).not.toEqual([MAIL_SPOOL_DRAIN_CONTAINER_PORT]);
+    // The replaced assertion, verbatim, passes on that same broken document.
+    expect(() =>
+      expect(service.ports).not.toContain(expect.stringContaining(`:${MAIL_SPOOL_HTTP_PORT}`))
+    ).not.toThrow();
   });
 
   it('pins the image by digest in the rendered file itself', () => {
@@ -129,7 +170,14 @@ describe('renderMailSpoolStack()', () => {
     );
     const environment = spoolService(mailSpoolDocument(demoHostArgs())).environment as Rec;
     expect(Object.keys(environment).sort()).toEqual(
-      ['PORT', 'SHIM_DB_PATH', 'SHIM_DRAIN_PORT', 'SHIM_DRAIN_TOKEN', 'SMTP_LISTEN_PORT'].sort()
+      [
+        'PORT',
+        'SHIM_DB_PATH',
+        'SHIM_DRAIN_HOST',
+        'SHIM_DRAIN_PORT',
+        'SHIM_DRAIN_TOKEN',
+        'SMTP_LISTEN_PORT',
+      ].sort()
     );
   });
 
@@ -201,7 +249,7 @@ describe("Ghost's mail environment and the spool agree, from one source", () => 
     expect(env.mail__options__secure).toBe(false);
   });
 
-  it("the SMTP credential is the tenant's sending domain and the bulk path's own key, never a literal", () => {
+  it("the SMTP credential is the tenant's credential domain and the bulk path's own key, never a literal", () => {
     const descriptor = validate(demoDescriptor(), TEST_ZONES);
     const env = tenantEnvironment(
       descriptor,
@@ -222,7 +270,9 @@ describe("Ghost's mail environment and the spool agree, from one source", () => 
     expect(compose).toContain(`  ${network}:\n    name: '${network}'\n    external: true`);
     const spoolNetworks = networksOf(mailSpoolDocument(demoHostArgs()));
     expect(spoolNetworks[network]).toEqual({ name: network, internal: true });
-    expect(spoolService(mailSpoolDocument(demoHostArgs())).networks).toContain(network);
+    expect(Object.keys(spoolService(mailSpoolDocument(demoHostArgs())).networks as Rec)).toContain(
+      network
+    );
   });
 
   it('a tenant with mail disabled gets no spool network and no transport', () => {
@@ -316,6 +366,102 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
       /\/drain on the tenant-facing listener/,
     ],
     [
+      'a drain port with no SHIM_DRAIN_HOST',
+      (d) => {
+        delete (spoolService(d).environment as Rec).SHIM_DRAIN_HOST;
+      },
+      /must set SHIM_DRAIN_HOST/,
+    ],
+    [
+      'an empty SHIM_DRAIN_HOST',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_HOST = '';
+      },
+      /must set SHIM_DRAIN_HOST/,
+    ],
+    [
+      'the drain host set to 0.0.0.0',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_HOST = '0.0.0.0';
+      },
+      /must not be a wildcard address \(0\.0\.0\.0\)/,
+    ],
+    [
+      'the drain host set to ::',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_HOST = '::';
+      },
+      /must not be a wildcard address \(::\)/,
+    ],
+    [
+      'the drain host set to a spelled-out all-zero IPv6 address',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_HOST = '0:0:0:0:0:0:0:0';
+      },
+      /must not be a wildcard address/,
+    ],
+    [
+      'the drain host set to an address on a tenant network',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_HOST = '172.20.0.2';
+      },
+      /must be the spool's fixed drain address/,
+    ],
+    [
+      'the drain host set to loopback, which Docker cannot forward the published port to',
+      (d) => {
+        (spoolService(d).environment as Rec).SHIM_DRAIN_HOST = '127.0.0.1';
+      },
+      /must be the spool's fixed drain address/,
+    ],
+    [
+      'the drain network ipam subnet changed',
+      (d) => {
+        const pool = ((networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipam as Rec).config as Rec[];
+        pool[0].subnet = '10.231.201.0/29';
+      },
+      /exactly the ipam pool subnet/,
+    ],
+    [
+      'the drain network ipam gateway changed',
+      (d) => {
+        const pool = ((networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipam as Rec).config as Rec[];
+        pool[0].gateway = '10.231.200.6';
+      },
+      /exactly the ipam pool subnet/,
+    ],
+    [
+      'the drain network with no ipam block',
+      (d) => {
+        delete (networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipam;
+      },
+      /exactly the ipam pool subnet/,
+    ],
+    [
+      "the service's ipv4_address on the drain network differing from SHIM_DRAIN_HOST",
+      (d) => {
+        ((spoolService(d).networks as Rec)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipv4_address =
+          '10.231.200.3';
+      },
+      /must set ipv4_address to SHIM_DRAIN_HOST/,
+    ],
+    [
+      'no ipv4_address on the drain network, so the container gets any address',
+      (d) => {
+        (spoolService(d).networks as Rec)[MAIL_SPOOL_DRAIN_NETWORK] = {
+          aliases: [MAIL_SPOOL_SERVICE],
+        };
+      },
+      /must set ipv4_address to SHIM_DRAIN_HOST/,
+    ],
+    [
+      'the list form of networks, which cannot carry a fixed address',
+      (d) => {
+        spoolService(d).networks = [MAIL_SPOOL_DRAIN_NETWORK];
+      },
+      /must set ipv4_address to SHIM_DRAIN_HOST/,
+    ],
+    [
       'an `expose` entry',
       (d) => {
         spoolService(d).expose = [String(MAIL_SPOOL_SMTP_PORT)];
@@ -325,7 +471,7 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
     [
       'a default egress network joined',
       (d) => {
-        (spoolService(d).networks as string[]).push('default');
+        (spoolService(d).networks as Rec).default = { aliases: [MAIL_SPOOL_SERVICE] };
         networksOf(d).default = {};
       },
       /not `internal: true`/,
@@ -357,7 +503,7 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
     [
       'a network the file does not declare',
       (d) => {
-        (spoolService(d).networks as string[]).push('host-net');
+        (spoolService(d).networks as Rec)['host-net'] = { aliases: [MAIL_SPOOL_SERVICE] };
       },
       /does not declare/,
     ],
@@ -531,6 +677,52 @@ describe('the posture check guards the renderer itself -- source-mutation sabota
     );
     expect(() => broken(demoHostArgs())).toThrow(/not `internal: true`/);
     expect(() => renderMailSpoolStack(demoHostArgs())).not.toThrow();
+  });
+
+  it('RED: a renderer that drops SHIM_DRAIN_HOST is refused at render time; GREEN: the real one renders it', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(s, 'SHIM_DRAIN_HOST: MAIL_SPOOL_DRAIN_ADDRESS,', '')
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/must set SHIM_DRAIN_HOST/);
+    expect(renderMailSpoolStack(demoHostArgs())).toContain(
+      `SHIM_DRAIN_HOST: '${MAIL_SPOOL_DRAIN_ADDRESS}'`
+    );
+  });
+
+  it('RED: a renderer that writes SHIM_DRAIN_HOST as 0.0.0.0 is refused at render time', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(s, 'SHIM_DRAIN_HOST: MAIL_SPOOL_DRAIN_ADDRESS,', "SHIM_DRAIN_HOST: '0.0.0.0',")
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/must not be a wildcard address \(0\.0\.0\.0\)/);
+  });
+
+  it('RED: a renderer that writes SHIM_DRAIN_HOST as :: is refused at render time', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(s, 'SHIM_DRAIN_HOST: MAIL_SPOOL_DRAIN_ADDRESS,', "SHIM_DRAIN_HOST: '::',")
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/must not be a wildcard address \(::\)/);
+  });
+
+  it('RED: a renderer that drops the drain network ipam is refused at render time', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(
+        s,
+        'ipam: {\n        config: [{ subnet: MAIL_SPOOL_DRAIN_SUBNET, gateway: MAIL_SPOOL_DRAIN_GATEWAY }],\n      },',
+        ''
+      )
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/exactly the ipam pool subnet/);
+  });
+
+  it("RED: a renderer that drops the spool's fixed address is refused at render time", async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(
+        s,
+        '{ ipv4_address: MAIL_SPOOL_DRAIN_ADDRESS }',
+        '{ aliases: [MAIL_SPOOL_SERVICE] }'
+      )
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/must set ipv4_address to SHIM_DRAIN_HOST/);
   });
 
   it('RED: a renderer that publishes the drain port on every address is refused at render time', async () => {

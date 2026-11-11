@@ -3,7 +3,6 @@ import type {
   TenantStackDescriptor,
   ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
-import type { GhostTenantSecrets } from '../index';
 
 /** Test-only zones, in RFC 2606 reserved names, never a real estate domain. */
 export const TEST_ZONES: ZoneConfig = {
@@ -20,7 +19,7 @@ const DIGEST = 'b'.repeat(64);
  * the live tenant-zero stack passes to the 4.0.0 component (MySQL, S3 media,
  * SMTP mail, bulk mail, default caps and upload limits), with placeholder
  * values. The slug is not tenant zero's own: see output-diff.md#the-slug.
- * No `ownerEmail`: it arrives as a secret, in `tenantZeroSecrets()`.
+ * No `ownerEmail`: the owner address reaches the host in the secrets file.
  */
 export function tenantZeroEquivalent(): TenantStackDescriptor {
   return {
@@ -64,18 +63,6 @@ export function tenantZeroEquivalent(): TenantStackDescriptor {
     breakGlass: { kind: 'disabled' },
     expiresAt: null,
   } as unknown as TenantStackDescriptor;
-}
-
-/** One placeholder per secret the tenant-zero-equivalent descriptor needs. */
-export function tenantZeroSecrets(): GhostTenantSecrets {
-  return {
-    databasePassword: 'PLACEHOLDER_DB_PASSWORD',
-    s3AccessKeyId: 'PLACEHOLDER_S3_KEY_ID',
-    s3SecretAccessKey: 'PLACEHOLDER_S3_SECRET',
-    mailPassword: 'PLACEHOLDER_MAIL_PASSWORD',
-    bulkEmailApiKey: 'PLACEHOLDER_BULK_KEY',
-    ownerEmail: 'owner@zero.platform-domain.example.test',
-  };
 }
 
 /** A demo descriptor, for the falsifying test's promotion. */

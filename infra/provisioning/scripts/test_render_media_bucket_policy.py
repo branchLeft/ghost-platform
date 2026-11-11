@@ -360,15 +360,23 @@ class TestInputRefusals(unittest.TestCase):
         # This script runs before the component and before provision-tenant.yml,
         # and its output creates a real bucket, so it must not be the one place
         # a reserved slug gets through.
-        for slug in policy_module.RESERVED_SLUGS:
+        # Literal names, so this does not depend on the register under test.
+        for slug in ("website", "edge", "db", "monitoring", "nextcloud1", "mail-spool"):
             with self.subTest(slug=slug):
                 with self.assertRaises(policy_module.PolicyInputError):
                     policy_module.media_bucket_name(slug)
 
-    def test_refuses_mail_spool_by_name(self):
-        # The name is literal, so this does not depend on the list under test.
-        with self.assertRaises(policy_module.PolicyInputError):
-            policy_module.media_bucket_name("mail-spool")
+    def test_accepts_tenant_zero_and_an_unregistered_slug(self):
+        # Controls: only infrastructure names are refused here.
+        self.assertEqual(policy_module.media_bucket_name("blog"), "branchleft-media-blog")
+        self.assertEqual(policy_module.media_bucket_name("demo-1"), "branchleft-media-demo-1")
+
+    def test_fails_closed_when_the_register_is_unreadable(self):
+        with mock.patch.object(policy_module, "REGISTER_PATH", "/nonexistent/tenant-names.json"):
+            for slug in ("demo-1", "blog"):
+                with self.subTest(slug=slug):
+                    with self.assertRaisesRegex(policy_module.PolicyInputError, "tenant-names.json"):
+                        policy_module.media_bucket_name(slug)
 
     def test_accepts_the_slugs_the_platform_permits(self):
         self.assertEqual(policy_module.media_bucket_name("a"), "branchleft-media-a")

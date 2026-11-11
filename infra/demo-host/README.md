@@ -41,7 +41,7 @@ Nothing else: no ICMP and no UDP 443 (Caddy falls back from HTTP/3 to TCP).
 There are no outbound rules. Hetzner switches a firewall to default-deny
 outbound as soon as it carries one outbound rule, and the host has to keep NTP
 and its security updates. Container egress is denied on the host instead, by
-`demo-host/provision/branchleft_demo_egress.sh`.
+`demo-host/provision/branchleft_demo_egress.py`.
 
 edge1's address is read from the estate stack's applied `edge1PublicIpv4`
 output rather than configured. A hand-copied value would go stale unnoticed.

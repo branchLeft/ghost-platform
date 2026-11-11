@@ -19,7 +19,10 @@ prints one `REFUSED:` line and writes nothing (a previous file is untouched).
 
 An unreachable broker, a body that is not an object, a missing or malformed
 list, or a stand-in on any one of the seven slots is a refusal. Nothing here
-assumes clean.
+assumes clean. Every slot is read and every reason is joined into the one
+`REFUSED:` line with `; ` (for example `slot 0: test stand-in loaded:
+noop-admin-api; slot 4: test stand-in loaded: noop-drain-source`), so one run
+names every stand-in.
 
 ## Sabotage
 

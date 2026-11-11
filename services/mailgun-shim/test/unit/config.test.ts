@@ -159,14 +159,18 @@ describe('loadConfig', () => {
 
   describe('SHIM_DRAIN_PORT', () => {
     const base = { ...baseEnv, SHIM_ALLOW_EPHEMERAL_DB: 'true' };
+    const drained = { ...base, SHIM_DRAIN_HOST: '198.18.250.2' };
 
     it('is undefined when unset, which leaves the single combined listener', () => {
       expect(loadConfig(base).drainPort).toBeUndefined();
+      expect(loadConfig(base).drainHost).toBeUndefined();
     });
 
     it('reads a port distinct from PORT', () => {
-      expect(loadConfig({ ...base, SHIM_DRAIN_PORT: '8081' }).drainPort).toBe(8081);
-      expect(loadConfig({ ...base, PORT: '9090', SHIM_DRAIN_PORT: '8081' }).drainPort).toBe(8081);
+      expect(loadConfig({ ...drained, SHIM_DRAIN_PORT: '8081' }).drainPort).toBe(8081);
+      expect(loadConfig({ ...drained, PORT: '9090', SHIM_DRAIN_PORT: '8081' }).drainPort).toBe(
+        8081
+      );
     });
 
     it('refuses to start when the drain port is the mail API port, explicit or defaulted', () => {
@@ -181,8 +185,62 @@ describe('loadConfig', () => {
     it.each(['', 'abc', '0', '-1', '70000', '80.5', ' '])(
       'refuses the invalid value %j',
       (value) => {
-        expect(() => loadConfig({ ...base, SHIM_DRAIN_PORT: value })).toThrow(/SHIM_DRAIN_PORT/);
+        expect(() => loadConfig({ ...drained, SHIM_DRAIN_PORT: value })).toThrow(/SHIM_DRAIN_PORT/);
       }
     );
+  });
+
+  describe('SHIM_DRAIN_HOST', () => {
+    const withPort = { ...baseEnv, SHIM_ALLOW_EPHEMERAL_DB: 'true', SHIM_DRAIN_PORT: '8081' };
+
+    it.each(['198.18.250.2', '10.0.0.5', '127.0.0.1', '::1', 'fd00::2'])(
+      'reads the address literal %s and hands it to the listener unchanged',
+      (value) => {
+        expect(loadConfig({ ...withPort, SHIM_DRAIN_HOST: value }).drainHost).toBe(value);
+      }
+    );
+
+    it('refuses to start when SHIM_DRAIN_PORT is set and SHIM_DRAIN_HOST is unset', () => {
+      expect(() => loadConfig(withPort)).toThrow(/SHIM_DRAIN_HOST is required/);
+    });
+
+    it('refuses an empty SHIM_DRAIN_HOST, so a templated-away value cannot bind every interface', () => {
+      expect(() => loadConfig({ ...withPort, SHIM_DRAIN_HOST: '' })).toThrow(
+        /SHIM_DRAIN_HOST is required/
+      );
+    });
+
+    it.each([
+      '0.0.0.0',
+      '0.0.0.00',
+      '::',
+      '::0',
+      '0:0:0:0:0:0:0:0',
+      '0000:0000:0000:0000:0000:0000:0000:0000',
+      '::0.0.0.0',
+      '::ffff:0.0.0.0',
+      '::%eth0',
+    ])('refuses the wildcard address %s', (value) => {
+      expect(() => loadConfig({ ...withPort, SHIM_DRAIN_HOST: value })).toThrow(/SHIM_DRAIN_HOST/);
+    });
+
+    it.each(['localhost', 'spool.internal', '0', '256.1.1.1', ' 127.0.0.1', '10.0.0.5/29'])(
+      'refuses %j, which is not an address literal',
+      (value) => {
+        expect(() => loadConfig({ ...withPort, SHIM_DRAIN_HOST: value })).toThrow(
+          /SHIM_DRAIN_HOST must be an IP address literal/
+        );
+      }
+    );
+
+    it('ignores SHIM_DRAIN_HOST when there is no drain port, leaving the combined listener', () => {
+      const config = loadConfig({
+        ...baseEnv,
+        SHIM_ALLOW_EPHEMERAL_DB: 'true',
+        SHIM_DRAIN_HOST: '10.0.0.5',
+      });
+      expect(config.drainPort).toBeUndefined();
+      expect(config.drainHost).toBeUndefined();
+    });
   });
 });

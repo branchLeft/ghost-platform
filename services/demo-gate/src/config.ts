@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { BlockList } from 'node:net';
 import { MIN_KEY_BYTES } from './cookie.js';
-import { isLoopbackHost, parseTrustedProxies } from './source.js';
+import { isLoopbackHost, parseTrustedProxies } from 'ghost-platform-request-guard/dist/index.js';
 
 export interface GateConfig {
   readonly port: number;
@@ -16,6 +16,8 @@ export interface GateConfig {
   readonly ceilingMaxSources: number;
   readonly ceilingBroadLimit: number;
   readonly ceilingBroadMaxSources: number;
+  /** Malformed requests per source per window before 429; see `app.ts`'s `malformedCeiling`. */
+  readonly ceilingMalformedLimit: number;
   readonly argon2MaxConcurrent: number;
   readonly argon2MaxQueued: number;
   /**
@@ -94,6 +96,10 @@ export function loadConfig(
       20_000,
       2_000_000
     ),
+    // A malformed request costs no derivation and no login ceiling, only this
+    // bucket, which bounds a flood of them per source. Shares the window; its
+    // table bound reuses the broad ceiling's.
+    ceilingMalformedLimit: positiveInteger(env, 'GATE_CEILING_MALFORMED_ATTEMPTS', 60, 10_000),
     // Bounded at 3, one below Node's default libuv threadpool size (4),
     // which `crypto.argon2` and `fs` share.
     // See ../README.md#the-argon2-concurrency-caps-default-of-3.

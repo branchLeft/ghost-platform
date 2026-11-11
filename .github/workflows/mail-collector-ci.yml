@@ -14,6 +14,7 @@ on:
     branches: [main]
     paths:
       - 'services/mail-collector/**'
+      - 'deadmans-switch/**'
       - '.github/workflows/mail-collector-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on
@@ -22,6 +23,12 @@ on:
 permissions:
   contents: read
   packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -46,7 +53,16 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@branchleft'
           cache: pnpm
-          cache-dependency-path: services/mail-collector/pnpm-lock.yaml
+          cache-dependency-path: |
+            services/mail-collector/pnpm-lock.yaml
+            deadmans-switch/pnpm-lock.yaml
+
+      # The collector links the shared dead-man's switch package, which
+      # installs its own dependencies: pnpm does not install a link target's.
+      - name: Install the shared dead-man's switch package
+        run: pnpm --dir ../../deadmans-switch install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

@@ -1,0 +1,10 @@
+{
+  "slug": "blog",
+  "uid": 30001,
+  "stackName": "blog",
+  "contentVolume": "ghost-blog-content",
+  "adaptersVolume": "ghost-blog-adapters",
+  "databaseName": "ghost_blog",
+  "appHostPrivateIp": "10.20.1.100",
+  "maxUserConnections": 10
+}

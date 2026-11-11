@@ -4,7 +4,7 @@
 
 One router per slot, installed at `/usr/local/lib/branchleft/health_router.py`
 and run by `branchleft-health-router@<slot>` (see `render_router_unit.md`).
-It listens on the slot's one loopback health port (`9100 + slot`) and is the
+It listens on the slot's one loopback health port (`10100 + slot`) and is the
 only thing there. The edge's check is `GET /healthz` with
 `X-Colour-Upstream: 127.0.0.1:<colour port>`; the router asks that colour's
 drain sidecar over a unix socket and answers 200 only if the sidecar did.

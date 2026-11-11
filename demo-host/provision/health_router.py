@@ -26,7 +26,7 @@ COLOURS: tuple[str, ...] = ("a", "b")
 SLOT_NAMES: tuple[str, ...] = tuple(str(n) for n in range(7))
 EDGE_ADDR = "127.0.0.1"
 APP_PORT_BASE = 9300
-HEALTH_PORT_BASE = 9100
+HEALTH_PORT_BASE = 10100
 COLOUR_HEADER = "X-Colour-Upstream"
 HEALTH_URI = "/healthz"
 

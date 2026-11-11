@@ -6,9 +6,9 @@ name: Portal applications CI
 # PostgreSQL, because the tenant boundary is the database's row-level policies
 # together with the scope bound at sign-in. The data layer's provisioning
 # command builds that database and checks pg_hba too, so the server runs with
-# the data layer's test pg_hba.conf mounted. The two packages it consumes, the
-# data layer and the identity verifier, are built first, as the applications
-# import their built output. A missing PORTAL_TEST_DATABASE_URL fails the
+# the data layer's test pg_hba.conf mounted. The three packages it consumes, the
+# data layer, the identity verifier and the request guard, are built first, as
+# the applications import their built output. A missing PORTAL_TEST_DATABASE_URL fails the
 # suite rather than skipping it.
 
 on:
@@ -17,14 +17,17 @@ on:
     paths:
       - 'portal/**'
       - 'services/identity/**'
+      - 'services/request-guard/**'
       - '.github/workflows/portal-apps-ci.yml'
   # Same set as the push filter above: the applications, the data layer they
-  # build first (both under portal/) and the identity verifier.
+  # build first (both under portal/), the identity verifier and the request
+  # guard.
   pull_request:
     branches: [main]
     paths:
       - 'portal/**'
       - 'services/identity/**'
+      - 'services/request-guard/**'
       - '.github/workflows/portal-apps-ci.yml'
 
 # `packages: read` because these packages take a dev dependency on
@@ -34,6 +37,12 @@ permissions:
   contents: read
   packages: read
 
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Portal applications type check and test
@@ -41,11 +50,12 @@ jobs:
     timeout-minutes: 15
     env:
       PORTAL_TEST_DATABASE_URL: postgres://postgres:ci-only-throwaway@127.0.0.1:5432/postgres
-      NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Started here rather than as a service container, which cannot mount a
       # file from the checkout.
@@ -80,18 +90,46 @@ jobs:
             portal/apps/pnpm-lock.yaml
             portal/data/pnpm-lock.yaml
             services/identity/pnpm-lock.yaml
+            services/request-guard/pnpm-lock.yaml
+
+      # The registry token is on the four install steps alone. A compile or
+      # test step runs code from the repository and from what was just
+      # installed, and must not be able to read it.
+      - name: Install the data layer's dependencies
+        working-directory: portal/data
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build the data layer
         working-directory: portal/data
-        run: pnpm install --frozen-lockfile && pnpm run build
+        run: pnpm run build
+
+      - name: Install the identity verifier's dependencies
+        working-directory: services/identity
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build the identity verifier
         working-directory: services/identity
-        run: pnpm install --frozen-lockfile && pnpm run build
+        run: pnpm run build
+
+      - name: Install the request guard's dependencies
+        working-directory: services/request-guard
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the request guard
+        working-directory: services/request-guard
+        run: pnpm run build
 
       - name: Install dependencies
         working-directory: portal/apps
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Type check
         working-directory: portal/apps

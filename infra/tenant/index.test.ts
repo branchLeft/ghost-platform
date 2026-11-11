@@ -1,23 +1,11 @@
-import * as pulumi from '@pulumi/pulumi';
 import {
   render,
   validateTenantStack,
   type TenantStackDescriptor,
 } from '@branchleft/ghost-platform-render-core';
 import { beforeAll, describe, expect, it } from 'vitest';
-import {
-  assertSecretCoverage,
-  fillSecretsTemplate,
-  requiredSecretKeys,
-  type GhostTenant as GhostTenantClass,
-  type GhostTenantSecrets,
-} from './index';
-import {
-  TEST_ZONES,
-  demoDescriptor,
-  tenantZeroEquivalent,
-  tenantZeroSecrets,
-} from './test/fixtures';
+import { requiredSecretKeys, type GhostTenant as GhostTenantClass } from './index';
+import { TEST_ZONES, demoDescriptor, tenantZeroEquivalent } from './test/fixtures';
 import { created, installMocks, settle, unwrap } from './test/harness';
 
 /**
@@ -36,10 +24,9 @@ beforeAll(async () => {
 
 function build(
   name: string,
-  descriptor: TenantStackDescriptor = tenantZeroEquivalent(),
-  secrets: GhostTenantSecrets = tenantZeroSecrets()
+  descriptor: TenantStackDescriptor = tenantZeroEquivalent()
 ): GhostTenantClass {
-  return new GhostTenant(name, { descriptor, zones: TEST_ZONES, secrets });
+  return new GhostTenant(name, { descriptor, zones: TEST_ZONES });
 }
 
 function rendered(descriptor: TenantStackDescriptor = tenantZeroEquivalent()): Map<string, string> {
@@ -79,7 +66,6 @@ describe('GhostTenant identity', () => {
     const tenant = new GhostTenant('cap', {
       descriptor: tenantZeroEquivalent(),
       zones: TEST_ZONES,
-      secrets: tenantZeroSecrets(),
       maxUserConnections: 25,
     });
     expect((await unwrap(tenant.identity)).maxUserConnections).toBe(25);
@@ -126,28 +112,19 @@ describe('GhostTenant renders nothing itself', () => {
     expect(tenant.edgeRequestBodyMaxSize).toBe('64MiB');
   });
 
-  it('changes only the KEY= lines of the render core secrets template', async () => {
+  it('outputs the render core secrets template as rendered, key names only', () => {
     const template = rendered().get('secrets.env') as string;
-    const filled = await unwrap(build('secrets').secretsEnvFile);
-    const templateLines = template.split('\n');
-    const filledLines = filled.split('\n');
-    expect(filledLines).toHaveLength(templateLines.length);
-    templateLines.forEach((line, index) => {
-      if (/^[A-Z][A-Z0-9_]*=$/.test(line)) {
-        expect(filledLines[index].startsWith(line)).toBe(true);
-        expect(filledLines[index].length).toBeGreaterThan(line.length);
-      } else {
-        expect(filledLines[index]).toBe(line);
-      }
-    });
-    expect(filled).toContain('GHOST_DB_PASSWORD=PLACEHOLDER_DB_PASSWORD\n');
-    expect(filled).toContain('GHOST_BULK_EMAIL_API_KEY=PLACEHOLDER_BULK_KEY\n');
-    expect(filled).toContain('GHOST_OWNER_EMAIL=owner@zero.platform-domain.example.test\n');
-  });
-
-  it('marks the secrets file as a Pulumi secret', async () => {
-    const tenant = build('secret-flag');
-    expect(await pulumi.isSecret(tenant.secretsEnvFile)).toBe(true);
+    const tenant = build('secrets');
+    expect(tenant.secretsEnvTemplate).toBe(template);
+    expect(tenant.secretKeys).toEqual(requiredSecretKeys(template));
+    expect(tenant.secretKeys).toEqual([
+      'GHOST_DB_PASSWORD',
+      'GHOST_S3_ACCESS_KEY_ID',
+      'GHOST_S3_SECRET_ACCESS_KEY',
+      'GHOST_MAIL_PASSWORD',
+      'GHOST_BULK_EMAIL_API_KEY',
+      'GHOST_OWNER_EMAIL',
+    ]);
   });
 
   it('derives the scalar outputs from the render core naming', () => {
@@ -182,7 +159,7 @@ describe('GhostTenant refusals, all before anything is registered', () => {
 
   it('refuses a demo descriptor', () => {
     const { ownerEmail: _ownerEmail, ...demo } = demoDescriptor();
-    refusesUnregistered('demo', () => build('demo', demo, {}), /must be "tenant"/);
+    refusesUnregistered('demo', () => build('demo', demo), /must be "tenant"/);
   });
 
   it('refuses a descriptor the render core does not validate', () => {
@@ -191,15 +168,6 @@ describe('GhostTenant refusals, all before anything is registered', () => {
       slug: 'Not A Slug',
     } as unknown as TenantStackDescriptor;
     refusesUnregistered('invalid', () => build('invalid', invalid), /slug/);
-  });
-
-  it('refuses a missing required secret', () => {
-    const { bulkEmailApiKey: _omitted, ...rest } = tenantZeroSecrets();
-    refusesUnregistered(
-      'missing',
-      () => build('missing', tenantZeroEquivalent(), rest),
-      /bulkEmailApiKey/
-    );
   });
 
   it('refuses a descriptor that still carries ownerEmail, without echoing it', () => {
@@ -211,58 +179,22 @@ describe('GhostTenant refusals, all before anything is registered', () => {
     refusesUnregistered('inline-owner', () => build('inline-owner', inline), /must not carry/);
   });
 
-  it('refuses a missing owner address', () => {
-    const { ownerEmail: _omitted, ...rest } = tenantZeroSecrets();
-    refusesUnregistered(
-      'no-owner',
-      () => build('no-owner', tenantZeroEquivalent(), rest),
-      /ownerEmail \(GHOST_OWNER_EMAIL\)/
-    );
-  });
-
-  it('refuses a secret the descriptor does not need', () => {
-    const queue = {
-      ...tenantZeroEquivalent(),
-      transport: { kind: 'queue', path: '/var/spool/zero' },
-    } as unknown as TenantStackDescriptor;
-    refusesUnregistered('orphan', () => build('orphan', queue), /mailPassword was supplied/);
+  it('refuses a secrets argument, never dropping it and never echoing it', () => {
+    const sentinel = 'PLACEHOLDER_REMOVED_ARGUMENT_9f3a';
+    const act = () =>
+      new GhostTenant('removed-argument', {
+        descriptor: tenantZeroEquivalent(),
+        zones: TEST_ZONES,
+        secrets: { databasePassword: sentinel },
+      } as unknown as ConstructorParameters<typeof GhostTenantClass>[1]);
+    expect(act).toThrow(/"secrets" argument was removed/);
+    expect(act).not.toThrow(new RegExp(sentinel));
+    expect(created.some((r) => r.name === 'removed-argument')).toBe(false);
   });
 });
 
-describe('fillSecretsTemplate', () => {
-  const template = '# header\nGHOST_DB_PASSWORD=\nGHOST_MAIL_PASSWORD=\n';
-
-  it('refuses a value carrying a newline, which would add a variable', () => {
-    const values = new Map([
-      ['GHOST_DB_PASSWORD', 'ok'],
-      ['GHOST_MAIL_PASSWORD', 'pw\nGHOST_DB_PASSWORD=attacker'],
-    ]);
-    expect(() => fillSecretsTemplate('zero', template, values)).toThrow(/control character/);
-  });
-
-  it('refuses a key the template names but no value fills', () => {
-    expect(() =>
-      fillSecretsTemplate('zero', template, new Map([['GHOST_DB_PASSWORD', 'ok']]))
-    ).toThrow(/no value for GHOST_MAIL_PASSWORD/);
-  });
-
-  it('leaves comment lines and the trailing newline untouched', () => {
-    const values = new Map([
-      ['GHOST_DB_PASSWORD', 'a'],
-      ['GHOST_MAIL_PASSWORD', 'b'],
-    ]);
-    expect(fillSecretsTemplate('zero', template, values)).toBe(
-      '# header\nGHOST_DB_PASSWORD=a\nGHOST_MAIL_PASSWORD=b\n'
-    );
-  });
-});
-
-describe('requiredSecretKeys and assertSecretCoverage', () => {
+describe('requiredSecretKeys', () => {
   it('reads only KEY= lines, in order', () => {
     expect(requiredSecretKeys('# A=\nB=\nC=x\nD=\n')).toEqual(['B', 'D']);
-  });
-
-  it('refuses a template key this component has no input for', () => {
-    expect(() => assertSecretCoverage('zero', ['GHOST_UNKNOWN'], {})).toThrow(/no input for/);
   });
 });

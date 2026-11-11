@@ -1,27 +1,26 @@
-"""Tests for the visibility refusal in ../../../.github/workflows/
-provision-tenant.yml. A private tenant is refused by the 'Validate inputs'
-step, before any step that writes a credential or creates a repository, so
-the tenant's state credentials are never handed to a private repository's
-production environment by this workflow.
-
-The refusal is tested by extracting the visibility `case` block from the
-step's `run:` body and executing it under `bash -e`, not by matching YAML
-text. A separate test reads the step order from the workflow file.
+"""Tests for the tenant_visibility gate in ../../../.github/workflows/
+provision-tenant.yml. A private tenant passes only when the owner's plan register
+attests a paid plan and a dedicated runner, via check_private_tenant_plan.py.
+The gate runs in Validate inputs, before any credential or repository step, and
+again at repository creation. Each case block runs under bash -e against a
+temporary workspace with a fixture register. A sabotage test removes the gate
+call in memory and shows the refusal depends on it.
 """
 
+import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 
-WORKFLOW = (
-    pathlib.Path(__file__).resolve().parents[3]
-    / ".github"
-    / "workflows"
-    / "provision-tenant.yml"
-)
+SCRIPTS = pathlib.Path(__file__).resolve().parent
+WORKFLOW = SCRIPTS.parents[2] / ".github" / "workflows" / "provision-tenant.yml"
+GATE_SOURCE = SCRIPTS / "check_private_tenant_plan.py"
+GATE_RELPATH = "infra/provisioning/scripts/check_private_tenant_plan.py"
+REGISTER_RELPATH = "registers/private-tenant-plan.json"
 
 VALIDATE_STEP = "Validate inputs"
 CREATE_STEP = "Generate the tenant repo from the template"
@@ -40,8 +39,28 @@ MUTATING_STEPS = (
     "Publish this tenant's encryption salt to its own environment secret",
 )
 
+GATE_CALL = (
+    'python3 "$GITHUB_WORKSPACE/infra/provisioning/scripts/'
+    'check_private_tenant_plan.py" || exit 1'
+)
+
 STEP_LINE = re.compile(r"^      - name: (.+)$")
 JOB_KEY_LINE = re.compile(r"^  [A-Za-z_][A-Za-z0-9_-]*:")
+
+
+def register_json(paid, runner, label="private-ci-hetzner"):
+    return json.dumps(
+        {
+            "version": 1,
+            "paid_plan_confirmed": paid,
+            "dedicated_runner_confirmed": runner,
+            "dedicated_runner_label": label,
+        }
+    )
+
+
+NEITHER = register_json(False, False)
+BOTH = register_json(True, True)
 
 
 def _read_workflow():
@@ -105,36 +124,89 @@ def _visibility_case(body):
     raise AssertionError("visibility case block has no closing esac")
 
 
-def _run_visibility(visibility, step=VALIDATE_STEP, print_after=""):
-    """Execute the visibility case block of `step` with TENANT_VISIBILITY set
-    to `visibility`, then run `print_after` if given. Returns (returncode,
-    combined output)."""
-    block = _visibility_case(_run_body(_step_lines(_read_workflow(), step)))
-    script = 'fail() { echo "::error::$1"; exit 1; }\n' + "\n".join(block) + "\n"
-    if print_after:
-        script += print_after + "\n"
-    directory = tempfile.mkdtemp(prefix="visibility-refusal-")
-    path = os.path.join(directory, "check.sh")
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(script)
-    env = dict(os.environ)
-    env["TENANT_VISIBILITY"] = visibility
-    proc = subprocess.run(
-        ["bash", "-e", path], env=env, capture_output=True, text=True
+def _visibility_block(step=VALIDATE_STEP, lines=None):
+    lines = _read_workflow() if lines is None else lines
+    return _visibility_case(_run_body(_step_lines(lines, step)))
+
+
+def _make_workspace(register):
+    """A temporary GITHUB_WORKSPACE holding a copy of the real gate script,
+    and the given register text (or no register at all when None)."""
+    root = tempfile.mkdtemp(prefix="visibility-workspace-")
+    scripts = os.path.join(root, "infra", "provisioning", "scripts")
+    os.makedirs(scripts)
+    shutil.copy2(GATE_SOURCE, os.path.join(scripts, "check_private_tenant_plan.py"))
+    if register is not None:
+        os.makedirs(os.path.join(root, "registers"))
+        with open(os.path.join(root, REGISTER_RELPATH), "w", encoding="utf-8") as fh:
+            fh.write(register)
+    return root
+
+
+def _run_block(block, visibility, register, print_after=""):
+    """Execute a visibility case block with TENANT_VISIBILITY set to
+    `visibility`, then `print_after` if given. Returns (returncode, output)."""
+    workspace = _make_workspace(register)
+    try:
+        script = 'fail() { echo "::error::$1"; exit 1; }\n' + "\n".join(block) + "\n"
+        if print_after:
+            script += print_after + "\n"
+        path = os.path.join(workspace, "check.sh")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        env = dict(os.environ)
+        env["TENANT_VISIBILITY"] = visibility
+        env["GITHUB_WORKSPACE"] = workspace
+        proc = subprocess.run(
+            ["bash", "-e", path], env=env, capture_output=True, text=True
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def _run_visibility(
+    visibility, step=VALIDATE_STEP, print_after="", register=NEITHER, lines=None
+):
+    return _run_block(
+        _visibility_block(step, lines), visibility, register, print_after
     )
-    return proc.returncode, proc.stdout + proc.stderr
 
 
-class APrivateTenantIsRefused(unittest.TestCase):
-    def test_private_is_refused_with_the_named_alternative(self):
-        rc, out = _run_visibility("private")
+class APrivateTenantNeedsBothAttestations(unittest.TestCase):
+    def test_private_with_neither_attestation_is_refused_and_names_both(self):
+        rc, out = _run_visibility("private", register=NEITHER)
         self.assertNotEqual(rc, 0, out)
-        self.assertIn("::error::", out)
-        self.assertIn("refused by this public provisioning workflow", out)
-        self.assertIn("the owner's to run", out)
-        self.assertIn("No agent or hand run", out)
+        self.assertIn("::error::paid_plan_confirmed is false", out)
+        self.assertIn("::error::dedicated_runner_confirmed is false", out)
+        self.assertIn("owner's spend", out)
+        self.assertIn("Mac", out)
 
-    def test_other_spellings_of_private_are_refused(self):
+    def test_each_combination_of_the_two_attestations(self):
+        cases = (
+            (False, False, False),
+            (True, False, False),
+            (False, True, False),
+            (True, True, True),
+        )
+        for paid, runner, passes in cases:
+            with self.subTest(paid=paid, runner=runner):
+                rc, out = _run_visibility(
+                    "private", register=register_json(paid, runner)
+                )
+                if passes:
+                    self.assertEqual(rc, 0, out)
+                    self.assertNotIn("::error::", out)
+                else:
+                    self.assertNotEqual(rc, 0, out)
+                    self.assertIn("::error::", out)
+
+    def test_private_with_both_attested_passes_the_validation_step(self):
+        rc, out = _run_visibility("private", register=BOTH)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("::error::", out)
+
+    def test_other_spellings_are_refused_even_with_both_attested(self):
         for value in (
             "Private",
             "PRIVATE",
@@ -146,9 +218,13 @@ class APrivateTenantIsRefused(unittest.TestCase):
             "",
         ):
             with self.subTest(value=value):
-                rc, out = _run_visibility(value)
+                rc, out = _run_visibility(value, register=BOTH)
                 self.assertNotEqual(rc, 0, out)
                 self.assertIn("::error::", out)
+
+    def test_the_validation_arm_calls_the_gate_and_stops_on_failure(self):
+        block = "\n".join(_visibility_block())
+        self.assertIn(GATE_CALL, block)
 
 
 class APublicTenantStillPasses(unittest.TestCase):
@@ -157,28 +233,59 @@ class APublicTenantStillPasses(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("::error::", out)
 
+    def test_public_never_reads_the_register(self):
+        rc, out = _run_visibility("public", register=None)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("private-tenant plan", out)
+
     def test_an_unanswered_choice_is_still_refused(self):
         rc, out = _run_visibility("ask the tenant -- this is not an answer")
         self.assertNotEqual(rc, 0, out)
         self.assertIn("tenant_visibility was not answered", out)
 
 
-class TheRepositoryCreationStepHasNoPrivateArm(unittest.TestCase):
-    def test_creation_case_refuses_private_and_every_other_spelling(self):
-        for value in ("private", "Private", "PRIVATE", ""):
-            with self.subTest(value=value):
-                rc, out = _run_visibility(
-                    value, CREATE_STEP, print_after='echo "$visibility_flag"'
-                )
-                self.assertNotEqual(rc, 0, out)
-                self.assertNotIn("--private", out)
-
-    def test_creation_case_still_picks_public(self):
+class TheRepositoryCreationStepGatesPrivateAgain(unittest.TestCase):
+    def test_private_on_an_unconfirmed_register_is_refused_with_no_flag(self):
         rc, out = _run_visibility(
-            "public", CREATE_STEP, print_after='echo "$visibility_flag"'
+            "private",
+            step=CREATE_STEP,
+            print_after='echo "$visibility_flag"',
+            register=NEITHER,
+        )
+        self.assertNotEqual(rc, 0, out)
+        self.assertNotIn("--private", out)
+
+    def test_private_on_a_confirmed_register_gets_the_private_flag(self):
+        rc, out = _run_visibility(
+            "private",
+            step=CREATE_STEP,
+            print_after='echo "$visibility_flag"',
+            register=BOTH,
+        )
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.strip().splitlines()[-1], "--private")
+
+    def test_public_still_picks_public(self):
+        rc, out = _run_visibility(
+            "public",
+            step=CREATE_STEP,
+            print_after='echo "$visibility_flag"',
+            register=None,
         )
         self.assertEqual(rc, 0, out)
         self.assertEqual(out.strip(), "--public")
+
+    def test_other_spellings_get_no_flag_even_with_both_attested(self):
+        for value in ("Private", "PRIVATE", ""):
+            with self.subTest(value=value):
+                rc, out = _run_visibility(
+                    value,
+                    step=CREATE_STEP,
+                    print_after='echo "$visibility_flag"',
+                    register=BOTH,
+                )
+                self.assertNotEqual(rc, 0, out)
+                self.assertNotIn("--private", out)
 
 
 class TheRefusalPrecedesEveryMutation(unittest.TestCase):
@@ -196,6 +303,34 @@ class TheRefusalPrecedesEveryMutation(unittest.TestCase):
                     names.index(step),
                     f"{VALIDATE_STEP!r} must run before {step!r}",
                 )
+
+
+class SabotageTests(unittest.TestCase):
+    """Red, then green, for the validation gate. The gate call in the Validate
+    step's private arm is replaced, in memory, by a no-op. The replacement
+    count is asserted to be exactly one. With the mechanism broken, a private
+    tenant on an unconfirmed register gets through (red). With the real
+    workflow it is refused (green)."""
+
+    def test_removing_the_gate_call_lets_private_through_and_the_real_workflow_refuses_it(self):
+        validate = _step_lines(_read_workflow(), VALIDATE_STEP)
+        broken_text, replaced = re.subn(
+            r'^([ \t]+)' + re.escape(GATE_CALL) + r"$",
+            r"\1true",
+            "\n".join(validate),
+            flags=re.M,
+        )
+        self.assertEqual(replaced, 1, "the gate call is not in the Validate step once")
+        broken = broken_text.split("\n")
+
+        red_rc, red_out = _run_block(
+            _visibility_block(VALIDATE_STEP, broken), "private", NEITHER
+        )
+        self.assertEqual(red_rc, 0, "the broken workflow should admit private: " + red_out)
+
+        green_rc, green_out = _run_visibility("private", register=NEITHER)
+        self.assertNotEqual(green_rc, 0, green_out)
+        self.assertIn("::error::paid_plan_confirmed is false", green_out)
 
 
 if __name__ == "__main__":

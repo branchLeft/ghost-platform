@@ -38,11 +38,12 @@ fail() { echo "  FAIL  $1"; FAILURES=$((FAILURES + 1)); }
 expect() {
     if [ "$3" = "$2" ]; then pass "$1 ($3)"; else fail "$1: expected $2, got $3"; fi
 }
-# probe <method> <path> [cookie|-] [form-body] -> status, headers JSON, body (3 lines)
-probe() {
+# probe_host <name> <method> <path> [cookie|-] [form-body] -> status, headers JSON, body (3 lines)
+probe_host() {
     docker run --rm --network "container:$SIM" -v "$PROOF:/proof:ro" -v "$WORK/root.crt:/ca/root.crt:ro" \
-        -e PROBE_CA_FILE=/ca/root.crt "$NODE_IMAGE" node /proof/probe.mjs "$HOST" "$@"
+        -e PROBE_CA_FILE=/ca/root.crt "$NODE_IMAGE" node /proof/probe.mjs "$@"
 }
+probe() { probe_host "$HOST" "$@"; }
 status() { probe "$@" | sed -n 1p; }
 body() { probe "$@" | sed -n '3,$p'; }
 header() { name="$1"; shift; probe "$@" | sed -n 2p | node -e "
@@ -72,13 +73,13 @@ chmod 0644 "$WORK/leases/0.json"
 sed "s/demo-host.example.test/$HOST/; s/k7m-vale-bright.demo-domain.example.test/$HOST/" \
     "$HERE/render-core/test/golden/demo.edge.json" > "$WORK/edge.json"
 # Proof-only global options: a local CA and no trust-store install.
-python3 "$HERE/demo-host/provision/render_demo_site.py" --slot 0 --edge-json "$WORK/edge.json" \
-    --gate-env-out "$WORK/gate.env" \
+python3 "$HERE/demo-host/provision/render_demo_site.py" --base "${HOST#*.}" --site 0="$WORK/edge.json" \
+    --tls 'tls internal' --gate-env-out "$WORK/gate.env" \
     | sed 's/^\tadmin off$/\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\tauto_https disable_redirects/' \
     > "$WORK/Caddyfile"
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "narrow-import" ]; then
     # Sabotage: restore the narrow matcher the review broke (one literal path).
-    sed 's|^\t\t\t\tpath .*$|\t\t\t\tpath /ghost/api/admin/members/upload/|; s|^\t\t\t\tpath_regexp .*$|\t\t\t\tpath /ghost/api/admin/members/upload/|' \
+    sed 's|^\t\t\t\t\tpath .*$|\t\t\t\t\tpath /ghost/api/admin/members/upload/|; s|^\t\t\t\t\tpath_regexp .*$|\t\t\t\t\tpath /ghost/api/admin/members/upload/|' \
         "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
     mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
     echo "  SABOTAGE: members-import matcher narrowed to one literal path"
@@ -86,9 +87,32 @@ fi
 if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "exempt-ghost" ]; then
     # Sabotage: exempt /ghost/* from forward_auth. The "every path is gated"
     # probes must go red (see test-demo-edge.md).
-    sed 's|^\thandle {$|\thandle /ghost/* {\n\t\treverse_proxy 127.0.0.1:9300\n\t}\n\thandle {|' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    sed 's|^\t\thandle {$|\t\thandle /ghost/* {\n\t\t\treverse_proxy 127.0.0.1:9300\n\t\t}\n\t\thandle {|' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
     mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
     echo "  SABOTAGE: /ghost/* exempted from forward_auth"
+fi
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-abort" ]; then
+    # Sabotage: remove the wildcard's closing `handle { abort }`. The
+    # unmatched-name probe must go red (see test-demo-edge.md).
+    sed '/^\thandle {$/{N;N;/\n\t\tabort\n/d;}' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: the unmatched-name abort removed"
+fi
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-upload-guard" ]; then
+    # Sabotage: the uploaded-file refusals answer 200 instead of 403, so a
+    # tenant's uploaded script is served. The upload probes must go red.
+    sed 's|^\(.*respond @activeUpload.* \)403$|\1200|' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    if cmp -s "$WORK/Caddyfile" "$WORK/Caddyfile.sab"; then echo "sabotage matched nothing" >&2; exit 2; fi
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: the uploaded-file refusals removed"
+fi
+if [ "${DEMO_EDGE_PROOF_SABOTAGE:-}" = "drop-error-nosniff" ]; then
+    # Sabotage: remove the site's error-response header block, so a 503 from a
+    # colour with no healthy upstream carries no nosniff. The 5b checks must go red.
+    sed '/^\thandle_errors {$/,/^\t}$/d' "$WORK/Caddyfile" > "$WORK/Caddyfile.sab"
+    if cmp -s "$WORK/Caddyfile" "$WORK/Caddyfile.sab"; then echo "sabotage matched nothing" >&2; exit 2; fi
+    mv "$WORK/Caddyfile.sab" "$WORK/Caddyfile"
+    echo "  SABOTAGE: the error-response nosniff removed"
 fi
 echo "  rendered $(wc -l < "$WORK/Caddyfile") lines for $HOST"
 
@@ -163,6 +187,38 @@ expect "GET /ghost/api/admin/members/upload/ with the cookie" 200 \
 expect "POST to another admin path with the cookie is not refused by the edge" 200 \
     "$(status POST /ghost/api/admin/session "$COOKIE")"
 
+echo "--- 4b. an uploaded file a browser would run is refused, whatever the spelling ---"
+# Ghost serves what a tenant uploads from the tenant's own origin, where
+# `script-src 'self'` lets a .js run. The stand-in colours answer 200
+# to every path, so a 403 here is the edge's and a 200 is the edge letting it by.
+expect "GET an uploaded script with no cookie (the gate answers before the refusal)" 401 \
+    "$(status GET /content/files/2026/11/x.js)"
+for path in /content/files/x.js /content/files/2026/11/x.js /content/images/2026/11/x.js \
+    /content/media/2026/11/x.js /content/files/2026/11/x.mjs /content/files/2026/11/x.cjs \
+    /content/files/2026/11/x.html /content/files/2026/11/x.htm /content/files/2026/11/x.xhtml \
+    /content/files/2026/11/x.css /content/files/2026/11/x.svg /content/images/2026/11/x.svg \
+    /content/files/2026/11/x.svgz /content/files/2026/11/x.xml /content/files/2026/11/x.xsl \
+    /content/files/2026/11/x.kml /content/files/2026/11/x.gpx /content/images/2026/11/x.gpx \
+    /content/files/2026/11/x.JS /content/files/2026/11/x.Js /content/files/2026/11/X.HTML \
+    /content/FILES/2026/11/x.js /content/Images/2026/11/x.svg "/content/files/2026/11/x.js?a=1" \
+    /content/files/2026/11/x%2ejs /content/files/2026/11/%78.js /content/files/2026/11/./x.js \
+    /content/files/2026/./11/x.js //content/files//2026/11/x.js /content/files/2026/11/../11/x.js \
+    /content/./files/x.js /content/files/x.js/; do
+    expect "GET $path with the cookie" 403 "$(status GET "$path" "$COOKIE")"
+done
+for method in POST PUT DELETE; do
+    expect "$method an uploaded-script path with the cookie (every method is refused)" 403 \
+        "$(status $method /content/files/2026/11/x.js "$COOKIE")"
+done
+# The controls: what the guard must leave alone.
+for path in /content/images/2026/11/a.png /content/images/size/w600/2026/11/a.webp \
+    /content/files/2026/11/report.pdf /content/media/2026/11/clip.mp4 /content/files/2026/11/x.jsx \
+    /ghost/assets/app.js /assets/built/main.css /x.js /content/other/x.js; do
+    expect "GET $path with the cookie is not refused by the edge" 200 "$(status GET "$path" "$COOKIE")"
+done
+expect "nosniff on a served response" nosniff "$(header x-content-type-options GET / "$COOKIE")"
+expect "nosniff on the refusal" nosniff "$(header x-content-type-options GET /content/files/2026/11/x.js "$COOKIE")"
+
 echo "--- 5. per-colour health: draining the serving colour moves traffic, no reload ---"
 expect "colour a serves first" "colour-a GET /" "$(body GET / "$COOKIE")"
 touch "$WORK/drain/a"
@@ -180,6 +236,28 @@ for _ in $(seq 1 15); do
     sleep 1
 done
 expect "and back to colour a when b drains (the check tells the colours apart)" yes "$BACK"
+
+echo "--- 5b. both colours drained: the 503 from the edge carries nosniff too ---"
+touch "$WORK/drain/a" "$WORK/drain/b"
+DOWN=no
+for _ in $(seq 1 15); do
+    if [ "$(status GET / "$COOKIE")" = "503" ]; then DOWN=yes; break; fi
+    sleep 1
+done
+expect "both colours drained answer 503" yes "$DOWN"
+expect "nosniff on the 503" nosniff "$(header x-content-type-options GET / "$COOKIE")"
+rm -f "$WORK/drain/a" "$WORK/drain/b"
+
+echo "--- 6. a name under the wildcard that is no slot's gets no site ---"
+# The same address and the same wildcard certificate, a different name: the
+# connection is closed with no status line and so no body. The slot's own
+# name answering (401 with no cookie) is the control that Caddy is up.
+UNMATCHED="unmatched.${HOST#*.}"
+expect "the slot's own name answers" 401 "$(probe_host "$HOST" GET / | sed -n 1p)"
+UNMATCHED_REPLY="$(probe_host "$UNMATCHED" GET /)"
+expect "an unmatched name gets no status" 0 "$(echo "$UNMATCHED_REPLY" | sed -n 1p)"
+expect "an unmatched name's connection is closed after the handshake" "Error: socket hang up" \
+    "$(echo "$UNMATCHED_REPLY" | sed -n 3p)"
 
 if [ "$FAILURES" -ne 0 ]; then
     echo "$FAILURES check(s) failed"

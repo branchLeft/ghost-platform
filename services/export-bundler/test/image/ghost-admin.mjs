@@ -95,13 +95,15 @@ export class GhostAdmin {
     return ok(await this.call('GET', '/db/'), 'export content and settings').body;
   }
 
+  /** The same import, returned whatever Ghost answers, for a caller that expects a refusal. */
+  importContentRaw(bytes) {
+    const form = multipart('importfile', 'export.json', 'application/json', bytes);
+    return this.call('POST', '/db/', form.body, { 'content-type': form.contentType });
+  }
+
   /** Ghost's own import of that same file into this instance. */
   async importContent(bytes) {
-    const form = multipart('importfile', 'export.json', 'application/json', bytes);
-    return ok(
-      await this.call('POST', '/db/', form.body, { 'content-type': form.contentType }),
-      'import content and settings'
-    );
+    return ok(await this.importContentRaw(bytes), 'import content and settings');
   }
 
   /** Ghost's own members CSV export: the raw bytes. */

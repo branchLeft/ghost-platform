@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_TICKETS_PER_WINDOW,
+  MAX_TRACKED_TENANTS,
   SupportLimiter,
   WINDOW_SECONDS,
 } from '../src/tenant/supportLimiter.js';
@@ -46,6 +47,18 @@ describe('the ticket limit', () => {
     expect(limiter.trackedTenants).toBe(50);
     advance(WINDOW_SECONDS);
     limiter.tryTake('tenant-late');
+    expect(limiter.trackedTenants).toBe(1);
+  });
+
+  it('refuses a tenant it has no room to count, and counts it once room is made', () => {
+    const { limiter, advance } = limiterAt(1000);
+    for (let tenant = 0; tenant < MAX_TRACKED_TENANTS; tenant += 1) {
+      expect(limiter.tryTake(`tenant-${tenant}`)).toBe(true);
+    }
+    expect(limiter.tryTake('tenant-over')).toBe(false);
+    expect(limiter.trackedTenants).toBe(MAX_TRACKED_TENANTS);
+    advance(WINDOW_SECONDS);
+    expect(limiter.tryTake('tenant-over')).toBe(true);
     expect(limiter.trackedTenants).toBe(1);
   });
 });

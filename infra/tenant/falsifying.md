@@ -19,9 +19,7 @@ This file runs that test against the rewired component rather than against
 4. **Control case:** hand-edit one extra field (`appHostIp`) after the
    promotion, and the diff is rejected with an error naming that field.
 
-The secrets passed in are the promoted descriptor's: `transform()` keeps the
-demo's `queue` transport, so no SMTP password is supplied, and supplying one
-would be refused by the component's own secret-coverage check. The demo's
-owner address comes out of the promoted descriptor and goes in as
-`secrets.ownerEmail`, as a real promotion must do before the descriptor is
-committed to a tenant repository (index.md#the-owner-address).
+The component takes no secret. The demo's owner address comes out of the
+promoted descriptor before it is handed over, as a real promotion must do
+before the descriptor is committed to a tenant repository, and it reaches the
+host through the secrets file (index.md#the-owner-address).

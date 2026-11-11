@@ -21,7 +21,7 @@ renders:
 | Output | Goes to |
 |---|---|
 | `composeFile` | `/opt/branchleft/<slug>/compose.yml` on the app host |
-| `secretsEnvFile` (a Pulumi secret) | `/etc/branchleft/<slug>.env`, root-owned `0600` |
+| `secretsEnvTemplate`, `secretKeys` (key names only) | filled on the host into `/etc/branchleft/<slug>.env`, root-owned `0600` |
 | `provisionScript` | run as root on the app host, before the unit is enabled |
 | `imageEnvFile` | `/etc/branchleft/<slug>.image.env`, today written by `branchleft-deploy` |
 | `edgeSiteBlock` | the tenant's site block in the edge's site registry |
@@ -34,6 +34,19 @@ renders:
 A tenant's Pulumi stack is therefore the versioned, reviewed,
 passphrase-wrapped record of that configuration, and its checkpoint is what the
 delete guard protects.
+
+## Tenant names
+
+A tenant's slug must not be taken. `registers/tenant-names.json` in the
+ghost-platform repository is the only list of taken names: `infrastructure`
+names (`website`, `edge`, `db`, `monitoring`, `nextcloud1`, `mail-spool`) are
+refused to every tenant, and a `tenant` name (tenant zero's `blog`) is taken
+only by the repository the register records for it. `GhostTenant` checks the
+second from `GITHUB_REPOSITORY` before anything else, and refuses a registered
+name when that variable is unset, so a local preview of tenant zero fails
+rather than passes. The list in `naming.ts` is generated from the register by
+`scripts/sync-tenant-name-register.py` and checked in CI; it lags the register
+until the next release. See `naming.md`.
 
 ## Three steps outside Pulumi
 
@@ -56,13 +69,13 @@ Each fails loudly rather than silently when it has not been done:
    is a claim its own subject can delete. The register is cross-checked against
    the volumes Docker holds, and a volume with no register entry is a refusal
    rather than a free UID.
-3. **The secrets file.** Written by an operator from `secretsEnvFile`. No
-   automated path may write it; `branchleft-deploy` writes only
-   `/etc/branchleft/<slug>.image.env`. Since 7.0.0 it also carries the
-   owner's email address as `GHOST_OWNER_EMAIL`, the only place that address
-   reaches the host: a tenant program passes it as `secrets.ownerEmail` from
-   `config.requireSecret`, never as a descriptor field. See
-   `index.md#the-owner-address`.
+3. **The secrets file.** Rendered on the host by
+   `app/provision/render_tenant_secrets.py` from the `secretsEnvTemplate`
+   output and values given on its stdin. Since 8.0.0 the tenant stack holds
+   no secret value and the component takes no `secrets` argument.
+   `branchleft-deploy` writes only `/etc/branchleft/<slug>.image.env`. The
+   file also carries the owner's email address as `GHOST_OWNER_EMAIL`. See
+   `index.md#secrets-on-the-host`.
 
 ## The runtime posture
 
@@ -121,9 +134,11 @@ that drifts — and none of them substitutes for another:
 derived from the one ceiling is on the same power-of-two base. Caddy reads
 `64MiB` as 67,108,864 bytes and `64MB` as 64,000,000 bytes, so `MB` would be
 about 4.6% smaller: tighter than the derivation intends, not looser. **The
-component emits the value; nothing yet carries it into the edge's site
-registry**, which lives in a different repository — so today it is an output
-an operator has to place by hand.
+component emits the value. The edge's site registry has a field for it:**
+`requestBodyMaxSize` on each site in `sites.ts` of `branchLeft/shared-infra`,
+typed as `EdgeSite` in `siteTypes.ts`, and the renderer in
+`hetzner/edge/render.ts` emits `request_body { max_size … }` from it. Nothing
+copies this output into that field, so today an operator places it by hand.
 
 `mem_limit` is the RSS budget **plus** the tmpfs ceiling, because tmpfs pages
 are charged to the container's own memory cgroup. A tenant sitting at its RSS

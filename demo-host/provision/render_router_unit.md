@@ -33,7 +33,7 @@ read-only filesystem, private `/tmp` and devices.
 1. `systemd-analyze verify /etc/systemd/system/branchleft-health-router@.service`
    reports nothing, and every directive loads (no "unknown lvalue").
 2. Instance start as `demo-router` (uid 30008): `systemctl show -p MainPID,User
-   branchleft-health-router@0`, and `ss -ltnp` shows it on 127.0.0.1:9100 only.
+   branchleft-health-router@0`, and `ss -ltnp` shows it on 127.0.0.1:10100 only.
 3. `ProtectSystem=strict` and `IPAddressDeny=any` still let it connect to a
    unix socket in the socket directory (connect to a real sidecar socket and
    read a 200).

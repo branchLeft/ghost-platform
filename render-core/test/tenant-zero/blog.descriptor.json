@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "kind": "tenant",
+  "slug": "blog",
+  "siteUrl": "https://blog.branchleft.co.uk",
+  "image": "ghcr.io/branchleft/ghost-tenant@sha256:a49a7d35feeb17eeb86a981dad2aa7c66a1e4bc1f8a07e4e4a1d4297a41c1cb5",
+  "uid": 30001,
+  "ports": { "a": 8101, "b": 8102, "health": 8103 },
+  "appHostIp": "10.20.1.100",
+  "database": {
+    "kind": "mysql",
+    "host": "10.20.1.20",
+    "port": 3306,
+    "name": "ghost_blog",
+    "user": "ghost_blog"
+  },
+  "media": {
+    "kind": "s3",
+    "endpoint": "https://hel1.your-objectstorage.com",
+    "region": "hel1",
+    "bucket": "branchleft-media-blog",
+    "resize": true,
+    "srcsets": true
+  },
+  "transport": {
+    "kind": "smtp",
+    "host": "mx1.branchleft.co.uk",
+    "port": 587,
+    "user": "blog@branchleft.co.uk"
+  },
+  "mail": {
+    "enabled": true,
+    "ceiling": 100000,
+    "estateCeiling": 100000,
+    "identity": { "kind": "tenant", "domain": "blog.branchleft.co.uk", "dkimSelector": "bl" }
+  },
+  "hostname": {
+    "kind": "theirs",
+    "fqdn": "blog.branchleft.co.uk",
+    "verifiedAt": "2026-11-01T21:40:27.000Z"
+  },
+  "gate": { "kind": "none" },
+  "backup": {
+    "kind": "bucket-native",
+    "encryptionRecipient": "BLOG_BACKUP_AGE_RECIPIENT_PLACEHOLDER"
+  },
+  "codeInjection": { "kind": "blocked" },
+  "limits": { "membersCap": null, "staffCap": null },
+  "caps": { "cpus": "1.0", "cpuShares": 512, "pidsLimit": 256, "nofile": 4096 },
+  "safety": { "near": true, "exact": true },
+  "breakGlass": { "kind": "disabled" },
+  "expiresAt": null
+}

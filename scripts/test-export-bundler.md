@@ -28,6 +28,9 @@ What this proves, through the built CLI:
   byte-identical before and after the export
 - defence in depth on the copy: no reachable mail transport, the scheduler
   disabled (a post due during the export is still scheduled on the copy)
+- a tenant with Stripe connected: fake Stripe Connect keys (a `sk_test_`
+  key) in the live settings travel into the copy, the colour boots on them,
+  and it cannot reach `api.stripe.com`
 - no tenant secret in any process's argv while the colour runs
 - no Docker log of tenant data: the mysqldump container (caught while it
   streams), the scratch database, the colour and its relay all run with

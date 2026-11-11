@@ -8,12 +8,13 @@ on:
   push:
     branches: [main]
   # A pull request starts this only when its diff touches something the job
-  # reads: the service and render-core (linked by `link:` and built first).
-  # Push to main stays unfiltered as the backstop.
+  # reads: the service, render-core and the request guard (both linked by
+  # `link:` and built first). Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
     paths:
       - 'services/demo-gate/**'
+      - 'services/request-guard/**'
       - 'render-core/**'
       - '.github/workflows/demo-gate-ci.yml'
 
@@ -23,6 +24,12 @@ on:
 permissions:
   contents: read
   packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -50,12 +57,21 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: '@branchleft'
           cache: pnpm
-          cache-dependency-path: services/demo-gate/pnpm-lock.yaml
+          cache-dependency-path: |
+            services/demo-gate/pnpm-lock.yaml
+            services/request-guard/pnpm-lock.yaml
 
       # The service links render-core by a relative link: dependency and
       # needs its compiled types.
       - name: Build render-core
         working-directory: render-core
+        run: pnpm install --frozen-lockfile && pnpm run build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Likewise the request guard: the gate imports its built output.
+      - name: Build request-guard
+        working-directory: services/request-guard
         run: pnpm install --frozen-lockfile && pnpm run build
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

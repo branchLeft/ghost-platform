@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, type BrokerEnv } from '../../src/config.js';
+
+const GOLDEN_PORTS_PATH = fileURLToPath(
+  new URL('../../../../demo-host/provision/slot-ports.golden.json', import.meta.url)
+);
 
 function validEnv(overrides: Partial<BrokerEnv> = {}): BrokerEnv {
   return {
@@ -47,7 +53,14 @@ describe('loadConfig', () => {
     expect(config.drainPollTimeoutMs).toBe(30_000);
     expect(config.healthCheckTimeoutMs).toBe(2_000);
     expect(config.ghostReadyPollTimeoutMs).toBe(30_000);
-    expect(config.healthPortBase).toBe(9100);
+    expect(config.healthPortBase).toBe(10100);
+    // The broker's default and the shared golden fixture must agree: a
+    // default moved on one side only would desync the slot health ports
+    // the edge and the router are built against.
+    const golden = JSON.parse(readFileSync(GOLDEN_PORTS_PATH, 'utf8')) as {
+      healthPortBase: number;
+    };
+    expect(config.healthPortBase).toBe(golden.healthPortBase);
     expect(typeof config.nowMs()).toBe('number');
   });
 

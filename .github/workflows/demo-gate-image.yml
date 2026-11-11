@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - services/demo-gate/**
+      - services/request-guard/**
       - render-core/**
       - scripts/test-demo-gate.sh
       - scripts/test-demo-edge.sh
@@ -26,6 +27,7 @@ on:
     branches: [main]
     paths:
       - services/demo-gate/**
+      - services/request-guard/**
       - render-core/**
       - scripts/test-demo-gate.sh
       - scripts/test-demo-edge.sh
@@ -40,6 +42,12 @@ on:
 permissions:
   contents: read
   packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -92,5 +100,15 @@ jobs:
         run: |
           if DEMO_EDGE_PROOF_SABOTAGE=narrow-import ./scripts/test-demo-edge.sh demo-gate:ci; then
             echo "::error::the members-import probes stayed green with only the literal path refused"
+            exit 1
+          fi
+
+      # And the uploaded-file refusal: with it answering 200, a
+      # tenant's uploaded script is served from the shared domain, where
+      # `script-src 'self'` lets it run. The upload probes must go red.
+      - name: Sabotage - drop the upload guard, proof must go red
+        run: |
+          if DEMO_EDGE_PROOF_SABOTAGE=drop-upload-guard ./scripts/test-demo-edge.sh demo-gate:ci; then
+            echo "::error::the uploaded-script probes stayed green with the upload guard dropped"
             exit 1
           fi

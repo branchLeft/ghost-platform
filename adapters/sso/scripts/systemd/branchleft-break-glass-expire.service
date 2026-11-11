@@ -1,6 +1,6 @@
 # Closes every break-glass support grant past its four-hour deadline, in the
 # same pinned Node container the host wrapper runs. The options match
-# scripts/host/branchleft-break-glass.sh; a test holds the two together.
+# scripts/host/branchleft-break-glass.py; a test holds the two together.
 # adapters/sso/scripts/break-glass-grant.md, "The clock" and "The container".
 [Unit]
 Description=Close break-glass support grants past their deadline

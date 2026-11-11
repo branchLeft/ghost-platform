@@ -670,6 +670,24 @@ def wait_for_status(
         sleep(1.0)
 
 
+def ensure_images(runner: Runner, images: Sequence[str]) -> None:
+    """Pulls each image, named by digest, unless that exact digest is already
+    present. The scratch-copy gate (scratch_preflight.py) pulls through this
+    too, so there is one way these hosts fetch a pinned image."""
+    for image in images:
+        present = runner(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            capture_output=True, text=True, check=False, env=_child_env(),
+        )
+        if present.returncode == 0:
+            continue
+        pulled = runner(
+            ["docker", "pull", "--quiet", image], capture_output=True, text=True, check=False, env=_child_env()
+        )
+        if pulled.returncode != 0:
+            raise DrillError(f"docker pull failed: {(pulled.stderr or '').strip()}")
+
+
 class Containers:
     """The drill's per-run containers and network, all carrying one label
     so a crashed run's leftovers are found and removed by the next."""
@@ -704,13 +722,7 @@ class Containers:
 
     def pull(self, images: Images) -> None:
         """Pulls each image unless that exact digest is already present."""
-        for image in (images.recovery, images.mysql, images.ghost, images.sidecar):
-            present = self._runner(
-                ["docker", "image", "inspect", "--format", "{{.Id}}", image],
-                capture_output=True, text=True, check=False, env=_child_env(),
-            )
-            if present.returncode != 0:
-                self._docker(["pull", "--quiet", image])
+        ensure_images(self._runner, (images.recovery, images.mysql, images.ghost, images.sidecar))
 
     def start_mysql(self, *, image: str, password: str, memory: str) -> None:
         self._docker(["network", "create", *self._label(), self.network])

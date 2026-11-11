@@ -42,6 +42,15 @@ const FIXED_HOST_LITERALS = {
 };
 const FIXED_HOST_LITERAL_VALUES = new Set(Object.values(FIXED_HOST_LITERALS));
 
+// app1's public address changes when the host is rebuilt, so it is never
+// committed as a literal: a runbook resolves it at run time with
+// `pulumi stack output app1PublicIpv4`. This exact wording is the one
+// address-shaped placeholder addressPlaceholders does not flag. It is matched
+// case-insensitively, like the rest of the scanner, and any other spelling
+// stays flagged (see the exact-wording self-test), so the exemption fails
+// closed for a new spelling.
+const VARIABLE_PUBLIC_ADDRESS_PLACEHOLDERS = new Set(['<app1-ipv4>']);
+
 /**
  * Split a runbook's text into fenced blocks, returning every block except
  * those whose language is in DENIED_FENCE_LANGS. Malformed input
@@ -81,7 +90,10 @@ function addressPlaceholders(blockText) {
   while ((match = PLACEHOLDER_RE.exec(blockText)) !== null) {
     const token = match[0];
     const inner = token.slice(1, -1);
-    if (ADDRESS_WORD_RE.test(inner)) {
+    if (
+      ADDRESS_WORD_RE.test(inner) &&
+      !VARIABLE_PUBLIC_ADDRESS_PLACEHOLDERS.has(token.toLowerCase())
+    ) {
       found.push(token);
     }
   }
@@ -738,6 +750,39 @@ test('self-test: the scanner leaves the verification slash-32 form alone', () =>
   ].join('\n');
   const blocks = commandBlocks(sample);
   assert.deepEqual(fixedHostLiterals(blocks[0].lines.join('\n')), []);
+});
+
+test('self-test: the scanner catches a placeholder for the private address of app1 in every command fence', () => {
+  // app1's private address is fixed (10.20.1.100), so a placeholder for it is
+  // the same defect as one for edge1. Caught by its wording, whatever the tag.
+  for (const tag of ['bash', 'sh', 'shell', 'console', '']) {
+    const sample = [`\`\`\`${tag}`, 'ssh root@<app1-private-ip>', '```'].join('\n');
+    const blocks = commandBlocks(sample);
+    assert.equal(blocks.length, 1, tag);
+    assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), ['<app1-private-ip>'], tag);
+  }
+});
+
+test('self-test: the scanner leaves the variable public address of app1 alone', () => {
+  // app1's public address changes when the host is rebuilt, so it is resolved
+  // by `pulumi stack output` at run time and never committed. A placeholder
+  // naming it is the one address-shaped placeholder this scanner does not flag.
+  for (const tag of ['bash', 'sh']) {
+    const sample = [`\`\`\`${tag}`, 'ssh root@<app1-ipv4>', '```'].join('\n');
+    const blocks = commandBlocks(sample);
+    assert.equal(blocks.length, 1, tag);
+    assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), [], tag);
+  }
+});
+
+test('self-test: the app1 public-address exemption matches only its exact wording', () => {
+  // A near-miss spelling is still flagged: the exemption is keyed on the one
+  // wording rather than on the host, so a new spelling fails closed.
+  for (const token of ['<app1-public-ipv4>', '<app1-public-ip>']) {
+    const sample = ['```bash', `ssh root@${token}`, '```'].join('\n');
+    const blocks = commandBlocks(sample);
+    assert.deepEqual(addressPlaceholders(blocks[0].lines.join('\n')), [token], token);
+  }
 });
 
 // Self-tests: secretEchoes, against synthetic input rather than today's

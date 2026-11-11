@@ -40,8 +40,8 @@ describe('slotPorts', () => {
   });
 
   it('slotHealthPort: advances by 1 per slot', () => {
-    expect(slotHealthPort(9100, '0' as SlotName)).toBe(9100);
-    expect(slotHealthPort(9100, '6' as SlotName)).toBe(9106);
+    expect(slotHealthPort(10100, '0' as SlotName)).toBe(10100);
+    expect(slotHealthPort(10100, '6' as SlotName)).toBe(10106);
   });
 
   it('slotUid: advances by 1 per slot', () => {
@@ -51,16 +51,16 @@ describe('slotPorts', () => {
 
   it('slotAllocation: bundles all four values for one slot consistently with the individual functions', () => {
     const slot = '3' as SlotName;
-    const allocation = slotAllocation(30001, 9300, 9100, slot);
+    const allocation = slotAllocation(30001, 9300, 10100, slot);
     expect(allocation).toEqual({
       uid: slotUid(30001, slot),
       ports: {
         a: slotPort(9300, slot, 'a'),
         b: slotPort(9300, slot, 'b'),
-        health: slotHealthPort(9100, slot),
+        health: slotHealthPort(10100, slot),
       },
     });
-    expect(allocation).toEqual({ uid: 30004, ports: { a: 9306, b: 9307, health: 9103 } });
+    expect(allocation).toEqual({ uid: 30004, ports: { a: 9306, b: 9307, health: 10103 } });
   });
 
   // --- `demo-host/provision/render_demo_edge.py` mirrors this file's own
@@ -79,7 +79,7 @@ describe('slotPorts', () => {
     it("the golden fixture uses this file's own default bases", async () => {
       golden = JSON.parse(await readFile(GOLDEN_PORTS_PATH, 'utf8')) as GoldenPorts;
       expect(golden.appPortBase).toBe(9300);
-      expect(golden.healthPortBase).toBe(9100);
+      expect(golden.healthPortBase).toBe(10100);
       expect(golden.slots).toHaveLength(7);
     });
 
@@ -95,8 +95,8 @@ describe('slotPorts', () => {
   });
 
   it('two different slots never share a port or a uid', () => {
-    const a = slotAllocation(30001, 9300, 9100, '1' as SlotName);
-    const b = slotAllocation(30001, 9300, 9100, '2' as SlotName);
+    const a = slotAllocation(30001, 9300, 10100, '1' as SlotName);
+    const b = slotAllocation(30001, 9300, 10100, '2' as SlotName);
     expect(a.uid).not.toBe(b.uid);
     expect(a.ports.a).not.toBe(b.ports.a);
     expect(a.ports.b).not.toBe(b.ports.b);

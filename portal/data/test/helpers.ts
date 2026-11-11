@@ -15,6 +15,7 @@ export const FIXTURE_DATABASE = 'portal_fixture';
 const TENANT_LOGIN = 'portal_test_tenant_login';
 const OWNER_LOGIN = 'portal_test_owner_login';
 const PROVISIONER_LOGIN = 'portal_test_provisioner_login';
+const MIGRATOR_LOGIN = 'portal_test_migrator_login';
 const DUAL_LOGIN = 'portal_test_dual_login';
 const LOGIN_PASSWORD = 'test-only-not-a-secret';
 
@@ -106,7 +107,7 @@ export async function createFixture(): Promise<Fixture> {
   const bootstrap = testPool('postgres', undefined, undefined, 1);
   // A fixture left behind by an interrupted run would make the command refuse.
   await dropDatabase(bootstrap, database);
-  for (const login of [TENANT_LOGIN, OWNER_LOGIN, PROVISIONER_LOGIN, DUAL_LOGIN]) {
+  for (const login of [TENANT_LOGIN, OWNER_LOGIN, PROVISIONER_LOGIN, MIGRATOR_LOGIN, DUAL_LOGIN]) {
     await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`);
   }
   // The database under test is the one the provisioning command builds: the
@@ -114,6 +115,7 @@ export async function createFixture(): Promise<Fixture> {
   // the isolation suite proves what an operator would get, not a second copy.
   await provisionPortal({
     adminUrl: testUrl('postgres'),
+    migratorUrl: '',
     database,
     tenantLogin: TENANT_LOGIN,
     tenantPassword: LOGIN_PASSWORD,
@@ -121,6 +123,8 @@ export async function createFixture(): Promise<Fixture> {
     ownerPassword: LOGIN_PASSWORD,
     provisionerLogin: PROVISIONER_LOGIN,
     provisionerPassword: LOGIN_PASSWORD,
+    migratorLogin: MIGRATOR_LOGIN,
+    migratorPassword: LOGIN_PASSWORD,
   });
   // Test-only additions after the command has run: a login holding both roles
   // that bypasses row-level policies and, unlike the command's logins,
@@ -166,7 +170,13 @@ export async function createFixture(): Promise<Fixture> {
       // The portal roles are shared by the whole cluster, and the provisioning
       // command refuses a portal role held by a login it did not make, so a
       // fixture's logins go with its database.
-      for (const login of [TENANT_LOGIN, OWNER_LOGIN, PROVISIONER_LOGIN, DUAL_LOGIN]) {
+      for (const login of [
+        TENANT_LOGIN,
+        OWNER_LOGIN,
+        PROVISIONER_LOGIN,
+        MIGRATOR_LOGIN,
+        DUAL_LOGIN,
+      ]) {
         await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`);
       }
       await bootstrap.end();

@@ -204,7 +204,13 @@ export class DockerStepError extends Error {
 /** Runs docker and returns stdout; a failure names `step`, the argv, the exit code and stderr. */
 export function dockerSync(step, ...args) {
   try {
-    return execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    // maxBuffer: a container log can pass Node's 1 MiB default, and docker logs then
+    // fails with ENOBUFS before any caller sees the text.
+    return execFileSync('docker', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 256 * 1024 * 1024,
+    });
   } catch (err) {
     throw new DockerStepError(step, args, err);
   }

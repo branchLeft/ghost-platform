@@ -38,7 +38,7 @@ vars need plus the source notes below, which is load-bearing enough to
 live where it can't drift from the code that implements it.
 
 `docker-proof/deadmans-switch/run-deadmans-switch-proof.sh` proves
-`src/heartbeat.ts` against a real local Healthchecks instance rather than
+the shared `deadmans-switch/src/heartbeat.ts` against a real local Healthchecks instance rather than
 a mock — see its own header comment and the delivering PR's body for a
 recorded run.
 

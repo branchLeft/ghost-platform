@@ -131,8 +131,24 @@ the estate rather than per-tenant answers, which is why they are variables and
 not ten more fields on a dispatch form — `workflow_dispatch` also caps inputs at
 ten.
 
+**Select the hcloud project first.** The lookups below ask hcloud, so its active context
+must be the one for the project that holds the server. Which of your contexts that is
+is not recorded here. List them, read the name, then select it, each as its own paste:
+
 ```bash
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+hcloud context list
+```
+
+```bash
+read -r HCLOUD_CONTEXT
+```
+
+```bash
+hcloud context use "${HCLOUD_CONTEXT}"
+```
+
+```bash
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 gh variable set PLATFORM_DB_PRIVATE_IP     --repo branchLeft/ghost-platform --body "$DB1_PRIVATE_IP"
 gh variable set PLATFORM_MEDIA_ENDPOINT    --repo branchLeft/ghost-platform --body 'https://hel1.your-objectstorage.com'
 gh variable set PLATFORM_MEDIA_REGION      --repo branchLeft/ghost-platform --body 'hel1'
@@ -165,13 +181,15 @@ gh variable set TENANT_ENVIRONMENT_REVIEWERS --repo branchLeft/ghost-platform \
 Provisioning refuses to create a public tenant repo's environment while this is
 unset, and reads the environment back afterwards to confirm a
 `required_reviewers` rule actually landed — a PUT naming a principal without
-access to the new repository succeeds and silently produces no rule. For a
-**private** tenant repo it is skipped with a warning: protection rules are a
-public-repository feature on this plan tier, so choosing private for a tenant
-also chooses that their deploy cannot be gated. The environment is still
-created, because the scoping it gives — secrets readable only by the job that
-declares it, never by a run from a branch — is plan-independent and is most of
-the value.
+access to the new repository succeeds and silently produces no rule. The same
+reviewer and read-back apply to a **private** tenant repo, but only after the
+owner's plan register, `registers/private-tenant-plan.json`, attests both a paid
+GitHub plan and a dedicated Hetzner private-CI runner. The gate that reads it is
+`infra/provisioning/scripts/check_private_tenant_plan.py`. On a private repo,
+required reviewers and rulesets need that paid plan. A private tenant whose plan
+has lapsed fails the read-back, and the run stops before any state credential is
+written. Both attestations are the owner's spend and change only by a reviewed
+pull request. A personal Mac never qualifies as the dedicated runner.
 
 The endpoint host and the region must name the same location: against Ceph RGW
 the region is part of the SigV4 credential scope, so a mismatch is an opaque 403
@@ -270,8 +288,8 @@ goes through `edge1`. An earlier draft of this runbook invoked all of them from
 one invented path.
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 
@@ -286,6 +304,12 @@ scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r \
 scp -i ~/.ssh/id_ed25519_hetzner -r \
   app/provision/. root@"$APP1_IPV4":/root/platform-provision/
 
+# b2. The tenant name register, beside that script. provision_tenant_volume.py
+#     reads its list of taken names from this file and, if it is not there,
+#     refuses every slug. The register is the only list: never edit the copy.
+scp -i ~/.ssh/id_ed25519_hetzner \
+  registers/tenant-names.json root@"$APP1_IPV4":/root/platform-provision/
+
 # c. The host-provisioning scripts, from branchLeft/shared-infra. This is what
 #    installs provision_deploy_slot.py and the branchleft-deploy wrapper that
 #    understands --slot; a host provisioned before slot keys existed needs the
@@ -299,6 +323,8 @@ ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
 `app/provision/` and `hetzner/provision/` share `/root/platform-provision` on an
 app host and come from different repositories, so copy both whenever either
 changes; a stale half is a script that runs and disagrees with its neighbour.
+Copy `registers/tenant-names.json` (step b2) whenever the register changes too:
+a stale register on the host is a taken name the host script does not know.
 
 ### 3. Allocate the UID on the app host
 
@@ -319,7 +345,7 @@ Pick the host port the same way, distinct per tenant on that host.
 ### 4. Dispatch the provisioning workflow
 
 ```bash
-APP1_PRIVATE_IP=$(hcloud server describe app1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+APP1_PRIVATE_IP=$(hcloud server describe app1 -o format='{{(index .PrivateNet 0).IP}}')
 APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/hosts)
 gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f tenant_visibility=public \
@@ -345,7 +371,7 @@ it, then read the job summary: it carries the escrowed passphrase ciphertext.
 **Decrypt and file that ciphertext now**, per
 `infra/provisioning/escrow/README.md`. The run's summary and its artifact both
 expire; the password manager is the escrow of record, and step 7 needs the
-plaintext anyway — it is what unlocks `pulumi config set --secret` on this
+plaintext anyway — it is what unlocks `pulumi stack output` on this
 tenant's stack.
 
 ### 5. Create the tenant's database and DB user, on `db1`
@@ -353,8 +379,8 @@ tenant's stack.
 `db1` has no public address, so this goes through `edge1`:
 
 ```bash
-EDGE1_IPV4=$(hcloud server describe edge1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['public_net']['ipv4']['ip'])")
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o json | python3 -c "import json, sys; print(json.load(sys.stdin)['private_net'][0]['ip'])")
+EDGE1_IPV4=$(hcloud server ip edge1)
+DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
 ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
   'MYSQL_PWD=<mysql root password> python3 /opt/branchleft/db/provision/provision_tenant_db.py <slug>'
@@ -667,23 +693,15 @@ export AWS_ACCESS_KEY_ID='<Hetzner S3 access key id>'
 export AWS_SECRET_ACCESS_KEY='<Hetzner S3 secret access key>'
 pulumi login "$(gh variable get PULUMI_BACKEND_URL --repo branchLeft/ghost-tenant-<slug>)"
 
-# The salt FIRST, before any `--secret` write. Without it Pulumi mints a new
-# salt into this file, and the stack's checkpoint then disagrees with its own
-# config about which key its secrets are under.
-printf '\nencryptionsalt: %s\n' '<the PULUMI_ENCRYPTION_SALT value>' >> Pulumi.<slug>.yaml
-
-pulumi config set --secret databasePassword     --stack <slug>   # from step 5
-pulumi config set --secret mediaAccessKeyId     --stack <slug>
-pulumi config set --secret mediaSecretAccessKey --stack <slug>
-
-# Then take the salt back out, and confirm before committing.
-python3 - <<'EOF'
-import pathlib, re
-p = pathlib.Path([f for f in pathlib.Path('.').glob('Pulumi.*.yaml')][0])
-p.write_text(re.sub(r'(?m)^encryptionsalt:.*\n', '', p.read_text()))
-EOF
+# No `pulumi config set --secret` here, and no salt: from component 8.0.0 the
+# stack holds no secret value. The database password (step 5), the media key
+# pair (step 6) and the rest reach the host in step 8b, never this stack.
 python3 scripts/assert-no-committed-pulumi-secrets.py --scan-tree .
 ```
+
+A tenant still on a template that pins a component older than 8.0.0 reads
+`databasePassword`, `mediaAccessKeyId` and `mediaSecretAccessKey` from stack
+config. Do not onboard a new tenant on that template: update it first.
 
 There is no `known_hosts` step per tenant. The provisioning run fills it from
 the host-key register (`infra/provisioning/host-key-register.txt`, role
@@ -709,9 +727,10 @@ changed register by pull request. Commit and push the handover branch, but do
 not merge it yet.
 
 The salt is not in the escrow ciphertext: it is in the tenant repository's
-`PULUMI_ENCRYPTION_SALT` environment secret, which is write-only. If you no
-longer have it, read it out of the stack's checkpoint —
-`pulumi stack export --stack <slug> | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployment"]["secrets_providers"]["state"]["salt"])'`.
+`PULUMI_ENCRYPTION_SALT` environment secret, which is write-only. A tenant
+stack with no secret config needs it only for that repository's own deploy
+job. If you need it and no longer have it, read it out of the stack's checkpoint —
+`pulumi stack export --stack <slug> | jq -r '.deployment.secrets_providers.state.salt'`.
 
 ### 8. Provision the host side, in this order
 
@@ -724,12 +743,33 @@ APP1_IPV4=$(pulumi stack output app1PublicIpv4 --stack production --cwd infra/ho
 ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
   "/root/platform-provision/provision_tenant_volume.py --uid <uid> <slug>"
 
-# b. The secrets file, from the stack's own output. Root-owned 0600. No
-#    automated path may write it -- branchleft-deploy writes only
-#    /etc/branchleft/<slug>.image.env.
-pulumi stack output --show-secrets secretsEnvFile --stack <slug> \
+# b. The secrets file, rendered ON the host. The stack holds no secret value:
+#    its secretsEnvTemplate output names the keys (see secretKeys) and
+#    render_tenant_secrets.py fills them from a JSON object on its stdin and
+#    writes /etc/branchleft/<slug>.env, root-owned 0600. branchleft-deploy
+#    writes only /etc/branchleft/<slug>.image.env.
+#    Until the storage controller delivers the values, you supply them: read
+#    each into the shell (never typed into a command line, never in history).
+pulumi stack output secretsEnvTemplate --stack <slug> \
   | ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
-      "install -m 0600 -o root -g root /dev/stdin /etc/branchleft/<slug>.env"
+      "cat > /root/platform-provision/<slug>.secrets.template"
+read -rs GHOST_DB_PASSWORD && export GHOST_DB_PASSWORD                 # step 5
+read -rs GHOST_S3_ACCESS_KEY_ID && export GHOST_S3_ACCESS_KEY_ID      # step 6
+read -rs GHOST_S3_SECRET_ACCESS_KEY && export GHOST_S3_SECRET_ACCESS_KEY
+read -rs GHOST_MAIL_PASSWORD && export GHOST_MAIL_PASSWORD
+read -rs GHOST_BULK_EMAIL_API_KEY && export GHOST_BULK_EMAIL_API_KEY
+read -rs GHOST_OWNER_EMAIL && export GHOST_OWNER_EMAIL
+#    The keys are exactly the ones `pulumi stack output secretKeys` lists; the
+#    script refuses a missing or an extra one, so drop or add lines to match.
+jq -n 'env | {GHOST_DB_PASSWORD, GHOST_S3_ACCESS_KEY_ID, GHOST_S3_SECRET_ACCESS_KEY,
+      GHOST_MAIL_PASSWORD, GHOST_BULK_EMAIL_API_KEY, GHOST_OWNER_EMAIL}' \
+  | ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
+      "/root/platform-provision/render_tenant_secrets.py --slug=<slug> --template-file=/root/platform-provision/<slug>.secrets.template"
+unset GHOST_DB_PASSWORD GHOST_S3_ACCESS_KEY_ID GHOST_S3_SECRET_ACCESS_KEY \
+  GHOST_MAIL_PASSWORD GHOST_BULK_EMAIL_API_KEY GHOST_OWNER_EMAIL
+#    It prints "written" or "unchanged" and the key names, never a value. A
+#    re-run with the same values is a no-op; different values for an existing
+#    file are refused, and rotation is a separate step.
 
 # c. The Compose file, also from the stack's output, also root-owned. Every line
 #    of it is a runtime-isolation control, which is why nothing automated writes
@@ -823,7 +863,8 @@ other provisioning facts live.
 ### 9. Register the tenant at the edge
 
 Add this tenant's site block to the edge site registry in
-`branchLeft/shared-infra`, using the stack's own value:
+`branchLeft/shared-infra` (`sites.ts`), and set its `requestBodyMaxSize` field
+to the stack's own value:
 
 ```bash
 pulumi stack output edgeRequestBodyMaxSize --stack <slug>
@@ -831,6 +872,15 @@ pulumi stack output edgeRequestBodyMaxSize --stack <slug>
 
 It is derived from the same input as the container's `/tmp` ceiling so the two
 cannot disagree. Setting it there by hand to a different number defeats that.
+
+Nothing copies the output into `sites.ts` for you. The change reaches the edge
+through the rendered `hetzner/edge/stack/Caddyfile` in `branchLeft/shared-infra`,
+and `hetzner/edge/stack/**` is a hand-delivered path: render it, copy the stack to
+the edge host, then reload Caddy in place as `hetzner/RUNBOOK-edge.md` describes.
+Do not use `systemctl restart branchleft-compose@edge` for this. The Caddyfile is
+a bind mount whose contents are outside the compose config hash, so that restart
+is a silent no-op for a Caddyfile-only change: it exits 0 and the old
+configuration keeps serving.
 
 ### 10. Merge the handover pull request
 

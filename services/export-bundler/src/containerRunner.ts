@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process';
-import { dockerRemoveSync, processCleanup, type CleanupRegistry } from './cleanup.js';
+import {
+  dockerRemoveSync,
+  dockerRemoveUntilGoneSync,
+  installSignalCleanup,
+  processCleanup,
+  type CleanupRegistry,
+  type SignalTarget,
+} from './cleanup.js';
 import { withEnvFile } from './envFile.js';
 
 export interface VolumeMount {
@@ -154,16 +161,21 @@ export function parseInspectedEnv(stdout: string): Record<string, string> {
   return env;
 }
 
-export function runDocker(dockerCommand: string, argv: readonly string[]): Promise<string> {
+export function runDocker(
+  dockerCommand: string,
+  argv: readonly string[],
+  registry: CleanupRegistry = processCleanup
+): Promise<string> {
   return new Promise((resolve, reject) => {
     // Explicit, minimal env: PATH only, never the ambient environment this
     // shell carries (which holds live production credentials this process
     // has no business handing to `docker`).
-    execFile(
+    const child = execFile(
       dockerCommand,
       [...argv],
       { env: { PATH: process.env.PATH ?? '' }, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout, stderr) => {
+        untrack();
         if (err) {
           // Never err.message: it repeats the whole argv, env values included.
           reject(new Error(`docker ${argv[0]} failed (exit ${String(err.code)}): ${stderr}`));
@@ -172,7 +184,92 @@ export function runDocker(dockerCommand: string, argv: readonly string[]): Promi
         resolve(stdout);
       }
     );
+    // Tracked while in flight: a signal kills this client before the removers
+    // run, so a `create` it has not yet sent is never sent.
+    const untrack = registry.trackChild(child);
   });
+}
+
+/** The oldest Docker Engine this package runs a tenant's data on. */
+export const MIN_DOCKER_ENGINE_MAJOR = 28;
+
+export class DockerEngineTooOldError extends Error {
+  constructor(detail: string) {
+    super(
+      `refused: the Docker engine must be ${String(MIN_DOCKER_ENGINE_MAJOR)} or newer (${detail}); ` +
+        `nothing was started`
+    );
+    this.name = 'DockerEngineTooOldError';
+  }
+}
+
+// `N.N`, optionally `.N` and a `-rc.1` / `+dfsg` suffix; anything else is not a version.
+const ENGINE_VERSION = /^(\d+)\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.+-]*)?$/;
+
+/**
+ * Refuses to run on a Docker engine older than 28, before anything is
+ * created. Reads the engine (`Server`) version, not the client's, and fails
+ * closed: a missing binary, a daemon that does not answer, or output that is
+ * not a version is refused the same as an old engine. Returns the version.
+ */
+export async function assertDockerEngineAtLeast28(
+  dockerCommand = 'docker',
+  registry: CleanupRegistry = processCleanup
+): Promise<string> {
+  let stdout: string;
+  try {
+    stdout = await runDocker(
+      dockerCommand,
+      ['version', '--format', '{{.Server.Version}}'],
+      registry
+    );
+  } catch (err) {
+    throw new DockerEngineTooOldError(
+      `its version could not be read: ${(err as Error).message.slice(0, 300)}`
+    );
+  }
+  const version = stdout.trim();
+  const match = ENGINE_VERSION.exec(version);
+  if (match === null) {
+    throw new DockerEngineTooOldError(
+      `its version reads as ${JSON.stringify(version.slice(0, 40))}`
+    );
+  }
+  if (Number(match[1]) < MIN_DOCKER_ENGINE_MAJOR) {
+    throw new DockerEngineTooOldError(`the engine is ${version}`);
+  }
+  return version;
+}
+
+export interface StartupOptions {
+  readonly dockerCommand?: string;
+  readonly registry?: CleanupRegistry;
+  readonly exit?: (code: number) => void;
+  readonly signalTarget?: SignalTarget;
+  readonly writeStderr?: (line: string) => void;
+}
+
+/**
+ * The first thing a run does, in this order: install the signal cleanup, then
+ * check the Docker engine. Nothing that creates a resource runs before both.
+ * Returns the function that uninstalls the signal handlers; when the engine
+ * is refused the handlers are uninstalled and the refusal is thrown.
+ */
+export async function startup(options: StartupOptions = {}): Promise<() => void> {
+  const registry = options.registry ?? processCleanup;
+  const uninstall = installSignalCleanup(
+    registry,
+    options.exit,
+    options.signalTarget,
+    options.writeStderr
+  );
+  try {
+    await assertDockerEngineAtLeast28(options.dockerCommand ?? 'docker', registry);
+  } catch (err) {
+    uninstall();
+    throw err;
+  }
+  return uninstall;
 }
 
 /**
@@ -192,20 +289,15 @@ export function createDockerContainerRunner(
   let unregister: (() => void) | undefined;
 
   const removeRelaySync = () => {
-    for (const argv of [buildDockerStopArgs(relay), ['network', 'rm', edge]]) {
-      try {
-        dockerRemoveSync(argv, dockerCommand);
-      } catch {
-        // Already gone, or never created.
-      }
-    }
-  };
-  const removeAllSync = () => {
+    dockerRemoveUntilGoneSync(relay, dockerCommand, registry);
     try {
-      dockerRemoveSync(buildDockerStopArgs(template.containerName), dockerCommand);
+      dockerRemoveSync(['network', 'rm', edge], dockerCommand);
     } catch {
       // Already gone, or never created.
     }
+  };
+  const removeAllSync = () => {
+    dockerRemoveUntilGoneSync(template.containerName, dockerCommand, registry);
     if (relayed) removeRelaySync();
   };
 
@@ -222,13 +314,13 @@ export function createDockerContainerRunner(
       try {
         await withEnvFile(
           env,
-          (envFile) => runDocker(dockerCommand, buildDockerRunArgs({ ...spec, envFile })),
+          (envFile) => runDocker(dockerCommand, buildDockerRunArgs({ ...spec, envFile }), registry),
           registry
         );
         if (spec.network !== null) {
-          await runDocker(dockerCommand, ['network', 'create', edge]);
-          await runDocker(dockerCommand, buildRelayRunArgs(spec));
-          await runDocker(dockerCommand, ['network', 'connect', spec.network, relay]);
+          await runDocker(dockerCommand, ['network', 'create', edge], registry);
+          await runDocker(dockerCommand, buildRelayRunArgs(spec), registry);
+          await runDocker(dockerCommand, ['network', 'connect', spec.network, relay], registry);
         }
       } catch (err) {
         // `docker run -d` can create the container and then fail to start
@@ -241,12 +333,12 @@ export function createDockerContainerRunner(
     },
     async readEnv() {
       return parseInspectedEnv(
-        await runDocker(dockerCommand, buildDockerInspectEnvArgs(template.containerName))
+        await runDocker(dockerCommand, buildDockerInspectEnvArgs(template.containerName), registry)
       );
     },
     async stop() {
       if (relayed) removeRelaySync();
-      await runDocker(dockerCommand, buildDockerStopArgs(template.containerName));
+      await runDocker(dockerCommand, buildDockerStopArgs(template.containerName), registry);
       unregister?.();
     },
   };

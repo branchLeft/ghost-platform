@@ -1,0 +1,131 @@
+[
+  {
+    "id": "blue-green",
+    "status": "intended",
+    "paths": ["compose.service-names"],
+    "reason": "The one ghost service becomes ghost-a (the running port 8101) and its twin ghost-b on 8102, because blue/green applies to every kind; ports 8102 and 8103 must be free on app1."
+  },
+  {
+    "id": "header-comment",
+    "status": "intended",
+    "paths": ["compose.header-comment"],
+    "reason": "The header wording is now the render core's rather than the component's (one renderer); no key or value changes."
+  },
+  {
+    "id": "scanning-adapter",
+    "status": "intended",
+    "paths": [
+      "compose.services.ghost-a.environment.storage__images__adapter",
+      "compose.services.ghost-a.environment.storage__images__quarantinePath",
+      "compose.services.ghost-a.environment.storage__images__metricsTextfilePath",
+      "compose.services.ghost-a.environment.storage__images__metricsTenant",
+      "compose.services.ghost-a.environment.storage__media__adapter",
+      "compose.services.ghost-a.environment.storage__media__quarantinePath",
+      "compose.services.ghost-a.environment.storage__media__metricsTextfilePath",
+      "compose.services.ghost-a.environment.storage__media__metricsTenant",
+      "compose.services.ghost-a.environment.storage__files__adapter",
+      "compose.services.ghost-a.environment.storage__files__quarantinePath",
+      "compose.services.ghost-a.environment.storage__files__metricsTextfilePath",
+      "compose.services.ghost-a.environment.storage__files__metricsTenant"
+    ],
+    "reason": "The scanning adapter now wraps the same S3Storage settings for images, media and files, and the current image refuses to boot without these keys, which the 5.0.0 compose lacks (the 11 plain storage values are carried over key for key and are equal)."
+  },
+  {
+    "id": "media-key-prefix",
+    "status": "intended",
+    "paths": [
+      "compose.services.ghost-a.environment.storage__media__wrappedConfig__staticFileURLPrefix",
+      "compose.services.ghost-a.environment.storage__files__wrappedConfig__staticFileURLPrefix"
+    ],
+    "reason": "New media and file uploads are keyed under content/media and content/files instead of content/images; objects already in the bucket are untouched."
+  },
+  {
+    "id": "metrics-volume",
+    "status": "intended",
+    "paths": ["compose.services.ghost-a.volumes.2", "compose.volumes.ghost-blog-metrics.external"],
+    "reason": "A third external volume holds the scanner's metrics file; provision.sh creates it and the unit will not start until it exists."
+  },
+  {
+    "id": "mail-spool-network",
+    "status": "intended",
+    "paths": [
+      "compose.services.ghost-a.networks.0",
+      "compose.services.ghost-a.networks.1",
+      "compose.networks.branchleft-mail-30001.*"
+    ],
+    "reason": "Both colours join the host mail spool's per-tenant network, declared external, so the unit will not start until the spool on app1 exists (the owner ruled the live switch-over waits for it)."
+  },
+  {
+    "id": "mail-spool-base-url",
+    "status": "intended",
+    "paths": ["compose.services.ghost-a.environment.bulkEmail__mailgun__baseUrl"],
+    "reason": "Member mail goes to the host's own spool instead of mx1 (LLD-6 section 03); the API key in blog.env must be one the spool accepts."
+  },
+  {
+    "id": "mail-from",
+    "status": "defect",
+    "paths": ["compose.services.ghost-a.environment.mail__from"],
+    "reason": "Sends as hello@blog.branchleft.co.uk, not the display-named blog@ address: intended by the sending-identity decision, but that domain has no SPF or DKIM record today (checked 2026-11-01), so publish them and wait out the TTL before the live switch-over (LLD-10 M4)."
+  },
+  {
+    "id": "social-web-lock",
+    "status": "intended",
+    "paths": [
+      "compose.services.ghost-a.environment.hostSettings__limits__limitSocialWeb__disabled"
+    ],
+    "reason": "Locks Ghost's social web off for every tenant; the 5.0.0 render did not set it, so confirm the blog's own setting is already off."
+  },
+  {
+    "id": "owner-address-secret",
+    "status": "intended",
+    "paths": ["secrets.GHOST_OWNER_EMAIL"],
+    "reason": "The owner's address is a key in the secrets file and nowhere else; no container references it, so a blog.env without it still starts."
+  },
+  {
+    "id": "identity-connection-cap",
+    "status": "intended",
+    "paths": ["identity.maxUserConnections"],
+    "reason": "db1's per-account connection cap is applied by the database provisioning script and is no longer rendered; two colours can hold connections together, so check the cap on db1."
+  },
+  {
+    "id": "identity-bucket",
+    "status": "intended",
+    "paths": ["identity.mediaBucket"],
+    "reason": "The delete-guard identity now also names the media bucket, so changing it is refused like changing the uid."
+  },
+  {
+    "id": "provision-command",
+    "status": "intended",
+    "paths": ["scalars.hostProvisioningCommand"],
+    "reason": "The command is now the script's full path with quoted arguments; same script, same uid and slug."
+  },
+  {
+    "id": "edge-content-policy",
+    "status": "intended",
+    "paths": ["edge.contentSecurityPolicy", "edge.contentSecurityPolicyMode"],
+    "reason": "The edge entry gains a report-only content policy; the live Caddy block sets none, and report-only blocks nothing."
+  },
+  {
+    "id": "settings-support-address",
+    "status": "defect",
+    "paths": ["settings.members_support_address"],
+    "reason": "Would set members' reply address to hello@blog.branchleft.co.uk, a domain with no MX record today (checked 2026-11-01); the mailbox and its MX must exist before this is applied."
+  },
+  {
+    "id": "settings-pinned",
+    "status": "intended",
+    "paths": [
+      "settings.codeinjection_head",
+      "settings.codeinjection_foot",
+      "settings.codeInjectionExplainer",
+      "settings.social_web"
+    ],
+    "reason": "Ghost settings the render core pins (code injection blocked and empty, social web off); 5.0.0 rendered no settings file, so the running values can only be read from Ghost admin."
+  },
+  {
+    "id": "stop-grace-period",
+    "status": "intended",
+    "paths": ["compose.services.ghost-a.stop_grace_period"],
+    "reason": "5.0.0 sets no stop grace period, so a stop gives Ghost Docker's 10-second default before SIGKILL; the render sets 60s on each colour, a provisional value until the two-instance harness measures the batch."
+  }
+]

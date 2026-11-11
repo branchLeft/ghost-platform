@@ -57,6 +57,12 @@ prove "regression/portal-ignored" csp-regression-gate.mjs \
 prove "regression/attack-directive-unchecked" csp-regression-gate.mjs  "v.directive === 'script-src-elem' && " ""
 prove "regression/attack-blocked-uri-unchecked" csp-regression-gate.mjs  " && v.blockedURI === 'inline'" ""
 prove "regression/email-field-count-loosened" csp-regression-gate.mjs  "run.emailFields >= 1" "run.emailFields >= 0"
+prove "regression/uploaded-script-ignored" csp-regression-gate.mjs \
+    "if (run.uploadedScriptRan !== false) {" "if (false) {"
+prove "regression/uploaded-script-edge-refusal-unchecked" csp-regression-gate.mjs \
+    "} else if (run.uploadedScriptStatus !== 403) {" "} else if (false) {"
+prove "regression/uploaded-script-ran-vs-unexercised-confused" csp-regression-gate.mjs \
+    "run.uploadedScriptRan === true" "run.uploadedScriptRan === null"
 prove "theme-hash/report-only-flag-unchecked" theme-hash-gate.mjs  "if (record.flag !== REPORT_ONLY_FLAG)" "if (false)"
 prove "theme-hash/enforcing-mode-unchecked" theme-hash-gate.mjs  "if (edge.contentSecurityPolicyMode !== 'enforcing') {" "if (false) {"
 

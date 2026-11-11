@@ -2,9 +2,10 @@
 
 Static reversibility check for a Ghost upgrade range. It reads the migration
 source shipped at the target release tag and decides whether the range may
-take the automatic fast path or must be held until the owner, the system
-administrator, consents. The tenant is not asked. Nothing is executed, and no
-image is pulled.
+take the automatic fast path or is refused. A refused range keeps the tenant on
+its current version, and the tenant is not asked. Nothing is executed, and no
+image is pulled. The route name `consent` in the code is the refused route; it
+asks nobody for consent.
 
 Scope: this classifies. It does not open PRs, move tenants, or change state.
 
@@ -24,7 +25,7 @@ numbers and punctuators are read as the language reads them. Every rule below wa
 that tree, never the raw text. So a comment marker inside a string, a quote inside a
 regex, or a call inside a template substitution cannot hide code.
 
-The reader fails closed. A file routes consent, with the reason below, when:
+The reader fails closed. A file routes to refusal (`consent`), with the reason below, when:
 
 - acorn refuses it (`unclassified:syntax`; `unparsable` when Node's own loader
   accepts a form acorn does not yet know);
@@ -34,8 +35,8 @@ The reader fails closed. A file routes consent, with the reason below, when:
 - it is over one million characters (`unclassified:too-large`).
 
 An identifier with any character outside ASCII, or one written with a unicode escape,
-routes consent as `unclassified:non-ascii-identifier`. A file that does not compile
-as a CommonJS module routes consent as `unclassified:syntax` (`vm.compileFunction`
+routes to refusal as `unclassified:non-ascii-identifier`. A file that does not compile
+as a CommonJS module routes to refusal as `unclassified:syntax` (`vm.compileFunction`
 parses it; nothing runs).
 
 The check on the tree is the same whatever the reader: the class hits are read from
@@ -45,16 +46,16 @@ accept. A string that spells a name is a string node, so it is data.
 
 ## Routes
 
-A file is fast-path only if no class below matches it. The route is `consent` when
-any class matches anywhere in the range, and `fast-path` otherwise.
+A file is fast-path only if no class below matches it. The route is `consent` (refused)
+when any class matches anywhere in the range, and `fast-path` otherwise.
 
 A name in classes 2 to 5 is a hit wherever it occurs as an identifier token: called,
 passed by reference (`keys.map(removeSetting)`), aliased, destructured, optionally
 chained (`removeSetting?.(`) or used as a property name. A string that spells one is
 data, not a hit, except as the argument of `require`.
 
-1. **Major bump.** The target major is above the pinned major. Always consent.
-2. **Irreversible** (always consent). Ghost's own flag, or a helper that sets it:
+1. **Major bump.** The target major is above the pinned major. Always refused.
+2. **Irreversible** (always refused). Ghost's own flag, or a helper that sets it:
    - `flag`: the key `irreversible`, bare or quoted, set to `true`. Ghost's runner
      refuses a rollback on any truthy value, so the grammar accepts this key only
      with the literal `false` as its whole value. Any other value (`1`, `!0`,
@@ -62,22 +63,22 @@ data, not a hit, except as the argument of `require`.
      `unclassified:irreversible`.
    - `helper`: `createIrreversibleMigration`.
    - `wrapper`: `dropTables`. It sets the flag, so dropping a table is irreversible.
-3. **Destructive** (always consent). Data or structure removed with no way back from
+3. **Destructive** (always refused). Data or structure removed with no way back from
    the migration: `deleteTable`, `recreateTable`, `dropDevelopmentCopy`,
    `removeSetting`, raw `DROP TABLE` or `DELETE FROM` spelled in a string or
    template (escapes are decoded first), `truncate`, `delete`, and `del` other than
    a `.del()` with no argument. Also `noop-rollback`: a `down()` that does nothing, or
    only logs, in a file that also calls something destructive-looking.
-4. **Contracting** (routed by `CONTRACTING_ROUTE`, pinned to `consent`). Lossy:
+4. **Contracting** (routed by `CONTRACTING_ROUTE`, pinned to the refused route `consent`). Lossy:
    `dropColumn`, `dropColumns`, `createDropColumnMigration`, `.del()` with no argument,
    and permission removal (`removePermission`, `removePermissionFromRole`,
    `createRemovePermissionMigration`). A rollback re-adds a dropped column empty,
    and a delete loses rows. `removePermission`'s rollback re-adds only the configured
    permission. Its `up` deleted every permission row with the same action and object
    type, and those sibling rows are not restored.
-5. **Constraint** (routed by `CONSTRAINT_ROUTE`, pinned to `consent`). Schema-only
+5. **Constraint** (routed by `CONSTRAINT_ROUTE`, pinned to the refused route `consent`). Schema-only
    constraint drops: `dropIndex`, `dropUnique`, `dropForeign`. Kept apart from data loss.
-6. **Unclassified** (always consent). The fast-path grammar below refused the file.
+6. **Unclassified** (always refused). The fast-path grammar below refused the file.
    The reason is `unclassified:<name>`, the first node or token the grammar did not
    accept. Only the first is reported; the classes above are all reported.
 
@@ -110,7 +111,7 @@ A file is fast-path only if it is made entirely of these forms, checked by
   `class`, getters and methods in object literals, generators, regex literals, a
   property that is not allowlisted, and a call whose callee is a local name or a
   parameter. A local helper is therefore fast-path when handed to `map` or a wrapper
-  by reference, and consent when called by name.
+  by reference, and refused when called by name.
 
 Member calls and bare calls are told apart by the tree (a `MemberExpression` callee
 or an `Identifier` callee), never by name. `KNOWN_CALLS` holds each allowed name with its reason; the
@@ -156,14 +157,14 @@ wrong. `6.0/2025-06-30-13-59-10-remove-mail-events-table.js` calls `dropTables`,
 so it is irreversible through the wrapper.
 
 With the inclusive range, that migration is in range for any upgrade whose pinned
-minor is 6.0. So `v6.0.0` to `v6.1.0` routes consent on it. Ranges that start at 6.1
+minor is 6.0. So `v6.0.0` to `v6.1.0` routes to refusal on it. Ranges that start at 6.1
 or later do not include it.
 
 ## Usage
 
     node src/cli.mjs --from v6.55.0 --to v6.69.0 --versions <path>/migrations/versions
 
-Exit 0 is fast-path. Exit 2 is the consent verdict. Exit 1 is an error (bad arguments,
+Exit 0 is fast-path. Exit 2 is the refused verdict (route `consent`). Exit 1 is an error (bad arguments,
 an unreadable or unexpected tree, a range with no version folder in it): nothing is
 classified, and the message goes to stderr, not a verdict. A caller must treat any
 non-zero exit as not fast-path. The JSON output lists every matched file with its
@@ -197,7 +198,7 @@ real fixture exercises. The raw SQL in the tests is assembled from parts, so no 
 literal sits in the source.
 
 The control case: an irreversible migration in a non-newest folder of the range
-routes consent. A mutant that checks only the target folder for irreversible rules
+routes to refusal. A mutant that checks only the target folder for irreversible rules
 fails that test.
 
 ## Licence
@@ -212,7 +213,7 @@ at v6.69.0.
   to v6.57.1 after that patch adds a destructive migration to folder 6.57 would see an
   empty range. So the bound stays inclusive. The cost is measured: the upstream
   `versions` tree is identical at v6.57.0 and v6.57.1, and the classifier still routes
-  `v6.57.0` to `v6.57.1` consent on the two 6.57 files (the leaf-rows and
+  `v6.57.0` to `v6.57.1` refused on the two 6.57 files (the leaf-rows and
   reset-automation migrations). A possible fix is to compare the pinned and target
   trees and classify only files that are new since the pinned tag. That needs a second
   input and is not built here.
@@ -222,20 +223,20 @@ at v6.69.0.
   recorded above. The assumption it rests on is not verified.
 - **A range with no version folder in it.** Ghost has no folder for a minor line with
   no migrations (the v6.69.0 tree has no `6.62`), so `v6.62.0` to `v6.62.1` reads no
-  folder and exits 1. Exit 1 is an error, not the consent verdict (exit 2), and it is
+  folder and exits 1. Exit 1 is an error, not the refused verdict (exit 2), and it is
   not fast-path. Telling that apart from a
   partial or wrong tree needs the list of minor lines Ghost shipped, a second input
   that is not built here.
 - **Local helpers called by name.** A file that declares `const add = (n) => ...` and
-  calls `add('x')` routes consent, although the helper's body is checked. Allowing it
+  calls `add('x')` routes to refusal, although the helper's body is checked. Allowing it
   needs a rule that a local bound once to a function is callable. It is not built:
-  the default is consent.
+  the default is refusal.
 
 ## Not claimed
 
 This does not establish that a range is safe. It checks migration source against
-a fixed grammar and a fixed list of names, and forms outside them route consent as
+a fixed grammar and a fixed list of names, and forms outside them route to refusal as
 unclassified. Helpers on the allowlist are trusted on the basis of the reasons beside
 them, so a data change written in a form the allowlist accepts, but whose effect the
-reason does not cover, passes unseen. The range v6.55.0 to v6.69.0 routes to consent,
+reason does not cover, passes unseen. The range v6.55.0 to v6.69.0 routes to refusal,
 and the issue's Done-when is not claimed.

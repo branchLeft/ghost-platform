@@ -3,11 +3,13 @@ import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { createGateHandler } from './app.js';
 import { hashPassphrase, parseArgon2idHash } from './argon2id.js';
-import { createAttemptCeiling } from './ceiling.js';
+import {
+  createAttemptCeiling,
+  createSourceResolver,
+} from 'ghost-platform-request-guard/dist/index.js';
 import { loadConfig } from './config.js';
 import { createDerivationGate } from './derivationGate.js';
 import { createLeaseReader, createSlotsSource } from './slots.js';
-import { createSourceResolver } from './source.js';
 import { createTrafficCounterStore } from './trafficCounter.js';
 
 const config = loadConfig(process.env);
@@ -34,6 +36,11 @@ const handler = createGateHandler({
   }),
   broadCeiling: createAttemptCeiling({
     limit: config.ceilingBroadLimit,
+    windowMs: config.ceilingWindowMs,
+    maxSources: config.ceilingBroadMaxSources,
+  }),
+  malformedCeiling: createAttemptCeiling({
+    limit: config.ceilingMalformedLimit,
     windowMs: config.ceilingWindowMs,
     maxSources: config.ceilingBroadMaxSources,
   }),
