@@ -140,8 +140,8 @@ shared-infra) reads this directory through its textfile collector. The install
 steps are the ghost-platform-docs page `db1-node-exporter-install-runbook.md`.
 The alert rules `DbNightlyDumpFailed`, `DbNightlyDumpStale` and
 `DbNightlyDumpMetricAbsent` live in shared-infra's
-`hetzner/monitoring/render.ts`. The thresholds there follow the timer: 03:10
+`hetzner/monitoring/render.ts`. The thresholds there follow the timer: 03:00
 UTC plus up to 5 minutes of random delay, and the unit's 30 minute timeout, so
-a healthy run finishes by about 03:45 and a metric older than 30 hours means a
+a healthy run finishes by about 03:35 and a metric older than 30 hours means a
 night was missed. The rules read these files only once db1's node target
 answers; whether it does today is read from Prometheus, not from this file.
