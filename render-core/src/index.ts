@@ -113,6 +113,8 @@ export {
   MAIL_SPOOL_DRAIN_BRIDGE,
   MAIL_SPOOL_DRAIN_GATEWAY,
   MAIL_SPOOL_DRAIN_NETWORK,
+  MAIL_SPOOL_DRAIN_OUTCOMES_KEY,
+  MAIL_SPOOL_DRAIN_OUTCOMES_VALUE,
   MAIL_SPOOL_DRAIN_SUBNET,
   MAIL_SPOOL_DRAIN_TOKEN_KEY,
   MAIL_SPOOL_HTTP_PORT,
@@ -123,6 +125,7 @@ export {
   MAIL_SPOOL_UID,
   assertSpoolPosture,
   mailSpoolDocument,
+  mailSpoolNeedsDrainOutcomes,
   mailSpoolNetworkName,
   renderMailSpoolStack,
 } from './spool.js';
