@@ -21,10 +21,12 @@ Docker restart it, and reads the result:
 It also refuses to pass when Ghost's network namespace did not change across
 the restart (the sandbox key Docker reports is compared before and after).
 
-Ghost runs with `--restart on-failure` here, not the Compose file's
-`unless-stopped`, because `docker kill` counts as a manual stop for the
-latter. Both policies restart a Ghost whose process dies by itself, which is
-the case this models.
+Ghost's main process is killed with `sudo kill -9` on the host, not with
+`docker kill`: Docker treats `docker kill` as a manual stop and does not
+restart the container, where a process that dies by itself is restarted. The
+script therefore needs passwordless `sudo`, as a CI runner has. Ghost runs
+with `--restart on-failure` here, not the Compose file's `unless-stopped`;
+both restart a crashed Ghost.
 
 ## Usage
 
@@ -34,7 +36,7 @@ docker build -t drain-sidecar:local --secret id=node_auth_token,env=NODE_AUTH_TO
 python3 scripts/test-drain-sidecar-crash-restart.py drain-sidecar:local ghost-platform:local
 ```
 
-Needs a local Docker daemon. It uses host ports 4220 to 4222 and removes every
+Needs a local Linux Docker daemon and passwordless `sudo`. It uses host ports 4220 to 4222 and removes every
 container it starts, pass or fail. It runs in CI after the real-Ghost proof in
 `.github/workflows/drain-sidecar-image.yml`.
 

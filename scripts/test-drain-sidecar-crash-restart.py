@@ -129,8 +129,11 @@ def run() -> list[str]:
              lambda: status(WATCHED_PORT) == 200 and status(CONTROL_PORT) == 200)  # fmt: skip
 
     before = sandbox_key(GHOST_NAME)
-    print("--- killing Ghost; Docker restarts it into a new network namespace ---")
-    docker("kill", GHOST_NAME)
+    print("--- crashing Ghost; Docker restarts it into a new network namespace ---")
+    # Killed from outside the container's own control, so Docker sees a crash.
+    # `docker kill` counts as a manual stop and is not restarted.
+    pid = docker("inspect", "--format", "{{.State.Pid}}", GHOST_NAME)
+    subprocess.run(["sudo", "kill", "-9", pid], check=True)
     wait_for("Docker to restart Ghost", 60, lambda: restart_count(GHOST_NAME) >= 1)
     wait_for("Ghost to answer again", BOOT_SECONDS, lambda: ghost_front_page_status() == 200)
     if sandbox_key(GHOST_NAME) == before:

@@ -43,7 +43,9 @@ export interface StaleNamespaceWatchOptions {
   now?: () => number;
 }
 
-export function createStaleNamespaceWatch(options: StaleNamespaceWatchOptions): StaleNamespaceWatch {
+export function createStaleNamespaceWatch(
+  options: StaleNamespaceWatchOptions
+): StaleNamespaceWatch {
   const now = options.now ?? Date.now;
   let unreachableSince: number | null = null;
   return {

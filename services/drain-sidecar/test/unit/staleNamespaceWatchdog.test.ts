@@ -68,9 +68,7 @@ describe('createHttpReachabilityProbe', () => {
   let server: Server | undefined;
 
   afterEach(async () => {
-    await new Promise<void>((resolve) =>
-      server ? server.close(() => resolve()) : resolve()
-    );
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
     server = undefined;
   });
 
