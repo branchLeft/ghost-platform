@@ -150,6 +150,24 @@ function fromVerdict(from: unknown, scopeDomain: string): HeaderFromVerdict {
 }
 
 /**
+ * A header key folded the way nodemailer's _normalizeHeaderKey folds it: every
+ * whitespace character, C0 control, DEL and colon is dropped from anywhere in
+ * the key, then the key is lower-cased. Written as a character loop so that no
+ * control character sits in a regular expression (no-control-regex).
+ */
+function foldHeaderKey(name: string): string {
+  let folded = '';
+  for (const char of name) {
+    const code = char.codePointAt(0) ?? 0;
+    const dropped = code <= 0x20 || code === 0x7f || char === ':' || /\s/.test(char);
+    if (!dropped) {
+      folded += char;
+    }
+  }
+  return folded.toLowerCase();
+}
+
+/**
  * Whether a drained message may be submitted for a target whose sending domain
  * is `sendingDomain`: the header From names exactly one mailbox and its domain
  * is that domain exactly (case, trailing dot and internationalised spelling
@@ -169,7 +187,7 @@ export function checkHeaderFrom(
     // Stripped and case-folded the way nodemailer's _normalizeHeaderKey folds a key:
     // it removes whitespace, C0 controls, DEL and colons anywhere in the key, then
     // lower-cases it. Any spelling that reaches the wire as a competing name is refused.
-    if (COMPETING_IDENTITY_HEADERS.has(name.replace(/[\s\x00-\x20\x7f:]/g, '').toLowerCase())) {
+    if (COMPETING_IDENTITY_HEADERS.has(foldHeaderKey(name))) {
       return { ok: false, reason: 'from-unreadable' };
     }
   }

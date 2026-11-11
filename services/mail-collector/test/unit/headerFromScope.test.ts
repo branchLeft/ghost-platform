@@ -216,20 +216,23 @@ describe('checkHeaderFrom agrees with nodemailer on the wire', () => {
     'X-Ghost-Email-Id',
   ];
 
-  it.each(PARITY_KEYS)('key %j is refused exactly when nodemailer puts a refused header on the wire', async (key) => {
-    const headers = { [key]: 'evil@other.example' };
-    const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
-    // A copy: nodemailer may rewrite the object it is given, and the check must see the input as drained.
-    const info = await transport.sendMail({
-      from: 'hello@scope.example',
-      to: 'b@x.example',
-      subject: 's',
-      text: 't',
-      headers: { ...headers },
-    });
-    const head = info.message.toString().split('\r\n\r\n')[0] ?? '';
-    const onWire = head.split('\r\n').some((line) => REFUSED_ON_WIRE.test(line));
-    const verdict = checkHeaderFrom(message('hello@scope.example', headers), SCOPE);
-    expect(!verdict.ok).toBe(onWire);
-  });
+  it.each(PARITY_KEYS)(
+    'key %j is refused exactly when nodemailer puts a refused header on the wire',
+    async (key) => {
+      const headers = { [key]: 'evil@other.example' };
+      const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+      // A copy: nodemailer may rewrite the object it is given, and the check must see the input as drained.
+      const info = await transport.sendMail({
+        from: 'hello@scope.example',
+        to: 'b@x.example',
+        subject: 's',
+        text: 't',
+        headers: { ...headers },
+      });
+      const head = info.message.toString().split('\r\n\r\n')[0] ?? '';
+      const onWire = head.split('\r\n').some((line) => REFUSED_ON_WIRE.test(line));
+      const verdict = checkHeaderFrom(message('hello@scope.example', headers), SCOPE);
+      expect(!verdict.ok).toBe(onWire);
+    }
+  );
 });
