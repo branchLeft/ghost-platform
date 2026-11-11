@@ -8,6 +8,7 @@ import type {
 } from './contracts.js';
 import { refusal } from './refusal.js';
 import { guardTenant, routeRequest, type RoutedRequest } from './router.js';
+import type { TenantLimits } from './limits/index.js';
 import type { UploadBindings } from './uploads.js';
 
 /** One logged refusal. Carries no object key, bucket or request target. */
@@ -39,6 +40,12 @@ export interface AdmitDependencies {
    * tenant's upload id. Absent, no binding is enforced.
    */
   readonly uploads?: UploadBindings;
+  /**
+   * When given, an otherwise admitted request must also pass the tenant's
+   * write switches and rate limit. It is asked last, so a refused request
+   * never spends a tenant's allowance.
+   */
+  readonly limits?: TenantLimits;
 }
 
 export type AdmitResult =
@@ -47,7 +54,12 @@ export type AdmitResult =
       readonly route: RoutedRequest;
       readonly tenant: { readonly keyId: string; readonly folder: string; readonly bucket: string };
     }
-  | { readonly ok: false; readonly refusal: Refusal };
+  | {
+      readonly ok: false;
+      readonly refusal: Refusal;
+      /** Present on a rate-limited refusal: milliseconds until a retry can succeed. */
+      readonly retryAfterMs?: number;
+    };
 
 /**
  * Decides whether a request may be forwarded upstream, failing closed. The
@@ -63,7 +75,8 @@ export async function admit(
   const method = request.method;
   const refuse = (
     code: RefusalCode,
-    context: { keyId?: string; folder?: string; operation?: AllowedOperation } = {}
+    context: { keyId?: string; folder?: string; operation?: AllowedOperation } = {},
+    retryAfterMs?: number
   ): AdmitResult => {
     const r = refusal(code);
     deps.logger.refusal({
@@ -75,7 +88,9 @@ export async function admit(
       ...(context.folder === undefined ? {} : { folder: context.folder }),
       ...(context.operation === undefined ? {} : { operation: context.operation }),
     });
-    return { ok: false, refusal: r };
+    return retryAfterMs === undefined
+      ? { ok: false, refusal: r }
+      : { ok: false, refusal: r, retryAfterMs };
   };
 
   let keyId: string;
@@ -122,6 +137,16 @@ export async function admit(
     }
     if (!bound) {
       return refuse('upload-not-bound', { keyId, folder, operation: routed.route.operation });
+    }
+  }
+
+  if (deps.limits !== undefined) {
+    const context = { keyId, folder, operation: routed.route.operation };
+    try {
+      const decision = deps.limits.check({ keyId, operation: routed.route.operation });
+      if (!decision.ok) return refuse(decision.refusal.code, context, decision.retryAfterMs);
+    } catch {
+      return refuse('internal-error', context);
     }
   }
 
