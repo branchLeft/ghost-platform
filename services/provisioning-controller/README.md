@@ -24,10 +24,20 @@ executes nothing and writes nothing.
 `executeOnboarding(approvalId, ports, options?)` runs that plan. Every call is
 a fresh start or a resume.
 
-- **Approval gate.** Checked before the run and again before every attempt of
-  every step (`src/gate.ts`). A revoked, narrowed or re-pointed approval stops
-  the run at the next step boundary: a `run-halted` record is appended, the
-  console is told, and the call throws the part 1 approval error.
+- **Approval gate.** All three scopes are checked once before the run, before
+  the state is read and before any step is planned, so one withdrawn scope (or a
+  narrowed approval) refuses the whole run with no step run. Each step's own
+  scope is checked before every attempt of that step, retries included
+  (`src/gate.ts`). An attempt already in flight is not interrupted; the check
+  comes before the next attempt. So a scope withdrawn mid-run stops the run at
+  the next attempt of a step that needs it, and that step is not started. The
+  run then throws, so the steps after it do not run in that call, even those in
+  scopes still granted; steps already complete stay recorded. Revoking the
+  approval, or re-pointing it at another tenant, is refused at the next check.
+  Before the run there is no tenant to compare, so the run takes the tenant the
+  ledger names when it starts. Each stop appends a `run-halted` record, tells
+  the console, and throws the part 1 approval error. If the store does not
+  accept that record, `StateStoreWriteError` is thrown instead.
 - **Recorded state, before acting and after.** A `started` record is appended
   before a step is tried and a `complete` record before the next step starts.
   The store is append-only (`StateStore`); `FileStateStore` writes one JSON
