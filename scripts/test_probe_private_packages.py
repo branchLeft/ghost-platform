@@ -19,24 +19,51 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 REAL_IMAGES = REPO_ROOT / ".github" / "image-mirror" / "images.json"
 REAL_LIST = REPO_ROOT / ".github" / "image-mirror" / "private-packages.json"
 CONTROL = "branchleft/ghost-tenant"
-MIRROR_GHOST = "branchleft/mirror/ghost"
+MIRROR_GHOST = "branchleft/mirror-private/ghost"
+LEGACY_GHOST = "branchleft/mirror/ghost"
 DERIVED_RECOVERY = "branchleft/db-recovery"
 
 
-class FakeRegistry:
-    """Answers like the registry: a token for any scope, tags only when served.
+def real_private_repos() -> set[str]:
+    """Every repo the real lists say must be non-public, built from the files."""
+    images = json.loads(REAL_IMAGES.read_text())
+    private = json.loads(REAL_LIST.read_text())
+    prefix = images["registry"].split("/", 1)[1]
+    repos = {f"{prefix}/{name}" for name in private["mirror"]}
+    repos |= {f"branchleft/{name}" for name in private["derived"]}
+    return repos
 
-    A repo in `served` lists its tags to the anonymous token. A repo in `token_500`
-    fails the token request. A repo in `raising` raises on the tags request.
+
+def real_legacy_repos() -> set[str]:
+    images = json.loads(REAL_IMAGES.read_text())
+    return {f"branchleft/mirror/{entry['name']}" for entry in images["images"]}
+
+
+def scope_repo(path: str) -> str:
+    scope = parse_qs(urlsplit(path).query)["scope"][0]
+    return scope[len("repository:") : -len(":pull")]
+
+
+class FakeRegistry:
+    """Answers like GHCR does to an anonymous caller, by the package's state.
+
+    A repo in `served` is public: the token request answers 200 and the tags list
+    to that token. A repo in `existing` is there but not public: the token request
+    answers 401. Any other repo does not exist: the token request answers 403,
+    which is what GHCR says for a namespace that holds nothing. A repo in
+    `token_500` fails the token request. A repo in `raising` raises on the tags
+    request.
     """
 
     def __init__(
         self,
         served: set[str],
+        existing: set[str] | None = None,
         token_500: set[str] | None = None,
         raising: set[str] | None = None,
     ) -> None:
         self.served = served
+        self.existing = real_private_repos() if existing is None else existing
         self.token_500 = token_500 or set()
         self.raising = raising or set()
         self.calls: list[tuple[str, dict[str, str]]] = []
@@ -48,7 +75,11 @@ class FakeRegistry:
             repo = scope[len("repository:") : -len(":pull")]
             if repo in self.token_500:
                 return 500, b""
-            return 200, json.dumps({"token": "anon-" + repo}).encode()
+            if repo in self.served:
+                return 200, json.dumps({"token": "anon-" + repo}).encode()
+            if repo in self.existing:
+                return 401, b'{"errors":[]}'
+            return 403, b'{"errors":[]}'
         repo = path[len("/v2/") : -len("/tags/list")]
         if repo in self.raising:
             raise OSError("connection reset")
@@ -79,7 +110,7 @@ class RealFilesTest(unittest.TestCase):
         registry = FakeRegistry(served={CONTROL, MIRROR_GHOST})
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
-        self.assertIn("served branchleft/mirror/ghost", out)
+        self.assertIn(f"served {MIRROR_GHOST}", out)
         self.assertIn("PRIVATE PROBE FAILED", out)
 
     def test_red_when_a_derived_recovery_image_is_served(self) -> None:
@@ -88,6 +119,31 @@ class RealFilesTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("served branchleft/db-recovery", out)
 
+    def test_probes_the_current_names_and_the_retired_public_set(self) -> None:
+        registry = FakeRegistry(served={CONTROL} | real_legacy_repos())
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 0, out)
+        probed = {
+            parse_qs(urlsplit(path).query)["scope"][0][len("repository:") : -len(":pull")]
+            for path, _ in registry.calls
+            if path.startswith("/token?")
+        }
+        self.assertIn(MIRROR_GHOST, probed)
+        self.assertIn(LEGACY_GHOST, probed)
+        self.assertIn(DERIVED_RECOVERY, probed)
+        self.assertEqual(
+            probed, {CONTROL} | real_private_repos() | real_legacy_repos()
+        )
+        self.assertIn(f"LEGACY-PUBLIC served {LEGACY_GHOST}", out)
+
+    def test_retired_public_packages_served_or_gone_do_not_fail_the_run(self) -> None:
+        # GitHub cannot make a public package private; the owner deletes them later.
+        for served in (real_legacy_repos(), set()):
+            registry = FakeRegistry(served={CONTROL} | served)
+            code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+            self.assertEqual(code, 0, out)
+            self.assertIn("PRIVATE PROBE OK", out)
+
     def test_red_when_the_control_is_not_served(self) -> None:
         registry = FakeRegistry(served=set())
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
@@ -95,20 +151,71 @@ class RealFilesTest(unittest.TestCase):
         self.assertIn("PROBE BROKEN", out)
 
 
+class EmptyNamespaceTest(unittest.TestCase):
+    """The trap: GHCR answers 403 for a package that does not exist, so a probe
+    that counts 403 as a refusal passes against an empty or wrong namespace."""
+
+    def test_red_when_the_private_namespace_holds_nothing(self) -> None:
+        # Nothing exists at the current names: every private package answers 403.
+        registry = FakeRegistry(served={CONTROL}, existing=set())
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 1, out)
+        self.assertIn("missing branchleft/mirror-private/ghost", out)
+        self.assertIn("missing branchleft/db-recovery", out)
+        self.assertIn("PRIVATE PROBE FAILED", out)
+        self.assertNotIn("PRIVATE PROBE OK", out)
+
+    def test_red_when_the_packages_are_only_in_the_old_namespace(self) -> None:
+        # The packages moved to mirror-private; the old namespace is all that exists.
+        existing = real_private_repos() - {MIRROR_GHOST} | {LEGACY_GHOST}
+        registry = FakeRegistry(served={CONTROL}, existing=existing)
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"missing {MIRROR_GHOST}", out)
+
+    def test_a_404_token_answer_is_also_missing(self) -> None:
+        class NotFound(FakeRegistry):
+            def get(
+                self, host: str, path: str, headers: dict[str, str]
+            ) -> tuple[int, bytes]:
+                if path.startswith("/token?") and scope_repo(path) == MIRROR_GHOST:
+                    return 404, b""
+                return super().get(host, path, headers)
+
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, NotFound(served={CONTROL}))
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"missing {MIRROR_GHOST}", out)
+
+    def test_tags_refusal_after_a_token_was_issued_is_unknown_not_refused(self) -> None:
+        class TagsRefused(FakeRegistry):
+            def get(
+                self, host: str, path: str, headers: dict[str, str]
+            ) -> tuple[int, bytes]:
+                if path.startswith("/token?") and scope_repo(path) == MIRROR_GHOST:
+                    return 200, b'{"token": "anon-x"}'
+                return super().get(host, path, headers)
+
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, TagsRefused(served={CONTROL}))
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"unknown {MIRROR_GHOST}", out)
+
+
 class FailClosedTest(unittest.TestCase):
     def test_unknown_token_answer_fails_closed(self) -> None:
         registry = FakeRegistry(served={CONTROL}, token_500={MIRROR_GHOST})
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
-        self.assertIn("unknown branchleft/mirror/ghost", out)
+        self.assertIn(f"unknown {MIRROR_GHOST}", out)
 
     def test_network_error_fails_closed(self) -> None:
-        registry = FakeRegistry(served={CONTROL}, raising={DERIVED_RECOVERY})
+        registry = FakeRegistry(
+            served={CONTROL, DERIVED_RECOVERY}, raising={DERIVED_RECOVERY}
+        )
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
         self.assertIn("unknown branchleft/db-recovery", out)
 
-    def test_refused_token_counts_as_refused(self) -> None:
+    def test_a_401_token_counts_as_refused(self) -> None:
         class TokenRefused(FakeRegistry):
             def get(
                 self, host: str, path: str, headers: dict[str, str]
@@ -123,7 +230,7 @@ class FailClosedTest(unittest.TestCase):
         registry = TokenRefused(served={CONTROL})
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 0, out)
-        self.assertIn("refused branchleft/mirror/ghost", out)
+        self.assertIn(f"refused {MIRROR_GHOST}", out)
 
 
 class NoCredentialTest(unittest.TestCase):
@@ -158,7 +265,7 @@ class ListValidationTest(unittest.TestCase):
     def images(
         self,
         tmp: Path,
-        registry: str = "branchleft.example/branchleft/mirror",
+        registry: str = "branchleft.example/branchleft/mirror-private",
         names: tuple[str, ...] = ("ghost",),
     ) -> Path:
         data = {"registry": registry, "images": [{"name": n} for n in names]}

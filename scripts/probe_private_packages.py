@@ -10,16 +10,29 @@ come from .github/image-mirror/private-packages.json.
 
 For each package the probe asks the registry for an anonymous pull token (the
 token request carries no credential and no Authorization header), then lists
-the package's tags with that token. A 200 means the package is served to anyone.
+the package's tags with that token. GHCR answers the token request by the
+package's state, and the probe reads exactly that:
+    200  a public package: the token is issued, the tags are then listed
+    401  a package that exists and is not public: the only refusal that passes
+    403  a package that does not exist: a wrong or empty namespace looks like this
+
+A 403 or 404 is never a pass. A refusal from a namespace that holds nothing
+proves nothing, so a missing package is a failure, the same as a package served.
 
 Verdicts, fail-closed:
     private package served          -> FAIL
-    private package refused         -> pass
+    private package refused (401)   -> pass
+    private package missing         -> FAIL (403/404: wrong namespace, or never published)
     private package unknown answer  -> FAIL (a 5xx, a timeout, a bad token reply)
     control not served              -> FAIL, the probe itself is broken
 
-Exit 0: every private package refused and the control served.
-Exit 1: a private package served or unknown, or the control not served.
+The retired public namespace (<owner>/mirror/<name>, see scripts/mirror-images.md)
+is probed and reported as an inventory. GitHub cannot make a public package
+private again, so those stay public until the owner deletes them; served, now
+private or gone is each reported and none fails the run.
+
+Exit 0: every private package refused (401) and the control served.
+Exit 1: a private package served, missing or unknown, or the control not served.
 Exit 2: a list is unreadable or inconsistent with the mirror list.
 """
 
@@ -42,7 +55,12 @@ DEFAULT_LIST = REPO_ROOT / ".github" / "image-mirror" / "private-packages.json"
 
 REGISTRY = re.compile(r"\A([a-z0-9.-]+)/([a-z0-9._-]+(?:/[a-z0-9._-]+)*)\Z")
 PACKAGE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-REFUSED_STATUSES = frozenset({401, 403, 404})
+# Only 401 says "exists, not public". 403 and 404 say "no such package".
+REFUSED_STATUS = 401
+MISSING_STATUSES = frozenset({403, 404})
+# The namespace the mirror used before it moved to mirror-private. Its packages
+# were published public and are not changed by this repository.
+LEGACY_PUBLIC_NAMESPACE = "mirror"
 TIMEOUT_SECONDS = 30.0
 
 
@@ -53,6 +71,7 @@ class ProbeListError(Exception):
 class Verdict(Enum):
     SERVED = "served"
     REFUSED = "refused"
+    MISSING = "missing"
     UNKNOWN = "unknown"
 
 
@@ -174,8 +193,14 @@ def check_package(transport: Transport, host: str, repo: str) -> Result:
         status, body = transport.get(host, "/token?" + query, {})
     except (OSError, http.client.HTTPException) as err:
         return Result(repo, Verdict.UNKNOWN, f"token request failed: {err}")
-    if status in REFUSED_STATUSES:
+    if status == REFUSED_STATUS:
         return Result(repo, Verdict.REFUSED, f"token refused with {status}")
+    if status in MISSING_STATUSES:
+        return Result(
+            repo,
+            Verdict.MISSING,
+            f"token answered {status}: no such package (wrong namespace or never published)",
+        )
     if status != 200:
         return Result(repo, Verdict.UNKNOWN, f"token answered {status}")
     token = read_token(body)
@@ -189,9 +214,9 @@ def check_package(transport: Transport, host: str, repo: str) -> Result:
         return Result(repo, Verdict.UNKNOWN, f"tags request failed: {err}")
     if status == 200:
         return Result(repo, Verdict.SERVED, "tags listed to an anonymous token")
-    if status in REFUSED_STATUSES:
-        return Result(repo, Verdict.REFUSED, f"tags refused with {status}")
-    return Result(repo, Verdict.UNKNOWN, f"tags answered {status}")
+    # The token request already said the package is public; a tags refusal after
+    # that is a contradiction, not a refusal. It fails closed.
+    return Result(repo, Verdict.UNKNOWN, f"tags answered {status} after a token was issued")
 
 
 def run(images_path: Path, list_path: Path, transport: Transport) -> int:
@@ -226,9 +251,15 @@ def run(images_path: Path, list_path: Path, transport: Transport) -> int:
         print(f"{result.verdict.value} {result.repo}: {result.detail}")
         if result.verdict is not Verdict.REFUSED:
             failed.append(repo)
+    # Inventory of the retired public namespace: reported, never a failure.
+    for name in mirror_names:
+        legacy = check_package(
+            transport, host, f"{owner}/{LEGACY_PUBLIC_NAMESPACE}/{name}"
+        )
+        print(f"LEGACY-PUBLIC {legacy.verdict.value} {legacy.repo}: {legacy.detail}")
     if failed:
         print(
-            f"PRIVATE PROBE FAILED: {len(failed)} package(s) readable or unknown: {failed}"
+            f"PRIVATE PROBE FAILED: {len(failed)} package(s) readable, missing or unknown: {failed}"
         )
         return 1
     print(f"PRIVATE PROBE OK: {len(repos)} package(s) refused, control served")
