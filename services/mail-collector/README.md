@@ -24,6 +24,15 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DEDUPE_STATE_PATH` | no (off) | File, on a volume that outlives the container and is writable by the `node` user, the submitted ids are kept in. Unset, the ids live in memory only: a restart forgets them and the collector logs `dedupe_not_persistent` at start-up. |
 | `COLLECTOR_SMTP_HOST` / `_PORT` / `_USER` / `_PASS` | yes / no (`587`) / yes / yes | mx1's authenticated SMTP submission endpoint. |
 | `COLLECTOR_SMTP_SECURE` | no (default `false`) | `true` for implicit TLS. |
+| `COLLECTOR_SWEEGO_SMTP_HOST` | no (off) | The Sweego relay host (`SWEEGO_RELAY_HOST`). Setting it turns the Sweego client on; the settings below are then required where marked, and set without it they fail start-up. |
+| `COLLECTOR_SWEEGO_SMTP_PORT` / `_SECURE` | no (`587` / `false`) | The relay port (`SWEEGO_RELAY_PORT`) and whether it is implicit TLS. With `_SECURE` false the client requires STARTTLS before it sends the credential. |
+| `COLLECTOR_SWEEGO_SMTP_USER` | with the host | The relay login name (`SWEEGO_RELAY_USER`). |
+| `COLLECTOR_SWEEGO_SMTP_PASS_FILE` | with the host | Path of the root-readable file on ops1 that holds the relay credential, and nothing else but an optional trailing newline. The value is never an environment variable: `COLLECTOR_SWEEGO_SMTP_PASS` is refused at start-up. |
+| `COLLECTOR_SWEEGO_MESSAGES_PER_HOUR` | with the host | Sweego's own send-rate ceiling (`SWEEGO_MESSAGES_PER_HOUR`), separate from `COLLECTOR_MESSAGES_PER_HOUR`. No default: the plan sets it. |
+| `COLLECTOR_SWEEGO_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override, `{"messagesPerHour": N}`, for the Sweego ceiling only. |
+| `COLLECTOR_SWEEGO_SMTP_TIMEOUT_MS` | no (default `20000`) | Bounds connecting, the greeting and every wait on the relay, so a down relay fails fast. |
+| `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up. |
+| `COLLECTOR_PIN_TTL_MS` | no (default `604800000`) | How long a pin is remembered. A placeholder: it must outlast the shim's longest retry horizon, which has not been read yet. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 | `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
@@ -193,7 +202,8 @@ asks again with the failure. The hard rules, in the order they apply:
    RCPT) and by nothing else. A recipient 5xx and an ambiguous failure (a timeout
    after DATA, or any error that names no kind) hold the message; bulk always
    holds. An unclassified error is ambiguous: a client says `not-accepted` only
-   by throwing `TargetSubmissionError`.
+   by throwing `TargetSubmissionError`. The loop does not ask the resolver about a
+   recipient 5xx: it drops the message (see Sweego submission below).
 2. A `mx1` route, a demo and any message that already reached mx1 go to mx1.
    Nothing goes from mx1 to Sweego: `FALLBACK_EDGES` has no edge out of mx1, the
    route has no field to say otherwise, `assertNoSweegoAfterMx1` is the last
@@ -205,10 +215,69 @@ asks again with the failure. The hard rules, in the order they apply:
    mx1 health counter that gates the heartbeat.
 
 A message held for Sweego does not stop the rest of its batch (an mx1 failure
-still does). Nothing in `server.ts` supplies a Sweego client or a quota, so
-every route is served by mx1 today. `mx1Pins` is memory-only and its default TTL
-is a placeholder: the pin must outlast the shim's longest retry horizon and
-survive a restart before a Sweego client is wired.
+still does). `server.ts` builds the Sweego client only when
+`COLLECTOR_SWEEGO_SMTP_HOST` is set, and supplies no quota, so until a counter
+exists the resolver reads every allowance as reached and every route is still
+served by mx1. The pins are kept under `COLLECTOR_PIN_STATE_DIR` when it is set;
+their TTL is a placeholder that must outlast the shim's longest retry horizon.
+
+### sweegoDeliveryClient createSweegoDeliveryClient
+
+Authenticated SMTP submission to the Sweego relay, tested against a local fake
+relay (`test/helpers/fakeSweegoRelay.ts`), never a real host. The credential is
+read from `COLLECTOR_SWEEGO_SMTP_PASS_FILE` for each message and passed to one
+transporter that lives for that message alone, so it is held nowhere else: not in
+config, not in the client, not in a pooled connection, not in the descriptor, the
+spool or a tenant host. The client requires STARTTLS (or implicit TLS) before it
+sends the credential; only a test against a fake relay with no TLS turns that off.
+
+Every failure is thrown as a `SweegoSubmissionError` whose message is built from
+a reason and the SMTP reply number only. The relay's own text, which can echo an
+address, and the underlying error are dropped, so no log line, exception, counter
+or metric can carry the credential, a recipient or a subject. A test greps all of
+them across every failure the fake relay can produce.
+
+The Sweego throttle (`sweegoThrottle`) is a second `createThrottle`, with its own
+rate and its own reload file. Sweego mail draws only on it, mx1 mail only on the
+estate throttle. A Sweego client supplied without a throttle is read as not
+configured.
+
+### sweegoFailure classifySweegoError
+
+Maps a nodemailer error onto the design's outcomes. Only a definite
+non-acceptance is `not-accepted`, which is what lets login mail fall back to mx1;
+anything that may have reached the relay's queue, and anything unplaced, is
+`ambiguous` and never falls back, so it cannot duplicate a message.
+
+| Reason | Kind | Cause |
+|---|---|---|
+| `unreachable` | `not-accepted` | Connection refused, DNS failure, TLS or greeting failure, connect timeout |
+| `auth` | `not-accepted` | The relay refused the login |
+| `credential` | `not-accepted` | The credential file is unreadable or empty |
+| `deferred` | `not-accepted` | A 4xx at MAIL or RCPT |
+| `refused` | `not-accepted` | A 5xx at MAIL: the sender was refused, nothing taken |
+| `recipient-rejected` | `recipient-rejected` | A 5xx at RCPT, or an envelope the client could not form |
+| `timeout` | `ambiguous` | A timeout once the session was past setup |
+| `ambiguous` | `ambiguous` | A failure at or after DATA, a reset mid-session, anything unplaced |
+
+`unclassified` is the count label for a failure that no Sweego client classified.
+The loop records each failure in `sweegoFailures` (`submissionFailures.ts`), a
+counter keyed by reason alone, for the signals that read it.
+
+### collectorLoop Sweego submission
+
+- **The pin.** The first attempt at Sweego writes the message id to
+  `sweegoPins` before the attempt is made. A retry then stays on Sweego whatever
+  the route or the quota has since become, because the earlier attempt may have
+  been taken. If the process holds no Sweego client at that point the message is
+  held (`sweego_pinned_unavailable`), never sent to mx1. The login fallback is the
+  one exception: its mx1 attempt is pinned in `mx1Pins`, which takes over.
+- **The accept.** A Sweego accept marks the dedupe tracker, so a lost ack is only
+  re-acked on the next offer and never re-sent.
+- **The terminal outcome.** A `recipient-rejected` failure is dropped: marked in
+  the dedupe tracker, acked, counted under `recipient-rejected`, and never retried
+  or sent to mx1. The spool is not told the failure was permanent (the outcome
+  path is opt-in per spool and mx1-shaped), so it shows the message as accepted.
 
 ### health HealthState
 

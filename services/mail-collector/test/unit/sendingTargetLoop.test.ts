@@ -1,72 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createCollectorRuntime } from '../../src/collectorLoop.js';
 import { createSubmittedTracker } from '../../src/dedupe.js';
-import type { DeliveryClient } from '../../src/deliveryClient.js';
 import type { DrainTarget } from '../../src/descriptorTargets.js';
-import { createDrainClient, type WireMessage } from '../../src/drainClient.js';
+import { createDrainClient } from '../../src/drainClient.js';
 import { createHealthState } from '../../src/health.js';
 import { createLogger } from '../../src/log.js';
 import { TargetSubmissionError, type SweegoQuota } from '../../src/sendingTarget.js';
 import type { Throttle } from '../../src/throttle.js';
-import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';
+import { FakeShimServer } from '../helpers/fakeShimServer.js';
 import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
-
-const DRAIN_TOKEN = 'estate-drain-token';
-
-/** Sweego allowance and account cap both free: the only quota in which Sweego may be chosen. */
-const QUOTA_FREE: SweegoQuota = { allowanceReached: () => false, accountCapReached: () => false };
-
-interface FakeClient extends DeliveryClient {
-  readonly calls: string[];
-  /** Returns an error to throw for this message, or undefined to accept it. */
-  behaviour: (message: WireMessage) => Error | undefined;
-}
-
-function fakeClient(): FakeClient {
-  const client: FakeClient = {
-    calls: [],
-    behaviour: () => undefined,
-    async deliver(message) {
-      client.calls.push(message.id);
-      const error = client.behaviour(message);
-      if (error) {
-        throw error;
-      }
-    },
-    close() {},
-  };
-  return client;
-}
-
-function message(id: string, emailId: string | null): QueuedMessage {
-  return {
-    id,
-    domain: 'tenant.example',
-    emailId,
-    from: 'noreply@tenant.example',
-    to: `reader-${id}@example.com`,
-    subject: `Subject ${id}`,
-    html: `<p>${id}</p>`,
-    text: id,
-    headers: {},
-  };
-}
-
-const LOGIN = (id: string): QueuedMessage => message(id, null);
-const NEWSLETTER = (id: string): QueuedMessage => message(id, `email-${id}`);
-
-async function until(condition: () => boolean, label: string, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for: ${label}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-/** A short, fixed settle so a "nothing happens" assertion has had several poll cycles to be wrong in. */
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 250));
+import {
+  DRAIN_TOKEN,
+  LOGIN,
+  NEWSLETTER,
+  QUOTA_FREE,
+  countingThrottle,
+  fakeClient,
+  settle,
+  until,
+  type FakeClient,
+} from '../helpers/loopHarness.js';
 
 describe('collector loop with two sending targets', () => {
   let shim: FakeShimServer;
@@ -104,11 +57,13 @@ describe('collector loop with two sending targets', () => {
       reload() {},
       currentRate: () => 0,
     };
+    const sweegoThrottle = countingThrottle();
     const runtime = createCollectorRuntime({
       store,
       drainClient: createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 }),
       deliveryClient: options.mx1,
       sweegoDeliveryClient: options.sweego,
+      sweegoThrottle,
       sweegoQuota: options.quota,
       throttle,
       dedupe: createSubmittedTracker(60_000),
@@ -120,7 +75,7 @@ describe('collector loop with two sending targets', () => {
     });
     runtime.start();
     stop = () => runtime.stop();
-    return { store, health, tokens };
+    return { store, health, tokens, sweegoThrottle };
   }
 
   const acked = (): string[] => shim.ackRequests.flat().map((ack) => ack.id);
@@ -130,11 +85,12 @@ describe('collector loop with two sending targets', () => {
     const sweego = fakeClient();
     shim.enqueue(LOGIN('login-1'));
     shim.enqueue(NEWSLETTER('news-1'));
-    const { tokens } = start({ mx1, sweego, quota: QUOTA_FREE });
+    const { tokens, sweegoThrottle } = start({ mx1, sweego, quota: QUOTA_FREE });
     await until(() => acked().length === 2, 'both acked');
     expect(sweego.calls.sort()).toEqual(['login-1', 'news-1']);
     expect(mx1.calls).toEqual([]);
     expect(tokens.taken).toBe(0);
+    expect(sweegoThrottle.taken).toBe(2);
   });
 
   it('serves a sweego route by mx1 when no sweego client exists, both classes, at the estate throttle', async () => {
@@ -236,10 +192,6 @@ describe('collector loop with two sending targets', () => {
     it.each([
       ['an unclassified error', new Error('socket hang up')],
       ['an ambiguous failure', new TargetSubmissionError('timeout after DATA', 'ambiguous')],
-      [
-        'a recipient rejection',
-        new TargetSubmissionError('550 no such user', 'recipient-rejected'),
-      ],
     ])('keeps login mail off mx1 after %s, leaving it unacked', async (_label, error) => {
       const mx1 = fakeClient();
       const sweego = fakeClient();
