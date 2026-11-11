@@ -61,7 +61,16 @@ const drainClient = createDrainClient({
 
 const deliveryClient = createDeliveryClient({
   ...config.smtp,
-  ...(config.outcomes ? { outcomes: { returnPath: config.outcomes.returnPath } } : {}),
+  ...(config.outcomes
+    ? {
+        outcomes: {
+          returnPath: config.outcomes.returnPath,
+          ...(config.outcomes.bulkReturnPath
+            ? { bulkReturnPath: config.outcomes.bulkReturnPath }
+            : {}),
+        },
+      }
+    : {}),
 });
 
 const PIN_FILES = ['mx1-pins.json', 'sweego-pins.json', 'sweego-ambiguous.json'] as const;
