@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if a package that must be private can be read without a credential.
+"""Fail if a mirror package that must be private can be read without a credential.
 
 Usage: probe_private_packages.py [--images PATH] [--list PATH]
 
@@ -43,6 +43,15 @@ class Verdict(Enum):
     REFUSED = "refused"
     MISSING = "missing"
     UNKNOWN = "unknown"
+
+
+# How the derived-image inventory names each verdict.
+DERIVED_LABELS = {
+    Verdict.SERVED: "served",
+    Verdict.REFUSED: "private",
+    Verdict.MISSING: "gone",
+    Verdict.UNKNOWN: "unknown",
+}
 
 
 @dataclass(frozen=True)
@@ -214,13 +223,25 @@ def run(images_path: Path, list_path: Path, transport: Transport) -> int:
         return 1
 
     repos = [f"{registry_path}/{name}" for name in private.mirror]
-    repos += [f"{owner}/{name}" for name in private.derived]
     failed: list[str] = []
     for repo in repos:
         result = check_package(transport, host, repo)
         print(f"{result.verdict.value} {result.repo}: {result.detail}")
         if result.verdict is not Verdict.REFUSED:
             failed.append(repo)
+    # Inventory of the derived images: public today and pulled anonymously by
+    # their consumers. Reported, never a failure, and an unknown answer is
+    # printed, not dropped.
+    tally: dict[str, int] = {label: 0 for label in DERIVED_LABELS.values()}
+    for name in private.derived:
+        derived = check_package(transport, host, f"{owner}/{name}")
+        label = DERIVED_LABELS[derived.verdict]
+        tally[label] += 1
+        print(f"DERIVED-INVENTORY {label} {derived.repo}: {derived.detail}")
+    print(
+        "DERIVED-INVENTORY summary: "
+        + ", ".join(f"{count} {label}" for label, count in tally.items())
+    )
     # Inventory of the retired public namespace: reported, never a failure.
     for name in mirror_names:
         legacy = check_package(
@@ -232,7 +253,7 @@ def run(images_path: Path, list_path: Path, transport: Transport) -> int:
             f"PRIVATE PROBE FAILED: {len(failed)} package(s) readable, missing or unknown: {failed}"
         )
         return 1
-    print(f"PRIVATE PROBE OK: {len(repos)} package(s) refused, control served")
+    print(f"PRIVATE PROBE OK: {len(repos)} mirror package(s) refused, control served")
     return 0
 
 

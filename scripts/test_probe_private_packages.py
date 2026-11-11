@@ -113,11 +113,36 @@ class RealFilesTest(unittest.TestCase):
         self.assertIn(f"served {MIRROR_GHOST}", out)
         self.assertIn("PRIVATE PROBE FAILED", out)
 
-    def test_red_when_a_derived_recovery_image_is_served(self) -> None:
+    def test_derived_image_served_is_inventory_and_does_not_fail(self) -> None:
+        # The derived images are public today; serving them must not fail the run.
         registry = FakeRegistry(served={CONTROL, DERIVED_RECOVERY})
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"DERIVED-INVENTORY served {DERIVED_RECOVERY}", out)
+        self.assertIn("DERIVED-INVENTORY summary: 1 served, 5 private", out)
+        self.assertIn("PRIVATE PROBE OK", out)
+
+    def test_every_derived_image_served_still_exits_zero(self) -> None:
+        derived = {f"branchleft/{n}" for n in json.loads(REAL_LIST.read_text())["derived"]}
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, FakeRegistry(served={CONTROL} | derived))
+        self.assertEqual(code, 0, out)
+        self.assertIn("DERIVED-INVENTORY summary: 6 served, 0 private, 0 gone, 0 unknown", out)
+
+    def test_derived_private_and_gone_are_labelled_in_the_inventory(self) -> None:
+        existing = real_private_repos() - {DERIVED_RECOVERY, "branchleft/drain-sidecar"}
+        registry = FakeRegistry(served={CONTROL}, existing=existing)
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"DERIVED-INVENTORY gone {DERIVED_RECOVERY}", out)
+        self.assertIn("DERIVED-INVENTORY private branchleft/mail-collector", out)
+
+    def test_mirror_served_still_fails_when_derived_is_served_too(self) -> None:
+        registry = FakeRegistry(served={CONTROL, MIRROR_GHOST, DERIVED_RECOVERY})
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
-        self.assertIn("served branchleft/db-recovery", out)
+        self.assertIn("PRIVATE PROBE FAILED: 1 package(s)", out)
+        self.assertIn(f"[{MIRROR_GHOST!r}]", out)
+        self.assertNotIn(f"'{DERIVED_RECOVERY}'", out)
 
     def test_probes_the_current_names_and_the_retired_public_set(self) -> None:
         registry = FakeRegistry(served={CONTROL} | real_legacy_repos())
@@ -161,7 +186,7 @@ class EmptyNamespaceTest(unittest.TestCase):
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
         self.assertEqual(code, 1, out)
         self.assertIn("missing branchleft/mirror-private/ghost", out)
-        self.assertIn("missing branchleft/db-recovery", out)
+        self.assertIn("DERIVED-INVENTORY gone branchleft/db-recovery", out)
         self.assertIn("PRIVATE PROBE FAILED", out)
         self.assertNotIn("PRIVATE PROBE OK", out)
 
@@ -207,13 +232,30 @@ class FailClosedTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn(f"unknown {MIRROR_GHOST}", out)
 
-    def test_network_error_fails_closed(self) -> None:
+    def test_network_error_on_a_mirror_package_fails_closed(self) -> None:
+        registry = FakeRegistry(
+            served={CONTROL, MIRROR_GHOST}, raising={MIRROR_GHOST}
+        )
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"unknown {MIRROR_GHOST}", out)
+
+    def test_derived_unknown_answer_exits_zero_but_is_reported(self) -> None:
+        # A 5xx on a derived image is inventory, not a failure, and never silent.
+        registry = FakeRegistry(served={CONTROL}, token_500={DERIVED_RECOVERY})
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"DERIVED-INVENTORY unknown {DERIVED_RECOVERY}", out)
+        self.assertIn("1 unknown", out)
+        self.assertIn("PRIVATE PROBE OK", out)
+
+    def test_derived_network_error_exits_zero_but_is_reported_unknown(self) -> None:
         registry = FakeRegistry(
             served={CONTROL, DERIVED_RECOVERY}, raising={DERIVED_RECOVERY}
         )
         code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
-        self.assertEqual(code, 1, out)
-        self.assertIn("unknown branchleft/db-recovery", out)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"DERIVED-INVENTORY unknown {DERIVED_RECOVERY}", out)
 
     def test_a_401_token_counts_as_refused(self) -> None:
         class TokenRefused(FakeRegistry):
@@ -331,6 +373,26 @@ class ListValidationTest(unittest.TestCase):
             listing = self.listing(tmp, mirror=["ghost", "ghost"])
             code, _ = run_probe(images, listing, FakeRegistry(served={CONTROL}))
         self.assertEqual(code, 2)
+
+    def test_derived_name_repeating_a_mirror_name_is_a_list_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            listing = self.listing(tmp, mirror=["ghost"], derived=["ghost"])
+            code, _ = run_probe(images, listing, FakeRegistry(served={CONTROL}))
+        self.assertEqual(code, 2)
+
+    def test_derived_list_unreadable_is_a_list_error(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            for derived in (None, [], "db-recovery", ["Bad Name"]):
+                data = {"mirror": ["ghost"], "control": "ghost-tenant"}
+                if derived is not None:
+                    data["derived"] = derived
+                listing = self.write(tmp, "private.json", data)
+                code, _ = run_probe(images, listing, FakeRegistry(served={CONTROL}))
+                self.assertEqual(code, 2, repr(derived))
 
     def test_token_without_a_token_field_is_unknown(self) -> None:
         self.assertIsNone(probe.read_token(b"not json"))
