@@ -186,13 +186,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     // is the plan's ceiling and holds for every class. A pinned message
     // stays on Sweego whatever the tenant's allowance now says, and is counted;
     // the account cap holds for it too (see `resolveNow`).
+    // A pinned message that was already counted (an earlier attempt ended
+    // ambiguous, or its reserved place was recounted after a crash) holds its
+    // place in the cap: a retry takes no second one, so the cap does not hold it.
+    const holdsPlace = (): boolean =>
+      pinnedToSweego && deps.sweegoQuota?.holdsPlace?.(message.id) === true;
     const contextNow = (): SendingContext => ({
       mailClass,
       demo: target.demo === true,
       sweegoConfigured: sweegoReady,
       allowanceReached:
         pinnedToSweego || mailClass === 'transactional' ? false : quota.allowanceReached(target.id),
-      accountCapReached: quota.accountCapReached(),
+      accountCapReached: holdsPlace() ? false : quota.accountCapReached(),
       reachedMx1,
     });
     const route = pinnedToSweego ? 'sweego' : target.route;
@@ -229,10 +234,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }
     }
     if (decision === 'sweego' && sweegoReady) {
+      // The place is reserved, and written down, before the pin and before the
+      // attempt: a crash after this point leaves it counted. Refused, nothing
+      // was sent and nothing is pinned, so the message is held and offered again.
+      const counter = deps.sweegoQuota;
+      const slot = counter?.begin?.(target.id, message.id);
+      if (slot === undefined && counter?.begin !== undefined) {
+        deps.log.warn('sweego_reservation_failed', { target: target.id, message: message.id });
+        return 'held';
+      }
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
-      const slot = deps.sweegoQuota?.begin?.(target.id, message.id);
       let accepted = false;
       try {
         await sweego.deliver(message, target.id);
