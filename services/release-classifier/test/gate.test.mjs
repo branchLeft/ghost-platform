@@ -115,7 +115,8 @@ test('a forward-only step is refused even when the record also lists unread file
   both.unclassifiedFiles = 1;
   const verdict = assertReleaseReversible(both, { pinned: 'v6.56.0', target: 'v6.57.0' });
   assert.equal(verdict.ok, false);
-  assert.ok([REFUSAL.FORWARD_ONLY, REFUSAL.UNCLASSIFIED].includes(verdict.reason));
+  // Forward-only wins over unclassified in the gate, as it does in the step classifier.
+  assert.equal(verdict.reason, REFUSAL.FORWARD_ONLY);
 });
 
 test('a later step that is forward-only refuses the whole range', () => {
@@ -244,4 +245,114 @@ test('cli: exit 0 only for an accepted record; 2 for a refusal; 1 for an error, 
   );
   assert.equal(run(['--record', writeJson(reversible), '--pinned', 'v6.65.0']).code, 1);
   assert.equal(run([]).code, 1);
+});
+
+// a one-step record whose step is the given tags, with the given overrides.
+const oneStep = (pinned, from, to, over = {}) => ({
+  schema: 'release-reversibility/v1',
+  pinned,
+  class: 'reversible',
+  unclassifiedFiles: 0,
+  steps: [
+    {
+      from,
+      to,
+      class: 'reversible',
+      majorBump: false,
+      newFiles: 0,
+      forwardOnly: [],
+      unclassified: [],
+      ...over,
+    },
+  ],
+});
+
+test('a record whose majorBump does not follow its tags is refused', () => {
+  const verdict = assertReleaseReversible(oneStep('v6.66.0', 'v6.66.0', 'v7.0.0'), {
+    pinned: 'v6.66.0',
+    target: 'v7.0.0',
+  });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, REFUSAL.RECORD_UNREADABLE);
+});
+
+test('a downgrade step and a step with from equal to to are refused', () => {
+  const down = assertReleaseReversible(oneStep('v6.66.0', 'v6.66.0', 'v6.65.0'), {
+    pinned: 'v6.66.0',
+    target: 'v6.65.0',
+  });
+  assert.equal(down.ok, false);
+  assert.equal(down.reason, REFUSAL.RECORD_UNREADABLE);
+
+  const same = assertReleaseReversible(oneStep('v6.66.0', 'v6.66.0', 'v6.66.0'), {
+    pinned: 'v6.66.0',
+    target: 'v6.66.0',
+  });
+  assert.equal(same.ok, false);
+  assert.equal(same.reason, REFUSAL.RECORD_UNREADABLE);
+});
+
+test('tags padded with spaces are refused, in the record and in the release', () => {
+  const padded = assertReleaseReversible(oneStep(' v6.66.0', ' v6.66.0', 'v6.67.0 '), {
+    pinned: ' v6.66.0',
+    target: 'v6.67.0 ',
+  });
+  assert.equal(padded.ok, false);
+  assert.equal(padded.reason, REFUSAL.RECORD_UNREADABLE);
+
+  const paddedRelease = assertReleaseReversible(oneStep('v6.66.0', 'v6.66.0', 'v6.67.0'), {
+    pinned: 'v6.66.0',
+    target: ' v6.67.0',
+  });
+  assert.equal(paddedRelease.ok, false);
+  assert.equal(paddedRelease.reason, REFUSAL.RELEASE_MISMATCH);
+});
+
+test('a throwing getter on the record is a refusal, never a throw', () => {
+  const bad = oneStep('v6.66.0', 'v6.66.0', 'v6.67.0');
+  Object.defineProperty(bad, 'class', {
+    get() {
+      throw new Error('getter');
+    },
+    enumerable: true,
+  });
+  let verdict;
+  assert.doesNotThrow(() => {
+    verdict = assertReleaseReversible(bad, { pinned: 'v6.66.0', target: 'v6.67.0' });
+  });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, REFUSAL.RECORD_UNREADABLE);
+});
+
+test('a hostile error value thrown while reading is a refusal, never a throw', () => {
+  const hostile = new Proxy(new Error('x'), {
+    getPrototypeOf() {
+      throw new Error('prototype trap');
+    },
+  });
+  const bad = oneStep('v6.66.0', 'v6.66.0', 'v6.67.0');
+  Object.defineProperty(bad, 'class', {
+    get() {
+      throw hostile;
+    },
+    enumerable: true,
+  });
+  let verdict;
+  assert.doesNotThrow(() => {
+    verdict = assertReleaseReversible(bad, { pinned: 'v6.66.0', target: 'v6.67.0' });
+  });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, REFUSAL.RECORD_UNREADABLE);
+});
+
+test('a Symbol in a hit is a refusal, never a throw', () => {
+  const bad = oneStep('v6.66.0', 'v6.66.0', 'v6.67.0', {
+    forwardOnly: [{ path: 'x.js', class: 'contracting', rule: Symbol('r') }],
+  });
+  let verdict;
+  assert.doesNotThrow(() => {
+    verdict = assertReleaseReversible(bad, { pinned: 'v6.66.0', target: 'v6.67.0' });
+  });
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, REFUSAL.RECORD_UNREADABLE);
 });
