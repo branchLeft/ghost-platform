@@ -6,8 +6,10 @@ import type { Logger } from './log.js';
 export interface DrainTarget {
   readonly id: string;
   readonly baseUrl: string;
-  /** The sending target the descriptor names for this host's mail (`mx1` when it names none). Carried only: nothing in this service reads it yet. */
+  /** The sending target the descriptor names for this host's mail (`mx1` when it names none). Read only by the resolver in sendingTarget.ts. */
   readonly route: MailRoute;
+  /** Set (true) only for a demo host, which never sends through Sweego. Absent for a tenant. */
+  readonly demo?: true;
 }
 
 /** The sending targets a descriptor's `mail.route.primary` may name. Mirrors render-core's `MailRoute`; this service keeps its own shape check rather than import render-core. */
@@ -250,6 +252,7 @@ export class DescriptorTargetStore implements TargetStore {
         id: raw.slug,
         baseUrl: `${this.shimScheme}://${raw.appHostIp}:${this.shimPort}`,
         route,
+        ...(raw.kind === 'demo' ? { demo: true as const } : {}),
       });
     }
     this.current = next;
