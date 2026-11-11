@@ -4,7 +4,7 @@
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
   "packageManager": "pnpm@11.17.0",
-  "description": "The tenant provisioning controller's planning half: from one recorded owner approval and the tenant register alone, an ordered, keyed, typed plan of every onboarding step. It executes nothing.",
+  "description": "The tenant provisioning controller's core: from one recorded owner approval and the tenant register alone, an ordered, keyed, typed plan of every onboarding step, and an executor that runs it idempotently with recorded state, bounded retry and resume, through ports only.",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
