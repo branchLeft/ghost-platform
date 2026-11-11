@@ -300,27 +300,40 @@ counter keyed by reason alone, for the signals that read it.
   counted under `recipient-rejected`, and never retried or sent to mx1. Every
   other refusal, a 4xx at any step and a 5xx at MAIL or the DATA command or after
   DATA, is held and retried (login mail falls back to mx1 once, only when nothing
-  was taken) under its own counted reason. Known gap: the spool is not told a
-  dropped recipient failed for good (the outcome path is opt-in per spool and
-  mx1-shaped), so Ghost shows the message as accepted and the address is not
-  suppressed.
+  was taken) under its own counted reason. Once the drop is acked, the spool is
+  told it failed for good (see [a dropped recipient reported back to the
+  spool](#a-dropped-recipient-reported-back-to-the-spool)).
 - **An attempt that may have been taken.** When an attempt ends ambiguous
   (a timeout, a failure after DATA, anything unplaced) the id is recorded in
   `sweegoAmbiguous`. A later definite failure for the same message is then read as
   ambiguous too, so login mail does not fall back to mx1 and arrive twice. A bad
-  address is still dropped.
+  address is still dropped. The attempt is counted against the tenant allowance and
+  the account cap (see `sweegoUsage`), once per message however it ends later.
+- **A pinned message and the account cap.** A pinned retry goes to Sweego whatever
+  the tenant's allowance says, but it is counted in the same reservation as any
+  other attempt and the account cap holds for it: at the cap it is left unacked
+  (`sweego_pinned_held_at_cap`), never sent above the cap and never to mx1 (its
+  first attempt may have been taken). The cap is a spend limit, so it wins over
+  delivery: a held message waits for the next month, and if the spool's retry
+  horizon ends first the spool gives up on it. The overshoot past the cap is
+  therefore bounded by the messages in flight together, not by the pinned backlog.
 - **A pin file that cannot be trusted.** The three pin files are written
   atomically, but if one is corrupt or unreadable at start-up its ids are lost.
+  The same holds for a file that has vanished (missing though a first save was
+  made, see [state markers](#state-markers)).
   The tracker records that (`stateLost`, kept in the file so a restart still knows)
   for one pin TTL. In that time a message on a Sweego route that the shim is
   offering again (`drainCount` above 1) and that no pin remembers is held
   (`pin_state_lost_held`), never sent to mx1 or to a second Sweego attempt: a held
   message waits, a released one can arrive twice. First offers are unaffected.
-- **Rollout.** `COLLECTOR_PIN_STATE_DIR` must be set before Sweego is enabled:
-  without it a restart forgets every pin and ambiguity record, and with them the
-  protection above (the collector logs `pins_not_persistent` at start-up). The
-  7 day `COLLECTOR_PIN_TTL_MS` is a placeholder until the shim's longest retry
-  horizon has been read.
+- **Rollout.** The hand-delivered rollout must set `COLLECTOR_DEDUPE_STATE_PATH`,
+  `COLLECTOR_PIN_STATE_DIR` and `COLLECTOR_SWEEGO_USAGE_STATE_PATH` (all three on a
+  volume that outlives the container), or that state is memory-only. Without
+  `COLLECTOR_PIN_STATE_DIR` a restart forgets every pin and ambiguity record, and
+  with them the protection above (the collector logs `pins_not_persistent` at
+  start-up); without `COLLECTOR_SWEEGO_USAGE_STATE_PATH` Sweego is not used at all.
+  Set all three before Sweego is enabled. The 7 day `COLLECTOR_PIN_TTL_MS` is a
+  placeholder until the shim's longest retry horizon has been read.
 
 ### sweegoUsage createSweegoUsage
 
@@ -330,10 +343,15 @@ placeholders: `COLLECTOR_SWEEGO_ACCOUNT_CAP=SWEEGO_ACCOUNT_CAP`,
 `COLLECTOR_SWEEGO_USAGE_STATE_PATH=SWEEGO_USAGE_STATE_PATH`, and in a tenant's
 descriptor `mail.route: { primary: "sweego", sweegoAllowance: TENANT_ALLOWANCE }`.
 
-- **What is counted.** Messages Sweego accepted, per tenant and in total, by UTC
-  calendar month (`YYYY-MM`, from an injectable clock). The loop calls `begin`
-  before an attempt and `settle(true)` after the accept, after the dedupe mark and
-  before the ack; any other end settles `false` and counts nothing. A lost ack is
+- **What is counted.** Messages Sweego accepted, plus attempts that may have been
+  taken, per tenant and in total, by UTC calendar month (`YYYY-MM`, from an
+  injectable clock). The loop calls `begin(tenant, message)` before an attempt and
+  `settle(true)` after the accept, after the dedupe mark and before the ack. An
+  attempt that ends unplaced (a timeout, a failure after DATA) calls `ambiguous()`
+  and is counted, because Sweego may have delivered it. Any other end (a definite
+  refusal, a bad address) settles `false` and counts nothing. A message counts once
+  a month: the file keeps a digest of each message counted at an ambiguous end
+  (never the id), and a later accept for it is not counted again. A lost ack is
   re-offered but skipped by the dedupe tracker, so it cannot count twice. A crash
   between the accept and the write undercounts by one.
 - **In flight counts.** The quota questions include attempts begun and not yet
@@ -350,27 +368,86 @@ descriptor `mail.route: { primary: "sweego", sweegoAllowance: TENANT_ALLOWANCE }
   Unlike the tenant latch it is computed from the total, so raising the cap
   (the owner's act, with a bigger plan) lifts it at the next start.
 - **Pin beats latch.** A message already pinned to Sweego keeps going there
-  after its tenant latched, or the cap was reached, and is counted. So a
-  tenant can end a month a few messages over its allowance (and the account a
-  few over the cap): only messages already attempted at Sweego before the latch.
+  after its tenant latched, and is counted. The account cap is stricter: a pinned
+  message is held at the cap (see the pinned bullet under the Sweego submission
+  notes). So a tenant can end a month a few messages over its allowance, but the
+  account stays inside the cap except for messages in flight together.
 - **Rollover.** Every question reads the month from the clock, so a boundary
   crossed while idle is seen on the next question: counters and latches start
   at zero at 00:00:00 UTC on the first. A clock reading an earlier month than
   the stored counters changes nothing (`clock-behind-state`).
 - **State.** One file, rewritten whole and atomically (temp file, fsync, rename)
-  on every change; it holds the month, a degraded flag and per-tenant counts,
-  nothing about any message.
+  on every change; it holds the month, a degraded flag, per-tenant counts and,
+  only while any exist, digests of the messages counted at an ambiguous end. No
+  message id, address or subject. A marker file beside it is written after the
+  first successful save (see [state markers](#state-markers)).
 - **Fail closed.** An unreadable or corrupt file (`state-unreadable`,
   `state-corrupt`) means usage is unknown: every tenant is latched and the cap
   is read as reached until the month changes, written down as `degraded` so a
   restart does not forget. A failed write (`state-write-failed`) latches
-  everyone until a write succeeds again. A missing file is a first run, not a
-  failure. Unset cap or file path: Sweego is not used at all.
+  everyone until a write succeeds again. A missing file with no marker is a first
+  run, not a failure: counters start at zero. A missing file with the marker
+  present has vanished (`state-vanished`): a fresh allowance must not follow a
+  lost volume, so every send, bulk and login (the account cap holds for every
+  class), goes to mx1. The latch is written into the file and survives restarts
+  and month changes; only the owner clears it, by deleting the marker file
+  (`<COLLECTOR_SWEEGO_USAGE_STATE_PATH>.initialised`) and restarting the collector,
+  which keeps the counts it has and releases the latch. Unset cap or file path:
+  Sweego is not used at all.
 - **What it exposes.** `reasons()` counts events by label only (no tenant, no
   address, no subject) and is logged as `sweego_usage` with the reason alone.
   `tenantLatchState()` and `accountState()` are plain functions for the later
   signals to read per-tenant latch state; nothing here builds a label from a
   tenant.
+
+### state markers
+
+A state file that is missing is a first run only if it was never written. Each
+persistent state file (the dedupe ids, the three pin files, the usage counters)
+has a small marker beside it, `<state file>.initialised`, written once after the
+file's first successful save, and after the file, so a crash between the two leaves
+a file with no marker and never a marker with no file. At start-up:
+
+| File | Marker | Meaning |
+|---|---|---|
+| missing | absent | First run. Clean, counters at zero. |
+| missing | present | Vanished (an unmounted or wiped volume, a deleted file). Lost, as for a corrupt file: the pin trackers hold re-offered Sweego-route messages for one TTL, and the usage counter latches every send to mx1 until the owner deletes the marker. |
+| present | absent | A file from before the marker existed, or the owner cleared the latch. The marker is written. |
+| present | present | Normal. |
+
+A marker that cannot be read (as against known to be absent) counts as present, so
+doubt reads as a loss. A marker that cannot be written is a failed write: the usage
+counter latches until it can be.
+
+Limit: the marker lives on the same volume as the file. It catches a vanished file,
+a deleted file or a state directory emptied in place; it does not catch a whole
+volume replaced by a new empty one, because the marker goes with it. Catching that
+needs a witness outside the volume, which this service does not have.
+
+### a dropped recipient reported back to the spool
+
+A recipient Sweego refuses for good is acked and dropped, so the spool would
+otherwise show the message as accepted and never suppress the address. The
+collector therefore tells the spool, over its existing outcome route
+(`POST /drain/outcomes`, the same one the mx1 outcome path uses): a `failed`
+outcome of severity `permanent`, which the spool records as a failed event and
+adds the address to its bounce suppressions. No change to the spool is needed.
+
+- It follows the ack, because the spool takes an outcome only for a message it has
+  already marked sent. A drop whose ack is lost is reported with the generation of
+  the re-offer that finally acks it.
+- The text sent is fixed and names no address, subject or body.
+- The spool serves the route only when opted in (`SHIM_DRAIN_OUTCOMES=true`). A
+  spool that has not opted in answers 404: the failure is logged
+  (`dropped_outcome_report_failed`) and tried again every five minutes, then given
+  up on after a day (`dropped_outcome_abandoned`). The message itself is already
+  acked and dropped either way.
+- An `unknown` answer (the spool has not caught up with the ack) is kept and tried
+  again. At most a thousand reports wait at once; the oldest is given up on first.
+
+Known gaps: the waiting reports are held in memory, so a restart loses them (the
+address is then not suppressed, as before this route was used); a spool that has not
+opted in never learns of the drop.
 
 ### health HealthState
 

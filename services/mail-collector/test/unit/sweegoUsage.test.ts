@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -416,6 +416,172 @@ describe('the sweego usage counter', () => {
       expect(blocked.allowanceReached('tenant-a')).toBe(false);
       expect(usedBy(blocked, 'tenant-a')).toBe(1);
       expect(usedBy(open({ path: join(dir, 'blocker', 'usage.json') }), 'tenant-a')).toBe(1);
+    });
+  });
+
+  describe('a state file that has vanished', () => {
+    const markerOf = (): string => `${statePath}.initialised`;
+
+    it('writes a marker beside the state file on the first successful save, and not before', () => {
+      const usage = open();
+      expect(existsSync(markerOf())).toBe(false);
+      send(usage, 'tenant-a');
+      expect(existsSync(markerOf())).toBe(true);
+    });
+
+    it('latches every send toward mx1 when the file is gone but the marker is there, and counts the reason', () => {
+      send(open(), 'tenant-a', 2);
+      rmSync(statePath);
+      reasons.length = 0;
+      const usage = open();
+      expect(usage.allowanceReached('tenant-a')).toBe(true);
+      expect(usage.allowanceReached('tenant-b')).toBe(true);
+      expect(usage.accountCapReached()).toBe(true);
+      expect(usage.reasons()).toEqual({ 'state-vanished': 1 });
+      expect(reasons).toEqual(['state-vanished']);
+    });
+
+    it('stays latched across a restart and a month change until the owner deletes the marker', () => {
+      send(open(), 'tenant-a');
+      rmSync(statePath);
+      open();
+      expect(open().accountCapReached()).toBe(true);
+      clock = at('2026-12-01T00:00:00.000Z');
+      const later = open();
+      expect(later.accountCapReached()).toBe(true);
+      expect(later.allowanceReached('tenant-a')).toBe(true);
+      rmSync(markerOf());
+      const cleared = open();
+      expect(cleared.accountCapReached()).toBe(false);
+      expect(cleared.allowanceReached('tenant-a')).toBe(false);
+      send(cleared, 'tenant-a');
+      expect(open().accountCapReached()).toBe(false);
+    });
+
+    it('is a first run, counters at zero, when the owner has deleted the marker and the file is gone too', () => {
+      send(open(), 'tenant-a', 2);
+      rmSync(statePath);
+      rmSync(markerOf());
+      reasons.length = 0;
+      const usage = open();
+      expect(usage.accountCapReached()).toBe(false);
+      expect(usage.accountState().total).toBe(0);
+      expect(reasons).toEqual([]);
+    });
+
+    it('reads a file with no marker as an upgrade, not a loss, and writes the marker', () => {
+      writeFileSync(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          month: '2026-11',
+          degraded: false,
+          tenants: { 'tenant-a': { used: 2, latched: false } },
+        })
+      );
+      const usage = open();
+      expect(usedBy(usage, 'tenant-a')).toBe(2);
+      expect(usage.accountCapReached()).toBe(false);
+      expect(existsSync(markerOf())).toBe(true);
+      rmSync(statePath);
+      expect(open().accountCapReached()).toBe(true);
+    });
+
+    it('goes closed, as a failed write, when the marker cannot be written', () => {
+      const usage = open();
+      mkdirSync(markerOf());
+      send(usage, 'tenant-a');
+      expect(usage.reasons()['state-write-failed']).toBeGreaterThanOrEqual(1);
+      expect(usage.accountCapReached()).toBe(true);
+      rmSync(markerOf(), { recursive: true });
+      expect(usage.accountCapReached()).toBe(false);
+      expect(existsSync(markerOf())).toBe(true);
+    });
+
+    it('logs a reason that names no tenant, recipient or subject', () => {
+      allowances = { 'tenant-secret-name': 5 };
+      send(open(), 'tenant-secret-name');
+      rmSync(statePath);
+      reasons.length = 0;
+      const usage = open();
+      expect(JSON.stringify({ counts: usage.reasons(), heard: reasons })).not.toContain(
+        'tenant-secret-name'
+      );
+      expect(reasons).toEqual(['state-vanished']);
+    });
+  });
+
+  describe('an attempt that may have been taken', () => {
+    it('counts an ambiguous end against the tenant and the total', () => {
+      const usage = open();
+      usage.begin('tenant-a', 'm1').ambiguous();
+      expect(usedBy(usage, 'tenant-a')).toBe(1);
+      expect(usage.accountState().total).toBe(1);
+    });
+
+    it('counts the message once when a later attempt for it is accepted', () => {
+      const usage = open();
+      usage.begin('tenant-a', 'm1').ambiguous();
+      usage.begin('tenant-a', 'm1').settle(true);
+      expect(usedBy(usage, 'tenant-a')).toBe(1);
+      expect(usage.accountState().total).toBe(1);
+    });
+
+    it('counts the message once across a restart', () => {
+      open().begin('tenant-a', 'm1').ambiguous();
+      const restarted = open();
+      restarted.begin('tenant-a', 'm1').settle(true);
+      restarted.begin('tenant-a', 'm1').ambiguous();
+      expect(usedBy(restarted, 'tenant-a')).toBe(1);
+    });
+
+    it('counts two different messages separately', () => {
+      const usage = open();
+      usage.begin('tenant-a', 'm1').ambiguous();
+      usage.begin('tenant-a', 'm2').ambiguous();
+      expect(usedBy(usage, 'tenant-a')).toBe(2);
+    });
+
+    it('latches the tenant when an ambiguous attempt reaches its allowance', () => {
+      const usage = open();
+      send(usage, 'tenant-a', 2);
+      usage.begin('tenant-a', 'm1').ambiguous();
+      expect(usage.allowanceReached('tenant-a')).toBe(true);
+    });
+
+    it('counts in the same reservation as any other attempt: it holds a place until it ends', () => {
+      const usage = open({ accountCap: 1 });
+      const slot = usage.begin('tenant-a', 'm1');
+      expect(usage.accountCapReached()).toBe(true);
+      slot.ambiguous();
+      expect(usage.accountCapReached()).toBe(true);
+      expect(usage.accountState().total).toBe(1);
+    });
+
+    it('settles once: an ambiguous end after a settle, or the other way round, changes nothing', () => {
+      const usage = open();
+      const first = usage.begin('tenant-a', 'm1');
+      first.settle(false);
+      first.ambiguous();
+      const second = usage.begin('tenant-a', 'm2');
+      second.ambiguous();
+      second.settle(true);
+      second.ambiguous();
+      expect(usedBy(usage, 'tenant-a')).toBe(1);
+    });
+
+    it('forgets the counted messages at a month change, so one tried again in the new month counts there', () => {
+      const usage = open();
+      usage.begin('tenant-a', 'm1').ambiguous();
+      clock = at('2026-12-01T00:00:00.000Z');
+      usage.begin('tenant-a', 'm1').settle(true);
+      expect(usedBy(usage, 'tenant-a')).toBe(1);
+      expect(usage.accountState()).toMatchObject({ month: '2026-12', total: 1 });
+    });
+
+    it('writes the counted messages as digests, never as ids', () => {
+      open().begin('tenant-a', 'message-id-123').ambiguous();
+      expect(readFileSync(statePath, 'utf8')).not.toContain('message-id-123');
     });
   });
 

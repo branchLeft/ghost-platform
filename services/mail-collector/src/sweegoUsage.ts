@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { writeFileAtomic } from './atomicWrite.js';
+import { markerAbsent, writeMarker } from './stateMarker.js';
 import type { SweegoQuota } from './sendingTarget.js';
 
 /**
@@ -18,6 +20,8 @@ export type UsageReason =
   | 'state-corrupt'
   /** The state file exists but could not be read: treated as `state-corrupt`. */
   | 'state-unreadable'
+  /** The state file is missing though it was written before: counters are unknown, and every send goes to mx1 until the owner deletes the marker. */
+  | 'state-vanished'
   /** The state file could not be written: nothing goes to Sweego until a write succeeds. */
   | 'state-write-failed'
   /** The clock reads an earlier month than the stored counters: they are kept, not reset. */
@@ -29,6 +33,11 @@ export type UsageReason =
 export interface UsageSlot {
   /** `true` when Sweego accepted the message: it is counted. Any other end counts nothing. */
   settle(accepted: boolean): void;
+  /**
+   * The attempt ended unplaced (a timeout, a failure after DATA): Sweego may
+   * have taken it, so it is counted, once per message however it ends later.
+   */
+  ambiguous(): void;
 }
 
 /** What the collector loop calls around a Sweego attempt. */
@@ -36,8 +45,10 @@ export interface SweegoUseCounter {
   /**
    * Called in the same tick as the last quota check, so an attempt in flight
    * counts against the allowance and the account cap before it is accepted.
+   * `messageId` lets a message that is counted at an ambiguous end be counted
+   * only once if a later attempt for it is accepted.
    */
-  begin(tenantId: string): UsageSlot;
+  begin(tenantId: string, messageId?: string): UsageSlot;
 }
 
 export interface TenantLatchState {
@@ -58,6 +69,8 @@ export interface AccountState {
   capReached: boolean;
   /** Usage was unknown at load: everything is latched until the month changes. */
   degraded: boolean;
+  /** The state file vanished: everything is latched until the owner deletes the marker. */
+  vanished: boolean;
 }
 
 export interface SweegoUsage extends SweegoQuota, SweegoUseCounter {
@@ -98,7 +111,14 @@ interface TenantUse {
 interface LoadedState {
   month: string;
   degraded: boolean;
+  vanished: boolean;
   tenants: Map<string, TenantUse>;
+  counted: Set<string>;
+}
+
+/** An opaque digest, so the file holds no message id. */
+function digestOf(messageId: string): string {
+  return createHash('sha256').update(messageId).digest('hex').slice(0, 16);
 }
 
 function isCount(value: unknown): value is number {
@@ -115,12 +135,18 @@ function parseState(raw: string): LoadedState | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  const { version, month, degraded, tenants } = parsed as Record<string, unknown>;
+  const { version, month, degraded, tenants, vanished, ambiguous } = parsed as Record<
+    string,
+    unknown
+  >;
   if (
     version !== STATE_VERSION ||
     typeof month !== 'string' ||
     !MONTH_PATTERN.test(month) ||
     typeof degraded !== 'boolean' ||
+    (vanished !== undefined && typeof vanished !== 'boolean') ||
+    (ambiguous !== undefined &&
+      (!Array.isArray(ambiguous) || !ambiguous.every((entry) => typeof entry === 'string'))) ||
     typeof tenants !== 'object' ||
     tenants === null ||
     Array.isArray(tenants)
@@ -138,7 +164,13 @@ function parseState(raw: string): LoadedState | undefined {
     }
     loaded.set(tenant, { used, latched });
   }
-  return { month, degraded, tenants: loaded };
+  return {
+    month,
+    degraded,
+    vanished: vanished === true,
+    tenants: loaded,
+    counted: new Set(ambiguous as string[] | undefined),
+  };
 }
 
 /**
@@ -164,6 +196,13 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
   let totalUsed = 0;
   let month = utcMonthOf(now());
   let degraded = false;
+  // Set when the file vanished; unlike `degraded` it outlasts the month, and
+  // only the owner deleting the marker clears it.
+  let vanished = false;
+  // Digests of the messages counted at an ambiguous end this month.
+  let counted = new Set<string>();
+  // True once the marker beside the state file is known to exist.
+  let markerKnown = false;
   let unpersisted = false;
   let clockBehind = false;
 
@@ -187,9 +226,17 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
           version: STATE_VERSION,
           month,
           degraded,
+          ...(vanished ? { vanished } : {}),
           tenants: Object.fromEntries(tenants),
+          ...(counted.size > 0 ? { ambiguous: [...counted] } : {}),
         })
       );
+      // After the file: a crash between the two leaves a file with no marker,
+      // read as an upgrade at the next load, never a marker with no file.
+      if (!markerKnown) {
+        writeMarker(statePath);
+        markerKnown = true;
+      }
       unpersisted = false;
     } catch {
       unpersisted = true;
@@ -206,6 +253,13 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
         degraded = true;
         note('state-unreadable');
         persist();
+      } else if (!markerAbsent(statePath)) {
+        // Written before, so not a first run: the counters are gone and a fresh
+        // monthly allowance must not follow. Written down, so a restart keeps it.
+        markerKnown = true;
+        vanished = true;
+        note('state-vanished');
+        persist();
       }
       return;
     }
@@ -218,10 +272,24 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     }
     month = loaded.month;
     degraded = loaded.degraded;
+    counted = loaded.counted;
     for (const [tenant, use] of loaded.tenants) {
       tenants.set(tenant, use);
     }
     recount();
+    if (loaded.vanished && markerAbsent(statePath)) {
+      // The owner deleted the marker: the latch is cleared, the counts kept.
+      persist();
+    } else if (loaded.vanished) {
+      vanished = true;
+      markerKnown = true;
+      note('state-vanished');
+    } else if (markerAbsent(statePath)) {
+      // A file from before the marker existed: write it now, so the file's later loss is seen.
+      persist();
+    } else {
+      markerKnown = true;
+    }
   }
 
   // Run before every answer: the month is read from the clock each time, so a
@@ -231,6 +299,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     if (current > month) {
       month = current;
       tenants.clear();
+      counted.clear();
       totalUsed = 0;
       degraded = false;
       clockBehind = false;
@@ -254,7 +323,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     if (unpersisted) {
       persist();
     }
-    return degraded || unpersisted;
+    return degraded || vanished || unpersisted;
   }
 
   function allowanceReached(tenantId: string): boolean {
@@ -297,27 +366,51 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     persist();
   }
 
-  function begin(tenantId: string): UsageSlot {
+  function begin(tenantId: string, messageId?: string): UsageSlot {
     roll();
     pending.set(tenantId, (pending.get(tenantId) ?? 0) + 1);
     pendingTotal += 1;
     let settled = false;
+    // Ends the reservation; false when it had already ended.
+    function release(): boolean {
+      if (settled) {
+        return false;
+      }
+      settled = true;
+      const left = (pending.get(tenantId) ?? 1) - 1;
+      if (left > 0) {
+        pending.set(tenantId, left);
+      } else {
+        pending.delete(tenantId);
+      }
+      pendingTotal -= 1;
+      roll();
+      return true;
+    }
     return {
       settle(accepted: boolean): void {
-        if (settled) {
+        if (!release() || !accepted) {
           return;
         }
-        settled = true;
-        const left = (pending.get(tenantId) ?? 1) - 1;
-        if (left > 0) {
-          pending.set(tenantId, left);
-        } else {
-          pending.delete(tenantId);
+        // Already counted at an earlier ambiguous end: one message, one count.
+        // Already counted at an earlier ambiguous end: one message, one count.
+        if (messageId !== undefined && counted.has(digestOf(messageId))) {
+          return;
         }
-        pendingTotal -= 1;
-        if (accepted) {
-          accept(tenantId);
+        accept(tenantId);
+      },
+      ambiguous(): void {
+        if (!release()) {
+          return;
         }
+        if (messageId !== undefined) {
+          const digest = digestOf(messageId);
+          if (counted.has(digest)) {
+            return;
+          }
+          counted.add(digest);
+        }
+        accept(tenantId);
       },
     };
   }
@@ -343,6 +436,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
       accountCap,
       capReached: totalUsed >= accountCap,
       degraded,
+      vanished,
     };
   }
 

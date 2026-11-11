@@ -3,6 +3,7 @@ import type { DrainClient, WireMessage } from './drainClient.js';
 import type { DeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
+import type { DroppedOutcomes } from './droppedOutcomes.js';
 import type { HealthState } from './health.js';
 import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
 import type { Logger } from './log.js';
@@ -13,6 +14,7 @@ import {
   mailClassOf,
   resolveSendingTarget,
   type SendingContext,
+  type SendingDecision,
   type SweegoQuota,
 } from './sendingTarget.js';
 import type { FailureCounter } from './submissionFailures.js';
@@ -48,6 +50,11 @@ export interface CollectorLoopDeps {
    * attempt may have been delivered. Memory-only if unset.
    */
   sweegoAmbiguous?: SubmittedTracker;
+  /**
+   * Tells the spool a dropped recipient failed for good, once the drop is acked.
+   * Unset, the spool is not told and shows the message as accepted.
+   */
+  droppedOutcomes?: DroppedOutcomes;
   /** Counts Sweego failures by reason class for the signals that read them. Counts nothing if unset. */
   sweegoFailures?: FailureCounter;
   /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
@@ -145,18 +152,35 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     // throttle. Login mail never consults the tenant's latch (its newsletters
     // moving to mx1 is no reason to move a sign-in link), but the account cap
     // is the plan's ceiling and holds for every class. A pinned message
-    // stays on Sweego whatever the quota now says; it is still counted.
+    // stays on Sweego whatever the tenant's allowance now says, and is counted;
+    // the account cap holds for it too (see `resolveNow`).
     const contextNow = (): SendingContext => ({
       mailClass,
       demo: target.demo === true,
       sweegoConfigured: sweegoReady,
       allowanceReached:
         pinnedToSweego || mailClass === 'transactional' ? false : quota.allowanceReached(target.id),
-      accountCapReached: pinnedToSweego ? false : quota.accountCapReached(),
+      accountCapReached: quota.accountCapReached(),
       reachedMx1,
     });
     const route = pinnedToSweego ? 'sweego' : target.route;
-    let decision = resolveSendingTarget(route, contextNow());
+    // A pinned message cannot move to mx1 (its first attempt may have been
+    // taken) and must not go above the cap, so at the cap it waits. Undefined
+    // means exactly that.
+    const resolveNow = (): SendingDecision | undefined => {
+      const context = contextNow();
+      return pinnedToSweego && context.accountCapReached
+        ? undefined
+        : resolveSendingTarget(route, context);
+    };
+    const heldAtCap = (): 'held' => {
+      deps.log.warn('sweego_pinned_held_at_cap', { target: target.id, message: message.id });
+      return 'held';
+    };
+    let decision = resolveNow();
+    if (decision === undefined) {
+      return heldAtCap();
+    }
     if (decision === 'sweego') {
       if (!sweegoReady) {
         // Not reachable while the resolver reads `sweegoConfigured`; a message
@@ -167,20 +191,29 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       await sweegoThrottle.waitForToken();
       // The wait can be long, and other tenants can have used the plan in the
       // meantime: ask again, and begin the attempt in the same tick.
-      decision = resolveSendingTarget(route, contextNow());
+      decision = resolveNow();
+      if (decision === undefined) {
+        return heldAtCap();
+      }
     }
     if (decision === 'sweego' && sweegoReady) {
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
-      const slot = deps.sweegoQuota?.begin?.(target.id);
+      const slot = deps.sweegoQuota?.begin?.(target.id, message.id);
       let accepted = false;
       try {
         await sweego.deliver(message, target.id);
         accepted = true;
       } catch (error) {
-        slot?.settle(false);
         const kind = failureKindOf(error);
+        // An attempt that may have been taken is counted, once per message; any
+        // other end (a definite refusal, a bad address) used nothing.
+        if (kind === 'ambiguous') {
+          slot?.ambiguous();
+        } else {
+          slot?.settle(false);
+        }
         const reason = failureReasonOf(error);
         deps.sweegoFailures?.record(reason);
         deps.log.warn('sweego_submission_failed', {
@@ -357,6 +390,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         continue;
       }
       if (messages.length === 0) {
+        await deps.droppedOutcomes?.flush(target);
         deps.heartbeat?.onCycleComplete(initialTarget.id);
         await sleep(deps.emptyPollBackoffMs);
         continue;
@@ -378,11 +412,15 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           if (result === 'held') {
             continue;
           }
+          if (result === 'dropped') {
+            deps.droppedOutcomes?.dropped(target.id, message.id, message.drainCount);
+          }
         } else {
           deps.log.info('resubmission_skipped', {
             target: initialTarget.id,
             message: message.id,
           });
+          deps.droppedOutcomes?.offered(message.id, message.drainCount);
         }
         acks.push({ id: message.id, drainCount: message.drainCount });
       }
@@ -391,6 +429,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         try {
           const result = await deps.drainClient.ack(target, acks);
           deps.dedupe.markAcked([...result.acked, ...result.alreadyHandled]);
+          deps.droppedOutcomes?.acked(result);
         } catch (error) {
           deps.log.warn('ack_failed', {
             target: initialTarget.id,
@@ -402,6 +441,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           // recognised and only re-acked, never resubmitted.
         }
       }
+
+      await deps.droppedOutcomes?.flush(target);
 
       // A cycle that drained and (attempted to) submit something still
       // completed -- report it regardless of whether every delivery in it
