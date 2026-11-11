@@ -62,6 +62,15 @@ decide, and it has no model in its path (D37).
 5. **No ring 2 without MySQL.** The entry ring is not entered unless ring 0
    held a MySQL tenant that reached `done` and stayed healthy (U6).
 
+Who is in which ring is data the caller supplies, never code in this
+module: `parseRingAssignments` (`src/ringMembership.ts`) refuses anything but
+all four rings named once with each tenant in exactly one, and
+`createListMembers` turns it into `listMembers`. A tenant's engine is read
+through an injected `engineOf`, never from the assignment data, so nothing
+can satisfy rule 5 by being labelled MySQL. The tenant-zero MySQL canary
+joins ring 0 by being listed there; the assignment data is held with the
+controller's own host configuration, not in this public repository.
+
 A red gate, a major release or a regression is a hold, not a page: tenants
 stay on the current version, and the hold is raised as an operational alert
 and a filed work item. No person approves a release to get past it. The only page is the state machine's own `failed-unsafe`.

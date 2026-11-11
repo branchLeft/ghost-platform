@@ -183,6 +183,51 @@ reads as zero migrations, so a range whose only folders in range are empty is th
 fast path, with `filesInRange` 0. Git cannot carry an empty folder, so a checkout
 never has one.
 
+## Release steps
+
+The range classifier above asks whether a migration's own rollback runs. The step
+classifier asks the question the restore policy needs: after this release has migrated
+the database, does the previous image still run on it? If not, the only way back is a
+restore of the pre-upgrade backup, and the step is forward-only.
+
+    node src/steps-cli.mjs --release v6.57.0=<dir> --release v6.58.0=<dir> --release v6.59.0=<dir>
+
+Each `<dir>` is Ghost's `migrations/versions` directory at that tag, oldest first. The
+first release is the pinned one; every later release is one step from the one before.
+Only migrations new in the step's target are read: a file counts as new when its path is
+absent from the previous tree, or its source differs. So a patch release that adds no
+migration is a reversible step, and an edited migration is read again.
+
+Per step the output carries `class`, `majorBump`, `newFiles`, `forwardOnly` (each hit with
+its path, class and rule) and `unclassified` (new files the grammar refused, and
+`removed-migration` for a path that was in the previous tree and is gone). The record
+carries `schema` (`release-reversibility/v1`), `pinned`, the worst `class` over all
+steps and `unclassified` files in total.
+
+- `forward-only`: any new file hits a class of the range classifier (irreversible,
+  destructive, contracting or constraint), changes a column in place (`rename-column`
+  for `createRenameColumnMigration`, `set-nullable` for `createSetNullableMigration`),
+  or the step is a major bump. The name-based rules are the same as above; every hit
+  is listed, so a gate can read why.
+- `unclassified`: no forward-only hit, but a new file was refused or a known one is gone.
+  Reversible is not established.
+- `reversible`: new files were read, none hit a rule, none was refused.
+
+Forward-only wins over unclassified in `class`: an unread file cannot make a step less
+reversible than forward-only. The `unclassified` list stays in the record, so a gate that
+refuses on unreadable files reads it there. The worst class over the steps orders
+reversible, then unclassified, then forward-only.
+
+Exit 0 is every step reversible. Exit 2 is any other class. Exit 1 is an error (usage,
+an unreadable tree, tags out of order, fewer than two releases): nothing is classified.
+A caller must treat any non-zero exit as not reversible.
+
+What a step class does not say: a new column that is required and has no default also
+breaks the previous image, and a column whose type changed, and neither is read here.
+The live check that boots the previous image on migrated data is the cover for those.
+The range route above is unchanged by `rename-column` and `set-nullable`: those two are
+reported under `schemaChange` and do not move `route`.
+
 ## Tests
 
     pnpm test
@@ -196,6 +241,12 @@ the previous design routed fast-path; the test pins which stay fast-path under t
 grammar and which do not, and why. Synthetic sources cover the rules and evasions no
 real fixture exercises. The raw SQL in the tests is assembled from parts, so no SQL
 literal sits in the source.
+
+The step tests build release trees from further real copies under `test/fixtures/steps/`
+and `test/fixtures/rename-at-v6.58.0/` (the rename migration as shipped in v6.58.0, before
+its algorithm option was edited). The folders 6.56 to 6.59, 6.65 and 6.66 were read from
+the upstream tags: each folder used in a comparison is complete there. Older folders are
+not in the trees; they are the same in both releases of each step.
 
 The control case: an irreversible migration in a non-newest folder of the range
 routes to refusal. A mutant that checks only the target folder for irreversible rules
@@ -215,8 +266,8 @@ at v6.69.0.
   `versions` tree is identical at v6.57.0 and v6.57.1, and the classifier still routes
   `v6.57.0` to `v6.57.1` refused on the two 6.57 files (the leaf-rows and
   reset-automation migrations). A possible fix is to compare the pinned and target
-  trees and classify only files that are new since the pinned tag. That needs a second
-  input and is not built here.
+  trees and classify only files that are new since the pinned tag. The range route does
+  not do that; the per-step classifier (Release steps) does.
 - **Contracting, constraint and unclassified.** The owner's rulings are open for the
   first two. The unclassified allowlist needs a ruling on each addition.
 - **Rollback residuals.** Ruled: option A. The files stay fast-path with the residual
