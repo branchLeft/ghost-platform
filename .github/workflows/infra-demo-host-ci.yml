@@ -66,7 +66,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -131,7 +131,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -147,7 +147,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Pulumi CLI
-        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+        uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7.1.0
 
       - name: Verify the deploy secrets are present
         run: |
@@ -199,7 +199,7 @@ jobs:
       - name: Decide whether the plan could cost money
         id: spend
         continue-on-error: true
-        uses: branchLeft/github-workflows/.github/actions/spend-gate@ea6de91ba90ed9a3a988ae8ffa0e9d70dd42f691 # v1.0.19
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@8435e9fb73a5ef015f19bc6803b98b1105c03540 # v1.0.23
         with:
           preview-json: preview.json
           working-directory: infra/demo-host
@@ -245,7 +245,7 @@ jobs:
       - name: Decide whether the plan changes anything
         id: noop
         if: always()
-        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@ea6de91ba90ed9a3a988ae8ffa0e9d70dd42f691 # v1.0.19
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@8435e9fb73a5ef015f19bc6803b98b1105c03540 # v1.0.23
         with:
           preview-json: preview.json
           plan-file: preview-plan.json
@@ -345,7 +345,7 @@ jobs:
           fi
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -361,7 +361,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Pulumi CLI
-        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+        uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7.1.0
 
       - name: Verify the deploy secrets are present
         run: |
@@ -401,7 +401,7 @@ jobs:
       - name: Decide whether the plan could cost money
         id: spend
         continue-on-error: true
-        uses: branchLeft/github-workflows/.github/actions/spend-gate@ea6de91ba90ed9a3a988ae8ffa0e9d70dd42f691 # v1.0.19
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@8435e9fb73a5ef015f19bc6803b98b1105c03540 # v1.0.23
         with:
           preview-json: preview.json
           working-directory: infra/demo-host
