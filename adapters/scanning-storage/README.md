@@ -559,6 +559,18 @@ feature refuses the bytes the images feature is holding, the images
 verdict then comes back clean, and the image must stay unserved with the
 sealed bytes and `.refused.json` still in quarantine.
 
+**Ghost's own content importer is proven through the decorator.**
+`test/image/importer-handlers.image.test.mjs` runs
+`test/helpers/importer-in-image.cjs` inside the built image, where Ghost's real
+import manager is available (its handlers need Ghost core, which this package
+does not carry). An image, a media file and a file go through Ghost's real
+`handlers/image.js` and `importer-content-file-handler.js` and its content-file
+importers, with the decorator as each feature's store. Every reference must
+resolve to a stored key: the name the handler promised is the URL `save`
+returns, the file is in the store with the imported bytes, and the post's
+reference was rewritten to it. Without the decorator's `staticFileURLPrefix`
+the handler throws `reading 'split'` on its first file.
+
 **Bind-mount ownership.** The base image's entrypoint chowns everything
 under the content directory to `node` on every boot, including the
 `resolvePath` mount the hold tests write verdicts into. A `mkdtemp`
