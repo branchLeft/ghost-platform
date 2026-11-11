@@ -35,36 +35,66 @@ Run by `.github/workflows/release-watcher-run.yml`. Tests:
 - The poll-age gauge is `ghost_release_watcher_last_success_timestamp_seconds`,
   written to `release-watcher.prom` on the `state/release-watcher` branch, beside
   `ghost_release_watcher_pr_writes_enabled`. A value of 0 means the runs succeed
-  but cannot open PRs (no `RELEASE_WATCHER_TOKEN`), so a healthy age alone does
+  but cannot open PRs (no App token minted), so a healthy age alone does
   not mean PRs are opening.
 - When `main` moves to a newer major, a PR left open on the older line is not
   touched again. It stays open until the owner closes it; the watcher now
   follows the new line.
 
-## The secret this needs
+## The identity this needs
 
-`RELEASE_WATCHER_TOKEN`, a repository secret on `branchLeft/ghost-platform`.
+A GitHub App, installed on `branchLeft/ghost-platform` only. Each run mints a
+short-lived installation token for it (`actions/create-github-app-token`,
+pinned by commit sha) and hands it to the watcher as `RELEASE_WATCHER_TOKEN`
+inside the job. Nothing long-lived is stored.
 
-Minimum scope, whichever identity is chosen:
+The names the workflow reads, all on `branchLeft/ghost-platform`:
 
-- Contents: read and write on `branchLeft/ghost-platform`, to create the
-  branch and commit the `Dockerfile` change.
-- Pull requests: read and write on `branchLeft/ghost-platform`, to open and
-  update the PR.
-- Nothing else, and no other repository.
+- Repository variable `DIGEST_APP_ID`: the App's id. While it is unset the mint
+  step is skipped and the run opens no PR.
+- Repository secret `DIGEST_APP_PRIVATE_KEY`: the App's private key, read by the
+  mint step alone.
 
-Until the secret exists, the run warns and opens no PR. The poll still
-runs and the gauge is still written.
+The token asks for the least the watcher uses, on this repository only:
 
-The identity is not decided. Two options are open for the owner, and neither is
-chosen by this change:
+- Contents: read and write, to create the branch and commit the `Dockerfile`
+  change.
+- Pull requests: read and write, to open and update the PR.
+- Checks: read, for the merge step to read the required check results on the
+  PR head.
+- Nothing else. The watcher files no issue (a new major is a run notice), so no
+  issues grant and no second token for another repository.
 
-- A GitHub App installation token, installed on `branchLeft/ghost-platform`
-  only, with the two permissions above. Recommended: its token expires and is
-  scoped to this repository.
-- The workflow's own `GITHUB_TOKEN` with PR creation enabled. PRs opened with
-  it do not trigger the `pull_request` CI workflows, so their required checks
-  never run and the PR cannot merge without a manual push.
+Until the App exists the run warns and opens no PR. The poll still runs and the
+gauge is still written.
+
+## The digest merge
+
+After the watcher step, `python3 -m release_watcher.merge` merges the open
+digest PR, or leaves it open and fails the job. It merges only when all of these
+hold, each re-read live:
+
+- `DIGEST_MACHINE_SLUG` is set, the minted token belongs to that App, and
+  `DIGEST_MACHINE_LOGIN` (the variable the line-scope check reads) is exactly
+  `<slug>[bot]`. If it were not, that check would pass the PR unexamined.
+- The PR on the line's branch is authored by `<slug>[bot]` (type Bot), is not a
+  draft and targets `main`. Any other author is skipped with a warning.
+- Its diff is one modified `Dockerfile`, one hunk, one line replaced by one
+  line, both `FROM ghost:<stable tag>@sha256:<digest>` on the pinned major, and
+  the replaced line is the pin on `main`. A new major is never merged.
+- A ruleset on `main` requires `Digest-only line scope`, which has succeeded on
+  the head sha (reported by `github-actions`), and every other required check
+  has passed. The checks are polled every 30 seconds for at most 30 minutes.
+
+The call is one squash merge pinned to the head sha it checked, so a push in
+between is refused by GitHub. There is no admin or bypass flag, and the repo's
+auto-merge setting is neither read nor changed. A failed required check, a
+timeout, a refusal from GitHub or a diff that is more than the `FROM` line fails
+the job, leaves the PR open, and so leaves the poll-age gauge unwritten.
+
+The merge itself relies on the App being a bypass actor on the default-branch
+ruleset (it does not hold an approval), and on a second ruleset it cannot
+bypass that requires `Digest-only line scope`.
 
 ## Not wired yet (named follow-ups)
 
