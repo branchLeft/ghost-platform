@@ -8,15 +8,22 @@ name: Export bundler CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/export-bundler/**'
+      - 'db/RUNBOOK-db.md'
+      - '.github/workflows/export-bundler-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the service, and db/RUNBOOK-db.md, whose MySQL image pin a unit
-  # test compares against. Push to main stays unfiltered as the backstop.
+  # reads: the service, and db/RUNBOOK-db.md, whose MySQL image pin a unit test
+  # compares against. Push to main starts it on the same list, and a weekly run
+  # of the whole tree is the backstop for a read the list misses.
   pull_request:
     branches: [main]
     paths:
       - 'services/export-bundler/**'
       - 'db/RUNBOOK-db.md'
       - '.github/workflows/export-bundler-ci.yml'
+  schedule:
+    - cron: '15 4 * * 1'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401

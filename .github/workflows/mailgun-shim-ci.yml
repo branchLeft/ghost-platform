@@ -8,13 +8,19 @@ name: Mailgun shim CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/mailgun-shim/**'
+      - '.github/workflows/mailgun-shim-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the service. Push to main stays unfiltered as the backstop.
+  # reads: the service. Push to main starts it on the same list, and a weekly
+  # run of the whole tree is the backstop for a read the list misses.
   pull_request:
     branches: [main]
     paths:
       - 'services/mailgun-shim/**'
       - '.github/workflows/mailgun-shim-ci.yml'
+  schedule:
+    - cron: '30 4 * * 1'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401 to
