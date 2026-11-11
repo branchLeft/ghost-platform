@@ -939,7 +939,7 @@ describe('collector loop -- login and bulk lanes', () => {
     bulkCap?: BulkCap;
     wrapDelivery?: (inner: DeliveryClient) => DeliveryClient;
   }) {
-    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl }]);
+    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]);
     const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
     const real = createDeliveryClient({
       host: '127.0.0.1',
