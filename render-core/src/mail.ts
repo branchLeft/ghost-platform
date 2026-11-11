@@ -11,6 +11,9 @@ import type { ZoneConfig } from './validate.js';
 /** Every value `mail.route.primary` may take; anything else is refused by `validate()`. */
 export const MAIL_ROUTES: readonly MailRoute[] = ['mx1', 'sweego'];
 
+/** The most a tenant's `mail.route.sweegoAllowance` may be: a sanity ceiling, not a plan size. */
+export const MAX_SWEEGO_ALLOWANCE = 100_000_000;
+
 /** What an absent `mail.route` means. */
 export const DEFAULT_MAIL_ROUTE: MailRoute = 'mx1';
 

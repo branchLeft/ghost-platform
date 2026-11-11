@@ -84,11 +84,28 @@ describe('the drain target carries the descriptor mail route', () => {
 
   it('reads mx1 and sweego from mail.route.primary', async () => {
     write('a', descriptor({ slug: 'a', mail: { route: { primary: 'mx1' } } }));
-    write('b', descriptor({ slug: 'b', mail: { route: { primary: 'sweego' } } }));
+    write(
+      'b',
+      descriptor({ slug: 'b', mail: { route: { primary: 'sweego', sweegoAllowance: 250 } } })
+    );
     const store = storeOver(dir);
     await store.refresh();
     const routes = Object.fromEntries(store.targets.map((t) => [t.id, t.route]));
     expect(routes).toEqual({ a: 'mx1', b: 'sweego' });
+  });
+
+  it('carries the sweego allowance on a sweego target, and none on an mx1 target', async () => {
+    write('a', descriptor({ slug: 'a', mail: { route: { primary: 'mx1' } } }));
+    write('bare', descriptor({ slug: 'bare' }));
+    write(
+      'b',
+      descriptor({ slug: 'b', mail: { route: { primary: 'sweego', sweegoAllowance: 250 } } })
+    );
+    const store = storeOver(dir);
+    await store.refresh();
+    const allowances = Object.fromEntries(store.targets.map((t) => [t.id, t.sweegoAllowance]));
+    expect(allowances).toEqual({ a: undefined, bare: undefined, b: 250 });
+    expect(store.targets.find((t) => t.id === 'a')).not.toHaveProperty('sweegoAllowance');
   });
 
   it('lets a demo name mx1 but refuses a demo that names sweego', async () => {
@@ -98,7 +115,11 @@ describe('the drain target carries the descriptor mail route', () => {
     );
     write(
       'demo-bad',
-      descriptor({ kind: 'demo', slug: 'demo-bad', mail: { route: { primary: 'sweego' } } })
+      descriptor({
+        kind: 'demo',
+        slug: 'demo-bad',
+        mail: { route: { primary: 'sweego', sweegoAllowance: 100 } },
+      })
     );
     const store = storeOver(dir);
     await store.refresh();
@@ -111,6 +132,14 @@ describe('the drain target carries the descriptor mail route', () => {
     ['a numeric target', { primary: 1 }],
     ['no target', {}],
     ['a fallback key beside a target', { primary: 'sweego', fallback: 'mx1' }],
+    ['sweego with no allowance', { primary: 'sweego' }],
+    ['sweego with a zero allowance', { primary: 'sweego', sweegoAllowance: 0 }],
+    ['sweego with a negative allowance', { primary: 'sweego', sweegoAllowance: -3 }],
+    ['sweego with a fractional allowance', { primary: 'sweego', sweegoAllowance: 2.5 }],
+    ['sweego with a string allowance', { primary: 'sweego', sweegoAllowance: '100' }],
+    ['sweego with a null allowance', { primary: 'sweego', sweegoAllowance: null }],
+    ['sweego with an allowance past the ceiling', { primary: 'sweego', sweegoAllowance: 1e9 }],
+    ['an allowance on mx1', { primary: 'mx1', sweegoAllowance: 100 }],
     ['a bare string', 'sweego'],
     ['null', null],
     ['an array', ['sweego']],

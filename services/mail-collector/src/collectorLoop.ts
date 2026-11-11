@@ -17,6 +17,7 @@ import {
 } from './sendingTarget.js';
 import type { FailureCounter } from './submissionFailures.js';
 import { failureReasonOf } from './sweegoFailure.js';
+import type { SweegoUseCounter } from './sweegoUsage.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
@@ -31,8 +32,12 @@ export interface CollectorLoopDeps {
    * without one is read as not configured: nothing is sent to Sweego unthrottled.
    */
   sweegoThrottle?: Throttle;
-  /** Unset means unknown, which the resolver reads as "reached": nothing goes to Sweego. */
-  sweegoQuota?: SweegoQuota;
+  /**
+   * Unset means unknown, which the resolver reads as "reached": nothing goes
+   * to Sweego. A quota that also counts (`begin`) is told of each Sweego
+   * attempt and whether it was accepted; `createSweegoUsage` is the one that does.
+   */
+  sweegoQuota?: SweegoQuota & Partial<SweegoUseCounter>;
   /** Ids whose submission has reached mx1; such a message is never offered to Sweego. Memory-only if unset. */
   mx1Pins?: SubmittedTracker;
   /** Ids whose first attempt was at Sweego; a retry stays on Sweego until the login fallback reaches mx1. Memory-only if unset. */
@@ -135,15 +140,23 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       deps.log.warn('sweego_pinned_unavailable', { target: target.id, message: message.id });
       return 'held';
     }
-    const context: SendingContext = {
-      mailClass: mailClassOf(message.emailId),
+    const mailClass = mailClassOf(message.emailId);
+    // Asked afresh each time: the quota can change while a message waits on a
+    // throttle. Login mail never consults the tenant's latch (its newsletters
+    // moving to mx1 is no reason to move a sign-in link), but the account cap
+    // is the plan's ceiling and holds for every class. A pinned message
+    // stays on Sweego whatever the quota now says; it is still counted.
+    const contextNow = (): SendingContext => ({
+      mailClass,
       demo: target.demo === true,
       sweegoConfigured: sweegoReady,
-      allowanceReached: pinnedToSweego ? false : quota.allowanceReached(target.id),
+      allowanceReached:
+        pinnedToSweego || mailClass === 'transactional' ? false : quota.allowanceReached(target.id),
       accountCapReached: pinnedToSweego ? false : quota.accountCapReached(),
       reachedMx1,
-    };
-    let decision = resolveSendingTarget(pinnedToSweego ? 'sweego' : target.route, context);
+    });
+    const route = pinnedToSweego ? 'sweego' : target.route;
+    let decision = resolveSendingTarget(route, contextNow());
     if (decision === 'sweego') {
       if (!sweegoReady) {
         // Not reachable while the resolver reads `sweegoConfigured`; a message
@@ -152,16 +165,21 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         return 'held';
       }
       await sweegoThrottle.waitForToken();
+      // The wait can be long, and other tenants can have used the plan in the
+      // meantime: ask again, and begin the attempt in the same tick.
+      decision = resolveSendingTarget(route, contextNow());
+    }
+    if (decision === 'sweego' && sweegoReady) {
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
+      const slot = deps.sweegoQuota?.begin?.(target.id);
+      let accepted = false;
       try {
         await sweego.deliver(message, target.id);
-        // Without this a lost ack re-sends the message to Sweego.
-        deps.dedupe.markSubmitted(message.id);
-        deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
-        return 'submitted';
+        accepted = true;
       } catch (error) {
+        slot?.settle(false);
         const kind = failureKindOf(error);
         const reason = failureReasonOf(error);
         deps.sweegoFailures?.record(reason);
@@ -186,14 +204,24 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           sweegoAmbiguous.markSubmitted(message.id);
         }
         decision = resolveSendingTarget('sweego', {
-          ...context,
+          ...contextNow(),
           failed: {
             target: 'sweego',
             kind: sweegoAmbiguous.has(message.id) ? 'ambiguous' : kind,
           },
         });
       }
-    } else if (target.route === 'sweego' && !servedByMx1Logged.has(target.id)) {
+      if (accepted) {
+        // Without this a lost ack re-sends the message to Sweego. Marked
+        // before the count, so a crash between the two undercounts by one
+        // rather than sending the message twice.
+        deps.dedupe.markSubmitted(message.id);
+        slot?.settle(true);
+        deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
+        return 'submitted';
+      }
+    }
+    if (decision === 'mx1' && target.route === 'sweego' && !servedByMx1Logged.has(target.id)) {
       servedByMx1Logged.add(target.id);
       deps.log.warn('sweego_route_served_by_mx1', { target: target.id });
     }

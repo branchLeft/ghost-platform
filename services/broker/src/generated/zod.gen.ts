@@ -112,10 +112,11 @@ export const zLimitsSpec = z.object({
 });
 
 /**
- * Which sending target the mail collector uses for this host's drained mail. Optional on `MailSpec`: an absent route means `mx1`. A `demo` descriptor whose route is `sweego` is refused by render-core's own validator, which this wire shape does not duplicate. Nothing reads the route yet.
+ * Which sending target the mail collector uses for this host's drained mail. Optional on `MailSpec`: an absent route means `mx1`. A `demo` descriptor whose route is `sweego` is refused by render-core's own validator, which this wire shape does not duplicate. So is the pairing of `sweegoAllowance` with the route: render-core requires it when `primary` is `sweego` and refuses it when `primary` is `mx1`.
  */
 export const zMailRouteSpec = z.object({
-    primary: z.enum(['mx1', 'sweego'])
+    primary: z.enum(['mx1', 'sweego']),
+    sweegoAllowance: z.int().gte(1).lte(100000000).optional()
 });
 
 /**

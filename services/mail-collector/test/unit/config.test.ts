@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from '../../src/config.js';
+import { loadConfig, sweegoUsable } from '../../src/config.js';
 
 const BASE_ENV = {
   COLLECTOR_DESCRIPTOR_DIR: '/tmp/descriptors',
@@ -129,7 +129,57 @@ describe('loadConfig', () => {
         messagesPerHour: 120,
         throttleConfigPath: undefined,
         timeoutMs: 20000,
+        accountCap: undefined,
+        usageStatePath: undefined,
       });
+    });
+
+    it('carries the account-wide cap and the counter file, with no default for either', () => {
+      const sweego = loadConfig({
+        ...SWEEGO_ENV,
+        COLLECTOR_SWEEGO_ACCOUNT_CAP: '5000',
+        COLLECTOR_SWEEGO_USAGE_STATE_PATH: '/var/lib/collector/sweego-usage.json',
+      }).sweego;
+      expect(sweego?.accountCap).toBe(5000);
+      expect(sweego?.usageStatePath).toBe('/var/lib/collector/sweego-usage.json');
+      const bare = loadConfig(SWEEGO_ENV).sweego;
+      expect(bare?.accountCap).toBeUndefined();
+      expect(bare?.usageStatePath).toBeUndefined();
+    });
+
+    it.each([['0'], ['-3'], ['1.5'], ['plenty'], ['Infinity']])(
+      'refuses %s as the account cap: there is no unlimited',
+      (value) => {
+        expect(() => loadConfig({ ...SWEEGO_ENV, COLLECTOR_SWEEGO_ACCOUNT_CAP: value })).toThrow(
+          /COLLECTOR_SWEEGO_ACCOUNT_CAP/
+        );
+      }
+    );
+
+    it('refuses the cap and the counter file without the host, rather than ignoring them', () => {
+      expect(() => loadConfig({ ...BASE_ENV, COLLECTOR_SWEEGO_ACCOUNT_CAP: '5000' })).toThrow(
+        /COLLECTOR_SWEEGO_SMTP_HOST/
+      );
+      expect(() =>
+        loadConfig({ ...BASE_ENV, COLLECTOR_SWEEGO_USAGE_STATE_PATH: '/var/lib/x.json' })
+      ).toThrow(/COLLECTOR_SWEEGO_SMTP_HOST/);
+    });
+
+    it('is usable only with the relay, the cap and the counter file all set', () => {
+      const full = {
+        ...SWEEGO_ENV,
+        COLLECTOR_SWEEGO_ACCOUNT_CAP: '5000',
+        COLLECTOR_SWEEGO_USAGE_STATE_PATH: '/var/lib/collector/sweego-usage.json',
+      };
+      expect(sweegoUsable(loadConfig(full).sweego)).toBe(true);
+      expect(sweegoUsable(loadConfig(SWEEGO_ENV).sweego)).toBe(false);
+      expect(
+        sweegoUsable(loadConfig({ ...full, COLLECTOR_SWEEGO_ACCOUNT_CAP: undefined }).sweego)
+      ).toBe(false);
+      expect(
+        sweegoUsable(loadConfig({ ...full, COLLECTOR_SWEEGO_USAGE_STATE_PATH: undefined }).sweego)
+      ).toBe(false);
+      expect(sweegoUsable(loadConfig(BASE_ENV).sweego)).toBe(false);
     });
 
     it.each([

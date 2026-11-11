@@ -114,24 +114,38 @@ describe('collector loop with two sending targets', () => {
     expect(sweego.calls).toEqual([]);
   });
 
-  it('moves both classes to mx1 once the tenant allowance is reached, and again for the account cap', async () => {
-    for (const quota of [
-      { allowanceReached: () => true, accountCapReached: () => false },
-      { allowanceReached: () => false, accountCapReached: () => true },
-    ] satisfies SweegoQuota[]) {
-      const mx1 = fakeClient();
-      const sweego = fakeClient();
-      const before = acked().length;
-      shim.enqueue(LOGIN(`login-${before}`));
-      shim.enqueue(NEWSLETTER(`news-${before}`));
-      const { tokens } = start({ mx1, sweego, quota });
-      await until(() => acked().length === before + 2, 'both acked');
-      expect(mx1.calls).toHaveLength(2);
-      expect(sweego.calls).toEqual([]);
-      expect(tokens.taken).toBe(2);
-      await stop?.();
-      stop = undefined;
-    }
+  it('moves both classes to mx1 once the account cap is reached', async () => {
+    const mx1 = fakeClient();
+    const sweego = fakeClient();
+    shim.enqueue(LOGIN('login-1'));
+    shim.enqueue(NEWSLETTER('news-1'));
+    const { tokens } = start({
+      mx1,
+      sweego,
+      quota: { allowanceReached: () => false, accountCapReached: () => true },
+    });
+    await until(() => acked().length === 2, 'both acked');
+    expect(mx1.calls).toHaveLength(2);
+    expect(sweego.calls).toEqual([]);
+    expect(tokens.taken).toBe(2);
+  });
+
+  it('moves only newsletters to mx1 once the tenant allowance is reached: login mail never consults the latch', async () => {
+    const mx1 = fakeClient();
+    const sweego = fakeClient();
+    shim.enqueue(LOGIN('login-1'));
+    shim.enqueue(NEWSLETTER('news-1'));
+    const { tokens, sweegoThrottle } = start({
+      mx1,
+      sweego,
+      quota: { allowanceReached: () => true, accountCapReached: () => false },
+    });
+    await until(() => acked().length === 2, 'both acked');
+    expect(sweego.calls).toEqual(['login-1']);
+    expect(mx1.calls).toEqual(['news-1']);
+    // The newsletter went through the estate (warm-up) throttle, the login did not.
+    expect(tokens.taken).toBe(1);
+    expect(sweegoThrottle.taken).toBe(1);
   });
 
   it('sends a demo to mx1 even if its target names sweego', async () => {
@@ -260,8 +274,8 @@ describe('collector loop with two sending targets', () => {
       async (_label, build) => {
         const mx1 = fakeClient();
         const sweego = fakeClient();
-        // Latched: the message goes to mx1, which fails. Then the tenant's quota frees up.
-        let quota: SweegoQuota = { allowanceReached: () => true, accountCapReached: () => false };
+        // At the account cap: the message goes to mx1, which fails. Then the quota frees up.
+        let quota: SweegoQuota = { allowanceReached: () => false, accountCapReached: () => true };
         const liveQuota: SweegoQuota = {
           allowanceReached: (id) => quota.allowanceReached(id),
           accountCapReached: () => quota.accountCapReached(),

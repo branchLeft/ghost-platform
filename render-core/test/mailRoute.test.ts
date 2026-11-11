@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { FieldValidationError } from '../src/brand.js';
 import type { TenantDescriptor, TenantStackDescriptor } from '../src/descriptor.js';
-import { DEFAULT_MAIL_ROUTE, MAIL_ROUTES, mailRouteOf } from '../src/mail.js';
+import { DEFAULT_MAIL_ROUTE, MAIL_ROUTES, MAX_SWEEGO_ALLOWANCE, mailRouteOf } from '../src/mail.js';
 import { render } from '../src/render.js';
 import { TierMismatchError, validate, validateTenantStack } from '../src/validate.js';
 import {
@@ -26,6 +26,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 function withRoute(descriptor: TenantDescriptor, route: unknown): TenantDescriptor {
   return { ...descriptor, mail: { ...descriptor.mail, route } } as unknown as TenantDescriptor;
+}
+
+/** A valid route for each target: `sweego` carries the allowance it requires. */
+function routeFor(primary: (typeof MAIL_ROUTES)[number]): unknown {
+  return primary === 'sweego' ? { primary, sweegoAllowance: 100 } : { primary };
 }
 
 function withoutRoute(descriptor: TenantDescriptor): TenantDescriptor {
@@ -59,7 +64,9 @@ describe('mailRouteOf', () => {
 
 describe('validate() -- mail.route', () => {
   it.each(MAIL_ROUTES)('accepts a tenant whose route is %s', (primary) => {
-    expect(() => validate(withRoute(tenantDescriptor(), { primary }), TEST_ZONES)).not.toThrow();
+    expect(() =>
+      validate(withRoute(tenantDescriptor(), routeFor(primary)), TEST_ZONES)
+    ).not.toThrow();
   });
 
   it('accepts a tenant with no route at all', () => {
@@ -73,8 +80,21 @@ describe('validate() -- mail.route', () => {
     ['a null target', { primary: null }],
     ['no target', {}],
     ['a fallback key', { primary: 'sweego', fallback: 'mx1' }],
-    ['an allowance key', { primary: 'sweego', sweegoAllowance: 100 }],
     ['an exception key', { primary: 'mx1', except: ['login'] }],
+    ['sweego with no allowance', { primary: 'sweego' }],
+    ['sweego with an undefined allowance', { primary: 'sweego', sweegoAllowance: undefined }],
+    ['an allowance on mx1', { primary: 'mx1', sweegoAllowance: 100 }],
+    ['a zero allowance', { primary: 'sweego', sweegoAllowance: 0 }],
+    ['a negative allowance', { primary: 'sweego', sweegoAllowance: -1 }],
+    ['a fractional allowance', { primary: 'sweego', sweegoAllowance: 1.5 }],
+    ['a string allowance', { primary: 'sweego', sweegoAllowance: '100' }],
+    ['a null allowance', { primary: 'sweego', sweegoAllowance: null }],
+    ['a NaN allowance', { primary: 'sweego', sweegoAllowance: Number.NaN }],
+    ['an infinite allowance', { primary: 'sweego', sweegoAllowance: Number.POSITIVE_INFINITY }],
+    [
+      'an allowance past the ceiling',
+      { primary: 'sweego', sweegoAllowance: MAX_SWEEGO_ALLOWANCE + 1 },
+    ],
     ['a bare string', 'sweego'],
     ['null', null],
     ['an array', ['sweego']],
@@ -83,6 +103,21 @@ describe('validate() -- mail.route', () => {
     const caught = refusalOf(() => validate(withRoute(tenantDescriptor(), route), TEST_ZONES));
     expect(caught).toBeInstanceOf(FieldValidationError);
     expect((caught as FieldValidationError).field).toMatch(/^mail\.route/);
+  });
+
+  it('accepts the smallest allowance and the ceiling', () => {
+    for (const sweegoAllowance of [1, MAX_SWEEGO_ALLOWANCE]) {
+      expect(() =>
+        validate(withRoute(tenantDescriptor(), { primary: 'sweego', sweegoAllowance }), TEST_ZONES)
+      ).not.toThrow();
+    }
+  });
+
+  it('names the allowance field when it refuses a bad allowance', () => {
+    const caught = refusalOf(() =>
+      validate(withRoute(tenantDescriptor(), { primary: 'sweego' }), TEST_ZONES)
+    );
+    expect((caught as FieldValidationError).field).toBe('mail.route.sweegoAllowance');
   });
 
   it('refuses a route on a paying-tenant stack descriptor the same way', () => {
@@ -97,7 +132,7 @@ describe('validate() -- mail.route', () => {
 describe('validate() -- a demo never leaves mx1', () => {
   it('refuses a demo whose route is sweego', () => {
     const caught = refusalOf(() =>
-      validate(withRoute(demoDescriptor(), { primary: 'sweego' }), TEST_ZONES)
+      validate(withRoute(demoDescriptor(), routeFor('sweego')), TEST_ZONES)
     );
     expect(caught).toBeInstanceOf(TierMismatchError);
     expect((caught as Error).message).toContain('mail.route');
@@ -141,7 +176,10 @@ describe('an absent route changes nothing', () => {
     (_label, fixture) => {
       const absent = render(validate(withoutRoute(fixture()), TEST_ZONES), TEST_ZONES);
       for (const primary of MAIL_ROUTES) {
-        const routed = render(validate(withRoute(fixture(), { primary }), TEST_ZONES), TEST_ZONES);
+        const routed = render(
+          validate(withRoute(fixture(), routeFor(primary)), TEST_ZONES),
+          TEST_ZONES
+        );
         expect(routed).toEqual(absent);
       }
     }
@@ -158,11 +196,12 @@ describe('an absent route changes nothing', () => {
 
   it('puts no route and no Sweego word in any artefact a tenant host receives', () => {
     const artefacts = render(
-      validate(withRoute(tenantDescriptor(), { primary: 'sweego' }), TEST_ZONES),
+      validate(withRoute(tenantDescriptor(), routeFor('sweego')), TEST_ZONES),
       TEST_ZONES
     );
     for (const artefact of artefacts) {
       expect(artefact.content.toLowerCase()).not.toContain('sweego');
+      expect(artefact.content.toLowerCase()).not.toContain('allowance');
     }
   });
 });
