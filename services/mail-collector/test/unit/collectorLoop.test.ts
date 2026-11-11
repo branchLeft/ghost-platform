@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCollectorRuntime } from '../../src/collectorLoop.js';
 import { createSubmittedTracker, type SubmittedTracker } from '../../src/dedupe.js';
 import { createDrainClient, type DrainAck, type DrainClient } from '../../src/drainClient.js';
-import { createDeliveryClient } from '../../src/deliveryClient.js';
+import { createDeliveryClient, type DeliveryClient } from '../../src/deliveryClient.js';
 import { createHealthState } from '../../src/health.js';
+import { createBulkCap, type BulkCap } from '../../src/lanes.js';
 import {
   createDeadMansSwitch,
   type DeadMansSwitch,
@@ -887,4 +888,208 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       });
     }
   );
+});
+
+/**
+ * A bulk bucket whose waits can be cut short at shutdown. Without this a test
+ * that leaves bulk waiting for an hour's token would make runtime.stop() hang.
+ */
+function gatedThrottle(inner: Throttle): { throttle: Throttle; release: () => void } {
+  const controller = new AbortController();
+  return {
+    throttle: {
+      ...inner,
+      waitForToken: () => inner.waitForToken(controller.signal),
+    },
+    release: () => controller.abort(new Error('test shutdown')),
+  };
+}
+
+async function waitUntil(check: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) {
+      throw new Error('condition not met in time');
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+describe('collector loop -- login and bulk lanes', () => {
+  const LOGIN_ID = 'login-m';
+  const LOGIN_TO = `reader-${LOGIN_ID}@example.com`;
+  let shim: FakeShimServer;
+  let baseUrl: string;
+  let sink: SmtpSink;
+
+  beforeEach(async () => {
+    shim = new FakeShimServer(DRAIN_TOKEN);
+    baseUrl = await shim.listen();
+    sink = await startSmtpSink('collector', 'sink-secret');
+  });
+
+  afterEach(async () => {
+    await shim.close();
+    await sink.close();
+  });
+
+  function runtimeFor(opts: {
+    throttle: Throttle;
+    loginThrottle?: Throttle;
+    bulkCap?: BulkCap;
+    wrapDelivery?: (inner: DeliveryClient) => DeliveryClient;
+  }) {
+    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl }]);
+    const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
+    const real = createDeliveryClient({
+      host: '127.0.0.1',
+      port: sink.port,
+      secure: false,
+      user: 'collector',
+      pass: 'sink-secret',
+    });
+    const deliveryClient = opts.wrapDelivery ? opts.wrapDelivery(real) : real;
+    const runtime = createCollectorRuntime({
+      store,
+      drainClient,
+      deliveryClient,
+      throttle: opts.throttle,
+      loginThrottle: opts.loginThrottle,
+      bulkCap: opts.bulkCap,
+      dedupe: createSubmittedTracker(60_000),
+      health: createHealthState(),
+      log: createLogger(() => {}),
+      descriptorRefreshMs: 50,
+      drainRetryBackoffMs: 50,
+      emptyPollBackoffMs: 20,
+    });
+    return { runtime, deliveryClient };
+  }
+
+  it('login mail in a batch behind a bulk backlog is submitted first', async () => {
+    shim.enqueue(message('bulk-1', { emailId: 'campaign-1' }));
+    shim.enqueue(message('bulk-2', { emailId: 'campaign-1' }));
+    shim.enqueue(message(LOGIN_ID));
+    const bulk = gatedThrottle(createThrottle({ messagesPerHour: 1 }));
+    const { runtime, deliveryClient } = runtimeFor({
+      throttle: bulk.throttle,
+      loginThrottle: createThrottle({ messagesPerHour: 360_000 }),
+    });
+    runtime.start();
+    const [first] = await sink.waitForCount(1, 1000);
+    expect(first!.envelopeTo).toEqual([LOGIN_TO]);
+    bulk.release();
+    await runtime.stop();
+    deliveryClient.close();
+  });
+
+  it('login mail spends its own bucket, so an exhausted bulk bucket does not hold it', async () => {
+    const bulkInner = createThrottle({ messagesPerHour: 1 });
+    bulkInner.tryTake(); // the bulk bucket is empty before the login message arrives
+    const bulk = gatedThrottle(bulkInner);
+    shim.enqueue(message(LOGIN_ID));
+    const { runtime, deliveryClient } = runtimeFor({
+      throttle: bulk.throttle,
+      loginThrottle: createThrottle({ messagesPerHour: 360_000 }),
+    });
+    runtime.start();
+    const [first] = await sink.waitForCount(1, 1000);
+    expect(first!.envelopeTo).toEqual([LOGIN_TO]);
+    bulk.release();
+    await runtime.stop();
+    deliveryClient.close();
+  });
+
+  it('a ramp file holds bulk to its day-0 rate: only the grace token goes in the first second', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'collector-ramp-'));
+    try {
+      const rampPath = join(dir, 'ramp.json');
+      writeFileSync(
+        rampPath,
+        JSON.stringify({
+          startedAt: new Date().toISOString(),
+          steps: [
+            { afterDays: 0, messagesPerHour: 1 },
+            { afterDays: 1, messagesPerHour: 360_000 },
+          ],
+        })
+      );
+      const bulkCap = createBulkCap({ rampPath });
+      const bulk = gatedThrottle(
+        createThrottle({
+          messagesPerHour: 360_000,
+          rateFor: (configured, nowMs) => bulkCap.rateFor(configured, nowMs),
+        })
+      );
+      for (const id of ['bulk-1', 'bulk-2', 'bulk-3']) {
+        shim.enqueue(message(id, { emailId: 'campaign-1' }));
+      }
+      const { runtime, deliveryClient } = runtimeFor({ throttle: bulk.throttle, bulkCap });
+      runtime.start();
+      await sink.waitForCount(1, 1000);
+      await new Promise((r) => setTimeout(r, 400));
+      expect(sink.messages).toHaveLength(1); // ignoring the ramp would drain all three here
+      bulk.release();
+      await runtime.stop();
+      deliveryClient.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a bulk deferral from mx1 halves the bulk rate for the hold period', async () => {
+    const bulkCap = createBulkCap();
+    let failures = 0;
+    const deferOnce = (inner: DeliveryClient): DeliveryClient => ({
+      deliver: async (msg, targetId) => {
+        if (msg.emailId && failures === 0) {
+          failures += 1;
+          const reply = '421 4.7.28 Unusual rate, slow down';
+          throw Object.assign(new Error(reply), { responseCode: 421, response: reply });
+        }
+        return inner.deliver(msg, targetId);
+      },
+      close: () => inner.close(),
+    });
+    shim.enqueue(message('bulk-1', { emailId: 'campaign-1' }));
+    const { runtime, deliveryClient } = runtimeFor({
+      throttle: createThrottle({
+        messagesPerHour: 3600,
+        rateFor: (configured, nowMs) => bulkCap.rateFor(configured, nowMs),
+      }),
+      bulkCap,
+      wrapDelivery: deferOnce,
+    });
+    runtime.start();
+    await waitUntil(() => failures === 1);
+    await waitUntil(() => bulkCap.rateFor(3600, Date.now()) === 1800);
+    expect(bulkCap.rateFor(3600, Date.now())).toBe(1800);
+    await runtime.stop();
+    deliveryClient.close();
+  });
+
+  it('a login deferral does not slow the bulk lane', async () => {
+    const bulkCap = createBulkCap();
+    const deferLogin = (inner: DeliveryClient): DeliveryClient => ({
+      deliver: async (msg, targetId) => {
+        if (!msg.emailId) {
+          const reply = '421 4.7.28 Unusual rate, slow down';
+          throw Object.assign(new Error(reply), { responseCode: 421, response: reply });
+        }
+        return inner.deliver(msg, targetId);
+      },
+      close: () => inner.close(),
+    });
+    shim.enqueue(message(LOGIN_ID));
+    const { runtime, deliveryClient } = runtimeFor({
+      throttle: createThrottle({ messagesPerHour: 3600 }),
+      bulkCap,
+      wrapDelivery: deferLogin,
+    });
+    runtime.start();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(bulkCap.rateFor(3600, Date.now())).toBe(3600);
+    await runtime.stop();
+    deliveryClient.close();
+  });
 });
