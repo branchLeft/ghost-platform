@@ -546,6 +546,7 @@ def _replay_from_resume_point(
     apply_password: str,
     run,
     skip_creation: bool = False,
+    skip_accounts: bool = False,
 ) -> ReplayResult:
     ordered_paths = _files_from(log_file, binlog_paths)
 
@@ -560,6 +561,12 @@ def _replay_from_resume_point(
         # The database was created by the instance pass already; applying its
         # own creation again would fail on a database that exists.
         sql = without_database_creation(sql, tenant_database)
+    if skip_accounts:
+        # An account statement run under a `USE` is in this stream as well as
+        # in the instance pass, which applies every one exactly once, in log
+        # order. Applied here too it would run twice, and an older
+        # `ALTER USER ... IDENTIFIED BY` could land after a newer one.
+        sql = without_account_statements(sql)
     row_events, statements = count_tenant_events(sql, tenant_database)
     # Always applied -- a stream with zero row events and zero statements
     # for this tenant is only session setup and positioning commands, a
@@ -802,6 +809,18 @@ def without_database_creation(sql: bytes, database: str) -> bytes:
     return _join(preamble, [seg for seg in segments if _created_database(_query_statement(seg)) != database], closing)
 
 
+def without_account_statements(sql: bytes) -> bytes:
+    """`sql` without its account statements; see ACCOUNT_STATEMENT_PATTERN."""
+    preamble, segments, closing = _split_events(sql)
+    kept = []
+    for segment in segments:
+        statement = _query_statement(segment)
+        if statement is not None and ACCOUNT_STATEMENT_PATTERN.match(statement):
+            continue
+        kept.append(segment)
+    return _join(preamble, kept, closing)
+
+
 class DumpIndex(NamedTuple):
     """Every database a dump declares, each with the resume point of its own
     section (or of the one bare comment), and the earliest resume point in the
@@ -908,10 +927,17 @@ def restore_instance(
     replays: dict[str, ReplayResult] = {}
     for name in sorted(index.databases):
         log_file, position = index.databases[name]
-        replays[name] = _replay_from_resume_point(log_file=log_file, position=position, tenant_database=name, **replay)
+        replays[name] = _replay_from_resume_point(
+            log_file=log_file, position=position, tenant_database=name, skip_accounts=True, **replay
+        )
     for name in new_databases:
         replays[name] = _replay_from_resume_point(
-            log_file=earliest_file, position=earliest_position, tenant_database=name, skip_creation=True, **replay
+            log_file=earliest_file,
+            position=earliest_position,
+            tenant_database=name,
+            skip_creation=True,
+            skip_accounts=True,
+            **replay,
         )
     return InstanceRestore(instance_events=kept, new_databases=tuple(new_databases), replays=replays)
 

@@ -389,6 +389,47 @@ class InstanceRestoreTests(unittest.TestCase):
                 applied = b"\n".join(run.applied_all)
                 self.assertEqual(applied.count(b"CREATE DATABASE tenant_new"), 1)
 
+    def test_an_account_statement_run_under_a_use_is_applied_once_not_twice(self):
+        # tagged with a database, as when an admin session had it as default:
+        # the instance pass applies it, and the database's own replay would too.
+        events = [
+            *instance_events(None),
+            ("mysql-bin.000003", 2200, "tenant_a", "DDL:ALTER USER 'after_dump'@'localhost' IDENTIFIED BY 'older'"),
+            ("mysql-bin.000003", 2250, "tenant_a", "DDL:GRANT SELECT ON tenant_a.* TO 'after_dump'@'localhost'"),
+            ("mysql-bin.000003", 2300, "tenant_a", "DDL:SET PASSWORD FOR 'after_dump'@'localhost' = 'x'"),
+            ("mysql-bin.000004", 600, "tenant_new", "DDL:SET DEFAULT ROLE r TO 'after_dump'@'localhost'"),
+            ("mysql-bin.000004", 700, "tenant_a", "DDL:ALTER USER 'after_dump'@'localhost' IDENTIFIED BY 'newer'"),
+        ]
+        run = FakeMysqlbinlog(events)
+        restored = self._restore(run)
+        applied = b"\n".join(run.applied_all)
+        for statement in (
+            b"IDENTIFIED BY 'older'",
+            b"GRANT SELECT ON tenant_a.*",
+            b"SET PASSWORD FOR",
+            b"SET DEFAULT ROLE r",
+            b"IDENTIFIED BY 'newer'",
+        ):
+            self.assertEqual(applied.count(statement), 1, statement)
+        # and they come from the instance pass, in log order: older, then newer
+        self.assertLess(run.applied_all[0].index(b"'older'"), run.applied_all[0].index(b"'newer'"))
+        for name in ("tenant_a", "tenant_new"):
+            self.assertNotIn(b"after_dump", restored.replays[name].sql)
+
+    def test_a_single_tenant_replay_still_carries_an_account_statement_run_under_its_use(self):
+        events = [("mysql-bin.000003", 2200, "tenant_a", "DDL:ALTER USER 'u'@'h' IDENTIFIED BY 'p'")]
+        run = FakeMysqlbinlog(events)
+        result = etb.restore_point_in_time(
+            dump_text=DUMP_IN_SECTIONS,
+            binlog_paths=["mysql-bin.000003"],
+            tenant_database="tenant_a",
+            apply_socket_path="/tmp/mysqld.sock",
+            apply_user="root",
+            apply_password="pw",
+            run=run,
+        )
+        self.assertIn(b"ALTER USER 'u'@'h'", result.sql)
+
     def test_nothing_from_before_the_dump_and_no_recreation_of_a_declared_database(self):
         run = FakeMysqlbinlog(instance_events(None))
         self._restore(run)
@@ -539,6 +580,15 @@ class SelectInstanceStatementsTests(unittest.TestCase):
         out = etb.without_database_creation(sql, "a").decode()
         self.assertNotIn("CREATE DATABASE a", out)
         self.assertIn("CREATE DATABASE b", out)
+        self.assertIn("CREATE TABLE t", out)
+        self.assertIn("Table_map", out)
+        self.assertTrue(out.rstrip().endswith("# End of log file"))
+
+    def test_without_account_statements_removes_only_those(self):
+        sql = self._stream("CREATE USER 'u'@'h'", "SET PASSWORD FOR 'u'@'h' = 'p'", "CREATE TABLE t (id INT)", "GRANT ALL ON x.* TO 'u'@'h'")
+        out = etb.without_account_statements(sql).decode()
+        for gone in ("CREATE USER", "SET PASSWORD", "GRANT ALL"):
+            self.assertNotIn(gone, out)
         self.assertIn("CREATE TABLE t", out)
         self.assertIn("Table_map", out)
         self.assertTrue(out.rstrip().endswith("# End of log file"))

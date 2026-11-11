@@ -635,7 +635,8 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
       Nothing in this pass is in the dump, because the dump's `mysql` is at
       that same position, so each statement is applied once and in order.
    2. **Each declared database** (the `USE` names in the dump, once each),
-      from its own section's position.
+      from its own section's position, without account statements (step 1
+      has applied every one, including any run under a `USE`).
    3. **Each database step 1 created**, from the first section's position,
       without its creation event (step 1 applied it; applying it twice
       fails on a database that exists).
@@ -667,7 +668,7 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
    ```bash
    docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      mysqlbinlog --base64-output=DECODE-ROWS mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...] \
-     | grep -oE "^CREATE (DATABASE|SCHEMA) (IF NOT EXISTS )?`?[A-Za-z0-9_$]+" | sort -u
+     | grep -oE '^CREATE (DATABASE|SCHEMA) (IF NOT EXISTS )?`?[A-Za-z0-9_$]+' | sort -u
    docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      mysqlbinlog --base64-output=DECODE-ROWS mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...] \
      | grep -oE "^CREATE USER (IF NOT EXISTS )?'[^']+'@'[^']+'" | sort -u

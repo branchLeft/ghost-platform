@@ -127,7 +127,13 @@ own position and adds a pass for what the filters cannot carry, in this order:
    and `CREATE DATABASE`/`CREATE SCHEMA` of a database the dump does not
    declare. They are applied as one stream.
 2. Each declared database, from its own section's position, as a single
-   `--tenant-database` replay does.
+   `--tenant-database` replay does, except that account statements are
+   dropped from the stream (and from step 3's): an account statement run
+   under a `USE` is in that database's filtered stream as well as in step 1,
+   and step 1 already applies every one exactly once, in log order. Applied
+   twice it would stop the restore with an error, or let an older
+   `ALTER USER ... IDENTIFIED BY` land after a newer one. A single
+   `--tenant-database` replay has no instance pass and keeps them.
 3. Each database step 1 created, from the earliest position, with the event
    that creates it removed (`without_database_creation`), because step 1
    already applied it. Whether the server tags `CREATE DATABASE` with the new
