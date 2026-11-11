@@ -18,8 +18,12 @@ export interface SubmittedTracker {
   markSubmitted(id: string, awaitingAck?: boolean): void;
   /** The shim has taken these ids: they expire on the plain TTL, counted from now. */
   markAcked(ids: readonly string[]): void;
-  /** Drops entries older than the configured TTL. Called on a timer by the caller, not internally, so tests can drive it deterministically. */
-  sweep(): void;
+  /**
+   * Drops entries older than the configured TTL. Called on a timer by the caller, not internally, so tests can drive it deterministically.
+   * An id `keep` returns true for is never dropped, however old: the caller
+   * names the ids it is still acting on (a message held at the account cap).
+   */
+  sweep(keep?: (id: string) => boolean): void;
   readonly size: number;
   /**
    * True while the state file could not be trusted: it was corrupt, unreadable
@@ -221,12 +225,12 @@ export function createSubmittedTracker(
         persist(statePath);
       }
     },
-    sweep(): void {
+    sweep(keep?: (id: string) => boolean): void {
       const nowMs = now();
       let evicted = false;
       for (const [id, at] of submittedAt) {
         const bound = awaitingAck.has(id) ? MAX_AWAITING_ACK_MS : ttlMs;
-        if (at < nowMs - bound) {
+        if (at < nowMs - bound && keep?.(id) !== true) {
           submittedAt.delete(id);
           awaitingAck.delete(id);
           evicted = true;

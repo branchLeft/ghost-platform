@@ -1,3 +1,4 @@
+import nodemailer from 'nodemailer';
 import { describe, expect, it } from 'vitest';
 import { checkHeaderFrom } from '../../src/headerFromScope.js';
 
@@ -6,6 +7,26 @@ const message = (from: unknown, headers: Record<string, string> = {}) => ({
   from: from as string,
   headers,
 });
+
+const COMPETING_NAMES = ['Sender', 'Return-Path', 'Resent-From', 'Resent-Sender'];
+
+/** Puts `insert` in the middle of `name`, so it sits inside the key, not at an end. */
+const withinKey = (name: string, insert: string) => {
+  const at = Math.floor(name.length / 2);
+  return name.slice(0, at) + insert + name.slice(at);
+};
+
+/** Spellings nodemailer strips from a key (whitespace, C0, DEL, colon) at a point `trim()` does not reach. */
+const SPELLINGS: ReadonlyArray<readonly [string, (name: string) => string]> = [
+  ['a trailing colon', (name) => `${name}:`],
+  ['an embedded space', (name) => withinKey(name, ' ')],
+  ['an embedded tab', (name) => withinKey(name, '\t')],
+  ['an embedded no-break space', (name) => withinKey(name, ' ')],
+  ['an embedded NUL', (name) => withinKey(name, '\u0000')],
+  ['an embedded CRLF', (name) => withinKey(name, '\r\n')],
+  ['a leading C0 control', (name) => `\u0001${name}`],
+  ['a trailing DEL', (name) => `${name}\u007f`],
+];
 
 describe('checkHeaderFrom: the header From must name exactly one mailbox in the sending domain', () => {
   describe('accepted', () => {
@@ -113,6 +134,35 @@ describe('checkHeaderFrom: the header From must name exactly one mailbox in the 
       ).toEqual({ ok: false, reason: 'from-unreadable' });
     });
 
+    it.each([
+      'Sender ',
+      ' Sender',
+      'sender\r\n',
+      'SENDER\t',
+      'Return-Path\r\n',
+      ' return-path ',
+      'Resent-From\r',
+      '\tRESENT-FROM',
+      'Resent-Sender \r\n',
+    ])(
+      'a competing identity header whose key is padded or has a line break (%j) is refused',
+      (name) => {
+        expect(
+          checkHeaderFrom(message('hello@scope.example', { [name]: 'x@scope.example' }), SCOPE)
+        ).toEqual({ ok: false, reason: 'from-unreadable' });
+      }
+    );
+
+    it.each(
+      COMPETING_NAMES.flatMap((name) =>
+        SPELLINGS.map(([label, make]) => [`${label} on ${name}`, make(name)] as const)
+      )
+    )('a competing identity header with %s in the key is refused (%j)', (_label, name) => {
+      expect(
+        checkHeaderFrom(message('hello@scope.example', { [name]: 'x@scope.example' }), SCOPE)
+      ).toEqual({ ok: false, reason: 'from-unreadable' });
+    });
+
     it('does not read a message with no headers object as carrying one', () => {
       expect(checkHeaderFrom({ from: 'hello@scope.example' } as never, SCOPE)).toEqual({
         ok: true,
@@ -139,4 +189,50 @@ describe('checkHeaderFrom: the header From must name exactly one mailbox in the 
     const verdict = checkHeaderFrom(message('"Secret Name" <leak@main.example>'), SCOPE);
     expect(JSON.stringify(verdict)).not.toMatch(/Secret|leak|main\.example|scope\.example/);
   });
+});
+
+describe('checkHeaderFrom agrees with nodemailer on the wire', () => {
+  const REFUSED_ON_WIRE = /^(sender|return-path|resent-from|resent-sender):/i;
+  const PARITY_KEYS = [
+    'Sender',
+    'Sender ',
+    'sender\r\n',
+    'SENDER\t',
+    'Sender:',
+    'sender :',
+    'Sen der',
+    'Sen\tder',
+    'Send\u0000er',
+    'Sender\u0000',
+    '\u0001Sender',
+    'Sender\u007f',
+    'Sen der',
+    'Sen\r\nder',
+    'Return-Path:',
+    'Return-\tPath',
+    'Resent-From\r',
+    'Resent-Fr om',
+    'Resent-\u0000Sender',
+    'X-Ghost-Email-Id',
+  ];
+
+  it.each(PARITY_KEYS)(
+    'key %j is refused exactly when nodemailer puts a refused header on the wire',
+    async (key) => {
+      const headers = { [key]: 'evil@other.example' };
+      const transport = nodemailer.createTransport({ streamTransport: true, buffer: true });
+      // A copy: nodemailer may rewrite the object it is given, and the check must see the input as drained.
+      const info = await transport.sendMail({
+        from: 'hello@scope.example',
+        to: 'b@x.example',
+        subject: 's',
+        text: 't',
+        headers: { ...headers },
+      });
+      const head = info.message.toString().split('\r\n\r\n')[0] ?? '';
+      const onWire = head.split('\r\n').some((line) => REFUSED_ON_WIRE.test(line));
+      const verdict = checkHeaderFrom(message('hello@scope.example', headers), SCOPE);
+      expect(!verdict.ok).toBe(onWire);
+    }
+  );
 });
