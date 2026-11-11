@@ -204,6 +204,13 @@ jobs:
           python3 scripts/assert-slug-pattern-consistency.py --self-test
           python3 scripts/assert-slug-pattern-consistency.py
 
+      # The Mollie test-charge script must refuse any key that is not a test
+      # key before a network call, and its workflow must stay dispatch-only,
+      # behind the production environment, with the key bound to one step.
+      # The HTTP layer is a fake; nothing reaches Mollie.
+      - name: Mollie test-charge script and workflow tests
+        run: python3 -m unittest discover -s scripts -p 'test_mollie_test_charge.py' -v
+
       # generate-lockfile.yml trusts this gate to keep its `workflow_dispatch`
       # input from reaching the filesystem or a shell as anything other than
       # `services/<name>` or `adapters/<name>` -- self-tested here, on every
