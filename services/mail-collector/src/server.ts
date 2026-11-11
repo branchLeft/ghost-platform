@@ -15,6 +15,7 @@ import { createFailureCounter } from './submissionFailures.js';
 import { createSweegoDeliveryClient } from './sweegoDeliveryClient.js';
 import { createSweegoUsage } from './sweegoUsage.js';
 import { createThrottle } from './throttle.js';
+import { createBulkCap } from './lanes.js';
 
 const config = loadConfig();
 const log = createLogger();
@@ -27,9 +28,17 @@ const store = new DescriptorTargetStore({
   log,
 });
 
+const bulkCap = createBulkCap({ rampPath: config.bulkRampPath, log });
+
 const throttle = createThrottle({
   configPath: config.throttleConfigPath,
   messagesPerHour: config.messagesPerHour,
+  log,
+  rateFor: (configured, nowMs) => bulkCap.rateFor(configured, nowMs),
+});
+
+const loginThrottle = createThrottle({
+  messagesPerHour: config.loginMessagesPerHour,
   log,
 });
 
@@ -148,6 +157,8 @@ const runtime = createCollectorRuntime({
   sweegoPins,
   sweegoAmbiguous,
   throttle,
+  loginThrottle,
+  bulkCap,
   dedupe,
   health,
   heartbeat,

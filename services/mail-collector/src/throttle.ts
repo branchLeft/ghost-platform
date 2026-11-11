@@ -7,6 +7,12 @@ export interface ThrottleOptions {
   messagesPerHour: number;
   now?: () => number;
   log?: Logger;
+  /**
+   * Optional: the effective rate at a moment, given the configured one
+   * (lanes.ts's bulk cap uses it to ramp and back off). The configured
+   * value stays what reload() reads; only refill and currentRate() use this.
+   */
+  rateFor?: (configuredPerHour: number, nowMs: number) => number;
 }
 
 export interface Throttle {
@@ -39,11 +45,16 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
   let lastRefillAt = now();
   let lastMtimeMs: number | undefined;
 
+  function effectiveRate(nowSeconds: number): number {
+    return opts.rateFor ? opts.rateFor(messagesPerHour, nowSeconds * 1000) : messagesPerHour;
+  }
+
   function refill(): void {
     const nowSeconds = now();
     const elapsedHours = (nowSeconds - lastRefillAt) / SECONDS_PER_HOUR;
     if (elapsedHours > 0) {
-      tokens = Math.min(messagesPerHour, tokens + elapsedHours * messagesPerHour);
+      const rate = effectiveRate(nowSeconds);
+      tokens = Math.min(rate, tokens + elapsedHours * rate);
       lastRefillAt = nowSeconds;
     }
   }
@@ -96,7 +107,7 @@ export function createThrottle(opts: ThrottleOptions): Throttle {
     tryTake,
     reload,
     currentRate() {
-      return messagesPerHour;
+      return effectiveRate(now());
     },
     waitForToken(signal?: AbortSignal): Promise<void> {
       return new Promise((resolve, reject) => {
