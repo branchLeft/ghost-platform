@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createApp } from './app.js';
 import { loadConfig, sweegoUsable } from './config.js';
 import { createCollectorRuntime } from './collectorLoop.js';
@@ -159,7 +159,14 @@ const outcomes = config.outcomes
 // spool, on its existing outcome route, so Ghost shows the failure and the
 // address is suppressed. A spool that has not opted in answers 404: logged,
 // tried again, then given up on.
-const droppedOutcomes = createDroppedOutcomes({ client: drainClient, log });
+// Kept beside the dedupe file, as the bulk deferral hold is, so a restart keeps the waiting reports.
+const droppedOutcomes = createDroppedOutcomes({
+  client: drainClient,
+  log,
+  ...(config.dedupeStatePath
+    ? { statePath: join(dirname(config.dedupeStatePath), 'dropped-outcomes.json') }
+    : {}),
+});
 
 const runtime = createCollectorRuntime({
   outcomes,
