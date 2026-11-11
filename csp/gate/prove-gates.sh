@@ -189,6 +189,8 @@ prove "real-mode/shell-owner-keys-not-used" "$GATE_SH" \
     'STRIPE_SECRET_KEY="$STRIPE_TEST_SECRET_KEY"' 'STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"'
 prove "real-mode/shell-derive-allowed-with-keys" "$GATE_SH" \
     'if [ -n "$REAL" ] && [ -n "$DERIVE" ]; then' 'if false; then'
+prove "real-mode/shell-cleanup-keeps-volumes" "$GATE_SH" \
+    'docker rm -fv "$GHOST_NAME"' 'docker rm -f "$GHOST_NAME"'
 
 [ "$FAIL" -eq 0 ] && echo "ALL SABOTAGES DETECTED" || echo "SABOTAGE PROOF FAILED"
 exit "$FAIL"

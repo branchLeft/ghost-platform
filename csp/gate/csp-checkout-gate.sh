@@ -68,7 +68,9 @@ STRIPE_PORT="${CSP_CHECKOUT_STRIPE_PORT:-4322}"
 ORIGIN="http://localhost:${HOST_PORT}"
 
 cleanup() {
-    docker rm -f "$GHOST_NAME" "$ORIGIN_NAME" "$FAKE_NAME" >/dev/null 2>&1 || true
+    # -v also removes each container's anonymous volumes: Ghost's image declares
+    # a content volume, and in real mode it holds the owner's test keys.
+    docker rm -fv "$GHOST_NAME" "$ORIGIN_NAME" "$FAKE_NAME" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -131,7 +133,7 @@ fi
 wait_for "Ghost" 90 docker exec "$GHOST_NAME" wget -q -O /dev/null http://127.0.0.1:2368/
 
 start_origin() { # header name, header value
-    docker rm -f "$ORIGIN_NAME" >/dev/null 2>&1 || true
+    docker rm -fv "$ORIGIN_NAME" >/dev/null 2>&1 || true
     docker run -d --name "$ORIGIN_NAME" --network "$NET" -p "${HOST_PORT}:8080" \
         -e "GHOST_UPSTREAM=${GHOST_NAME}:2368" \
         -e "CSP_HEADER_NAME=$1" -e "CSP_HEADER_VALUE=$2" \

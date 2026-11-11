@@ -482,6 +482,35 @@ test("shell wiring, default: the fake Stripe starts as before and the owner's va
   });
 });
 
+// Cleanup: the gate removes its containers WITH their anonymous volumes. Ghost's
+// image declares a content volume, and real mode keeps the owner's test keys in
+// it; `docker rm -f` without -v would leave that volume behind after the run.
+const removals = (lines) => lines.filter((l) => /^rm /.test(l));
+
+test('shell wiring, real mode: cleanup removes the Ghost container with its anonymous volumes (rm -fv)', () => {
+  withGateTree(({ exec, dockerLines }) => {
+    exec([], REAL_ENV);
+    const rms = removals(dockerLines());
+    assert.ok(
+      rms.some((l) => /^rm -fv csp-checkout-ghost-\d+ /.test(l)),
+      `the Ghost container is removed without -v: ${JSON.stringify(rms)}`
+    );
+    for (const l of rms) assert.match(l, /^rm -fv /, `a removal lacks -v: ${l}`);
+  });
+});
+
+test('shell wiring, default: cleanup also removes the fake run with its anonymous volumes (rm -fv)', () => {
+  withGateTree(({ exec, dockerLines }) => {
+    exec([], { ...GOOD });
+    const rms = removals(dockerLines());
+    assert.ok(
+      rms.some((l) => /^rm -fv csp-checkout-ghost-\d+ csp-checkout-origin-\d+ csp-checkout-stripe-\d+$/.test(l)),
+      `the cleanup removal lacks -v: ${JSON.stringify(rms)}`
+    );
+    for (const l of rms) assert.match(l, /^rm -fv /, `a removal lacks -v: ${l}`);
+  });
+});
+
 test('shell: without the switch the real-mode code is never reached, even with test keys in the environment', () => {
   withShimDocker((base) => {
     const r = runGate([], { ...base, ...GOOD, STRIPE_TEST_SECRET_KEY: LIVE_SECRET });
