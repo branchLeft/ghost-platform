@@ -1,0 +1,222 @@
+name: Refresh lockfile (artifact only)
+
+# Regenerates one project's pnpm-lock.yaml in CI, where the run's own
+# `GITHUB_TOKEN` (`packages: read`) can read the `@branchleft/*` packages on
+# GitHub Packages, and hands the result back as a workflow artifact plus a diff
+# in the job summary. It commits and pushes NOTHING. Whoever dispatched it
+# downloads the artifact and commits the lockfile to the branch as an ordinary
+# signed commit, so the branch's own push fires the PR checks.
+#
+# This is the read-only sibling of generate-lockfile.yml, which holds
+# `contents: write` and commits for itself (and then fails closed, because a
+# `GITHUB_TOKEN` write starts no CI). See README-refresh-lockfile.md for why both
+# exist and for the design points below.
+#
+# `workflow_dispatch` only, never a pull request trigger: the run reads a
+# package token and checks out a branch's files.
+#
+# Both inputs reach the shell only through `env:`, never an expression inside
+# `run:`. `validate` refuses a `ref` that is not a plain short branch name and a
+# `project_dir` outside the list below; the second `case` repeats the `options:`
+# list on purpose, because GitHub's own choice check is not a control this job
+# should lean on. workflow-refresh-lockfile.test.js keeps the two lists equal to
+# each other and to the pnpm projects in this tree that consume `@branchleft/*`.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch (in this repository) whose project files are used, for example the branch of a pin-bump pull request'
+        required: true
+        type: string
+      project_dir:
+        description: 'pnpm project whose lockfile is regenerated'
+        required: true
+        type: choice
+        options:
+          - infra/tenant
+          - infra/hosts
+          - infra/demo-host
+          - infra/hetzner-host-check
+          - render-core
+          - deadmans-switch
+          - portal/apps
+          - portal/data
+          - services/broker
+          - services/demo-gate
+          - services/drain-sidecar
+          - services/export-bundler
+          - services/identity
+          - services/mail-collector
+          - services/mailgun-shim
+          - services/major-watcher
+          - services/odask
+          - services/request-guard
+          - services/ring-controller
+          - services/storage-gateway
+          - .
+
+# Deny by default; each job states exactly what it needs.
+permissions: {}
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      ref: ${{ steps.shape.outputs.ref }}
+      project_dir: ${{ steps.shape.outputs.project_dir }}
+
+    steps:
+      - name: Validate ref and project_dir
+        id: shape
+        env:
+          REF: ${{ inputs.ref }}
+          PROJECT_DIR: ${{ inputs.project_dir }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          # A conservative allow-list, not the full git ref grammar. A
+          # qualified `refs/...` form is refused: the checkout step qualifies
+          # the name itself, so the value must always be a short branch name.
+          [[ "$REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$ ]] \
+            || fail "ref must be a short branch name of A-Za-z0-9._/- (at most 200 characters, starting with a letter or digit)"
+          case "$REF" in
+            refs/* | *..* | */ | *.lock | *//*)
+              fail "ref is not a well-formed short branch name"
+              ;;
+          esac
+
+          case "$PROJECT_DIR" in
+            infra/tenant | infra/hosts | infra/demo-host | infra/hetzner-host-check | render-core | deadmans-switch | portal/apps | portal/data) ;;
+            services/broker | services/demo-gate | services/drain-sidecar | services/export-bundler | services/identity | services/mail-collector) ;;
+            services/mailgun-shim | services/major-watcher | services/odask | services/request-guard | services/ring-controller | services/storage-gateway) ;;
+            .) ;;
+            *)
+              fail "project_dir is not one of the listed pnpm projects"
+              ;;
+          esac
+
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+  refresh:
+    name: Regenerate the lockfile
+    needs: validate
+    runs-on: ubuntu-latest
+    # Observed: not yet run. A checkout, a tool setup and a metadata-only
+    # resolve of one project; 10 minutes is generous.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      # `ref:` is qualified here, the one place it is assembled: checkout
+      # treats a bare name as ambiguous (it could be a tag). No credential is
+      # left in the checkout's git config; nothing in this job pushes.
+      - name: Checkout the branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/${{ needs.validate.outputs.ref }}
+          persist-credentials: false
+
+      - name: Confirm the project has a package.json and an .nvmrc on this branch
+        env:
+          PROJECT_DIR: ${{ needs.validate.outputs.project_dir }}
+          REF: ${{ needs.validate.outputs.ref }}
+        run: |
+          set -euo pipefail
+          for f in package.json .nvmrc; do
+            if [ ! -f "$PROJECT_DIR/$f" ]; then
+              echo "::error::'$PROJECT_DIR/$f' does not exist on branch '$REF'"
+              exit 1
+            fi
+          done
+
+      # pnpm and Node come from the project's own files, not from the repo
+      # root: the projects do not all pin the same pnpm.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ${{ needs.validate.outputs.project_dir }}/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ needs.validate.outputs.project_dir }}/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+
+      # Resolves from a copy in $RUNNER_TEMP, never in the project directory:
+      # every project here carries a committed `.npmrc`, and pnpm lets a
+      # project-level `.npmrc` outrank the user-level one `setup-node` just
+      # wrote. A branch author's `.npmrc` could point `@branchleft:registry`
+      # at a foreign host paired with `_authToken=${NODE_AUTH_TOKEN}` and read
+      # this run's token out of the environment. The copy holds only
+      # `package.json`, the existing lockfile (so unchanged entries keep their
+      # resolved versions) and `pnpm-workspace.yaml` where there is one.
+      #
+      # `--lockfile-only`: the one output is the lockfile. `--ignore-scripts`:
+      # nothing from the branch or the registry runs.
+      - name: Resolve the lockfile in an isolated directory
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_DIR: ${{ needs.validate.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          WORKDIR="$RUNNER_TEMP/lockfile-install"
+          mkdir -p "$WORKDIR"
+          cp "$PROJECT_DIR/package.json" "$WORKDIR/package.json"
+          if [ -f "$PROJECT_DIR/pnpm-lock.yaml" ]; then
+            cp "$PROJECT_DIR/pnpm-lock.yaml" "$WORKDIR/pnpm-lock.yaml"
+            cp "$PROJECT_DIR/pnpm-lock.yaml" "$RUNNER_TEMP/lockfile-before.yaml"
+          else
+            : > "$RUNNER_TEMP/lockfile-before.yaml"
+          fi
+          if [ -f "$PROJECT_DIR/pnpm-workspace.yaml" ]; then
+            cp "$PROJECT_DIR/pnpm-workspace.yaml" "$WORKDIR/pnpm-workspace.yaml"
+          fi
+          (cd "$WORKDIR" && pnpm install --lockfile-only --ignore-scripts)
+
+      - name: Write the lockfile diff to the job summary
+        env:
+          PROJECT_DIR: ${{ needs.validate.outputs.project_dir }}
+          REF: ${{ needs.validate.outputs.ref }}
+        run: |
+          set -euo pipefail
+          AFTER="$RUNNER_TEMP/lockfile-install/pnpm-lock.yaml"
+          DIFF_FILE="$RUNNER_TEMP/lockfile.diff"
+          # `diff` exits 1 when the files differ; only 2 or more is an error.
+          diff -u --label "a/$PROJECT_DIR/pnpm-lock.yaml" --label "b/$PROJECT_DIR/pnpm-lock.yaml" \
+            "$RUNNER_TEMP/lockfile-before.yaml" "$AFTER" > "$DIFF_FILE" || [ "$?" -eq 1 ]
+          {
+            echo "### Refreshed lockfile for \`$PROJECT_DIR\` on \`$REF\`"
+            echo
+            if [ -s "$DIFF_FILE" ]; then
+              echo "Nothing was committed. Download the artifact \`refreshed-pnpm-lock\` and commit \`pnpm-lock.yaml\` to \`$PROJECT_DIR\` on the branch."
+              echo
+              echo '```diff'
+              head -n 400 "$DIFF_FILE"
+              echo '```'
+              if [ "$(wc -l < "$DIFF_FILE")" -gt 400 ]; then
+                echo
+                echo "The diff is longer than 400 lines; the artifact holds the whole file."
+              fi
+            else
+              echo "No change: the committed lockfile already matches what \`package.json\` resolves to."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # The same resolution lines in the log, readable without the
+          # artifact: the exact values a lockfile entry for these packages needs.
+          grep -E "^  '@branchleft/[^']+':$" -A1 "$AFTER" || true
+
+      - name: Upload the regenerated lockfile
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: refreshed-pnpm-lock
+          path: ${{ runner.temp }}/lockfile-install/pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 7
