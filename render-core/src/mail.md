@@ -74,10 +74,12 @@ place that default lives.
   percent until month end.
 - **A demo stays on mx1.** A demo whose route is `sweego` is refused as a tier
   mismatch, the same way a demo carrying a DKIM selector is.
-- **Nothing reads it yet.** `render()` emits no artefact that mentions the
+- **`render()` ignores it.** `render()` emits no artefact that mentions the
   route, so a tenant host receives byte-identical output whatever its value
   (`test/mailRoute.test.ts`). The collector reads the route and the allowance
   from the descriptor; the counts themselves are collector state, never
-  descriptor data.
+  descriptor data. The one other reader is the host's mail spool, which a
+  Sweego route opts into `SHIM_DRAIN_OUTCOMES`
+  (`mailSpoolNeedsDrainOutcomes`; see spool.md#the-outcomes-route).
 - **No credential or host.** The allowance is a plain number. The plan size
   and the account-wide cap are not descriptor fields.

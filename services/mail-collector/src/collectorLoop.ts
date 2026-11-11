@@ -6,6 +6,7 @@ import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { DroppedOutcomes } from './droppedOutcomes.js';
 import type { HealthState } from './health.js';
 import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
+import { checkHeaderFrom } from './headerFromScope.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
 import {
@@ -19,7 +20,7 @@ import {
 } from './sendingTarget.js';
 import type { FailureCounter } from './submissionFailures.js';
 import { failureReasonOf } from './sweegoFailure.js';
-import type { SweegoUseCounter } from './sweegoUsage.js';
+import { DEFAULT_PIN_TTL_MS, type SweegoUseCounter } from './sweegoUsage.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
@@ -55,8 +56,18 @@ export interface CollectorLoopDeps {
    * Unset, the spool is not told and shows the message as accepted.
    */
   droppedOutcomes?: DroppedOutcomes;
-  /** Counts Sweego failures by reason class for the signals that read them. Counts nothing if unset. */
+  /**
+   * Counts failures by reason class for the signals that read them: Sweego
+   * failures, and the header From refusals on either target. Counts nothing if unset.
+   */
   sweegoFailures?: FailureCounter;
+  /**
+   * Checks each message's header From against its host's sending domain before
+   * any target sees it, on both targets. `server.ts` always sets it; it is
+   * optional only so the test doubles that build deps by hand need not.
+   * See ../README.md#header-from-scope.
+   */
+  enforceHeaderFrom?: boolean;
   /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
   throttle: Throttle;
   /** Optional login lane: its own bucket, so sign-in mail never spends bulk tokens. */
@@ -86,8 +97,9 @@ export interface CollectorRuntime {
 }
 
 const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
-// UNPROVEN: must outlast the shim's longest retry horizon; read it from the shim before the pin is made persistent.
-const DEFAULT_MX1_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// The shim re-offers an unacked row every SHIM_DRAIN_LEASE_SECONDS (30 s by default)
+// with no attempt cap and no maximum age, so the pin TTL alone bounds a held
+// message. It outlasts the longest cap hold: see ../README.md#dedupe-createsubmittedtracker.
 
 /**
  * Reconciles one drain-and-deliver loop per descriptor-named host on every
@@ -104,16 +116,23 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
-  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
-  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
-  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
   const servedByMx1Logged = new Set<string>();
+  // Pinned messages the last offer left held at the account cap. Their pins are
+  // never swept: a swept pin would let the message be decided afresh.
+  const heldAtCapIds = new Set<string>();
+  const isHeldAtCap = (id: string): boolean => heldAtCapIds.has(id);
 
   /**
    * Submits one message through the target the resolver names. `submitted`:
    * a target accepted it. `dropped`: Sweego refused the recipient for good, so
-   * the message is acked and counted, never retried. `held`: left unacked for
+   * the message is acked and counted, never retried. `refused`: its header From
+   * is not in its host's scope, so it is acked and counted the same way but
+   * never reported to the spool as a bounce (that would suppress an innocent
+   * recipient). `held`: left unacked for
    * the shim to re-offer, and the rest of the batch carries on (Sweego said
    * no, mx1 was not tried). `stop`: mx1 failed, so the rest of the batch is
    * left too, as it always was. Sweego mail spends Sweego's own throttle,
@@ -123,7 +142,28 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   async function submit(
     message: WireMessage,
     target: DrainTarget
-  ): Promise<'submitted' | 'dropped' | 'held' | 'stop'> {
+  ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop'> {
+    // Asked afresh on every offer: only a message the latest offer left held at
+    // the cap is protected from the pin sweep.
+    heldAtCapIds.delete(message.id);
+    if (deps.enforceHeaderFrom) {
+      const verdict = checkHeaderFrom(message, target.sendingDomain);
+      if (!verdict.ok) {
+        deps.sweegoFailures?.record(verdict.reason);
+        // The line names a reason and a message id only: no host, address,
+        // subject or domain.
+        deps.log.warn('header_from_refused', { message: message.id, reason: verdict.reason });
+        if (verdict.reason === 'from-scope-unknown') {
+          // Nothing is wrong with the message: its host has no sending domain
+          // to check against yet. Left unacked, the spool re-offers it.
+          return 'held';
+        }
+        // Permanent, and the same ending as a dropped recipient: marked so a
+        // lost ack is only re-acked on the next offer, never sent or retried.
+        deps.dedupe.markSubmitted(message.id, true);
+        return 'refused';
+      }
+    }
     const lane = laneOf(message);
     const sweego = deps.sweegoDeliveryClient;
     const sweegoThrottle = deps.sweegoThrottle;
@@ -154,13 +194,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     // is the plan's ceiling and holds for every class. A pinned message
     // stays on Sweego whatever the tenant's allowance now says, and is counted;
     // the account cap holds for it too (see `resolveNow`).
+    // A pinned message that was already counted (an earlier attempt ended
+    // ambiguous, or its reserved place was recounted after a crash) holds its
+    // place in the cap: a retry takes no second one, so the cap does not hold it.
+    const holdsPlace = (): boolean =>
+      pinnedToSweego && deps.sweegoQuota?.holdsPlace?.(message.id) === true;
     const contextNow = (): SendingContext => ({
       mailClass,
       demo: target.demo === true,
       sweegoConfigured: sweegoReady,
       allowanceReached:
         pinnedToSweego || mailClass === 'transactional' ? false : quota.allowanceReached(target.id),
-      accountCapReached: quota.accountCapReached(),
+      accountCapReached: holdsPlace() ? false : quota.accountCapReached(),
       reachedMx1,
     });
     const route = pinnedToSweego ? 'sweego' : target.route;
@@ -174,6 +219,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         : resolveSendingTarget(route, context);
     };
     const heldAtCap = (): 'held' => {
+      heldAtCapIds.add(message.id);
       deps.log.warn('sweego_pinned_held_at_cap', { target: target.id, message: message.id });
       return 'held';
     };
@@ -197,10 +243,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }
     }
     if (decision === 'sweego' && sweegoReady) {
+      // The place is reserved, and written down, before the pin and before the
+      // attempt: a crash after this point leaves it counted. Refused, nothing
+      // was sent and nothing is pinned, so the message is held and offered again.
+      const counter = deps.sweegoQuota;
+      const slot = counter?.begin?.(target.id, message.id);
+      if (slot === undefined && counter?.begin !== undefined) {
+        deps.log.warn('sweego_reservation_failed', { target: target.id, message: message.id });
+        return 'held';
+      }
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
-      const slot = deps.sweegoQuota?.begin?.(target.id, message.id);
       let accepted = false;
       try {
         await sweego.deliver(message, target.id);
@@ -470,8 +524,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       sweepTimer = setInterval(() => {
         deps.dedupe.sweep();
         mx1Pins.sweep();
-        sweegoPins.sweep();
-        sweegoAmbiguous.sweep();
+        sweegoPins.sweep(isHeldAtCap);
+        sweegoAmbiguous.sweep(isHeldAtCap);
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 

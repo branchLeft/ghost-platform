@@ -1,4 +1,5 @@
 import { dirname, join } from 'node:path';
+import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
 export interface CollectorConfig {
   port: number;
@@ -41,6 +42,12 @@ export interface CollectorConfig {
    * not this story.
    */
   drainToken: string;
+  /**
+   * The platform's shared demo mail domain: the one domain a demo host's mail
+   * may be sent from (a demo descriptor carries a local part only). Unset, the
+   * mail of every demo host is held, never sent.
+   */
+  demoMailDomain?: string;
   /** Client-side timeout for one GET /drain call -- must exceed the shim's own holdMs (~30s) or every long-poll would be treated as a failure. */
   drainTimeoutMs: number;
   /** How long to back off after a failed GET/POST to a target before retrying it. */
@@ -114,8 +121,13 @@ export interface CollectorConfig {
 
   /** Directory the per-message target pins are kept in, on a volume that outlives the process. Unset, a restart forgets them. */
   pinStateDir?: string;
-  /** How long a pin is remembered. Must outlast the shim's longest retry horizon. */
+  /** How long a pin is remembered. Never below the longest Sweego cap hold (`MAX_CAP_HOLD_MS`); `loadConfig` refuses a lower value. */
   pinTtlMs: number;
+  /**
+   * Directory the state witnesses are kept in, on a different mount from every
+   * state file above. Unset, only the markers beside the state files guard them.
+   */
+  stateWitnessDir?: string;
 
   /**
    * The estate's dead-man's-switch ping URL (Healthchecks.io, or the local
@@ -190,6 +202,21 @@ function shimSchemeEnv(env: CollectorEnv): string {
   return raw;
 }
 
+/**
+ * A pin that ends before the longest cap hold would let a message held at the
+ * cap be decided afresh (sent to Sweego again, or to mx1), so a TTL below that
+ * bound is refused at start-up rather than trusted.
+ */
+function pinTtlEnv(env: CollectorEnv): number {
+  const ttl = positiveIntEnv(env, 'COLLECTOR_PIN_TTL_MS', DEFAULT_PIN_TTL_MS);
+  if (ttl < MAX_CAP_HOLD_MS) {
+    throw new Error(
+      `COLLECTOR_PIN_TTL_MS is ${ttl} ms, below the longest Sweego cap hold of ${MAX_CAP_HOLD_MS} ms (31 days): a pinned message held at the cap would be decided afresh when its pin ended`
+    );
+  }
+  return ttl;
+}
+
 function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
@@ -219,7 +246,6 @@ function bulkDeferralStatePathEnv(env: CollectorEnv): string | undefined {
 
 const DEFAULT_SWEEGO_SMTP_PORT = 587;
 const DEFAULT_SWEEGO_TIMEOUT_MS = 20_000;
-const DEFAULT_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SWEEGO_PARTNERS = [
   'COLLECTOR_SWEEGO_SMTP_USER',
@@ -302,6 +328,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       DEFAULT_DESCRIPTOR_MAX_STALENESS_MS
     ),
     shimScheme: shimSchemeEnv(env),
+    demoMailDomain: env.COLLECTOR_DEMO_MAIL_DOMAIN || undefined,
     shimPort: positiveIntEnv(env, 'COLLECTOR_SHIM_PORT', DEFAULT_SHIM_PORT),
     // No default: an empty or guessable token defeats the drain endpoint's
     // one credential check, the same reasoning as the shim's own
@@ -338,7 +365,8 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     },
     sweego: sweegoEnv(env),
     pinStateDir: env.COLLECTOR_PIN_STATE_DIR || undefined,
-    pinTtlMs: positiveIntEnv(env, 'COLLECTOR_PIN_TTL_MS', DEFAULT_PIN_TTL_MS),
+    pinTtlMs: pinTtlEnv(env),
+    stateWitnessDir: env.COLLECTOR_STATE_WITNESS_DIR || undefined,
     heartbeatUrl: requireEnv(env, 'COLLECTOR_HEARTBEAT_URL'),
     heartbeatFailureThreshold: positiveIntEnv(
       env,

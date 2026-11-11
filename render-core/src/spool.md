@@ -71,6 +71,28 @@ for it breaks nothing and fixes nothing; a shim image from after it, run from a
 file with no host, refuses to start. The rendered file and the image digest
 therefore move together, in one gated apply.
 
+## The outcomes route
+
+The shim serves `POST /drain/outcomes`, where the collector reports recipients
+it dropped, only when `SHIM_DRAIN_OUTCOMES` is the string `true`
+(`env.SHIM_DRAIN_OUTCOMES === 'true'`); with it unset the route answers 404 and
+the collector's reports are inert. It is opt-in, because most hosts have no
+Sweego tenant and an always-on key would change every reviewed spool file.
+
+- **Opt-in.** `MailSpoolStackArgs.drainOutcomes` is `true` to render
+  `SHIM_DRAIN_OUTCOMES: 'true'` straight after `SHIM_DRAIN_HOST`. Absent or
+  `false` renders nothing: the file is byte-identical to the one an earlier
+  release rendered (`test/spool.outcomes.test.ts` against the committed golden).
+- **Who sets it.** The spool is per host and takes no descriptor, so the caller
+  asks `mailSpoolNeedsDrainOutcomes(mails)` with the `mail` of every descriptor
+  on the host: true when any of them routes through Sweego (`mailRouteOf`),
+  false for an empty list and for `mx1` or route-less specs.
+- **Exactly `true`.** The value is a quoted string, never a YAML boolean, and
+  `True`, `1` and `yes` leave the route off while looking as if it were on. A
+  non-boolean `drainOutcomes` is refused by `renderMailSpoolStack`.
+- **Out of scope.** mx1's shim environment is rendered by a script on mx1, which
+  this package does not touch.
+
 ## The drain network
 
 Docker publishes no port for a container whose only networks are internal,
@@ -121,6 +143,9 @@ before returning. It refuses:
   match, so no copy of the shim's own address classifier is needed); and a
   service `ipv4_address` on the drain network that is missing or differs from
   `SHIM_DRAIN_HOST`;
+- `SHIM_DRAIN_OUTCOMES` as anything but the string `true`; and, when the
+  caller states whether the host needs it, a file that disagrees (the variable
+  missing when asked for, present when not);
 - the drain token as anything but a `${VAR:?...}` reference;
 - an ephemeral queue, an overridden SMTP bind, an image not pinned by digest,
   any mount but the spool's own data volume;

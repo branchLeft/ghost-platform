@@ -1,0 +1,32 @@
+{
+  "mirror": [
+    "ghost",
+    "caddy",
+    "debian",
+    "node",
+    "postgres",
+    "mysql",
+    "percona-server",
+    "mysqld-exporter",
+    "versitygw",
+    "curl",
+    "alpine",
+    "docker",
+    "python",
+    "healthchecks",
+    "s3mock",
+    "pebble",
+    "pebble-challtestsrv",
+    "zitadel",
+    "dockerfile"
+  ],
+  "derived": [
+    "db-recovery",
+    "drain-sidecar",
+    "mail-collector",
+    "mailgun-shim",
+    "demo-edge",
+    "portal-apps"
+  ],
+  "control": "ghost-tenant"
+}

@@ -12,17 +12,24 @@ name: Image mirror
 # login and no stored secret. Idempotent: an entry whose mirror tag already
 # resolves to the listed digest is verified, not copied again.
 #
-# Runs on merge to main when the list, the script or this file changes, and by
-# hand. Nothing here runs on a pull request: it writes packages, and a pull
-# request's code must not.
+# Runs on merge to main when the list, the script or this file changes, on a
+# daily schedule, and by hand. Nothing here runs on a pull request: it writes
+# packages, and a pull request's code must not.
+#
+# The last step probes the packages that must stay private with an anonymous
+# pull, and fails the run if any is readable (scripts/probe_private_packages.py).
 
 on:
   push:
     branches: [main]
     paths:
       - .github/image-mirror/images.json
+      - .github/image-mirror/private-packages.json
       - scripts/mirror-images.py
+      - scripts/probe_private_packages.py
       - .github/workflows/image-mirror.yml
+  schedule:
+    - cron: '23 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -76,3 +83,8 @@ jobs:
 
       - name: Mirror and verify
         run: python3 scripts/mirror-images.py
+
+      # Anonymous on purpose: no step above passes a credential to this one,
+      # and the probe sends none. Fails closed on any package it cannot place.
+      - name: Probe private packages stay private
+        run: python3 scripts/probe_private_packages.py

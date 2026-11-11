@@ -2,5 +2,6 @@
   "kind": "tenant",
   "slug": "tenant-b",
   "appHostIp": "shim-b",
-  "expiresAt": null
+  "expiresAt": null,
+  "mail": { "identity": { "kind": "tenant", "domain": "tenant-b.example", "dkimSelector": "sel" } }
 }

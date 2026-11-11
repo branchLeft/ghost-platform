@@ -2,6 +2,28 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## Unreleased
+
+**The mail spool can serve the outcomes route.**
+
+- **Additive:** `MailSpoolStackArgs` takes an optional `drainOutcomes`. When
+  `true`, `renderMailSpoolStack()` renders `SHIM_DRAIN_OUTCOMES: 'true'` in the
+  spool service's `environment:`, straight after `SHIM_DRAIN_HOST`, so the
+  shim registers `POST /drain/outcomes` and the collector's dropped-recipient
+  reports stop answering 404. Absent or `false`, every spool file is
+  byte-identical to 0.4.0 (pinned against the committed demo1 golden).
+  `mailSpoolNeedsDrainOutcomes(mails)` is true when any of the host's `mail`
+  specs has a `sweego` route. A non-boolean `drainOutcomes` is refused.
+- `assertSpoolPosture(document, drainPort, expectOutcomes?)` refuses
+  `SHIM_DRAIN_OUTCOMES` as anything but the string `true` (not `True`, `1`, a
+  YAML boolean or an empty string) and, when `expectOutcomes` is given, a file
+  that disagrees with it. New exports `MAIL_SPOOL_DRAIN_OUTCOMES_KEY`,
+  `MAIL_SPOOL_DRAIN_OUTCOMES_VALUE` and `mailSpoolNeedsDrainOutcomes`. See
+  src/spool.md#the-outcomes-route.
+- **Rollout:** a consumer on an earlier release renders no such key; a host with
+  a Sweego tenant needs this release and a call that passes
+  `mailSpoolNeedsDrainOutcomes`. No `render()` artefact changes.
+
 ## 0.4.0
 
 **The descriptor can name a mail route.**

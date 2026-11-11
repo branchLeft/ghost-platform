@@ -97,7 +97,8 @@ export interface MailSpec {
   /**
    * Which sending target the mail collector uses for this host's drained
    * mail. Absent means `mx1`, so a descriptor written before this field
-   * existed means exactly what it always did. Nothing reads it yet. See
+   * existed means exactly what it always did. `render()` ignores it; the host's
+   * mail spool reads it through `mailSpoolNeedsDrainOutcomes`. See
    * mail.md#mail-route.
    */
   readonly route?: MailRouteSpec;

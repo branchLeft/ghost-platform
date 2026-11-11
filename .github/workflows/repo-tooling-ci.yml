@@ -218,6 +218,17 @@ jobs:
       - name: Lockfile package_dir allow-list self-test
         run: python3 scripts/assert-lockfile-package-dir.py --self-test
 
+      # Every pnpm workspace that consumes a @branchleft package must exclude
+      # that scope from minimumReleaseAge, so our own fresh releases install in
+      # CI. Third-party packages keep the default cutoff. The check reads the
+      # tree on every push; its self-test proves the matcher still fails a bare
+      # consumer.
+      - name: Release-age exclude self-test
+        run: python3 scripts/assert-release-age-exclude.py --self-test
+
+      - name: Release-age exclude across consuming workspaces
+        run: python3 scripts/assert-release-age-exclude.py .
+
       # The comparison that keeps the broker's committed generated code equal to
       # what Speckify generates runs in speckify.yml, where Speckify has run.
       # Only its matcher is exercised here, on every push, so a guard that has

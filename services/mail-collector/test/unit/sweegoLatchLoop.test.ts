@@ -135,7 +135,7 @@ describe('the allowance latch in the collector loop', () => {
     const mx1 = fakeClient();
     const sweego = fakeClient();
     const usage = usageFor({ 'tenant-a': 1 });
-    usage.begin('tenant-a').settle(true);
+    usage.begin('tenant-a')!.settle(true);
     expect(usage.allowanceReached('tenant-a')).toBe(true);
     shim.enqueue(LOGIN('login-1'));
     shim.enqueue(NEWSLETTER('news-1'));
@@ -228,7 +228,7 @@ describe('the allowance latch in the collector loop', () => {
       const { shim, baseUrl } = await newShim();
       const mx1 = fakeClient();
       const sweego = fakeClient();
-      usageFor({ 'tenant-a': 1000 }).begin('tenant-a').settle(true);
+      usageFor({ 'tenant-a': 1000 }).begin('tenant-a')!.settle(true);
       rmSync(statePath);
       const usage = usageFor({ 'tenant-a': 1000 });
       shim.enqueue(NEWSLETTER('news-1'));
@@ -310,7 +310,7 @@ describe('the allowance latch in the collector loop', () => {
       const mx1 = fakeClient();
       const sweego = fakeClient();
       const usage = usageFor({ 'tenant-a': 1 });
-      usage.begin('tenant-a').settle(true);
+      usage.begin('tenant-a')!.settle(true);
       expect(usage.allowanceReached('tenant-a')).toBe(true);
       const sweegoPins = createSubmittedTracker(60_000);
       sweegoPins.markSubmitted('news-pinned');
@@ -336,7 +336,7 @@ describe('the allowance latch in the collector loop', () => {
       const mx1 = fakeClient();
       const sweego = fakeClient();
       const usage = usageFor({ 'tenant-a': 50 }, 1);
-      usage.begin('tenant-a').settle(true);
+      usage.begin('tenant-a')!.settle(true);
       expect(usage.accountCapReached()).toBe(true);
       const sweegoPins = createSubmittedTracker(60_000);
       sweegoPins.markSubmitted('news-pinned');
@@ -360,7 +360,7 @@ describe('the allowance latch in the collector loop', () => {
       const sweego = fakeClient();
       const mx1 = fakeClient();
       const usage = usageFor({ 'tenant-a': 50 }, 1);
-      usage.begin('tenant-a').settle(true);
+      usage.begin('tenant-a')!.settle(true);
       const sweegoPins = createSubmittedTracker(60_000);
       sweegoPins.markSubmitted('login-pinned');
       shim.enqueue(LOGIN('login-pinned'));
@@ -515,7 +515,7 @@ describe('the allowance latch in the collector loop', () => {
       sweegoThrottle: gatedThrottle,
     });
     await until(() => reached, 'the message is waiting on the sweego throttle');
-    usage.begin('tenant-a').settle(true);
+    usage.begin('tenant-a')!.settle(true);
     open();
     await until(() => ackedIn(shim).length === 1, 'acked');
     expect(mx1.calls).toEqual(['news-1']);

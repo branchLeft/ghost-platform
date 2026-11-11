@@ -13,6 +13,22 @@ export { createFileTenantStateStore } from './tenantStateStore.js';
 export type { PersistedTenantState, TenantStateStore } from './tenantStateStore.js';
 export { acquireProcessLock, ProcessLockHeldError, DEFAULT_LOCK_PATH } from './processLock.js';
 export type { ProcessLock, ProcessLockOptions } from './processLock.js';
+export {
+  createPromotionChainLog,
+  verifyChain,
+  ChainRefusedError,
+  CHAIN_VERSION,
+  GENESIS_HASH,
+} from './promotionChainLog.js';
+export type {
+  ChainEntry,
+  ChainFailureCode,
+  ChainHead,
+  ChainVerification,
+  PromotionChainLog,
+  PromotionChainLogOptions,
+  PromotionRecord,
+} from './promotionChainLog.js';
 export { recoverPersistedTenants } from './recovery.js';
 export type { RecoveredTenant, RecoveryFailure, RecoverySweepResult } from './recovery.js';
 export {

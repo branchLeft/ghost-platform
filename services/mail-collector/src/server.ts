@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createApp } from './app.js';
 import { loadConfig, sweegoUsable } from './config.js';
 import { createCollectorRuntime } from './collectorLoop.js';
@@ -14,6 +14,7 @@ import { createDirectoryDsnMailbox } from './dsnMailbox.js';
 import { createOutcomeRunner } from './outcomeRunner.js';
 import { createFailureCounter } from './submissionFailures.js';
 import { createSweegoDeliveryClient } from './sweegoDeliveryClient.js';
+import { createStateWitness } from './stateWitness.js';
 import { createSweegoUsage } from './sweegoUsage.js';
 import { createThrottle } from './throttle.js';
 import { createBulkCap } from './lanes.js';
@@ -27,7 +28,12 @@ const store = new DescriptorTargetStore({
   shimPort: config.shimPort,
   maxStalenessMs: config.descriptorMaxStalenessMs,
   log,
+  ...(config.demoMailDomain ? { demoMailDomain: config.demoMailDomain } : {}),
 });
+if (!config.demoMailDomain) {
+  // Only a demo host is affected: its mail is held until the domain is set.
+  log.warn('demo_mail_domain_not_set', {});
+}
 
 const bulkCap = createBulkCap({
   rampPath: config.bulkRampPath,
@@ -58,8 +64,28 @@ const deliveryClient = createDeliveryClient({
   ...(config.outcomes ? { outcomes: { returnPath: config.outcomes.returnPath } } : {}),
 });
 
+const PIN_FILES = ['mx1-pins.json', 'sweego-pins.json', 'sweego-ambiguous.json'] as const;
+const sweegoUsageStatePath = sweegoUsable(config.sweego) ? config.sweego.usageStatePath : undefined;
+
+// A second copy of "this state was written", on a different mount, so a state
+// volume replaced by an empty one is seen. Refuses to start with the witness
+// on the same mount as any state it guards.
+const pinStateDir = config.pinStateDir;
+const witnessedStatePaths = [
+  ...(config.dedupeStatePath ? [config.dedupeStatePath] : []),
+  ...(pinStateDir ? PIN_FILES.map((name) => join(pinStateDir, name)) : []),
+  ...(sweegoUsageStatePath ? [sweegoUsageStatePath] : []),
+];
+const stateWitness = config.stateWitnessDir
+  ? createStateWitness({ dir: config.stateWitnessDir, statePaths: witnessedStatePaths })
+  : undefined;
+if (!stateWitness) {
+  log.warn('state_witness_not_configured', {});
+}
+
 const dedupe = createSubmittedTracker(config.dedupeTtlMs, Date.now, {
   ...(config.dedupeStatePath ? { statePath: config.dedupeStatePath } : {}),
+  ...(stateWitness ? { witness: stateWitness } : {}),
   onError: (error) => log.warn('dedupe_state_error', { error: error.message }),
 });
 if (!config.dedupeStatePath) {
@@ -71,12 +97,13 @@ if (!config.dedupeStatePath) {
 function pinTracker(name: string): SubmittedTracker {
   return createSubmittedTracker(config.pinTtlMs, Date.now, {
     ...(config.pinStateDir ? { statePath: join(config.pinStateDir, name) } : {}),
+    ...(stateWitness ? { witness: stateWitness } : {}),
     onError: (error) => log.warn('pin_state_error', { error: error.message }),
   });
 }
-const mx1Pins = pinTracker('mx1-pins.json');
-const sweegoPins = pinTracker('sweego-pins.json');
-const sweegoAmbiguous = pinTracker('sweego-ambiguous.json');
+const mx1Pins = pinTracker(PIN_FILES[0]);
+const sweegoPins = pinTracker(PIN_FILES[1]);
+const sweegoAmbiguous = pinTracker(PIN_FILES[2]);
 if (!config.pinStateDir) {
   log.warn('pins_not_persistent', {});
 }
@@ -114,6 +141,7 @@ const sweegoFailures = createFailureCounter();
 const sweegoUsage = sweegoConfig
   ? createSweegoUsage({
       statePath: sweegoConfig.usageStatePath,
+      ...(stateWitness ? { witness: stateWitness } : {}),
       accountCap: sweegoConfig.accountCap,
       allowanceOf: (tenantId) => store.targets.find((t) => t.id === tenantId)?.sweegoAllowance,
       onReason: (reason) => log.warn('sweego_usage', { reason }),
@@ -154,7 +182,14 @@ const outcomes = config.outcomes
 // spool, on its existing outcome route, so Ghost shows the failure and the
 // address is suppressed. A spool that has not opted in answers 404: logged,
 // tried again, then given up on.
-const droppedOutcomes = createDroppedOutcomes({ client: drainClient, log });
+// Kept beside the dedupe file, as the bulk deferral hold is, so a restart keeps the waiting reports.
+const droppedOutcomes = createDroppedOutcomes({
+  client: drainClient,
+  log,
+  ...(config.dedupeStatePath
+    ? { statePath: join(dirname(config.dedupeStatePath), 'dropped-outcomes.json') }
+    : {}),
+});
 
 const runtime = createCollectorRuntime({
   outcomes,
@@ -165,6 +200,7 @@ const runtime = createCollectorRuntime({
   sweegoDeliveryClient,
   sweegoThrottle,
   sweegoFailures,
+  enforceHeaderFrom: true,
   sweegoQuota: sweegoUsage,
   mx1Pins,
   sweegoPins,
