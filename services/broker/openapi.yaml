@@ -806,6 +806,22 @@ components:
           type: integer
         identity:
           $ref: '#/components/schemas/SendingIdentitySpec'
+        route:
+          $ref: '#/components/schemas/MailRouteSpec'
+      additionalProperties: false
+    MailRouteSpec:
+      type: object
+      description: >-
+        Which sending target the mail collector uses for this host's drained
+        mail. Optional on `MailSpec`: an absent route means `mx1`. A `demo`
+        descriptor whose route is `sweego` is refused by render-core's own
+        validator, which this wire shape does not duplicate. Nothing reads
+        the route yet.
+      required: [primary]
+      properties:
+        primary:
+          type: string
+          enum: [mx1, sweego]
       additionalProperties: false
     HostnameSpec:
       description: >-

@@ -6,7 +6,15 @@ import type { Logger } from './log.js';
 export interface DrainTarget {
   readonly id: string;
   readonly baseUrl: string;
+  /** The sending target the descriptor names for this host's mail (`mx1` when it names none). Carried only: nothing in this service reads it yet. */
+  readonly route: MailRoute;
 }
+
+/** The sending targets a descriptor's `mail.route.primary` may name. Mirrors render-core's `MailRoute`; this service keeps its own shape check rather than import render-core. */
+export type MailRoute = 'mx1' | 'sweego';
+
+const MAIL_ROUTES: readonly string[] = ['mx1', 'sweego'];
+const DEFAULT_MAIL_ROUTE: MailRoute = 'mx1';
 
 /**
  * What collectorLoop.ts actually depends on -- narrower than the concrete
@@ -99,6 +107,33 @@ function hasValidShapeForDraining(value: unknown): value is {
   return true;
 }
 
+/**
+ * `mx1` when the descriptor carries no `mail.route`; otherwise the named
+ * target, or `undefined` when the route is present but not exactly
+ * `{ primary: "mx1" | "sweego" }`, or when a demo names `sweego`. An
+ * undefined result makes the descriptor malformed, so the host is not drained
+ * rather than guessed at. See ../README.md#descriptortargets-mail-route.
+ */
+function readMailRoute(kind: 'demo' | 'tenant', raw: object): MailRoute | undefined {
+  const mail = (raw as { mail?: unknown }).mail;
+  if (typeof mail !== 'object' || mail === null || !('route' in mail) || mail.route === undefined) {
+    return DEFAULT_MAIL_ROUTE;
+  }
+  const route = mail.route;
+  if (typeof route !== 'object' || route === null || Array.isArray(route)) {
+    return undefined;
+  }
+  const keys = Object.keys(route);
+  const primary = (route as { primary?: unknown }).primary;
+  if (keys.length !== 1 || keys[0] !== 'primary' || typeof primary !== 'string') {
+    return undefined;
+  }
+  if (!MAIL_ROUTES.includes(primary) || (kind === 'demo' && primary !== 'mx1')) {
+    return undefined;
+  }
+  return primary as MailRoute;
+}
+
 function isLive(expiresAt: string | null, nowMs: number): boolean {
   if (expiresAt === null) {
     return true;
@@ -188,6 +223,11 @@ export class DescriptorTargetStore implements TargetStore {
         this.log.warn('descriptor_malformed', { file });
         continue;
       }
+      const route = readMailRoute(raw.kind, raw);
+      if (route === undefined) {
+        this.log.warn('descriptor_malformed', { file });
+        continue;
+      }
       if (!isLive(raw.expiresAt, nowMs)) {
         continue;
       }
@@ -209,6 +249,7 @@ export class DescriptorTargetStore implements TargetStore {
       next.push({
         id: raw.slug,
         baseUrl: `${this.shimScheme}://${raw.appHostIp}:${this.shimPort}`,
+        route,
       });
     }
     this.current = next;

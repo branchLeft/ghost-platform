@@ -24,6 +24,7 @@ import { SECRET_ENV_KEYS } from './environment.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
 import type { SlugClaimant } from './naming.js';
 import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
+import { MAIL_ROUTES, mailRouteOf } from './mail.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
 
@@ -204,7 +205,8 @@ const MEDIA_LOCAL_KEYS = ['kind', 'path', 'resize', 'srcsets'] as const;
 const MEDIA_S3_KEYS = ['kind', 'endpoint', 'region', 'bucket', 'resize', 'srcsets'] as const;
 const TRANSPORT_QUEUE_KEYS = ['kind', 'path'] as const;
 const TRANSPORT_SMTP_KEYS = ['kind', 'host', 'port', 'user'] as const;
-const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity'] as const;
+const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity', 'route'] as const;
+const MAIL_ROUTE_KEYS = ['primary'] as const;
 const SENDING_IDENTITY_DEMO_KEYS = ['kind', 'localPart'] as const;
 const SENDING_IDENTITY_TENANT_KEYS = ['kind', 'domain', 'dkimSelector'] as const;
 const HOSTNAME_OURS_KEYS = ['kind', 'sub', 'gated'] as const;
@@ -387,6 +389,17 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
     assertNoUnknownKeys(descriptor.mail.identity, SENDING_IDENTITY_TENANT_KEYS, 'mail.identity');
     assertString(descriptor.mail.identity.domain, 'mail.identity.domain');
     assertString(descriptor.mail.identity.dkimSelector, 'mail.identity.dkimSelector');
+  }
+  if (descriptor.mail.route !== undefined) {
+    assertObject(descriptor.mail.route, 'mail.route');
+    assertNoUnknownKeys(descriptor.mail.route, MAIL_ROUTE_KEYS, 'mail.route');
+    if (!MAIL_ROUTES.includes(descriptor.mail.route.primary)) {
+      throw new FieldValidationError(
+        'mail.route.primary',
+        `mail.route.primary must be one of ${MAIL_ROUTES.join(', ')}, got ` +
+          `${JSON.stringify(descriptor.mail.route.primary)}.`
+      );
+    }
   }
 
   if (descriptor.hostname.kind === 'ours') {
@@ -1201,6 +1214,12 @@ function checkTierVariants(descriptor: TenantStackDescriptor): void {
     throw new TierMismatchError(
       `kind "demo" requires mail.identity.kind "demo", got "${descriptor.mail.identity.kind}". ` +
         `Demo slots get no DKIM key, selector or domain of their own.`
+    );
+  }
+  if (mailRouteOf(descriptor.mail) !== 'mx1') {
+    throw new TierMismatchError(
+      `kind "demo" requires mail.route "mx1" (or none), got "${mailRouteOf(descriptor.mail)}". ` +
+        `A demo never sends through any target but the estate's own.`
     );
   }
   if (descriptor.expiresAt === null) {

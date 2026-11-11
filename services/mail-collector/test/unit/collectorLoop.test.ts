@@ -104,7 +104,9 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   it('a message enqueued on a described host reaches the sink within a second', async () => {
     shimA.enqueue(message('m1'));
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+    const { runtime, deliveryClient } = buildRuntime([
+      { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+    ]);
     const startedAt = Date.now();
     runtime.start();
     const [received] = await sink.waitForCount(1, 1000);
@@ -118,8 +120,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     shimA.enqueue(message('from-a'));
     shimB.enqueue(message('from-b'));
     const { runtime, deliveryClient } = buildRuntime([
-      { id: 'tenant-a', baseUrl: baseUrlA },
-      { id: 'tenant-b', baseUrl: baseUrlB },
+      { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+      { id: 'tenant-b', baseUrl: baseUrlB, route: 'mx1' },
     ]);
     runtime.start();
     const received = await sink.waitForCount(2, 2000);
@@ -134,7 +136,9 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
   it('CONTROL CASE: a host reachable on the network but absent from the target list is never drained', async () => {
     shimUndescribed.enqueue(message('should-never-arrive'));
     shimA.enqueue(message('from-a'));
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+    const { runtime, deliveryClient } = buildRuntime([
+      { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+    ]);
     runtime.start();
     await sink.waitForCount(1, 1000); // the described host's message does arrive
     await new Promise((r) => setTimeout(r, 300)); // give the undescribed host every chance to be reached anyway
@@ -147,7 +151,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   it('a host removed from the target list mid-run stops being drained', async () => {
     const { runtime, store, deliveryClient } = buildRuntime([
-      { id: 'tenant-a', baseUrl: baseUrlA },
+      { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
     ]);
     runtime.start();
     await new Promise((r) => setTimeout(r, 100)); // let the loop for tenant-a actually start polling
@@ -164,13 +168,13 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   it('STALE THEN FRESH: a host whose descriptor goes stale and recovers is drained again', async () => {
     const { runtime, store, deliveryClient } = buildRuntime([
-      { id: 'tenant-a', baseUrl: baseUrlA },
+      { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
     ]);
     runtime.start();
     await new Promise((r) => setTimeout(r, 100));
     store.setTargets([]); // descriptor goes stale: tenant-a's loop winds down
     await new Promise((r) => setTimeout(r, 150));
-    store.setTargets([{ id: 'tenant-a', baseUrl: baseUrlA }]); // descriptor is fresh again
+    store.setTargets([{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }]); // descriptor is fresh again
     shimA.enqueue(message('after-recovery'));
     await new Promise((r) => setTimeout(r, 400));
     expect(sink.messages.map((m) => m.envelopeTo[0])).toEqual([
@@ -196,9 +200,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       },
     };
     shimA.enqueue(message('after-crash'));
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-      throttle: crashOnFirstReload,
-    });
+    const { runtime, deliveryClient } = buildRuntime(
+      [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+      {
+        throttle: crashOnFirstReload,
+      }
+    );
     runtime.start();
     await new Promise((r) => setTimeout(r, 400));
     expect(reloads).toBeGreaterThanOrEqual(2); // the first loop crashed; a second one ran
@@ -223,9 +230,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       },
       ack: (target, acks, signal) => real.ack(target, acks, signal),
     };
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-      drainClient: countingDrainClient,
-    });
+    const { runtime, deliveryClient } = buildRuntime(
+      [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+      {
+        drainClient: countingDrainClient,
+      }
+    );
     runtime.start();
     await new Promise((r) => setTimeout(r, 500)); // about ten refresh-driven reconciles
     await runtime.stop();
@@ -235,7 +245,9 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   it('a message the sink accepts is acknowledged exactly once', async () => {
     shimA.enqueue(message('m1'));
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+    const { runtime, deliveryClient } = buildRuntime([
+      { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+    ]);
     runtime.start();
     await sink.waitForCount(1, 1000);
     await new Promise((r) => setTimeout(r, 200)); // let the ack round-trip complete
@@ -251,6 +263,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     }).drain({
       id: 'tenant-a',
       baseUrl: baseUrlA,
+      route: 'mx1',
     });
     expect(remaining).toEqual([]);
   });
@@ -273,9 +286,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       },
     };
 
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-      drainClient: lossyDrainClient,
-    });
+    const { runtime, deliveryClient } = buildRuntime(
+      [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+      {
+        drainClient: lossyDrainClient,
+      }
+    );
     runtime.start();
 
     // The first delivery happens; its ack is the one that gets lost.
@@ -295,7 +311,11 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     expect(sink.messages).toHaveLength(1); // submitted exactly once despite the re-offer
     expect(sink.messages[0]!.envelopeTo).toEqual(['reader-m1@example.com']);
 
-    const remaining = await realDrainClient.drain({ id: 'tenant-a', baseUrl: baseUrlA });
+    const remaining = await realDrainClient.drain({
+      id: 'tenant-a',
+      baseUrl: baseUrlA,
+      route: 'mx1',
+    });
     expect(remaining).toEqual([]); // and eventually acked, clearing the shim's queue
   });
 
@@ -304,7 +324,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     const stateDir = mkdtempSync(join(tmpdir(), 'collector-dedupe-'));
     const statePath = join(stateDir, 'submitted.json');
     const realDrainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
-    const target: DrainTarget = { id: 'tenant-a', baseUrl: baseUrlA };
+    const target: DrainTarget = { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' };
 
     // First process: mx1 accepts the message, then the process dies before
     // the ack lands -- modelled as an ack that never reaches the shim.
@@ -356,9 +376,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       ack: (target, acks, signal) => realDrainClient.ack(target, acks, signal),
     };
     shimA.enqueue(message('m1'));
-    const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-      drainClient: flakyDrainClient,
-    });
+    const { runtime, deliveryClient } = buildRuntime(
+      [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+      {
+        drainClient: flakyDrainClient,
+      }
+    );
     runtime.start();
     const received = await sink.waitForCount(1, 2000);
     expect(received[0]!.envelopeTo).toEqual(['reader-m1@example.com']);
@@ -369,7 +392,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
   it('a delivery failure leaves the message unacked rather than losing or duplicating it', async () => {
     shimA.enqueue(message('m1'));
-    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }]);
     const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
     // Wrong credentials -- every delivery attempt fails, as if mx1 rejected the submission.
     const deliveryClient = createDeliveryClient({
@@ -409,7 +432,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
   it('a descriptor refresh failure is logged and does not stop the loop', async () => {
     shimA.enqueue(message('m1'));
     let refreshCalls = 0;
-    const realStore = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+    const realStore = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }]);
     const flakyStore = {
       get targets() {
         return realStore.targets;
@@ -476,9 +499,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       writeFileSync(configPath, JSON.stringify({ messagesPerHour: 5 }));
       const throttle = createThrottle({ configPath, messagesPerHour: 5 });
 
-      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-        throttle,
-      });
+      const { runtime, deliveryClient } = buildRuntime(
+        [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+        {
+          throttle,
+        }
+      );
       runtime.start();
       await new Promise((r) => setTimeout(r, 150)); // several empty-poll iterations with nothing queued
 
@@ -497,8 +523,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       shimB.enqueue(message('from-b'));
       const { runtime, deliveryClient } = buildRuntime(
         [
-          { id: 'tenant-a', baseUrl: baseUrlA },
-          { id: 'tenant-b', baseUrl: baseUrlB },
+          { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+          { id: 'tenant-b', baseUrl: baseUrlB, route: 'mx1' },
         ],
         { throttle }
       );
@@ -524,7 +550,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
   describe('the heartbeat reflects real submission health through the running loop', () => {
     it('a collector failing every real submission becomes unhealthy through health.recordFailure(), wired to an actual delivery failure', async () => {
       shimA.enqueue(message('m1'));
-      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }]);
       const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
       // Wrong credentials -- every submission mx1 (the sink) is offered fails, as if the estate's real credential were rejected.
       const deliveryClient = createDeliveryClient({
@@ -574,9 +600,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     it('an idle host -- reachable, described, nothing queued -- still pings on every empty cycle', async () => {
       const pings = vi.fn();
       const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
-      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-        heartbeat,
-      });
+      const { runtime, deliveryClient } = buildRuntime(
+        [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+        {
+          heartbeat,
+        }
+      );
       runtime.start();
       // emptyPollBackoffMs is 20ms in buildRuntime -- several idle cycles
       // comfortably complete inside this window with nothing ever enqueued.
@@ -589,9 +618,12 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       shimA.enqueue(message('m1'));
       const pings = vi.fn();
       const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
-      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-        heartbeat,
-      });
+      const { runtime, deliveryClient } = buildRuntime(
+        [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+        {
+          heartbeat,
+        }
+      );
       runtime.start();
       await sink.waitForCount(1, 1000);
       await vi.waitFor(() => expect(pings.mock.calls.length).toBeGreaterThanOrEqual(1));
@@ -611,10 +643,13 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       };
       const pings = vi.fn();
       const heartbeat: DeadMansSwitch = { onCycleComplete: pings };
-      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }], {
-        drainClient: failingDrainClient,
-        heartbeat,
-      });
+      const { runtime, deliveryClient } = buildRuntime(
+        [{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }],
+        {
+          drainClient: failingDrainClient,
+          heartbeat,
+        }
+      );
       runtime.start();
       await new Promise((r) => setTimeout(r, 200)); // several failed-drain retries elapse
       expect(pings).not.toHaveBeenCalled();
@@ -624,7 +659,9 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
 
     it('with no heartbeat supplied, the loop runs exactly as before -- the dependency is optional, not required', async () => {
       shimA.enqueue(message('m1'));
-      const { runtime, deliveryClient } = buildRuntime([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      const { runtime, deliveryClient } = buildRuntime([
+        { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+      ]);
       runtime.start();
       const received = await sink.waitForCount(1, 1000);
       expect(received[0]!.envelopeTo).toEqual(['reader-m1@example.com']);
@@ -640,7 +677,7 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
       // assertion is that final one, not any stub earlier in this test.
       // Against a genuinely idle host a missing ping looks like a wedged
       // loop: the switch would go Late then Down for a healthy worker.
-      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA }]);
+      const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' }]);
       const drainClient = createDrainClient({ drainToken: DRAIN_TOKEN, drainTimeoutMs: 5000 });
       const deliveryClient = createDeliveryClient({
         host: '127.0.0.1',
@@ -694,8 +731,8 @@ describe('collector loop -- against real local shim servers and a real SMTP sink
     () => {
       function buildTwoHostRuntime(drainClient: DrainClient, fetchImpl: typeof fetch) {
         const store = createFakeTargetStore([
-          { id: 'tenant-a', baseUrl: baseUrlA },
-          { id: 'tenant-b', baseUrl: baseUrlB },
+          { id: 'tenant-a', baseUrl: baseUrlA, route: 'mx1' },
+          { id: 'tenant-b', baseUrl: baseUrlB, route: 'mx1' },
         ]);
         const deliveryClient = createDeliveryClient({
           host: '127.0.0.1',

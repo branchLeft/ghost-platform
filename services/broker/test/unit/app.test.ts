@@ -679,6 +679,37 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(broker.adminApi.calls).toHaveLength(0);
   });
 
+  // A demo's mail never leaves mx1: the wire schema lets `sweego` through for
+  // every kind, so this is render-core's `validate()` refusing it.
+  it('refuses a demo descriptor whose mail route is sweego, before any side effect', async () => {
+    broker = await startTestBroker();
+    const base = demoDescriptor();
+    const bad = { ...base, mail: { ...base.mail, route: { primary: 'sweego' } } };
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('mail.route');
+    expect(broker.renderer.calls).toHaveLength(0);
+    expect(broker.adminApi.calls).toHaveLength(0);
+  });
+
+  it('refuses a descriptor whose mail route is not a known target', async () => {
+    broker = await startTestBroker();
+    const base = demoDescriptor();
+    const bad = { ...base, mail: { ...base.mail, route: { primary: 'mailgun' } } };
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: bad });
+    expect(res.status).toBe(400);
+    expect(broker.renderer.calls).toHaveLength(0);
+  });
+
+  it('reconciles a demo descriptor whose mail route is mx1', async () => {
+    broker = await startTestBroker();
+    const base = demoDescriptor();
+    const withMx1 = { ...base, mail: { ...base.mail, route: { primary: 'mx1' } } };
+    const res = await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: withMx1 });
+    expect(res.status).toBe(200);
+    expect(broker.renderer.calls).toHaveLength(1);
+  });
+
   // --- Item 1: a descriptor whose ports or uid disagree with the slot's
   // own allocation is refused before the renderer or the Admin API ever
   // see it. ---

@@ -94,6 +94,26 @@ export interface MailSpec {
   readonly ceiling: number;
   readonly estateCeiling: number;
   readonly identity: SendingIdentitySpec;
+  /**
+   * Which sending target the mail collector uses for this host's drained
+   * mail. Absent means `mx1`, so a descriptor written before this field
+   * existed means exactly what it always did. Nothing reads it yet. See
+   * mail.md#mail-route.
+   */
+  readonly route?: MailRouteSpec;
+}
+
+/** The two sending targets the collector may be told to use. */
+export type MailRoute = 'mx1' | 'sweego';
+
+/**
+ * A strict object, not a bare string, so a later field (an allowance) can
+ * be added beside `primary` without renaming anything. It carries no
+ * credential, no host and no fallback target: the fallback is fixed in the
+ * collector's code and has no descriptor field. See mail.md#mail-route.
+ */
+export interface MailRouteSpec {
+  readonly primary: MailRoute;
 }
 
 /**
