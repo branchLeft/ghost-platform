@@ -87,7 +87,8 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0006_demo_lifecycle_register',
       'applied migration 0007_demo_rebuild_extended',
       'applied migration 0008_tenant_name',
-      'applied migration 0009_demo_request',
+      'applied migration 0009_custom_domain',
+      'applied migration 0010_demo_request',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),
@@ -161,6 +162,17 @@ describe('the provisioning lifecycle', () => {
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'UPDATE')).toBe(true);
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.moderation_setting', 'SELECT')).toBe(false);
+    // A tenant requests, connects and removes its own domains; it never edits a row,
+    // and no other role touches either table.
+    for (const table of ['portal.custom_domain_request', 'portal.connected_domain']) {
+      for (const verb of ['INSERT', 'SELECT', 'DELETE']) {
+        expect(await privilege('portal_tenant', table, verb)).toBe(true);
+      }
+      expect(await privilege('portal_tenant', table, 'UPDATE')).toBe(false);
+      for (const role of ['portal_owner', 'portal_provisioner']) {
+        expect(await privilege(role, table, 'SELECT')).toBe(false);
+      }
+    }
     // The provisioner role appends and reads the register and the events; it
     // changes and removes nothing, and no other role writes them.
     for (const table of [

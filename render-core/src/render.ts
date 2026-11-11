@@ -13,7 +13,7 @@ import {
   validateSlug,
   validateTenantUid,
 } from './brand.js';
-import { renderComposeStack, type DemoDataMount } from './compose.js';
+import { renderComposeStack, type Colour, type DemoDataMount } from './compose.js';
 import type { TenantStackDescriptor } from './descriptor.js';
 import { renderEdgeSiteBlock, THEME_CSP_UNAVAILABLE, type ThemeCsp } from './edge.js';
 import { tenantEnvironment, SECRET_ENV_KEYS } from './environment.js';
@@ -193,6 +193,13 @@ function assertAllocationShape(descriptor: TenantStackDescriptor): void {
   validateDigestPinnedRef(descriptor.image);
 }
 
+/** Optional inputs to `render()` that are deploy-time state, not part of the
+ * descriptor. See compose.md#one-running-colour. */
+export interface RenderOptions {
+  /** When given, `compose.yml` carries only this colour's Ghost service. */
+  readonly activeColour?: Colour;
+}
+
 /**
  * `descriptor` must already have passed `validate()` — `render()` does not
  * re-run it, but does re-check every field it interpolates into shell, env
@@ -202,7 +209,8 @@ function assertAllocationShape(descriptor: TenantStackDescriptor): void {
 export function render(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
-  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE
+  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE,
+  options: RenderOptions = {}
 ): readonly Artefact[] {
   assertAllocationShape(descriptor);
   const dataMount = demoDataMount(descriptor);
@@ -220,6 +228,7 @@ export function render(
     caps: descriptor.caps,
     dataMount,
     mailNetwork: descriptor.mail.enabled ? mailSpoolNetworkName(descriptor.uid) : null,
+    ...(options.activeColour === undefined ? {} : { activeColour: options.activeColour }),
   });
   const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp);
   const settings = renderSettings(descriptor, zones);

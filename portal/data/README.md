@@ -184,6 +184,51 @@ save route must pass the changes in `COMMENT_CHECKS` order, the order the route
 uses. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
 deletes a setting, and the owner role has no grant on it.
 
+## Custom domains
+
+A real tenant connects its own domain in three steps, each a `TenantDb` call:
+`requestCustomDomain` (the domain is normalised and refused unless it is a plain
+domain name outside every platform-owned domain, and only a `REAL` tenant may
+ask), `checkCustomDomain` (a lookup, below) and `connectCustomDomain`.
+`removeCustomDomain` disconnects it. Nothing here serves a domain: the edge
+serves only what is in `portal.connected_domain`, and wiring that to the edge
+is not part of this layer.
+
+Two tables, both isolated like every tenant table. `portal.custom_domain_request`
+holds the unproven asks, one row per tenant and domain with a one-time token
+(32 characters of base32, 160 bits, from the operating system's random source);
+it is not unique across tenants, so an unproven ask never blocks a domain's real
+owner. `portal.connected_domain` holds the connections, keyed by the domain, so
+a domain is connected to one tenant at a time and a second tenant's connection
+is refused by the table (`connected_domain_pkey`) even to a statement that skips
+the code. The portal maps that refusal to `CustomDomainTakenError`, which names
+neither the domain nor the tenant. Both tables check the stored name against the
+same pattern the code normalises to.
+
+**The check.** `checkCustomDomain(resolver, edgeTarget, { fqdn, token }, now)`
+passes only when every address the domain resolves to is one of the edge's (or
+the domain is a CNAME to the edge's name), and a TXT record at
+`_publicpress-verify.<domain>` holds `publicpress-verify=<token>`. A domain that
+also answers at an address the edge does not hold is not pointed at it. A lookup
+that fails for any reason other than "no such record" throws
+`DnsLookupFailedError`: the check never passes on a failed lookup. The resolver
+is a seam (`nodeDnsResolver(servers)` is the real one).
+
+**The proof.** A passing check returns a `DomainProof`, and
+`connectCustomDomain` accepts nothing else. A proof has no public constructor
+(`checkCustomDomain` is the only way to make one) and is looked up in a
+registry on use, so a look-alike object is refused. It is also refused when older
+than ten minutes or dated ahead, and when the domain was not requested by this
+tenant or the proof's token is not the one the request holds. This is a
+type-and-registry control inside trusted application code; the database cannot
+see DNS, so a tenant-role statement that skips the code can still insert a
+connection, which is why the edge's own admission (`ghost-platform` `services/odask`)
+must stay the second gate.
+
+**Grants.** This is the one place a tenant deletes its own rows: the tenant role
+holds `SELECT`, `INSERT` and `DELETE` on the two tables, never `UPDATE`, and the
+owner and provisioner roles hold nothing on them. A test pins that exact set.
+
 ## The demo lifecycle, its term and the hostname register
 
 A demo is the owner side's record of one prospect's tenancy; the lifecycle

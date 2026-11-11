@@ -186,7 +186,8 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0006_demo_lifecycle_register',
       'applied migration 0007_demo_rebuild_extended',
       'applied migration 0008_tenant_name',
-      'applied migration 0009_demo_request',
+      'applied migration 0009_custom_domain',
+      'applied migration 0010_demo_request',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -285,7 +286,7 @@ describe('--migrate-only on a real server', () => {
 
   it('adds the demo request table to a server that has the lifecycle, with the front door insert-only', async () => {
     const all = readMigrations();
-    const index = all.findIndex((m) => m.tag === '0009_demo_request');
+    const index = all.findIndex((m) => m.tag === '0010_demo_request');
     expect(index).toBeGreaterThan(0);
     const before = await run({ migrations: all.slice(0, index) });
     expect(before.err).toEqual([]);
@@ -295,7 +296,7 @@ describe('--migrate-only on a real server', () => {
     const result = await migrate();
     expect(result.err).toEqual([]);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('applied migration 0009_demo_request');
+    expect(result.out).toContain('applied migration 0010_demo_request');
     expect((await admin(PROV_DB, table))[0]!.rows[0].t).toBe('portal.demo_request');
     const [grants] = await admin(
       PROV_DB,

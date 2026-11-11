@@ -122,7 +122,8 @@ const KIND = '0005_tenant_kind';
 const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
 const DEMO_REBUILD = '0007_demo_rebuild_extended';
 const TENANT_NAME = '0008_tenant_name';
-const DEMO_REQUEST = '0009_demo_request';
+const CUSTOM_DOMAIN = '0009_custom_domain';
+const DEMO_REQUEST = '0010_demo_request';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -251,6 +252,25 @@ export function manifest(major: number, database: string): readonly ManifestObje
       since: MODERATION,
       grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
     },
+    // TenantDb.requestCustomDomain inserts and reads the tenant's own requests,
+    // connectCustomDomain deletes the request it turns into a connection and
+    // removeCustomDomain deletes one. Nothing updates a request. The owner role
+    // reads nothing here yet.
+    {
+      kind: 'table',
+      identity: 'portal.custom_domain_request',
+      since: CUSTOM_DOMAIN,
+      grants: [{ grantee: 'tenantRole', privileges: ['DELETE', 'INSERT', 'SELECT'] }],
+    },
+    // TenantDb.connectCustomDomain inserts and customDomains reads the tenant's
+    // own connections; removeCustomDomain deletes one. Nothing updates a
+    // connection. The owner role reads nothing here yet.
+    {
+      kind: 'table',
+      identity: 'portal.connected_domain',
+      since: CUSTOM_DOMAIN,
+      grants: [{ grantee: 'tenantRole', privileges: ['DELETE', 'INSERT', 'SELECT'] }],
+    },
     // ProvisionerDb appends events and reads the latest to decide the next;
     // OwnerDb.listDemos and demoHistory read. No role updates or deletes an
     // event: the history is the record, and the tenant role holds nothing.
@@ -308,6 +328,8 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
+  'portal.custom_domain_request': { enabled: true, forced: false },
+  'portal.connected_domain': { enabled: true, forced: false },
   'portal.demo_state_event': { enabled: false, forced: false },
   'portal.hostname_register': { enabled: false, forced: false },
   'portal.hostname_retirement': { enabled: false, forced: false },
@@ -387,6 +409,22 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`,
     `(${BOUND})`
   ),
+  policy(
+    'portal.custom_domain_request',
+    'tenant_isolation',
+    CUSTOM_DOMAIN,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  policy(
+    'portal.connected_domain',
+    'tenant_isolation',
+    CUSTOM_DOMAIN,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
 ];
 
 /**
@@ -412,6 +450,9 @@ export interface TableShape {
 }
 
 const PLAIN = 'generated=- identity=-';
+
+/** The domain-name check as the server deparses it; written out so the manifest pins the text, not an import. */
+const FQDN_REGEX = '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?[.])+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$';
 
 export const TABLE_SHAPES: Record<string, TableShape> = {
   'drizzle.__drizzle_migrations': {
@@ -549,6 +590,37 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
         'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
         'USING btree (tenant_id, check_id)',
+    ],
+  },
+  'portal.custom_domain_request': {
+    since: CUSTOM_DOMAIN,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column fqdn text notnull=true ${PLAIN}`,
+      `column verification_token text notnull=true ${PLAIN}`,
+      `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      `constraint custom_domain_request_fqdn_shape CHECK (((fqdn ~ '${FQDN_REGEX}'::text) AND (length(fqdn) <= 253)))`,
+      'constraint custom_domain_request_tenant_id_fqdn_pk PRIMARY KEY (tenant_id, fqdn)',
+      'constraint custom_domain_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      "constraint custom_domain_request_token_shape CHECK ((verification_token ~ '^[a-z2-7]{32}$'::text))",
+      'index portal.custom_domain_request_tenant_id_fqdn_pk CREATE UNIQUE INDEX ' +
+        'custom_domain_request_tenant_id_fqdn_pk ON portal.custom_domain_request ' +
+        'USING btree (tenant_id, fqdn)',
+    ],
+  },
+  'portal.connected_domain': {
+    since: CUSTOM_DOMAIN,
+    lines: [
+      `column fqdn text notnull=true ${PLAIN}`,
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column connected_at timestamp with time zone notnull=true ${PLAIN}`,
+      `constraint connected_domain_fqdn_shape CHECK (((fqdn ~ '${FQDN_REGEX}'::text) AND (length(fqdn) <= 253)))`,
+      'constraint connected_domain_pkey PRIMARY KEY (fqdn)',
+      'constraint connected_domain_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.connected_domain_pkey CREATE UNIQUE INDEX connected_domain_pkey ON ' +
+        'portal.connected_domain USING btree (fqdn)',
     ],
   },
   'portal.demo_state_event': {

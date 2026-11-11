@@ -461,9 +461,13 @@ describe('the statements the command writes', () => {
     ]);
   });
 
-  it('grants no DELETE anywhere and no UPDATE on the register', () => {
+  it('grants DELETE only on the two custom-domain tables and no UPDATE on the register', () => {
     const all = manifest(14, 'portal').flatMap((o) => grantStatements(o, names, 14));
-    expect(all.filter((s) => s.includes('DELETE'))).toEqual([]);
+    // A tenant disconnects a domain by deleting its own rows; nothing else is ever deleted.
+    expect(all.filter((s) => s.includes('DELETE'))).toEqual([
+      'GRANT DELETE, INSERT, SELECT ON TABLE portal.custom_domain_request TO "portal_tenant"',
+      'GRANT DELETE, INSERT, SELECT ON TABLE portal.connected_domain TO "portal_tenant"',
+    ]);
     expect(all.filter((s) => s.includes('UPDATE'))).toEqual([
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.health_reading TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.moderation_setting TO "portal_tenant"',
