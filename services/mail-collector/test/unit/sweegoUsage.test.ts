@@ -49,7 +49,7 @@ describe('the sweego usage counter', () => {
 
   function send(usage: SweegoUsage, tenant: string, times = 1): void {
     for (let n = 0; n < times; n += 1) {
-      usage.begin(tenant).settle(true);
+      usage.begin(tenant)!.settle(true);
     }
   }
 
@@ -61,7 +61,7 @@ describe('the sweego usage counter', () => {
       const usage = open();
       send(usage, 'tenant-a', 2);
       send(usage, 'tenant-b');
-      usage.begin('tenant-a').settle(false);
+      usage.begin('tenant-a')!.settle(false);
       expect(usedBy(usage, 'tenant-a')).toBe(2);
       expect(usedBy(usage, 'tenant-b')).toBe(1);
       expect(usage.accountState()).toMatchObject({ month: '2026-11', total: 3, degraded: false });
@@ -69,7 +69,7 @@ describe('the sweego usage counter', () => {
 
     it('counts an attempt once however often it is settled', () => {
       const usage = open();
-      const slot = usage.begin('tenant-a');
+      const slot = usage.begin('tenant-a')!;
       slot.settle(true);
       slot.settle(true);
       slot.settle(false);
@@ -142,7 +142,7 @@ describe('the sweego usage counter', () => {
     it('counts an attempt in flight against the allowance, and gives it back if the attempt fails', () => {
       const usage = open();
       send(usage, 'tenant-a', 2);
-      const inFlight = usage.begin('tenant-a');
+      const inFlight = usage.begin('tenant-a')!;
       expect(usage.allowanceReached('tenant-a')).toBe(true);
       inFlight.settle(false);
       expect(usage.allowanceReached('tenant-a')).toBe(false);
@@ -184,7 +184,7 @@ describe('the sweego usage counter', () => {
       allowances = { 'tenant-a': 50, 'tenant-b': 50 };
       const usage = open({ accountCap: 2 });
       send(usage, 'tenant-a');
-      const a = usage.begin('tenant-a');
+      const a = usage.begin('tenant-a')!;
       expect(usage.accountCapReached()).toBe(true);
       a.settle(false);
       expect(usage.accountCapReached()).toBe(false);
@@ -404,10 +404,12 @@ describe('the sweego usage counter', () => {
     });
 
     it('goes closed when the state cannot be written, counts the message, and opens when a write succeeds', () => {
-      // Opened while the path is free, then a plain file takes the place of its directory.
+      // The place is reserved while the path is free, then a plain file takes the place of its directory.
       const blocked = open({ path: join(dir, 'blocker', 'usage.json') });
+      const slot = blocked.begin('tenant-a')!;
+      rmSync(join(dir, 'blocker'), { recursive: true });
       writeFileSync(join(dir, 'blocker'), 'a file where a directory is needed');
-      send(blocked, 'tenant-a');
+      slot.settle(true);
       expect(blocked.reasons()['state-write-failed']).toBeGreaterThanOrEqual(1);
       expect(blocked.allowanceReached('tenant-a')).toBe(true);
       expect(blocked.accountCapReached()).toBe(true);
@@ -490,7 +492,7 @@ describe('the sweego usage counter', () => {
     it('goes closed, as a failed write, when the marker cannot be written', () => {
       const usage = open();
       mkdirSync(markerOf());
-      send(usage, 'tenant-a');
+      expect(usage.begin('tenant-a')).toBeUndefined();
       expect(usage.reasons()['state-write-failed']).toBeGreaterThanOrEqual(1);
       expect(usage.accountCapReached()).toBe(true);
       rmSync(markerOf(), { recursive: true });
@@ -514,44 +516,44 @@ describe('the sweego usage counter', () => {
   describe('an attempt that may have been taken', () => {
     it('counts an ambiguous end against the tenant and the total', () => {
       const usage = open();
-      usage.begin('tenant-a', 'm1').ambiguous();
+      usage.begin('tenant-a', 'm1')!.ambiguous();
       expect(usedBy(usage, 'tenant-a')).toBe(1);
       expect(usage.accountState().total).toBe(1);
     });
 
     it('counts the message once when a later attempt for it is accepted', () => {
       const usage = open();
-      usage.begin('tenant-a', 'm1').ambiguous();
-      usage.begin('tenant-a', 'm1').settle(true);
+      usage.begin('tenant-a', 'm1')!.ambiguous();
+      usage.begin('tenant-a', 'm1')!.settle(true);
       expect(usedBy(usage, 'tenant-a')).toBe(1);
       expect(usage.accountState().total).toBe(1);
     });
 
     it('counts the message once across a restart', () => {
-      open().begin('tenant-a', 'm1').ambiguous();
+      open().begin('tenant-a', 'm1')!.ambiguous();
       const restarted = open();
-      restarted.begin('tenant-a', 'm1').settle(true);
-      restarted.begin('tenant-a', 'm1').ambiguous();
+      restarted.begin('tenant-a', 'm1')!.settle(true);
+      restarted.begin('tenant-a', 'm1')!.ambiguous();
       expect(usedBy(restarted, 'tenant-a')).toBe(1);
     });
 
     it('counts two different messages separately', () => {
       const usage = open();
-      usage.begin('tenant-a', 'm1').ambiguous();
-      usage.begin('tenant-a', 'm2').ambiguous();
+      usage.begin('tenant-a', 'm1')!.ambiguous();
+      usage.begin('tenant-a', 'm2')!.ambiguous();
       expect(usedBy(usage, 'tenant-a')).toBe(2);
     });
 
     it('latches the tenant when an ambiguous attempt reaches its allowance', () => {
       const usage = open();
       send(usage, 'tenant-a', 2);
-      usage.begin('tenant-a', 'm1').ambiguous();
+      usage.begin('tenant-a', 'm1')!.ambiguous();
       expect(usage.allowanceReached('tenant-a')).toBe(true);
     });
 
     it('counts in the same reservation as any other attempt: it holds a place until it ends', () => {
       const usage = open({ accountCap: 1 });
-      const slot = usage.begin('tenant-a', 'm1');
+      const slot = usage.begin('tenant-a', 'm1')!;
       expect(usage.accountCapReached()).toBe(true);
       slot.ambiguous();
       expect(usage.accountCapReached()).toBe(true);
@@ -560,10 +562,10 @@ describe('the sweego usage counter', () => {
 
     it('settles once: an ambiguous end after a settle, or the other way round, changes nothing', () => {
       const usage = open();
-      const first = usage.begin('tenant-a', 'm1');
+      const first = usage.begin('tenant-a', 'm1')!;
       first.settle(false);
       first.ambiguous();
-      const second = usage.begin('tenant-a', 'm2');
+      const second = usage.begin('tenant-a', 'm2')!;
       second.ambiguous();
       second.settle(true);
       second.ambiguous();
@@ -572,15 +574,15 @@ describe('the sweego usage counter', () => {
 
     it('forgets the counted messages at a month change, so one tried again in the new month counts there', () => {
       const usage = open();
-      usage.begin('tenant-a', 'm1').ambiguous();
+      usage.begin('tenant-a', 'm1')!.ambiguous();
       clock = at('2026-12-01T00:00:00.000Z');
-      usage.begin('tenant-a', 'm1').settle(true);
+      usage.begin('tenant-a', 'm1')!.settle(true);
       expect(usedBy(usage, 'tenant-a')).toBe(1);
       expect(usage.accountState()).toMatchObject({ month: '2026-12', total: 1 });
     });
 
     it('writes the counted messages as digests, never as ids', () => {
-      open().begin('tenant-a', 'message-id-123').ambiguous();
+      open().begin('tenant-a', 'message-id-123')!.ambiguous();
       expect(readFileSync(statePath, 'utf8')).not.toContain('message-id-123');
     });
   });

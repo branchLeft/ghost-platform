@@ -27,7 +27,9 @@ export type UsageReason =
   /** The clock reads an earlier month than the stored counters: they are kept, not reset. */
   | 'clock-behind-state'
   /** A tenant asked about carries no allowance, so it is treated as latched. */
-  | 'allowance-unknown';
+  | 'allowance-unknown'
+  /** A place reserved before a crash had no outcome recorded, so the next start counted it as used. */
+  | 'inflight-recounted';
 
 /** One attempt at Sweego, begun before the send and settled once it ends. Settling twice is a no-op. */
 export interface UsageSlot {
@@ -46,9 +48,20 @@ export interface SweegoUseCounter {
    * Called in the same tick as the last quota check, so an attempt in flight
    * counts against the allowance and the account cap before it is accepted.
    * `messageId` lets a message that is counted at an ambiguous end be counted
-   * only once if a later attempt for it is accepted.
+   * only once if a later attempt for it is accepted. The place is written to
+   * the state file before this returns; `undefined` means it could not be
+   * (the state is unreadable or the write failed), and the caller must not
+   * send. A message that already holds a place is given a slot that reserves
+   * nothing more.
    */
-  begin(tenantId: string, messageId?: string): UsageSlot;
+  begin(tenantId: string, messageId?: string): UsageSlot | undefined;
+  /**
+   * True when this message was already counted this month (an earlier attempt
+   * ended ambiguous, or its reserved place was recounted after a crash), so a
+   * retry of it needs no new place. Always false while the counters cannot be
+   * trusted.
+   */
+  holdsPlace(messageId: string): boolean;
 }
 
 export interface TenantLatchState {
@@ -108,12 +121,19 @@ interface TenantUse {
   latched: boolean;
 }
 
+/** A place reserved and not yet settled. The digest is absent when the attempt carried no message id. */
+interface InflightEntry {
+  tenant: string;
+  digest?: string;
+}
+
 interface LoadedState {
   month: string;
   degraded: boolean;
   vanished: boolean;
   tenants: Map<string, TenantUse>;
   counted: Set<string>;
+  inflight: InflightEntry[];
 }
 
 /** An opaque digest, so the file holds no message id. */
@@ -135,7 +155,7 @@ function parseState(raw: string): LoadedState | undefined {
   if (typeof parsed !== 'object' || parsed === null) {
     return undefined;
   }
-  const { version, month, degraded, tenants, vanished, ambiguous } = parsed as Record<
+  const { version, month, degraded, tenants, vanished, ambiguous, inflight } = parsed as Record<
     string,
     unknown
   >;
@@ -164,12 +184,29 @@ function parseState(raw: string): LoadedState | undefined {
     }
     loaded.set(tenant, { used, latched });
   }
+  const reserved: InflightEntry[] = [];
+  if (inflight !== undefined) {
+    if (!Array.isArray(inflight)) {
+      return undefined;
+    }
+    for (const entry of inflight) {
+      if (typeof entry !== 'object' || entry === null) {
+        return undefined;
+      }
+      const { tenant, digest } = entry as Record<string, unknown>;
+      if (typeof tenant !== 'string' || (digest !== undefined && typeof digest !== 'string')) {
+        return undefined;
+      }
+      reserved.push(digest === undefined ? { tenant } : { tenant, digest });
+    }
+  }
   return {
     month,
     degraded,
     vanished: vanished === true,
     tenants: loaded,
     counted: new Set(ambiguous as string[] | undefined),
+    inflight: reserved,
   };
 }
 
@@ -193,6 +230,9 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
   const tenants = new Map<string, TenantUse>();
   const pending = new Map<string, number>();
   let pendingTotal = 0;
+  // Places reserved and not yet settled. Written to the file with every save,
+  // so a crash leaves them there and the next start counts them.
+  const inflight = new Set<InflightEntry>();
   let totalUsed = 0;
   let month = utcMonthOf(now());
   let degraded = false;
@@ -229,6 +269,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
           ...(vanished ? { vanished } : {}),
           tenants: Object.fromEntries(tenants),
           ...(counted.size > 0 ? { ambiguous: [...counted] } : {}),
+          ...(inflight.size > 0 ? { inflight: [...inflight] } : {}),
         })
       );
       // After the file: a crash between the two leaves a file with no marker,
@@ -277,6 +318,21 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
       tenants.set(tenant, use);
     }
     recount();
+    // Places reserved by a process that died before it recorded an outcome:
+    // the send may have been taken, so each is counted as used.
+    let recounted = false;
+    for (const entry of loaded.inflight) {
+      if (entry.digest !== undefined) {
+        if (counted.has(entry.digest)) {
+          recounted = true;
+          continue;
+        }
+        counted.add(entry.digest);
+      }
+      addUse(entry.tenant);
+      note('inflight-recounted');
+      recounted = true;
+    }
     if (loaded.vanished && markerAbsent(statePath)) {
       // The owner deleted the marker: the latch is cleared, the counts kept.
       persist();
@@ -289,6 +345,10 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
       persist();
     } else {
       markerKnown = true;
+    }
+    // Last, so the file written keeps the vanished latch the branches above settled.
+    if (recounted) {
+      persist();
     }
   }
 
@@ -349,8 +409,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     return totalUsed + pendingTotal >= accountCap;
   }
 
-  function accept(tenantId: string): void {
-    roll();
+  function addUse(tenantId: string): void {
     const use = tenants.get(tenantId) ?? { used: 0, latched: false };
     use.used += 1;
     totalUsed += 1;
@@ -363,13 +422,54 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     if (totalUsed === accountCap) {
       note('account-cap-reached');
     }
+  }
+
+  function accept(tenantId: string): void {
+    roll();
+    addUse(tenantId);
     persist();
   }
 
-  function begin(tenantId: string, messageId?: string): UsageSlot {
-    roll();
+  // Ends the reservation in memory.
+  function unreserve(tenantId: string, entry: InflightEntry): void {
+    inflight.delete(entry);
+    const left = (pending.get(tenantId) ?? 1) - 1;
+    if (left > 0) {
+      pending.set(tenantId, left);
+    } else {
+      pending.delete(tenantId);
+    }
+    pendingTotal -= 1;
+  }
+
+  // What a message that already holds a place is given: nothing more is reserved or counted.
+  const HELD_PLACE_SLOT: UsageSlot = { settle(): void {}, ambiguous(): void {} };
+
+  function holdsPlace(messageId: string): boolean {
+    return !blocked() && counted.has(digestOf(messageId));
+  }
+
+  function begin(tenantId: string, messageId?: string): UsageSlot | undefined {
+    // Unknown usage: no place can be promised, so the send must not go ahead.
+    if (blocked()) {
+      return undefined;
+    }
+    const digest = messageId === undefined ? undefined : digestOf(messageId);
+    if (digest !== undefined && counted.has(digest)) {
+      return HELD_PLACE_SLOT;
+    }
+    const entry: InflightEntry =
+      digest === undefined ? { tenant: tenantId } : { tenant: tenantId, digest };
+    inflight.add(entry);
     pending.set(tenantId, (pending.get(tenantId) ?? 0) + 1);
     pendingTotal += 1;
+    // Written ahead of the send: a crash from here on leaves the place in the
+    // file, and the next start counts it. A write that fails gives it back.
+    persist();
+    if (unpersisted) {
+      unreserve(tenantId, entry);
+      return undefined;
+    }
     let settled = false;
     // Ends the reservation; false when it had already ended.
     function release(): boolean {
@@ -377,24 +477,19 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
         return false;
       }
       settled = true;
-      const left = (pending.get(tenantId) ?? 1) - 1;
-      if (left > 0) {
-        pending.set(tenantId, left);
-      } else {
-        pending.delete(tenantId);
-      }
-      pendingTotal -= 1;
+      unreserve(tenantId, entry);
       roll();
       return true;
     }
     return {
       settle(accepted: boolean): void {
-        if (!release() || !accepted) {
+        if (!release()) {
           return;
         }
         // Already counted at an earlier ambiguous end: one message, one count.
-        // Already counted at an earlier ambiguous end: one message, one count.
-        if (messageId !== undefined && counted.has(digestOf(messageId))) {
+        // Either way the one save also drops the place from the in-flight list.
+        if (!accepted || (digest !== undefined && counted.has(digest))) {
+          persist();
           return;
         }
         accept(tenantId);
@@ -403,9 +498,9 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
         if (!release()) {
           return;
         }
-        if (messageId !== undefined) {
-          const digest = digestOf(messageId);
+        if (digest !== undefined) {
           if (counted.has(digest)) {
+            persist();
             return;
           }
           counted.add(digest);
@@ -447,6 +542,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     allowanceReached,
     accountCapReached,
     begin,
+    holdsPlace,
     tenantLatchState,
     accountState,
     reasons: () => ({ ...reasonCounts }),
