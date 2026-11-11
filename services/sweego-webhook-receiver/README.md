@@ -38,9 +38,12 @@ receive time in epoch seconds. The recipient and every other field are dropped.
 - A caller holding the secret can enqueue records, bounded by the 5 MiB queue
   cap and the 200,000-entry replay cap (both answer 503 when reached; neither
   evicts). Each complaint takes two replay entries, and the replay cap is sized
-  above twice what the queue can hold, so the queue fills first. Room in the
-  replay set is checked before anything is queued, so a full replay set refuses
-  with nothing queued and a retry cannot duplicate.
+  above twice what a full 5 MiB queue can hold. Replay entries live the full
+  3-hour TTL even after the collector drains the queue, so while the collector
+  keeps draining, the replay set can still reach its cap before the queue
+  fills. Room in the replay set is checked before anything is queued, so a
+  full replay set refuses with 503 and nothing queued: a retry cannot
+  duplicate, and the refusal ends as entries expire.
 - No caller can read anything: the public listener has no read route and the
   drain routes do not exist on it.
 
@@ -82,8 +85,13 @@ All by environment variable. Secrets and the token are file paths.
 | `WEBHOOK_OUTCOME_HEADER` | optional name of our correlation header in the payload |
 | `WEBHOOK_HEADERS_TIMEOUT_MS`, `WEBHOOK_REQUEST_TIMEOUT_MS`, `WEBHOOK_KEEP_ALIVE_TIMEOUT_MS` | read timeouts (5000, 10000, 5000) |
 
-A wildcard listen address is refused in every spelling (`0.0.0.0`, `::`, `::0`,
-`[::]`, the expanded and IPv4-mapped IPv6 forms, and short forms such as `0`).
+A wildcard listen address is refused in these spellings: `0.0.0.0` and its short
+and padded IPv4 forms (`0`, `00`, `0x0`, `0.0`, `0.0.0.00`); `::`, `::0`, the
+expanded `0:0:0:0:0:0:0:0`, `[::]`, and the IPv4-mapped forms `::ffff:0.0.0.0`
+and `::ffff:0:0`; and any of the IPv6 spellings with a zone id (`::%eth0`,
+`[::%25eth0]`). A spelling the URL parser rejects is not refused by this check
+and fails when the listener binds. A specific address, with or without a zone
+id, is accepted.
 A missing or malformed value stops startup. The secrets and token are read once
 at start; rotation is a restart.
 

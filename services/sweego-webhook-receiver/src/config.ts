@@ -22,12 +22,16 @@ const WILDCARD_HOSTS = new Set(['0.0.0.0', '[::]', '[::ffff:0:0]']);
 const MIN_DRAIN_TOKEN_CHARS = 32;
 
 /**
- * True for any spelling of an all-interfaces address: `::0`, the expanded
- * IPv6 form, the IPv4-mapped form, and the short IPv4 forms such as `0`, `0.0`
- * and `0x0`. The WHATWG URL parser reduces each of those to one canonical host.
+ * True for the all-interfaces address in the spellings the WHATWG URL parser
+ * reduces to one canonical host: `::0`, the expanded IPv6 form, the
+ * IPv4-mapped form, short IPv4 forms such as `0`, `0.0` and `0x0`, and any of
+ * those with an IPv6 zone id. A spelling the parser rejects is not refused here.
  */
 function isWildcard(value: string): boolean {
-  const bare = value.startsWith('[') ? value.slice(1, -1) : value;
+  const unbracketed = value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
+  // A zone id (`%eth0`, or `%25eth0` percent-encoded) does not change the address.
+  const zone = unbracketed.indexOf('%');
+  const bare = zone === -1 ? unbracketed : unbracketed.slice(0, zone);
   const literal = bare.includes(':') ? `[${bare}]` : bare;
   try {
     return WILDCARD_HOSTS.has(new URL(`http://${literal}`).hostname);
