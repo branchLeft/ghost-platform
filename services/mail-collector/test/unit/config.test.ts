@@ -142,7 +142,14 @@ describe('loadConfig', () => {
       const config = loadConfig(BASE_ENV);
       expect(config.sweego).toBeUndefined();
       expect(config.pinStateDir).toBeUndefined();
+      expect(config.stateWitnessDir).toBeUndefined();
       expect(config.pinTtlMs).toBe(35 * 24 * 60 * 60 * 1000);
+    });
+
+    it('carries the state witness directory when it is set', () => {
+      expect(
+        loadConfig({ ...BASE_ENV, COLLECTOR_STATE_WITNESS_DIR: '/var/witness' }).stateWitnessDir
+      ).toBe('/var/witness');
     });
 
     it('carries the credential file path and its own rate, with documented defaults', () => {

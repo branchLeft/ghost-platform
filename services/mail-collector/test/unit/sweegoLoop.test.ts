@@ -10,6 +10,7 @@ import { createDrainClient, type DrainClient } from '../../src/drainClient.js';
 import { createHealthState } from '../../src/health.js';
 import { createLogger } from '../../src/log.js';
 import type { SweegoQuota } from '../../src/sendingTarget.js';
+import { createStateWitness } from '../../src/stateWitness.js';
 import { createFailureCounter } from '../../src/submissionFailures.js';
 import { createSweegoDeliveryClient } from '../../src/sweegoDeliveryClient.js';
 import { SweegoSubmissionError, type CountedFailureReason } from '../../src/sweegoFailure.js';
@@ -527,6 +528,57 @@ describe('collector loop with the Sweego client', () => {
         SubmittedTracker,
         SubmittedTracker,
       ];
+      const mx1 = fakeClient();
+      const recovered = fakeClient();
+      shim.simulateLostAck();
+      const second = start({
+        mx1,
+        sweego: recovered,
+        quota: { allowanceReached: () => true, accountCapReached: () => false },
+        mx1Pins: mx1PinsAfter,
+        sweegoPins: sweegoPinsAfter,
+        sweegoAmbiguous: sweegoAmbiguousAfter,
+      });
+      await until(
+        () => second.logLines.some((line) => line.includes('pin_state_lost_held')),
+        'message held'
+      );
+      await settle();
+      expect(mx1.calls).toEqual([]);
+      expect(recovered.calls).toEqual([]);
+      expect(acked()).toEqual([]);
+    });
+  });
+
+  describe('a pin volume that was replaced by an empty one', () => {
+    it('holds a re-offered message: the witness on the other mount remembers what the volume forgot', async () => {
+      const pinDir = join(dir, 'pins');
+      const witnessDir = join(dir, 'witness');
+      const names = ['mx1-pins.json', 'sweego-pins.json', 'sweego-ambiguous.json'];
+      const files = names.map((name) => join(pinDir, name));
+      const witness = createStateWitness({
+        dir: witnessDir,
+        statePaths: files,
+        mountKeyOf: (path) => (path.startsWith(witnessDir) ? 'witness' : 'pins'),
+      });
+      const trackers = (): [SubmittedTracker, SubmittedTracker, SubmittedTracker] => {
+        const [a, b, c] = files.map((statePath) =>
+          createSubmittedTracker(60_000, Date.now, { statePath, witness })
+        ) as [SubmittedTracker, SubmittedTracker, SubmittedTracker];
+        return [a, b, c];
+      };
+      const [mx1Pins, sweegoPins, sweegoAmbiguous] = trackers();
+      const sweego = fakeClient();
+      sweego.behaviour = () => new SweegoSubmissionError('timeout');
+      shim.enqueue(LOGIN('login-1'));
+      start({ mx1: fakeClient(), sweego, mx1Pins, sweegoPins, sweegoAmbiguous });
+      await until(() => sweego.calls.length >= 1, 'first attempt');
+      await stop?.();
+      stop = undefined;
+
+      // The whole volume replaced: files and markers go together, the witness stays.
+      rmSync(pinDir, { recursive: true, force: true });
+      const [mx1PinsAfter, sweegoPinsAfter, sweegoAmbiguousAfter] = trackers();
       const mx1 = fakeClient();
       const recovered = fakeClient();
       shim.simulateLostAck();
