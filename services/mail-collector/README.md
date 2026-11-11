@@ -87,6 +87,10 @@ sent to a guessed address. How notifications get into the directory, and whether
 mx1 honours the DSN request at all, is the mx1-side half and is unproven; see
 the delivering PR's runbook.
 
+A feedback-loop complaint (an RFC 5965 abuse report) arriving in the same
+directory can be read as a `complained` outcome by an opt-in reader that is off
+by default: see [src/arf/README.md](src/arf/README.md).
+
 ## Source notes
 
 One section per symbol whose source comment was trimmed to a pointer here.
