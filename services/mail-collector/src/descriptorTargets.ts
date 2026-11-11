@@ -12,6 +12,13 @@ export interface DrainTarget {
   readonly sweegoAllowance?: number;
   /** Set (true) only for a demo host, which never sends through Sweego. Absent for a tenant. */
   readonly demo?: true;
+  /**
+   * The one domain this host's mail may be sent from: a tenant's own sending
+   * domain from the descriptor's `mail.identity`, or the shared demo mail
+   * domain for a demo. Absent when the descriptor names none (or a demo has no
+   * domain configured); the header From check then holds the host's mail.
+   */
+  readonly sendingDomain?: string;
 }
 
 /** The sending targets a descriptor's `mail.route.primary` may name. Mirrors render-core's `MailRoute`; this service keeps its own shape check rather than import render-core. */
@@ -60,6 +67,8 @@ export interface DescriptorTargetStoreOptions {
   readonly maxStalenessMs: number;
   readonly log: Logger;
   readonly now?: () => number;
+  /** The platform's shared demo mail domain: the sending domain of every demo host, which a demo descriptor does not carry. */
+  readonly demoMailDomain?: string;
 }
 
 /**
@@ -161,6 +170,34 @@ function readMailRoute(kind: 'demo' | 'tenant', raw: object): ReadRoute | undefi
   return { route: 'sweego', sweegoAllowance };
 }
 
+/**
+ * The sending domain a descriptor's `mail.identity` names for a tenant. A demo
+ * descriptor carries only a local part (the domain is the platform's shared
+ * demo mail domain, which the collector is configured with), and a tenant
+ * descriptor whose identity is a demo's or is unreadable names no domain.
+ */
+function readSendingDomain(
+  kind: 'demo' | 'tenant',
+  raw: object,
+  demoMailDomain: string | undefined
+): string | undefined {
+  const mail = (raw as { mail?: unknown }).mail;
+  const identity =
+    typeof mail === 'object' && mail !== null
+      ? (mail as { identity?: unknown }).identity
+      : undefined;
+  if (typeof identity !== 'object' || identity === null) {
+    return kind === 'demo' ? demoMailDomain : undefined;
+  }
+  const { kind: identityKind, domain } = identity as { kind?: unknown; domain?: unknown };
+  if (kind === 'demo') {
+    return identityKind === 'demo' ? demoMailDomain : undefined;
+  }
+  return identityKind === 'tenant' && typeof domain === 'string' && domain !== ''
+    ? domain
+    : undefined;
+}
+
 function isLive(expiresAt: string | null, nowMs: number): boolean {
   if (expiresAt === null) {
     return true;
@@ -183,6 +220,7 @@ export class DescriptorTargetStore implements TargetStore {
   private readonly maxStalenessMs: number;
   private readonly log: Logger;
   private readonly now: () => number;
+  private readonly demoMailDomain: string | undefined;
   private lastGoodRefreshAtMs: number | null = null;
   // Guards against two refreshes racing -- see odask's DescriptorStore for
   // why this must not be `async` (an `async` fn always allocates a new
@@ -197,6 +235,7 @@ export class DescriptorTargetStore implements TargetStore {
     this.maxStalenessMs = options.maxStalenessMs;
     this.log = options.log;
     this.now = options.now ?? Date.now;
+    this.demoMailDomain = options.demoMailDomain;
   }
 
   /** Fails closed once the last successful read is further in the past than `maxStalenessMs` -- including at boot, before any refresh has ever succeeded. */
@@ -273,6 +312,7 @@ export class DescriptorTargetStore implements TargetStore {
         throw err;
       }
       seenSlugs.set(raw.slug, file);
+      const sendingDomain = readSendingDomain(raw.kind, raw, this.demoMailDomain);
       next.push({
         id: raw.slug,
         baseUrl: `${this.shimScheme}://${raw.appHostIp}:${this.shimPort}`,
@@ -281,6 +321,7 @@ export class DescriptorTargetStore implements TargetStore {
           ? {}
           : { sweegoAllowance: mailRoute.sweegoAllowance }),
         ...(raw.kind === 'demo' ? { demo: true as const } : {}),
+        ...(sendingDomain === undefined ? {} : { sendingDomain }),
       });
     }
     this.current = next;

@@ -13,6 +13,7 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DESCRIPTOR_DIR` | yes | Directory of tenant/demo descriptor JSON files — the only source of the drain list. |
 | `COLLECTOR_DESCRIPTOR_REFRESH_MS` | no (default `5000`) | How often the descriptor directory is re-read. |
 | `COLLECTOR_DESCRIPTOR_MAX_STALENESS_MS` | no (default `60000`) | Past this age, the drain list is treated as empty rather than as its last good read. |
+| `COLLECTOR_DEMO_MAIL_DOMAIN` | for a demo host | The platform's shared demo mail domain: the one domain a demo host's header From may carry (a demo descriptor holds a local part only). Unset, the mail of every demo host is held, unsent and unacked, and the collector logs `demo_mail_domain_not_set` at start-up. See the header From scope section. |
 | `COLLECTOR_SHIM_PORT` | no (default `8080`) | The HTTP port every host's mailgun-shim listens on for its drain surface — a deployment convention, combined with the descriptor's own `appHostIp`. |
 | `COLLECTOR_DRAIN_TOKEN` | yes | The drain endpoint's shared bearer credential. One value across every host today — see the PR body's Design section for why, and what changes once per-host tokens exist. |
 | `COLLECTOR_DRAIN_TIMEOUT_MS` | no (default `40000`) | Client-side timeout for one `GET /drain` call. Must exceed the target shim's own `SHIM_DRAIN_HOLD_MS`. |
@@ -207,6 +208,52 @@ does not import it.
 A demo target also carries `demo: true`, which the resolver reads (below). With
 no Sweego delivery client the drain output is byte-identical whatever `route`
 is (`test/unit/routeCarried.test.ts`).
+
+### header From scope
+
+A documented control of the collector: **a message is submitted only if its
+header From names exactly one mailbox, in its host's sending domain.** Stalwart
+checks the envelope sender for the scoped credential on mx1; the collector
+checks the header, before any target is chosen, so the one check covers mx1,
+Sweego and the fall-back from one to the other (`headerFromScope.ts`, called
+first in `submit`). `server.ts` always switches it on (`enforceHeaderFrom`).
+
+- **Scope.** A tenant's sending domain is `mail.identity.domain` in its
+  descriptor. A demo descriptor carries no domain, so a demo's is
+  `COLLECTOR_DEMO_MAIL_DOMAIN` (the platform's shared demo mail domain). The
+  target carries it as `sendingDomain`; there is no second source.
+- **Match.** Exact equality of the domain, after lower-casing, dropping trailing
+  dots and converting an internationalised domain to its punycode form (the
+  form the SMTP clients send). Never a subdomain or a suffix. The address is read
+  by the parser the SMTP clients use to build the header, so the address checked
+  is the address sent.
+- **Refused as `from-unreadable`** (fail closed): no From, a non-string, a blank
+  or over-long value, a control character (a line break would let a second line
+  be read as the header), no mailbox, more than one mailbox, group syntax, an
+  `@` left in the local part, a space in the local part, an encoded word in the
+  address, a domain that is not a hostname, and a custom `From`, `Sender`,
+  `Return-Path`, `Resent-From` or `Resent-Sender` header (the spool never
+  forwards `Sender`, so one here was not made by the spool). A display name is
+  not read: a name that looks like an in-scope address does not make a message
+  in scope.
+- **Refused as `from-out-of-scope`:** one readable mailbox in any other domain,
+  including another tenant's.
+- **A refusal** is permanent: the message is marked in the dedupe tracker, acked
+  and never sent or retried, the same ending as a dropped recipient. It is not
+  reported to the spool as a failed recipient, because that report suppresses the
+  recipient's address and the recipient is not at fault. The spool therefore shows
+  the message as accepted. It is counted in the failure counter under its reason.
+  The log line (`header_from_refused`) carries the reason and the message id only:
+  no host, recipient, subject, domain or address.
+- **No scope** (`from-scope-unknown`): a host whose descriptor names no sending
+  domain, or a demo with no demo mail domain configured (logged once at start-up
+  as `demo_mail_domain_not_set`), has its mail held: left unacked, so the spool
+  offers it again once the descriptor or the setting is fixed. Nothing is lost
+  and nothing is sent.
+- **What it does not cover.** `Reply-To` is not checked (a reply address outside
+  the domain is ordinary). The Sieve check on mx1 and the DMARC policy of the main
+  domain are separate, owner-chosen mitigations; this one is in code and does not
+  replace them.
 
 ### sendingTarget resolveSendingTarget
 
