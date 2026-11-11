@@ -122,6 +122,11 @@ export interface CollectorConfig {
   pinStateDir?: string;
   /** How long a pin is remembered. Must outlast the shim's longest retry horizon. */
   pinTtlMs: number;
+  /**
+   * Directory the state witnesses are kept in, on a different mount from every
+   * state file above. Unset, only the markers beside the state files guard them.
+   */
+  stateWitnessDir?: string;
 
   /**
    * The estate's dead-man's-switch ping URL (Healthchecks.io, or the local
@@ -346,6 +351,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     sweego: sweegoEnv(env),
     pinStateDir: env.COLLECTOR_PIN_STATE_DIR || undefined,
     pinTtlMs: positiveIntEnv(env, 'COLLECTOR_PIN_TTL_MS', DEFAULT_PIN_TTL_MS),
+    stateWitnessDir: env.COLLECTOR_STATE_WITNESS_DIR || undefined,
     heartbeatUrl: requireEnv(env, 'COLLECTOR_HEARTBEAT_URL'),
     heartbeatFailureThreshold: positiveIntEnv(
       env,

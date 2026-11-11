@@ -38,6 +38,7 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_SWEEGO_ACCOUNT_CAP` | to use Sweego | Messages per UTC calendar month across every tenant together, held inside the Sweego plan (`SWEEGO_ACCOUNT_CAP`). A positive integer; no default. Unset, Sweego is treated as not configured: the collector logs `sweego_not_configured` and every message goes through mx1. |
 | `COLLECTOR_SWEEGO_USAGE_STATE_PATH` | to use Sweego | File, on a volume that outlives the container and is writable by the `node` user, the monthly counters are kept in (`SWEEGO_USAGE_STATE_PATH`). Unset, Sweego is treated as not configured, the same as an unset cap. |
 | `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up, so the rollout must set it before Sweego is enabled. |
+| `COLLECTOR_STATE_WITNESS_DIR` | no (off) | Directory, on a volume that outlives the container, writable by the `node` user and on a **different mount** from the dedupe, pin and usage state, the state witnesses are kept in. The collector refuses to start with it on the same mount as any of them. A state volume replaced by an empty one then reads as lost, not as a first run. Unset, the collector logs `state_witness_not_configured`. See the state witness section. |
 | `COLLECTOR_PIN_TTL_MS` | no (default `604800000`) | How long a pin is remembered. The 7 days are a placeholder, not a measured value: it must outlast the shim's longest retry horizon, which has not been read yet. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
@@ -478,7 +479,8 @@ descriptor `mail.route: { primary: "sweego", sweegoAllowance: TENANT_ALLOWANCE }
   present has vanished (`state-vanished`): a fresh allowance must not follow a
   lost volume, so every send, bulk and login (the account cap holds for every
   class), goes to mx1. The latch is written into the file and survives restarts
-  and month changes; only the owner clears it, by deleting the marker file
+  and month changes (a file the [state witness](#state-witness) no longer vouches
+  for latches the same way, counted as `witness-mismatch`); only the owner clears it, by deleting the marker file
   (`<COLLECTOR_SWEEGO_USAGE_STATE_PATH>.initialised`) and restarting the collector,
   which keeps the counts it has and releases the latch. Unset cap or file path:
   Sweego is not used at all.
@@ -509,8 +511,40 @@ counter latches until it can be.
 
 Limit: the marker lives on the same volume as the file. It catches a vanished file,
 a deleted file or a state directory emptied in place; it does not catch a whole
-volume replaced by a new empty one, because the marker goes with it. Catching that
-needs a witness outside the volume, which this service does not have.
+volume replaced by a new empty one, because the marker goes with it. With
+`COLLECTOR_STATE_WITNESS_DIR` set, the [state witness](#state-witness) catches that too.
+
+### state witness
+
+`COLLECTOR_STATE_WITNESS_DIR` names a directory on a different mount from every
+state file the markers guard (the dedupe ids, the three pin files, the usage
+counters). It holds one small file per state file, `<name>.<12 hex>.witness`, with
+no content that matters. The marker then says whether a witness was written
+(`initialised witnessed`; a marker from before reads `initialised`). The witness is
+written before the marker, so a marker that promises a witness never exists without
+one. At start-up the collector refuses to run if the witness directory shares a mount
+with any state file's directory (the mount id from `/proc/self/mountinfo`, so two
+volumes on one disk are told apart; the device number where that cannot be read).
+
+| File | Marker | Witness | Meaning |
+|---|---|---|---|
+| missing | absent | absent | First run. Clean, counters at zero. |
+| missing | absent | present or unreadable | The state volume was replaced by an empty one. Lost: the usage counter latches every send to mx1 (`witness-mismatch`), the pin trackers hold re-offered Sweego-route messages for one TTL. The marker and witness are written again with the new file. |
+| missing | present | any | Vanished, as above (`state-vanished`). |
+| present | `initialised witnessed` | absent | The witness was removed, replaced, or is no longer configured. Lost, as above. |
+| present | `initialised` or absent | any | A file from before the marker or witness existed. The missing parts are written. |
+| present | `initialised witnessed` | present | Normal. |
+
+To clear a false alarm (a witness directory deliberately recreated, a state volume
+deliberately restored): fix the mounts, delete the usage marker
+(`<COLLECTOR_SWEEGO_USAGE_STATE_PATH>.initialised`) and restart the collector. The counts it
+holds are kept, the latch is released, and the marker and witness are written again. The
+pin trackers need nothing: their loss clears itself after `COLLECTOR_PIN_TTL_MS`. A genuinely
+new install, with nothing in either place, starts at zero.
+
+Limits: the witness records that a file was written, not what was in it, so a volume
+restored from an old copy (marker and witness both present) is not caught. Unset, only
+the markers guard the files and the collector logs `state_witness_not_configured`.
 
 ### a dropped recipient reported back to the spool
 

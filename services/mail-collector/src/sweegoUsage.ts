@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { writeFileAtomic } from './atomicWrite.js';
-import { markerAbsent, writeMarker } from './stateMarker.js';
+import { markerAbsent, missingFileVerdict, presentFileTrust, writeMarker } from './stateMarker.js';
+import type { StateWitness } from './stateWitness.js';
 import type { SweegoQuota } from './sendingTarget.js';
 
 /**
@@ -22,6 +23,8 @@ export type UsageReason =
   | 'state-unreadable'
   /** The state file is missing though it was written before: counters are unknown, and every send goes to mx1 until the owner deletes the marker. */
   | 'state-vanished'
+  /** The state file's witness on the other mount disagrees with the volume (the volume was replaced, or the witness is gone): treated as `state-vanished`. */
+  | 'witness-mismatch'
   /** The state file could not be written: nothing goes to Sweego until a write succeeds. */
   | 'state-write-failed'
   /** The clock reads an earlier month than the stored counters: they are kept, not reset. */
@@ -103,6 +106,8 @@ export interface SweegoUsageOptions {
   allowanceOf: (tenantId: string) => number | undefined;
   /** Injectable so a test crosses a month boundary without waiting. */
   now?: () => number;
+  /** Witness kept on a different mount from `statePath`. Absent, only the marker beside the file guards it. */
+  witness?: StateWitness;
   /** Called with each reason as it is counted. */
   onReason?: (reason: UsageReason) => void;
 }
@@ -221,7 +226,7 @@ function parseState(raw: string): LoadedState | undefined {
  * Sweego sends. See ../README.md#sweegousage-createsweegousage.
  */
 export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
-  const { statePath, accountCap, allowanceOf } = options;
+  const { statePath, accountCap, allowanceOf, witness } = options;
   if (!Number.isSafeInteger(accountCap) || accountCap <= 0) {
     throw new Error('the Sweego account cap must be a positive integer');
   }
@@ -275,7 +280,7 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
       // After the file: a crash between the two leaves a file with no marker,
       // read as an upgrade at the next load, never a marker with no file.
       if (!markerKnown) {
-        writeMarker(statePath);
+        writeMarker(statePath, witness);
         markerKnown = true;
       }
       unpersisted = false;
@@ -294,13 +299,18 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
         degraded = true;
         note('state-unreadable');
         persist();
-      } else if (!markerAbsent(statePath)) {
-        // Written before, so not a first run: the counters are gone and a fresh
-        // monthly allowance must not follow. Written down, so a restart keeps it.
-        markerKnown = true;
-        vanished = true;
-        note('state-vanished');
-        persist();
+      } else {
+        const verdict = missingFileVerdict(statePath, witness);
+        if (verdict !== 'first-run') {
+          // Written before, so not a first run: the counters are gone and a fresh
+          // monthly allowance must not follow. Written down, so a restart keeps it.
+          // The marker and witness are written again with the file: a marker lost
+          // with a replaced volume must not read as the owner's clearing.
+          markerKnown = false;
+          vanished = true;
+          note(verdict === 'vanished' ? 'state-vanished' : 'witness-mismatch');
+          persist();
+        }
       }
       return;
     }
@@ -333,15 +343,23 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
       note('inflight-recounted');
       recounted = true;
     }
+    const trust = presentFileTrust(statePath, witness);
     if (loaded.vanished && markerAbsent(statePath)) {
       // The owner deleted the marker: the latch is cleared, the counts kept.
       persist();
     } else if (loaded.vanished) {
       vanished = true;
-      markerKnown = true;
+      markerKnown = trust === 'trusted';
       note('state-vanished');
-    } else if (markerAbsent(statePath)) {
-      // A file from before the marker existed: write it now, so the file's later loss is seen.
+    } else if (trust === 'witness-lost') {
+      // The witness no longer vouches for this file: the volume may be an old
+      // copy or a stand-in. Latched like a vanished file, and written down.
+      vanished = true;
+      markerKnown = false;
+      note('witness-mismatch');
+      persist();
+    } else if (trust === 'unmarked') {
+      // A file from before the marker or witness existed: write them now, so the file's later loss is seen.
       persist();
     } else {
       markerKnown = true;

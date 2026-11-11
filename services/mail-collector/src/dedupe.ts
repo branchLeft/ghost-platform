@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { writeFileAtomic } from './atomicWrite.js';
-import { markerAbsent, writeMarker } from './stateMarker.js';
+import { missingFileVerdict, presentFileTrust, writeMarker } from './stateMarker.js';
+import type { StateWitness } from './stateWitness.js';
 
 /**
  * Named `submitted`, not `delivered` -- LLD-6 M5: this tracker records
@@ -38,6 +39,8 @@ export interface SubmittedTrackerOptions {
    * every id.
    */
   statePath?: string;
+  /** Witness kept on a different mount from `statePath`. Absent, only the marker beside the file guards it. */
+  witness?: StateWitness;
   /** Called with a state-file read or write failure; the tracker never throws for one. */
   onError?: (error: Error) => void;
 }
@@ -60,7 +63,7 @@ export function createSubmittedTracker(
   now: () => number = Date.now,
   options: SubmittedTrackerOptions = {}
 ): SubmittedTracker {
-  const { statePath, onError } = options;
+  const { statePath, witness, onError } = options;
   const submittedAt = new Map<string, number>();
   const awaitingAck = new Set<string>();
   let lostAt: number | undefined;
@@ -81,13 +84,23 @@ export function createSubmittedTracker(
         lostAt = now();
         report(error);
         persist(path);
-      } else if (!markerAbsent(path)) {
-        // Written before, so not a first run: the file has vanished and the ids
-        // it held are forgotten. Recorded in the file, as for a corrupt one.
-        markerKnown = true;
-        lostAt = now();
-        report(new Error('dedupe state file is missing though it was written before'));
-        persist(path);
+      } else {
+        const verdict = missingFileVerdict(path, witness);
+        if (verdict !== 'first-run') {
+          // Written before, so not a first run: the file has vanished and the ids
+          // it held are forgotten. Recorded in the file, as for a corrupt one.
+          // The marker and witness are written again with it.
+          markerKnown = false;
+          lostAt = now();
+          report(
+            new Error(
+              verdict === 'vanished'
+                ? 'dedupe state file is missing though it was written before'
+                : 'dedupe state file is missing and its witness remembers it: the volume was replaced'
+            )
+          );
+          persist(path);
+        }
       }
       return;
     }
@@ -121,8 +134,20 @@ export function createSubmittedTracker(
       if (typeof parsed.lostAt === 'number' && Number.isFinite(parsed.lostAt)) {
         lostAt = parsed.lostAt;
       }
-      // A file from before the marker existed: write it now, so the file's later loss is seen.
-      writeMarkerOnce(path);
+      const trust = presentFileTrust(path, witness);
+      if (trust === 'witness-lost') {
+        // The witness no longer vouches for this file: the volume may be an old
+        // copy or a stand-in, so what it holds is not to be relied on.
+        markerKnown = false;
+        lostAt = now();
+        report(new Error('dedupe state file is no longer vouched for by its witness'));
+        persist(path);
+      } else if (trust === 'unmarked') {
+        // A file from before the marker or witness existed: write them now, so the file's later loss is seen.
+        writeMarkerOnce(path);
+      } else {
+        markerKnown = true;
+      }
     } catch (error) {
       submittedAt.clear();
       awaitingAck.clear();
@@ -157,7 +182,7 @@ export function createSubmittedTracker(
       return;
     }
     try {
-      writeMarker(path);
+      writeMarker(path, witness);
       markerKnown = true;
     } catch (error) {
       report(error);
