@@ -28,5 +28,26 @@
     "demo-edge",
     "portal-apps"
   ],
+  "retired_private": [
+    "ghost",
+    "caddy",
+    "debian",
+    "node",
+    "postgres",
+    "mysql",
+    "percona-server",
+    "mysqld-exporter",
+    "versitygw",
+    "curl",
+    "alpine",
+    "docker",
+    "python",
+    "healthchecks",
+    "s3mock",
+    "pebble",
+    "pebble-challtestsrv",
+    "zitadel",
+    "dockerfile"
+  ],
   "control": "ghost-tenant"
 }
