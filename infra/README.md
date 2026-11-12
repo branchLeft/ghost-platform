@@ -51,8 +51,9 @@ This repo's IaC, split by shape rather than lumped into one program:
   Object Storage backend under the passphrase provider, and the
   stack's config carries no salt and no token. Applied by CI on merge to
   `main` (`.github/workflows/infra-hosts-ci.yml`): plan job first, preview
-  in the job summary, then an apply paused by the `production` environment's
-  required-reviewer rule -- failing closed if that rule is absent -- with
+  in the job summary, then an apply held by an environment approval gate
+  (`production-free` for a plan the spend gate calls free, `production`
+  otherwise) -- failing closed if that gate is absent -- with
   the delete guard (`../scripts/assert-no-hetzner-deletes.py`) refusing any
   plan that destroys a protected resource. Pull requests run typecheck and
   unit tests only; no cloud credential touches PR code. The one hand-run
