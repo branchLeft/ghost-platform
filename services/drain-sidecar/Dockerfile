@@ -45,9 +45,13 @@ RUN pnpm run build
 # of the image that actually ships.
 RUN pnpm prune --prod
 
-# npm is only needed to install pnpm. The service runs `node` alone, so npm
-# and its bundled packages are removed rather than shipped unused.
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm
+# npm is only needed to install pnpm, and pnpm only to install, build and
+# prune. The service runs `node` alone, so both package managers, their
+# bundled packages (pnpm carries its own copies of tar and undici) and their
+# caches are removed rather than shipped unused.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
+    /usr/local/lib/node_modules/pnpm /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/pn /usr/local/bin/pnx \
+    /root/.local/share/pnpm /root/.cache
 
 USER node
 

@@ -39,4 +39,18 @@ describe('Dockerfile base image', () => {
     expect(removeAt).toBeGreaterThan(pruneAt);
     expect(dockerfile.indexOf('USER node')).toBeGreaterThan(removeAt);
   });
+
+  it('removes pnpm, which bundles its own tar and undici, in the same step', () => {
+    const removeLine = dockerfile
+      .replace(/\\\n/g, ' ')
+      .split('\n')
+      .find((line) => line.startsWith('RUN rm -rf'));
+    expect(removeLine).toBeDefined();
+    expect(removeLine).toContain('/usr/local/lib/node_modules/pnpm');
+    expect(removeLine).toContain('/usr/local/bin/pnpm');
+    expect(removeLine).toContain('/usr/local/bin/pn ');
+    expect(dockerfile.indexOf('RUN pnpm run build')).toBeLessThan(
+      dockerfile.indexOf('/usr/local/lib/node_modules/pnpm')
+    );
+  });
 });
