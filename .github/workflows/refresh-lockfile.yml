@@ -1,0 +1,206 @@
+name: Refresh stale lockfile (artifact only)
+
+# When a pull request changes the package.json of a pnpm project that consumes
+# a `@branchleft/*` package from GitHub Packages, this resolves that project's
+# lockfile in CI, where the run's own `GITHUB_TOKEN` (`packages: read`) can read
+# the registry, and compares it with the committed one. A lockfile that no
+# longer satisfies its package.json (a pin bump with no integrity yet) is
+# reported in the job summary with its diff, and the regenerated file is
+# uploaded as an artifact. It commits and pushes NOTHING: whoever owns the
+# branch commits the artifact as an ordinary signed commit, so the push starts
+# the pull request's checks on the real head.
+#
+# `pull_request` (plus a push to `main`, below), never `pull_request_target`:
+# the job runs the pull request's own files. A pull request from a fork is skipped by the `if:` on
+# both jobs and in any case receives a read-only token with no package access.
+# A pull request opened by Dependabot is skipped too: its token cannot read the
+# registry and the run would only be noise. See README-refresh-lockfile.md for
+# the design points, including why it sits beside generate-lockfile.yml.
+#
+# Branch names and directory names reach no shell line: the SHAs the diff needs
+# pass through `env:`, and the project list is data read by a script.
+on:
+  pull_request:
+    paths:
+      - '**/package.json'
+  # The same check on `main` (standards CI-3): a push that changes a package.json
+  # is compared with the commit before it, so a lockfile that reached `main`
+  # stale is reported there too.
+  push:
+    branches: [main]
+    paths:
+      - '**/package.json'
+
+# Deny by default; each job states exactly what it needs.
+permissions: {}
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  select:
+    name: Find changed pnpm projects
+    # Same-repository pull requests only. Evaluated on the event payload, not on
+    # anything the pull request's files can change.
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    # Observed: not yet run. A checkout, one git diff and one script.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      projects: ${{ steps.select.outputs.projects }}
+
+    steps:
+      # The head commit itself, not the merge ref, so the files read are the
+      # branch's own and the lockfile the artifact replaces is the branch's.
+      # Full history so the three-dot diff against the base finds its merge base.
+      - name: Checkout the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the changed pnpm projects that consume @branchleft packages
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          git diff -z --name-only "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+          PROJECTS="$(python3 scripts/select-lockfile-projects.py < "$RUNNER_TEMP/changed-paths")"
+          echo "projects=$PROJECTS" >> "$GITHUB_OUTPUT"
+          echo "Selected: $PROJECTS"
+
+  refresh:
+    name: Check lockfile (${{ matrix.slug }})
+    needs: select
+    if: needs.select.outputs.projects != '[]'
+    runs-on: ubuntu-latest
+    # Observed: not yet run. A checkout, a tool setup and a metadata-only
+    # resolve of one project; 10 minutes is generous.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.projects) }}
+
+    steps:
+      - name: Checkout the pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Confirm the project has an .nvmrc
+        env:
+          PROJECT_DIR: ${{ matrix.dir }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$PROJECT_DIR/.nvmrc" ]; then
+            echo "::error::'$PROJECT_DIR/.nvmrc' does not exist -- every project here pins its own Node version"
+            exit 1
+          fi
+
+      # pnpm and Node come from the project's own files, not from the repo
+      # root: the projects do not all pin the same pnpm.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: ${{ matrix.dir }}/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ${{ matrix.dir }}/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+
+      # Resolves from a copy in $RUNNER_TEMP, never in the project directory:
+      # every project here carries a committed `.npmrc`, and pnpm lets a
+      # project-level `.npmrc` outrank the user-level one `setup-node` just
+      # wrote. A branch's `.npmrc` could point `@branchleft:registry` at a
+      # foreign host paired with `_authToken=${NODE_AUTH_TOKEN}` and read this
+      # run's token out of the environment. The copy holds only `package.json`,
+      # the committed lockfile (so unchanged entries keep their resolved
+      # versions) and `pnpm-workspace.yaml` where there is one.
+      #
+      # `--lockfile-only`: the one output is the lockfile. `--ignore-scripts`:
+      # nothing from the branch or the registry runs.
+      - name: Resolve the lockfile in an isolated directory
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_DIR: ${{ matrix.dir }}
+        run: |
+          set -euo pipefail
+          WORKDIR="$RUNNER_TEMP/lockfile-install"
+          mkdir -p "$WORKDIR"
+          cp "$PROJECT_DIR/package.json" "$WORKDIR/package.json"
+          if [ -f "$PROJECT_DIR/pnpm-lock.yaml" ]; then
+            cp "$PROJECT_DIR/pnpm-lock.yaml" "$WORKDIR/pnpm-lock.yaml"
+            cp "$PROJECT_DIR/pnpm-lock.yaml" "$RUNNER_TEMP/lockfile-before.yaml"
+          else
+            : > "$RUNNER_TEMP/lockfile-before.yaml"
+          fi
+          if [ -f "$PROJECT_DIR/pnpm-workspace.yaml" ]; then
+            cp "$PROJECT_DIR/pnpm-workspace.yaml" "$WORKDIR/pnpm-workspace.yaml"
+          fi
+          (cd "$WORKDIR" && pnpm install --lockfile-only --ignore-scripts)
+
+      # Reports and does not fail: an up-to-date lockfile is the common case and
+      # a stale one is already a red frozen-lockfile install in the project's
+      # own check. This step says what to do about it.
+      - name: Compare and report
+        id: compare
+        env:
+          PROJECT_DIR: ${{ matrix.dir }}
+          SLUG: ${{ matrix.slug }}
+        run: |
+          set -euo pipefail
+          AFTER="$RUNNER_TEMP/lockfile-install/pnpm-lock.yaml"
+          DIFF_FILE="$RUNNER_TEMP/lockfile.diff"
+          # `diff` exits 1 when the files differ; only 2 or more is an error.
+          diff -u --label "a/$PROJECT_DIR/pnpm-lock.yaml" --label "b/$PROJECT_DIR/pnpm-lock.yaml" \
+            "$RUNNER_TEMP/lockfile-before.yaml" "$AFTER" > "$DIFF_FILE" || [ "$?" -eq 1 ]
+          if [ ! -s "$DIFF_FILE" ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "### \`$PROJECT_DIR\`: lockfile is up to date" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "stale=true" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/refreshed/$PROJECT_DIR"
+          cp "$AFTER" "$RUNNER_TEMP/refreshed/$PROJECT_DIR/pnpm-lock.yaml"
+          echo "::warning title=Stale lockfile::$PROJECT_DIR/pnpm-lock.yaml does not satisfy its package.json. The regenerated file is in this run's artifacts."
+          {
+            echo "### \`$PROJECT_DIR\`: lockfile does not satisfy package.json"
+            echo
+            echo "Nothing was committed. Download the artifact \`refreshed-pnpm-lock-$SLUG\`, which holds \`$PROJECT_DIR/pnpm-lock.yaml\`, and commit it to this branch."
+            echo
+            echo '```diff'
+            head -n 400 "$DIFF_FILE"
+            echo '```'
+            if [ "$(wc -l < "$DIFF_FILE")" -gt 400 ]; then
+              echo
+              echo "The diff is longer than 400 lines; the artifact holds the whole file."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # The same resolution lines in the log, readable without the artifact:
+          # the exact values a lockfile entry for these packages needs.
+          grep -E "^  '@branchleft/[^']+':$" -A1 "$AFTER" || true
+
+      - name: Upload the regenerated lockfile
+        if: steps.compare.outputs.stale == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: refreshed-pnpm-lock-${{ matrix.slug }}
+          path: ${{ runner.temp }}/refreshed
+          if-no-files-found: error
+          retention-days: 7
