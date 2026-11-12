@@ -102,9 +102,6 @@ export function parseGrantArgs(argv) {
  * Runs inside the tenant's running Ghost container, through Ghost's own config
  * and knex. The account it acts on is the supportIdentity in the tenant's own
  * config, never a value from outside. See break-glass-grant.md#the-account.
- * Ghost rewrites a configured `sqlite3` client to `better-sqlite3`, so the
- * script reads either name and a knex of its own against a tenant's file must
- * ask for `better-sqlite3`.
  */
 export const INNER_SCRIPT = `
 process.chdir('/var/lib/ghost');

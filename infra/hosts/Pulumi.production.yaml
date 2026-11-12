@@ -16,11 +16,6 @@
 # every piece of ciphertext this stack has ever encrypted stops decrypting
 # under it, silently, until something next reads a secret.
 #
-# `pulumi stack rm` deletes this file from the working copy along with the
-# state entry, and this one is committed. To redo a stack init, restore it
-# first (`git checkout -- Pulumi.production.yaml`); otherwise the re-init
-# writes a salt-only file and the preview fails on missing required config.
-#
 # The deploy public keys are documentation more than mechanism: each value
 # reaches its host through cloud-init, and `userData` is in the component's
 # `ignoreChanges`, so the value that landed at creation is the one the host

@@ -62,6 +62,8 @@ The rest of LLD-5 section 05 is in `scripts/`. The owner runs it, and no agent d
 - `scripts/break-glass-mint.mjs` runs on `ops1`. It holds the only private key, at `/etc/branchleft/break-glass/`, mints for at most 600 seconds, and builds `/ghost/` URLs only. See `scripts/break-glass-mint.md`.
 - `scripts/break-glass-grant.mjs` runs on the tenant's host, in a pinned Node container started by `scripts/host/branchleft-break-glass.py`, so the host needs no Node. It opens the consented or incident lane, closes it, and runs every minute from `scripts/systemd/branchleft-break-glass-expire.service` and its timer to close any grant past its four hours. See `scripts/break-glass-grant.md`.
 
+Both scripts go through Ghost's own knex. Ghost rewrites a configured `sqlite3` client to `better-sqlite3`, so they read either name, and a knex built separately against a tenant's file has to ask for `better-sqlite3`.
+
 The host steps are in `ghost-platform-docs`, `break-glass-runbook.md`. `test/image/break-glass-lanes.image.test.mjs` proves both scripts against the built image.
 
 ## What Ghost's extension point does, and the traps in it

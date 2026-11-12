@@ -14,11 +14,6 @@
 # Pulumi rewrites this file in place on every `stack init` and `config set`,
 # and a comment survives only while the file carries at least one populated
 # config entry.
-#
-# `pulumi stack rm` deletes this file from the working copy along with the
-# state entry, and this one is committed. To redo a stack init, restore it
-# first (`git checkout -- Pulumi.production.yaml`); otherwise the re-init
-# writes a salt-only file and the preview fails on missing required config.
 config:
   # Ignored by the program after creation, as on the estate hosts: Hetzner
   # reuses an image name across point releases.
