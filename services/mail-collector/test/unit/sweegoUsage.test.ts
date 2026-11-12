@@ -37,10 +37,19 @@ describe('the sweego usage counter', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function open(options: { accountCap?: number; path?: string } = {}): SweegoUsage {
+  function open(
+    options: {
+      accountCap?: number;
+      path?: string;
+      newsletterCap?: number;
+      suspension?: { suspended(): boolean };
+    } = {}
+  ): SweegoUsage {
     return createSweegoUsage({
       statePath: options.path ?? statePath,
       accountCap: options.accountCap ?? 100,
+      ...(options.newsletterCap === undefined ? {} : { newsletterCap: options.newsletterCap }),
+      ...(options.suspension ? { suspension: options.suspension } : {}),
       allowanceOf: (id) => allowances[id],
       now: () => clock,
       onReason: (reason) => reasons.push(reason),
@@ -584,6 +593,100 @@ describe('the sweego usage counter', () => {
     it('writes the counted messages as digests, never as ids', () => {
       open().begin('tenant-a', 'message-id-123')!.ambiguous();
       expect(readFileSync(statePath, 'utf8')).not.toContain('message-id-123');
+    });
+  });
+
+  describe('the newsletter threshold', () => {
+    it('is not reached, and not exposed, while no threshold is set', () => {
+      const usage = open({ accountCap: 5 });
+      send(usage, 'tenant-a', 2);
+      expect(usage.newsletterThresholdReached()).toBe(false);
+      expect(usage.accountState()).toMatchObject({
+        newsletterCap: undefined,
+        newsletterThresholdReached: false,
+        suspended: false,
+      });
+    });
+
+    it('is reached by the message that reaches it, for every tenant, and the account cap is not', () => {
+      allowances = { 'tenant-a': 50, 'tenant-b': 50 };
+      const usage = open({ accountCap: 10, newsletterCap: 4 });
+      send(usage, 'tenant-a', 3);
+      expect(usage.newsletterThresholdReached()).toBe(false);
+      send(usage, 'tenant-b');
+      expect(usage.newsletterThresholdReached()).toBe(true);
+      expect(usage.accountCapReached()).toBe(false);
+      expect(usage.allowanceReached('tenant-a')).toBe(false);
+      expect(usage.allowanceReached('tenant-b')).toBe(false);
+      expect(usage.accountState()).toMatchObject({
+        total: 4,
+        newsletterCap: 4,
+        newsletterThresholdReached: true,
+        capReached: false,
+      });
+      expect(usage.reasons()['newsletter-threshold-reached']).toBe(1);
+    });
+
+    it('counts places in flight, as the account cap does', () => {
+      const usage = open({ accountCap: 10, newsletterCap: 2 });
+      const first = usage.begin('tenant-a')!;
+      usage.begin('tenant-a')!;
+      expect(usage.newsletterThresholdReached()).toBe(true);
+      first.settle(false);
+      expect(usage.newsletterThresholdReached()).toBe(false);
+    });
+
+    it('survives a restart', () => {
+      send(open({ accountCap: 10, newsletterCap: 2 }), 'tenant-a', 2);
+      expect(open({ accountCap: 10, newsletterCap: 2 }).newsletterThresholdReached()).toBe(true);
+    });
+
+    it('starts again at the first instant of the next UTC month', () => {
+      const usage = open({ accountCap: 10, newsletterCap: 2 });
+      send(usage, 'tenant-a', 2);
+      expect(usage.newsletterThresholdReached()).toBe(true);
+      clock = at('2026-12-01T00:00:00.000Z');
+      expect(usage.newsletterThresholdReached()).toBe(false);
+      expect(usage.accountState()).toMatchObject({
+        month: '2026-12',
+        total: 0,
+        newsletterThresholdReached: false,
+      });
+    });
+
+    it('reads unknown usage as reached', () => {
+      writeFileSync(statePath, 'garbage');
+      expect(open({ accountCap: 10, newsletterCap: 2 }).newsletterThresholdReached()).toBe(true);
+    });
+
+    it.each([
+      ['equal to the account cap', 10, 10],
+      ['above the account cap', 11, 10],
+      ['zero', 0, 10],
+      ['negative', -1, 10],
+      ['not an integer', 1.5, 10],
+    ])('refuses a threshold that is %s', (_label, newsletterCap, accountCap) => {
+      expect(() => open({ accountCap, newsletterCap })).toThrow(/newsletter cap/);
+    });
+
+    it('accepts a threshold one below the account cap', () => {
+      expect(() => open({ accountCap: 10, newsletterCap: 9 })).not.toThrow();
+    });
+  });
+
+  describe('the suspension fact', () => {
+    it('reports what the suspension latch says, live', () => {
+      let suspended = false;
+      const usage = open({ suspension: { suspended: () => suspended } });
+      expect(usage.suspended()).toBe(false);
+      expect(usage.accountState().suspended).toBe(false);
+      suspended = true;
+      expect(usage.suspended()).toBe(true);
+      expect(usage.accountState().suspended).toBe(true);
+    });
+
+    it('is false with no suspension latch', () => {
+      expect(open().suspended()).toBe(false);
     });
   });
 

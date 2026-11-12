@@ -15,6 +15,7 @@ import { createOutcomeRunner } from './outcomeRunner.js';
 import { createFailureCounter } from './submissionFailures.js';
 import { createSweegoDeliveryClient } from './sweegoDeliveryClient.js';
 import { createStateWitness } from './stateWitness.js';
+import { createSweegoSuspension } from './sweegoSuspension.js';
 import { createSweegoUsage } from './sweegoUsage.js';
 import { createThrottle } from './throttle.js';
 import { createBulkCap } from './lanes.js';
@@ -75,6 +76,9 @@ const witnessedStatePaths = [
   ...(config.dedupeStatePath ? [config.dedupeStatePath] : []),
   ...(pinStateDir ? PIN_FILES.map((name) => join(pinStateDir, name)) : []),
   ...(sweegoUsageStatePath ? [sweegoUsageStatePath] : []),
+  ...(sweegoUsageStatePath && config.sweego?.suspensionStatePath
+    ? [config.sweego.suspensionStatePath]
+    : []),
 ];
 const stateWitness = config.stateWitnessDir
   ? createStateWitness({ dir: config.stateWitnessDir, statePaths: witnessedStatePaths })
@@ -135,6 +139,15 @@ const sweegoThrottle = sweegoConfig
     })
   : undefined;
 const sweegoFailures = createFailureCounter();
+// The suspension latch: a run of refusals, or the owner's file, switches Sweego off.
+const sweegoSuspension = sweegoConfig?.suspensionStatePath
+  ? createSweegoSuspension({
+      statePath: sweegoConfig.suspensionStatePath,
+      ...(sweegoConfig.suspendFilePath ? { ownerFilePath: sweegoConfig.suspendFilePath } : {}),
+      ...(stateWitness ? { witness: stateWitness } : {}),
+      onReason: (reason) => log.warn('sweego_suspension', { reason }),
+    })
+  : undefined;
 // The counter is the quota the resolver asks. The allowance it checks is the
 // one the tenant's route carries, read from the live descriptor list. The
 // reasons it counts name no tenant, so they can be logged as they are.
@@ -143,6 +156,8 @@ const sweegoUsage = sweegoConfig
       statePath: sweegoConfig.usageStatePath,
       ...(stateWitness ? { witness: stateWitness } : {}),
       accountCap: sweegoConfig.accountCap,
+      ...(sweegoConfig.newsletterCap ? { newsletterCap: sweegoConfig.newsletterCap } : {}),
+      ...(sweegoSuspension ? { suspension: sweegoSuspension } : {}),
       allowanceOf: (tenantId) => store.targets.find((t) => t.id === tenantId)?.sweegoAllowance,
       onReason: (reason) => log.warn('sweego_usage', { reason }),
     })
@@ -202,6 +217,7 @@ const runtime = createCollectorRuntime({
   sweegoFailures,
   enforceHeaderFrom: true,
   sweegoQuota: sweegoUsage,
+  sweegoSuspension,
   mx1Pins,
   sweegoPins,
   sweegoAmbiguous,
