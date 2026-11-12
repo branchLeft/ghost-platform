@@ -48,7 +48,7 @@ import {
   type Phase,
   type SlotState,
 } from './stateStore.js';
-import type { SlotWrapper } from './wrapper.js';
+import { errorLogText, type SlotWrapper } from './wrapper.js';
 import { writeArtefacts } from './writeArtefacts.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -296,7 +296,7 @@ async function handleReconcile(deps: BrokerDeps, body: ReconcileBody): Promise<R
           // Same rule as `/reset`: a slot is only ever `free` after its
           // wipe succeeded, or the next visitor could get this site.
           deps.log(
-            `teardown after host conflict failed for slot "${slot}": ${(teardownErr as Error).message}`
+            `teardown after host conflict failed for slot "${slot}": ${errorLogText(teardownErr)}`
           );
           await writeSlotState(deps.stateDir, slot, {
             phase: 'error' satisfies Phase,
@@ -311,7 +311,7 @@ async function handleReconcile(deps: BrokerDeps, body: ReconcileBody): Promise<R
         return reply(409, { error: firstErr.message });
       }
       deps.log(
-        `reconcile failed for slot "${slot}", resetting and retrying once: ${(firstErr as Error).message}`
+        `reconcile failed for slot "${slot}", resetting and retrying once: ${errorLogText(firstErr)}`
       );
       await writeSlotState(deps.stateDir, slot, {
         phase: 'resetting' satisfies Phase,
@@ -328,7 +328,7 @@ async function handleReconcile(deps: BrokerDeps, body: ReconcileBody): Promise<R
         await deps.drainFlags.set(slot, 'b');
         await attempt();
       } catch (secondErr) {
-        deps.log(`reconcile retry also failed for slot "${slot}": ${(secondErr as Error).message}`);
+        deps.log(`reconcile retry also failed for slot "${slot}": ${errorLogText(secondErr)}`);
         await writeSlotState(deps.stateDir, slot, {
           phase: 'error' satisfies Phase,
           lastHashId: state.lastHashId,
@@ -470,9 +470,7 @@ async function attemptColourSwap(
     // catch never reaches this line at all; that is `recoverSwapInFlight`'s
     // job, above.)
     await restorePreSwapState();
-    deps.log(
-      `colour swap failed for slot "${slot}" (target "${target}"): ${(err as Error).message}`
-    );
+    deps.log(`colour swap failed for slot "${slot}" (target "${target}"): ${errorLogText(err)}`);
     return reply(503, {
       slot,
       phase: 'running',
@@ -657,7 +655,7 @@ async function handleReset(deps: BrokerDeps, body: SlotBody): Promise<ResetResul
       await deps.adminApi.forget?.(slot);
       await deps.wrapper.reset(slot);
     } catch (err) {
-      deps.log(`reset failed for slot "${slot}": ${(err as Error).message}`);
+      deps.log(`reset failed for slot "${slot}": ${errorLogText(err)}`);
       await writeSlotState(deps.stateDir, slot, {
         phase: 'error' satisfies Phase,
         lastHashId: state.lastHashId,
@@ -938,7 +936,7 @@ export function createBrokerHandler(deps: BrokerDeps): Handler {
     // a 500 with no body, as before.
     onError: (error, req) => {
       if (error instanceof RefusalSent) return;
-      deps.log(`broker error: ${(error as Error).name}: ${(error as Error).message}`);
+      deps.log(`broker error: ${(error as Error).name}: ${errorLogText(error)}`);
       const res = responses.get(req) as ServerResponse;
       if (!res.headersSent) send(res, 500);
       else res.destroy();
@@ -967,7 +965,7 @@ export function createBrokerHandler(deps: BrokerDeps): Handler {
       responses.set(req, res);
       listener(req, res);
     } catch (err) {
-      deps.log(`broker error: ${(err as Error).name}: ${(err as Error).message}`);
+      deps.log(`broker error: ${(err as Error).name}: ${errorLogText(err)}`);
       if (!res.headersSent) send(res, 500);
       else res.destroy();
     }
