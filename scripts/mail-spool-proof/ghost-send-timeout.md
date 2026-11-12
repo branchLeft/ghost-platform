@@ -45,6 +45,5 @@ assertion by name: `the golden renders mail__options__connectionTimeout`.
 - Only the `queue` transport is proven. The `smtp` transport renders no
   timeouts (`render-core/src/environment.ts`, `transportEnvironment`), so it is
   out of scope; see `render-core/src/environment.md#transport-environment`.
-- The live proof on the demo host (ws#1272) is a separate owner step.
-- The CI run is the first execution of this file. Local runs need the pinned
-  Ghost base image, which is not on the agent machine.
+- Local runs need the pinned Ghost base image, which is not on the agent
+  machine.

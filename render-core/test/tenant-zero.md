@@ -62,7 +62,6 @@ itself.
 `defect` means the render is as designed but the difference must not reach the
 live host until something outside this package is done (a DNS record, a
 mailbox, a host-side object). It does not mean the render core is wrong.
-Neither `defect` entry has been resolved; both are live-step items.
 
 ## What this does not prove
 

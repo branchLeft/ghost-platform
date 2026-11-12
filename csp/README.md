@@ -31,7 +31,7 @@ general case). `render()`'s new third argument defaults to
 `THEME_CSP_UNAVAILABLE`, so every existing caller in this repo (the broker,
 demo-gate) keeps compiling and keeps rendering the report-only policy
 exactly as before — wiring a real, derived value through a running service
-is the harness's job (LLD-3), which does not exist in this repo yet.
+is the harness's job (LLD-3).
 
 **`proof/`** — the live proof LLD-5's own "Done means" asks for: a real
 pinned Ghost, this repo's self-hosted widget bundles (`widgets/`, so Portal
@@ -40,11 +40,12 @@ headless Chromium, driven through the exact attack the spike measured. One
 GREEN baseline (the enforcing policy, with the theme's own derived hashes,
 blocks the attack while Portal's sign-in form still renders and exactly one
 violation fires), one control (no policy: the attack runs, proving the
-harness can see it at all), and one sabotage (the real, unmutated
+harness can see it at all), and two sabotages (the real, unmutated
 report-only policy wired in as an *enforcing* header instead — the exact
 bug the render core's own `contentSecurityPolicyMode` flag exists to
-prevent — which blocks Ghost's own inline scripts too, and the "exactly one
-violation" assertion goes red), then a final GREEN restoring the correct
-wiring. Needs Docker and `proof/`'s own `pnpm install` for Playwright — never
+prevent — which blocks Ghost's own inline scripts too; and each derived hash
+dropped in turn, which leaves one of Ghost's own inline blocks unhashed and
+refused; in both the "exactly one violation" assertion goes red), then a
+final GREEN restoring the correct wiring. Needs Docker and `proof/`'s own `pnpm install` for Playwright — never
 run in CI, like `widgets/proof/`. Run it from the repo root:
 `./csp/proof/run-proof.sh`.
