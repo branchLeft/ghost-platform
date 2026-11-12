@@ -1,7 +1,12 @@
 import { readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createSlotWrapper, WrapperError, type SlotWrapper } from '../../src/wrapper.js';
+import {
+  createSlotWrapper,
+  stderrOneLine,
+  WrapperError,
+  type SlotWrapper,
+} from '../../src/wrapper.js';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { join } from 'node:path';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
@@ -15,6 +20,16 @@ async function readLoggedInvocations(logPath: string): Promise<string[][]> {
     .filter(Boolean)
     .map((line) => JSON.parse(line) as string[]);
 }
+
+describe('stderrOneLine', () => {
+  it('trims the ends and escapes CR and LF so the text is one line', () => {
+    expect(stderrOneLine('  first\r\nsecond\n')).toBe('first\\r\\nsecond');
+  });
+
+  it('is empty for stderr that is only whitespace', () => {
+    expect(stderrOneLine(' \n\t')).toBe('');
+  });
+});
 
 describe('createSlotWrapper', () => {
   let dir: string;
@@ -71,6 +86,26 @@ describe('createSlotWrapper', () => {
   it('rejects with a WrapperError, carrying stdout/stderr, when the wrapper exits non-zero', async () => {
     process.env.FAKE_WRAPPER_FAIL = '1';
     await expect(wrapper.reset('0' as SlotName)).rejects.toBeInstanceOf(WrapperError);
+  });
+
+  it('puts the wrapper stderr on the one-line WrapperError message, newlines escaped', async () => {
+    process.env.FAKE_WRAPPER_FAIL = '1';
+    process.env.FAKE_WRAPPER_STDERR = 'slot 0: unit not loaded\r\nslot 0: no volume\n';
+    try {
+      const error = await wrapper.reset('0' as SlotName).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(WrapperError);
+      const message = (error as WrapperError).message;
+      expect(message).not.toMatch(/\n|\r/);
+      expect(message).toMatch(/^slot wrapper failed: Command failed: /);
+      expect(
+        message.endsWith(
+          ' stderr: slot 0: unit not loaded\\r\\nslot 0: no volume\\nfake wrapper: forced failure'
+        )
+      ).toBe(true);
+    } finally {
+      delete process.env.FAKE_WRAPPER_FAIL;
+      delete process.env.FAKE_WRAPPER_STDERR;
+    }
   });
 
   it('rejects with a WrapperError when the wrapper runs longer than timeoutMs', async () => {

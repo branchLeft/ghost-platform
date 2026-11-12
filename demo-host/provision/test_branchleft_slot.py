@@ -184,6 +184,9 @@ class FakeSlotOps:
     def systemctl(self, action: str, unit: str) -> None:
         self.calls.append(("systemctl", action, unit))
 
+    def unit_is_stopped(self, unit: str) -> bool:
+        return False
+
     def load_image(self, path: str) -> None:
         self.calls.append(("load_image", path))
 
@@ -813,6 +816,76 @@ class RealSlotOpsWiringTests(unittest.TestCase):
         for call in run.call_args_list:
             argv = call.args[0]
             self.assertEqual(argv[0], "systemctl")
+
+
+class ResetOfUnitsNotStoppedTests(unittest.TestCase):
+    """A reset of a slot whose colour units were never installed (not loaded)
+    must still empty the slot: `systemctl stop` exits non-zero on such a unit,
+    and that alone must not leave the tenant's data in place. A stop that
+    fails on a unit that is loaded and active still aborts before anything
+    is wiped.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._patch = mock.patch.object(bs, "LOCK_DIR", self._tmp.name)
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def test_reset_of_a_slot_whose_units_are_not_loaded_still_empties_it(self):
+        class NotLoadedOps(FakeSlotOps):
+            def systemctl(self, action: str, unit: str) -> None:
+                super().systemctl(action, unit)
+                if action == "stop":
+                    raise subprocess.CalledProcessError(5, ["systemctl", action, unit])
+
+            def unit_is_stopped(self, unit: str) -> bool:
+                return True
+
+        ops = NotLoadedOps(content_volume="ghost-demo-5-content")
+        bs.perform(bs.ResetInvocation(slot="4"), ops)
+        names = [call[0] for call in ops.calls]
+        self.assertIn("remove_volume_contents", names)
+        self.assertEqual(names[-1], "recreate_empty_dir")
+
+    def test_reset_still_refuses_when_a_loaded_unit_fails_to_stop(self):
+        class StuckOps(FakeSlotOps):
+            def systemctl(self, action: str, unit: str) -> None:
+                super().systemctl(action, unit)
+                if action == "stop":
+                    raise subprocess.CalledProcessError(1, ["systemctl", action, unit])
+
+        ops = StuckOps(content_volume="ghost-demo-5-content")
+        with self.assertRaises(subprocess.CalledProcessError):
+            bs.perform(bs.ResetInvocation(slot="4"), ops)
+        names = [call[0] for call in ops.calls]
+        self.assertNotIn("remove_volume_contents", names)
+        self.assertNotIn("remove_dir_contents", names)
+
+    def test_unit_is_stopped_reads_load_and_active_state_with_systemctl_show(self):
+        unit = "branchleft-compose@demo-0-a"
+        inactive = subprocess.CompletedProcess([], 0, stdout="LoadState=not-found\nActiveState=inactive\n")
+        with mock.patch("branchleft_slot.subprocess.run", return_value=inactive) as run:
+            self.assertTrue(bs.RealSlotOps().unit_is_stopped(unit))
+        run.assert_called_once_with(
+            ["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", unit],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_unit_is_stopped_is_false_for_a_loaded_active_unit(self):
+        running = subprocess.CompletedProcess([], 0, stdout="LoadState=loaded\nActiveState=active\n")
+        with mock.patch("branchleft_slot.subprocess.run", return_value=running):
+            self.assertFalse(bs.RealSlotOps().unit_is_stopped("branchleft-compose@demo-0-a"))
+
+    def test_unit_is_stopped_is_false_when_no_property_comes_back(self):
+        silent = subprocess.CompletedProcess([], 0, stdout="")
+        with mock.patch("branchleft_slot.subprocess.run", return_value=silent):
+            self.assertFalse(bs.RealSlotOps().unit_is_stopped("branchleft-compose@demo-0-a"))
 
 
 class RealSlotOpsFilesystemTests(unittest.TestCase):

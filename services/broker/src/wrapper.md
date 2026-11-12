@@ -30,3 +30,12 @@ and `verb` each arrive here already validated against their own closed set
 (`literals.ts`) and are each pushed as their own argv element, so the
 sudoers boundary and this process's own argv agree on where one argument
 ends and the next begins.
+
+## stderr on one line
+
+A failed run rejects with a `WrapperError` whose message is the first line of
+Node's own `err.message` (the `Command failed: …` line), then ` stderr: ` and
+the child's stderr from `stderrOneLine`: trimmed, with CR and LF written as the
+escapes `\r` and `\n`. The broker logs that message as it is, so a grep of the
+log finds the wrapper's reason on the same line as the failure. The full
+stderr stays on `WrapperError.stderr` for any caller that wants it.

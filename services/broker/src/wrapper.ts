@@ -16,6 +16,15 @@ export interface SlotWrapper {
   load(tarPath: string): Promise<string>;
 }
 
+/**
+ * A child's stderr as one log-safe line: trimmed, with CR and LF written as
+ * the two-character escapes `\r` and `\n`. A line-based log read then carries
+ * the whole reason. See wrapper.md#stderr-on-one-line.
+ */
+export function stderrOneLine(stderr: string): string {
+  return stderr.trim().replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+}
+
 export class WrapperError extends Error {
   constructor(
     message: string,
@@ -50,7 +59,12 @@ export function createSlotWrapper(config: WrapperConfig): SlotWrapper {
     return new Promise((resolve, reject) => {
       execFile(file, rest, { timeout: config.timeoutMs }, (err, stdout, stderr) => {
         if (err) {
-          reject(new WrapperError(`slot wrapper failed: ${err.message}`, stdout, stderr));
+          // Node puts the child's stderr after the first line of err.message,
+          // so the first line is kept and the stderr is appended on one line.
+          const [head = ''] = err.message.split(/\r?\n/);
+          const reason = stderrOneLine(stderr);
+          const detail = reason === '' ? '' : ` stderr: ${reason}`;
+          reject(new WrapperError(`slot wrapper failed: ${head}${detail}`, stdout, stderr));
           return;
         }
         resolve(stdout);

@@ -23,6 +23,9 @@ SABOTAGES = [
     ("drop the mount-point device check (the walk crosses a mount)",
      "if os.fstat(child_fd).st_dev != dev:",
      "if False:"),
+    ("drop the not-loaded tolerance on a reset stop (a missing unit aborts the reset)",
+     "        if ops.unit_is_stopped(unit):\n            return\n",
+     "        if False:\n            return\n"),
 ]
 
 
