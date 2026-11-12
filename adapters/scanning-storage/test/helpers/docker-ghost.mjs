@@ -149,7 +149,7 @@ export class GhostContainer {
   // `siteUrl` is the address Ghost is told it lives at (its `url` setting) and
   // the origin the harness sends; the default is the in-container address. The
   // mail gate passes its slot's domain.
-  static async #start(image, env, { network, volumes = [], siteUrl = SITE_URL }) {
+  static async #start(image, env, { network, volumes = [], siteUrl = SITE_URL, addHosts = [] }) {
     const port = await reservePort();
     const name = uniqueName('contract-ghost');
     const fullEnv = {
@@ -163,6 +163,7 @@ export class GhostContainer {
     };
     const envArgs = Object.entries(fullEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
     const volumeArgs = volumes.flatMap(({ host, container }) => ['-v', `${host}:${container}`]);
+    const hostArgs = addHosts.flatMap((entry) => ['--add-host', entry]);
     docker(
       'create',
       '--name',
@@ -175,6 +176,7 @@ export class GhostContainer {
       `127.0.0.1:${port}:2368`,
       ...envArgs,
       ...volumeArgs,
+      ...hostArgs,
       image
     );
     const ghost = new GhostContainer(name, port, siteUrl);
