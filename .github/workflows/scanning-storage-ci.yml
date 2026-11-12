@@ -7,10 +7,22 @@ name: Scanning storage adapter CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'adapters/scanning-storage/**'
+      - 'Dockerfile'
+      - 'render-core/test/golden/**'
+      # The held-media backup proof runs the real media backup and restore.
+      - 'infra/provisioning/scripts/media_backup_restore.py'
+      - 'infra/provisioning/scripts/media_backup_held_proof.py'
+      - 'infra/provisioning/scripts/shared_objectstorage.py'
+      - 'db/provision/objectstorage.py'
+      - '.python-version'
+      - '.github/workflows/scanning-storage-ci.yml'
   # A pull request starts this only when its diff touches something the job
   # reads: the adapter, the root Dockerfile (a unit test reads it) and
-  # render-core's golden files (a unit test compares against them). Push to
-  # main stays unfiltered as the backstop.
+  # render-core's golden files (a unit test compares against them). Push to main
+  # starts it on the same list, and a weekly run of the whole tree is the
+  # backstop for a read the list misses.
   pull_request:
     branches: [main]
     paths:
@@ -24,6 +36,8 @@ on:
       - 'db/provision/objectstorage.py'
       - '.python-version'
       - '.github/workflows/scanning-storage-ci.yml'
+  schedule:
+    - cron: '42 4 * * 1'
 
 permissions:
   contents: read
