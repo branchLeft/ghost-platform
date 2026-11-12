@@ -16,13 +16,13 @@ which the client library reaches solely via a socket.
 
 ## 0. Preconditions
 
-`db1` exists as a Hetzner server (created by `infra/hosts`, private-only,
-`10.20.1.20`) but is **base-unprovisioned**: no Docker, no deploy account.
-Base-provision it first, exactly as shared-infra's
+`db1` is a Hetzner server (created by `infra/hosts`, private-only,
+`10.20.1.20`) that must be base-provisioned first (Docker, a deploy account),
+exactly as shared-infra's
 [`RUNBOOK-provision-host.md`](https://github.com/branchLeft/shared-infra/blob/main/hetzner/RUNBOOK-provision-host.md)
 §4 describes for any host with no public address -- through `edge1` as a
-jump host. That is a platform-owner-only step (root SSH); this repo's own
-PR states the exact command. Confirm it completed before anything below:
+jump host. That is a platform-owner-only step (root SSH). Confirm it completed
+before anything below:
 
 **Select the hcloud project first.** The lookups below ask hcloud, so its active context
 must be the one for the project that holds the server. Which of your contexts that is
@@ -56,22 +56,11 @@ versioning, a lifecycle rule and its fence set — see "The backup bucket" below
 
 ## The backup bucket
 
-> **STOP — the fencing half of this step does not run yet.** A bucket policy
-> this repository wrote was accepted by the endpoint and then enforced against
-> nobody: neither the key it exempted nor a key it should have denied was
-> refused. Whether a bucket policy can fence anything at all on this provider is
-> an open question, and `configure_backup_bucket.py` below will refuse to apply
-> one until it has been answered.
->
-> Answer it first with section 0 of
-> [`RUNBOOK-bucket-fencing.md`](../RUNBOOK-bucket-fencing.md) — it is reversible,
-> writes no fence, and takes one command. Then follow what its verdict says. On
-> every reading but one, no fence is applied to this bucket at all and the
-> bucket is left as versioning and the lifecycle rule make it; the estate's
-> offsite backups then rest on the project boundary alone, which is a fact for
-> the platform owner to decide about rather than something to work around here.
->
-> Tracked as branchLeft/workspace#301.
+> **`configure_backup_bucket.py` below refuses to write anything unless it is
+> given `--engine-diagnostic-passed`.** Pass it only after section 0 of
+> [`RUNBOOK-bucket-fencing.md`](../RUNBOOK-bucket-fencing.md) — reversible, writes
+> no fence, one command — has reported that a bucket policy can fence one key
+> from another on this account.
 
 Console-only (no `hcloud` API for Object Storage), one time, before `db.env`
 is written. This repo's PR body carries the exact bucket name, location and
