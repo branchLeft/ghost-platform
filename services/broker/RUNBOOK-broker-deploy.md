@@ -314,6 +314,18 @@ esac
 The compare API is unauthenticated, which allows 60 requests per hour per
 address: ample for a deploy.
 
+**Not yet exercised.** Four things here have not been observed and the first
+consumer run proves three of them: `gh attestation verify --bundle ... --custom-trusted-root`
+working without a logged-in `gh`; `gh attestation trusted-root` working
+without a logged-in `gh`; and the JSON field that carries the source digest
+(`.[0].verificationResult.signature.certificate.sourceRepositoryDigest` above).
+The fourth is that `GITHUB_SHA` on an annotated-tag push is the commit and not
+the tag object, which the release workflow passes to the tag check as the commit
+being built. If it is the tag object the check fails closed: it refuses every
+release and signs nothing, so nothing unsafe ships. The first live tag shows
+which it is. If any one behaves differently, this section changes to match what
+was observed.
+
 **What this does and does not prove.** The attestation shows the commit the
 tag named when the run started, and which workflow run produced the bytes
 (`broker-release.yml` at `refs/tags/broker-vX.Y.Z`). It does not show the bytes
@@ -322,7 +334,9 @@ was the one on `main`. The controls are the pinned digest, which makes
 reviewed code choose which release deploys, and the check above that the
 attested commit is on `main`. This is the same trust in GitHub that
 branchLeft/workspace#2483 accepted for merge signatures; moving to a key of
-our own later changes only the attest step and the flags above.
+our own later changes only the attest step and the flags above. A `broker-v*`
+tag is protected from deletion and update by the `release tags` repository
+ruleset; the digest pin is what keeps a moved tag from deploying.
 
 **Install from the release.** Unpack into a new release directory and swap
 `current` as in Upgrade above; never unpack over `current/`:
