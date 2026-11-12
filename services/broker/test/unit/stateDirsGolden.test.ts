@@ -31,12 +31,34 @@ function parseEnvFile(path: string): Map<string, string> {
   return out;
 }
 
-function readWritePaths(): string[] {
-  const unit = readFileSync(join(SYSTEMD_DIR, 'branchleft-broker.service'), 'utf8');
+const SHIPPED_UNIT = readFileSync(join(SYSTEMD_DIR, 'branchleft-broker.service'), 'utf8');
+
+function readWritePaths(unit: string = SHIPPED_UNIT): string[] {
   return unit
     .split('\n')
     .filter((line) => line.startsWith('ReadWritePaths='))
     .flatMap((line) => line.slice('ReadWritePaths='.length).trim().split(/\s+/));
+}
+
+/**
+ * The exact set the unit may write. The two state paths come from the golden
+ * file; the other two are the broker's install and config trees, which the
+ * golden file does not carry. A new writable path is a deliberate change that
+ * edits this list in the same commit as the unit.
+ */
+const EXPECTED_WRITABLE: readonly string[] = [
+  '/opt/branchleft',
+  '/etc/branchleft',
+  golden.brokerSlotsDir,
+  golden.dockerVolumeRoot,
+];
+
+/** What differs between the unit's writable set and the expected one. */
+function writableSetDrift(actual: readonly string[]): { extra: string[]; missing: string[] } {
+  return {
+    extra: [...new Set(actual.filter((path) => !EXPECTED_WRITABLE.includes(path)))].sort(),
+    missing: EXPECTED_WRITABLE.filter((path) => !actual.includes(path)).sort(),
+  };
 }
 
 /**
@@ -77,6 +99,50 @@ describe('the broker slots file, pinned to state-dirs.golden.json', () => {
       expect(path).not.toBe(golden.stateRoot);
       expect(path === golden.routerRoot || path.startsWith(`${golden.routerRoot}/`)).toBe(false);
     }
+  });
+});
+
+/**
+ * The two path-specific tests above and below only check what the unit does
+ * contain and what it must not. Neither would notice a new sibling such as
+ * /var/lib/docker/containers, so the whole set is pinned here, in both
+ * directions, with the sabotage shown against the real unit text.
+ */
+describe('the unit writable set, pinned exactly', () => {
+  it('ReadWritePaths= is exactly the expected set, with no duplicates', () => {
+    const actual = readWritePaths();
+    expect(writableSetDrift(actual)).toEqual({ extra: [], missing: [] });
+    expect(actual).toHaveLength(EXPECTED_WRITABLE.length);
+  });
+
+  it('sabotage: an extra path in the unit is reported', () => {
+    const sabotaged = SHIPPED_UNIT.replace(
+      /^ReadWritePaths=.*$/m,
+      (line) => `${line} /var/lib/docker/containers`
+    );
+    expect(sabotaged).not.toBe(SHIPPED_UNIT);
+    expect(writableSetDrift(readWritePaths(sabotaged))).toEqual({
+      extra: ['/var/lib/docker/containers'],
+      missing: [],
+    });
+  });
+
+  it('sabotage: a path removed from the unit is reported', () => {
+    const sabotaged = SHIPPED_UNIT.replace(/^ReadWritePaths=.*$/m, (line) =>
+      line.replace(` ${golden.dockerVolumeRoot}`, '')
+    );
+    expect(sabotaged).not.toBe(SHIPPED_UNIT);
+    expect(writableSetDrift(readWritePaths(sabotaged))).toEqual({
+      extra: [],
+      missing: [golden.dockerVolumeRoot],
+    });
+  });
+
+  it('sabotage: a second ReadWritePaths= line is reported', () => {
+    const sabotaged = `${SHIPPED_UNIT}\nReadWritePaths=/var/lib/docker/containers\n`;
+    expect(writableSetDrift(readWritePaths(sabotaged)).extra).toEqual([
+      '/var/lib/docker/containers',
+    ]);
   });
 });
 
