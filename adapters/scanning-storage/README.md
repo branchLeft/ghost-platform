@@ -433,6 +433,11 @@ same line again rather than resuming it. To retry a stuck hold once its
 cause is fixed, remove that owner's `stuck` entry from the sidecar and
 restart Ghost.
 
+**Why the write budget matters.** Ghost's `S3Storage` builds its S3 client with
+only a region, endpoint, path-style flag and credentials, and its config schema
+has no timeout field. There is no request timeout beneath `writeTimeoutMs`, so
+that budget is the only bound on a write the object store never acknowledges.
+
 **Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
 between the two leaves bytes under `<digest>` with no sidecar and no
 refusal record. They were never served, but nothing would ever resume or

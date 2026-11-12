@@ -41,9 +41,7 @@ decision.
   mail host, and `mail__from` is the render core's sending address. Since
   render core 0.1.1, both colours also join the tenant's own internal network
   to the spool, `branchleft-mail-<uid>`, declared external, and the base URL
-  is the spool's service name on it. The owner
-  ruled that tenant zero's live switch-over waits until its per-host spool is
-  live.
+  is the spool's service name on it.
 - **`single-renderer`**: the component renders nothing itself (this story's
   Done criterion; LLD-1 §05). Comment-only lines in the Compose and secrets
   headers are now the render core's wording.
