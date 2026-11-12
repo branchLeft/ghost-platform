@@ -14,6 +14,7 @@ interface GoldenStateDirs {
   readonly routerRoot: string;
   readonly brokerSlotsDir: string;
   readonly brokerSlotsFile: string;
+  readonly dockerVolumeRoot: string;
 }
 
 const golden = JSON.parse(readFileSync(GOLDEN_PATH, 'utf8')) as GoldenStateDirs;
@@ -76,5 +77,27 @@ describe('the broker slots file, pinned to state-dirs.golden.json', () => {
       expect(path).not.toBe(golden.stateRoot);
       expect(path === golden.routerRoot || path.startsWith(`${golden.routerRoot}/`)).toBe(false);
     }
+  });
+});
+
+/**
+ * The slot wrapper empties tenant volumes under the Docker volume root, and
+ * the unit's read-only mount namespace is inherited through `sudo -n`, so the
+ * volumes directory (and only it) must be writable. See systemd/README.md.
+ */
+describe('the Docker volume root, pinned to state-dirs.golden.json', () => {
+  it('the unit makes the volumes directory writable', () => {
+    expect(readWritePaths()).toContain(golden.dockerVolumeRoot);
+  });
+
+  it('no writable path is /var/lib/docker itself or a parent of the volumes directory', () => {
+    const engineRoot = dirname(golden.dockerVolumeRoot);
+    for (const path of readWritePaths()) {
+      expect(path === '/' || path === engineRoot || engineRoot.startsWith(`${path}/`)).toBe(false);
+    }
+  });
+
+  it('the boot proof creates the volumes directory, so the unit still starts', () => {
+    expect(readFileSync(BOOT_DOCKERFILE, 'utf8')).toContain(golden.dockerVolumeRoot);
   });
 });
