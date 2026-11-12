@@ -5,6 +5,7 @@ import {
 } from '../../../src/bumpStateMachine.js';
 import { createApplyLock } from '../../../src/applyLock.js';
 import type { GateReport } from '../../../src/gates.js';
+import type { PromotionRecord } from '../../../src/promotionChainLog.js';
 import type { RingBakeConfig, RingName } from '../../../src/rings.js';
 import type {
   Health,
@@ -68,6 +69,8 @@ export interface FleetOptions {
   ) => readonly string[] | Promise<readonly string[]>;
   listMembers?: (ring: RingName) => Promise<readonly RingMember[]>;
   runGatesThrows?: boolean;
+  /** Replaces the default recorder, which accepts every record. */
+  recordPromotion?: (record: PromotionRecord) => Promise<void>;
 }
 
 /** Counts how many `run()` calls are in flight at once. */
@@ -109,6 +112,7 @@ export function makeFleet(options: FleetOptions = {}) {
   const sleeps: number[] = [];
   const events: string[] = [];
   const holds: Held[] = [];
+  const records: PromotionRecord[] = [];
   const pages: string[] = [];
   const counter = { inFlight: 0, highWater: 0 };
   const calls = { newBump: 0, runGates: 0, health: 0, reportedErrors: 0 };
@@ -197,6 +201,11 @@ export function makeFleet(options: FleetOptions = {}) {
       if (options.reportedErrors) return options.reportedErrors(tenantId, sinceMs, nowMs);
       return [];
     },
+    recordPromotion: async (record) => {
+      if (options.recordPromotion) await options.recordPromotion(record);
+      events.push(`record:${record.slot}`);
+      records.push(record);
+    },
     hold: async (held) => {
       holds.push(held);
     },
@@ -209,6 +218,7 @@ export function makeFleet(options: FleetOptions = {}) {
     sleeps,
     events,
     holds,
+    records,
     pages,
     counter,
     calls,

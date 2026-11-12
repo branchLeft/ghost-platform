@@ -1,5 +1,5 @@
 {
-  "registry": "ghcr.io/branchleft/mirror-private",
+  "registry": "ghcr.io/branchleft/mirror-private2",
   "images": [
     {
       "name": "ghost",

@@ -13,3 +13,4 @@ allowBuilds:
 # top level and pnpm keeps private to @types/express.
 publicHoistPattern:
   - '@types/express-serve-static-core'
+minimumReleaseAgeExclude: ['@branchleft/*']

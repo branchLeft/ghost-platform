@@ -7,6 +7,262 @@
       "reason": "Denial of service when parsing JWKs that contain RSA keys. The GitHub advisory lists go-jose/v3 up to 3.0.5 with no patched version (first_patched_version null); the only fix is in go-jose/v4 4.1.6, a different module path. Grype reports fix state not-fixed for this package. Reachability in the demo edge is not established here. Revisit when a go-jose/v3 fix or a dependency move removes it.",
       "granted": "2026-11-10",
       "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-115506",
+      "package": "expat",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). Exploiting it needs the process to parse attacker-supplied XML. The only package that links libexpat apart from expat itself is dbus-broker, which is not run here; mysqld and its plugins do not link it and a running server maps none. Revisit when UBI ships an expat fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-76641",
+      "package": "expat",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). Exploiting it needs the process to parse attacker-supplied XML. The only package that links libexpat apart from expat itself is dbus-broker, which is not run here; mysqld and its plugins do not link it and a running server maps none. Revisit when UBI ships an expat fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-118131",
+      "package": "gnupg2",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in GnuPG for Windows (insecure default DACL on the shared program data directory); this image is Linux, so the affected code does not exist here. gnupg2 is present only as a dependency of gpgme, which the package manager uses to check package signatures; the server never runs gpg.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-120194",
+      "package": "json-glib",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). json-glib is linked only by librhsm, the package manager's subscription helper. Nothing in this image evaluates attacker-supplied JSONPath expressions, and a running mysqld maps no json-glib library.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112315",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112316",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112317",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112318",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112319",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112320",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112321",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112322",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-112323",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-119079",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "libblkid",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "libblkid",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "libfdisk",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "libfdisk",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "libmount",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "libmount",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "libsmartcols",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "libsmartcols",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "libuuid",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "libuuid",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-119373",
+      "package": "sqlite-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). sqlite-libs is linked only by rpm-libs, libdnf and gnupg2 (package tooling that does not run at run time); mysqld and its plugins do not link it and a running server maps none. The sqlite3 command-line tool is not installed. Exploiting it needs attacker-controlled SQLite data fed to that tooling.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-119374",
+      "package": "sqlite-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). sqlite-libs is linked only by rpm-libs, libdnf and gnupg2 (package tooling that does not run at run time); mysqld and its plugins do not link it and a running server maps none. The sqlite3 command-line tool is not installed. Exploiting it needs attacker-controlled SQLite data fed to that tooling.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-119379",
+      "package": "sqlite-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). sqlite-libs is linked only by rpm-libs, libdnf and gnupg2 (package tooling that does not run at run time); mysqld and its plugins do not link it and a running server maps none. The sqlite3 command-line tool is not installed. Exploiting it needs attacker-controlled SQLite data fed to that tooling.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-119586",
+      "package": "sqlite-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). sqlite-libs is linked only by rpm-libs, libdnf and gnupg2 (package tooling that does not run at run time); mysqld and its plugins do not link it and a running server maps none. The sqlite3 command-line tool is not installed. Exploiting it needs attacker-controlled SQLite data fed to that tooling.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "util-linux",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "util-linux",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53613",
+      "package": "util-linux-core",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The mount(8) race needs an /etc/fstab entry with the user or users option and a local unprivileged user; the image has no /etc/fstab and the server runs as the mysql user with no mount privilege. The util-linux libraries are listed one by one because Grype reports each; a running mysqld maps none of them.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-53615",
+      "package": "util-linux-core",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The overflow needs libblkid to parse a crafted disk image or partition table. The container opens no block device or disk image, the server runs as the mysql user, and a running mysqld maps no libblkid. The other util-linux libraries are listed one by one because Grype reports each.",
+      "granted": "2026-11-10",
+      "expires": "2026-12-10"
     }
   ]
 }

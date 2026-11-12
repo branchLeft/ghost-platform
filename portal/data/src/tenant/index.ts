@@ -30,3 +30,28 @@ export {
   type DocumentView,
   type UpcomingView,
 } from '../documents.js';
+export {
+  CustomDomainNotAllowedError,
+  CustomDomainNotRequestedError,
+  CustomDomainOwnedError,
+  CustomDomainTakenError,
+  InvalidCustomDomainError,
+  normaliseCustomDomain,
+  verificationRecordName,
+  verificationRecordValue,
+  type ConnectedDomainView,
+  type CustomDomainView,
+  type PendingDomainView,
+} from '../customDomain.js';
+export {
+  DnsLookupFailedError,
+  DomainProof,
+  DomainProofInvalidError,
+  InvalidEdgeTargetError,
+  checkCustomDomain,
+  type DnsResolver,
+  type DomainCheckResult,
+  type DomainRefusal,
+  type EdgeTarget,
+} from '../domainCheck.js';
+export { nodeDnsResolver } from '../nodeDnsResolver.js';
