@@ -14,9 +14,11 @@ on:
       - scripts/test-verify-image-attestation.sh
       - workflow-image-attestation.test.js
       - workflow-image-scan-before-attest.test.js
+      - test-support/publish-job-checks.mjs
       - .github/workflows/registry-push.yml
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
+      - .github/workflows/demo-gate-image.yml
       - .github/workflows/mail-collector-image.yml
       - .github/workflows/drain-sidecar-image.yml
       - .github/workflows/recovery-image.yml
@@ -33,9 +35,11 @@ on:
       - scripts/test-verify-image-attestation.sh
       - workflow-image-attestation.test.js
       - workflow-image-scan-before-attest.test.js
+      - test-support/publish-job-checks.mjs
       - .github/workflows/registry-push.yml
       - .github/workflows/portal-apps-image.yml
       - .github/workflows/demo-edge-image.yml
+      - .github/workflows/demo-gate-image.yml
       - .github/workflows/mail-collector-image.yml
       - .github/workflows/drain-sidecar-image.yml
       - .github/workflows/recovery-image.yml
