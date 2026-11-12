@@ -8,9 +8,10 @@ same reason in each case: a fake implementation would silently pass its
 own tests while doing nothing real in production. `Renderer` is filled for
 real (`plugins/renderCorePlugin.ts`, adapting `render-core`'s own
 `render()`), and so is `ImageLoader` (`plugins/dockerImageLoader.ts`,
-`docker load` and nothing else). The Admin API call's content is
-unspecified by any design document; the drain source depends on the
-unbuilt mail spool and an unbuilt "reaper" — both still seams.
+`docker load` and nothing else). `AdminApiClient` is
+`plugins/ghostAdminApi.ts`, and `DrainSource` is
+`plugins/refusingDrainSource.ts`, which refuses every poll because mail is
+collected from the mail queue directly.
 
 This entrypoint loads each from a module path named by its own environment
 variable and refuses to start if one is missing *or if its default export

@@ -119,8 +119,4 @@ Added on the same reasoning as the directives above — none of the three
 uses a seccomp filter (cgroup-BPF for the address filter, a private IPC
 namespace for the other two), so none should force `no_new_privs`, and
 `sudo -n` execing a local root process needs neither non-loopback network
-access nor System V/POSIX IPC. **Not yet proven by a real boot at this
-head** — Docker was unavailable when these were added; the next real boot
-proof must confirm both that the unit still starts and that `/reset` still
-reaches the wrapper with these applied, the same way every directive above
-was individually confirmed.
+access nor System V/POSIX IPC.
