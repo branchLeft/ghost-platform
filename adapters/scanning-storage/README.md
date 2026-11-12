@@ -425,19 +425,18 @@ targets stay on disk. A write already in flight when it timed out cannot be
 cancelled and may still land at the hold's own target. A promotion write
 that does not settle within `writeTimeoutMs` counts as a failed retry, and a
 request-path write that does not settle is rejected after the same budget
-(default 60000 ms, set through the adapter's `writeTimeoutMs` config).
-Ghost's `S3Storage` builds its S3 client with only a region, endpoint,
-path-style flag and credentials, so there is no request timeout beneath this
-budget: a write the object store never acknowledges would otherwise hold the
-upload open indefinitely, and the client's retries never start because a
-response that never arrives is not an error. Its config schema has no timeout
-field to set instead. It is
+(default 60000 ms, set through the adapter's `writeTimeoutMs` config). It is
 logged once with the fixed prefix
 `ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
 `"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
 same line again rather than resuming it. To retry a stuck hold once its
 cause is fixed, remove that owner's `stuck` entry from the sidecar and
 restart Ghost.
+
+**Why the write budget matters.** Ghost's `S3Storage` builds its S3 client with
+only a region, endpoint, path-style flag and credentials, and its config schema
+has no timeout field. There is no request timeout beneath `writeTimeoutMs`, so
+that budget is the only bound on a write the object store never acknowledges.
 
 **Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
 between the two leaves bytes under `<digest>` with no sidecar and no

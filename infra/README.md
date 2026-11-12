@@ -57,11 +57,9 @@ This repo's IaC, split by shape rather than lumped into one program:
   plan that destroys a protected resource. Pull requests run typecheck and
   unit tests only; no cloud credential touches PR code. The one hand-run
   operation is the stack bootstrap (`pulumi stack init` -- state only, no
-  cloud resources). `pulumi stack rm` deletes the committed
-  `Pulumi.production.yaml` from the working copy along with the state entry,
-  here and in `demo-host/`: to redo a stack init, restore it first
-  (`git checkout -- Pulumi.production.yaml`), or the re-init writes a
-  salt-only file and the preview fails on missing required config. Base
+  cloud resources). `pulumi stack rm` also deletes the stack's committed
+  `Pulumi.production.yaml` unless `--preserve-config` is passed, here and in
+  `demo-host/`, so restore the file from git afterwards. Base
   pattern only: nothing here installs MySQL, Ghost or Compose -- those are
   delivered onto the hosts separately.
 
