@@ -1,34 +1,6 @@
-"""Proof that .github/CODEOWNERS still owns what the owner's review criteria name.
+"""Proof that .github/CODEOWNERS owns what the owner's review criteria name.
 
-CODEOWNERS is the owner's gate: a pull request that touches an owned path needs
-the owner's review, and one that touches none merges on the reviewer App's
-approval. A wrong line removes a control without any error, so this module
-answers two questions from the files themselves.
-
-OwnsTheSamples: for a fixed table of paths, one or more per kept criterion and
-per released class, does the file own the path or not. The matcher follows
-GitHub's rules: the last matching line wins, an unrooted name matches at any
-depth, a matching directory owns what is beneath it, and a line with no owner
-releases the path.
-
-SecretBearingJobsOwnTheirInputs: every file a workflow job that holds a secret
-(or feeds one) executes must be owned, because an edited script or manifest
-there reaches a token the pull request itself never sees. The workflows are read
-from the checkout with the standard library only. A job holds a secret when it
-declares a write permission, names an environment, references a secret other
-than the read GITHUB_TOKEN, or declares no permissions at all: the repository's
-default workflow token is write, so a job with no permissions block at workflow
-or job level holds a write token. A workflow this module cannot parse fails
-closed, naming the file.
-
-CODEOWNERS_FILE names another file to check (the default is the repository's),
-which is how the red result on an older file is produced:
-
-    git show origin/main:.github/CODEOWNERS > "$TMP/old"
-    CODEOWNERS_FILE="$TMP/old" python3 -m unittest discover -s scripts \\
-        -p test_codeowners_ownership.py -v
-
-Run from infra/provisioning, where CI runs the suite.
+Run from infra/provisioning. CODEOWNERS_FILE names another file to check.
 """
 
 from __future__ import annotations
@@ -278,6 +250,27 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("services/storage-gateway/.npmrc", True, "registry credentials file"),
     ("services/mail-collector/Dockerfile", True, "mounts the registry token"),
     ("portal/Dockerfile", True, "mounts the registry token"),
+    # Criterion 2 and 3: what a job that holds a token builds into an image.
+    ("Dockerfile", True, "built by build.yml build (default write token) and registry-push.yml push"),
+    ("docker-entrypoint.branchleft.sh", True, "copied into that image and run as its entrypoint"),
+    (".dockerignore", True, "keeps .git and the persisted token out of that build"),
+    ("services/drain-sidecar/.dockerignore", True, "beside a Dockerfile that mounts the token"),
+    ("services/mail-collector/Dockerfile.dockerignore", True, "beside a Dockerfile that mounts the token"),
+    ("db/percona/Dockerfile", True, "percona-image.yml push, packages write"),
+    ("db/recovery/Dockerfile", True, "recovery-image.yml push, packages write"),
+    ("db/provision/install_host_prereqs.py", True, "copied into the recovery image and run by its build"),
+    ("services/demo-edge/Dockerfile", True, "demo-edge-image.yml build feeds push; its xcaddy line picks the DNS module"),
+    ("adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh", True, "run by the root Dockerfile build"),
+    ("themes/fetch.mjs", True, "run by the root Dockerfile build"),
+    ("themes/lib/treehash.mjs", True, "imported by themes/verify.mjs, run by that build"),
+    # Criterion 1 and 3: a new file beside a script that a job holding a token runs.
+    ("scripts/json.py", True, "new file in a directory whose scripts secret-bearing jobs run"),
+    ("scripts/mail-spool-proof/subprocess.py", True, "new file beside released proofs, still under scripts/"),
+    ("db/percona/json.py", True, "new file beside smoke_check.py, run by percona-image.yml push"),
+    ("db/recovery/subprocess.py", True, "new file beside check_toolchain_version.py, run by recovery-image.yml push"),
+    ("scripts/test_image_mirror.py", True, "c1 test of the kept gate assert-image-refs-on-mirror.py"),
+    ("db/recovery/test-restore-drained-proof.sh", True, "c7 proof of the kept restore_drained.py"),
+    ("db/provision/prove-promotion-gate.sh", True, "c7 proof of the kept promotion gate"),
     # Criterion 2: keys, access, break-glass, grants.
     ("db/provision/provision_tenant_db.py", True, "db grants"),
     ("db/tunnel/tunnel_account.py", True, "tunnel account"),
@@ -328,7 +321,6 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("scripts/resolve-published-image.sh", False, "image-attestation-tokenless.yml, read-only token"),
     ("scripts/probe-tokenless-attestation.sh", False, "same job"),
     ("scripts/test-probe-tokenless-attestation.sh", False, "image-attestation-ci.yml, no token"),
-    ("scripts/test_image_mirror.py", False, "image-mirror-ci.yml, no token"),
     ("scripts/test_probe_private_packages.py", False, "image-mirror-ci.yml, no token"),
     ("scripts/select-lockfile-projects.py", False, "refresh-lockfile.yml select, contents read"),
     ("scripts/assert-slug-pattern-consistency.py", False, "repo-tooling-ci.yml, read-only token"),
@@ -347,9 +339,6 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("adapters/scanning-storage/src/pdq.js", False, "product code, no criterion path"),
     ("services/request-guard/src/ceiling.ts", False, "product code, caught only by a name rule"),
     ("services/storage-gateway/src/router.ts", False, "product code"),
-    ("services/demo-edge/Dockerfile", False, "digest pins only, no secret mounted"),
-    ("Dockerfile", False, "image content judged by the kept gate set; no token reaches the build"),
-    ("docker-entrypoint.branchleft.sh", False, "image content judged by the kept gate set"),
     (
         "services/mailgun-shim/test/helpers/connectGuardPreload.mjs",
         False,
@@ -781,14 +770,16 @@ class Input:
     job: str
     path: str
     why: str
+    # True for a file a secret reaches whatever job it is in (a docker build that mounts one).
+    always: bool = False
 
 
 def job_inputs(job: Job, tree: Tree, dynamic: Mapping[str, tuple[str, ...]]) -> Iterator[Input]:
     """Every repository file the job executes or installs from."""
     extra = dynamic.get(job.workflow)
 
-    def emit(path: str, why: str) -> Input:
-        return Input(job.workflow, job.name, path, why)
+    def emit(path: str, why: str, always: bool = False) -> Input:
+        return Input(job.workflow, job.name, path, why, always)
 
     for step in job.steps:
         workdirs = _step_dirs(job, step, extra)
@@ -828,10 +819,17 @@ def job_inputs(job: Job, tree: Tree, dynamic: Mapping[str, tuple[str, ...]]) -> 
                                 yield emit(dependency, f"imported by {path}")
         if step.uses.startswith("pnpm/action-setup") and "package.json" in tree.members:
             yield emit("package.json", "pnpm/action-setup reads the packageManager field")
-        for dockerfile, copied in _docker_secret_inputs(step, tree, workdirs):
-            yield emit(dockerfile, "docker build mounts a secret")
-            for path in copied:
-                yield emit(path, f"copied into the image by {dockerfile}")
+        for build in _docker_builds(step, tree, workdirs):
+            kind = "docker build mounts a secret" if build.secret else "docker build in this job"
+            yield emit(build.dockerfile, kind, build.secret)
+            for path in build.ignore_files:
+                yield emit(path, f"build ignore file of {build.dockerfile}", build.secret)
+            for path in build.run_files:
+                yield emit(path, f"copied into the image and run by {build.dockerfile}", build.secret)
+                for dependency in _import_closure(path, tree):
+                    yield emit(dependency, f"copied into the image and imported by {path}", build.secret)
+            for path in build.manifests:
+                yield emit(path, f"copied into the image by {build.dockerfile}", True)
     for pattern in extra or ():
         if any(_PM.search(s.run) for s in job.steps):
             for name in MANIFEST_NAMES:
@@ -842,19 +840,45 @@ def job_inputs(job: Job, tree: Tree, dynamic: Mapping[str, tuple[str, ...]]) -> 
 _DOCKER_VALUE_FLAGS = ("-f", "--file", "-t", "--tag", "--secret", "--build-arg", "--target", "--platform", "--label")
 
 
-def _docker_secret_inputs(
-    step: Step, tree: Tree, bases: Sequence[str]
-) -> list[tuple[str, list[str]]]:
-    out: list[tuple[str, list[str]]] = []
+@dataclass(frozen=True)
+class Build:
+    """One `docker build` line: its Dockerfile and the files that build reads and runs."""
+
+    dockerfile: str
+    secret: bool
+    manifests: tuple[str, ...]
+    ignore_files: tuple[str, ...]
+    run_files: tuple[str, ...]
+
+
+_BUILD_LINE = re.compile(r"\bdocker\s+(?:buildx\s+)?build\b")
+_EXECUTES = re.compile(r"^\s*(?:RUN|ENTRYPOINT|CMD)\s+(.*)$", re.M)
+_INTERPRETERS = ("node", "python", "python3", "sh", "bash")
+
+
+def _programs(dockerfile_text: str) -> set[str]:
+    """File names a RUN, ENTRYPOINT or CMD runs as a program (or hands to an interpreter)."""
+    names: set[str] = set()
+    for match in _EXECUTES.finditer(dockerfile_text):
+        command_text = re.sub(r'[\[\]",]', " ", match.group(1))
+        for command in re.split(r"&&|\|\||[;|\n]", command_text):
+            words = [w for w in command.split() if not w.startswith("-")]
+            if words and words[0] in _INTERPRETERS:
+                words = words[1:]
+            if words:
+                names.add(posixpath.basename(words[0]))
+    return names
+
+
+def _docker_builds(step: Step, tree: Tree, bases: Sequence[str]) -> list[Build]:
+    out: list[Build] = []
     text = _clean(step.run).replace("\\\n", " ")
     for line in text.splitlines():
-        if not re.search(r"\bdocker\s+build\b", line) or "--secret" not in line:
+        if not _BUILD_LINE.search(line) or line.strip().startswith("#"):
             continue
         words = line.split()
-        position = words.index("build") + 1
+        index = words.index("build") + 1
         dockerfile: Optional[str] = None
-        context = "."
-        index = position
         positionals: list[str] = []
         while index < len(words):
             word = words[index]
@@ -870,8 +894,7 @@ def _docker_secret_inputs(
             elif not word.startswith("-"):
                 positionals.append(word)
             index += 1
-        if positionals:
-            context = positionals[-1]
+        context = positionals[-1] if positionals else "."
         for base in bases:
             context_dir = posixpath.normpath(posixpath.join(base, context))
             file = posixpath.normpath(
@@ -879,14 +902,50 @@ def _docker_secret_inputs(
             )
             if file not in tree.members:
                 continue
-            copied: list[str] = []
-            for copy in re.finditer(r"^\s*COPY\s+(?:--\S+\s+)*(.+)$", tree.read(file), re.M):
-                sources = copy.group(1).split()[:-1]
-                for source in sources:
-                    if posixpath.basename(source) in MANIFEST_NAMES:
-                        copied += tree.expand(posixpath.join(context_dir, source))
-            out.append((file, copied))
+            body = tree.read(file).replace("\\\n", " ")
+            executed = _programs(body)
+            manifests: list[str] = []
+            run_files: list[str] = []
+            for copy in re.finditer(r"^\s*COPY\s+((?:--\S+\s+)*)(.+)$", body, re.M):
+                if "--from=" in copy.group(1):
+                    continue
+                for source in copy.group(2).split()[:-1]:
+                    for path in tree.expand(posixpath.join(context_dir, source)):
+                        if posixpath.basename(source) in MANIFEST_NAMES:
+                            manifests.append(path)
+                        elif posixpath.basename(path) in executed:  # a program, not a patch it applies
+                            run_files.append(path)
+            ignores = [
+                p
+                for p in (file + ".dockerignore", posixpath.join(context_dir, ".dockerignore"))
+                if p in tree.members
+            ]
+            out.append(
+                Build(
+                    dockerfile=file,
+                    secret="--secret" in line,
+                    manifests=tuple(manifests),
+                    ignore_files=tuple(ignores),
+                    run_files=tuple(run_files),
+                )
+            )
     return out
+
+
+def holding_inputs(
+    workflows: Mapping[str, str],
+    tree: Tree,
+    dynamic: Mapping[str, tuple[str, ...]] = DYNAMIC_PACKAGE_DIRS,
+) -> list[Input]:
+    """Every input of a secret-bearing or feeding job, and of a build that mounts a secret."""
+    found: list[Input] = []
+    for name in sorted(workflows):
+        jobs = parse_workflow(name, workflows[name])
+        feed = feeders(jobs)
+        for job in jobs:
+            holds = job.secret_bearing or job.name in feed
+            found += [i for i in job_inputs(job, tree, dynamic) if holds or i.always]
+    return found
 
 
 def unowned_inputs(
@@ -897,18 +956,31 @@ def unowned_inputs(
 ) -> list[Input]:
     """Inputs of secret-bearing and feeding jobs that no rule owns."""
     missing: dict[tuple[str, str, str], Input] = {}
-    for name in sorted(workflows):
-        jobs = parse_workflow(name, workflows[name])
-        feed = feeders(jobs)
-        for job in jobs:
-            for item in job_inputs(job, tree, dynamic):
-                holds = job.secret_bearing or job.name in feed
-                docker = item.why.startswith(("docker build", "copied into the image"))
-                if not (holds or docker):
-                    continue
-                if owning_rule(rules, item.path) is None:
-                    missing[(item.workflow, item.job, item.path)] = item
+    for item in holding_inputs(workflows, tree, dynamic):
+        if owning_rule(rules, item.path) is None:
+            missing[(item.workflow, item.job, item.path)] = item
     return list(missing.values())
+
+
+def unowned_beside_python(
+    workflows: Mapping[str, str],
+    tree: Tree,
+    rules: Sequence[Rule],
+    dynamic: Mapping[str, tuple[str, ...]] = DYNAMIC_PACKAGE_DIRS,
+) -> list[str]:
+    """Directories whose Python a secret-bearing job runs, where a new `json.py` would be unowned.
+
+    The script's directory is first on sys.path, so a new file there named like a
+    standard module runs in place of it.
+    """
+    # A file copied into an image runs from the image's own directory, not this one.
+    directories = {
+        posixpath.dirname(i.path)
+        for i in holding_inputs(workflows, tree, dynamic)
+        if i.path.endswith(".py") and not i.why.startswith("copied into the image")
+    }
+    shadows = (posixpath.join(d, "json.py") for d in sorted(directories))
+    return [s for s in shadows if owning_rule(rules, s) is None]
 
 
 def live_workflows() -> dict[str, str]:
@@ -1103,6 +1175,12 @@ class ReadingWhatAJobRuns(unittest.TestCase):
         "app/lib/package.json": "{}",
         "checks/test_x.py": "import helper\n",
         "checks/helper.py": "",
+        "pkg/Dockerfile": "COPY run.sh data.json fix.patch /opt/\nRUN set -e && /opt/run.sh x /opt/fix.patch\n",
+        "pkg/Dockerfile.dockerignore": ".git\n",
+        "pkg/.dockerignore": ".git\n",
+        "pkg/run.sh": "",
+        "pkg/data.json": "{}",
+        "pkg/fix.patch": "",
     }
     HEAD = "on: push\npermissions:\n  packages: write\njobs:\n  j:\n    runs-on: x\n    steps:\n"
 
@@ -1133,6 +1211,27 @@ class ReadingWhatAJobRuns(unittest.TestCase):
             {"app/Dockerfile", "app/lib/package.json"},
         )
 
+    def test_a_docker_build_in_such_a_job_needs_its_ignore_files_and_what_it_runs_owned(self) -> None:
+        found = self.inputs("docker build --tag x pkg")
+        self.assertGreaterEqual(
+            found, {"pkg/Dockerfile", "pkg/Dockerfile.dockerignore", "pkg/.dockerignore", "pkg/run.sh"}
+        )
+        self.assertNotIn("pkg/data.json", found)  # copied, but not run
+        self.assertNotIn("pkg/fix.patch", found)  # a patch the build applies is data
+
+    def test_a_docker_build_in_a_read_only_job_needs_none_of_it_owned(self) -> None:
+        text = "on: push\npermissions:\n  contents: read\njobs:\n  j:\n    runs-on: x\n    steps:\n      - run: docker build --tag x pkg\n"
+        self.assertEqual(unowned_inputs({"w.yml": text}, _tree(self.FILES), [], {}), [])
+
+    def test_a_new_file_beside_python_a_job_runs_is_reported_until_the_directory_is_owned(self) -> None:
+        text = self.HEAD + "      - run: python3 checks/helper.py\n"
+        workflows = {"w.yml": text}
+        tree = _tree(self.FILES)
+        file_only = parse_codeowners("/checks/helper.py @o\n/checks/test_x.py @o\n")
+        self.assertEqual(unowned_beside_python(workflows, tree, file_only, {}), ["checks/json.py"])
+        whole = parse_codeowners("/checks/ @o\n/checks/test_x.py\n")
+        self.assertEqual(unowned_beside_python(workflows, tree, whole, {}), [])
+
     def test_a_comment_line_in_a_run_block_names_nothing_but_a_command_line_does(self) -> None:
         self.assertEqual(self.inputs("|\n          # node app/esbuild.bundle.mjs"), set())
         self.assertEqual(self.inputs("|\n          node app/esbuild.bundle.mjs"), {"app/esbuild.bundle.mjs"})
@@ -1159,6 +1258,19 @@ class SecretBearingJobsOwnTheirInputs(CodeownersCase):
             "repository default token is write) runs these files, and no CODEOWNERS "
             "line owns them. Own them, or give the job an explicit read-only "
             "permissions block.\n" + "\n".join(lines),
+        )
+
+    def test_a_new_file_beside_python_that_such_a_job_runs_would_be_owned(self) -> None:
+        try:
+            shadows = unowned_beside_python(live_workflows(), live_tree(), self.rules)
+        except WorkflowParseError as error:
+            self.fail(f"cannot read a workflow, so it cannot be proven: {error}")
+        self.assertEqual(
+            shadows,
+            [],
+            "\nA file added here would be unowned and run in place of a standard module "
+            "(its directory is first on sys.path). Own the directory, then release the "
+            "named files inside it.\n" + "\n".join(shadows),
         )
 
     def test_the_workflows_read_are_the_ones_in_the_checkout(self) -> None:

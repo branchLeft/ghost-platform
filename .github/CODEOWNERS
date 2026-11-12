@@ -1,5 +1,5 @@
 # Code owners: the files whose change can do harm that no later check would
-# catch (branchLeft/workspace#3637, criteria 1 to 8). Every other file is
+# catch (the owner's review criteria 1 to 8). Every other file is
 # unowned: an agent pull request touching only those merges on the reviewer
 # App's approval. There is deliberately no catch-all line, and none may be added.
 #
@@ -10,9 +10,11 @@
 # (SYNC-1) are the final lines of the file.
 #
 # Check an edit with the codeowners/errors API: an empty list is the only signal
-# that every entry resolved. A new script that a secret-bearing workflow job
-# runs must be named below; infra/provisioning/scripts/test_codeowners_ownership.py
-# fails if it is not.
+# that every entry resolved. A directory whose scripts a secret-bearing job runs
+# is owned whole (a new file there would otherwise shadow a module those scripts
+# import), and only named files inside it are released, last. A Dockerfile, its
+# .dockerignore and what it copies and runs are owned where such a job builds
+# it. infra/provisioning/scripts/test_codeowners_ownership.py fails if not.
 
 # --- Criterion 1: the rules, the gates, the floors and the exemptions ---
 /gate-set/                                       @branchLeft/branchleft-admin
@@ -40,30 +42,18 @@
 **/.standards-db-tooling                         @branchLeft/branchleft-admin
 
 # Criterion 1, gates in the pull-request and image path: judges of a merge, an image or a deploy.
-/scripts/digest-line-scope.js                    @branchLeft/branchleft-admin
-/scripts/assert-image-refs-on-mirror.py          @branchLeft/branchleft-admin
-/scripts/test-node-env-gate.sh                   @branchLeft/branchleft-admin
-/scripts/verify-image-attestation.sh             @branchLeft/branchleft-admin
-/scripts/test-verify-image-attestation.sh        @branchLeft/branchleft-admin
-/scripts/prove-wrong-identity-rejected.sh        @branchLeft/branchleft-admin
-/scripts/demo-edge-pins.mjs                      @branchLeft/branchleft-admin
-/scripts/assert-lockfile-package-dir.py          @branchLeft/branchleft-admin
-/scripts/assert-broker-contract-generated.py     @branchLeft/branchleft-admin
-/scripts/test-drain-sidecar.sh                   @branchLeft/branchleft-admin
-/scripts/test-drain-sidecar-crash-restart.py     @branchLeft/branchleft-admin
-/scripts/test-demo-gate.sh                       @branchLeft/branchleft-admin
-/scripts/test-demo-edge.sh                       @branchLeft/branchleft-admin
-/scripts/demo-edge-proof/                        @branchLeft/branchleft-admin
+# Criterion 1, 3 and 7: these directories hold gates and the programs that secret-bearing jobs run.
+# Each is owned whole, so a new file cannot arrive unowned beside a script they run and shadow a
+# module it imports. Only the named probes, checkers and documents are released, last.
+/scripts/                                        @branchLeft/branchleft-admin
+/db/percona/                                     @branchLeft/branchleft-admin
+/db/recovery/                                    @branchLeft/branchleft-admin
 /services/release-classifier/src/                @branchLeft/branchleft-admin
 /services/release-classifier/test/               @branchLeft/branchleft-admin
 /services/ring-controller/src/                   @branchLeft/branchleft-admin
 /services/ring-controller/test/                  @branchLeft/branchleft-admin
 /services/broker/src/controlPlaneImagePush.ts    @branchLeft/branchleft-admin
 /services/broker/test/unit/controlPlaneImagePush.test.ts @branchLeft/branchleft-admin
-/db/percona/smoke_check.py                       @branchLeft/branchleft-admin
-/db/percona/test_smoke_check.py                  @branchLeft/branchleft-admin
-/db/recovery/check_toolchain_version.py          @branchLeft/branchleft-admin
-/db/recovery/test_check_toolchain_version.py     @branchLeft/branchleft-admin
 /infra/scripts/                                  @branchLeft/branchleft-admin
 /infra/tenant/scripts/                           @branchLeft/branchleft-admin
 /portal/data/src/checkIsolation.ts               @branchLeft/branchleft-admin
@@ -71,13 +61,6 @@
 
 # Criterion 3 and 2: programs and inputs a secret-bearing job runs on the host
 # (a registry, release or watcher token, an App key, a protected environment).
-/scripts/smoke-test.sh                           @branchLeft/branchleft-admin
-/scripts/test-storage-guard.sh                   @branchLeft/branchleft-admin
-/scripts/mail-gate/                              @branchLeft/branchleft-admin
-/scripts/mirror-images.py                        @branchLeft/branchleft-admin
-/scripts/probe_private_packages.py               @branchLeft/branchleft-admin
-/scripts/mollie-test-charge.py                   @branchLeft/branchleft-admin
-/scripts/test_mollie_test_charge.py              @branchLeft/branchleft-admin
 /services/broker/release/                        @branchLeft/branchleft-admin
 /services/release-watcher/                       @branchLeft/branchleft-admin
 /speckify.yaml                                   @branchLeft/branchleft-admin
@@ -86,9 +69,8 @@
 # Criterion 3 and 2: build.yml declares no permissions block, so its `build` job holds the
 # repository's default workflow token, which is write. Every test, helper and import it
 # runs on the host is owned, as for any job that holds a token.
-/scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs @branchLeft/branchleft-admin
 /themes/image/                                   @branchLeft/branchleft-admin
-/themes/lib/origins.mjs                          @branchLeft/branchleft-admin
+/themes/lib/                                     @branchLeft/branchleft-admin
 /services/export-bundler/test/image/             @branchLeft/branchleft-admin
 /adapters/stripe-connect-limit/test/image/       @branchLeft/branchleft-admin
 /adapters/sso/test/image/                        @branchLeft/branchleft-admin
@@ -121,6 +103,18 @@
 /services/odask/Dockerfile                       @branchLeft/branchleft-admin
 /services/sweego-webhook-receiver/Dockerfile     @branchLeft/branchleft-admin
 /portal/Dockerfile                               @branchLeft/branchleft-admin
+# Criterion 2 and 3: what a job that holds a token builds into an image: the Dockerfile, its
+# ignore file (what keeps .git, and the token it holds, out of the build) and what it copies and runs.
+/Dockerfile                                      @branchLeft/branchleft-admin
+/docker-entrypoint.branchleft.sh                 @branchLeft/branchleft-admin
+/services/demo-edge/Dockerfile                   @branchLeft/branchleft-admin
+/adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh @branchLeft/branchleft-admin
+/adapters/ghost-core-overlay/apply-patch.sh      @branchLeft/branchleft-admin
+/themes/fetch.mjs                                @branchLeft/branchleft-admin
+/themes/verify.mjs                               @branchLeft/branchleft-admin
+/db/provision/install_host_prereqs.py            @branchLeft/branchleft-admin
+**/.dockerignore                                 @branchLeft/branchleft-admin
+**/*.dockerignore                                @branchLeft/branchleft-admin
 
 # Criterion 2: keys, secrets, access, break-glass, database grants.
 /db/provision/provision_tenant_db.py             @branchLeft/branchleft-admin
@@ -190,8 +184,7 @@
 /db/provision/test_naming.py                     @branchLeft/branchleft-admin
 /db/provision/promotion_gate.py                  @branchLeft/branchleft-admin
 /db/provision/test_promotion_gate.py             @branchLeft/branchleft-admin
-/db/recovery/restore_drained.py                  @branchLeft/branchleft-admin
-/db/recovery/test_restore_drained.py             @branchLeft/branchleft-admin
+/db/provision/prove-promotion-gate.sh            @branchLeft/branchleft-admin
 /db/stack/conf.d/branchleft.cnf                  @branchLeft/branchleft-admin
 /db/provision/test_branchleft_cnf_contract.py    @branchLeft/branchleft-admin
 /control/provision/branchleft-backup-worker*     @branchLeft/branchleft-admin
@@ -212,6 +205,35 @@
 /infra/provisioning/scripts/media-backup-restore-proof.*
 /infra/provisioning/scripts/media_backup_held_proof.py
 /infra/provisioning/scripts/media_backup_restore_proof_helpers.*
+# Released inside the owned directories above: checkers and probes that no job holding a token runs.
+/scripts/assert-register-holds-no-customer-names.js
+/scripts/assert-release-age-exclude.py
+/scripts/assert-slug-pattern-consistency.py
+/scripts/sync-tenant-name-register.py
+/scripts/select-lockfile-projects.py
+/scripts/resolve-published-image.sh
+/scripts/probe-tokenless-attestation.sh
+/scripts/test-probe-tokenless-attestation.sh
+/scripts/test_probe_private_packages.py
+/scripts/measure-old-colour-schema-drift.sh
+/scripts/render-mail-spool-compose.mjs
+/scripts/render-mail-spool-compose.test.mjs
+/scripts/test-batch-claim-lock.sh
+/scripts/test-colour-swap.sh
+/scripts/test-colour-swap-mysql.sh
+/scripts/test-demo-container-egress.sh
+/scripts/test-demo-mail-spool.sh
+/scripts/test-demo-router-dir-permissions.sh
+/scripts/test-drain-flag-dir-permissions.sh
+/scripts/test-export-bundler.sh
+/scripts/test-odask.sh
+/scripts/mail-spool-proof/dnsprobe.js
+/scripts/mail-spool-proof/drainack.js
+/scripts/mail-spool-proof/drainroute.py
+/scripts/mail-spool-proof/ghostmail.py
+/scripts/mail-spool-proof/ghostprobe.py
+/scripts/mail-spool-proof/pyconnect.py
+/scripts/mail-spool-proof/tcpprobe.js
 **/*.md
 **/pnpm-lock.yaml
 **/package-lock.json
