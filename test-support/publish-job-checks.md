@@ -4,7 +4,8 @@ The shape checks for an image publish workflow built the way
 `drain-sidecar-image.yml` is: a `build` job that proves the image and saves it,
 and a `push` job that loads exactly that image and publishes it. It has one home
 on purpose; it used to live inside `workflow-drain-sidecar-publish.test.js`, and
-`workflow-demo-edge-image.test.js` needed the same checks.
+`workflow-demo-edge-image.test.js` needed the same checks, and so does
+`workflow-demo-gate-image.test.js`, the third consumer.
 
 `problems(source)` returns the list of ways the workflow text departs from the
 route: a write scope at the top level or in any job but `push` and `attest` (the
