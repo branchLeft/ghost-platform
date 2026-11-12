@@ -3,8 +3,8 @@
 # One image, identical for every tenant, configured entirely by environment
 # variables at deploy time (see README.md for the full list). No secrets,
 # no tenant-specific values, and no writable local disk assumptions for
-# anything that must survive a restart — this image targets Cloud Run,
-# which has no durable local storage.
+# anything that must survive a restart — a container is replaced, not
+# repaired, so its local disk is not durable storage.
 #
 # Base image pinned to an explicit version *and* digest (not `latest`, not
 # a bare major tag) so a rebuild is reproducible and a base-image swap is
@@ -21,12 +21,12 @@ FROM ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984
 # vars documented in the README. This is why there is no `npm install` /
 # `pnpm add` line in this Dockerfile for storage support.
 
-# Cloud Run entrypoint wrapper: translates the platform's $PORT into Ghost's
+# Entrypoint wrapper: translates the platform's $PORT into Ghost's
 # server__port / server__host config, and refuses to start (fail closed)
 # unless storage__images__adapter is the scanning decorator (below) wrapping
 # a durable adapter with its required config present — Ghost's own compiled
 # default is a bare local adapter, which is both silently lost on every
-# Cloud Run instance recycle and silently unscanned. See
+# container replacement and silently unscanned. See
 # docker-entrypoint.branchleft.sh for the full guard and its explicit
 # local-dev escape hatch, and scripts/test-storage-guard.sh for the
 # regression test proving both the blocked and permitted paths actually
