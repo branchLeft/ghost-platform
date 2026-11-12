@@ -9,15 +9,13 @@ on:
   push:
     branches: [main]
   # A pull request starts this only when its diff touches something the job
-  # reads: the broker (bundled and copied into the proof image), render-core
-  # (built first), the two demo-host wrapper files the image copies, and the
-  # root .dockerignore that shapes the build context. Push to main stays
-  # unfiltered as the backstop.
+  # reads: the broker (bundled and copied into the proof image), the two
+  # demo-host wrapper files the image copies, and the root .dockerignore that
+  # shapes the build context. Push to main stays unfiltered as the backstop.
   pull_request:
     branches: [main]
     paths:
       - 'services/broker/**'
-      - 'render-core/**'
       - 'demo-host/provision/**'
       - '.dockerignore'
       - '.github/workflows/broker-systemd-boot-ci.yml'
@@ -53,12 +51,6 @@ jobs:
           scope: '@branchleft'
           cache: pnpm
           cache-dependency-path: services/broker/pnpm-lock.yaml
-
-      - name: Build render-core
-        working-directory: render-core
-        run: pnpm install --frozen-lockfile && pnpm run build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build the broker's deployable bundle
         working-directory: services/broker

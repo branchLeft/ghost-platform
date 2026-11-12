@@ -16,7 +16,6 @@ on:
     paths:
       - services/demo-gate/**
       - services/request-guard/**
-      - render-core/**
       - scripts/test-demo-gate.sh
       - scripts/test-demo-edge.sh
       - scripts/demo-edge-proof/**
@@ -28,7 +27,6 @@ on:
     paths:
       - services/demo-gate/**
       - services/request-guard/**
-      - render-core/**
       - scripts/test-demo-gate.sh
       - scripts/test-demo-edge.sh
       - scripts/demo-edge-proof/**
@@ -53,8 +51,8 @@ jobs:
   build:
     name: docker build + real-Caddy proof (demo-gate)
     runs-on: ubuntu-latest
-    # Generous bound: it builds one image (render-core plus the gate,
-    # multi-stage in one Dockerfile) and boots three containers (Caddy, the
+    # Generous bound: it builds one image (the request guard plus the gate,
+    # with render-core installed from the registry) and boots three containers (Caddy, the
     # gate and a stand-in slot) for the live proof's 49 checks.
     timeout-minutes: 15
 
@@ -62,11 +60,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Built from the repository root: the service depends on render-core
-      # through a relative `link:` dependency, so the build context must contain
-      # both (see services/demo-gate/Dockerfile). The secret is consumed by
-      # a `RUN --mount` there, so it reaches `pnpm install` without entering a
-      # layer or the build history.
+      # Built from the repository root: the service depends on the request
+      # guard through a relative `link:` dependency, so the build context must
+      # contain both (see services/demo-gate/Dockerfile). The secret is
+      # consumed by a `RUN --mount` there, so it reaches `pnpm install` (which
+      # fetches render-core from GitHub Packages) without entering a layer or
+      # the build history.
       - name: Build gate image
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
