@@ -120,7 +120,7 @@ at the same step, and nothing else about the technique changes.
 ## Grants
 
 `SELECT`, `LOCK TABLES`, `SHOW VIEW` and `TRIGGER` on what is dumped, and
-`BACKUP_ADMIN` and `SELECT` on `performance_schema.log_status` (or `REPLICATION CLIENT`
+`BACKUP_ADMIN` for `performance_schema.log_status` (or `REPLICATION CLIENT`
 alone, with `coordinates="master_status"`). `RELOAD` is no longer
 needed, so neither backup account can take a global read lock at all.
 `PROCESS` is not needed on the per-tenant path, which passes

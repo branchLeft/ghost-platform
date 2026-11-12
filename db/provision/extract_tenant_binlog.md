@@ -80,9 +80,10 @@ not written with GTIDs, so the set could not be honoured, and is refused too.
 range some other way; it says so on stderr.
 
 `mysqlbinlog` is not in the official `mysql` image (`db/RUNBOOK-db.md`'s
-toolchain note); `db/recovery/` builds the pinned recovery image that carries
-it. This module assumes `mysqlbinlog` is already on `PATH` wherever it runs
-and does not attempt to locate or install it.
+toolchain note); a pinned recovery image that carries it is tracked
+separately and does not exist yet. This module assumes `mysqlbinlog` is
+already on `PATH` wherever it runs and does not attempt to locate or
+install it.
 
 This module operates on binlog files already decrypted to plaintext, same
 as the manual Drill A steps -- it never touches an `age`-encrypted object

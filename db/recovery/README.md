@@ -95,7 +95,8 @@ a weekly schedule (build-and-verify only, no publish) so upstream drift —
 package change — is caught even when nothing here changes.
 
 `db/RUNBOOK-db.md` records the published image **by digest**, not by tag —
-see its own instructions for exactly how. A recovery drill or
+see its own instructions for exactly how, and for why that field cannot be
+filled in until the workflow has actually run once. A recovery drill or
 incident pulls that digest, never `latest`: `latest` can move at any
 merge, and recovery under incident conditions must pull the exact,
 already-verified image the runbook names, not whatever happens to be newest.
