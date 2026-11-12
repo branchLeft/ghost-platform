@@ -263,6 +263,23 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh", True, "run by the root Dockerfile build"),
     ("themes/fetch.mjs", True, "run by the root Dockerfile build"),
     ("themes/lib/treehash.mjs", True, "imported by themes/verify.mjs, run by that build"),
+    # Criterion 1 and 7: the pre-swap scratch-copy gate and its tests (nonzero exit means do not swap).
+    ("infra/provisioning/scripts/scratch_preflight.py", True, "c1 and c7 pre-swap gate"),
+    ("infra/provisioning/scripts/scratch_boot_smoke.py", True, "c1 and c7 pre-swap gate"),
+    ("infra/provisioning/scripts/test_scratch_preflight.py", True, "c1 test of the kept pre-swap gate"),
+    ("infra/provisioning/scripts/test_scratch_boot_smoke.py", True, "c1 test of the kept pre-swap gate"),
+    ("infra/provisioning/scripts/scratch_json.py", True, "new file beside the gate it could shadow"),
+    # Criterion 1: what the gate set pins or reads.
+    (
+        "adapters/scanning-storage/ghost-core-overlay/theme-storage.js",
+        True,
+        "c1 gate-set repoFile: the file whose own hash is the pin",
+    ),
+    ("adapters/scanning-storage/ghost-core-overlay/theme-storage.upstream.sha256", True, "c1 gate-set pin"),
+    ("adapters/scanning-storage/test/fixtures/bad.png", True, "c1 fixture of the storage image gate"),
+    ("csp/proof/inject-attack.mjs", True, "c1 run by the content-policy gate"),
+    ("csp/proof/package.json", True, "c1 manifest of the content-policy gate's harness"),
+    ("themes/manifest.json", True, "c1 theme list the theme-scan gate iterates"),
     # Criterion 1 and 3: a new file beside a script that a job holding a token runs.
     ("scripts/json.py", True, "new file in a directory whose scripts secret-bearing jobs run"),
     ("scripts/mail-spool-proof/subprocess.py", True, "new file beside released proofs, still under scripts/"),
@@ -331,7 +348,8 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("infra/provisioning/scripts/probe-gateway-storage.py", False, "probe"),
     ("infra/provisioning/scripts/test_probe_gateway_storage.py", False, "test of a probe"),
     ("infra/provisioning/scripts/prove-restore-drill.sh", False, "proof"),
-    ("infra/provisioning/scripts/scratch_preflight.py", False, "scratch check"),
+    ("infra/provisioning/scripts/media-backup-restore-proof.sh", False, "live proof no job runs"),
+    ("infra/provisioning/scripts/media_backup_held_proof.py", False, "driver of a unit test, read-only token job"),
     ("demo-host/provision/health_router.py", False, "host configuration, gated apply"),
     ("db/provision/rewrite_media_links.py", False, "reversible dry-run-first tool"),
     ("db/provision/snapshot_probe.py", False, "probe"),
@@ -346,7 +364,6 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ),
     ("widgets/scripts/fetch-pins.mjs", False, "manual tool"),
     ("infra/hetzner-host-check/package.json", False, "installed only by a read-only-token job"),
-    ("csp/proof/package.json", False, "installed only by a read-only-token job"),
     (
         "services/export-bundler/ghost-adapter/package.json",
         False,
@@ -983,6 +1000,20 @@ def unowned_beside_python(
     return [s for s in shadows if owning_rule(rules, s) is None]
 
 
+_GATE_PIN = re.compile(r"""\b(?:repoFile|pin):\s*['"]([^'"]+)['"]""")
+_GATE_AT = re.compile(r"\bat\(((?:\s*['\"][^'\"]+['\"]\s*,?)+)\)")
+
+
+def gate_set_reads(gates_source: str) -> list[str]:
+    """Repository files that gate-set/gates.mjs names: the pins and the files its gates run."""
+    found: list[str] = _GATE_PIN.findall(gates_source)
+    for call in _GATE_AT.findall(gates_source):
+        path = "/".join(re.findall(r"""['"]([^'"]+)['"]""", call))
+        if "." in posixpath.basename(path):  # a file, not a working directory
+            found.append(path)
+    return sorted(set(found))
+
+
 def live_workflows() -> dict[str, str]:
     directory = REPO / ".github" / "workflows"
     return {
@@ -1040,6 +1071,27 @@ class OwnsTheSamples(CodeownersCase):
                 sample += "file"
             with self.subTest(pattern=pattern):
                 self.assertIsNotNone(owning_rule(self.rules, sample))
+
+
+class GateSetFilesKeepTheirOwner(CodeownersCase):
+    def test_the_reader_finds_a_pinned_file_and_a_file_the_gate_runs(self) -> None:
+        source = (
+            "{ repoFile: 'a/b.js' }, { pin: 'c/d.sha256' }, "
+            "exec(['sh', at('scripts', 'e.sh'), image], { cwd: at('adapters', 'x') })"
+        )
+        self.assertEqual(gate_set_reads(source), ["a/b.js", "c/d.sha256", "scripts/e.sh"])
+
+    def test_every_file_the_gate_set_pins_or_runs_is_owned(self) -> None:
+        source = (REPO / "gate-set" / "gates.mjs").read_text(encoding="utf-8")
+        named = gate_set_reads(source)
+        self.assertIn("adapters/scanning-storage/ghost-core-overlay/theme-storage.js", named)
+        unowned = [p for p in named if owning_rule(self.rules, p) is None]
+        self.assertEqual(
+            unowned,
+            [],
+            "\nThe gate set pins or runs these files, so an edit to one changes what the "
+            "gate calls green (criterion 1). Keep them owned:\n" + "\n".join(unowned),
+        )
 
 
 class ReadingTheWorkflows(unittest.TestCase):

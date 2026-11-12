@@ -21,6 +21,12 @@
 /csp/gate/                                       @branchLeft/branchleft-admin
 /csp/derive/                                     @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
+# What the gate set pins or reads: the overlay file whose own hash is the pin (gate-set/gates.mjs
+# repoFile), the fixtures of the storage image tests, the gate's attack harness, the theme list.
+/adapters/scanning-storage/ghost-core-overlay/   @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/fixtures/       @branchLeft/branchleft-admin
+/csp/proof/                                      @branchLeft/branchleft-admin
+/themes/manifest.json                            @branchLeft/branchleft-admin
 **/*.sha256                                      @branchLeft/branchleft-admin
 /widgets/pins.json                               @branchLeft/branchleft-admin
 /widgets/verify-pins.test.mjs                    @branchLeft/branchleft-admin
@@ -200,8 +206,6 @@
 /infra/provisioning/scripts/probe-*
 /infra/provisioning/scripts/test_probe_*
 /infra/provisioning/scripts/prove-*
-/infra/provisioning/scripts/scratch_*
-/infra/provisioning/scripts/test_scratch_*
 /infra/provisioning/scripts/media-backup-restore-proof.*
 /infra/provisioning/scripts/media_backup_held_proof.py
 /infra/provisioning/scripts/media_backup_restore_proof_helpers.*
