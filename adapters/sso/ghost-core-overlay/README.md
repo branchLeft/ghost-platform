@@ -1,6 +1,6 @@
 # Ghost core overlay: session-from-token.js
 
-The only Ghost-core file this platform patches: `core/server/services/auth/session/session-from-token.js`.
+This overlay patches one Ghost-core file: `core/server/services/auth/session/session-from-token.js`.
 **No copy of Ghost's source is committed here.** The baseline is the file already inside the digest-pinned
 Ghost image the root `Dockerfile` builds on, so a Ghost security release reaches us through that image's
 Dependabot or release-watcher bump, never hidden behind a copy that keeps shipping the old bytes. What is
@@ -55,8 +55,7 @@ row, and `Set-Cookie` is unchanged, so no client can observe it. Noted here only
 Measured on the pinned `ghost:6.55.0-alpine` image, driving real break-glass logins through the adapter:
 sequential logins never hit the race (60/60), but concurrent logins did, worse under CPU contention, which
 is exactly the condition an incident responder using break-glass is likely to be in. Full counts and the
-before/after image-test proof are in `adapters/sso/test/image/break-glass.image.test.mjs` and the PR that
-introduced this overlay.
+before/after image-test proof are in `adapters/sso/test/image/break-glass.image.test.mjs`.
 
 ## How it is tested
 

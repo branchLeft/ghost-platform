@@ -5,16 +5,12 @@
 `resolveTierPolicy(config)` turns `storage__<feature>__tier` into
 `{ allowVideoAudio: boolean }`, which the entry file hands to the decorator.
 Only the exact string `professional` gives `true`. Unset, null, empty, a
-different case, a stray space, a boolean, `entry`, `demo`, `hobbyist` and any
+different case, a stray space, a boolean, `entry`, `demo`, `essentials` and any
 typo give `false`. The decorator reads only the boolean `true` as well, so
 one constructed without the option refuses video and audio.
 
 The key comes from boot config. It is not read from anything an uploader or a
 tenant can write, and it is not inferred from limits, caps or hostnames.
-render-core renders no `tier` key for any demo or tenant yet, so today every
-rendered configuration refuses video and audio. The remaining slice is a tier
-field on the tenant descriptor (a schema version change) and render-core
-rendering this key from it.
 
 ## What each answer does
 

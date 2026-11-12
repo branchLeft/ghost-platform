@@ -8,8 +8,7 @@ while the loop is wedged.
 Consumers depend on it through a relative `link:` dependency, the same pattern
 as `services/demo-gate` and `render-core`:
 
-- `services/mail-collector` (the drain worker). The verdict channel, comment
-  polling and health collection have no worker code on `main` yet.
+- `services/mail-collector` (the drain worker).
 
 The collector's semantics, the proof, and the sabotage control are documented in
 `services/mail-collector/README.md` (the heartbeat sections) and
