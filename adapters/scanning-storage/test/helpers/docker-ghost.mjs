@@ -88,18 +88,19 @@ export class RecordingDouble {
     this.s3Endpoint = `http://${name}:9090`;
   }
 
-  async waitForReady() {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${this.control}/requests`);
-        if (res.status === 200) return;
-      } catch {
-        // not listening yet
-      }
-      await sleep(300);
+  // Every attempt has its own abort timer (pollHttp200), so a connection the
+  // published port accepts and nothing answers costs one attempt, not the
+  // whole step deadline; a failure names the double and its container state.
+  async waitForReady({ deadlineMs = 30_000, attemptMs = 2_000 } = {}) {
+    const result = await pollHttp200(`${this.control}/requests`, {
+      containerName: this.name,
+      deadlineMs,
+      attemptMs,
+      sleepMs: 300,
+    });
+    if (!result.ok) {
+      throw new Error(`the recording double ${this.name} did not become ready: ${result.detail}`);
     }
-    throw new Error('the recording double did not become ready in time');
   }
 
   async requests() {
