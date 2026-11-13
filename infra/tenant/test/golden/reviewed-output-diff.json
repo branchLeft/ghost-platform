@@ -88,6 +88,12 @@
     "decision": "mail-spool"
   },
   {
+    "change": "added",
+    "path": "compose.services.ghost.environment.hostSettings__limits__limitSocialWeb__disabled",
+    "after": true,
+    "decision": "render-core-update"
+  },
+  {
     "change": "changed",
     "path": "compose.services.ghost.environment.mail__from",
     "before": "PLACEHOLDER_SENDER_NAME <zero@example.test>",
@@ -105,6 +111,18 @@
     "path": "compose.services.ghost.environment.storage__files__adapter",
     "after": "ScanningStorageAdapter",
     "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__metricsTenant",
+    "after": "zero",
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__files__metricsTextfilePath",
+    "after": "/var/lib/ghost/metrics/scanner.prom",
+    "decision": "render-core-update"
   },
   {
     "change": "added",
@@ -186,6 +204,18 @@
   },
   {
     "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__metricsTenant",
+    "after": "zero",
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__images__metricsTextfilePath",
+    "after": "/var/lib/ghost/metrics/scanner.prom",
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
     "path": "compose.services.ghost.environment.storage__images__quarantinePath",
     "after": "/var/lib/ghost/content/quarantine",
     "decision": "scanning-wrapper"
@@ -261,6 +291,18 @@
     "path": "compose.services.ghost.environment.storage__media__adapter",
     "after": "ScanningStorageAdapter",
     "decision": "scanning-wrapper"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__metricsTenant",
+    "after": "zero",
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.environment.storage__media__metricsTextfilePath",
+    "after": "/var/lib/ghost/metrics/scanner.prom",
+    "decision": "render-core-update"
   },
   {
     "change": "added",
@@ -408,6 +450,24 @@
   },
   {
     "change": "added",
+    "path": "compose.services.ghost.stop_grace_period",
+    "after": "60s",
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
+    "path": "compose.services.ghost.volumes.2",
+    "after": "ghost-zero-metrics:/var/lib/ghost/metrics",
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
+    "path": "compose.volumes.ghost-zero-metrics.external",
+    "after": true,
+    "decision": "render-core-update"
+  },
+  {
+    "change": "added",
     "path": "output.edgeSiteBlock",
     "after": "{\n  \"displayHostname\": \"zero.platform-domain.example.test\",\n  \"admittedHostname\": \"zero.platform-domain.example.test\",\n  \"gate\": {\n    \"kind\": \"none\"\n  },\n  \"requestBodyMaxSize\": \"64MiB\",\n  \"contentSecurityPolicy\": \"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'self'\",\n  \"contentSecurityPolicyMode\": \"report-only\"\n}\n",
     "decision": "render-core-artefact"
@@ -415,7 +475,7 @@
   {
     "change": "added",
     "path": "output.ghostSettings",
-    "after": "{\n  \"codeinjection_head\": \"\",\n  \"codeinjection_foot\": \"\",\n  \"codeInjectionExplainer\": \"ALL_CAPS_PLACEHOLDER: code injection explainer copy\",\n  \"members_support_address\": \"hello@zero-mail.example.test\"\n}\n",
+    "after": "{\n  \"codeinjection_head\": \"\",\n  \"codeinjection_foot\": \"\",\n  \"codeInjectionExplainer\": \"ALL_CAPS_PLACEHOLDER: code injection explainer copy\",\n  \"members_support_address\": \"hello@zero-mail.example.test\",\n  \"social_web\": false\n}\n",
     "decision": "render-core-artefact"
   },
   {
@@ -433,7 +493,7 @@
   {
     "change": "added",
     "path": "output.provisionScript",
-    "after": "#!/bin/sh\nset -eu\n# Provisions zero's two named volumes before zero's\n# unit is enabled. Idempotent; safe to re-run.\n/root/platform-provision/provision_tenant_volume.py --uid '30001' 'zero'\n",
+    "after": "#!/bin/sh\nset -eu\n# Provisions zero's three named volumes before zero's\n# unit is enabled. Idempotent; safe to re-run.\n/root/platform-provision/provision_tenant_volume.py --uid '30001' 'zero'\n",
     "decision": "render-core-artefact"
   },
   {

@@ -57,9 +57,11 @@ run, a registered name is refused rather than allowed: tenant applies run in
 CI, so failing closed costs nothing there. An unregistered name passes.
 
 `GhostTenant` calls it first, before the descriptor is validated or rendered.
-The check duplicates `render-core`'s `validateSlugAvailability` claim rule
-until a render-core release carrying it is adopted, after which this copy is
-to be deleted. The register holds tenant zero and the infrastructure names only.
+The check duplicates `render-core`'s `validateSlugAvailability` claim rule,
+adopted with render-core 0.3.0. `GhostTenant` passes `GITHUB_REPOSITORY` to
+render core as `options.claimantRepo`, the same claimant this check reads;
+without it render core refuses even tenant zero's own repository. The two
+checks agree, and this copy stays as the first, clearer refusal. The register holds tenant zero and the infrastructure names only.
 Customer tenant names are deliberately absent, because the register is public and
 this package is published; whether one is taken is decided by the control plane
 when it accepts the sign-up (`portal/data`, the tenant name column), and by the
