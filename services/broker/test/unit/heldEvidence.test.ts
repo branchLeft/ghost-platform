@@ -88,6 +88,24 @@ describe('errorStateOf', () => {
   );
 });
 
+describe('errorStateOf and the held receipt', () => {
+  it('keeps the receipt beside an already-confirmed marker, so a recovery cannot lose what /freeze replays', () => {
+    const heldReceipt = { entry: '0-1', sha256: 'a'.repeat(64), bytes: 1 };
+    expect(
+      errorStateOf({
+        phase: 'swapping',
+        lastHashId: 'h' as never,
+        evidence: 'detached',
+        heldReceipt,
+      })
+    ).toEqual({ phase: 'error', lastHashId: 'h', evidence: 'detached', heldReceipt });
+  });
+
+  it('adds no receipt where there was none', () => {
+    expect('heldReceipt' in errorStateOf({ phase: 'swapping', evidence: 'frozen' })).toBe(false);
+  });
+});
+
 describe('/reset and held evidence', () => {
   let broker: TestBroker | undefined;
 

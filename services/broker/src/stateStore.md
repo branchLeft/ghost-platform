@@ -77,6 +77,16 @@ released slot keeps its confirmation and does not throw on a fail-closed path.
 Any change to who may release held evidence must change this function and
 this rule together.
 
+`POST /freeze` is that path's one caller (`app.md#freeze`). It stores the
+wrapper's receipt in `heldReceipt` in the same write, so a replayed `/freeze`
+answers from it, and `errorStateOf` carries the receipt with a confirmed
+marker. A reset drops marker and receipt together: the held area and the
+control estate's custody row hold that memory, not the broker.
+
+`evidenceStatusOf` is what `GET /status` reports of the marker: `absent`,
+`frozen` or `detached`, with any value this code does not recognise read as
+`frozen`, as the guard above reads it.
+
 ## assertHashRotated
 
 The one check downstream of the broker that nothing else can make:

@@ -103,6 +103,7 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
 | 3    | `CANDIDATE INADEQUATE`: a control from 1 to 5 failed with nothing sabotaged                     |
 | 4    | the control 6 finding could not be recorded                                                     |
 | 5    | refused before any container                                                                    |
+| 6    | `host too noisy: inconclusive`: control 2 was the only control to fail, and no write over 100 ms was attributed to a snapshot (see control 2) |
 
 ## The six controls
 
@@ -132,12 +133,39 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
    side of the set, fails the oracle too: it was blind. The replica is asked
    for its executed set after the load and it must equal the set the oracle
    judged.
-2. **No tenant's writes stall.** Every tenant's worst write transaction over
-   the whole run, the long round included, is under 100 ms (a writer's first
-   two statements are dropped as connection warm-up). Each tenant's worst
-   statement before the first dump is printed beside it. When that baseline is
-   already over the limit the failure says the host's own commit latency may be
-   the cause. The limit is never loosened.
+2. **No tenant's writes stall.** Every tenant's worst write transaction in
+   every round, the long round and the short ones, is under 100 ms for the whole
+   run (a writer's first two statements are dropped as connection warm-up). The
+   limit is never loosened, and no round is outvoted by the others.
+   **Host noise, told by where a slow write fell.** The probe records the start
+   and length of every write over 50 ms (`SLOW_WRITE_SECONDS`) per tenant, and
+   each tenant's snapshot windows (when its dump ran, by pass). A write over
+   100 ms is the candidate's only when it overlaps its own tenant's window, with
+   20 ms of margin either side (`WINDOW_MARGIN_SECONDS`), and was not a spike on
+   every tenant at once: each other tenant, outside its own window, had a write
+   at that moment at least half its size (`SHARED_SPIKE_RATIO`; a global lock
+   under a long reader stalls the dumped tenant for a minute and the others
+   for a fraction of it, so it never reads as shared). Slow writes inside their
+   own tenants' windows in two or more passes of the run (`RECURRING_PASSES`),
+   slower than that tenant's baseline before its round's first dump, are the
+   candidate's even when each was shared. A write over 100 ms outside every own
+   window, or shared, is the host's: the round is inconclusive. When control 2
+   is the only gating control to fail, any attributed stall exits 3
+   (`CANDIDATE INADEQUATE`); otherwise any inconclusive round prints
+   `INCONCLUSIVE control 2` and `host too noisy: inconclusive` and exits 6, so
+   the run is neither a pass nor an inadequate candidate and CI stays red until
+   it is re-run. No readings, a round with no windows, a write over the limit with
+   no record, or a tenant nobody measured, exits 3. The log prints each round's
+   baseline per tenant and where its slow writes fell (inside their tenant's
+   window, shared, outside every window). A pass is never reclassified, a
+   failure of any other control keeps exit 3, and a sabotage run keeps exits 1
+   and 2. A runner that spikes inside two passes' windows is the candidate's
+   by this rule: a re-run settles it. `percona_snapshot_probe_noisy_host.json`
+   records a quiet fast run, the recorded global-lock stall, a host that degraded
+   after round 1 and two runs slow throughout, with the placement of their slow
+   writes marked as an assumption in its note; `test_percona_host_noise.py` runs
+   them, and sabotages the overlap check to show a spike outside every window
+   would otherwise exit 3.
 3. **No global or write-blocking lock.** A sampler reads
    `performance_schema.metadata_locks` for the dump accounts' threads, unpaced,
    across the whole run. No `GLOBAL` or `COMMIT` lock and no `TABLE` lock of a

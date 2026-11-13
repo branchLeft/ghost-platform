@@ -28,7 +28,8 @@ describe('deliveryClient outcomes (opt-in)', () => {
   const clients: DeliveryClient[] = [];
 
   function client(
-    outcomes?: Omit<NonNullable<DeliveryClientOptions['outcomes']>, 'messageIdKey'>
+    outcomes?: Omit<NonNullable<DeliveryClientOptions['outcomes']>, 'messageIdKey'>,
+    lanes?: { tx: string; nl: string }
   ): DeliveryClient {
     const c = createDeliveryClient({
       host: '127.0.0.1',
@@ -37,6 +38,7 @@ describe('deliveryClient outcomes (opt-in)', () => {
       user: 'collector',
       pass: 'sink-secret',
       outcomes: outcomes ? { ...outcomes, messageIdKey: KEY } : undefined,
+      lanes,
     });
     clients.push(c);
     return c;
@@ -94,40 +96,54 @@ describe('deliveryClient outcomes (opt-in)', () => {
     expect(received!.envelopeFrom).toBe('noreply@tenant-a.example');
   });
 
-  describe('return path by mail class', () => {
+  describe('lane return paths', () => {
     const BULK = { ...MESSAGE, emailId: 'email-1' };
-    const paths = {
-      returnPath: 'login-bounces@collector.example',
-      bulkReturnPath: 'bulk-bounces@collector.example',
-    };
+    const lanes = { tx: 'bounce-tx@tx.example', nl: 'bounce-nl@nl.example' };
 
-    it('sends a bulk message from the bulk return path', async () => {
-      await client(paths).deliver(BULK, 'tenant-a');
+    it('sends a bulk message from the newsletter path, outcomes off', async () => {
+      await client(undefined, lanes).deliver(BULK, 'tenant-a', { demo: false });
       const [received] = await sink.waitForCount(1);
-      expect(received!.envelopeFrom).toBe('bulk-bounces@collector.example');
+      expect(received!.envelopeFrom).toBe(lanes.nl);
+      expect(received!.dsnNotify).toBeUndefined();
+      expect(decodeOutcomeMessageId(received!.parsed.messageId ?? '')).toBeNull();
     });
 
-    it('sends a login message from the login return path even when a bulk one is set', async () => {
-      await client(paths).deliver(MESSAGE, 'tenant-a');
+    it('sends a login message from the transactional path, outcomes off', async () => {
+      await client(undefined, lanes).deliver(MESSAGE, 'tenant-a', { demo: false });
       const [received] = await sink.waitForCount(1);
-      expect(received!.envelopeFrom).toBe('login-bounces@collector.example');
+      expect(received!.envelopeFrom).toBe(lanes.tx);
     });
 
-    it('sends bulk from the single return path when no bulk one is set', async () => {
-      await client({ returnPath: paths.returnPath }).deliver(BULK, 'tenant-a');
+    it('sends a demo login message from the newsletter path', async () => {
+      await client(undefined, lanes).deliver(MESSAGE, 'tenant-a', { demo: true });
       const [received] = await sink.waitForCount(1);
-      expect(received!.envelopeFrom).toBe('login-bounces@collector.example');
+      expect(received!.envelopeFrom).toBe(lanes.nl);
     });
 
-    it('keeps the correlation id and the DSN request on a bulk message', async () => {
-      await client(paths).deliver(BULK, 'tenant-a');
+    it('takes a login message with no context as not demo, and needs no spool named', async () => {
+      await client(undefined, lanes).deliver(MESSAGE);
       const [received] = await sink.waitForCount(1);
+      expect(received!.envelopeFrom).toBe(lanes.tx);
+    });
+
+    it('keeps the correlation id and the DSN request when outcomes are on', async () => {
+      await client({}, lanes).deliver(BULK, 'tenant-a', { demo: false });
+      const [received] = await sink.waitForCount(1);
+      expect(received!.envelopeFrom).toBe(lanes.nl);
       expect(decodeOutcomeMessageId(received!.parsed.messageId ?? '')).toEqual({
         targetId: 'tenant-a',
         id: MESSAGE.id,
         drainCount: 2,
       });
       expect(received!.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
+    });
+
+    it('refuses to be built with the single outcome return path beside the lane paths', () => {
+      expect(() => client({ returnPath: 'outcomes@collector.example' }, lanes)).toThrow(/lane/);
+    });
+
+    it('refuses outcomes with neither a return path nor lane paths', () => {
+      expect(() => client({})).toThrow(/return path/);
     });
   });
 });

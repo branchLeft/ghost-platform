@@ -1,4 +1,10 @@
 import { dirname, join } from 'node:path';
+import {
+  MX1_NL_RETURN_PATH_ENV,
+  MX1_TX_RETURN_PATH_ENV,
+  parseLaneReturnPaths,
+  type Mx1LaneReturnPaths,
+} from './mx1Lane.js';
 import { MIN_MAC_KEY_LENGTH } from './outcomeId.js';
 import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
@@ -156,16 +162,26 @@ export interface CollectorConfig {
    */
   heartbeatFailureThreshold: number;
   /**
+   * The envelope sender of every mx1 submission, by lane (see `mx1Lane.ts`).
+   * Absent unless BOTH COLLECTOR_MX1_TX_RETURN_PATH and
+   * COLLECTOR_MX1_NL_RETURN_PATH are set. Independent of the outcome path.
+   */
+  mx1Lanes?: Mx1LaneReturnPaths;
+  /**
    * Opt-in outcome path; absent unless COLLECTOR_OUTCOMES_RETURN_PATH,
    * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY are all
-   * set (a partial set throws).
+   * set (a partial set throws). With `mx1Lanes` set, the return path is not
+   * set (the lane return paths are the envelope sender), so the notification
+   * directory and the Message-ID key together turn it on.
    * Absent, submissions and the drain loop are exactly as before.
    */
   outcomes?: {
-    /** Envelope sender mx1 returns delivery status notifications to: login mail's, and bulk mail's too unless `bulkReturnPath` is set. */
-    returnPath: string;
-    /** Envelope sender for bulk mail only. Absent, bulk mail uses `returnPath`. */
-    bulkReturnPath?: string;
+    /**
+     * The one envelope sender mx1 returns delivery status notifications to,
+     * for every message. Absent exactly when `mx1Lanes` is set: the lane
+     * return paths are then the envelope senders.
+     */
+    returnPath?: string;
     /** Directory the notifications arrive in, one .eml file each. */
     dsnDir: string;
     /** Signs each outgoing Message-ID (HMAC); a bounce is read only if its quoted id verifies. A secret: never logged. */
@@ -229,17 +245,51 @@ function pinTtlEnv(env: CollectorEnv): number {
   return ttl;
 }
 
-function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
+function requireMessageIdKeyLength(messageIdKey: string): void {
+  if (messageIdKey.length < MIN_MAC_KEY_LENGTH) {
+    // The value is never put in the message.
+    throw new Error(
+      `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be at least ${MIN_MAC_KEY_LENGTH} characters`
+    );
+  }
+}
+
+function outcomesEnv(
+  env: CollectorEnv,
+  mx1Lanes: Mx1LaneReturnPaths | undefined
+): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
-  const bulkReturnPath = env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH;
   const messageIdKey = env.COLLECTOR_OUTCOMES_MESSAGE_ID_KEY;
-  if (!returnPath && !dsnDir && !messageIdKey) {
-    if (bulkReturnPath) {
+  if (env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH) {
+    throw new Error(
+      `COLLECTOR_OUTCOMES_BULK_RETURN_PATH was replaced by ${MX1_NL_RETURN_PATH_ENV} and ${MX1_TX_RETURN_PATH_ENV}: unset it`
+    );
+  }
+  if (mx1Lanes) {
+    // Two settings must not name the same thing: with the lane paths set they
+    // are the envelope sender of every submission.
+    if (returnPath) {
       throw new Error(
-        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY'
+        `COLLECTOR_OUTCOMES_RETURN_PATH cannot be set with ${MX1_TX_RETURN_PATH_ENV} and ${MX1_NL_RETURN_PATH_ENV}: the lane return paths are the envelope sender`
       );
     }
+    if (!dsnDir && !messageIdKey) {
+      return undefined;
+    }
+    if (!dsnDir || !messageIdKey) {
+      throw new Error(
+        'COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be set together'
+      );
+    }
+    requireMessageIdKeyLength(messageIdKey);
+    return {
+      dsnDir,
+      messageIdKey,
+      pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
+    };
+  }
+  if (!returnPath && !dsnDir && !messageIdKey) {
     return undefined;
   }
   if (!returnPath || !dsnDir || !messageIdKey) {
@@ -247,20 +297,9 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
       'COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be set together'
     );
   }
-  if (messageIdKey.length < MIN_MAC_KEY_LENGTH) {
-    // The value is never put in the message.
-    throw new Error(
-      `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be at least ${MIN_MAC_KEY_LENGTH} characters`
-    );
-  }
-  if (bulkReturnPath && bulkReturnPath.toLowerCase() === returnPath.toLowerCase()) {
-    throw new Error(
-      'COLLECTOR_OUTCOMES_BULK_RETURN_PATH must differ from COLLECTOR_OUTCOMES_RETURN_PATH'
-    );
-  }
+  requireMessageIdKeyLength(messageIdKey);
   return {
     returnPath,
-    ...(bulkReturnPath ? { bulkReturnPath } : {}),
     dsnDir,
     messageIdKey,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
@@ -390,6 +429,7 @@ function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
 }
 
 export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
+  const mx1Lanes = parseLaneReturnPaths(env[MX1_TX_RETURN_PATH_ENV], env[MX1_NL_RETURN_PATH_ENV]);
   return {
     port: Number(env.PORT) || 8080,
     descriptorDir: requireEnv(env, 'COLLECTOR_DESCRIPTOR_DIR'),
@@ -449,6 +489,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       'COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD',
       DEFAULT_HEARTBEAT_FAILURE_THRESHOLD
     ),
-    outcomes: outcomesEnv(env),
+    mx1Lanes,
+    outcomes: outcomesEnv(env, mx1Lanes),
   };
 }

@@ -46,4 +46,15 @@ if (args[0] === 'load') {
     process.env.FAKE_WRAPPER_LOAD_OUTPUT ?? `Loaded image ID: sha256:${'0'.repeat(64)}\n`
   );
 }
+// The `detach` verb prints one receipt line on success, as the real wrapper's
+// `detach` must (`wrapper.md#slotwrapper-detach`): the held entry's name, the
+// SHA-256 of its manifest and the byte count. `FAKE_WRAPPER_DETACH_OUTPUT`
+// replaces the line so `wrapper.test.ts` can drive malformed receipts through
+// the same subprocess boundary.
+if (args[1] === 'detach') {
+  process.stdout.write(
+    process.env.FAKE_WRAPPER_DETACH_OUTPUT ??
+      JSON.stringify({ entry: `${args[0]}-1`, sha256: 'a'.repeat(64), bytes: 4096 }) + '\n'
+  );
+}
 process.exit(0);

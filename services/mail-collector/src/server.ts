@@ -62,14 +62,12 @@ const drainClient = createDrainClient({
 
 const deliveryClient = createDeliveryClient({
   ...config.smtp,
+  ...(config.mx1Lanes ? { lanes: config.mx1Lanes } : {}),
   ...(config.outcomes
     ? {
         outcomes: {
-          returnPath: config.outcomes.returnPath,
+          ...(config.outcomes.returnPath ? { returnPath: config.outcomes.returnPath } : {}),
           messageIdKey: config.outcomes.messageIdKey,
-          ...(config.outcomes.bulkReturnPath
-            ? { bulkReturnPath: config.outcomes.bulkReturnPath }
-            : {}),
         },
       }
     : {}),

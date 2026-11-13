@@ -30,10 +30,12 @@ by the check (`tier-policy.md` and the README say what follows).
 
 - **Images that share the ISO container are images.** AVIF and HEIC use
   `ftyp` with image brands (`avif`, `heic`, `mif1`, `msf1` and the rest of
-  the list in the source). A file with an image brand is video or audio only
-  when its `moov` box holds a track whose handler is video or sound. A still
-  image has no `moov`, and an animated image sequence has picture tracks, so
-  both stay images; an MP4 that merely claims an image brand is caught.
+  the list in the source). A file with an image brand is video or audio when
+  any of its `moov` boxes holds a track whose handler is video or sound. The
+  format allows one `moov`, but a reader may use a later one, so every `moov`
+  is checked, not only the first. A still image has no `moov`, and an
+  animated image sequence has picture tracks, so both stay images; an MP4 that
+  merely claims an image brand is caught.
   A file whose top-level boxes cannot all be read to the end is refused as
   video, because a box it could not read may hold the movie. Any other brand,
   including an unknown one, is video or audio.

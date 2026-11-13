@@ -43,6 +43,8 @@ describe('loadConfig', () => {
     expect(config.wrapperCommand).toBe('/usr/local/sbin/branchleft-slot');
     expect(config.wrapperPrefix).toEqual(['sudo', '-n']);
     expect(config.wrapperTimeoutMs).toBe(30_000);
+    // A detach hashes a whole tenancy: its own, longer bound.
+    expect(config.wrapperDetachTimeoutMs).toBe(600_000);
     expect(config.zones).toEqual({
       demoZone: 'demo-domain.example.test',
       platformZone: 'platform-domain.example.test',
@@ -97,6 +99,7 @@ describe('loadConfig', () => {
         BROKER_WRAPPER_COMMAND: '/tmp/stand-in',
         BROKER_WRAPPER_PREFIX: '',
         BROKER_WRAPPER_TIMEOUT_MS: '5000',
+        BROKER_WRAPPER_DETACH_TIMEOUT_MS: '90000',
         BROKER_SLOT_LITERALS: '0,1',
         BROKER_DRAIN_POLL_TIMEOUT_MS: '10000',
         BROKER_HEALTH_TIMEOUT_MS: '3000',
@@ -115,6 +118,7 @@ describe('loadConfig', () => {
     // on an empty string yields [], not ['sudo', '-n'].
     expect(config.wrapperPrefix).toEqual([]);
     expect(config.wrapperTimeoutMs).toBe(5000);
+    expect(config.wrapperDetachTimeoutMs).toBe(90_000);
     expect(config.slotLiterals).toEqual(['0', '1']);
     expect(config.drainPollTimeoutMs).toBe(10_000);
     expect(config.healthCheckTimeoutMs).toBe(3_000);
