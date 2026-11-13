@@ -49,19 +49,14 @@ SLEEP_SECONDS = 60
 # between passes keeps the dumps from being a CPU stress test of the host.
 PASS_GAP_SECONDS = 2.0
 LATENCY_LIMIT_SECONDS = sp.WRITER_LIMIT_SECONDS
-# Control 2 is judged on this many timed windows, each a long round with a fresh
-# dump, and fails only when WINDOWS_TO_FAIL or more of them break the limit: one
-# window over is a pass with a warning naming it. A one-window plan (a sabotage
-# run) needs only its one.
-LATENCY_WINDOWS = 3
-WINDOWS_TO_FAIL = 2
-# A host whose own commit latency, before any dump, is over this cannot judge
-# control 2: the limit is 100 ms and such a host spends half of it idle. Chosen
-# from the native runs that passed (worst baseline 8 to 25.7 ms, run to run) at
-# about twice that; the runs a slow shared runner failed measured 133 to 213 ms.
-# It never touches the 100 ms limit and never turns a pass into anything else.
+# A round whose own commit latency, before its first dump, is over this cannot
+# judge control 2 on its own: the limit is 100 ms and such a host spends half of
+# it idle. Chosen from the native runs that passed (worst baseline 8 to 25.7 ms,
+# run to run) at about twice that; the runs a slow shared runner failed measured
+# 102 to 383 ms. It never touches the 100 ms limit and never turns a pass into
+# anything else.
 HOST_BASELINE_BOUND_SECONDS = 0.050
-# A failure is put down to the host only while it is the size the host's own
+# A slow round is put down to the host only while it is the size the host's own
 # latency explains: a tenant's worst statement within the limit plus this many
 # times its baseline. Past that a dump stalled the writers whatever the host.
 HOST_NOISE_FACTOR = 2
@@ -173,35 +168,22 @@ def latency_verdict(samples: Mapping[str, Sequence[float]], limit: float, baseli
     return Verdict(False, reason)
 
 
-def windowed_latency_verdict(
-    windows: Mapping[int, Mapping[str, Sequence[float]]], limit: float, baselines: Mapping[int, Mapping[str, float]] | None = None
+def rounds_latency_verdict(
+    rounds: Mapping[int, Mapping[str, Sequence[float]]], limit: float, baselines: Mapping[int, Mapping[str, float]] | None = None
 ) -> Verdict:
-    """Control 2 over its timed windows (round number to each tenant's latencies).
-    A window is over when any tenant's worst statement is over `limit`. The
-    control fails when WINDOWS_TO_FAIL windows (or, of fewer windows, all of
-    them) are over; fewer is a pass and window_warnings names them. A window in
-    which a tenant was not measured fails the control: the probe was blind."""
-    if not windows:
-        return Verdict(False, "no window was measured")
-    results = {number: latency_verdict(samples, limit, (baselines or {}).get(number)) for number, samples in sorted(windows.items())}
-    for number, samples in sorted(windows.items()):
-        if not samples or any(not latencies for latencies in samples.values()):
-            return Verdict(False, f"round {number}: {results[number].reason}")
-    over = [number for number, result in results.items() if not result.passed]
-    if len(over) >= min(WINDOWS_TO_FAIL, len(windows)):
-        return Verdict(False, "; ".join(f"round {number}: {results[number].reason}" for number in over))
-    note = f"; {len(over)} of {len(windows)} windows over the limit, reported as a pass (WARNING)" if over else ""
-    worst = ", ".join(f"round {number} {sp._ms(max((max(v) for v in samples.values() if v), default=0.0))}" for number, samples in sorted(windows.items()))
-    return Verdict(True, f"{len(windows)} windows, each tenant's worst statement within the {sp._ms(limit)} limit in {len(windows) - len(over)} (worst per window: {worst}){note}")
-
-
-def window_warnings(windows: Mapping[int, Mapping[str, Sequence[float]]], limit: float) -> list[str]:
-    """One line per window over the limit while the control still passes."""
-    over = {number: latency_verdict(samples, limit) for number, samples in sorted(windows.items())}
-    over = {number: result for number, result in over.items() if not result.passed}
-    if not over or len(over) >= min(WINDOWS_TO_FAIL, len(windows)):
-        return []
-    return [f"WARNING control 2: round {number} exceeded the limit, {len(over)} of {len(windows)} windows, so it passes: {result.reason}" for number, result in over.items()]
+    """Control 2 over every round (round number to each tenant's latencies), the
+    whole run: every tenant's worst statement in every round is under `limit`.
+    A round in which a tenant was not measured fails the control: the probe was
+    blind. `baselines` is each round's own worst statement before its first dump;
+    whether a failure is the host's is the exit code's to say (classify_round)."""
+    if not rounds:
+        return Verdict(False, "no round was measured")
+    results = {number: latency_verdict(samples, limit, (baselines or {}).get(number)) for number, samples in sorted(rounds.items())}
+    failed = [number for number, result in results.items() if not result.passed]
+    if failed:
+        return Verdict(False, "; ".join(f"round {number}: {results[number].reason}" for number in failed))
+    worst = ", ".join(f"round {number} {sp._ms(max((max(v) for v in samples.values() if v), default=0.0))}" for number, samples in sorted(rounds.items()))
+    return Verdict(True, f"{len(rounds)} rounds, each tenant's worst statement within the {sp._ms(limit)} limit in every one (worst per round: {worst})")
 
 
 def dump_lock_verdict(rows: Iterable[Sequence[str]]) -> Verdict:
@@ -640,42 +622,44 @@ class RoundReading(NamedTuple):
     worst: Mapping[str, float]
 
 
-def round_trusted(reading: RoundReading) -> bool:
-    """Whether a round can be held against the candidate. Its own baseline must
-    be at or under HOST_BASELINE_BOUND_SECONDS for every tenant. A noisy round
-    still counts when some tenant's worst statement is over the limit plus
-    HOST_NOISE_FACTOR times its baseline (the host does not explain that), and a
-    round with a tenant that has no baseline is never excused."""
+ROUND_OK = "ok"
+ROUND_STALL = "stall"
+ROUND_INCONCLUSIVE = "inconclusive"
+
+
+def classify_round(reading: RoundReading) -> str:
+    """One round, by its own baseline. A tenant whose worst statement is over the
+    limit is a stall when the round's baseline is quiet (every tenant at or under
+    HOST_BASELINE_BOUND_SECONDS), when the tenant has no baseline, or when the
+    worst is over the limit plus HOST_NOISE_FACTOR times its baseline, whatever
+    the baseline. Over the limit on a noisy baseline but within that is
+    inconclusive: the host may be the cause. Anything else is ok."""
     baseline, worst = reading.baseline, reading.worst
-    if not baseline or any(tenant not in baseline for tenant in worst):
-        return True
-    if all(value <= HOST_BASELINE_BOUND_SECONDS for value in baseline.values()):
-        return True
-    return any(value > LATENCY_LIMIT_SECONDS + HOST_NOISE_FACTOR * baseline[tenant] for tenant, value in worst.items())
-
-
-def host_explains_failure(rounds: Mapping[int, RoundReading] | None) -> bool:
-    """Control 2 failed: whether fewer than WINDOWS_TO_FAIL of the judged rounds
-    (of fewer rounds, all of them) were quiet enough to judge. A round nobody
-    measured for every tenant makes the run judgeable, not inconclusive."""
-    if not rounds:
-        return False
-    if any(not reading.worst or set(reading.baseline) - set(reading.worst) for reading in rounds.values()):
-        return False
-    return sum(round_trusted(reading) for reading in rounds.values()) < min(WINDOWS_TO_FAIL, len(rounds))
+    over = {tenant: value for tenant, value in worst.items() if value > LATENCY_LIMIT_SECONDS}
+    if not over:
+        return ROUND_OK
+    quiet = bool(baseline) and all(value <= HOST_BASELINE_BOUND_SECONDS for value in baseline.values())
+    if quiet or any(tenant not in baseline or value > LATENCY_LIMIT_SECONDS + HOST_NOISE_FACTOR * baseline[tenant] for tenant, value in over.items()):
+        return ROUND_STALL
+    return ROUND_INCONCLUSIVE
 
 
 def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool, rounds: Mapping[int, RoundReading] | None = None) -> int:
     """`outcomes` maps each control run to whether it passed: snapshot_probe's
     convention, controls 1 to 5 gating and 6 recorded. The one addition: when
-    control 2 is the only gating control that failed and host_explains_failure,
-    the run is inconclusive, not inadequate. A sabotage run, a pass and any
-    other failure keep snapshot_probe's code."""
+    control 2 is the only gating control that failed, its rounds decide. Any
+    stall exits 3 (candidate inadequate); otherwise any inconclusive round exits
+    6 (host too noisy). No readings, or a round with a tenant nobody measured,
+    exits 3. A sabotage run, a pass and any other failure keep snapshot_probe's
+    code."""
     code = sp.exit_code(outcomes, sabotaged=sabotaged)
     if code != EXIT_CANDIDATE_INADEQUATE:
         return code
     failed = sorted(number for number, passed in outcomes.items() if not passed and number in sp.GATING_CONTROLS)
-    if failed == [2] and host_explains_failure(rounds):
+    if failed != [2] or not rounds or any(not reading.worst or set(reading.baseline) - set(reading.worst) for reading in rounds.values()):
+        return code
+    classes = {classify_round(reading) for reading in rounds.values()}
+    if ROUND_STALL not in classes and ROUND_INCONCLUSIVE in classes:
         return EXIT_HOST_TOO_NOISY
     return code
 
@@ -689,15 +673,16 @@ def outcome_message(code: int, controls: str, rounds: Mapping[int, RoundReading]
     if code == EXIT_SABOTAGE_NOT_DETECTED:
         return f"SABOTAGE NOT DETECTED: a control stayed green under {sabotage}"
     if code == EXIT_HOST_TOO_NOISY:
-        noisy = {number: reading for number, reading in sorted((rounds or {}).items()) if not round_trusted(reading)}
+        noisy = {number: reading for number, reading in sorted((rounds or {}).items()) if classify_round(reading) == ROUND_INCONCLUSIVE}
         detail = "; ".join(
-            f"round {number}: " + ", ".join(f"{tenant} {sp._ms(value)}" for tenant, value in sorted(reading.baseline.items()))
+            f"round {number}: baseline " + ", ".join(f"{tenant} {sp._ms(value)}" for tenant, value in sorted(reading.baseline.items()))
+            + ", worst " + ", ".join(f"{tenant} {sp._ms(value)}" for tenant, value in sorted(reading.worst.items()))
             for number, reading in noisy.items()
         )
         return (
-            f"host too noisy: inconclusive. Control 2 failed, but only {len(rounds or {}) - len(noisy)} of {len(rounds or {})} judged rounds had a commit latency "
-            f"before their first dump at or under the {sp._ms(HOST_BASELINE_BOUND_SECONDS)} bound (over it: {detail}), so the run says nothing about the candidate. "
-            "Re-run on a quieter host."
+            f"host too noisy: inconclusive. Control 2 failed in {len(noisy)} of {len(rounds or {})} rounds, each on a commit latency before its first dump "
+            f"over the {sp._ms(HOST_BASELINE_BOUND_SECONDS)} bound and within what that explains ({detail}); no round was a stall, "
+            "so the run says nothing about the candidate. Re-run on a quieter host."
         )
     if code == EXIT_CANDIDATE_INADEQUATE:
         return "CANDIDATE INADEQUATE: a control from 1 to 5 failed with nothing sabotaged. Stop and tell the owner."
@@ -857,12 +842,12 @@ class RoundSpec:
 
 
 # The rounds each run does, how a dump is taken, and whether a replica is seeded.
-# Default: LATENCY_WINDOWS long rounds (a long write transaction and
-# SELECT SLEEP(60) on one tenant; control 2's windows) then two short ones: a
-# commit race is a window, so one lucky pass proves little
-# (replication_client_probe.py makes the same point). The sabotages need less.
+# Default: one long round (a long write transaction and SELECT SLEEP(60) on
+# one tenant) then four short ones: a commit race is a window, so one lucky
+# pass proves little (replication_client_probe.py makes the same point). The
+# sabotages need less.
 PLANS: Mapping[str | None, tuple[RoundSpec, ...]] = {
-    None: (RoundSpec(True, True),) * LATENCY_WINDOWS + (RoundSpec(False, False),) * 2,
+    None: (RoundSpec(True, True),) + (RoundSpec(False, False),) * 4,
     "commit-before-coordinates": (RoundSpec(False, False),),
     "global-lock": (RoundSpec(True, False),),
     "gtid-drop-one": (RoundSpec(False, False),) * 2,
@@ -903,9 +888,8 @@ class Scenario:
     # Each round's own baseline, before that round's first dump: host noise is
     # judged per judged round on this, not on `baseline`.
     round_baselines: dict[int, dict[str, float]] = dataclasses.field(default_factory=dict)
-    # Each round's latencies, and which rounds were long: control 2's windows.
+    # Each round's latencies: control 2 judges every round.
     window_latencies: dict[int, dict[str, list[float]]] = dataclasses.field(default_factory=dict)
-    long_rounds: list[int] = dataclasses.field(default_factory=list)
     lock_rows: set[tuple[str, str, str]] = dataclasses.field(default_factory=set)
     lock_samples: int = 0
     lock_table_samples: int = 0
@@ -1200,20 +1184,11 @@ def finish_writers(writers: Mapping[str, Sequence[sp.Writer]]) -> dict[str, list
     return samples
 
 
-def record_round_latencies(scenario: Scenario, number: int, long_round: bool, per_tenant: Mapping[str, Sequence[float]]) -> None:
-    """Fold one round's write latencies in, pooled and as its own window."""
+def record_round_latencies(scenario: Scenario, number: int, per_tenant: Mapping[str, Sequence[float]]) -> None:
+    """Fold one round's write latencies in, pooled and as its own round."""
     for tenant, latencies in per_tenant.items():
         scenario.latencies[tenant].extend(latencies)
     scenario.window_latencies[number] = {tenant: list(latencies) for tenant, latencies in per_tenant.items()}
-    if long_round:
-        scenario.long_rounds.append(number)
-
-
-def judged_windows(scenario: Scenario) -> dict[int, dict[str, list[float]]]:
-    """Control 2's windows: the long rounds, where a dump meets a long reader;
-    a plan with none judges every round."""
-    numbers = scenario.long_rounds or sorted(scenario.window_latencies)
-    return {number: scenario.window_latencies[number] for number in numbers}
 
 
 def record_round_baseline(scenario: Scenario, number: int, round_baseline: Mapping[str, float]) -> None:
@@ -1224,11 +1199,11 @@ def record_round_baseline(scenario: Scenario, number: int, round_baseline: Mappi
     scenario.round_baselines[number] = dict(round_baseline)
 
 
-def judged_readings(scenario: Scenario) -> dict[int, RoundReading]:
-    """Each judged round's baseline and worst statements, for the exit code."""
+def round_readings(scenario: Scenario) -> dict[int, RoundReading]:
+    """Each round's baseline and worst statements, for the exit code."""
     return {
         number: RoundReading(scenario.round_baselines.get(number, {}), {tenant: max(values) for tenant, values in samples.items() if values})
-        for number, samples in judged_windows(scenario).items()
+        for number, samples in scenario.window_latencies.items()
     }
 
 
@@ -1287,7 +1262,7 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
             before = [latency for start, latency in writer_samples[WARMUP_SAMPLES:] if start + latency < dumping]
             round_baseline[tenant] = max(round_baseline[tenant], max(before, default=0.0))
     record_round_baseline(scenario, number, round_baseline)
-    record_round_latencies(scenario, number, spec.long_round, round_latencies)
+    record_round_latencies(scenario, number, round_latencies)
     scenario.snapshots += passes * len(TENANTS)
     statements = {tenant: sum(len(writer_samples) for writer_samples in per_writer) for tenant, per_writer in samples.items()}
     kind = "short"
@@ -1407,24 +1382,23 @@ def control_1(run: Run) -> sp.ControlResult:
 
 
 def control_2(run: Run) -> sp.ControlResult:
-    """Every tenant's worst write stays under the limit in the timed windows: it
-    fails only when WINDOWS_TO_FAIL of them break it."""
+    """Every tenant's worst write stays under the limit in every round, the
+    whole run: issue 1708's rule. Whether a failure is the host's is the exit
+    code's to say, round by round."""
     scenario = get_scenario(run)
-    windows = judged_windows(scenario)
-    verdict = windowed_latency_verdict(windows, LATENCY_LIMIT_SECONDS, scenario.round_baselines)
+    verdict = rounds_latency_verdict(scenario.window_latencies, LATENCY_LIMIT_SECONDS, scenario.round_baselines)
     numbers = [
         f"{tenant}: {len(latencies)} write transactions timed, worst {sp._ms(max(latencies, default=0.0))}, "
         f"worst before the first dump {sp._ms(scenario.baseline[tenant])}"
         for tenant, latencies in scenario.latencies.items()
     ]
     numbers.extend(
-        f"round {number}" + (" (judged)" if number in windows else "") + ": worst "
+        f"round {number}: worst "
         + ", ".join(f"{tenant} {sp._ms(max(latencies, default=0.0))}" for tenant, latencies in samples.items())
         + "; baseline before this round's first dump "
         + ", ".join(f"{tenant} {sp._ms(value)}" for tenant, value in scenario.round_baselines.get(number, {}).items())
         for number, samples in sorted(scenario.window_latencies.items())
     )
-    numbers.extend(window_warnings(windows, LATENCY_LIMIT_SECONDS))
     return sp.ControlResult(2, "no tenant's writes stall", verdict, numbers)
 
 
@@ -1568,10 +1542,12 @@ def run_probe(args: argparse.Namespace) -> int:
             ctx.say(f"  {line}")
         outcomes[number] = result.verdict.passed
         if run.scenario is not None:
-            rounds = judged_readings(run.scenario)
+            rounds = round_readings(run.scenario)
         label = "FINDING" if number == 6 else ("PASS" if result.verdict.passed else ("RED" if args.sabotage else "FAIL"))
-        if number == 2 and not result.verdict.passed and not args.sabotage and host_explains_failure(rounds):
-            label = "INCONCLUSIVE"
+        if number == 2 and not result.verdict.passed and not args.sabotage and rounds:
+            classes = {classify_round(reading) for reading in rounds.values()}
+            if ROUND_STALL not in classes and ROUND_INCONCLUSIVE in classes:
+                label = "INCONCLUSIVE"
         ctx.say(f"{label} control {number}, {result.title}: {result.verdict.reason}")
     code = exit_code(outcomes, sabotaged=bool(args.sabotage), rounds=rounds)
     ctx.say(outcome_message(code, args.controls, rounds, args.sabotage))

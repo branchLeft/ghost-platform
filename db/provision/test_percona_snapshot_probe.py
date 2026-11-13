@@ -499,11 +499,10 @@ class PlanTests(unittest.TestCase):
             self.assertTrue(psp.SEEDING[name])
             self.assertEqual(psp.DUMP_MODES[name], "percona")
 
-    def test_the_default_run_is_the_long_rounds_with_the_long_transaction_then_short_ones(self) -> None:
+    def test_the_default_run_is_one_long_round_with_the_long_transaction_then_short_ones(self) -> None:
         plan = psp.PLANS[None]
-        long_rounds = psp.LATENCY_WINDOWS
-        self.assertEqual(plan[:long_rounds], (psp.RoundSpec(long_round=True, long_transaction=True),) * long_rounds)
-        self.assertTrue(all(not spec.long_round for spec in plan[long_rounds:]))
+        self.assertEqual(plan[0], psp.RoundSpec(long_round=True, long_transaction=True))
+        self.assertTrue(all(not spec.long_round for spec in plan[1:]))
         self.assertGreaterEqual(len(plan), 5)
 
     def test_three_writers_per_tenant_run_in_every_round(self) -> None:

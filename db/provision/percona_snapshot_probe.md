@@ -103,22 +103,22 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
 | 3    | `CANDIDATE INADEQUATE`: a control from 1 to 5 failed with nothing sabotaged                     |
 | 4    | the control 6 finding could not be recorded                                                     |
 | 5    | refused before any container                                                                    |
-| 6    | `host too noisy: inconclusive`: control 2 was the only control to fail, on a host whose own baseline was over the bound (see control 2) |
+| 6    | `host too noisy: inconclusive`: control 2 was the only control to fail, with no stall and at least one round slow on a noisy baseline (see control 2) |
 
 ## The six controls
 
 1. **Variables, and a GTID set consistent with the snapshot.** The server
    exposes `Binlog_snapshot_file`, `_position` and `_gtid_executed`, and runs
    `log_bin=1`, `binlog_format=ROW`, `sync_binlog=1`, `gtid_mode=ON` and
-   `enforce_gtid_consistency=ON`. Then five rounds (three long, two short) with three writers on every
+   `enforce_gtid_consistency=ON`. Then five rounds with three writers on every
    tenant. Each round dumps each tenant as its dump account with the Percona
    `mysqldump --single-transaction --routines --triggers --set-gtid-purged=ON
    --no-tablespaces` (no `--source-data`), stops the writers, and for each tenant
    seeds the replica from that dump's GTID set, replays by
    `SOURCE_AUTO_POSITION=1` to the source's final GTID set and asserts every table
    matches on count and `CHECKSUM TABLE`, and that the replay applied at least
-   one write the dump did not hold (a replay of nothing proves nothing). Rounds 1 to 3
-   are the long rounds: each a long open write transaction (`integrations`) and a
+   one write the dump did not hold (a replay of nothing proves nothing). Round 1
+   is the long round: a long open write transaction (`integrations`) and a
    `SELECT SLEEP(60)` reading `t1.posts` run while the three tenants are dumped
    over and over; the transaction commits after the last dump.
    **The oracle** judges every dump of the round, not only the one the replica
@@ -133,37 +133,27 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
    side of the set, fails the oracle too: it was blind. The replica is asked
    for its executed set after the load and it must equal the set the oracle
    judged.
-2. **No tenant's writes stall.** Control 2 is judged on three timed windows:
-   the three long rounds, each with a fresh dump taken under a long reader and a
-   long open write transaction. A window is over when any tenant's worst write
-   transaction in it is over 100 ms (a writer's first two statements are dropped
-   as connection warm-up). The candidate is inadequate only when two or more of
-   the three are over; one over passes, and a `WARNING control 2` line names the
-   round and its numbers. A window in which a tenant was not measured fails the
-   control. A sabotage run with a single window needs only that one. The limit is
-   still 100 ms and is never loosened. Each tenant's worst statement before the
-   first dump is printed beside it; when it is over the limit the failure says the
-   host's own commit latency may be the cause. The two short rounds are timed and
-   printed but not judged: control 3 samples the locks across the whole run.
+2. **No tenant's writes stall.** Every tenant's worst write transaction in
+   every round, the long round and the short ones, is under 100 ms for the whole
+   run (a writer's first two statements are dropped as connection warm-up). The
+   limit is never loosened, and no round is outvoted by the others.
    **Host noise.** Each round measures its own baseline, every tenant's worst
    write before that round's first dump, and the log prints it per tenant per
-   round beside the round's worst. A judged round is quiet when every tenant's
-   baseline is at or under 50 ms (`HOST_BASELINE_BOUND_SECONDS`); a noisy round
-   still counts against the candidate when some tenant's worst is over the limit
-   plus twice that tenant's baseline, which the host does not explain. When
-   control 2 is the only gating control to fail and fewer than two of the three
-   judged rounds are quiet, the run prints `INCONCLUSIVE control 2` and `host too
-   noisy: inconclusive` and exits 6, not 3: the host, not the candidate, broke the
-   limit, so the run is neither a pass nor `CANDIDATE INADEQUATE`, and CI stays red
-   until it is re-run on a quieter host. With two or more quiet rounds, or a
-   tenant nobody measured, a failure keeps exit 3, and so does a stall with a
-   quiet baseline. The bound is about twice the worst baseline of the native runs
-   that passed (8 to 25.7 ms); slow shared runners measured 102 to 383 ms. A pass
-   is never reclassified, a failure of any other control keeps exit 3, and a
-   sabotage run keeps exits 1 and 2. `percona_snapshot_probe_noisy_host.json`
-   records a quiet fast run, a quiet run with a real stall, a host that degraded
-   after round 1 and two runs slow throughout; `test_percona_host_noise.py` runs
-   them.
+   round beside the round's worst. A round with a worst over 100 ms is a stall
+   when its baseline is quiet (every tenant at or under 50 ms,
+   `HOST_BASELINE_BOUND_SECONDS`), and whatever the baseline when the worst is
+   over 100 ms plus twice that tenant's baseline; on a noisy baseline, within
+   that, it is inconclusive. When control 2 is the only gating control to fail,
+   any stall exits 3 (`CANDIDATE INADEQUATE`); otherwise any inconclusive round
+   prints `INCONCLUSIVE control 2` and `host too noisy: inconclusive` and exits 6,
+   so the run is neither a pass nor an inadequate candidate and CI stays red until
+   it is re-run on a quieter host. No readings, or a tenant nobody measured, exits
+   3. The bound is about twice the worst baseline of the native runs that passed
+   (8 to 25.7 ms); slow shared runners measured 102 to 383 ms. A pass is never
+   reclassified, a failure of any other control keeps exit 3, and a sabotage run
+   keeps exits 1 and 2. `percona_snapshot_probe_noisy_host.json` records a quiet
+   fast run, a recorded stall on a quiet host, a host that degraded after round 1
+   and two runs slow throughout; `test_percona_host_noise.py` runs them.
 3. **No global or write-blocking lock.** A sampler reads
    `performance_schema.metadata_locks` for the dump accounts' threads, unpaced,
    across the whole run. No `GLOBAL` or `COMMIT` lock and no `TABLE` lock of a
