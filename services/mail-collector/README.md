@@ -45,9 +45,11 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_PIN_TTL_MS` | no (default `3024000000`, 35 days) | How long a pin is remembered, counted from the attempt that made it. It must outlast the longest hold at the Sweego account cap (31 days, the longest UTC month, `MAX_CAP_HOLD_MS` in `sweegoUsage.ts`), so the default adds four days. A value below 31 days (`2678400000`) is refused at start-up. The shim re-offers an unacked row every `SHIM_DRAIN_LEASE_SECONDS` (30 s; `services/mailgun-shim/src/config.ts`) with no attempt cap and no maximum age, and the drain contract sets none, so this TTL is the only time bound on a held pinned message. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
-| `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
-| `COLLECTOR_OUTCOMES_BULK_RETURN_PATH` | no (off) | A second envelope sender, used for bulk (campaign) mail only; `COLLECTOR_OUTCOMES_RETURN_PATH` then serves login (transactional) mail alone. Unset, bulk mail uses the single return path as before. Needs the other two outcome variables, and must differ from `COLLECTOR_OUTCOMES_RETURN_PATH`. Notifications for both addresses must arrive in `COLLECTOR_OUTCOMES_DSN_DIR`: the Message-ID, not the address, names the message. The mailbox for this address and any DNS it needs are set up on the mail host before this is set. |
-| `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications for that return path arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. |
+| `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path, without lane return paths. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. Refused beside the two `COLLECTOR_MX1_*_RETURN_PATH` settings: with those set they are the envelope sender, and two settings may not name the same thing. With the outcome variables unset, submissions and the drain loop are exactly as before. |
+| `COLLECTOR_OUTCOMES_BULK_RETURN_PATH` | removed | Replaced by the lane return paths below. Setting it is refused at start-up, so a stale value cannot go on routing bulk mail silently. |
+| `COLLECTOR_MX1_TX_RETURN_PATH` | no (off) | Envelope sender of non-demo sign-in mail submitted to mx1 (the transactional lane). A plain address on a different domain from `COLLECTOR_MX1_NL_RETURN_PATH`. Set together with it, or neither. See Lane return paths. |
+| `COLLECTOR_MX1_NL_RETURN_PATH` | no (off) | Envelope sender of every newsletter and every demo message submitted to mx1 (the newsletter lane). A plain address on a different domain from `COLLECTOR_MX1_TX_RETURN_PATH`. Set together with it, or neither. The mailboxes, DNS and the credential's sender scope for both domains are set up on the mail host before these are set. |
+| `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. With the lane return paths set it alone turns the outcome path on; otherwise it needs `COLLECTOR_OUTCOMES_RETURN_PATH`. |
 | `COLLECTOR_OUTCOMES_POLL_MS` | no (default `30000`) | How often the directory is read. |
 
 ## Design
@@ -62,16 +64,36 @@ the shared `deadmans-switch/src/heartbeat.ts` against a real local Healthchecks 
 a mock — see its own header comment and the delivering PR's body for a
 recorded run.
 
+## Lane return paths
+
+mx1's MTA chooses the source IP by the envelope sender's domain, so every
+message the collector submits to mx1 carries a lane return path: one function,
+`mx1Lane(mailClass, demo)` in `mx1Lane.ts`, names the lane. Every newsletter and
+all demo mail (sign-in links included) take the newsletter lane
+(`COLLECTOR_MX1_NL_RETURN_PATH`); only non-demo sign-in mail takes the
+transactional lane (`COLLECTOR_MX1_TX_RETURN_PATH`). Sweego submissions are
+untouched. A sign-in message that falls back from Sweego to mx1 goes on the
+transactional path, and a latched tenant's newsletters on mx1 go on the
+newsletter path.
+
+The envelope sender is set for every mx1 submission, with the outcome path on
+or off: the Message-ID correlation and the DSN request stay tied to the outcome
+reader (`COLLECTOR_OUTCOMES_DSN_DIR`), the envelope sender does not. Start-up
+refuses: only one of the two set; a value that is not a plain address; both on
+one domain (the lanes would silently route one way). With both unset nothing
+changes.
+
 ## Outcomes carried back to the spool
 
 "Delivered" has to mean the receiving MTA delivered it, not that mx1 accepted
 the submission. With `COLLECTOR_OUTCOMES_RETURN_PATH` and
-`COLLECTOR_OUTCOMES_DSN_DIR` set (off otherwise), the collector:
+`COLLECTOR_OUTCOMES_DSN_DIR` set, or the lane return paths and
+`COLLECTOR_OUTCOMES_DSN_DIR` (off otherwise), the collector:
 
 1. submits each message with a Message-ID that encodes the message id, its claim
    generation and its spool (`outcomeId.ts`, under the reserved `.invalid` TLD),
-   an envelope sender of the return path, and a DSN request for success, failure
-   and delay. Nothing about an in-flight message is held in memory, so a restart
+   an envelope sender of the return path (the lane return path when those are
+   set), and a DSN request for success, failure and delay. Nothing about an in-flight message is held in memory, so a restart
    loses nothing;
 2. acks as before. At this point the spool holds the message as `sent`
    (accepted), and no `delivered` event exists;

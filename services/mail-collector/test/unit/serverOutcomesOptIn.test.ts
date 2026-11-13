@@ -131,21 +131,29 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     });
   });
 
-  const TWO_PATHS = {
-    COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
-    COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+  const LANES = {
+    COLLECTOR_MX1_TX_RETURN_PATH: 'bounce-tx@tx.example',
+    COLLECTOR_MX1_NL_RETURN_PATH: 'bounce-nl@nl.example',
   };
 
-  it('with a bulk return path set, a bulk message leaves from it', async () => {
-    const received = await submitOneMessage(
-      { ...TWO_PATHS, COLLECTOR_OUTCOMES_DSN_DIR: dir },
-      'email-1'
-    );
-    expect(received.envelopeFrom).toBe('bulk-bounces@collector.example');
+  it('with the lane paths set and outcomes off, a bulk message leaves from the newsletter path and requests no DSN', async () => {
+    const received = await submitOneMessage(LANES, 'email-1');
+    expect(received.envelopeFrom).toBe('bounce-nl@nl.example');
+    expect(received.dsnNotify).toBeUndefined();
+    expect(decodeOutcomeMessageId(received.parsed.messageId ?? '')).toBeNull();
   });
 
-  it('with a bulk return path set, a login message still leaves from the login return path', async () => {
-    const received = await submitOneMessage({ ...TWO_PATHS, COLLECTOR_OUTCOMES_DSN_DIR: dir });
-    expect(received.envelopeFrom).toBe('login-bounces@collector.example');
+  it('with the lane paths set and outcomes off, a login message leaves from the transactional path', async () => {
+    const received = await submitOneMessage(LANES);
+    expect(received.envelopeFrom).toBe('bounce-tx@tx.example');
+  });
+
+  it('with the lane paths and the notification directory set, the lane path is the envelope sender and the DSN is requested', async () => {
+    const received = await submitOneMessage(
+      { ...LANES, COLLECTOR_OUTCOMES_DSN_DIR: dir },
+      'email-1'
+    );
+    expect(received.envelopeFrom).toBe('bounce-nl@nl.example');
+    expect(received.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
   });
 });
