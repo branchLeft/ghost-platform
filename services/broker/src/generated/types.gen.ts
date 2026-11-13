@@ -82,6 +82,39 @@ export type DrainPayload = {
 
 export type ErrorBody = {
     error: string;
+    /**
+     * Set by `POST /reset` and `POST /freeze` on a 409, so a caller never has to read the English in `error` to tell "retry later" (`locked`) from "held evidence, never retry" (`held-evidence`).
+     */
+    reason?: 'locked' | 'held-evidence' | 'occupied' | 'nothing-to-freeze';
+};
+
+/**
+ * The held-evidence marker, and nothing else about it. `frozen` means a freeze has begun and is not yet confirmed (a marker value the broker does not recognise also reads `frozen`); `detached` means the held set is confirmed in the held area; `absent` means none was ever taken.
+ */
+export type EvidenceStatus = 'absent' | 'frozen' | 'detached';
+
+export type FreezePending = {
+    evidence: 'frozen';
+    phase: 'detaching';
+    slot: SlotName;
+};
+
+export type FreezeSuccess = {
+    /**
+     * Bytes held in the entry.
+     */
+    bytes: number;
+    /**
+     * The held entry's name under the held root, `<slot>-<counter>`.
+     */
+    entry: string;
+    evidence: 'detached';
+    phase: 'error';
+    /**
+     * Lower-case hex SHA-256 over the entry's manifest.
+     */
+    sha256: string;
+    slot: SlotName;
 };
 
 /**
@@ -266,6 +299,7 @@ export type SlotRequest = {
 };
 
 export type StatusResponse = {
+    evidence: EvidenceStatus;
     healthy: boolean;
     /**
      * Host-wide: the plugin seams whose loaded module marks itself interim (shipped, but standing in for a part not built yet), sorted. A host is not ready to go live while this is non-empty.
@@ -399,6 +433,65 @@ export type PollDrainQueueResponses = {
 };
 
 export type PollDrainQueueResponse = PollDrainQueueResponses[keyof PollDrainQueueResponses];
+
+export type FreezeSlotData = {
+    body: SlotRequest;
+    headers: {
+        /**
+         * The signing time, whole seconds since the Unix epoch, as a decimal string -- never an ISO-8601 timestamp. Part of the signed bytes; checked against the host's own clock for staleness and forward skew, and against the process's own start time to refuse a request replayed after a restart.
+         */
+        'X-Broker-Timestamp': string;
+        /**
+         * A caller-chosen, per-request value, 16-128 characters from `[A-Za-z0-9._-]`. Part of the signed bytes; claimed exactly once against the host's in-memory nonce store, only after the signature has verified.
+         */
+        'X-Broker-Nonce': string;
+        /**
+         * Base64-encoded, 64-byte raw Ed25519 signature. See the `brokerSignature` security scheme for exactly which bytes it covers.
+         */
+        'X-Broker-Signature': string;
+    };
+    path?: never;
+    query?: never;
+    url: '/freeze';
+};
+
+export type FreezeSlotErrors = {
+    /**
+     * The request body is not valid JSON.
+     */
+    400: ErrorBody;
+    /**
+     * The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
+     */
+    401: unknown;
+    /**
+     * The slot is locked by a concurrent request (`locked`); is free and holds nothing to freeze (`nothing-to-freeze`); is in a phase a freeze must not interrupt, or carries a confirmed marker with no stored receipt (`occupied`). The slot is left untouched.
+     */
+    409: ErrorBody;
+    /**
+     * The request body exceeded the broker's fixed 256 KiB limit. Carries no body.
+     */
+    413: unknown;
+    /**
+     * `slot` is missing, not a string, not shaped like a slot name, or not one of the host's enumerated slot literals.
+     */
+    422: ErrorBody;
+    /**
+     * The revoke or the detach did not complete, or the wrapper's receipt was not accepted. The slot stays `detaching` with evidence `frozen`, so every `POST /reset` is refused; retry `POST /freeze`.
+     */
+    503: FreezePending;
+};
+
+export type FreezeSlotError = FreezeSlotErrors[keyof FreezeSlotErrors];
+
+export type FreezeSlotResponses = {
+    /**
+     * The detach is confirmed. The receipt names the held entry, its manifest digest and its byte count, and nothing else about what was held.
+     */
+    200: FreezeSuccess;
+};
+
+export type FreezeSlotResponse = FreezeSlotResponses[keyof FreezeSlotResponses];
 
 export type PushImageData = {
     /**
@@ -560,7 +653,7 @@ export type ResetSlotErrors = {
      */
     401: unknown;
     /**
-     * The slot is locked by a concurrent request, or is detaching or holding frozen evidence not yet confirmed detached; the slot is left untouched.
+     * The slot is locked by a concurrent request (`reason` is `locked`, retry later), or is detaching or holding frozen evidence not yet confirmed detached (`reason` is `held-evidence`, never retry, page); the slot is left untouched.
      */
     409: ErrorBody;
     /**
