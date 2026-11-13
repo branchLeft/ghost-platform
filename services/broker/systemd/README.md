@@ -100,6 +100,41 @@ running in it. Two real, independent writes need this:
   fixture now seeds a real leased slot "0" and the proof resets it, so a
   regression here fails loudly again.
 
+## `/var/lib/docker/volumes` is writable
+
+The same inherited mount namespace (see the section above) makes every path
+outside `ReadWritePaths=` read-only to the sudo-elevated wrapper, root or not.
+`branchleft_slot.py`'s `reset` empties each tenant volume's `_data` directory
+under `DOCKER_VOLUME_ROOT` (`/var/lib/docker/volumes`). Without that path in
+`ReadWritePaths=` the first `unlink` of a file in a volume fails, and the
+broker journal shows:
+
+```
+branchleft-slot: [Errno 30] Read-only file system: '<file name in the volume>'
+```
+
+The name in the message is the directory entry being removed, relative to an
+open directory descriptor, so it reads like a relative path. It is not a
+working-directory write, and the wrapper's code is not at fault.
+
+- **Only the volumes directory.** `/var/lib/docker` itself stays read-only:
+  it holds the engine's images, containers and state, which the broker has no
+  reason to reach. `state-dirs.golden.json` pins the path
+  (`dockerVolumeRoot`) against the wrapper's constant, and
+  `stateDirsGolden.test.ts` fails if the unit does not list it or lists
+  `/var/lib/docker` or any parent of it.
+- **Filesystem permissions still bind the unprivileged broker.** This widens
+  the mount namespace only. The broker process runs as `broker` and cannot
+  write the root-owned volume directories; only the wrapper, run as root
+  through `sudo -n`, can.
+- **The path must exist**, or the unit fails to start with `226/NAMESPACE`.
+  RUNBOOK-broker-deploy.md step 5 creates it, and the boot-proof fixture's
+  Dockerfile does the same.
+- **Missed on the first boot proof** for the same reason as the slots file:
+  the fixture seeds no volume content, so a reset in CI never unlinks
+  anything under the volume root. Seeding a volume and proving the reset
+  empties it is tracked as a follow-up.
+
 ## `UMask=0022`, not `0077`
 
 `UMask=` is a process attribute, not an environment variable, so `sudo`'s

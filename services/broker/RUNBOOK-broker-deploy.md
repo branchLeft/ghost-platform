@@ -149,6 +149,7 @@ The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge
 
    ```bash
    sudo mkdir -p /etc/branchleft
+   sudo mkdir -p /var/lib/docker/volumes
    sudo install -d -o root -g root -m 0755 /var/lib/branchleft
    sudo install -d -o broker -g broker -m 0755 /var/lib/branchleft/broker-slots
    sudo install -d -o broker -g broker -m 0700 /var/lib/branchleft/broker-slots/admin-keys

@@ -21,6 +21,7 @@ import {
   releasePort,
   runStep,
 } from '../../../../test-support/image-harness.mjs';
+import { RecordingDouble } from '../../../scanning-storage/test/helpers/docker-ghost.mjs';
 
 const FIXTURES = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -279,6 +280,61 @@ describe('pollHttp200', () => {
     } finally {
       process.env.PATH = saved;
       fs.rmSync(stubDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the scanning-storage recording double readiness wait', () => {
+  // The first request is accepted and never answered, as a published port can
+  // do before its container listens; every later one answers 200. The old
+  // loop awaited that first fetch with no abort timer, past its own 30 s
+  // deadline and into the step's 120 s one.
+  it('abandons a hung attempt and is ready on the next one', { timeout: 10_000 }, async () => {
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-stub-'));
+    fs.writeFileSync(path.join(stubDir, 'docker'), '#!/bin/sh\necho true\n', { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = `${stubDir}${path.delimiter}${saved}`;
+    let seen = 0;
+    const server = http.createServer((req, res) => {
+      seen += 1;
+      if (seen > 1) res.end('[]');
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const double = new RecordingDouble('double', server.address().port, 'bucket');
+      const started = Date.now();
+      await double.waitForReady({ attemptMs: 200, deadlineMs: 5_000 });
+      assert.ok(seen >= 2, 'the hung attempt was abandoned and retried');
+      assert.ok(Date.now() - started < 3_000, 'ready within a few attempts, not a step deadline');
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(stubDir, { recursive: true, force: true });
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it('fails with the double named and its last error when it never answers 200', async () => {
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-stub-'));
+    fs.writeFileSync(path.join(stubDir, 'docker'), '#!/bin/sh\necho true\n', { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = `${stubDir}${path.delimiter}${saved}`;
+    const server = http.createServer((req, res) => {
+      res.statusCode = 503;
+      res.end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const double = new RecordingDouble('double-x', server.address().port, 'bucket');
+      await assert.rejects(
+        () => double.waitForReady({ attemptMs: 200, deadlineMs: 600 }),
+        /the recording double double-x did not become ready: .*last error: HTTP 503; Running=true/
+      );
+    } finally {
+      process.env.PATH = saved;
+      fs.rmSync(stubDir, { recursive: true, force: true });
+      server.closeAllConnections();
+      server.close();
     }
   });
 });
