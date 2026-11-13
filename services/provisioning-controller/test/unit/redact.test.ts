@@ -107,6 +107,116 @@ describe('redactSecrets', () => {
     );
   });
 
+  // An Authorization credential is the whole header value up to whitespace: a comma, a semicolon,
+  // a quote or a brace inside it is part of the secret, not the end of it. The remnant marker is
+  // RETX9; no output may hold it.
+  describe('an Authorization credential that holds punctuation', () => {
+    const PUNCTUATED = [
+      ['a comma', 'SEC,RETX9'],
+      ['a semicolon', 'SEC;RETX9'],
+      ['a double quote', 'SEC"RETX9'],
+      ['a single quote', "SEC'RETX9"],
+      ['a closing brace', 'SEC}RETX9'],
+      ['an opening brace', 'SEC{RETX9'],
+      ['every one of them', 'SEC,;"\'}{RETX9'],
+      ['a trailing comma', 'SECRETX9,'],
+      ['a leading comma', ',SECRETX9'],
+      ['a run of commas', 'SEC,,,RETX9'],
+    ] as const;
+    const SCHEMES = ['Token', 'Bearer', 'Hmac', 'OAuth', 'Basic', 'Digest'] as const;
+
+    it('redacts the example from the report with no remnant', () => {
+      expect(redactSecrets('Authorization: Token SEC,RETX9')).toBe(
+        `Authorization: Token ${REDACTED}`
+      );
+    });
+
+    it.each(
+      SCHEMES.flatMap((scheme) =>
+        PUNCTUATED.map(([what, credential]) => [scheme, what, credential] as const)
+      )
+    )('removes the whole %s credential holding %s', (scheme, _what, credential) => {
+      expect(redactSecrets(`Authorization: ${scheme} ${credential}`)).toBe(
+        `Authorization: ${scheme} ${REDACTED}`
+      );
+    });
+
+    it.each(PUNCTUATED)(
+      'removes a credential holding %s with no scheme word',
+      (_what, credential) => {
+        expect(redactSecrets(`Authorization: ${credential}`)).toBe(`Authorization: ${REDACTED}`);
+      }
+    );
+
+    it.each(PUNCTUATED)(
+      'removes a credential holding %s after an equals sign',
+      (_what, credential) => {
+        expect(redactSecrets(`Authorization=Token ${credential}`)).toBe(
+          `Authorization=Token ${REDACTED}`
+        );
+      }
+    );
+
+    it('stops at whitespace and keeps the words after the credential', () => {
+      expect(
+        redactSecrets('call failed: Authorization: Token SEC,RETX9 rejected, retry later')
+      ).toBe(`call failed: Authorization: Token ${REDACTED} rejected, retry later`);
+    });
+
+    it('removes a credential inside a JSON string and keeps the fields around it', () => {
+      const out = redactSecrets('{"step":2,"Authorization":"Token SEC,;}{RETX9","next":3}');
+      expect(out).not.toContain('RETX9');
+      expect(out).not.toContain('SEC');
+      expect(out).toContain('"step":2');
+      expect(out).toContain('"next":3}');
+    });
+
+    it.each([
+      ['an escaped double quote', '{"Authorization":"Token SEC\\"RETX9","next":3}'],
+      ['an escaped backslash', '{"Authorization":"Token SEC\\\\RETX9","next":3}'],
+      ['a single quote inside double quotes', '{"Authorization":"Token SEC\'RETX9","next":3}'],
+      ['a double quote inside single quotes', "{'Authorization': 'Token SEC\"RETX9', 'next': 3}"],
+      ['an escaped single quote', "{'Authorization': 'Token SEC\\'RETX9', 'next': 3}"],
+      ['a comma and a semicolon', '{"Authorization":"Token SEC,RETX9;","next":3}'],
+      ['braces and a comma', '{"Authorization":"Bearer SE}C,{RETX9","next":3}'],
+    ])('removes the whole quoted credential holding %s', (_what, text) => {
+      const out = redactSecrets(text);
+      expect(out).not.toContain('RETX9');
+      expect(out).not.toContain('SEC');
+      expect(out).toMatch(/"next":3\}|'next': 3\}/);
+    });
+
+    it('still splits a header that names a second scheme, and removes both credentials', () => {
+      expect(redactSecrets('Authorization: Token SEC,RETX9, Bearer SE,RETX8')).toBe(
+        `Authorization: Token ${REDACTED}, Bearer ${REDACTED}`
+      );
+      expect(redactSecrets('Authorization: Token SEC,RETX9,Bearer ab')).toBe(
+        `Authorization: Token ${REDACTED},Bearer ${REDACTED}`
+      );
+    });
+
+    // Without this, the table above could pass on input the old rule already handled. The old
+    // credential pattern is kept here only to show it leaves a remnant on every punctuated input.
+    // (An opening brace, a trailing comma and a leading comma were already read whole or not at all.)
+    const LEAKED_BEFORE = [
+      'a comma',
+      'a semicolon',
+      'a double quote',
+      'a single quote',
+      'a closing brace',
+      'every one of them',
+      'a run of commas',
+    ] as const;
+    it.each(PUNCTUATED.filter(([what]) => (LEAKED_BEFORE as readonly string[]).includes(what)))(
+      'is a real test: the pre-fix credential pattern leaves a remnant after %s',
+      (_what, credential) => {
+        const oldRule = /\b(authorization["']?\s*[=:]\s*["']?)(token[ \t]+)?(?:[^\s,;"'}])+/gi;
+        const out = `Authorization: Token ${credential}`.replace(oldRule, `$1$2${REDACTED}`);
+        expect(out).toContain('RETX9');
+      }
+    );
+  });
+
   // The rules above add coverage; none may stop catching what the original single
   // field rule removed (a flag with a spaced separator, a quoted value ending in a backslash).
   it.each([
@@ -334,6 +444,19 @@ describe('redactSecrets on adversarial 100 KB input', () => {
     ['dotted words inside an open quoted value', repeated('token.', 'password="')],
     ['glued secret words after a separator', repeated('token', 'password=')],
     ['glued secret words before a separator', `${repeated('token')} =`],
+    ['a long comma-separated Authorization credential', repeated('a,', 'Authorization: Token ')],
+    ['a long Authorization credential of dotted words', repeated('ab.', 'Authorization: Token ')],
+    ['a long Authorization credential of secret words', repeated('token', 'Authorization: ')],
+    ['a long quoted Authorization credential', repeated(',a', '{"Authorization":"Token ')],
+    ['a long quoted Authorization credential of escapes', repeated('\\"', '{"Authorization":"')],
+    ['glued Authorization openings', repeated('Authorization:')],
+    ['glued quoted Authorization openings', repeated('Authorization:"')],
+    ['a long run of scheme-like segments', repeated(',token ', 'Authorization: Token a')],
+    ['a long run of spaced commas', repeated(', ', 'Authorization: Token a')],
+    [
+      'a long run of commas then spaces',
+      `Authorization: Token a${','.repeat(SIZE)}${' '.repeat(SIZE)}`,
+    ],
   ])('finishes %s in under 50 ms', (_name, text) => {
     expect(text.length).toBeGreaterThanOrEqual(SIZE);
     expect(bestOfThreeMs(text)).toBeLessThan(50);

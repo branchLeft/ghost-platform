@@ -34,6 +34,42 @@ const VALUE = `${quoted('"')}|${quoted("'")}|"[^"]*"|'[^']*'|[^\\s,;]+`;
 /** Auth schemes that stand before the credential in an Authorization header. */
 const AUTH_SCHEME = '(?:bearer|basic|token|digest|negotiate|apikey|bot|hmac|oauth)';
 
+/**
+ * Where the next scheme of a multi-scheme Authorization header starts: a comma, then a known
+ * scheme word and a space. Any other comma is part of the credential.
+ */
+const NEXT_SCHEME = `,[ \\t]*${AUTH_SCHEME}[ \\t]`;
+/**
+ * One Authorization credential: every character up to the end of its run (see `unit`), stopping
+ * only before a glued secret field name or the next scheme. A comma, semicolon, quote or brace is
+ * part of the secret, so none of them ends it.
+ */
+const credential = (unit: string): string => `(?:(?!${NEXT_FIELD})(?!${NEXT_SCHEME})${unit})+`;
+/** An unquoted header value: the credential ends at whitespace. */
+const BARE_CREDENTIAL = credential('\\S');
+/** A credential inside a quoted value: it ends at whitespace or the closing quote, and holds escapes. */
+const quotedCredential = (q: string): string => credential(`[^\\s\\\\${q}]|\\\\\\S`);
+/** The further `, Scheme credential` segments of a multi-scheme header. */
+const tailSegments = (value: string): string => `(?:${NEXT_SCHEME}+${value})*`;
+
+/**
+ * Redacts the credential of an Authorization header or key: keeps the scheme word, drops the
+ * credential after it, and does the same for each further scheme the header names.
+ */
+function authorizationRule(opening: string, value: string): Rule {
+  const rule = new RegExp(
+    `\\b(authorization["']?\\s*[=:]\\s*${opening})(${AUTH_SCHEME}[ \\t]+)?${value}(${tailSegments(value)})`,
+    'gi'
+  );
+  const segment = new RegExp(`(${NEXT_SCHEME}+)${value}`, 'gi');
+  return (text) =>
+    text.replace(
+      rule,
+      (_all, head: string, scheme: string | undefined, tail: string) =>
+        `${head}${scheme ?? ''}${REDACTED}${tail.replace(segment, `$1${REDACTED}`)}`
+    );
+}
+
 /** Token shapes with a fixed prefix; a JWT opens with "eyJ" and is checked by hand below. */
 const TOKEN_SHAPE =
   'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}';
@@ -103,13 +139,11 @@ const RULES: readonly Rule[] = [
   [/(?<=\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]*@/gi, `${REDACTED}@`],
   // An Authorization header or JSON key: keep the scheme word, drop the credential after it.
   // The credential stops before a glued secret field name, which the field rules then handle.
-  [
-    new RegExp(
-      `\\b(authorization["']?\\s*[=:]\\s*["']?)(${AUTH_SCHEME}[ \\t]+)?(?:(?!${NEXT_FIELD})[^\\s,;"'}])+`,
-      'gi'
-    ),
-    `$1$2${REDACTED}`,
-  ],
+  // The credential is the whole value up to whitespace (or the closing quote of a quoted value):
+  // a comma, semicolon, quote or brace inside it is part of the secret.
+  authorizationRule('(?!["\'])', BARE_CREDENTIAL),
+  authorizationRule('"', quotedCredential('"')),
+  authorizationRule("'", quotedCredential("'")),
   [/\b(bearer|basic)\s+[\w.~+/=-]{8,}/gi, `$1 ${REDACTED}`],
   // The original field rule, unchanged, runs before the wider rules below so that nothing it
   // removed can be left readable by them: a new rule must never read a glued field name or a
