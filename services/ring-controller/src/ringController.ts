@@ -1,4 +1,10 @@
 import type { BumpState, BumpStateMachine } from './bumpStateMachine.js';
+import {
+  DeadlineExceededError,
+  resolveCallDeadlines,
+  withDeadline,
+  type CallDeadlines,
+} from './deadlines.js';
 import type { PromotionRecord } from './promotionChainLog.js';
 import { assertGatesGreen, type GateReport } from './gates.js';
 import { assertModelFreeEnvironment, type ModelFreeEnvironment } from './modelFreeEnvironment.js';
@@ -63,13 +69,17 @@ export type ReleaseOutcome = { status: 'completed' } | Held;
 export interface RingControllerDependencies {
   /** Ring 0 is the bumpable canaries; slot 0 itself is the gates' host. */
   listMembers(ring: RingName): Promise<readonly RingMember[]>;
-  /** Run the gates once, on slot 0. */
+  /** Run the gates once, on slot 0. A throw, or no answer by `runGatesMs`, holds as `gate-red`. */
   runGates(digest: string): Promise<GateReport>;
-  /** Per-tenant wiring. Every machine it returns shares one `ApplyLock`. */
+  /**
+   * Per-tenant wiring. Every machine it returns shares one `ApplyLock`. A
+   * `run()` that has not finished by `bumpMs` is asked to abort and fails
+   * its member as `bump-not-done`.
+   */
   newBump(member: RingMember, release: Release): BumpStateMachine;
-  /** A throw or a timeout means unhealthy. */
+  /** A throw, or no answer by `healthMs`, means blocked (`probe-failed`). */
   health(tenantId: string): Promise<Health>;
-  /** A throw means blocked. */
+  /** A throw, or no answer by `reportedErrorsMs`, means blocked (`probe-failed`). */
   reportedErrors(tenantId: string, sinceMs: number): Promise<readonly string[]>;
   /**
    * Appends the signed promotion record for one member. Awaited before that
@@ -80,6 +90,31 @@ export interface RingControllerDependencies {
   /** The operational alert and filed-work-item sink. Never a page, never an approval. */
   hold(held: Held): Promise<void>;
   clock: { now(): number; sleep(ms: number): Promise<void> };
+  /** Bounds on the calls above; any left out take `DEFAULT_CALL_DEADLINES`. */
+  deadlines?: Partial<CallDeadlines>;
+}
+
+/** The dependencies as the controller uses them: every outside call already bounded. */
+type BoundedDependencies = RingControllerDependencies & { deadlines: CallDeadlines };
+
+/**
+ * Wraps each awaited outside call in its deadline, once, so no call site can
+ * forget one. A miss rejects like a throw and takes the throw's path.
+ */
+function bounded(deps: RingControllerDependencies): BoundedDependencies {
+  const deadlines = resolveCallDeadlines(deps.deadlines);
+  return {
+    ...deps,
+    deadlines,
+    runGates: (digest) => withDeadline(deps.runGates(digest), deadlines.runGatesMs, 'runGates()'),
+    health: (tenantId) => withDeadline(deps.health(tenantId), deadlines.healthMs, 'health()'),
+    reportedErrors: (tenantId, sinceMs) =>
+      withDeadline(
+        deps.reportedErrors(tenantId, sinceMs),
+        deadlines.reportedErrorsMs,
+        'reportedErrors()'
+      ),
+  };
 }
 
 interface Bumped {
@@ -90,7 +125,7 @@ interface Bumped {
 interface BumpOutcome {
   member: RingMember;
   machine: BumpStateMachine | undefined;
-  state: BumpState | 'threw';
+  state: BumpState | 'threw' | 'timed-out';
   detail?: string;
 }
 
@@ -112,17 +147,20 @@ function messageOf(err: unknown): string {
  * one tenant at a time within a ring (LLD-4 §04/§06b). Deterministic code:
  * no model, no agent, no token budget (D37). `env` is passed in, never
  * read from the process, so a test can prove the controller promotes with
- * every key absent and refuses with one present. See README.md in this
- * directory for the narrative.
+ * every key absent and refuses with one present; `runReleaseFromProcess`
+ * is the entry that hands it the process's own. Every outside call is
+ * bounded by `deps.deadlines`. See README.md in this directory for the
+ * narrative.
  */
 export async function runRelease(
   release: Release,
-  deps: RingControllerDependencies,
+  given: RingControllerDependencies,
   config: RingBakeConfig,
   env: ModelFreeEnvironment
 ): Promise<ReleaseOutcome> {
   assertModelFreeEnvironment(env);
   validateBakeConfig(config);
+  const deps = bounded(given);
 
   if (release.route !== 'fast-path') {
     return hold(deps, release, 'preflight', 'consent-required');
@@ -182,7 +220,7 @@ async function hold(
 async function runRing(
   ring: RingName,
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   bake: RingBake
 ): Promise<RingResult> {
   const ringStartedAt = deps.clock.now();
@@ -275,7 +313,7 @@ function heldAt(
 async function bumpInOrder(
   members: readonly RingMember[],
   release: Release,
-  deps: RingControllerDependencies
+  deps: BoundedDependencies
 ): Promise<BumpOutcome[]> {
   const outcomes: BumpOutcome[] = [];
   for (const member of members) {
@@ -289,13 +327,27 @@ async function bumpInOrder(
 async function bumpOne(
   member: RingMember,
   release: Release,
-  deps: RingControllerDependencies
+  deps: BoundedDependencies
 ): Promise<BumpOutcome> {
+  let machine: BumpStateMachine | undefined;
   try {
-    const machine = deps.newBump(member, release);
-    const state = await machine.run();
+    machine = deps.newBump(member, release);
+    const state = await withDeadline(machine.run(), deps.deadlines.bumpMs, 'the bump');
     return { member, machine, state };
   } catch (err) {
+    if (err instanceof DeadlineExceededError && machine !== undefined) {
+      // The run cannot be cancelled from here, and the release is about to
+      // stop watching it. Abort lands at the machine's own safe point:
+      // cancel before apply, never interrupt apply, revert after it, so a
+      // late finish cannot leave this tenant on the new version unbaked.
+      machine.abort();
+      return {
+        member,
+        machine,
+        state: 'timed-out',
+        detail: `${err.message}, still in '${machine.getState()}'; abort requested`,
+      };
+    }
     return {
       member,
       machine: undefined,
@@ -315,7 +367,7 @@ async function soak(
   ring: RingName,
   bumped: readonly Bumped[],
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   ringStartedAt: number,
   bakeStartedAt: number,
   bake: RingBake
@@ -339,7 +391,7 @@ async function soak(
 async function probeRing(
   bumped: readonly Bumped[],
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   ringStartedAt: number
 ): Promise<Problem[]> {
   const problems: Problem[] = [];
@@ -356,7 +408,7 @@ async function probeMember(
   tenantId: string,
   machine: BumpStateMachine,
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   ringStartedAt: number
 ): Promise<Problem | undefined> {
   try {

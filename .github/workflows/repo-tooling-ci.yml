@@ -102,6 +102,13 @@ jobs:
       - name: CSP script-hash derivation tests
         run: node --test --experimental-test-coverage csp/derive/derive-script-hashes.test.mjs
 
+      # The Stripe checkout proof's pieces that need no Docker or browser: the
+      # fake Stripe API (it must refuse non-test keys and cards), the paid-site
+      # setup's live-key refusal, and the payment-origin derivation. node:test
+      # and node built-ins only.
+      - name: CSP payments tests
+        run: node --test csp/derive/derive-payment-origins.test.mjs csp/proof/*.test.mjs
+
       # The bundled themes and fonts (themes/README.md): the outside-origin
       # scanner, the licence manifest and the bundle verifier, each with its red
       # cases. The fetch itself needs the network and runs in the image build.
@@ -119,6 +126,12 @@ jobs:
           (cd render-core && pnpm install --frozen-lockfile --ignore-scripts && pnpm run build)
           node --test csp/gate/*.test.mjs
           ./csp/gate/prove-gates.sh
+
+      # The checkout gate's runner (csp/gate/csp-checkout-gate.py): every
+      # program it starts is a recording fake, so no Docker or browser. Its
+      # tests also mutate the real source and require red.
+      - name: CSP checkout gate runner tests
+        run: python3 -m unittest discover -s csp/gate -p 'test_csp_checkout_gate.py' -v
 
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
@@ -173,6 +186,13 @@ jobs:
       # self-evidently right.
       - name: Demo host provisioning script tests
         run: python3 -m unittest discover -s demo-host/provision -p 'test_*.py'
+
+      # The demo host mail spool workflow starts only on a path in its filter.
+      # This derives the job's real inputs (render-core's build, the scripts it
+      # runs, the whole of demo-host/provision) and fails for one outside the
+      # filter, for the two events differing, or for an entry matching nothing.
+      - name: Demo host mail spool CI path filter tests
+        run: python3 -m unittest discover -s scripts -p 'test_demo_host_mail_spool_ci_paths.py'
 
       # Each gate of the demo site block broken in a scratch copy: the suite must
       # go red for every one, and green on the real copy.

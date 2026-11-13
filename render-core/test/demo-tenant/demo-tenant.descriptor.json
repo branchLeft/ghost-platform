@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "kind": "tenant",
+  "slug": "demo-tenant",
+  "siteUrl": "https://demo-tenant.sites.publicpress.co.uk",
+  "image": "ghcr.io/branchleft/ghost-tenant@sha256:8c9f2dc488c03454609e6573674f10f27ca162a440ff3f5910eaab48bafd9f3d",
+  "uid": 30001,
+  "ports": { "a": 8101, "b": 8102, "health": 8103 },
+  "appHostIp": "10.20.1.201",
+  "database": {
+    "kind": "mysql",
+    "host": "10.20.1.200",
+    "port": 3306,
+    "name": "ghost_demo_tenant",
+    "user": "ghost_demo_tenant"
+  },
+  "media": {
+    "kind": "s3",
+    "endpoint": "https://hel1.your-objectstorage.com",
+    "region": "hel1",
+    "bucket": "branchleft-media-demo-tenant",
+    "resize": false,
+    "srcsets": false
+  },
+  "transport": { "kind": "queue", "path": "/var/spool/demo-tenant" },
+  "mail": {
+    "enabled": false,
+    "ceiling": 0,
+    "estateCeiling": 0,
+    "identity": { "kind": "tenant", "domain": "demo-tenant.branchleft.co.uk", "dkimSelector": "bl" }
+  },
+  "hostname": { "kind": "ours", "sub": "demo-tenant", "gated": false },
+  "gate": { "kind": "none" },
+  "backup": {
+    "kind": "bucket-native",
+    "encryptionRecipient": "DEMO_TENANT_BACKUP_AGE_RECIPIENT_PLACEHOLDER"
+  },
+  "codeInjection": { "kind": "blocked" },
+  "limits": { "membersCap": null, "staffCap": null },
+  "caps": { "cpus": "1.0", "cpuShares": 512, "pidsLimit": 256, "nofile": 4096 },
+  "safety": { "near": true, "exact": true },
+  "breakGlass": { "kind": "disabled" },
+  "expiresAt": null
+}
