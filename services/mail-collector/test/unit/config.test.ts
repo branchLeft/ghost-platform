@@ -78,6 +78,50 @@ describe('loadConfig', () => {
     ])('refuses %s without its partner', (name, value) => {
       expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
     });
+
+    describe('the bulk return path', () => {
+      const ON = {
+        ...BASE_ENV,
+        COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
+        COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+      };
+
+      it('is read when the outcome path is on', () => {
+        expect(
+          loadConfig({
+            ...ON,
+            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+          }).outcomes
+        ).toEqual({
+          returnPath: 'login-bounces@collector.example',
+          bulkReturnPath: 'bulk-bounces@collector.example',
+          dsnDir: '/var/dsn',
+          pollMs: 30000,
+        });
+      });
+
+      it('is absent from the outcomes when unset', () => {
+        expect(loadConfig(ON).outcomes).not.toHaveProperty('bulkReturnPath');
+      });
+
+      it('is refused when the outcome path is off', () => {
+        expect(() =>
+          loadConfig({
+            ...BASE_ENV,
+            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+          })
+        ).toThrow(/COLLECTOR_OUTCOMES_BULK_RETURN_PATH.*COLLECTOR_OUTCOMES_RETURN_PATH/);
+      });
+
+      it('is refused when it names the same address as the login return path', () => {
+        expect(() =>
+          loadConfig({
+            ...ON,
+            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'LOGIN-bounces@collector.example',
+          })
+        ).toThrow(/must differ/);
+      });
+    });
   });
 
   it.each([
@@ -142,7 +186,14 @@ describe('loadConfig', () => {
       const config = loadConfig(BASE_ENV);
       expect(config.sweego).toBeUndefined();
       expect(config.pinStateDir).toBeUndefined();
-      expect(config.pinTtlMs).toBe(7 * 24 * 60 * 60 * 1000);
+      expect(config.stateWitnessDir).toBeUndefined();
+      expect(config.pinTtlMs).toBe(35 * 24 * 60 * 60 * 1000);
+    });
+
+    it('carries the state witness directory when it is set', () => {
+      expect(
+        loadConfig({ ...BASE_ENV, COLLECTOR_STATE_WITNESS_DIR: '/var/witness' }).stateWitnessDir
+      ).toBe('/var/witness');
     });
 
     it('carries the credential file path and its own rate, with documented defaults', () => {
@@ -189,6 +240,69 @@ describe('loadConfig', () => {
       expect(() =>
         loadConfig({ ...BASE_ENV, COLLECTOR_SWEEGO_USAGE_STATE_PATH: '/var/lib/x.json' })
       ).toThrow(/COLLECTOR_SWEEGO_SMTP_HOST/);
+    });
+
+    describe('the newsletter threshold and the suspension files', () => {
+      const WITH_CAP = {
+        ...SWEEGO_ENV,
+        COLLECTOR_SWEEGO_ACCOUNT_CAP: '5000',
+        COLLECTOR_SWEEGO_USAGE_STATE_PATH: '/var/lib/collector/sweego-usage.json',
+      };
+
+      it('has no newsletter threshold unless it is set', () => {
+        expect(loadConfig(WITH_CAP).sweego?.newsletterCap).toBeUndefined();
+      });
+
+      it('carries a threshold strictly below the account cap', () => {
+        expect(
+          loadConfig({ ...WITH_CAP, COLLECTOR_SWEEGO_NEWSLETTER_CAP: '4750' }).sweego?.newsletterCap
+        ).toBe(4750);
+        expect(
+          loadConfig({ ...WITH_CAP, COLLECTOR_SWEEGO_NEWSLETTER_CAP: '4999' }).sweego?.newsletterCap
+        ).toBe(4999);
+      });
+
+      it.each([['5000'], ['5001'], ['0'], ['-3'], ['1.5'], ['plenty'], ['Infinity']])(
+        'refuses %s as the newsletter threshold',
+        (value) => {
+          expect(() => loadConfig({ ...WITH_CAP, COLLECTOR_SWEEGO_NEWSLETTER_CAP: value })).toThrow(
+            /COLLECTOR_SWEEGO_NEWSLETTER_CAP/
+          );
+        }
+      );
+
+      it('refuses a threshold with no account cap to sit below', () => {
+        expect(() => loadConfig({ ...SWEEGO_ENV, COLLECTOR_SWEEGO_NEWSLETTER_CAP: '10' })).toThrow(
+          /COLLECTOR_SWEEGO_ACCOUNT_CAP/
+        );
+      });
+
+      it('refuses a threshold without the host, rather than ignoring it', () => {
+        expect(() => loadConfig({ ...BASE_ENV, COLLECTOR_SWEEGO_NEWSLETTER_CAP: '10' })).toThrow(
+          /COLLECTOR_SWEEGO_SMTP_HOST/
+        );
+      });
+
+      it('keeps the suspension files beside the counter file unless told otherwise', () => {
+        const sweego = loadConfig(WITH_CAP).sweego;
+        expect(sweego?.suspensionStatePath).toBe('/var/lib/collector/sweego-suspension.json');
+        expect(sweego?.suspendFilePath).toBe('/var/lib/collector/sweego-suspend');
+      });
+
+      it('takes the suspension files from their own settings', () => {
+        const sweego = loadConfig({
+          ...WITH_CAP,
+          COLLECTOR_SWEEGO_SUSPENSION_STATE_PATH: '/var/lib/other/latch.json',
+          COLLECTOR_SWEEGO_SUSPEND_FILE_PATH: '/etc/collector/suspend',
+        }).sweego;
+        expect(sweego?.suspensionStatePath).toBe('/var/lib/other/latch.json');
+        expect(sweego?.suspendFilePath).toBe('/etc/collector/suspend');
+      });
+
+      it('has no suspension file without the counter file or a path of its own', () => {
+        expect(loadConfig(SWEEGO_ENV).sweego?.suspensionStatePath).toBeUndefined();
+        expect(loadConfig(SWEEGO_ENV).sweego?.suspendFilePath).toBeUndefined();
+      });
     });
 
     it('is usable only with the relay, the cap and the counter file all set', () => {

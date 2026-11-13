@@ -13,6 +13,39 @@ export { createFileTenantStateStore } from './tenantStateStore.js';
 export type { PersistedTenantState, TenantStateStore } from './tenantStateStore.js';
 export { acquireProcessLock, ProcessLockHeldError, DEFAULT_LOCK_PATH } from './processLock.js';
 export type { ProcessLock, ProcessLockOptions } from './processLock.js';
+export {
+  createPromotionChainLog,
+  verifyChain,
+  ChainRefusedError,
+  CHAIN_VERSION,
+  GENESIS_HASH,
+} from './promotionChainLog.js';
+export type {
+  ChainEntry,
+  ChainFailureCode,
+  ChainHead,
+  ChainVerification,
+  PromotionChainLog,
+  PromotionChainLogOptions,
+  PromotionRecord,
+} from './promotionChainLog.js';
+export { KeyFileError, loadPublicKeyFile, loadSigningKeyFile } from './signingKeyFile.js';
+export type { KeyFileFailure, SigningKeyFileOptions } from './signingKeyFile.js';
+export {
+  ENV_HEAD_FILE,
+  ENV_LOG_FILE,
+  ENV_PUBLIC_KEY_FILE,
+  ENV_SIGNING_KEY_FILE,
+  PromotionRecorderError,
+  RecorderConfigError,
+  createPromotionRecorder,
+  createPromotionRecorderFromEnv,
+} from './promotionRecorder.js';
+export type {
+  PromotionRecorder,
+  PromotionRecorderOptions,
+  RecorderFailureCode,
+} from './promotionRecorder.js';
 export { recoverPersistedTenants } from './recovery.js';
 export type { RecoveredTenant, RecoveryFailure, RecoverySweepResult } from './recovery.js';
 export {

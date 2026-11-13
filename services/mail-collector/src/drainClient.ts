@@ -36,6 +36,13 @@ export interface OutcomeReport {
   message?: string;
 }
 
+/** A recipient's complaint about a drained message. The spool accepts it only once it is built to (see arf/README.md). */
+export interface ComplainedReport {
+  id: string;
+  drainCount: number;
+  outcome: 'complained';
+}
+
 export interface OutcomeResult {
   recorded: string[];
   alreadyHandled: string[];
@@ -53,7 +60,7 @@ export interface OutcomeClient {
   /** POST /drain/outcomes: the receiving MTA's final word on messages already acked. The spool serves it only when opted in; otherwise this rejects (404) and the caller retries later. */
   reportOutcomes(
     target: DrainTarget,
-    outcomes: OutcomeReport[],
+    outcomes: Array<OutcomeReport | ComplainedReport>,
     signal?: AbortSignal
   ): Promise<OutcomeResult>;
 }
@@ -111,7 +118,7 @@ export function createDrainClient(opts: DrainClientOptions): DrainClient & Outco
 
   async function reportOutcomes(
     target: DrainTarget,
-    outcomes: OutcomeReport[],
+    outcomes: Array<OutcomeReport | ComplainedReport>,
     signal?: AbortSignal
   ): Promise<OutcomeResult> {
     const res = await doFetch(`${target.baseUrl}/drain/outcomes`, {

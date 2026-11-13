@@ -62,7 +62,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function submitOneMessage(extraEnv: Record<string, string>) {
+  async function submitOneMessage(extraEnv: Record<string, string>, emailId: string | null = null) {
     const shimUrl = await shim.listen();
     writeFileSync(
       join(dir, 'tenant-a.json'),
@@ -77,7 +77,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     shim.enqueue({
       id: '4cfbf575-9efc-4508-bc4f-e0f9314e4844',
       domain: 'tenant-a.example',
-      emailId: null,
+      emailId,
       from: 'noreply@tenant-a.example',
       to: 'reader@example.com',
       subject: 'Hello',
@@ -129,5 +129,23 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
       targetId: 'tenant-a',
       id: '4cfbf575-9efc-4508-bc4f-e0f9314e4844',
     });
+  });
+
+  const TWO_PATHS = {
+    COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
+    COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+  };
+
+  it('with a bulk return path set, a bulk message leaves from it', async () => {
+    const received = await submitOneMessage(
+      { ...TWO_PATHS, COLLECTOR_OUTCOMES_DSN_DIR: dir },
+      'email-1'
+    );
+    expect(received.envelopeFrom).toBe('bulk-bounces@collector.example');
+  });
+
+  it('with a bulk return path set, a login message still leaves from the login return path', async () => {
+    const received = await submitOneMessage({ ...TWO_PATHS, COLLECTOR_OUTCOMES_DSN_DIR: dir });
+    expect(received.envelopeFrom).toBe('login-bounces@collector.example');
   });
 });

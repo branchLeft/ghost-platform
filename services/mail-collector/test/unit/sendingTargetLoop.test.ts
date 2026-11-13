@@ -131,7 +131,7 @@ describe('collector loop with two sending targets', () => {
     expect(tokens.taken).toBe(2);
   });
 
-  it('moves only newsletters to mx1 once the tenant allowance is reached: login mail never consults the latch', async () => {
+  it('moves both classes to mx1 once the tenant allowance is reached: a sign-in link follows its tenant latch', async () => {
     const mx1 = fakeClient();
     const sweego = fakeClient();
     shim.enqueue(LOGIN('login-1'));
@@ -142,11 +142,11 @@ describe('collector loop with two sending targets', () => {
       quota: { allowanceReached: () => true, accountCapReached: () => false },
     });
     await until(() => acked().length === 2, 'both acked');
-    expect(sweego.calls).toEqual(['login-1']);
-    expect(mx1.calls).toEqual(['news-1']);
-    // The newsletter went through the estate (warm-up) throttle, the login did not.
-    expect(tokens.taken).toBe(1);
-    expect(sweegoThrottle.taken).toBe(1);
+    expect(sweego.calls).toEqual([]);
+    expect(mx1.calls.sort()).toEqual(['login-1', 'news-1']);
+    // Both went through the estate throttle; neither spent a Sweego token.
+    expect(tokens.taken).toBe(2);
+    expect(sweegoThrottle.taken).toBe(0);
   });
 
   it('sends a demo to mx1 even if its target names sweego', async () => {

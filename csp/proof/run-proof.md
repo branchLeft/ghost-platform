@@ -68,7 +68,7 @@ the source list first), so the browser's own matching is still what is
 tested. CSP_STRIPE_REAL_JS=1 drops the stub and loads the real Stripe.js
 over the internet; that needs no account and no secret.
 
-Real test mode (PROOF_REAL_TEST_MODE=1, set by csp-checkout-gate.sh when the
+Real test mode (PROOF_REAL_TEST_MODE=1, set by csp-checkout-gate.py when the
 owner opts in): the checkout page is Stripe's own (checkout.stripe.com),
 Stripe.js is always the real one, and the card typed is checked against the
 published test card before the browser starts. A violation counts only when

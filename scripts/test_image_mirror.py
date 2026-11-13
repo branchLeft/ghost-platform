@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -48,7 +49,7 @@ ENTRY = {
     "redistribution": "permitted",
     "licenceSource": "https://example.invalid/LICENSE",
 }
-REGISTRY = "ghcr.io/branchleft/mirror-private"
+REGISTRY = "ghcr.io/branchleft/mirror-private2"
 TAGGED = f"{REGISTRY}/ghost:d-{DIGEST[7:19]}"
 PINNED = f"{REGISTRY}/ghost@{DIGEST}"
 SOURCE = f"docker.io/library/ghost@{DIGEST}"
@@ -173,7 +174,7 @@ class ListTests(unittest.TestCase):
         _, images = mirror.load_list(LIST)
         pinned = [e for e in images if any("break-glass minter" in p for p in e.get("hostPins", []))]
         self.assertEqual([e["name"] for e in pinned], ["node"])
-        self.assertTrue(pinned[0]["digest"].startswith("sha256:2d49d876"))
+        self.assertTrue(pinned[0]["digest"].startswith("sha256:b2646ba6"))
 
     def test_rejects_a_name_that_is_not_the_sources_last_component(self):
         bad = dict(ENTRY, name="ghosty")
@@ -234,7 +235,7 @@ class MainTests(unittest.TestCase):
 
 PAIRS = {("docker.io/library/ghost", "sha256:" + "a" * 64)}
 MIRROR_OK = "${IMAGE_REGISTRY:-docker.io/library}/ghost:6@sha256:" + "a" * 64
-HARD_CODED = "ghcr.io/branchleft/mirror-private/ghost@sha256:" + "a" * 64
+HARD_CODED = "ghcr.io/branchleft/mirror-private2/ghost@sha256:" + "a" * 64
 
 
 class ClassifyTests(unittest.TestCase):
@@ -267,8 +268,10 @@ class ClassifyTests(unittest.TestCase):
             "registry-1.docker.io/library/ghost:6": "docker.io",
             "quay.io/minio/minio:latest": "other-registry",
             "ghcr.io/zitadel/zitadel" + digest: "other-registry",
-            "ghcr.io/branchleft/mirror-private/ghost:6.55.0-alpine": "hard-coded-mirror",
+            "ghcr.io/branchleft/mirror-private2/ghost:6.55.0-alpine": "hard-coded-mirror",
             "ghcr.io/branchleft/mirror/ghost:6.55.0-alpine": "hard-coded-mirror",
+            "ghcr.io/branchleft/mirror-private/ghost:6.55.0-alpine": "hard-coded-mirror",
+            "ghcr.io/branchleft/mirror-private/ghost@sha256:" + "a" * 64: "hard-coded-mirror",
             HARD_CODED: "hard-coded-mirror",
             "${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine": "tag-only",
             "${IMAGE_REGISTRY:-docker.io/library}/ghost@sha256:" + "d" * 64: "bad-default",
@@ -414,7 +417,10 @@ class ModeTests(unittest.TestCase):
         "tag-only mirror ref": {"Dockerfile": "FROM ${IMAGE_REGISTRY:-docker.io/library}/ghost:6.55.0-alpine\n"},
         "hard-coded mirror ref": {"Dockerfile": f"FROM {HARD_CODED}\n"},
         "mirror override without packages: read": {
-            ".github/workflows/ci.yml": "jobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n"
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private2\n"
+        },
+        "override to the retired mirror-private namespace": {
+            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n"
         },
         "override to the public registry": {
             ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: docker.io/library\n"
@@ -441,7 +447,7 @@ class ModeTests(unittest.TestCase):
     def test_enforce_is_green_on_a_clean_tree(self):
         files = {
             "Dockerfile": f"ARG IMAGE_REGISTRY\nFROM {MIRROR_OK}\n",
-            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n    steps:\n      - run: docker build -t app:ci .\n",
+            ".github/workflows/ci.yml": "permissions:\n  packages: read\njobs:\n  t:\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private2\n    steps:\n      - run: docker build -t app:ci .\n",
         }
         code, out = self.run_guard(files, "enforce")
         self.assertEqual(code, 0)
@@ -842,7 +848,7 @@ class FileTypeTests(unittest.TestCase):
 
 
 class OverrideTests(unittest.TestCase):
-    MIRROR = "ghcr.io/branchleft/mirror-private"
+    MIRROR = "ghcr.io/branchleft/mirror-private2"
 
     def test_a_comment_does_not_grant_packages_read(self):
         text = f"# packages: read\nenv:\n  IMAGE_REGISTRY: {self.MIRROR}\n"
@@ -1547,6 +1553,76 @@ class ClaimsTableTests(unittest.TestCase):
                 kinds = [k for _, _, k in found({path: text})]
                 self.assertTrue(kinds, f"{claim}: not reported: {path!r} {text!r}")
                 self.assertNotIn("unresolved", kinds, f"{claim}: not read: {path!r} {text!r}")
+
+
+NEW_NAMESPACE = "ghcr.io/branchleft/mirror-private2"
+RETIRED_PRIVATE_NAMESPACE = "ghcr.io/branchleft/mirror-private"
+OLD_NAMESPACE_WORD = re.compile(r"mirror-private(?!2)")
+# The only tracked files that may still name the retired namespace: each says it
+# is retired (the probe's inventory of it, the guard refusing a literal pin to it,
+# the docs for both, and the tests of both).
+RETIRED_NAMESPACE_FILES = frozenset(
+    {
+        "scripts/assert-image-refs-on-mirror.py",
+        "scripts/assert-image-refs-on-mirror.md",
+        "scripts/mirror-images.md",
+        "scripts/probe_private_packages.py",
+        "scripts/probe_private_packages.md",
+        "scripts/test_image_mirror.py",
+        "scripts/test_probe_private_packages.py",
+    }
+)
+
+
+def tracked_files() -> list[str]:
+    done = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True, check=True
+    )
+    return [p for p in done.stdout.decode().split("\0") if p]
+
+
+class NamespaceTests(unittest.TestCase):
+    """The mirror writes to mirror-private2; mirror-private is retired."""
+
+    def test_every_target_names_the_new_namespace(self):
+        registry, _ = mirror.load_list(LIST)
+        self.assertEqual(registry, NEW_NAMESPACE)
+        self.assertEqual(guard.MIRROR_REGISTRY, NEW_NAMESPACE)
+        self.assertEqual(guard.MIRROR_PREFIX, "branchleft/mirror-private2/")
+
+    def test_the_mirror_script_refuses_the_retired_namespaces(self):
+        for old in (RETIRED_PRIVATE_NAMESPACE, "ghcr.io/branchleft/mirror", NEW_NAMESPACE + "/x"):
+            with self.assertRaises(mirror.ListError, msg=old):
+                mirror.load_list(self.write({"registry": old, "images": [ENTRY]}))
+
+    def write(self, data):
+        path = Path(tempfile.mkdtemp()) / "list.json"
+        path.write_text(json.dumps(data))
+        return path
+
+    def test_a_pin_to_the_retired_namespace_is_a_hard_coded_mirror(self):
+        digest = "@sha256:" + "a" * 64
+        for ref in (f"{RETIRED_PRIVATE_NAMESPACE}/ghost:6{digest}", f"{NEW_NAMESPACE}/ghost:6{digest}"):
+            verdict = guard.classify(ref, PAIRS, frozenset())
+            self.assertEqual(verdict[0] if verdict else None, "hard-coded-mirror", ref)
+
+    def test_no_tracked_file_names_the_retired_namespace_except_where_it_is_retired(self):
+        offenders = []
+        for rel in tracked_files():
+            if rel in RETIRED_NAMESPACE_FILES:
+                continue
+            try:
+                text = (REPO / rel).read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for n, line in enumerate(text.splitlines(), 1):
+                if OLD_NAMESPACE_WORD.search(line):
+                    offenders.append(f"{rel}:{n}")
+        self.assertEqual(offenders, [])
+
+    def test_the_retired_namespace_files_exist(self):
+        for rel in RETIRED_NAMESPACE_FILES:
+            self.assertTrue((REPO / rel).is_file(), rel)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import {
 } from '../../src/mailgunFields.js';
 import {
   containsHeaderInjectionChars,
+  dropUnresolvedListUnsubscribeEntries,
   isValidGhostEmailId,
   isValidHeaderFieldName,
   normalizeMailHeaderKey,
@@ -449,6 +450,32 @@ describe('isValidGhostEmailId', () => {
     expect(isValidGhostEmailId(GHOST_EMAIL_ID.toUpperCase())).toBe(false);
     expect(isValidGhostEmailId('email-record-42')).toBe(false);
     expect(isValidGhostEmailId('')).toBe(false);
+  });
+});
+
+describe('dropUnresolvedListUnsubscribeEntries', () => {
+  it('drops the Mailgun-only %tag_unsubscribe_email% entry and keeps the valid URI', () => {
+    expect(
+      dropUnresolvedListUnsubscribeEntries(
+        '<https://tenant1.example.com/unsubscribe/a>, <%tag_unsubscribe_email%>'
+      )
+    ).toBe('<https://tenant1.example.com/unsubscribe/a>');
+  });
+
+  it('keeps a header whose entries are all valid, unchanged', () => {
+    expect(
+      dropUnresolvedListUnsubscribeEntries(
+        '<https://tenant1.example.com/unsubscribe/a>, <mailto:unsub@tenant1.example.com>'
+      )
+    ).toBe('<https://tenant1.example.com/unsubscribe/a>, <mailto:unsub@tenant1.example.com>');
+  });
+
+  it('returns an empty string when every entry is unresolved', () => {
+    expect(dropUnresolvedListUnsubscribeEntries('<%tag_unsubscribe_email%>')).toBe('');
+  });
+
+  it('leaves a value with no angle-bracketed entries untouched', () => {
+    expect(dropUnresolvedListUnsubscribeEntries('not-a-list')).toBe('not-a-list');
   });
 });
 

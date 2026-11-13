@@ -1,0 +1,28 @@
+Authentication-Results: mx1.collector.example 1; dkim=pass header.d=mail.feedback-provider.example
+From: fbl@mail.feedback-provider.example
+To: complaints@return.collector.example
+Date: Tue, 10 Nov 2026 09:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=feedback-report; boundary=hdrs
+
+--hdrs
+Content-Type: text/plain
+
+Abuse report.
+
+--hdrs
+Content-Type: message/feedback-report
+
+Version: 1
+Feedback-Type: abuse
+User-Agent: ExampleFBL/2.0
+
+--hdrs
+Content-Type: text/rfc822-headers
+
+From: noreply@tenant.example
+To: reader@example.com
+Message-ID: <4cfbf575-9efc-4508-bc4f-e0f9314e4844.3@74656e616e742d61.outcomes.invalid>
+Subject: A newsletter
+
+--hdrs--

@@ -10,7 +10,7 @@ Stripe.
 
 ## What it runs
 
-`csp-checkout-gate.sh` (Docker, Chromium via `csp/proof`, render-core built):
+`csp-checkout-gate.py` (Docker, Chromium via `csp/proof`, render-core built):
 
 1. Starts the pinned Ghost image, a fake Stripe API (`csp/proof/fake-stripe.mjs`)
    and a Caddy origin whose `Content-Security-Policy` header is the value
@@ -55,7 +55,7 @@ page.
 ## Real test mode
 
 Opt-in only, and only by the owner: nothing in CI or in an agent's run sets the
-switch or holds a key. `csp/gate/csp-checkout-gate.sh --help` prints the exact
+switch or holds a key. `csp/gate/csp-checkout-gate.py --help` prints the exact
 command. The three values come from the shell environment only (never a file,
 never an argument, never echoed):
 
@@ -63,7 +63,7 @@ never an argument, never echoed):
 read -rs STRIPE_TEST_SECRET_KEY; export STRIPE_TEST_SECRET_KEY
 read -rs STRIPE_TEST_PUBLISHABLE_KEY; export STRIPE_TEST_PUBLISHABLE_KEY
 read -rs STRIPE_TEST_WEBHOOK_SECRET; export STRIPE_TEST_WEBHOOK_SECRET
-CSP_STRIPE_REAL_TEST_MODE=1 csp/gate/csp-checkout-gate.sh
+CSP_STRIPE_REAL_TEST_MODE=1 csp/gate/csp-checkout-gate.py
 ```
 
 Needs Docker, render-core built, Chromium installed in `csp/proof`, and the
@@ -105,7 +105,9 @@ Playwright locators that are unverified until the first owner run; and a webhook
 listener it cannot see (a missing one shows as `the member did not become paid`
 after 60 s). Redaction is on every line the node side prints (key-shaped
 strings, the exact values in the environment, and the fragment of the checkout
-URL), and the script sets `set +x`.
+URL). The runner keeps the keys out of every argument and every line it
+prints: it passes them to a child only in that child's environment (Ghost gets
+`-e WEBHOOK_SECRET` by name), and its command records do not show an environment.
 
 ## What it does not prove
 
@@ -128,3 +130,14 @@ and each derivation refusal and requires the tests to go red, then green.
 `render-core/test/edge.test.ts` pins the rendered policy to exactly the measured
 origins and carries source-mutation sabotage for the allowance, the origin-shape
 check and a stray origin.
+
+The runner itself is Python (`csp-checkout-gate.py`, standard library only).
+`python3 -m unittest discover -s csp/gate -p 'test_csp_checkout_gate.py' -v`
+runs it against recording fakes for docker, node and curl, so it needs no Docker
+or browser and runs in CI. The same file mutates the real source (a wrong exit
+code, a skipped refusal, a dropped cleanup, a swallowed failure) and requires
+the tests to go red for each. Arguments, environment variables, exit codes and
+output lines are those of the shell script it replaced. Its real-test-mode
+wiring (the refusals before Docker, the keys by environment only, `docker rm -fv`
+cleanup) has its own tests and mutations there, plus a few runs of the real
+program against the real preflight with a docker that fails if it is reached.

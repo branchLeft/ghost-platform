@@ -78,6 +78,10 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
     // version may or may not agree needs one.
     ...({ duplex: 'half' } as Record<string, unknown>),
     signal: AbortSignal.timeout(timeoutMs),
+    // The generated client defaults to following redirects. A 3xx here is a
+    // refusal, not a delivery: following one turns the signed POST into a
+    // body-less GET that can answer 200 for something that never loaded.
+    redirect: 'manual',
     headers: {
       'X-Broker-Timestamp': timestamp,
       'X-Broker-Nonce': nonce,

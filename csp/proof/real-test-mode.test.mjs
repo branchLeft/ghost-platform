@@ -1,20 +1,9 @@
 // node --test csp/proof/real-test-mode.test.mjs -- every refusal of the real
 // Stripe TEST-mode switch, and the rule that no key value ever reaches output.
-// No Docker, no browser, no network: the shell refuses before it starts either.
+// No Docker, no browser, no network.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -31,7 +20,7 @@ import {
 } from './real-test-mode.mjs';
 
 const MODULE = fileURLToPath(new URL('./real-test-mode.mjs', import.meta.url));
-const GATE = fileURLToPath(new URL('../gate/csp-checkout-gate.sh', import.meta.url));
+const GATE = fileURLToPath(new URL('../gate/csp-checkout-gate.py', import.meta.url));
 const ORIGIN = 'http://localhost:4321';
 
 // Shaped like real keys but made up and assembled at run time, so no secret
@@ -240,7 +229,7 @@ test('the owner command names only variables the gate reads and a script that ex
   assert.equal(block.split('\n').length, 4);
   for (const name of Object.keys(GOOD))
     assert.match(block, new RegExp(`read -rs ${name}; export ${name}`));
-  assert.match(block, /^CSP_STRIPE_REAL_TEST_MODE=1 csp\/gate\/csp-checkout-gate\.sh$/m);
+  assert.match(block, /^CSP_STRIPE_REAL_TEST_MODE=1 csp\/gate\/csp-checkout-gate\.py$/m);
   assert.doesNotMatch(usage(), /\/Users\//);
 });
 
@@ -280,243 +269,5 @@ test("a violation is the tenant's only when its document is the tenant's", () =>
   assert.equal(isTenantViolation(v('about:srcdoc'), ORIGIN), true, 'unplaceable fails closed');
 });
 
-// The shell: real mode refuses before it starts Docker; the default path never
-// mentions the switch. A shim docker records any call, so a refusal that
-// reached Docker is seen.
-function withShimDocker(run) {
-  const dir = mkdtempSync(join(tmpdir(), 'csp real mode '));
-  try {
-    const marker = join(dir, 'docker-called');
-    const shim = join(dir, 'docker');
-    writeFileSync(shim, `#!/bin/sh\ntouch "${marker}"\nexit 97\n`);
-    chmodSync(shim, 0o755);
-    return run({ PATH: `${dir}:${process.env.PATH}` }, () => existsSync(marker));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-function runGate(args, env) {
-  return spawnSync('sh', [GATE, ...args], { encoding: 'utf8', env });
-}
-
-test('shell: real mode with no keys refuses with exit 2, names each variable, never starts Docker', () => {
-  withShimDocker((base, dockerCalled) => {
-    const r = runGate([], { ...base, CSP_STRIPE_REAL_TEST_MODE: '1' });
-    assert.equal(r.status, 2, r.stderr);
-    for (const name of Object.keys(GOOD)) assert.match(r.stderr, new RegExp(name));
-    assert.equal(dockerCalled(), false);
-  });
-});
-
-test('shell: real mode with a live key refuses, prints no value, never starts Docker', () => {
-  withShimDocker((base, dockerCalled) => {
-    const r = runGate([], {
-      ...base,
-      ...GOOD,
-      STRIPE_TEST_SECRET_KEY: LIVE_SECRET,
-      CSP_STRIPE_REAL_TEST_MODE: '1',
-    });
-    assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /LIVE secret key is refused/);
-    const seen = `${r.stdout}${r.stderr}`;
-    for (const marker of MARKERS) assert.ok(!seen.includes(marker), marker);
-    assert.equal(dockerCalled(), false);
-  });
-});
-
-test('shell: real mode refuses another card number and a value of the switch that is not 1', () => {
-  withShimDocker((base, dockerCalled) => {
-    const card = runGate([], {
-      ...base,
-      ...GOOD,
-      CSP_STRIPE_REAL_TEST_MODE: '1',
-      CSP_STRIPE_TEST_CARD: '4000 0000 0000 0002',
-    });
-    assert.equal(card.status, 2, card.stderr);
-    assert.match(card.stderr, /CSP_STRIPE_TEST_CARD/);
-    const wrong = runGate([], { ...base, ...GOOD, CSP_STRIPE_REAL_TEST_MODE: 'yes' });
-    assert.equal(wrong.status, 2, wrong.stderr);
-    assert.match(wrong.stderr, /CSP_STRIPE_REAL_TEST_MODE must be 1/);
-    assert.equal(dockerCalled(), false);
-  });
-});
-
-test('shell: real mode refuses a tenant port setting that points the origin off this machine', () => {
-  withShimDocker((base, dockerCalled) => {
-    const r = runGate([], {
-      ...base,
-      ...GOOD,
-      CSP_STRIPE_REAL_TEST_MODE: '1',
-      CSP_CHECKOUT_PORT: '4321@tenant.example.com',
-    });
-    assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /local disposable tenant/);
-    assert.equal(dockerCalled(), false);
-  });
-});
-
-test('shell: real mode refuses --derive, which needs no keys and measures the real Stripe.js', () => {
-  withShimDocker((base, dockerCalled) => {
-    const r = runGate(['--derive'], {
-      ...base,
-      ...GOOD,
-      CSP_STRIPE_REAL_TEST_MODE: '1',
-      CSP_STRIPE_REAL_JS: '1',
-    });
-    assert.equal(r.status, 2, r.stderr);
-    assert.match(r.stderr, /--derive/);
-    assert.equal(dockerCalled(), false);
-  });
-});
-
-test('shell: --help prints the owner command and exits 0 without Docker', () => {
-  withShimDocker((base, dockerCalled) => {
-    const r = runGate(['--help'], base);
-    assert.equal(r.status, 0, r.stderr);
-    assert.ok(r.stdout.includes(ownerCommand()));
-    assert.match(
-      r.stdout,
-      /stripe listen --forward-to http:\/\/localhost:4321\/members\/webhooks\/stripe\//
-    );
-    assert.equal(dockerCalled(), false);
-  });
-});
-
-// The wiring past the refusals, with no Docker: the gate's own scripts are
-// copied into a temp tree with shim docker and curl (both succeed and record
-// their arguments) and a stub for the one script that receives the keys. The
-// run dies at the first script the tree lacks, after Ghost would have started.
-function withGateTree(run) {
-  const root = mkdtempSync(join(tmpdir(), 'csp gate tree '));
-  try {
-    const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
-    for (const [from, to] of [
-      ['../gate/csp-checkout-gate.sh', 'csp/gate/csp-checkout-gate.sh'],
-      ['../gate/lib.sh', 'csp/gate/lib.sh'],
-      ['./real-test-mode.mjs', 'csp/proof/real-test-mode.mjs'],
-    ]) {
-      mkdirSync(dirname(join(root, to)), { recursive: true });
-      copyFileSync(here(from), join(root, to));
-    }
-    mkdirSync(join(root, 'render-core/dist'), { recursive: true });
-    writeFileSync(join(root, 'render-core/dist/index.js'), '');
-    const trace = join(root, 'setup-paid-saw.json');
-    writeFileSync(
-      join(root, 'csp/proof/setup-paid.mjs'),
-      `import { writeFileSync } from 'node:fs';\n` +
-        `const e = process.env;\n` +
-        `writeFileSync(${JSON.stringify(trace)}, JSON.stringify({\n` +
-        `  secret: e.PROOF_STRIPE_SECRET_KEY === e.STRIPE_TEST_SECRET_KEY,\n` +
-        `  publishable: e.PROOF_STRIPE_PUBLISHABLE_KEY === e.STRIPE_TEST_PUBLISHABLE_KEY,\n` +
-        `  flag: e.PROOF_REAL_TEST_MODE ?? null,\n}));\n`
-    );
-    const bin = join(root, 'bin');
-    mkdirSync(bin);
-    const log = join(root, 'docker-argv.log');
-    writeFileSync(join(bin, 'docker'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`);
-    writeFileSync(join(bin, 'curl'), '#!/bin/sh\nexit 0\n');
-    chmodSync(join(bin, 'docker'), 0o755);
-    chmodSync(join(bin, 'curl'), 0o755);
-    const exec = (args, env) =>
-      spawnSync('sh', [...args, join(root, 'csp/gate/csp-checkout-gate.sh')], {
-        encoding: 'utf8',
-        env: { PATH: `${bin}:${process.env.PATH}`, ...env },
-      });
-    const dockerLines = () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n') : []);
-    const sawSetupPaid = () => (existsSync(trace) ? JSON.parse(readFileSync(trace, 'utf8')) : null);
-    return run({ exec, dockerLines, sawSetupPaid });
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-const REAL_ENV = { ...GOOD, CSP_STRIPE_REAL_TEST_MODE: '1' };
-
-test('shell wiring, real mode: Ghost is started with no fake and no key in any docker argument', () => {
-  withGateTree(({ exec, dockerLines }) => {
-    const r = exec([], REAL_ENV);
-    const lines = dockerLines();
-    const ghost = lines.find((l) => l.includes('stripeDirect=true'));
-    assert.ok(ghost, `Ghost was never started: ${r.stderr}`);
-    assert.match(ghost, / -e WEBHOOK_SECRET /, 'the webhook secret is passed by name');
-    assert.doesNotMatch(ghost, /STRIPE_API_HOST|STRIPE_API_PORT|STRIPE_API_PROTOCOL/);
-    assert.ok(!lines.some((l) => l.includes('fake-stripe.mjs')), 'no fake Stripe is started');
-    for (const marker of MARKERS) {
-      assert.ok(!lines.join('\n').includes(marker), `${marker} reached a docker argument`);
-      assert.ok(!`${r.stdout}${r.stderr}`.includes(marker), `${marker} reached the output`);
-    }
-  });
-});
-
-test("shell wiring, real mode: the owner's keys reach the setup script by environment, with the switch on", () => {
-  withGateTree(({ exec, sawSetupPaid }) => {
-    exec([], REAL_ENV);
-    assert.deepEqual(sawSetupPaid(), { secret: true, publishable: true, flag: '1' });
-  });
-});
-
-test('shell wiring, real mode: tracing the shell (sh -x) never shows a key', () => {
-  withGateTree(({ exec, sawSetupPaid }) => {
-    const r = exec(['-x'], REAL_ENV);
-    assert.ok(sawSetupPaid(), `the run never got as far as the keys: ${r.stderr.slice(-300)}`);
-    for (const marker of MARKERS) assert.ok(!r.stderr.includes(marker), `${marker} was traced`);
-  });
-});
-
-test("shell wiring, default: the fake Stripe starts as before and the owner's variables are not read", () => {
-  withGateTree(({ exec, dockerLines, sawSetupPaid }) => {
-    exec([], { ...GOOD });
-    const lines = dockerLines();
-    assert.ok(
-      lines.some((l) => l.includes('fake-stripe.mjs')),
-      'the fake starts'
-    );
-    const ghost = lines.find((l) => l.includes('stripeDirect=true'));
-    assert.match(
-      ghost,
-      /-e STRIPE_API_HOST=csp-checkout-stripe-\d+ -e STRIPE_API_PORT=12111 -e STRIPE_API_PROTOCOL=http -e WEBHOOK_SECRET=whsec_/
-    );
-    for (const marker of MARKERS) assert.ok(!lines.join('\n').includes(marker), marker);
-    assert.deepEqual(sawSetupPaid(), { secret: false, publishable: false, flag: null });
-  });
-});
-
-// Cleanup: the gate removes its containers WITH their anonymous volumes. Ghost's
-// image declares a content volume, and real mode keeps the owner's test keys in
-// it; `docker rm -f` without -v would leave that volume behind after the run.
-const removals = (lines) => lines.filter((l) => /^rm /.test(l));
-
-test('shell wiring, real mode: cleanup removes the Ghost container with its anonymous volumes (rm -fv)', () => {
-  withGateTree(({ exec, dockerLines }) => {
-    exec([], REAL_ENV);
-    const rms = removals(dockerLines());
-    assert.ok(
-      rms.some((l) => /^rm -fv csp-checkout-ghost-\d+ /.test(l)),
-      `the Ghost container is removed without -v: ${JSON.stringify(rms)}`
-    );
-    for (const l of rms) assert.match(l, /^rm -fv /, `a removal lacks -v: ${l}`);
-  });
-});
-
-test('shell wiring, default: cleanup also removes the fake run with its anonymous volumes (rm -fv)', () => {
-  withGateTree(({ exec, dockerLines }) => {
-    exec([], { ...GOOD });
-    const rms = removals(dockerLines());
-    assert.ok(
-      rms.some((l) => /^rm -fv csp-checkout-ghost-\d+ csp-checkout-origin-\d+ csp-checkout-stripe-\d+$/.test(l)),
-      `the cleanup removal lacks -v: ${JSON.stringify(rms)}`
-    );
-    for (const l of rms) assert.match(l, /^rm -fv /, `a removal lacks -v: ${l}`);
-  });
-});
-
-test('shell: without the switch the real-mode code is never reached, even with test keys in the environment', () => {
-  withShimDocker((base) => {
-    const r = runGate([], { ...base, ...GOOD, STRIPE_TEST_SECRET_KEY: LIVE_SECRET });
-    assert.notEqual(r.status, 0);
-    const seen = `${r.stdout}${r.stderr}`;
-    assert.doesNotMatch(seen, /REAL TEST MODE|STRIPE_TEST_|real test mode/);
-    for (const marker of MARKERS) assert.ok(!seen.includes(marker), marker);
-  });
-});
+// The gate runner's own wiring of this module (the refusals before Docker, the keys
+// by environment only, cleanup with -v) is tested in csp/gate/test_csp_checkout_gate.py.

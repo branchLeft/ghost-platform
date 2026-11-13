@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@branchleft/ghost-platform-render-core':
-        specifier: 0.2.0
-        version: 0.2.0
+        specifier: 0.4.0
+        version: 0.4.0
       '@pulumi/pulumi':
         specifier: ^3.268.0
         version: 3.268.0(typescript@5.9.3)
@@ -36,8 +36,8 @@ importers:
 
 packages:
 
-  '@branchleft/ghost-platform-render-core@0.2.0':
-    resolution: {integrity: sha512-S/Wpqi6NXdNrAH92xbMU90bGOpNS5mlT7lQ0oxdELI0/9La+uuAMEsNIQXjYYabBYTiZGkiz59JJEFYhOVUS8g==, tarball: https://npm.pkg.github.com/download/@branchleft/ghost-platform-render-core/0.2.0/2595e635aa5e5d5fc18b65b520a2aa7ae7371ea9}
+  '@branchleft/ghost-platform-render-core@0.4.0':
+    resolution: {integrity: sha512-4pfOOXNorxaw1eE/ArOfsJDKp2lsk2JPYnDv/5UJf9+Mvr9PxchiaDyKWyNB0J0shieaUO9CR+RIsDK31gck0g==, tarball: https://npm.pkg.github.com/download/@branchleft/ghost-platform-render-core/0.4.0/0611f2b7d3849190c26ff2c12275b0b781728958}
     engines: {node: '>=20.19'}
 
   '@branchleft/tsconfig@0.4.0':
@@ -1285,7 +1285,7 @@ packages:
 
 snapshots:
 
-  '@branchleft/ghost-platform-render-core@0.2.0': {}
+  '@branchleft/ghost-platform-render-core@0.4.0': {}
 
   '@branchleft/tsconfig@0.4.0': {}
 

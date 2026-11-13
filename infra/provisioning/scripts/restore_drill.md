@@ -100,8 +100,7 @@ worker's own gauges, written atomically:
   taken). `restore_drill_last_run_timestamp_seconds` is the refused attempt's time
   and `restore_drill_last_run_success` is 0. The last-success timestamp is carried
   over from the previous file, not advanced. Every other run sets
-  `restore_drill_last_run_refused` to 0. The monitoring rule that reads this gauge
-  is a separate item; this file only provides the signal.
+  `restore_drill_last_run_refused` to 0. This file only provides the signal.
 
 ## Images
 

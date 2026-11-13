@@ -146,7 +146,7 @@ export function ownerCommand() {
     'read -rs STRIPE_TEST_SECRET_KEY; export STRIPE_TEST_SECRET_KEY',
     'read -rs STRIPE_TEST_PUBLISHABLE_KEY; export STRIPE_TEST_PUBLISHABLE_KEY',
     'read -rs STRIPE_TEST_WEBHOOK_SECRET; export STRIPE_TEST_WEBHOOK_SECRET',
-    `${SWITCH}=1 csp/gate/csp-checkout-gate.sh`,
+    `${SWITCH}=1 csp/gate/csp-checkout-gate.py`,
   ].join('\n');
 }
 

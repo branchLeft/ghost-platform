@@ -1,4 +1,5 @@
 import type { BumpState, BumpStateMachine } from './bumpStateMachine.js';
+import type { PromotionRecord } from './promotionChainLog.js';
 import { assertGatesGreen, type GateReport } from './gates.js';
 import { assertModelFreeEnvironment, type ModelFreeEnvironment } from './modelFreeEnvironment.js';
 import {
@@ -40,6 +41,7 @@ export type HoldReason =
   | 'unhealthy'
   | 'reported-error'
   | 'probe-failed'
+  | 'promotion-record-failed'
   | 'no-mysql-in-ring-0';
 
 /**
@@ -69,6 +71,12 @@ export interface RingControllerDependencies {
   health(tenantId: string): Promise<Health>;
   /** A throw means blocked. */
   reportedErrors(tenantId: string, sinceMs: number): Promise<readonly string[]>;
+  /**
+   * Appends the signed promotion record for one member. Awaited before that
+   * member's old colour is stopped. A throw means the promotion is not
+   * recorded, and the release stops there.
+   */
+  recordPromotion(record: PromotionRecord): Promise<void>;
   /** The operational alert and filed-work-item sink. Never a page, never an approval. */
   hold(held: Held): Promise<void>;
   clock: { now(): number; sleep(ms: number): Promise<void> };
@@ -209,6 +217,19 @@ async function runRing(
   }
 
   for (const { member, machine } of bumped) {
+    // The last reversible moment: once the old colour is stopped there is no flag change back.
+    try {
+      await deps.recordPromotion({
+        promotion: release.digest,
+        slot: member.tenantId,
+        digest: release.digest,
+      });
+    } catch (err) {
+      return heldAt(ring, release, 'promotion-record-failed', {
+        tenantId: member.tenantId,
+        detail: `the promotion record was not written: ${messageOf(err)}`,
+      });
+    }
     let state: BumpState;
     try {
       state = await machine.closeBakeWindow();

@@ -16,7 +16,7 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
   Today that is `https://js.stripe.com` in `script-src` and `frame-src`.
 - The origins are **measured, not written**: `payments-origins.json` is produced
   only by `csp/derive/derive-payment-origins.mjs` from a real browser's report
-  against the real Stripe.js, and checked by `csp-checkout-gate.sh --derive`.
+  against the real Stripe.js, and checked by `csp-checkout-gate.py --derive`.
   `render-core` validates every origin on use (`validatePaymentOrigin`): a bare
   https origin on `stripe.com` or `stripe.network`, no wildcard, port or path.
   New exports `PaymentsCsp`, `PAYMENTS_CSP_NONE` and `validatePaymentOrigin`.

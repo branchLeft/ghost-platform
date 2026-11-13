@@ -12,6 +12,7 @@ on:
       - demo-host/provision/branchleft_demo_egress.py
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
+      - scripts/render-mail-spool-compose.test.mjs
       - scripts/mail-spool-proof/**
       - .github/workflows/demo-host-mail-spool-ci.yml
   pull_request:
@@ -21,6 +22,7 @@ on:
       - demo-host/provision/branchleft_demo_egress.py
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
+      - scripts/render-mail-spool-compose.test.mjs
       - scripts/mail-spool-proof/**
       - .github/workflows/demo-host-mail-spool-ci.yml
 
@@ -67,6 +69,9 @@ jobs:
           pnpm run build
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compose script renders the outcomes line for a Sweego host only
+        run: node --test scripts/render-mail-spool-compose.test.mjs
 
       - name: Shellcheck
         run: shellcheck scripts/test-demo-mail-spool.sh

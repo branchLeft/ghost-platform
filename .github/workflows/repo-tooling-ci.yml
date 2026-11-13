@@ -127,6 +127,12 @@ jobs:
           node --test csp/gate/*.test.mjs
           ./csp/gate/prove-gates.sh
 
+      # The checkout gate's runner (csp/gate/csp-checkout-gate.py): every
+      # program it starts is a recording fake, so no Docker or browser. Its
+      # tests also mutate the real source and require red.
+      - name: CSP checkout gate runner tests
+        run: python3 -m unittest discover -s csp/gate -p 'test_csp_checkout_gate.py' -v
+
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
       # then walks the tree rather than taking a list of changed files --
@@ -224,6 +230,17 @@ jobs:
       # push, rather than only when someone remembers to run it by hand.
       - name: Lockfile package_dir allow-list self-test
         run: python3 scripts/assert-lockfile-package-dir.py --self-test
+
+      # Every pnpm workspace that consumes a @branchleft package must exclude
+      # that scope from minimumReleaseAge, so our own fresh releases install in
+      # CI. Third-party packages keep the default cutoff. The check reads the
+      # tree on every push; its self-test proves the matcher still fails a bare
+      # consumer.
+      - name: Release-age exclude self-test
+        run: python3 scripts/assert-release-age-exclude.py --self-test
+
+      - name: Release-age exclude across consuming workspaces
+        run: python3 scripts/assert-release-age-exclude.py .
 
       # The comparison that keeps the broker's committed generated code equal to
       # what Speckify generates runs in speckify.yml, where Speckify has run.

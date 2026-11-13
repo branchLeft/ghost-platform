@@ -86,7 +86,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
       'h:Sender': 'noreply@tenant1.example.com',
       'h:Auto-Submitted': 'auto-generated',
       'h:X-Auto-Response-Suppress': 'OOF, AutoReply',
-      'h:List-Unsubscribe': '<%recipient.list_unsubscribe%>',
+      'h:List-Unsubscribe': '<%recipient.list_unsubscribe%>, <%tag_unsubscribe_email%>',
       'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       'v:email-id': '64f1a2b3c4d5e6f7a8b9c0d1',
       'o:tag': ['bulk-email', 'ghost-email'],
@@ -115,6 +115,22 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
 
     // Correlation: v:email-id survives to the delivery host as a header.
     expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('64f1a2b3c4d5e6f7a8b9c0d1');
+
+    // List-Unsubscribe as RECEIVED, read from the raw header lines (mailparser
+    // folds List-* headers into `list`, which hides an invalid entry): one
+    // valid URI per recipient, no leftover Mailgun-only token, and the
+    // one-click POST header intact.
+    const rawHeader = (message: (typeof received)[number], key: string): string[] =>
+      message.parsed.headerLines.filter((line) => line.key === key).map((line) => line.line);
+    expect(rawHeader(toA!, 'list-unsubscribe')).toEqual([
+      'List-Unsubscribe: <https://tenant1.example.com/unsubscribe/a>',
+    ]);
+    expect(rawHeader(toB!, 'list-unsubscribe')).toEqual([
+      'List-Unsubscribe: <https://tenant1.example.com/unsubscribe/b>',
+    ]);
+    expect(rawHeader(toA!, 'list-unsubscribe-post')).toEqual([
+      'List-Unsubscribe-Post: List-Unsubscribe=One-Click',
+    ]);
 
     // Acked — the queue is empty and the age gauge has gone quiet.
     expect(shim.store.countUndrainedRecipients()).toBe(0);

@@ -3,3 +3,4 @@
 allowBuilds:
   esbuild: false
   better-sqlite3: false
+minimumReleaseAgeExclude: ['@branchleft/*']

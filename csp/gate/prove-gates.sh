@@ -6,7 +6,7 @@
 # (a sabotage that changed nothing proves nothing). Needs render-core built.
 # The live-browser sabotages (policy removed, hashes removed, Stripe origin
 # removed) are in csp-regression-gate.sh --sabotage=... and
-# csp-checkout-gate.sh --sabotage=...; see their .md files.
+# csp-checkout-gate.py --sabotage=...; see their .md files.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
@@ -131,8 +131,8 @@ prove "checkout-real/steps-unchecked" checkout-gate.mjs \
 prove "checkout-real/switch-not-read" checkout-gate.mjs \
     "process.env.CSP_STRIPE_REAL_TEST_MODE === '1'" "false"
 
-# The real test-mode switch itself (csp/proof/real-test-mode.mjs and the gate
-# script's wiring of it): each refusal, and the rule that no key is ever shown.
+# The real test-mode switch itself (csp/proof/real-test-mode.mjs): each refusal,
+# and the rule that no key is ever shown.
 TESTS="$HERE/../proof/real-test-mode.test.mjs"
 REAL="../proof/real-test-mode.mjs"
 node --test "$TESTS" >/dev/null 2>&1 && echo "BASELINE real-test-mode: GREEN" || { echo "BASELINE real-test-mode: RED"; exit 1; }
@@ -170,27 +170,9 @@ prove "real-mode/stripe-side-violation-counted-as-tenant" "$REAL" \
     "return document.origin === new URL(tenantOrigin).origin;" "return true;"
 prove "real-mode/unplaceable-violation-not-counted" "$REAL" \
     "if (document.protocol !== 'http:' && document.protocol !== 'https:') return true;" "if (false) return true;"
-GATE_SH="../gate/csp-checkout-gate.sh"
-prove "real-mode/shell-preflight-skipped" "$GATE_SH" \
-    "node csp/proof/real-test-mode.mjs preflight" "true"
-prove "real-mode/shell-trace-left-on" "$GATE_SH" \
-    "set +x
-" ":
-"
-prove "real-mode/shell-webhook-secret-in-argv" "$GATE_SH" \
-    "-e WEBHOOK_SECRET
-else" "-e \"WEBHOOK_SECRET=\$WEBHOOK_SECRET\"
-else"
-prove "real-mode/shell-still-starts-the-fake" "$GATE_SH" \
-    'if [ -n "$REAL" ]; then
-    # No fake' 'if false; then
-    # No fake'
-prove "real-mode/shell-owner-keys-not-used" "$GATE_SH" \
-    'STRIPE_SECRET_KEY="$STRIPE_TEST_SECRET_KEY"' 'STRIPE_SECRET_KEY="$STRIPE_SECRET_KEY"'
-prove "real-mode/shell-derive-allowed-with-keys" "$GATE_SH" \
-    'if [ -n "$REAL" ] && [ -n "$DERIVE" ]; then' 'if false; then'
-prove "real-mode/shell-cleanup-keeps-volumes" "$GATE_SH" \
-    'docker rm -fv "$GHOST_NAME"' 'docker rm -f "$GHOST_NAME"'
+# The runner's own real-mode wiring (the refusals, the keys by environment only,
+# cleanup with -v) is proved in test_csp_checkout_gate.py, whose last class mutates
+# csp-checkout-gate.py and requires red.
 
 [ "$FAIL" -eq 0 ] && echo "ALL SABOTAGES DETECTED" || echo "SABOTAGE PROOF FAILED"
 exit "$FAIL"

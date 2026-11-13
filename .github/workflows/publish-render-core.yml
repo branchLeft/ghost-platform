@@ -30,9 +30,13 @@ jobs:
     name: Build & Publish to GitHub Packages
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # `id-token` and `attestations` are the signing grants, held by this one job,
+    # which packs, attests and publishes.
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     defaults:
       run:
         working-directory: render-core
@@ -80,7 +84,36 @@ jobs:
       - name: Test
         run: pnpm run test:unit
 
+      # The tarball is packed once, attested, and that same file is published, so
+      # the bytes signed are the bytes the registry receives. Publishing a tarball
+      # runs no lifecycle script, so the build `prepublishOnly` used to run is its
+      # own step. The attested ref is built from the version just packed, never
+      # from the ref that started the run.
+      - name: Build
+        run: pnpm run build
+
+      - name: Pack
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/pack"
+          packed="$(pnpm pack --pack-destination "${RUNNER_TEMP}/pack" --json)"
+          tarball="$(jq -er .filename <<<"${packed}")"
+          test -f "${tarball}"
+          version="$(node -p 'require("./package.json").version')"
+          echo "tarball=${tarball}" >> "${GITHUB_OUTPUT}"
+          echo "ref=refs/tags/render-core-v${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Attest the tarball
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@a2175a416b57f950fed891837f88f2d1a31e00f4 # v1.2.0
+        with:
+          tarball: ${{ steps.pack.outputs.tarball }}
+          repo: branchLeft/ghost-platform
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/publish-render-core.yml
+          ref: ${{ steps.pack.outputs.ref }}
+
       - name: Publish
-        run: pnpm publish --no-git-checks
+        run: pnpm publish "${TARBALL}" --no-git-checks
         env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

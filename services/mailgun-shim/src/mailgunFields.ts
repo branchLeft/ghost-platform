@@ -387,3 +387,21 @@ export function resolveRecipientTokens(content: string, variables: Record<string
     return Object.prototype.hasOwnProperty.call(variables, varName) ? variables[varName]! : match;
   });
 }
+
+const MAILGUN_ONLY_TOKEN = /%tag_[^%]+%/;
+const ANGLE_BRACKET_ENTRY = /<[^>]*>/g;
+
+/**
+ * Drops `List-Unsubscribe` entries that still carry a Mailgun-only tag token
+ * (e.g. `<%tag_unsubscribe_email%>`) after recipient tokens are resolved.
+ * Such an entry is not a valid URI, so it is removed rather than sent. A value
+ * with no angle-bracketed entries is returned unchanged. Returns '' when every
+ * entry was dropped, so the caller can omit the header.
+ */
+export function dropUnresolvedListUnsubscribeEntries(value: string): string {
+  const entries = value.match(ANGLE_BRACKET_ENTRY);
+  if (!entries) {
+    return value;
+  }
+  return entries.filter((entry) => !MAILGUN_ONLY_TOKEN.test(entry)).join(', ');
+}

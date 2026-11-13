@@ -39,7 +39,7 @@ the policy above blocks. The origins a paid site needs are *measured* by
 Stripe.js) into `render-core/src/payments-origins.json`, and
 `renderEdgeSiteBlock` adds them only when given an explicit
 `{ kind: 'stripe' }` (default `none`; not a descriptor field, same rule as
-`ThemeCsp`). `gate/csp-checkout-gate.sh` proves it live: a member checks out
+`ThemeCsp`). `gate/csp-checkout-gate.py` proves it live: a member checks out
 with Stripe's test card and the paid state shows, with zero violations in any
 frame, and `--sabotage=no-stripe-origin` must go red. See
 `gate/csp-checkout-gate.md` for what it does and does not prove.

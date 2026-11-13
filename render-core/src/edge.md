@@ -44,7 +44,7 @@ exactly as before: like `ThemeCsp` it is an explicit parameter and not a
 The origins live in `payments-origins.json` and are **measured**: only
 `csp/derive/derive-payment-origins.mjs` writes it, from a real browser's
 report-only run against a real Ghost loading the real Stripe.js, and
-`csp-checkout-gate.sh --derive` fails when the file drifts from a fresh
+`csp-checkout-gate.py --derive` fails when the file drifts from a fresh
 measurement. This module renders them and adds none. It also validates each one
 on use: a bare https origin on `stripe.com` or `stripe.network`, nothing else, so
 a hand edit cannot put a wildcard, a path, a third party or CSP syntax into the

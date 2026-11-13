@@ -4,28 +4,33 @@
 // never repairs. A migration that adds an object needs an entry here, or the
 // migration-sync test fails before the migration can reach a server.
 
-/** The seven principals, by the part each plays. */
+/** The nine principals, by the part each plays. */
 export type Principal =
   | 'tenantRole'
   | 'ownerRole'
   | 'provisionerRole'
+  | 'prospectRole'
   | 'tenantLogin'
   | 'ownerLogin'
   | 'provisionerLogin'
+  | 'prospectLogin'
   | 'migratorLogin';
 export type Grantee = Principal | 'PUBLIC';
 
 export const TENANT_ROLE = 'portal_tenant';
 export const OWNER_ROLE = 'portal_owner';
 export const PROVISIONER_ROLE = 'portal_provisioner';
+export const PROSPECT_ROLE = 'portal_prospect';
 
 export interface Names {
   tenantRole: string;
   ownerRole: string;
   provisionerRole: string;
+  prospectRole: string;
   tenantLogin: string;
   ownerLogin: string;
   provisionerLogin: string;
+  prospectLogin: string;
   migratorLogin: string;
 }
 
@@ -33,15 +38,18 @@ export function principalNames(
   tenantLogin: string,
   ownerLogin: string,
   provisionerLogin: string,
+  prospectLogin: string,
   migratorLogin: string
 ): Names {
   return {
     tenantRole: TENANT_ROLE,
     ownerRole: OWNER_ROLE,
     provisionerRole: PROVISIONER_ROLE,
+    prospectRole: PROSPECT_ROLE,
     tenantLogin,
     ownerLogin,
     provisionerLogin,
+    prospectLogin,
     migratorLogin,
   };
 }
@@ -58,9 +66,12 @@ export const ROLE_ATTRIBUTES: Record<Principal, RoleAttributes> = {
   ownerRole: { canLogin: false, bypassRls: true },
   // Writes the hostname register and the demo's state events, insert-only.
   provisionerRole: { canLogin: false, bypassRls: false },
+  // The internet-facing front door: inserts a request, and nothing else.
+  prospectRole: { canLogin: false, bypassRls: false },
   tenantLogin: { canLogin: true, bypassRls: false },
   ownerLogin: { canLogin: true, bypassRls: false },
   provisionerLogin: { canLogin: true, bypassRls: false },
+  prospectLogin: { canLogin: true, bypassRls: false },
   // Owns the portal database and everything the migrations create, and applies
   // them. A login like the others: no superuser, no BYPASSRLS, no CREATEROLE,
   // no CREATEDB, no REPLICATION, and a member of no role. The database's
@@ -76,6 +87,7 @@ export const MEMBERSHIPS: readonly (readonly [Principal, Principal])[] = [
   ['tenantLogin', 'tenantRole'],
   ['ownerLogin', 'ownerRole'],
   ['provisionerLogin', 'provisionerRole'],
+  ['prospectLogin', 'prospectRole'],
 ];
 
 export type ObjectKind = 'database' | 'schema' | 'table' | 'sequence' | 'function';
@@ -111,6 +123,7 @@ const DEMO_LIFECYCLE = '0006_demo_lifecycle_register';
 const DEMO_REBUILD = '0007_demo_rebuild_extended';
 const TENANT_NAME = '0008_tenant_name';
 const CUSTOM_DOMAIN = '0009_custom_domain';
+const DEMO_REQUEST = '0010_demo_request';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -145,6 +158,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'tenantLogin', privileges: ['CONNECT'] },
         { grantee: 'ownerLogin', privileges: ['CONNECT'] },
         { grantee: 'provisionerLogin', privileges: ['CONNECT'] },
+        { grantee: 'prospectLogin', privileges: ['CONNECT'] },
       ],
     },
     publicSchema(major),
@@ -179,6 +193,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'tenantRole', privileges: ['USAGE'] },
         { grantee: 'ownerRole', privileges: ['USAGE'] },
         { grantee: 'provisionerRole', privileges: ['USAGE'] },
+        { grantee: 'prospectRole', privileges: ['USAGE'] },
       ],
     },
     // TenantDb.ownRegistration, ownKind and scopeForOrganisation read; OwnerDb
@@ -290,6 +305,19 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
+    // ProspectDb.submit inserts and nothing else: the front door cannot read a
+    // request back, change one or remove one. ProvisionerDb.request and
+    // OwnerDb.listRequests read. No role updates or deletes a request.
+    {
+      kind: 'table',
+      identity: 'portal.demo_request',
+      since: DEMO_REQUEST,
+      grants: [
+        { grantee: 'prospectRole', privileges: ['INSERT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
+      ],
+    },
   ];
 }
 
@@ -305,6 +333,7 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.demo_state_event': { enabled: false, forced: false },
   'portal.hostname_register': { enabled: false, forced: false },
   'portal.hostname_retirement': { enabled: false, forced: false },
+  'portal.demo_request': { enabled: false, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -683,6 +712,51 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'constraint hostname_retirement_pkey PRIMARY KEY (label)',
       'index portal.hostname_retirement_pkey CREATE UNIQUE INDEX hostname_retirement_pkey ON ' +
         'portal.hostname_retirement USING btree (label)',
+    ],
+  },
+  'portal.demo_request': {
+    since: DEMO_REQUEST,
+    lines: [
+      `column accent_colour text notnull=false ${PLAIN}`,
+      `column consent_wording text notnull=true ${PLAIN}`,
+      `column demo_id uuid notnull=true ${PLAIN}`,
+      `column description text notnull=false ${PLAIN}`,
+      `column explainer_wording text notnull=true ${PLAIN}`,
+      `column font text notnull=false ${PLAIN}`,
+      `column import_source text notnull=false ${PLAIN}`,
+      `column logo_hash text notnull=false ${PLAIN}`,
+      `column new_to_ghost boolean notnull=true ${PLAIN}`,
+      `column outlet_type text notnull=true ${PLAIN}`,
+      `column publication_name text notnull=true ${PLAIN}`,
+      `column submitted_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column theme text notnull=false ${PLAIN}`,
+      `column verified_address text notnull=true ${PLAIN}`,
+      `column verified_subject text notnull=true ${PLAIN}`,
+      'default submitted_at now()',
+      'constraint demo_request_address_shape CHECK (((verified_address = lower(verified_address)) AND ' +
+        "(char_length(verified_address) <= 254) AND (verified_address ~ '^[^@[:space:]]+@[^@[:space:]]+[.][^@[:space:]]+$'::text)))",
+      'constraint demo_request_choices_shape CHECK ((((theme IS NULL) OR ' +
+        "(theme ~ '^[a-z0-9-]{1,40}$'::text)) AND ((font IS NULL) OR " +
+        "(font ~ '^[a-z0-9-]{1,40}$'::text)) AND (outlet_type ~ '^[a-z0-9-]{1,40}$'::text)))",
+      "constraint demo_request_colour_shape CHECK (((accent_colour IS NULL) OR (accent_colour ~ '^#[0-9a-f]{6}$'::text)))",
+      'constraint demo_request_description_length CHECK (((description IS NULL) OR ' +
+        '((char_length(description) >= 1) AND (char_length(description) <= 500))))',
+      'constraint demo_request_import_source_length CHECK (((import_source IS NULL) OR ' +
+        '((char_length(import_source) >= 1) AND (char_length(import_source) <= 100))))',
+      "constraint demo_request_logo_hash_shape CHECK (((logo_hash IS NULL) OR (logo_hash ~ '^[0-9a-f]{64}$'::text)))",
+      'constraint demo_request_name_length CHECK (((char_length(publication_name) >= 1) AND ' +
+        '(char_length(publication_name) <= 100)))',
+      'constraint demo_request_pkey PRIMARY KEY (demo_id)',
+      'constraint demo_request_subject_length CHECK (((char_length(verified_subject) >= 1) AND ' +
+        '(char_length(verified_subject) <= 255)))',
+      'constraint demo_request_verified_address_unique UNIQUE (verified_address)',
+      'constraint demo_request_wording_length CHECK ((((char_length(consent_wording) >= 1) AND ' +
+        '(char_length(consent_wording) <= 2000)) AND ((char_length(explainer_wording) >= 1) AND ' +
+        '(char_length(explainer_wording) <= 2000))))',
+      'index portal.demo_request_pkey CREATE UNIQUE INDEX demo_request_pkey ON ' +
+        'portal.demo_request USING btree (demo_id)',
+      'index portal.demo_request_verified_address_unique CREATE UNIQUE INDEX ' +
+        'demo_request_verified_address_unique ON portal.demo_request USING btree (verified_address)',
     ],
   },
 };
