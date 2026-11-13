@@ -55,6 +55,10 @@ LATENCY_LIMIT_SECONDS = sp.WRITER_LIMIT_SECONDS
 # about twice that; the runs a slow shared runner failed measured 133 to 213 ms.
 # It never touches the 100 ms limit and never turns a pass into anything else.
 HOST_BASELINE_BOUND_SECONDS = 0.050
+# A failure is put down to the host only while it is the size the host's own
+# latency explains: a tenant's worst statement within the limit plus this many
+# times its baseline. Past that a dump stalled the writers whatever the host.
+HOST_NOISE_FACTOR = 2
 # A writer's first statements pay for a cold connection and a cold table cache.
 WARMUP_SAMPLES = 2
 DUMP_PASSWORD_FILE = "coord"
@@ -596,17 +600,41 @@ def noisy_tenants(baseline: Mapping[str, float] | None, bound: float) -> list[st
     return sorted(tenant for tenant, worst in (baseline or {}).items() if worst > bound)
 
 
-def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool, baseline: Mapping[str, float] | None = None) -> int:
+def host_explains_failure(baseline: Mapping[str, float] | None, worst: Mapping[str, float] | None) -> bool:
+    """Whether the host's own latency accounts for every tenant that broke the
+    limit. `baseline` is round 1's worst statement before any dump, `worst` each
+    measured tenant's worst statement over the run. Every tenant over the limit
+    must have a baseline over HOST_BASELINE_BOUND_SECONDS and must not exceed
+    the limit plus HOST_NOISE_FACTOR times that baseline; a tenant nobody
+    measured, or no tenant over the limit, is not explained."""
+    if not baseline or not worst or not set(baseline) <= set(worst):
+        return False
+    failing = [tenant for tenant, value in worst.items() if value > LATENCY_LIMIT_SECONDS]
+    return bool(failing) and all(
+        tenant in baseline
+        and baseline[tenant] > HOST_BASELINE_BOUND_SECONDS
+        and worst[tenant] <= LATENCY_LIMIT_SECONDS + HOST_NOISE_FACTOR * baseline[tenant]
+        for tenant in failing
+    )
+
+
+def exit_code(
+    outcomes: Mapping[int, bool],
+    *,
+    sabotaged: bool,
+    baseline: Mapping[str, float] | None = None,
+    worst: Mapping[str, float] | None = None,
+) -> int:
     """`outcomes` maps each control run to whether it passed: snapshot_probe's
     convention, controls 1 to 5 gating and 6 recorded. The one addition: when
-    control 2 is the only gating control that failed and the host's baseline was
-    over HOST_BASELINE_BOUND_SECONDS, the run is inconclusive, not inadequate.
-    A sabotage run, a pass and any other failure keep snapshot_probe's code."""
+    control 2 is the only gating control that failed and host_explains_failure,
+    the run is inconclusive, not inadequate. A sabotage run, a pass and any
+    other failure keep snapshot_probe's code."""
     code = sp.exit_code(outcomes, sabotaged=sabotaged)
     if code != EXIT_CANDIDATE_INADEQUATE:
         return code
     failed = sorted(number for number, passed in outcomes.items() if not passed and number in sp.GATING_CONTROLS)
-    if failed == [2] and noisy_tenants(baseline, HOST_BASELINE_BOUND_SECONDS):
+    if failed == [2] and host_explains_failure(baseline, worst):
         return EXIT_HOST_TOO_NOISY
     return code
 
@@ -622,7 +650,7 @@ def outcome_message(code: int, controls: str, baseline: Mapping[str, float] | No
     if code == EXIT_HOST_TOO_NOISY:
         worst = ", ".join(f"{tenant} {sp._ms(baseline[tenant])}" for tenant in noisy_tenants(baseline, HOST_BASELINE_BOUND_SECONDS)) if baseline else ""
         return (
-            f"host too noisy: inconclusive. Control 2 failed, but this host's own commit latency before the first dump ({worst}) "
+            f"host too noisy: inconclusive. Control 2 failed, but this host's own commit latency before the first dump, in round 1 ({worst}) "
             f"is over the {sp._ms(HOST_BASELINE_BOUND_SECONDS)} bound, so the run says nothing about the candidate. Re-run on a quieter host."
         )
     if code == EXIT_CANDIDATE_INADEQUATE:
@@ -826,6 +854,9 @@ class Scenario:
     lines: list[str] = dataclasses.field(default_factory=list)
     latencies: dict[str, list[float]] = dataclasses.field(default_factory=lambda: {tenant: [] for tenant in TENANTS})
     baseline: dict[str, float] = dataclasses.field(default_factory=lambda: dict.fromkeys(TENANTS, 0.0))
+    # Round 1's baseline alone: no dump has run before it, so no dump's lingering
+    # load can be in it. Host noise is judged on this, not on `baseline`.
+    first_round_baseline: dict[str, float] = dataclasses.field(default_factory=dict)
     lock_rows: set[tuple[str, str, str]] = dataclasses.field(default_factory=set)
     lock_samples: int = 0
     lock_table_samples: int = 0
@@ -1120,6 +1151,15 @@ def finish_writers(writers: Mapping[str, Sequence[sp.Writer]]) -> dict[str, list
     return samples
 
 
+def record_round_baseline(scenario: Scenario, number: int, round_baseline: Mapping[str, float]) -> None:
+    """Fold one round's pre-dump baseline in: `baseline` keeps the worst of every
+    round (the control 2 report), `first_round_baseline` takes round 1's only."""
+    for tenant, worst in round_baseline.items():
+        scenario.baseline[tenant] = max(scenario.baseline.get(tenant, 0.0), worst)
+    if number == 1:
+        scenario.first_round_baseline = dict(round_baseline)
+
+
 def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> None:
     ctx = run.ctx
     writers = {tenant: [sp.Writer(ctx.source, tenant, sp.blog_statement) for _ in range(WRITERS_PER_TENANT)] for tenant in TENANTS}
@@ -1167,11 +1207,13 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
         holder.run("COMMIT;")
         holder.close()
         committed = "; the long transaction committed after the last dump"
+    round_baseline = dict.fromkeys(samples, 0.0)
     for tenant, per_writer in samples.items():
         for writer_samples in per_writer:
             scenario.latencies[tenant].extend(latency for _, latency in writer_samples[WARMUP_SAMPLES:])
             before = [latency for start, latency in writer_samples[WARMUP_SAMPLES:] if start + latency < dumping]
-            scenario.baseline[tenant] = max(scenario.baseline[tenant], max(before, default=0.0))
+            round_baseline[tenant] = max(round_baseline[tenant], max(before, default=0.0))
+    record_round_baseline(scenario, number, round_baseline)
     scenario.snapshots += passes * len(TENANTS)
     statements = {tenant: sum(len(writer_samples) for writer_samples in per_writer) for tenant, per_writer in samples.items()}
     kind = "short"
@@ -1432,6 +1474,7 @@ def run_probe(args: argparse.Namespace) -> int:
     seed_run(run)
     outcomes: dict[int, bool] = {}
     baseline: dict[str, float] | None = None
+    worst: dict[str, float] | None = None
     for number in controls:
         ctx.say(f"== control {number}" + (f" (sabotage: {args.sabotage})" if args.sabotage else ""))
         try:
@@ -1442,12 +1485,13 @@ def run_probe(args: argparse.Namespace) -> int:
             ctx.say(f"  {line}")
         outcomes[number] = result.verdict.passed
         if run.scenario is not None:
-            baseline = dict(run.scenario.baseline)
+            baseline = dict(run.scenario.first_round_baseline)
+            worst = {tenant: max(latencies) for tenant, latencies in run.scenario.latencies.items() if latencies}
         label = "FINDING" if number == 6 else ("PASS" if result.verdict.passed else ("RED" if args.sabotage else "FAIL"))
-        if number == 2 and not result.verdict.passed and not args.sabotage and noisy_tenants(baseline, HOST_BASELINE_BOUND_SECONDS):
+        if number == 2 and not result.verdict.passed and not args.sabotage and host_explains_failure(baseline, worst):
             label = "INCONCLUSIVE"
         ctx.say(f"{label} control {number}, {result.title}: {result.verdict.reason}")
-    code = exit_code(outcomes, sabotaged=bool(args.sabotage), baseline=baseline)
+    code = exit_code(outcomes, sabotaged=bool(args.sabotage), baseline=baseline, worst=worst)
     ctx.say(outcome_message(code, args.controls, baseline, args.sabotage))
     return code
 

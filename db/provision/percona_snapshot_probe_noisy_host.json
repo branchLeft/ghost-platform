@@ -1,14 +1,39 @@
 {
-  "note": "Recorded control-2 inputs from two native x86_64 runs of the Percona proof, un-sabotaged, same candidate digest and runner image. Latencies are in seconds. 'worst' is each tenant's worst statement over the whole run, 'baseline' its worst statement before the first dump. The quiet run passed on main; the noisy run was a slow shared runner whose own commit latency alone broke the 100 ms limit.",
+  "note": "Recorded control-2 inputs from native x86_64 runs of the Percona proof, un-sabotaged, same candidate digest and runner image. Latencies are in seconds. 'worst' is each tenant's worst statement over the whole run, 'baseline' its worst statement before the first dump (as logged: the worst across rounds, which is what these runs recorded; the probe now judges round 1 only). The quiet run passed on main; the two noisy runs were slow shared runners whose own commit latency alone broke the 100 ms limit.",
   "quiet": {
-    "worst": { "t1": 0.0235, "t2": 0.0251, "t3": 0.0257 },
-    "baseline": { "t1": 0.0235, "t2": 0.0251, "t3": 0.0257 }
+    "worst": {
+      "t1": 0.0235,
+      "t2": 0.0251,
+      "t3": 0.0257
+    },
+    "baseline": {
+      "t1": 0.0235,
+      "t2": 0.0251,
+      "t3": 0.0257
+    }
   },
   "noisy": {
-    "worst": { "t1": 0.4114, "t2": 0.43, "t3": 0.4099 },
-    "baseline": { "t1": 0.2057, "t2": 0.2044, "t3": 0.2128 }
+    "worst": {
+      "t1": 0.4114,
+      "t2": 0.43,
+      "t3": 0.4099
+    },
+    "baseline": {
+      "t1": 0.2057,
+      "t2": 0.2044,
+      "t3": 0.2128
+    }
   },
-  "noisy_red_case": {
-    "baseline": { "t1": 0.1327, "t2": 0.133, "t3": 0.1326 }
+  "noisy_second": {
+    "worst": {
+      "t1": 0.1859,
+      "t2": 0.1848,
+      "t3": 0.1856
+    },
+    "baseline": {
+      "t1": 0.1045,
+      "t2": 0.1025,
+      "t3": 0.1047
+    }
   }
 }
