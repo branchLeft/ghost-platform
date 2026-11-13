@@ -9,7 +9,7 @@ import {
   parsePort,
   parseTrustedProxyList,
 } from '../src/shell/config.js';
-import { cookieName, parseCookies, setCookie } from '../src/shell/cookies.js';
+import { assertCookiePrefix, cookieName, parseCookies, setCookie } from '../src/shell/cookies.js';
 import { escapeHtml, renderPage } from '../src/shell/html.js';
 import { renderDocuments } from '../src/shell/documentsHtml.js';
 import { expiryOf } from '../src/shell/oidc.js';
@@ -157,6 +157,31 @@ describe('cookies, pages and sessions', () => {
     expect(header).toContain('Max-Age=30');
     expect(setCookie('s', '', { maxAge: -5, secure: false })).toContain('Max-Age=0');
     expect(setCookie('s', '', { maxAge: 5, secure: false })).not.toContain('Secure');
+  });
+
+  it('accepts the prefixes the applications use and refuses any that could break a cookie name', () => {
+    for (const good of ['portal', 'console', 'a', 'a1-b', 'x'.repeat(32)]) {
+      expect(() => assertCookiePrefix(good)).not.toThrow();
+    }
+    const refused: unknown[] = [
+      '',
+      'Portal',
+      'a;b',
+      'a b',
+      'a=b',
+      'a\r\nSet-Cookie: x=1',
+      '__Host-x',
+      '_x',
+      'a_b',
+      '1a',
+      'x'.repeat(33),
+      undefined,
+      null,
+      5,
+    ];
+    for (const bad of refused) {
+      expect(() => assertCookiePrefix(bad), JSON.stringify(bad)).toThrow(/cookiePrefix/);
+    }
   });
 
   it('escapes markup', () => {

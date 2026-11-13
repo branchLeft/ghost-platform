@@ -282,3 +282,42 @@ describe("the shell's cookie names", () => {
     expect(again.body).toContain('FIRST_PAGE');
   });
 });
+
+// The prefix is checked once, where the shell is built, so a bad one stops the
+// process at start-up and never reaches a `Set-Cookie` header.
+describe('the shell refuses a cookie prefix that could break a cookie name', () => {
+  const build = (cookiePrefix: string) =>
+    createShell<string>({
+      issuer: ISSUER,
+      clientId: CLIENT_PORTAL,
+      projectId: PROJECT_ID,
+      redirectUri: `http://localhost${CALLBACK_PATH}`,
+      publicOrigin: 'http://localhost',
+      cookiePrefix,
+      verifier: createTokenVerifier({
+        issuer: ISSUER,
+        clientId: CLIENT_PORTAL,
+        requiredRole: 'tenant-admin',
+        allowedOrgIds: new Set(['org-x']),
+        clock: () => NOW,
+        fetchKeys: async () => jwks,
+      }),
+      secureCookies: false,
+      title: 'T',
+      nav: [],
+      signOutLabel: 'OUT',
+      bind: async () => 'bound',
+      landing: async () => '',
+    });
+
+  it.each(['', 'Portal', 'a;b', 'a b', 'a=b', 'a\r\nSet-Cookie: x=1', '__Host-x', 'a_b'])(
+    'throws at construction for %j',
+    (prefix) => {
+      expect(() => build(prefix)).toThrow(/cookiePrefix/);
+    }
+  );
+
+  it('builds with a plain prefix', () => {
+    expect(() => build('portal')).not.toThrow();
+  });
+});
