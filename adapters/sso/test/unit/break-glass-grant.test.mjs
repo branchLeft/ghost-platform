@@ -15,6 +15,7 @@ import {
   GrantRefusedError,
   main,
   parseGrantArgs,
+  provision,
   recreateIfDeleted,
   removeStateIfSame,
   revoke,
@@ -26,7 +27,10 @@ import {
   timerReportedActive,
 } from '../../scripts/break-glass-grant.mjs';
 import { EngineTimeoutError } from '../../scripts/docker-engine.mjs';
-import { ActiveExistingRowError } from '../../scripts/provision-support-account.mjs';
+import {
+  ActiveExistingRowError,
+  SUSPENDED_STATUS,
+} from '../../scripts/provision-support-account.mjs';
 
 const T0 = Date.UTC(2026, 9, 8, 12, 0, 0);
 const SUPPORT = 'support@platform.example';
@@ -69,6 +73,10 @@ function fakeDeps(overrides = {}) {
       };
     }),
     recreate: vi.fn(() => ({ created: false })),
+    provision: vi.fn(() => {
+      calls.push('provision');
+      return { created: true, repaired: false, id: 'u1', status: 'inactive' };
+    }),
     betweenPurges: vi.fn(async () => {
       calls.push('between');
     }),
@@ -147,7 +155,7 @@ describe('parseGrantArgs', () => {
   it('parses expire and status with no flags, and refuses other commands', () => {
     expect(parseGrantArgs(['expire'])).toEqual({ command: 'expire' });
     expect(parseGrantArgs(['status'])).toEqual({ command: 'status' });
-    expect(() => parseGrantArgs(['extend'])).toThrow(/grant, revoke, expire or status/);
+    expect(() => parseGrantArgs(['extend'])).toThrow(/grant, revoke, provision, expire or status/);
   });
 });
 
@@ -452,6 +460,104 @@ describe('status', () => {
     expect(status(deps)).toMatchObject([
       { tenant: 'tenant-zero', unreadable: expect.stringMatching(/deadline/) },
     ]);
+  });
+});
+
+describe('provision: the support account at tenant creation', () => {
+  const asked = (identity = undefined) => ({ tenant: 'tenant-zero', identity });
+
+  it('creates the account for the identity in the tenant config, and records it', async () => {
+    const deps = fakeDeps();
+    const done = await provision(asked(), deps);
+    expect(deps.calls).toEqual(['identity', 'provision']);
+    expect(deps.provision).toHaveBeenCalledWith({
+      container: 'tenant-zero-ghost-a-1',
+      identity: SUPPORT,
+    });
+    expect(done).toMatchObject({
+      tenant: 'tenant-zero',
+      identity: SUPPORT,
+      created: true,
+      repaired: false,
+      status: SUSPENDED_STATUS,
+    });
+    expect(records()).toMatchObject([{ event: 'provisioned', identity: SUPPORT, created: true }]);
+  });
+
+  it('opens no grant: no clock, no state file, no activation, and no need for the timer', async () => {
+    const deps = fakeDeps({ timerActive: () => false });
+    await provision(asked(), deps);
+    expect(fs.existsSync(deps.stateDir)).toBe(false);
+    expect(deps.calls).not.toContain('activate');
+    expect(deps.calls).not.toContain('revoke');
+  });
+
+  it('refuses a typed identity that is not the configured one, before anything is written', async () => {
+    const deps = fakeDeps();
+    await expect(provision(asked('staff-admin@tenant.example'), deps)).rejects.toThrow(
+      /not this tenant's configured support identity/
+    );
+    expect(deps.provision).not.toHaveBeenCalled();
+    expect(fs.existsSync(deps.recordLog)).toBe(false);
+  });
+
+  it('is a no-op when the account is already there and suspended', async () => {
+    const deps = fakeDeps({
+      provision: vi.fn(() => ({ created: false, repaired: false, id: 'u1', status: 'inactive' })),
+    });
+    await expect(provision(asked(), deps)).resolves.toMatchObject({
+      created: false,
+      repaired: false,
+    });
+  });
+
+  it('refuses an existing account that is not suspended, and writes no record of success', async () => {
+    const deps = fakeDeps({
+      provision: vi.fn(() => {
+        throw new ActiveExistingRowError('active');
+      }),
+    });
+    await expect(provision(asked(), deps)).rejects.toThrow(GrantRefusedError);
+    await expect(provision(asked(), deps)).rejects.toThrow(/not suspended/);
+    expect(fs.existsSync(deps.recordLog)).toBe(false);
+  });
+
+  it('never reports success for a result that is not suspended', async () => {
+    for (const status of ['active', 'warn-1', 'locked', undefined]) {
+      const deps = fakeDeps({
+        provision: vi.fn(() => ({ created: true, repaired: false, id: 'u1', status })),
+      });
+      await expect(provision(asked(), deps)).rejects.toThrow(/not suspended/);
+      expect(fs.existsSync(deps.recordLog)).toBe(false);
+    }
+  });
+
+  it('passes any other failure through', async () => {
+    const deps = fakeDeps({
+      provision: vi.fn(() => {
+        throw new Error('boom');
+      }),
+    });
+    await expect(provision(asked(), deps)).rejects.toThrow('boom');
+  });
+
+  it('is reachable through main with --tenant and an optional --identity only', async () => {
+    const deps = fakeDeps();
+    const out = {
+      text: '',
+      write(s) {
+        this.text += s;
+      },
+    };
+    expect(await main(['provision', '--tenant', 'tenant-zero'], deps, out)).toBe(0);
+    expect(JSON.parse(out.text)).toMatchObject({ created: true, status: SUSPENDED_STATUS });
+    expect(() => parseGrantArgs(['provision', '--tenant', 't', '--lane', 'incident'])).toThrow(
+      /provision does not take --lane/
+    );
+    expect(() => parseGrantArgs(['provision', '--tenant', 't', '--status', 'active'])).toThrow(
+      /unrecognised/
+    );
+    expect(() => parseGrantArgs(['provision'])).toThrow(/needs --tenant/);
   });
 });
 
