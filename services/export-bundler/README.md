@@ -224,7 +224,12 @@ makes it before any `docker run`, `create`, `network`, `volume` or `compose`.
 remover with `cleanup.ts`: the colour, the relay and its network, the dump
 container, the scratch container and its data, the run network, the volume
 and the env files. The normal path removes them in `finally`, colour first.
-A colour that is created but fails to start is removed at once. On SIGINT
+A colour that is created but fails to start is removed at once. A removal
+that fails never replaces the export's outcome: every step still runs, and the
+failures travel with it. On a failed export the original error is thrown, with
+the teardown failures on its `cleanupErrors` field and a second stderr line.
+On a successful export the CLI prints the archive path, sha256 and manifest
+first (they exist and are audited), then names the failed step and exits 70. On SIGINT
 or SIGTERM the removers run before the process exits. If a remover throws,
 its label is written to stderr as `export-bundler: cleanup step failed on
 <SIGNAL>: <label>` and the process exits with code 70 instead of 130 or 143;

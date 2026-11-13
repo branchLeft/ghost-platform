@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  cleanupErrorsOf,
   runExport,
   GhostNeverBecameHealthyError,
   type ExportRequest,
@@ -134,6 +135,8 @@ function fakeDeps(overrides: {
   members?: () => Promise<Collection>;
   comments?: () => Promise<Collection>;
   mediaExists?: boolean;
+  /** Teardown steps that throw: the colour, the copy, the drain flag. */
+  teardownFails?: readonly ('colour' | 'scratch' | 'drain flag')[];
 }): { deps: ExportRunnerDeps; recording: Recording } {
   const recording: Recording = {
     accountReads: [],
@@ -161,6 +164,8 @@ function fakeDeps(overrides: {
     async destroy() {
       recording.scratchDestroyed = true;
       recording.teardown.push('scratch');
+      if (overrides.teardownFails?.includes('scratch'))
+        throw new Error('teardown failure: scratch');
     },
   };
 
@@ -178,6 +183,7 @@ function fakeDeps(overrides: {
     async stop() {
       recording.containerStopped = true;
       recording.teardown.push('colour');
+      if (overrides.teardownFails?.includes('colour')) throw new Error('teardown failure: colour');
     },
   };
 
@@ -247,6 +253,9 @@ function fakeDeps(overrides: {
       clear: async (colourId) => {
         recording.drainClearCalls.push(colourId);
         recording.teardown.push('drain flag');
+        if (overrides.teardownFails?.includes('drain flag')) {
+          throw new Error('teardown failure: drain flag');
+        }
       },
     },
     readDrainFlag: () => flag,
@@ -617,6 +626,72 @@ describe('runExport', () => {
     await expect(runExport(deps, request())).rejects.toThrow('export sabotage failure');
     expect(recording.containerStopped).toBe(true);
     expect(recording.auditEntries).toEqual([]);
+  });
+
+  describe('a teardown step that fails', () => {
+    const STEPS = ['colour', 'scratch', 'drain flag'] as const;
+
+    it.each(STEPS)(
+      'on a failed export: the export error surfaces, %s failure is attached, and every other step still runs',
+      async (step) => {
+        const { deps, recording } = fakeDeps({ exportFails: true, teardownFails: [step] });
+        const err = await runExport(deps, request()).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toBe('export sabotage failure');
+        const attached = cleanupErrorsOf(err);
+        expect(attached.map((e) => (e as Error).message)).toEqual([`teardown failure: ${step}`]);
+        expect(recording.teardown).toEqual(['colour', 'scratch', 'drain flag']);
+      }
+    );
+
+    it('on a failed export: every failed step is attached, in teardown order', async () => {
+      const { deps } = fakeDeps({ exportFails: true, teardownFails: ['scratch', 'drain flag'] });
+      const err = await runExport(deps, request()).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect((err as Error).message).toBe('export sabotage failure');
+      expect(cleanupErrorsOf(err).map((e) => (e as Error).message)).toEqual([
+        'teardown failure: scratch',
+        'teardown failure: drain flag',
+      ]);
+    });
+
+    it('on a failed export with clean teardown: nothing is attached', async () => {
+      const { deps } = fakeDeps({ exportFails: true });
+      const err = await runExport(deps, request()).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(cleanupErrorsOf(err)).toEqual([]);
+    });
+
+    it.each(STEPS)(
+      'on a successful export: %s failure comes back beside the result, which still names the archive, sha256 and manifest',
+      async (step) => {
+        const { deps, recording } = fakeDeps({ teardownFails: [step] });
+        const result = await runExport(deps, request());
+        expect(result.cleanupErrors?.map((e) => (e as Error).message)).toEqual([
+          `teardown failure: ${step}`,
+        ]);
+        expect(recording.teardown).toEqual(['colour', 'scratch', 'drain flag']);
+        // bundle() had already written the archive, sidecar and audit entry.
+        const digest = createHash('sha256')
+          .update(await readFile(result.archivePath))
+          .digest('hex');
+        expect(result.archiveSha256).toBe(digest);
+        expect(await readFile(result.manifestPath, 'utf8')).toContain('"complete"');
+        expect(recording.auditEntries).toHaveLength(1);
+      }
+    );
+
+    it('on a successful export with clean teardown: the result carries no cleanupErrors field', async () => {
+      const { deps } = fakeDeps({});
+      expect('cleanupErrors' in (await runExport(deps, request()))).toBe(false);
+    });
   });
 
   it('succeeds with a request that carries no subscription or liveness field at all -- structurally, there is nothing to gate on', async () => {

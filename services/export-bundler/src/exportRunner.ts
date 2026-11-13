@@ -83,6 +83,74 @@ export interface ExportResult {
   readonly manifestPath: string;
   readonly archiveSha256: string;
   readonly manifest: ExportManifest;
+  /** Present only when a teardown step failed after the archive was written. */
+  readonly cleanupErrors?: readonly unknown[];
+}
+
+/**
+ * Raised by the CLI, after it has printed the result, when the export itself
+ * succeeded but a teardown step (colour, scratch copy, drain flag) failed: the
+ * archive, manifest and audit entry exist, and so does a leftover resource.
+ */
+export class ExportCleanupError extends Error {
+  constructor(
+    readonly result: ExportResult,
+    readonly cleanupErrors: readonly unknown[]
+  ) {
+    super(`the export succeeded but ${describeCleanupErrors(cleanupErrors)}`);
+    this.name = 'ExportCleanupError';
+  }
+}
+
+const CLEANUP_ERRORS = 'cleanupErrors';
+
+/**
+ * Teardown failures attached to the error that failed the export, in
+ * teardown order; empty when there are none. The export's own error is
+ * still the one thrown: a cleanup failure never replaces it.
+ */
+export function cleanupErrorsOf(err: unknown): readonly unknown[] {
+  if (typeof err !== 'object' || err === null) return [];
+  const attached = (err as Record<string, unknown>)[CLEANUP_ERRORS];
+  return Array.isArray(attached) ? (attached as unknown[]) : [];
+}
+
+/** `name: message` for each failure, for a log line. */
+export function describeCleanupErrors(errors: readonly unknown[]): string {
+  const parts = errors.map((e) => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)));
+  return `${parts.length === 1 ? 'a cleanup step' : `${parts.length} cleanup steps`} failed (${parts.join('; ')})`;
+}
+
+/** Teardown steps run to the end, each on its own, and the failures are kept for the caller. */
+class CleanupFailures {
+  readonly errors: unknown[] = [];
+  async attempt(step: () => Promise<void>): Promise<void> {
+    try {
+      await step();
+    } catch (err) {
+      this.errors.push(err);
+    }
+  }
+}
+
+function withCleanupErrors(err: unknown, errors: readonly unknown[]): unknown {
+  if (errors.length === 0) return err;
+  if (typeof err === 'object' && err !== null) {
+    try {
+      Object.defineProperty(err, CLEANUP_ERRORS, {
+        value: [...cleanupErrorsOf(err), ...errors],
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+      return err;
+    } catch {
+      // A frozen or sealed error cannot carry the field: fall through.
+    }
+  }
+  // Not an object, or one that cannot be written to: keep the original as the
+  // first of the aggregate, so it is still what a reader sees first.
+  return new AggregateError([err, ...errors], `${String(err)}; ${describeCleanupErrors(errors)}`);
 }
 
 export class GhostNeverBecameHealthyError extends Error {
@@ -121,58 +189,77 @@ export async function runExport(
   // function's own refusal path exercises the exact same check a stray
   // live colour would fail.
   await deps.drainFlags.set(request.colourId);
+  // A teardown failure is kept, never thrown from where it happens: thrown
+  // from a `finally` it would replace the export's own error, or, after a
+  // finished export, hide the archive that bundle() had already written and
+  // audited. Every step still runs; the failures go to the caller with the
+  // outcome instead.
+  const cleanup = new CleanupFailures();
+  let result: ExportResult;
   try {
-    assertDrained(deps.readDrainFlag(request.colourId), request.colourId);
-    try {
-      const copy = await deps.scratch.prepare();
-      const colourEnv = pointAtScratch(request.colourBaseEnv, copy);
-      // Before the colour exists: a colour pointed at the live database
-      // must never boot, because Ghost acts on its database during boot.
-      assertColourOnScratch(colourEnv, copy.target, request.liveDatabase);
-      const { baseUrl } = await deps.containerRunner.start(colourEnv, {
-        network: copy.network,
-        volumes: copy.colourVolumes,
-      });
-      try {
-        const healthy = await waitUntilHealthy(
-          deps.probe,
-          baseUrl,
-          deps.healthTimeoutMs,
-          deps.healthPollIntervalMs
-        );
-        if (!healthy) {
-          throw new GhostNeverBecameHealthyError(request.colourId, deps.healthTimeoutMs);
-        }
-        // Again, before any export call, on what Docker says the running
-        // colour was actually given.
-        assertColourOnScratch(
-          await deps.containerRunner.readEnv(),
-          copy.target,
-          request.liveDatabase
-        );
+    result = await exportOnScratch(deps, request, grant, cleanup);
+  } catch (err) {
+    await cleanup.attempt(() => deps.drainFlags.clear(request.colourId));
+    throw withCleanupErrors(err, cleanup.errors);
+  }
+  await cleanup.attempt(() => deps.drainFlags.clear(request.colourId));
+  return cleanup.errors.length === 0 ? result : { ...result, cleanupErrors: cleanup.errors };
+}
 
-        const [contentAndSettings, postAnalytics] = await Promise.all([
-          deps.exportClient.fetchContentAndSettings(baseUrl),
-          deps.exportClient.fetchPostAnalytics(baseUrl),
-        ]);
-        const extensions = await collectExtensions({
-          client: deps.exportClient,
-          mediaProbe: deps.mediaProbe,
-          baseUrl,
-          tenantId: request.tenantId,
-          media: request.media,
-          nowSeconds: Math.floor(Date.parse(deps.nowIso()) / 1000),
-          contentJson: contentAndSettings.body.toString('utf8'),
-        });
-        return await bundle(deps, request, grant, contentAndSettings, postAnalytics, extensions);
-      } finally {
-        await deps.containerRunner.stop();
+async function exportOnScratch(
+  deps: ExportRunnerDeps,
+  request: ExportRequest,
+  grant: SupportGrant,
+  cleanup: CleanupFailures
+): Promise<ExportResult> {
+  assertDrained(deps.readDrainFlag(request.colourId), request.colourId);
+  try {
+    const copy = await deps.scratch.prepare();
+    const colourEnv = pointAtScratch(request.colourBaseEnv, copy);
+    // Before the colour exists: a colour pointed at the live database
+    // must never boot, because Ghost acts on its database during boot.
+    assertColourOnScratch(colourEnv, copy.target, request.liveDatabase);
+    const { baseUrl } = await deps.containerRunner.start(colourEnv, {
+      network: copy.network,
+      volumes: copy.colourVolumes,
+    });
+    try {
+      const healthy = await waitUntilHealthy(
+        deps.probe,
+        baseUrl,
+        deps.healthTimeoutMs,
+        deps.healthPollIntervalMs
+      );
+      if (!healthy) {
+        throw new GhostNeverBecameHealthyError(request.colourId, deps.healthTimeoutMs);
       }
+      // Again, before any export call, on what Docker says the running
+      // colour was actually given.
+      assertColourOnScratch(
+        await deps.containerRunner.readEnv(),
+        copy.target,
+        request.liveDatabase
+      );
+
+      const [contentAndSettings, postAnalytics] = await Promise.all([
+        deps.exportClient.fetchContentAndSettings(baseUrl),
+        deps.exportClient.fetchPostAnalytics(baseUrl),
+      ]);
+      const extensions = await collectExtensions({
+        client: deps.exportClient,
+        mediaProbe: deps.mediaProbe,
+        baseUrl,
+        tenantId: request.tenantId,
+        media: request.media,
+        nowSeconds: Math.floor(Date.parse(deps.nowIso()) / 1000),
+        contentJson: contentAndSettings.body.toString('utf8'),
+      });
+      return await bundle(deps, request, grant, contentAndSettings, postAnalytics, extensions);
     } finally {
-      await deps.scratch.destroy();
+      await cleanup.attempt(() => deps.containerRunner.stop());
     }
   } finally {
-    await deps.drainFlags.clear(request.colourId);
+    await cleanup.attempt(() => deps.scratch.destroy());
   }
 }
 
