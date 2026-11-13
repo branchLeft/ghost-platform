@@ -39,6 +39,227 @@ describe('redactSecrets', () => {
     expect(out).toContain(REDACTED);
   });
 
+  it.each([
+    ['a JSON password', '{"password":"hunter2"}', 'hunter2'],
+    ['a JSON token', '{"token":"abc12345"}', 'abc12345'],
+    ['a JSON camelCase api key', '{"apiKey":"k3y-short"}', 'k3y-short'],
+    ['a JSON client secret', '{"client_secret":"s3cr3tvalue"}', 's3cr3tvalue'],
+    ['a JSON value after a space', '{"password": "hunter2"}', 'hunter2'],
+    [
+      'a JSON secret inside a longer body',
+      '{"error":"denied","token":"abc12345","step":3}',
+      'abc12345',
+    ],
+    ['a Python-repr password', "{'password': 'hunter2'}", 'hunter2'],
+    ['a flag with a space', 'ssh failed: --password hunter2', 'hunter2'],
+    ['a flag with a space and a token', 'run --token abc12345 --verbose', 'abc12345'],
+    ['a flag with a quoted value', 'run --password "has spaces inside"', 'has spaces inside'],
+    ['a flag with an equals sign', 'run --password=hunter2', 'hunter2'],
+    ['a secret word with no separator', 'invalid token abc12345def', 'abc12345def'],
+    ['a passphrase field', 'unlock with passphrase=hunter2', 'hunter2'],
+    ['a JSON passphrase', '{"passphrase":"hunter2"}', 'hunter2'],
+    ['an Authorization Token header', 'Authorization: Token abcdef123456', 'abcdef123456'],
+    ['an Authorization Bearer header', 'Authorization: Bearer abcdef123456', 'abcdef123456'],
+    ['an Authorization Basic header', 'authorization: Basic abcdef123456', 'abcdef123456'],
+    ['a JSON Authorization header', '{"Authorization":"Token abcdef123456"}', 'abcdef123456'],
+  ])('removes %s', (_name, text, secret) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+  });
+
+  it('keeps the field name and the shape around a JSON secret', () => {
+    expect(redactSecrets('{"token":"abc12345","step":3}')).toBe(`{"token":${REDACTED},"step":3}`);
+  });
+
+  it('keeps the scheme of an Authorization header so the reader can see what failed', () => {
+    expect(redactSecrets('Authorization: Token abcdef123456')).toBe(
+      `Authorization: Token ${REDACTED}`
+    );
+  });
+
+  it.each([
+    ['an escaped quote inside a JSON value', '{"password":"ab\\"SECRETX9"}', 'SECRETX9'],
+    ['an escaped quote inside a Python-repr value', "{'password': 'ab\\'SECRETX9'}", 'SECRETX9'],
+    ['an escaped backslash before the tail', '{"password":"ab\\\\SECRETX9"}', 'SECRETX9'],
+    ['a value ending in an escaped quote', '{"token":"SECRETX9\\""}', 'SECRETX9'],
+    ['an escaped quote in a quoted flag value', 'run --password "ab\\"SECRETX9"', 'SECRETX9'],
+    ['an Authorization Hmac header', 'Authorization: Hmac abcdef123456', 'abcdef123456'],
+    ['an Authorization OAuth header', 'Authorization: OAuth abcdef123456', 'abcdef123456'],
+  ])('removes %s', (_name, text, secret) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+  });
+
+  it('removes a whole escaped JSON value and keeps what follows it', () => {
+    expect(redactSecrets('{"password":"ab\\"SECRETX9","step":3}')).toBe(
+      `{"password":${REDACTED},"step":3}`
+    );
+  });
+
+  it('keeps the scheme of an Authorization Hmac or OAuth header', () => {
+    expect(redactSecrets('Authorization: Hmac abcdef123456')).toBe(
+      `Authorization: Hmac ${REDACTED}`
+    );
+    expect(redactSecrets('Authorization: OAuth abcdef123456')).toBe(
+      `Authorization: OAuth ${REDACTED}`
+    );
+  });
+
+  // The rules above add coverage; none may stop catching what the original single
+  // field rule removed (a flag with a spaced separator, a quoted value ending in a backslash).
+  it.each([
+    ['a flag with a spaced equals sign', 'run --password = SECRETX9 next', 'SECRETX9'],
+    ['a flag with a spaced colon', 'run --password : SECRETX9 next', 'SECRETX9'],
+    ['a flag with a colon', 'run --password: SECRETX9 next', 'SECRETX9'],
+    ['a flag with an equals sign and extra spaces', 'run --token=  SECRETX9 next', 'SECRETX9'],
+    ['a private-key flag with a spaced equals sign', 'run --private-key = SECRETX9', 'SECRETX9'],
+    ['an access-key flag with a spaced equals sign', 'run --x-access-key = SECRETX9', 'SECRETX9'],
+    [
+      'a double-quoted value with spaces ending in a backslash',
+      'password="ab SECRETX9\\"',
+      'SECRETX9',
+    ],
+    [
+      'a double-quoted value ending in a backslash, then more text',
+      'password="ab SECRETX9\\" next',
+      'SECRETX9',
+    ],
+    [
+      'a single-quoted value with spaces ending in a backslash',
+      "password='ab SECRETX9\\'",
+      'SECRETX9',
+    ],
+    ['a JSON value with spaces ending in a backslash', '{"password":"ab SECRETX9\\"}', 'SECRETX9'],
+    [
+      'a quoted flag value with spaces ending in a backslash',
+      'run --password "ab SECRETX9\\"',
+      'SECRETX9',
+    ],
+  ])('still removes %s', (_name, text, secret) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+  });
+
+  it('redacts a flag with a spaced equals sign exactly as the field rule always did', () => {
+    expect(redactSecrets('run --password = hunter2 next')).toBe(
+      `run --password = ${REDACTED} next`
+    );
+  });
+
+  it('redacts a quoted value ending in a backslash exactly as the field rule always did', () => {
+    expect(redactSecrets('password="ab cd\\"')).toBe(`password=${REDACTED}`);
+    expect(redactSecrets("password='ab cd\\'")).toBe(`password=${REDACTED}`);
+  });
+
+  // A quoted value that ends in a backslash must not swallow the next secret field on the line.
+  it.each([
+    [
+      'a trailing backslash then a second quoted field',
+      'password="ab cd\\" token="foo"',
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'a trailing backslash then a second quoted field (single quotes)',
+      "password='ab cd\\' token='foo'",
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'an escaped quote then a second quoted field',
+      'password="ab\\"cd" token="foo"',
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'an escaped quote then a second quoted field (single quotes)',
+      "password='ab\\'cd' token='foo'",
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'three fields, two of them ending in a backslash',
+      'password="a b\\" token="foo" secret="bar\\" api_key="baz"',
+      `password=${REDACTED} token=${REDACTED} secret=${REDACTED} api_key=${REDACTED}`,
+    ],
+    [
+      'three fields in single quotes, mixed with a double-quoted one',
+      "password='a b\\' token=\"foo\" secret='bar\\' api_key='baz'",
+      `password=${REDACTED} token=${REDACTED} secret=${REDACTED} api_key=${REDACTED}`,
+    ],
+    [
+      'a trailing backslash then a second field after a colon',
+      'password: "ab cd\\" token: "foo"',
+      `password: ${REDACTED} token: ${REDACTED}`,
+    ],
+    [
+      'a trailing backslash then a JSON field',
+      '{"password":"ab cd\\","token":"foo"}',
+      `{"password":${REDACTED},"token":${REDACTED}}`,
+    ],
+    [
+      'a JSON-escaped quote then a second JSON field',
+      '{"password":"ab\\"cd","token":"foo"}',
+      `{"password":${REDACTED},"token":${REDACTED}}`,
+    ],
+  ])('removes both secrets after %s', (_name, text, expected) => {
+    expect(redactSecrets(text)).toBe(expected);
+  });
+
+  // Found by the old-against-new differential: a value glued straight onto the next field name
+  // must not hide that field from the rules that removed it before.
+  it.each([
+    ['a value glued to the next field name', 'x-access-key=MARKA9client_secret="MARKB9"', 'MARKB9'],
+    [
+      'a JSON key whose value is glued to the next field',
+      'password":MARKA9token="ab MARKB9"',
+      'MARKB9',
+    ],
+    [
+      'a long run that the passphrase rule would cut in two',
+      'Authorization":ab MARKA9passphrase=MARKB9x-access-key":\'MARKC9\\\'',
+      'MARKA9',
+    ],
+  ])('still removes %s', (_name, text, secret) => {
+    expect(redactSecrets(text)).not.toContain(secret);
+  });
+
+  it('keeps a following field that is not a secret', () => {
+    expect(redactSecrets('password="a" other="keep"')).toBe(`password=${REDACTED} other="keep"`);
+    expect(redactSecrets('{"password":"x\\"y","note":"keep"}')).toBe(
+      `{"password":${REDACTED},"note":"keep"}`
+    );
+  });
+
+  it('stays fast on long quoted values that hold many words or one long word', () => {
+    for (const body of ['ab '.repeat(20_000), 'a'.repeat(50_000), 'ab\\"'.repeat(12_000)]) {
+      const started = performance.now();
+      redactSecrets(`password="${body}" next`);
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+  });
+
+  it('stays fast on a long run of dashes', () => {
+    const text = '-'.repeat(50_000);
+    const started = performance.now();
+    redactSecrets(text);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it.each([
+    'token expired for host-one.example.invalid (step 3)',
+    'the password policy rejected the request',
+    'passphrase required',
+    'invalid token',
+    'bad token format at step 3',
+    'run --verbose --timeout 30 --retries 3',
+    '{"status":"failed","step":3,"host":"host-one.example.invalid"}',
+    "{'status': 'failed', 'step': 3}",
+    'Authorization header missing',
+    'HTTP 401 Unauthorized from https://host-one.example.invalid/v1/things',
+  ])('leaves %j readable', (text) => {
+    expect(redactSecrets(text)).toBe(text);
+  });
+
   it('leaves an ordinary diagnostic readable', () => {
     const text = 'ConnectionError: connect ECONNREFUSED host-one.example.invalid:5432 (step 3)';
     expect(redactSecrets(text)).toBe(text);
