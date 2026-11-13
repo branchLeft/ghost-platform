@@ -4,12 +4,24 @@ name: Demo host mail spool CI
 # dockerd inside a privileged Docker-in-Docker stand-in for demo1, behind the
 # real container-egress policy. Its sabotage run must fail.
 
+# The paths filters list every input the job reads, and are the same for both
+# events. scripts/test_demo_host_mail_spool_ci_paths.py derives the inputs and
+# fails when one is outside the filter, so a new input is added here too.
 on:
   push:
     branches: [main]
     paths:
-      - render-core/src/spool.ts
-      - demo-host/provision/branchleft_demo_egress.py
+      - render-core/src/**/*.ts
+      - render-core/src/payments-origins.json
+      - render-core/test/golden/mail-spool-compose.demo1.yml
+      - render-core/package.json
+      - render-core/pnpm-lock.yaml
+      - render-core/tsconfig.json
+      - render-core/tsconfig.build.json
+      - render-core/.npmrc
+      - render-core/.nvmrc
+      - package.json
+      - demo-host/provision/**
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
       - scripts/render-mail-spool-compose.test.mjs
@@ -18,8 +30,17 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - render-core/src/spool.ts
-      - demo-host/provision/branchleft_demo_egress.py
+      - render-core/src/**/*.ts
+      - render-core/src/payments-origins.json
+      - render-core/test/golden/mail-spool-compose.demo1.yml
+      - render-core/package.json
+      - render-core/pnpm-lock.yaml
+      - render-core/tsconfig.json
+      - render-core/tsconfig.build.json
+      - render-core/.npmrc
+      - render-core/.nvmrc
+      - package.json
+      - demo-host/provision/**
       - scripts/test-demo-mail-spool.sh
       - scripts/render-mail-spool-compose.mjs
       - scripts/render-mail-spool-compose.test.mjs

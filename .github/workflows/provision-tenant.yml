@@ -838,7 +838,6 @@ jobs:
           pulumi config set uid "$TENANT_UID" --stack "$TENANT"
           pulumi config set hostPort "$HOST_PORT" --stack "$TENANT"
           pulumi config set appHostPrivateIp "$APP_HOST_PRIVATE_IP" --stack "$TENANT"
-          pulumi config set imageRef "$IMAGE_REF" --stack "$TENANT"
           pulumi config set databaseHost "$PLATFORM_DB_PRIVATE_IP" --stack "$TENANT"
           # Two media keys, not five. The bucket and the public base URL are
           # derived from the slug inside the component, so this stack holds no
@@ -847,6 +846,31 @@ jobs:
           # the shared bucket.
           pulumi config set mediaEndpoint "$PLATFORM_MEDIA_ENDPOINT" --stack "$TENANT"
           pulumi config set mediaRegion "$PLATFORM_MEDIA_REGION" --stack "$TENANT"
+
+      # The image the tenant runs is not stack config: it is the one line of
+      # `image-pin.txt` at the repository root, a file that holds no ciphertext,
+      # so a digest bump never has to pass through the file that carries the
+      # encrypted secrets. The tenant's `config.ts`, its plan job's
+      # `scripts/image-changed.py` and its deploy job's read step all read that
+      # file and nothing else, and each refuses any shape but one digest-pinned
+      # reference with at most the newline that ends it. The template ships no
+      # such file, so this is where the repository gets its first pin: the same
+      # attested `image_ref` that `assert-image-ref.py` accepted above.
+      #
+      # Written into the working copy the handover commit stages, like the
+      # stack config; the check below is the tenant reader's own pattern, so a
+      # value the reader would refuse stops here and not at that tenant's first
+      # deploy. The refusal does not echo the value.
+      - name: Write the tenant's image pin
+        working-directory: tenant
+        run: |
+          set -euo pipefail
+          pattern='^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}$'
+          if ! [[ "${IMAGE_REF:-}" =~ $pattern ]]; then
+            echo "::error::image_ref is not exactly one digest-pinned image reference; refusing to write the tenant's image pin"
+            exit 1
+          fi
+          printf '%s\n' "$IMAGE_REF" > image-pin.txt
 
       # `pulumi stack init` wrote this stack's encryption salt into the config
       # file, and the handover commit must not carry it: a salt in a tree anyone
