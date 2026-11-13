@@ -406,7 +406,12 @@ before the first entry is written, and removed after the last. A process
 killed between leaves the aside copy, and the next start-up, and every
 orphan sweep, finishes the split from it before it looks for orphaned
 bytes; a split another process has begun is finished the same way before
-an owner adopts its entries. `test/unit/hold-release-cross-process.test.mjs`
+an owner adopts its entries. Finishing a split can fail (a full disk, EIO,
+EACCES): the failure is logged and the aside copy stays. While it stands it
+is a hold on the digest it names, as a sidecar is, for every path that
+removes bytes: the orphan sweep, `releaseBytes` with `keepIfHeld`, and the
+sweep of releasing copies each keep them, on the same pass and on every
+later one, until a split completes. `test/unit/hold-release-cross-process.test.mjs`
 runs a releaser and a holder as two real processes, pausing the releaser
 before it gives up its entry, before it moves the bytes aside and after.
 
@@ -466,7 +471,8 @@ the adapter's constructor returns, and then every
 and that `stopAll` ends. A file is an orphan when it is a regular file
 whose name is not a dotfile (a live writer's temp file), an aside copy, a
 sidecar or a refusal record; it is older than `holdOrphanMinAgeMs`; and no
-sidecar of any owner and no refusal record sits beside it. Each removal is
+sidecar of any owner, no unfinished split's aside copy and no refusal record sits
+beside it. Each removal is
 logged with the fixed prefix `ScanningStorageAdapter: orphaned quarantine
 bytes`, then the digest and the age. Nothing about the digest's shape is
 assumed: a name is classified by what it is not.

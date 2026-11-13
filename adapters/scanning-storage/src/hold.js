@@ -15,6 +15,7 @@ const {
   sweepReleasing,
   sweepOrphans,
   HOLDS_SUFFIX,
+  SPLIT_ASIDE_NAME,
 } = require('./quarantine');
 
 // Incidental, like the verdict budget in checks.js: how often a held digest
@@ -214,8 +215,6 @@ function bytesMatchSync(quarantinePath, digest, computeDigest) {
 // with no sidecar and remove them. Entries have a name fixed by their owner,
 // and one that exists is left, so finishing a split twice, or from two
 // processes at once, writes each owner once.
-const ASIDE_NAME = /^\.(.+?)\.holds\.json\.[^.]+\.json$/;
-
 function splitEntryName(owner) {
   return `split-${crypto.createHash('sha256').update(owner).digest('hex').slice(0, 16)}.json`;
 }
@@ -263,7 +262,7 @@ function asideNamesSync(quarantinePath, onlyDigest) {
   }
   const found = [];
   for (const name of names) {
-    const match = ASIDE_NAME.exec(name);
+    const match = SPLIT_ASIDE_NAME.exec(name);
     if (match && (onlyDigest === undefined || match[1] === onlyDigest)) {
       found.push({ name, digest: match[1] });
     }
