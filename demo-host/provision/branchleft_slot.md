@@ -200,8 +200,7 @@ The content volume name comes from a broker-written file, and the slug is not
 fixed per slot, so the wrapper cannot check that the named volume belongs to
 this slot. A compromised broker could write another demo slot's content volume
 into this slot's `compose.yml` and have that emptied by a reset. The broker
-already writes every slot's artefacts, and the demo host holds no paid
-tenants' data. The name can never reach a `-data` volume, an `-adapters`
+already writes every slot's artefacts. The name can never reach a `-data` volume, an `-adapters`
 volume, or anything outside `DOCKER_VOLUME_ROOT`. The pattern does not require
 a `demo-` prefix: a demo's slug changes every lease, so a prefix would be a
 guess and could skip a wipe it should have made.

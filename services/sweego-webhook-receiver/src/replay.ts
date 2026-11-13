@@ -11,7 +11,11 @@ import {
 import { join } from 'node:path';
 
 export const REPLAY_TTL_SECONDS = 3 * 60 * 60;
-export const REPLAY_MAX_ENTRIES = 50_000;
+/**
+ * Two keys per accepted complaint, so this must stay at or above twice the
+ * most records the 5 MiB queue can hold: the queue cap binds first.
+ */
+export const REPLAY_MAX_ENTRIES = 200_000;
 
 export class ReplayFullError extends Error {
   constructor() {
@@ -21,6 +25,8 @@ export class ReplayFullError extends Error {
 
 export interface ReplayStore {
   has(key: string): boolean;
+  /** Throws ReplayFullError when `keys` would not fit; writes nothing. */
+  assertRoom(keys: readonly string[]): void;
   /** Persists every key before returning; throws ReplayFullError at the cap. */
   add(keys: readonly string[]): void;
   size(): number;
@@ -96,12 +102,15 @@ export function openReplayStore(
       const exp = live.get(key);
       return exp !== undefined && exp > nowSeconds();
     },
-    add(keys) {
+    assertRoom(keys) {
       prune();
-      const fresh = keys.filter((k) => !live.has(k));
-      if (live.size + fresh.length > maxEntries) {
+      if (live.size + keys.filter((k) => !live.has(k)).length > maxEntries) {
         throw new ReplayFullError();
       }
+    },
+    add(keys) {
+      this.assertRoom(keys);
+      const fresh = keys.filter((k) => !live.has(k));
       const exp = nowSeconds() + ttl;
       for (const k of fresh) {
         writeSync(fd, JSON.stringify({ k, exp }) + '\n');

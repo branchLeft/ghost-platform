@@ -46,6 +46,7 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 | `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
+| `COLLECTOR_OUTCOMES_BULK_RETURN_PATH` | no (off) | A second envelope sender, used for bulk (campaign) mail only; `COLLECTOR_OUTCOMES_RETURN_PATH` then serves login (transactional) mail alone. Unset, bulk mail uses the single return path as before. Needs the other two outcome variables, and must differ from `COLLECTOR_OUTCOMES_RETURN_PATH`. Notifications for both addresses must arrive in `COLLECTOR_OUTCOMES_DSN_DIR`: the Message-ID, not the address, names the message. The mailbox for this address and any DNS it needs are set up on the mail host before this is set. |
 | `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications for that return path arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. |
 | `COLLECTOR_OUTCOMES_POLL_MS` | no (default `30000`) | How often the directory is read. |
 
@@ -89,6 +90,10 @@ pass. A notification for a spool the descriptor no longer names is left, never
 sent to a guessed address. How notifications get into the directory, and whether
 mx1 honours the DSN request at all, is the mx1-side half and is unproven; see
 the delivering PR's runbook.
+
+A feedback-loop complaint (an RFC 5965 abuse report) arriving in the same
+directory can be read as a `complained` outcome by an opt-in reader that is off
+by default: see [src/arf/README.md](src/arf/README.md).
 
 ## Source notes
 

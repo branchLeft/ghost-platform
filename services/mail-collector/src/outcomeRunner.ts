@@ -1,7 +1,8 @@
 import { decodeOutcomeMessageId } from './outcomeId.js';
 import { parseDsn, toOutcome } from './dsn.js';
 import type { DsnMailbox } from './dsnMailbox.js';
-import type { OutcomeClient, OutcomeReport } from './drainClient.js';
+import type { ComplainedReport, OutcomeClient, OutcomeReport } from './drainClient.js';
+import type { ArfReader } from './arf/arfReader.js';
 import type { TargetStore } from './descriptorTargets.js';
 import type { Logger } from './log.js';
 
@@ -22,6 +23,14 @@ export interface OutcomeRunnerDeps {
    * but a stale generation never resolves, so it cannot be kept forever.
    */
   unknownGraceMs?: number;
+  /**
+   * Off unless given. With a reader, a feedback-loop report in the same
+   * directory is read before the DSN parser and reported as `complained`; a
+   * report that is not trustworthy is retired with its reason, never reported.
+   * Give it only once the spool accepts a complained outcome: a report it
+   * cannot parse fails the whole batch. See ./arf/README.md.
+   */
+  complaintReader?: ArfReader;
   now?: () => number;
 }
 
@@ -54,7 +63,7 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
 
     const byTarget = new Map<
       string,
-      Array<{ ref: string; receivedAtMs: number; report: OutcomeReport }>
+      Array<{ ref: string; receivedAtMs: number; report: OutcomeReport | ComplainedReport }>
     >();
     const retire = async (ref: string): Promise<void> => {
       try {
@@ -67,6 +76,26 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
     };
 
     for (const item of items) {
+      if (deps.complaintReader) {
+        const arf = deps.complaintReader(item.raw, item.receivedAtMs);
+        if (arf.ok) {
+          const { record } = arf;
+          const list = byTarget.get(record.targetId) ?? [];
+          list.push({
+            ref: item.ref,
+            receivedAtMs: item.receivedAtMs,
+            report: { id: record.id, drainCount: record.drainCount, outcome: 'complained' },
+          });
+          byTarget.set(record.targetId, list);
+          continue;
+        }
+        if (arf.reason !== 'not_arf') {
+          // Never a DSN and never a complaint: kept in processed/ for audit, never guessed at.
+          deps.log.info('complaint_rejected', { ref: item.ref, reason: arf.reason });
+          await retire(item.ref);
+          continue;
+        }
+      }
       const dsn = parseDsn(item.raw);
       const key = dsn ? decodeOutcomeMessageId(dsn.originalMessageId) : null;
       const outcome = dsn ? toOutcome(dsn) : null;

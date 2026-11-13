@@ -160,8 +160,10 @@ export interface CollectorConfig {
    * Absent, submissions and the drain loop are exactly as before.
    */
   outcomes?: {
-    /** Envelope sender mx1 returns delivery status notifications to. */
+    /** Envelope sender mx1 returns delivery status notifications to: login mail's, and bulk mail's too unless `bulkReturnPath` is set. */
     returnPath: string;
+    /** Envelope sender for bulk mail only. Absent, bulk mail uses `returnPath`. */
+    bulkReturnPath?: string;
     /** Directory the notifications arrive in, one .eml file each. */
     dsnDir: string;
     pollMs: number;
@@ -226,7 +228,13 @@ function pinTtlEnv(env: CollectorEnv): number {
 function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
+  const bulkReturnPath = env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH;
   if (!returnPath && !dsnDir) {
+    if (bulkReturnPath) {
+      throw new Error(
+        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR'
+      );
+    }
     return undefined;
   }
   if (!returnPath || !dsnDir) {
@@ -234,8 +242,14 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
       'COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR must be set together'
     );
   }
+  if (bulkReturnPath && bulkReturnPath.toLowerCase() === returnPath.toLowerCase()) {
+    throw new Error(
+      'COLLECTOR_OUTCOMES_BULK_RETURN_PATH must differ from COLLECTOR_OUTCOMES_RETURN_PATH'
+    );
+  }
   return {
     returnPath,
+    ...(bulkReturnPath ? { bulkReturnPath } : {}),
     dsnDir,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };

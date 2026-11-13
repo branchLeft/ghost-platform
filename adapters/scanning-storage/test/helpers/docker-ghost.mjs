@@ -88,18 +88,19 @@ export class RecordingDouble {
     this.s3Endpoint = `http://${name}:9090`;
   }
 
-  async waitForReady() {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${this.control}/requests`);
-        if (res.status === 200) return;
-      } catch {
-        // not listening yet
-      }
-      await sleep(300);
+  // Every attempt has its own abort timer (pollHttp200), so a connection the
+  // published port accepts and nothing answers costs one attempt, not the
+  // whole step deadline; a failure names the double and its container state.
+  async waitForReady({ deadlineMs = 30_000, attemptMs = 2_000 } = {}) {
+    const result = await pollHttp200(`${this.control}/requests`, {
+      containerName: this.name,
+      deadlineMs,
+      attemptMs,
+      sleepMs: 300,
+    });
+    if (!result.ok) {
+      throw new Error(`the recording double ${this.name} did not become ready: ${result.detail}`);
     }
-    throw new Error('the recording double did not become ready in time');
   }
 
   async requests() {
@@ -148,7 +149,7 @@ export class GhostContainer {
   // `siteUrl` is the address Ghost is told it lives at (its `url` setting) and
   // the origin the harness sends; the default is the in-container address. The
   // mail gate passes its slot's domain.
-  static async #start(image, env, { network, volumes = [], siteUrl = SITE_URL }) {
+  static async #start(image, env, { network, volumes = [], siteUrl = SITE_URL, addHosts = [] }) {
     const port = await reservePort();
     const name = uniqueName('contract-ghost');
     const fullEnv = {
@@ -162,6 +163,7 @@ export class GhostContainer {
     };
     const envArgs = Object.entries(fullEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
     const volumeArgs = volumes.flatMap(({ host, container }) => ['-v', `${host}:${container}`]);
+    const hostArgs = addHosts.flatMap((entry) => ['--add-host', entry]);
     docker(
       'create',
       '--name',
@@ -174,6 +176,7 @@ export class GhostContainer {
       `127.0.0.1:${port}:2368`,
       ...envArgs,
       ...volumeArgs,
+      ...hostArgs,
       image
     );
     const ghost = new GhostContainer(name, port, siteUrl);

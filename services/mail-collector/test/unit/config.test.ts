@@ -78,6 +78,50 @@ describe('loadConfig', () => {
     ])('refuses %s without its partner', (name, value) => {
       expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
     });
+
+    describe('the bulk return path', () => {
+      const ON = {
+        ...BASE_ENV,
+        COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
+        COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+      };
+
+      it('is read when the outcome path is on', () => {
+        expect(
+          loadConfig({
+            ...ON,
+            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+          }).outcomes
+        ).toEqual({
+          returnPath: 'login-bounces@collector.example',
+          bulkReturnPath: 'bulk-bounces@collector.example',
+          dsnDir: '/var/dsn',
+          pollMs: 30000,
+        });
+      });
+
+      it('is absent from the outcomes when unset', () => {
+        expect(loadConfig(ON).outcomes).not.toHaveProperty('bulkReturnPath');
+      });
+
+      it('is refused when the outcome path is off', () => {
+        expect(() =>
+          loadConfig({
+            ...BASE_ENV,
+            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+          })
+        ).toThrow(/COLLECTOR_OUTCOMES_BULK_RETURN_PATH.*COLLECTOR_OUTCOMES_RETURN_PATH/);
+      });
+
+      it('is refused when it names the same address as the login return path', () => {
+        expect(() =>
+          loadConfig({
+            ...ON,
+            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'LOGIN-bounces@collector.example',
+          })
+        ).toThrow(/must differ/);
+      });
+    });
   });
 
   it.each([
