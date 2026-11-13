@@ -589,10 +589,6 @@ class ImagePinTests(unittest.TestCase):
         self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
         self.assertIn(digest, mirrored)
 
-    def test_two_digests_in_the_wrapper_would_be_refused(self) -> None:
-        with self.assertRaises(ValueError):
-            psp.pinned_percona("percona/percona-server@sha256:" + "a" * 64 + " percona/percona-server@sha256:" + "b" * 64)
-
     def test_the_stock_digest_is_read_from_the_runbook_not_typed(self) -> None:
         self.assertNotRegex(_WRAPPER_TEXT, r"mysql:8\.0@sha256:[0-9a-f]{64}")
         self.assertIn("db/RUNBOOK-db.md", _WRAPPER_TEXT)
@@ -645,10 +641,9 @@ class WrapperTests(unittest.TestCase):
 
 
 class CiTests(unittest.TestCase):
-    def test_the_native_job_pulls_the_percona_pin_from_the_wrapper(self) -> None:
-        self.assertIn("db/provision/prove-percona-snapshot.sh", _CI)
-        self.assertRegex(_CI, r"percona/percona-server@sha256:\[0-9a-f\]\{64\}")
-        self.assertNotRegex(_CI, r"percona/percona-server@sha256:[0-9a-f]{64}")
+    def test_the_native_job_pulls_the_percona_pin_from_the_mirror_list(self) -> None:
+        self.assertIn("percona_pin.py index", _CI)
+        self.assertNotRegex(_CI, r"sha256:[0-9a-f]{64}")
 
     def test_the_green_proof_runs_un_sabotaged(self) -> None:
         self.assertRegex(_CI, r"run: db/provision/prove-percona-snapshot\.sh\n")

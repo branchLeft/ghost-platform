@@ -138,11 +138,7 @@ jobs:
       # control stayed green so could not have failed.
       - name: Pull the pinned Percona digest
         run: |
-          pins="$(grep -oE 'percona/percona-server@sha256:[0-9a-f]{64}' db/provision/prove-percona-snapshot.sh | sort -u)"
-          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
-            echo "db/provision/prove-percona-snapshot.sh must pin exactly one Percona digest, found: $pins" >&2
-            exit 1
-          fi
+          pins="percona/percona-server@$(python3 db/provision/percona_pin.py index)"
           docker pull "$pins"
 
       - name: Red case, a commit forced between the snapshot and the coordinates, no lock

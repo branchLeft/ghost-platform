@@ -588,14 +588,6 @@ def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool) -> int:
     return sp.exit_code(outcomes, sabotaged=sabotaged)
 
 
-def pinned_percona(wrapper_text: str) -> str:
-    """The one Percona digest the wrapper pins."""
-    pins = set(re.findall(r"percona/percona-server@sha256:[0-9a-f]{64}", wrapper_text))
-    if len(pins) != 1:
-        raise ValueError(f"expected exactly one Percona digest, found {sorted(pins)}")
-    return pins.pop()
-
-
 _OK = ("mysql-bin.000003", 1461)
 _NEXT = ("mysql-bin.000003", 1700)
 _SETTINGS = {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1", "gtid_mode": "ON", "enforce_gtid_consistency": "ON"}
