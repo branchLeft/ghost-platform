@@ -9,6 +9,7 @@ import {
   MODEL_ENV_SUFFIXES,
   ModelKeyPresentError,
 } from '../../src/modelFreeEnvironment.js';
+import * as entry from '../../src/index.js';
 import * as real from '../../src/processEntry.js';
 import { RELEASE, bakeConfig, makeFleet } from './helpers/fakeFleet.js';
 import { cleanupSabotageTmp, importSabotaged, type Mutation } from './helpers/sourceSabotage.js';
@@ -80,6 +81,11 @@ describe('runReleaseFromProcess', () => {
     expect((settled as Error).message).not.toContain(SECRET);
     expect(fleet.calls.runGates).toBe(0);
     expect(fleet.holds).toEqual([]);
+  });
+
+  it('is the only release entry the package exports, so no caller can pass its own environment', () => {
+    expect(entry.runReleaseFromProcess).toBe(real.runReleaseFromProcess);
+    expect(Object.keys(entry)).not.toContain('runRelease');
   });
 
   it('reads the environment at call time, not when the module was loaded', async () => {

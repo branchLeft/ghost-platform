@@ -74,6 +74,14 @@ and with no machine rehydrated for it, neither a later
 to act on. It is rehydrated with no recovery action of its own -- the
 state is already correct, only the in-memory object was lost.
 
+A saved abort (`abortRequested: true` on the record) is honoured on
+restart. Every machine is rehydrated with it, so a recovered `applying`
+that settles reverts instead of finishing, and a recovered `done` is
+reverted at once: the process that asked for the abort had given up on
+that tenant's bake, so nobody will ever watch it. `persist` writes are
+chained, so a slow write of an earlier step never lands over the abort
+that interrupted it.
+
 ## bumpStateMachine.ts: `BumpDependencies`
 
 Every side effect is injected, never called directly, so this state
@@ -264,26 +272,51 @@ argument and hands `process.env` to `runRelease` as it stands, so a caller
 cannot pass a scrubbed copy while the process itself holds a model key. A
 static test pins it as the only reader and pins the exact call; sabotage
 pairs pass an empty or filtered environment and watch a key get through.
+`runRelease` itself is not exported from the package entry (`index.ts`), so
+a caller outside this package cannot hand it an environment of its own.
 
 ## deadlines.ts
 
 Every outside call `runRelease` awaits has a bound: `runGates()` once,
-each member's `machine.run()`, and each `health()` and `reportedErrors()`
-call on every soak pass. The caller sets them in `deps.deadlines`; any left
-out take `DEFAULT_CALL_DEADLINES` (30 minutes, 60 minutes, 30 seconds, 30
-seconds), which are incidental. A bound that is not a finite number above
-zero is refused before anything is touched, because one that could never
-fire puts the hang back.
+`listMembers()` once per ring, each member's `machine.run()` and, if that
+times out, the save of its abort, each `health()` and `reportedErrors()`
+call on every soak pass, each `clock.sleep()` between passes (its own length
+plus `sleepOverrunMs`), each `recordPromotion()`, each `closeBakeWindow()`,
+each regression revert (`abortAfterDone()`), and each `hold()`. The caller
+sets them in `deps.deadlines`; any left out take `DEFAULT_CALL_DEADLINES`,
+whose values are incidental. A bound that is not a finite number above zero
+is refused before anything is touched, because one that could never fire
+puts the hang back.
 
 A call that misses its bound is read exactly as if it had thrown: hung gates
-hold as `gate-red`, a hung probe holds as `probe-failed` and reverts
-nothing. A hung bump fails its member as `bump-not-done`, later members are
-never touched, and the machine is asked to `abort()`: a promise cannot be
+hold as `gate-red`; a hung member list, probe or bake clock holds as
+`probe-failed` and reverts nothing; a hung recorder holds as
+`promotion-record-failed` before that member's old colour is stopped; a
+hung bake-window close holds as `bump-not-done`; a hung revert is named in
+the regression's hold. A hung `hold()` rejects `runRelease` with
+`DeadlineExceededError`, because a hold nobody received must not be
+returned as if it had been raised.
+
+A hung bump fails its member as `bump-not-done`, later members are never
+touched, and the machine is asked to `abort()`: a promise cannot be
 cancelled, so the request lands at the machine's own safe point (cancel
-before apply, never interrupt apply, revert after it). A bump that finishes
-late therefore ends reverted or cancelled, never `done` with nobody watching
-its bake. The calls are wrapped once, where `runRelease` takes its
-dependencies, so no call site can forget one.
+before apply, never interrupt apply, revert after it). `run()` checks the
+flag once more inside the apply lock, just before `applying` is entered,
+because both the `backed-up` write and the wait for the lock yield; an abort
+that lands in either still cancels, and the migration never starts. One that
+lands while `done` is being written reverts. `abort()` saves the request
+before it settles, and the controller waits for that save, up to `abortMs`,
+before it holds and moves on; a save that fails or hangs is named in the
+hold. A bump that finishes late therefore ends reverted or cancelled, never
+`done` with nobody watching its bake, and a restart honours the saved abort
+too (see recovery.ts above). The calls are wrapped once, where `runRelease`
+takes its dependencies or at the one call site of each machine method, so
+no call site can forget one.
+
+A recorder that answers after its bound may still append its record. The
+hold already stopped the release before that member's old colour was
+stopped, so the late record names a promotion whose old colour still runs:
+an inconsistency for whoever clears the hold to read, not an unsafe state.
 
 ## ringController.ts
 

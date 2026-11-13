@@ -1,6 +1,8 @@
 /**
- * Upper bounds on the calls `runRelease` awaits from outside: the gates,
- * one tenant's whole bump, and each health and reported-error probe. A call
+ * Upper bounds on every call `runRelease` awaits from outside: the gates,
+ * the member lists, one tenant's whole bump and its saved abort, each
+ * probe, the promotion record, the bake-window close, a revert, the hold
+ * sink and the bake clock's own sleep. A call
  * that has not answered by its deadline is read exactly as if it had thrown,
  * so a hung host fails its member and raises a hold instead of stalling the
  * release with nobody told. The values are incidental; that a bound exists
@@ -15,6 +17,20 @@ export interface CallDeadlines {
   readonly healthMs: number;
   /** One `reportedErrors()` call, on every soak pass. */
   readonly reportedErrorsMs: number;
+  /** One `listMembers()` call, once per ring. */
+  readonly listMembersMs: number;
+  /** Saving a timed-out bump's abort request (`machine.abort()`). */
+  readonly abortMs: number;
+  /** One `recordPromotion()` call, once per member. */
+  readonly recordPromotionMs: number;
+  /** One member's `machine.closeBakeWindow()`, which stops the old colour. */
+  readonly closeBakeWindowMs: number;
+  /** One regressed member's `machine.abortAfterDone()`, its flag change back. */
+  readonly revertMs: number;
+  /** One `hold()` call. */
+  readonly holdMs: number;
+  /** How far past its own length one `clock.sleep(ms)` may run. */
+  readonly sleepOverrunMs: number;
 }
 
 export const DEFAULT_CALL_DEADLINES: CallDeadlines = Object.freeze({
@@ -22,6 +38,13 @@ export const DEFAULT_CALL_DEADLINES: CallDeadlines = Object.freeze({
   bumpMs: 60 * 60 * 1000,
   healthMs: 30 * 1000,
   reportedErrorsMs: 30 * 1000,
+  listMembersMs: 60 * 1000,
+  abortMs: 60 * 1000,
+  recordPromotionMs: 60 * 1000,
+  closeBakeWindowMs: 10 * 60 * 1000,
+  revertMs: 10 * 60 * 1000,
+  holdMs: 60 * 1000,
+  sleepOverrunMs: 60 * 1000,
 });
 
 const DEADLINE_KEYS = Object.freeze([
@@ -29,6 +52,13 @@ const DEADLINE_KEYS = Object.freeze([
   'bumpMs',
   'healthMs',
   'reportedErrorsMs',
+  'listMembersMs',
+  'abortMs',
+  'recordPromotionMs',
+  'closeBakeWindowMs',
+  'revertMs',
+  'holdMs',
+  'sleepOverrunMs',
 ] as const satisfies readonly (keyof CallDeadlines)[]);
 
 /** The call named did not settle in time. Read as a failure, never as a pass. */
