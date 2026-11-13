@@ -3,6 +3,8 @@ name: Snapshot proof (native x86_64)
 # The full un-sabotaged snapshot-locking proof, run on a native x86_64 runner.
 # db1 is x86_64; the Mac runs this proof under amd64 emulation, so this is the
 # run that matches the hosts. Path-filtered to the proof and what it loads.
+# The Percona digest it proves is the one in the image mirror list, so that list is
+# in the filter: a re-pin must run the proof.
 # The unit tests for the same code run in repo-tooling-ci.yml on every push.
 
 on:
@@ -12,6 +14,7 @@ on:
       - 'db/provision/snapshot_probe*'
       - 'db/provision/replication_client_probe*'
       - 'db/provision/percona_snapshot_probe*'
+      - 'db/provision/percona_pin*'
       - 'db/provision/prove-snapshot-locking.sh'
       - 'db/provision/prove-replication-client.sh'
       - 'db/provision/prove-percona-snapshot.sh'
@@ -19,6 +22,7 @@ on:
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
       - 'db/stack/conf.d/branchleft.cnf'
+      - '.github/image-mirror/images.json'
       - '.github/workflows/snapshot-proof-ci.yml'
   pull_request:
     branches: [main]
@@ -26,6 +30,7 @@ on:
       - 'db/provision/snapshot_probe*'
       - 'db/provision/replication_client_probe*'
       - 'db/provision/percona_snapshot_probe*'
+      - 'db/provision/percona_pin*'
       - 'db/provision/prove-snapshot-locking.sh'
       - 'db/provision/prove-replication-client.sh'
       - 'db/provision/prove-percona-snapshot.sh'
@@ -33,6 +38,7 @@ on:
       - 'db/provision/extract_tenant_binlog.py'
       - 'db/RUNBOOK-db.md'
       - 'db/stack/conf.d/branchleft.cnf'
+      - '.github/image-mirror/images.json'
       - '.github/workflows/snapshot-proof-ci.yml'
 
 # Read-only. No secrets are used: the proof runs on local throwaway containers.
