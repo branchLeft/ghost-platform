@@ -857,6 +857,10 @@ describe("Ghost's content importer", () => {
       await expect(adapter.getUniqueFileName(another, dir)).rejects.toThrow(
         /too many upload names/
       );
+      // Waiting cannot clear a lapse, so the message must not tell the operator to retry.
+      const refusal = await adapter.getUniqueFileName(another, dir).catch((err) => err);
+      expect(refusal.message).toMatch(/restart/);
+      expect(refusal.message).not.toMatch(/retry later/);
       expect(adapter.reservedNames.size).toBe(0);
       expect(adapter.lapsedReservations.size).toBe(3);
       // None of the lapsed files was forgotten: each is still refused.

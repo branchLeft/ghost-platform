@@ -45,5 +45,4 @@ across the whole file. The provision job binds
 one, so a job-level-only scan would report a required name as unused.
 
 Exit 0 prints one line; exit 1 prints one `::error::` line per finding. The
-mode reads a file and takes no network access. It is not wired into any
-workflow here: adding that step is a workflow edit and is a separate change.
+mode reads a file and takes no network access.

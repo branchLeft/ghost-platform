@@ -76,7 +76,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     timeout-minutes: 20
     env:
-      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private
+      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private2
 
     steps:
       - name: Checkout
@@ -137,7 +137,7 @@ jobs:
     env:
       IMAGE: ghcr.io/branchleft/percona-server
       IMAGE_TAG: ${{ github.sha }}
-      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private
+      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private2
 
     steps:
       - name: Checkout

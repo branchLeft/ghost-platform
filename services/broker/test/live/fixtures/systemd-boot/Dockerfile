@@ -92,7 +92,7 @@ COPY services/broker/test/live/fixtures/systemd-boot/make-verify-key.mjs service
 # `{"slots": []}` shape found by a 500, and the non-empty seed added after a
 # review round found `/reset` on an empty slots file never exercises the
 # real write-rename against the ProtectSystem=strict mount at all).
-RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots \
+RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots /var/lib/docker/volumes \
  && /opt/branchleft/broker/node/bin/node /opt/branchleft/broker/proof/make-verify-key.mjs /etc/branchleft/broker-verify-key.bin /opt/branchleft/broker/proof/signing-key.bin \
  && chown root:broker /etc/branchleft/broker-verify-key.bin \
  && chmod 0640 /etc/branchleft/broker-verify-key.bin \
