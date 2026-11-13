@@ -4,6 +4,8 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+## 0.5.0
+
 **The mail spool can serve the outcomes route.**
 
 - **Additive:** `MailSpoolStackArgs` takes an optional `drainOutcomes`. When
