@@ -42,16 +42,6 @@ address and checks every artefact for it.
 6. `ghost-settings.json` — `settings.ts`
 7. `identity.json` — `identity.ts`
 
-**Known Done-criterion conflict, not resolved here — see the PR body.** The
-story's own Done means says tenant zero's rendered Compose and environment
-are byte-identical to what `infra/tenant` renders today. `compose.ts`'s own
-doc comment explains why that cannot hold at the same time as the ruling
-that blue/green applies everywhere, demos included: today's renderer emits
-one service on one port; this one necessarily emits two. The environment
-*values* this module renders match for every key `TransportSpec` can carry;
-`environment.ts`'s own doc comment on `transportEnvironment` names the four
-keys it cannot yet, and why.
-
 ## Provision script
 
 The exact root-run command that must create a paying tenant's three named
@@ -65,8 +55,8 @@ would fail "command not found" as a standalone script).
 A demo renders no equivalent command: its one directory is host-provisioned
 once, at demo-host build time, never per recycle, and never keyed by `slug`
 (a demo's slug is a throwaway per-lease value). `provision.sh` still exists
-for a demo, per the story's own Done means ("all seven artefacts... for a
-demo"), but is informational rather than a command to run.
+for a demo (all seven artefacts render for every kind), but is informational
+rather than a command to run.
 
 ## assertAllocationShape
 
@@ -90,8 +80,7 @@ skipped `validate()` gets a named refusal here rather than a malformed
 artefact.
 
 Returns the seven artefacts directly — the shape `services/broker/src/
-render.ts`'s `Renderer.render()` seam expects, and what the story's own Done
-means names: "`render(descriptor)` returns all seven artefacts".
+render.ts`'s `Renderer.render()` seam expects.
 `renderEdgeSiteBlock`/`renderSettings`/`renderIdentity` stay separately
 exported for a caller (a test, a future reconciler) that wants one
 artefact's typed value rather than re-parsing it back out of `content`.
@@ -99,10 +88,7 @@ artefact's typed value rather than re-parsing it back out of `content`.
 `themeCsp` (the strict content policy) defaults to `THEME_CSP_UNAVAILABLE`
 — the fail-soft posture — so every existing caller of
 `render(descriptor, zones)` keeps compiling and keeps rendering the
-report-only policy exactly as before. No caller in this repo passes a
-computed set yet: the harness that derives one at theme-admission time does
-not exist here — wiring a real value through is that story's job, not this
-one's.
+report-only policy exactly as before.
 
 `options.activeColour` (a fourth, optional argument) narrows `compose.yml` to
 one colour's Ghost service; the other six artefacts are unchanged. Omitting it

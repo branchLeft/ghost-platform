@@ -13,4 +13,4 @@ so two different slots reconciling concurrently — each holding its own,
 different per-slot lock — would otherwise still interleave their reads and
 writes here and lose entries. There is no flock to rely on either: the
 sudoers-enumerated wrapper's own per-slot flock spans one privileged
-invocation, never this file, and does not exist yet.
+invocation, never this file.

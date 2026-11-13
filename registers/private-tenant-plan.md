@@ -64,8 +64,8 @@ gate reads the edited copy. Neither control is checked by this file.
 ## Not covered
 
 - Existence of the dedicated runner virtual machine is attested, not verified.
-- The tenant repository template does not yet select the dedicated runner label
-  for a private tenant. Until it does, a private tenant's own CI cannot run on the
-  dedicated runner even when the gate passes.
+- The tenant repository template does not select the dedicated runner label
+  for a private tenant, so a private tenant's own CI cannot run on the
+  dedicated runner even when the gate passes. Do not flip either attestation
+  while that holds: a private tenant's CI would run on GitHub-hosted runners.
 - The gate does not verify the paid plan. The read-backs are the runtime proof.
-- Do not flip either attestation until the tenant template selects the dedicated runner. Until then a private tenant's CI would run on GitHub-hosted runners.

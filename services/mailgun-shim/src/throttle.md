@@ -31,14 +31,11 @@ to legitimately throttle.
 This bucket and LLD-6 §05's demo-mail "two ceilings" (load-bearing at
 §08) are not unrelated: both ultimately defend mx1's shared IP
 reputation (§05: "IP reputation is the thing that has to be actively
-defended, by ceilings, by warm-up discipline"). What changes is where
-that defence has to live. Today, one spool total, a per-spool bucket
-and an estate-wide bucket are the same thing. Once every host has its
-own spool (LLD-6's own end state), a per-spool bucket stops bounding
-anything at the IP: N hosts each independently allowed up to
+defended, by ceilings, by warm-up discipline"). A per-spool bucket does
+not bound anything at the IP: N hosts each independently allowed up to
 messagesPerHour is N times the intended estate rate against the one
-address that carries the reputation. The warm-up ceiling then belongs
-at the single egress point every host's mail eventually converges on
-(whatever drains every spool and submits to mx1) rather than here —
-that convergence point doesn't exist yet, so moving it is future work,
-not something this per-spool bucket can do on its own.
+address that carries the reputation. The estate warm-up ceiling therefore
+lives at the single egress point every host's mail converges on
+(`services/mail-collector`, which drains every spool and submits to mx1)
+rather than here; this bucket bounds how much one spool hands over in a
+drain.

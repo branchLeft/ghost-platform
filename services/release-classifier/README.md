@@ -147,7 +147,7 @@ Consequence: the classifier routes a range to fast-path on these files. Basis: t
 migration runner executes each migration once per database, so the skipped-up case
 should not occur in a normal upgrade. That is an assumption, not verified in this run.
 
-Pinned routes are the owner's open rulings. Changing a constant is a ruling, not a
+Pinned routes are the owner's rulings. Changing a constant is a ruling, not a
 refactor. The test suite pins the current values.
 
 ## Premise correction
@@ -302,8 +302,8 @@ at v6.69.0.
   reset-automation migrations). A possible fix is to compare the pinned and target
   trees and classify only files that are new since the pinned tag. The range route does
   not do that; the per-step classifier (Release steps) does.
-- **Contracting, constraint and unclassified.** The owner's rulings are open for the
-  first two. The unclassified allowlist needs a ruling on each addition.
+- **Contracting, constraint and unclassified.** Their routes are pinned constants,
+  and the unclassified allowlist needs a ruling on each addition.
 - **Rollback residuals.** Ruled: option A. The files stay fast-path with the residual
   recorded above. The assumption it rests on is not verified.
 - **A range with no version folder in it.** Ghost has no folder for a minor line with
@@ -323,5 +323,4 @@ This does not establish that a range is safe. It checks migration source against
 a fixed grammar and a fixed list of names, and forms outside them route to refusal as
 unclassified. Helpers on the allowlist are trusted on the basis of the reasons beside
 them, so a data change written in a form the allowlist accepts, but whose effect the
-reason does not cover, passes unseen. The range v6.55.0 to v6.69.0 routes to refusal,
-and the issue's Done-when is not claimed.
+reason does not cover, passes unseen.

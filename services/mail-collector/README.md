@@ -15,11 +15,11 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DESCRIPTOR_MAX_STALENESS_MS` | no (default `60000`) | Past this age, the drain list is treated as empty rather than as its last good read. |
 | `COLLECTOR_DEMO_MAIL_DOMAIN` | for a demo host | The platform's shared demo mail domain: the one domain a demo host's header From may carry (a demo descriptor holds a local part only). Unset, the mail of every demo host is held, unsent and unacked, and the collector logs `demo_mail_domain_not_set` at start-up. See the header From scope section. |
 | `COLLECTOR_SHIM_PORT` | no (default `8080`) | The HTTP port every host's mailgun-shim listens on for its drain surface — a deployment convention, combined with the descriptor's own `appHostIp`. |
-| `COLLECTOR_DRAIN_TOKEN` | yes | The drain endpoint's shared bearer credential. One value across every host today — see the PR body's Design section for why, and what changes once per-host tokens exist. |
+| `COLLECTOR_DRAIN_TOKEN` | yes | The drain endpoint's shared bearer credential. One value across every host. |
 | `COLLECTOR_DRAIN_TIMEOUT_MS` | no (default `40000`) | Client-side timeout for one `GET /drain` call. Must exceed the target shim's own `SHIM_DRAIN_HOLD_MS`. |
 | `COLLECTOR_DRAIN_RETRY_BACKOFF_MS` | no (default `2000`) | Backoff after a failed drain/ack call to one host before retrying it. |
 | `COLLECTOR_EMPTY_POLL_BACKOFF_MS` | no (default `250`) | Backoff after a `GET /drain` that answered with zero messages, before polling that host again. |
-| `COLLECTOR_MESSAGES_PER_HOUR` | no (default `50`) | The estate-wide send-rate ceiling, moved here from the shim's per-spool bucket. |
+| `COLLECTOR_MESSAGES_PER_HOUR` | no (default `50`) | The estate-wide send-rate ceiling. The shim keeps its own per-spool bucket. |
 | `COLLECTOR_THROTTLE_CONFIG_PATH` | no | Optional live-reloadable override file, `{"messagesPerHour": N}`. This is the bulk lane's ceiling. |
 | `COLLECTOR_LOGIN_MESSAGES_PER_HOUR` | no (default `3600`) | The login (transactional) lane's own ceiling. Login mail never spends bulk tokens. |
 | `COLLECTOR_BULK_RAMP_PATH` | no (off) | Optional live-reloadable bulk ramp file. Unset, bulk runs at the bulk ceiling alone. See the bulk lanes section. |
@@ -43,7 +43,7 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_PIN_STATE_DIR` | no (off) | Directory, on a volume that outlives the container and is writable by the `node` user, the per-message target pins are kept in. Unset, a restart forgets them and the collector logs `pins_not_persistent` at start-up, so the rollout must set it before Sweego is enabled. |
 | `COLLECTOR_STATE_WITNESS_DIR` | no (off) | Directory, on a volume that outlives the container, writable by the `node` user and on a **different mount** from the dedupe, pin and usage state, the state witnesses are kept in. The collector refuses to start with it on the same mount as any of them. A state volume replaced by an empty one then reads as lost, not as a first run. Unset, the collector logs `state_witness_not_configured`. See the state witness section. |
 | `COLLECTOR_PIN_TTL_MS` | no (default `3024000000`, 35 days) | How long a pin is remembered, counted from the attempt that made it. It must outlast the longest hold at the Sweego account cap (31 days, the longest UTC month, `MAX_CAP_HOLD_MS` in `sweegoUsage.ts`), so the default adds four days. A value below 31 days (`2678400000`) is refused at start-up. The shim re-offers an unacked row every `SHIM_DRAIN_LEASE_SECONDS` (30 s; `services/mailgun-shim/src/config.ts`) with no attempt cap and no maximum age, and the drain contract sets none, so this TTL is the only time bound on a held pinned message. |
-| `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
+| `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets, the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
 | `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. With both unset, submissions and the drain loop are exactly as before. |
 | `COLLECTOR_OUTCOMES_BULK_RETURN_PATH` | no (off) | A second envelope sender, used for bulk (campaign) mail only; `COLLECTOR_OUTCOMES_RETURN_PATH` then serves login (transactional) mail alone. Unset, bulk mail uses the single return path as before. Needs the other two outcome variables, and must differ from `COLLECTOR_OUTCOMES_RETURN_PATH`. Notifications for both addresses must arrive in `COLLECTOR_OUTCOMES_DSN_DIR`: the Message-ID, not the address, names the message. The mailbox for this address and any DNS it needs are set up on the mail host before this is set. |
@@ -52,15 +52,13 @@ authenticated SMTP submission, and acks it back. See
 
 ## Design
 
-See the delivering PR's body for the drain-list-derivation and
-estate-wide-throttle design decisions; this file states the mechanics env
-vars need plus the source notes below, which is load-bearing enough to
-live where it can't drift from the code that implements it.
+This file states the mechanics the env vars need plus the source notes
+below, which are load-bearing enough to live where they can't drift from the
+code that implements them.
 
 `docker-proof/deadmans-switch/run-deadmans-switch-proof.sh` proves
 the shared `deadmans-switch/src/heartbeat.ts` against a real local Healthchecks instance rather than
-a mock — see its own header comment and the delivering PR's body for a
-recorded run.
+a mock — see its own header comment.
 
 ## Outcomes carried back to the spool
 
@@ -88,8 +86,7 @@ temporary; any other status yields no outcome. A notice the spool calls `unknown
 unreachable spool, or one that has not opted in (404), keeps it for the next
 pass. A notification for a spool the descriptor no longer names is left, never
 sent to a guessed address. How notifications get into the directory, and whether
-mx1 honours the DSN request at all, is the mx1-side half and is unproven; see
-the delivering PR's runbook.
+mx1 honours the DSN request at all, is the mx1-side half.
 
 A feedback-loop complaint (an RFC 5965 abuse report) arriving in the same
 directory can be read as a `complained` outcome by an opt-in reader that is off

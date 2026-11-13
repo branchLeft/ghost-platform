@@ -94,9 +94,8 @@ line and the tenant's message. Every line is always present. A value the portal
 does not hold is the marker `NOT_AVAILABLE`, never an omitted or empty line. A
 reading that records no run of mismatching readings shows `MISMATCH_SINCE:
 NO_MISMATCH`; no reading at all makes every health-derived line `NOT_AVAILABLE`.
-`SITE_HOST` and `LAST_DEPLOY` are always `NOT_AVAILABLE` today: the portal's
-tenant data holds neither a site hostname nor a deploy record, and nothing in
-`portal/data` was added to supply them.
+`SITE_HOST` and `LAST_DEPLOY` are always `NOT_AVAILABLE`: the portal's
+tenant data holds neither a site hostname nor a deploy record.
 
 The email is built on the server at submit time. The tenant identifier, health
 and version come from a fresh `ownRegistration(scope)` and `ownHealth(scope)`

@@ -10,8 +10,8 @@ verdict question. There are three outcomes:
   This is the demo, dev and test path, and it is explicit.
 - `storage__<feature>__verdictSource=production` selects the production
   client (`production-verdict-client.md`) over a transport that code passes as
-  the second argument, `{ transport, logger }`. The entry file passes none
-  yet, so naming `production` there is the third outcome below: no source,
+  the second argument, `{ transport, logger }`. The entry file passes none,
+  so naming `production` there is the third outcome below: no source,
   every upload refused. Budgets are `verdictConnectTimeoutMs` and
   `verdictTotalTimeoutMs`; a value set but not a positive number is also no
   source, with the cause in the result's `configError`.
