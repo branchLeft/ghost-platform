@@ -90,6 +90,41 @@ describe('signed outcome ids', () => {
     }
   });
 
+  // A compare that looks at only some bytes passes every test that damages the
+  // same byte, so the damage is done at the first, a middle and the last position.
+  it.each([
+    ['first', 0],
+    ['second', 1],
+    ['middle', 15],
+    ['next to last', 30],
+    ['last', 31],
+  ])('does not verify when the %s character of the MAC is flipped', (_name, index) => {
+    const mac = /\.([0-9a-f]{32})@/.exec(signed)![1]!;
+    const flipped = `${mac.slice(0, index)}${mac[index] === '0' ? '1' : '0'}${mac.slice(index + 1)}`;
+    expect(flipped).not.toBe(mac);
+    expect(
+      verifyOutcomeMessageId(signed.replace(mac, flipped), ['reader@example.com'], KEY)
+    ).toBeNull();
+  });
+
+  it('keeps the fields apart: two different splits of the same text give different MACs', () => {
+    const macOf = (id: string): string => /\.([0-9a-f]{32})@/.exec(id)![1]!;
+    const sign = (k: typeof key, recipient: string): string =>
+      macOf(signOutcomeMessageId(k, recipient, KEY));
+    // The id and the generation run together as `a-111` unless they are separated.
+    expect(sign({ ...key, id: 'a-1', drainCount: 11 }, 'r@example.com')).not.toBe(
+      sign({ ...key, id: 'a-11', drainCount: 1 }, 'r@example.com')
+    );
+    // The spool and the recipient run together as `tenanta@x.com` unless they are separated.
+    expect(sign({ ...key, targetId: 'tenant' }, 'a@x.com')).not.toBe(
+      sign({ ...key, targetId: 'tenanta' }, '@x.com')
+    );
+    // The generation and the spool.
+    expect(sign({ ...key, drainCount: 1, targetId: '2a' }, 'r@example.com')).not.toBe(
+      sign({ ...key, drainCount: 12, targetId: 'a' }, 'r@example.com')
+    );
+  });
+
   it('refuses a key that is too short to be one, without echoing it', () => {
     expect(() => signOutcomeMessageId(key, 'reader@example.com', 'short-secret')).toThrow(
       /at least 32 characters/
