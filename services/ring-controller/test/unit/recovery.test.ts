@@ -338,7 +338,7 @@ describe('recoverPersistedTenants -- the recovery table', () => {
     // first-class part of the sweep's own result, so a caller can tell
     // "nothing left to recover" from "recovery itself failed" and act
     // on it (page an operator, alert on it, whatever fits).
-    expect(failed).toEqual([{ tenantId: 'throws', error: thrown }]);
+    expect(failed).toEqual([{ tenantId: 'throws', error: thrown, paged: false }]);
     expect(loggedErrors).toHaveLength(1);
     expect(String(loggedErrors[0])).toContain('throws');
 
