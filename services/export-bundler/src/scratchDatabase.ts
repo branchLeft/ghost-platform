@@ -545,11 +545,26 @@ export function createSqliteScratch(
   const volume = sqliteScratchVolume(spec.runId);
   const { network } = mysqlScratchNames(spec.runId);
   const removeSync = () => {
+    // Both removals are attempted: a volume that will not go must not leave
+    // the run network behind as well. Every failure is then reported.
+    const failures: unknown[] = [];
     for (const argv of [
       ['volume', 'rm', '-f', volume],
       ['network', 'rm', network],
     ]) {
-      removeScratchResourceSync(argv, docker);
+      try {
+        removeScratchResourceSync(argv, docker);
+      } catch (err) {
+        failures.push(err);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `${failures.length} scratch removals failed: ` +
+          failures.map((f) => (f instanceof Error ? f.message : String(f))).join('; ')
+      );
     }
   };
   let unregister: (() => void) | undefined;

@@ -273,13 +273,22 @@ async function writeFakeDocker(
   return { path, argvLog, importLog };
 }
 
-/** A docker stand-in that fails every network or volume removal with the given stderr. */
-async function writeRemovalDocker(dir: string, stderr: string): Promise<string> {
+/**
+ * A docker stand-in that fails every network or volume removal with the given
+ * stderr. With `argvLog`, each call's first two arguments are appended to it.
+ * With `failOnly`, only that resource kind fails; the other removal succeeds.
+ */
+async function writeRemovalDocker(
+  dir: string,
+  stderr: string,
+  options: { argvLog?: string; failOnly?: 'network' | 'volume' } = {}
+): Promise<string> {
   const path = join(dir, 'docker-removal');
   const lines = [
     '#!/bin/sh',
+    ...(options.argvLog ? [`echo "$1 $2" >> '${options.argvLog}'`] : []),
     'case "$1" in',
-    '  network|volume)',
+    `  ${options.failOnly ?? 'network|volume'})`,
     '    if [ "$2" = rm ]; then',
     `      printf '%s\\n' '${stderr}' >&2`,
     '      exit 1',
@@ -408,6 +417,14 @@ describe('createMysqlScratch', () => {
     await expect(scratch.destroy()).resolves.toBeUndefined();
   });
 
+  it('destroy() rethrows when the docker binary is missing', async () => {
+    const scratch = createMysqlScratch(mysqlSpec, {
+      dockerCommand: join(dir, 'no-such-docker'),
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow();
+  });
+
   it('destroy() rethrows a network removal that failed for another reason', async () => {
     const docker = await writeRemovalDocker(
       dir,
@@ -444,6 +461,48 @@ describe('SQLite scratch removers', () => {
       registry: new CleanupRegistry(),
     });
     await expect(scratch.destroy()).resolves.toBeUndefined();
+  });
+
+  it('still removes the network when the volume removal fails, and reports the volume failure', async () => {
+    const argvLog = join(dir, 'argv.log');
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: volume is in use by a running container',
+      { argvLog, failOnly: 'volume' }
+    );
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow(/in use/);
+    const calls = (await readFile(argvLog, 'utf8')).trim().split('\n');
+    expect(calls).toEqual(['volume rm', 'network rm']);
+  });
+
+  it('reports both failures when the volume and the network removals both fail', async () => {
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: permission denied on the daemon socket'
+    );
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    const err = await scratch.destroy().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors).toHaveLength(2);
+    expect((err as Error).message).toMatch(/2 scratch removals failed/);
+  });
+
+  it('rethrows when the docker binary is missing', async () => {
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: join(dir, 'no-such-docker'),
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow();
   });
 
   it('rethrows a volume removal that failed for another reason', async () => {
