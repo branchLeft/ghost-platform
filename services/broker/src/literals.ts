@@ -1,7 +1,7 @@
 import { validateSlotName, type SlotName } from '@branchleft/ghost-platform-render-core';
 
 export type Colour = 'a' | 'b';
-export type Verb = 'start' | 'stop';
+export type Verb = 'start' | 'stop' | 'detach';
 
 /**
  * `render-core`'s `validateSlotName` accepts the general DNS-label shape

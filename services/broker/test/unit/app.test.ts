@@ -34,6 +34,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(await statusRes.json()).toEqual({
       slot: '0',
       phase: 'running',
+      evidence: 'absent',
       healthy: false,
       notReal: [],
       interim: [],
@@ -51,6 +52,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(await statusAfterReset.json()).toEqual({
       slot: '0',
       phase: 'free',
+      evidence: 'absent',
       healthy: false,
       notReal: [],
       interim: [],
@@ -869,6 +871,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(await status.json()).toEqual({
       slot: '0',
       phase: 'error',
+      evidence: 'absent',
       healthy: false,
       notReal: [],
       interim: [],

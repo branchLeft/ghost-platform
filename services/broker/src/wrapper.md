@@ -12,6 +12,28 @@ else. Resolves to the wrapped `docker load`'s own stdout, unlike the other
 three verbs, which discard it — nothing else this wrapper runs has output a
 caller needs back.
 
+## SlotWrapper detach
+
+The enumerated `<slot> detach` verb: the broker's side of freeze-and-detach
+(`POST /freeze`, `app.md#freeze`). The wrapper moves the slot's whole held
+set (the slot directory, the content volume with its quarantine, the data
+volume) into the held area as one entry, seals, hashes and verifies it, and
+prints exactly one receipt line on stdout:
+
+```text
+{"entry":"<slot>-<counter>","sha256":"<64 lower-case hex>","bytes":<integer>}
+```
+
+That line is the contract the wrapper's `detach` verb must meet. `detach`
+resolves only when the process exited 0 and the line parses strictly (no
+extra field, no `.partial` entry, a safe-integer byte count); anything else
+rejects, and the broker keeps the slot `detaching` with evidence `frozen`.
+The broker then also checks that the entry is this slot's. It runs under
+`WrapperConfig.detachTimeoutMs` (`BROKER_WRAPPER_DETACH_TIMEOUT_MS`, default
+ten minutes), not the shorter bound the other verbs use, because it hashes a
+whole tenancy. The verb itself and its sudoers lines are not built here; until
+they are, `/freeze` fails safe, every time, at this call.
+
 ## createSlotWrapper
 
 Every invocation is `execFile` with an explicit argv array — never a shell

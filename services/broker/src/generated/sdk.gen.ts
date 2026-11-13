@@ -4,7 +4,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { GetSlotStatusData, GetSlotStatusErrors, GetSlotStatusResponses, PollDrainQueueData, PollDrainQueueErrors, PollDrainQueueResponses, PushImageData, PushImageErrors, PushImageResponses, ReconcileSlotData, ReconcileSlotErrors, ReconcileSlotResponses, ResetSlotData, ResetSlotErrors, ResetSlotResponses, StopSlotData, StopSlotErrors, StopSlotResponses } from './types.gen.js';
+import type { FreezeSlotData, FreezeSlotErrors, FreezeSlotResponses, GetSlotStatusData, GetSlotStatusErrors, GetSlotStatusResponses, PollDrainQueueData, PollDrainQueueErrors, PollDrainQueueResponses, PushImageData, PushImageErrors, PushImageResponses, ReconcileSlotData, ReconcileSlotErrors, ReconcileSlotResponses, ResetSlotData, ResetSlotErrors, ResetSlotResponses, StopSlotData, StopSlotErrors, StopSlotResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -29,6 +29,21 @@ export const pollDrainQueue = <ThrowOnError extends boolean = false>(options: Op
     security: [{ name: 'X-Broker-Signature', type: 'apiKey' }],
     url: '/drain',
     ...options
+});
+
+/**
+ * Freeze a slot's held evidence and detach it to the held area
+ *
+ * The only writer of the held-evidence marker. Writes the slot `detaching` with evidence `frozen` before any side effect, revokes the slot's lease, gate hash, drain flags and Ghost access key, then runs the sudoers-wrapped `detach` verb, which moves the slot's whole held set (slot directory, content volume with its quarantine, data volume) into the held area, seals, hashes and verifies it. Only when the wrapper's receipt parses and names this slot does the broker, in one write, record evidence `detached`, store the receipt and move the slot to `error`, which is what lets a later `POST /reset` through. Idempotent: a slot already `detached` answers from its stored receipt, and a slot left `detaching` or `error` with evidence `frozen` resumes. Never resets and never destroys. Requires the broker's signature scheme; the signed bytes are the raw JSON request body.
+ */
+export const freezeSlot = <ThrowOnError extends boolean = false>(options: Options<FreezeSlotData, ThrowOnError>): RequestResult<FreezeSlotResponses, FreezeSlotErrors, ThrowOnError> => (options.client ?? client).post<FreezeSlotResponses, FreezeSlotErrors, ThrowOnError>({
+    security: [{ name: 'X-Broker-Signature', type: 'apiKey' }],
+    url: '/freeze',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**
