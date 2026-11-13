@@ -186,7 +186,39 @@ def _content_directory(name: str) -> Path:
 
 
 _ADAPTERS_VOLUME_KEY = re.compile(rf"  (['\"]?)ghost-({_SLUG_PATTERN})-adapters\1:[ \t]*")
-_VOLUME_CREATE_TIMEOUT_SECONDS = 60
+# The broker gives one wrapper call `BROKER_WRAPPER_TIMEOUT_MS` (default 30 s,
+# `services/broker/src/config.ts`) and kills it on expiry. `start` spends that
+# on up to `_MAX_SLOT_VOLUMES` creates in a row and then `systemctl start`, so
+# the creates get 5 s each: 15 s at worst, half the default, and the other half
+# is left for the unit. A create on a healthy daemon takes well under a second.
+# `test_branchleft_slot.py`'s `VolumeCreateTimeoutBudgetTests` pins the value.
+_VOLUME_CREATE_TIMEOUT_SECONDS = 5
+_MAX_SLOT_VOLUMES = 3
+# What of docker's stderr rides in the error message: one line, printable ASCII,
+# cut here. Reasons: branchleft_slot.md#start-creates-the-slots-volumes.
+_DOCKER_STDERR_MAX_CHARS = 300
+
+
+class VolumeCreateFailed(RuntimeError):
+    """Raised when `docker volume create` fails or times out. The message is
+    one line and carries docker's own stderr, so the broker's log says why."""
+
+
+def _stderr_one_line(raw: bytes | str | None) -> str:
+    """A child's stderr as one log-safe line: whitespace runs (newlines
+    included) collapsed to one space, anything outside printable ASCII written
+    as `?`, cut at `_DOCKER_STDERR_MAX_CHARS`. Empty when there was none."""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else (raw or "")
+    flat = re.sub(r"[^\x20-\x7e]", "?", " ".join(text.split()))
+    if len(flat) > _DOCKER_STDERR_MAX_CHARS:
+        return flat[:_DOCKER_STDERR_MAX_CHARS] + "..."
+    return flat
+
+
+def _volume_create_failure(name: str, what: str, stderr: bytes | str | None) -> VolumeCreateFailed:
+    reason = _stderr_one_line(stderr)
+    suffix = f": {reason}" if reason else ""
+    return VolumeCreateFailed(f"docker volume create {name} {what}{suffix}")
 
 
 def _slot_volume_names(slot: str, compose_text: str) -> list[str]:
@@ -758,21 +790,31 @@ class RealSlotOps:
         `slot` (`_slot_volume_names`) with `docker volume create <name>`, which
         exits zero and changes nothing for a volume that already exists. No
         compose file to read creates nothing. Raises `RefusedVolume` for an
-        ambiguous file, and `CalledProcessError`, `TimeoutExpired` or
-        `OSError` when a create fails, so the unit is never started on a
-        missing volume. Reasons:
+        ambiguous file, `VolumeCreateFailed` (one-line message with docker's
+        stderr) when a create fails or runs past
+        `_VOLUME_CREATE_TIMEOUT_SECONDS`, and `OSError` when docker cannot
+        run, so the unit is never started on a missing volume. Reasons:
         branchleft_slot.md#start-creates-the-slots-volumes.
         """
         text = self._read_compose_text(slot_dir)
         if text is None:
             return
         for name in _slot_volume_names(slot, text):
-            subprocess.run(
-                ["docker", "volume", "create", name],
-                check=True,
-                capture_output=True,
-                timeout=_VOLUME_CREATE_TIMEOUT_SECONDS,
-            )
+            try:
+                subprocess.run(
+                    ["docker", "volume", "create", name],
+                    check=True,
+                    capture_output=True,
+                    timeout=_VOLUME_CREATE_TIMEOUT_SECONDS,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise _volume_create_failure(
+                    name, f"exited {exc.returncode}", exc.stderr
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise _volume_create_failure(
+                    name, f"timed out after {_VOLUME_CREATE_TIMEOUT_SECONDS}s", exc.stderr
+                ) from exc
 
     def remove_volume_contents(self, volume_dir: str) -> None:
         """Empties `volume_dir`, which must be exactly

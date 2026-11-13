@@ -129,6 +129,23 @@ exists exits zero and changes nothing, so a second lease, and the colour swap's
 `start`, repeat it harmlessly. A create that fails, times out or cannot run
 raises and the unit is never started.
 
+The creates run inside the broker's one wrapper call, which it kills at
+`BROKER_WRAPPER_TIMEOUT_MS` (30 s by default, `services/broker/src/config.ts`,
+the same figure for every verb). `start` runs up to three creates in a row and
+then `systemctl start`, so each create gets `_VOLUME_CREATE_TIMEOUT_SECONDS`
+(5 s): 15 s at worst, half the default, with the other half left for the unit.
+A create on a healthy daemon takes well under a second. A deploy that lowers
+the broker's figure has to lower this one with it.
+
+A failed or timed-out create raises `VolumeCreateFailed`, whose message names
+the volume and the exit status (or the timeout) and carries docker's stderr on
+the same line: whitespace runs collapsed to one space, anything outside
+printable ASCII written as `?`, cut at 300 characters. The argv is fixed words
+and a validated name, so the output holds no value this process was given
+beyond that name; the cut and the plain-ASCII rule keep one bad reply from
+filling or forging a log line. `main` prints it as the one stderr line, and the
+broker puts that stderr in its log, never in an HTTP body.
+
 This is the one place besides `load` that this process runs the Docker CLI,
 and it is narrow on the same terms: the argv is the fixed three words plus a
 name that has passed an anchored pattern; there is no shell; there is no path.

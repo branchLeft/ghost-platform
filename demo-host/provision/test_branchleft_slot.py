@@ -1490,8 +1490,10 @@ class RealEnsureSlotVolumesTests(unittest.TestCase):
     def test_a_failing_docker_volume_create_raises(self):
         self._write_compose(_compose_text())
         self.run.side_effect = subprocess.CalledProcessError(1, ["docker"])
-        with self.assertRaises(subprocess.CalledProcessError):
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
             self._ensure()
+        self.assertIn("ghost-demo-2-adapters", str(caught.exception))
+        self.assertIn("exited 1", str(caught.exception))
 
     def test_a_docker_that_cannot_run_raises(self):
         self._write_compose(_compose_text())
@@ -1502,8 +1504,129 @@ class RealEnsureSlotVolumesTests(unittest.TestCase):
     def test_a_docker_that_hangs_raises_rather_than_blocking_the_start(self):
         self._write_compose(_compose_text())
         self.run.side_effect = subprocess.TimeoutExpired(["docker"], 1)
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
             self._ensure()
+        self.assertIn("timed out after", str(caught.exception))
+
+    def test_a_failed_create_stops_the_ones_after_it(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.CalledProcessError(1, ["docker"])
+        with self.assertRaises(bs.VolumeCreateFailed):
+            self._ensure()
+        self.assertEqual(self.run.call_count, 1)
+
+    def test_a_failure_carries_dockers_stderr_on_one_line(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.CalledProcessError(
+            1, ["docker"], stderr=b"Error response from daemon:\n  no space left\non device\r\n"
+        )
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
+            self._ensure()
+        message = str(caught.exception)
+        self.assertIn("Error response from daemon: no space left on device", message)
+        for separator in ("\n", "\r", " ", "\u0085"):
+            self.assertNotIn(separator, message)
+
+    def test_a_timeout_carries_whatever_stderr_docker_had_written(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.TimeoutExpired(["docker"], 5, stderr=b"daemon not ready")
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
+            self._ensure()
+        self.assertIn("daemon not ready", str(caught.exception))
+
+    def test_the_message_has_no_control_character_and_is_cut_short(self):
+        self._write_compose(_compose_text())
+        noisy = b"first\x1b[31m line\x00\n" + b"x" * 5000 + "é end".encode()
+        self.run.side_effect = subprocess.CalledProcessError(1, ["docker"], stderr=noisy)
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
+            self._ensure()
+        message = str(caught.exception)
+        self.assertTrue(all(" " <= char <= "~" for char in message), message)
+        self.assertLess(len(message), 500)
+        self.assertTrue(message.endswith("..."))
+
+    def test_a_failure_with_no_stderr_still_names_the_volume_and_the_exit(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.CalledProcessError(125, ["docker"], stderr=b"")
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
+            self._ensure()
+        self.assertEqual(
+            str(caught.exception), "docker volume create ghost-demo-2-adapters exited 125"
+        )
+
+    def test_the_wrapper_prints_the_failure_as_one_stderr_line(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.CalledProcessError(
+            1, ["docker"], stderr=b"Error response from daemon: boom\nsecond line\n"
+        )
+        err = io.StringIO()
+        with mock.patch.object(bs, "LOCK_DIR", self.slot_dir), \
+            mock.patch.object(bs, "SLOT_DIR", self.slot_dir), \
+            contextlib.redirect_stderr(err):
+            code = bs.main(["1", "a", "start"])
+        self.assertEqual(code, 1)
+        lines = err.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Error response from daemon: boom second line", lines[0])
+
+
+class VolumeCreateTimeoutBudgetTests(unittest.TestCase):
+    """The broker kills a wrapper call that outlasts `BROKER_WRAPPER_TIMEOUT_MS`
+    (30 s by default, `services/broker/src/config.ts`), and `start` spends that
+    on up to three creates and then `systemctl start`. The per-create timeout
+    is pinned here: a removed, `None` or too-generous value fails."""
+
+    BROKER_DEFAULT_WRAPPER_TIMEOUT_SECONDS = 30
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        Path(self._tmp.name, "compose.yml").write_text(_compose_text())
+        run_patch = mock.patch("branchleft_slot.subprocess.run")
+        self.run = run_patch.start()
+        self.addCleanup(run_patch.stop)
+
+    def _timeouts_passed_to_docker(self) -> list[object]:
+        bs.RealSlotOps().ensure_slot_volumes(self._tmp.name, "1")
+        return [call.kwargs.get("timeout", "absent") for call in self.run.call_args_list]
+
+    def test_every_create_is_given_a_positive_number_of_seconds(self):
+        timeouts = self._timeouts_passed_to_docker()
+        self.assertEqual(len(timeouts), 3)
+        for timeout in timeouts:
+            self.assertIsInstance(timeout, (int, float))
+            self.assertNotIsInstance(timeout, bool)
+            self.assertGreater(timeout, 0)
+
+    def test_the_creates_are_pinned_to_five_seconds_each(self):
+        self.assertEqual(self._timeouts_passed_to_docker(), [5, 5, 5])
+        self.assertEqual(bs._VOLUME_CREATE_TIMEOUT_SECONDS, 5)
+
+    def test_all_the_creates_together_use_at_most_half_the_brokers_default(self):
+        timeouts = self._timeouts_passed_to_docker()
+        self.assertLessEqual(
+            sum(timeouts), self.BROKER_DEFAULT_WRAPPER_TIMEOUT_SECONDS / 2
+        )
+
+    def test_a_slot_names_no_more_volumes_than_the_budget_assumes(self):
+        text = _compose_text() + "  ghost-demo-9-content:\n"
+        with self.assertRaises(bs.RefusedVolume):
+            bs._slot_volume_names("1", text)
+        self.assertEqual(len(bs._slot_volume_names("1", _compose_text())), bs._MAX_SLOT_VOLUMES)
+
+    def test_the_budget_figure_here_is_the_brokers_default(self):
+        # Drift guard against `services/broker/src/config.ts`. The file is not
+        # present in every checkout of this directory (the sabotage copy, a host
+        # install), so the guard is skipped there rather than passed or failed.
+        config = Path(__file__).resolve().parents[2] / "services/broker/src/config.ts"
+        if not config.is_file():
+            self.skipTest("services/broker/src/config.ts is not beside this directory")
+        match = re.search(r"'BROKER_WRAPPER_TIMEOUT_MS',\s*([0-9_]+)", config.read_text())
+        self.assertIsNotNone(match)
+        self.assertEqual(
+            int(match.group(1).replace("_", "")) / 1000,
+            self.BROKER_DEFAULT_WRAPPER_TIMEOUT_SECONDS,
+        )
 
 
 class ResetOnVolumesThatDoNotExistYetTests(unittest.TestCase):

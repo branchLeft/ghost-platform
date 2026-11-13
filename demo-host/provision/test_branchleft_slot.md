@@ -133,7 +133,17 @@ the order (create, then start) and for what must never create: `stop`, and
 patched: the exact `docker volume create <name>` argv with `check=True`, a
 timeout and no shell; the same argv again on a second start; no compose file,
 a symlink or a FIFO creates nothing; a refused file creates nothing; a failing,
-missing or hanging `docker` raises.
+missing or hanging `docker` raises, and a failed or timed-out create raises
+`VolumeCreateFailed` with docker's stderr on one line (newlines collapsed,
+control and non-ASCII characters replaced, cut short, absent stderr tolerated,
+one stderr line out of `main`).
+
+`VolumeCreateTimeoutBudgetTests` pins the per-create timeout: a number above
+zero on every call (so a removed or `None` timeout fails), exactly 5 s, and the
+total at most half the broker's 30 s default. The 30 s is a constant in the
+test, guarded against `services/broker/src/config.ts` by a test that skips when
+that file is not beside the directory (the sabotage copy). The sabotage script
+proves the removed, `None` and 60 s timeouts and the stderr rows red.
 
 ## ResetOnVolumesThatDoNotExistYetTests
 
