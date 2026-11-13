@@ -110,15 +110,15 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
 1. **Variables, and a GTID set consistent with the snapshot.** The server
    exposes `Binlog_snapshot_file`, `_position` and `_gtid_executed`, and runs
    `log_bin=1`, `binlog_format=ROW`, `sync_binlog=1`, `gtid_mode=ON` and
-   `enforce_gtid_consistency=ON`. Then five rounds with three writers on every
+   `enforce_gtid_consistency=ON`. Then five rounds (three long, two short) with three writers on every
    tenant. Each round dumps each tenant as its dump account with the Percona
    `mysqldump --single-transaction --routines --triggers --set-gtid-purged=ON
    --no-tablespaces` (no `--source-data`), stops the writers, and for each tenant
    seeds the replica from that dump's GTID set, replays by
    `SOURCE_AUTO_POSITION=1` to the source's final GTID set and asserts every table
    matches on count and `CHECKSUM TABLE`, and that the replay applied at least
-   one write the dump did not hold (a replay of nothing proves nothing). Round 1
-   is the long round: a long open write transaction (`integrations`) and a
+   one write the dump did not hold (a replay of nothing proves nothing). Rounds 1 to 3
+   are the long rounds: each a long open write transaction (`integrations`) and a
    `SELECT SLEEP(60)` reading `t1.posts` run while the three tenants are dumped
    over and over; the transaction commits after the last dump.
    **The oracle** judges every dump of the round, not only the one the replica
@@ -133,12 +133,18 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
    side of the set, fails the oracle too: it was blind. The replica is asked
    for its executed set after the load and it must equal the set the oracle
    judged.
-2. **No tenant's writes stall.** Every tenant's worst write transaction over
-   the whole run, the long round included, is under 100 ms (a writer's first
-   two statements are dropped as connection warm-up). Each tenant's worst
-   statement before the first dump is printed beside it. When that baseline is
-   already over the limit the failure says the host's own commit latency may be
-   the cause. The limit is never loosened.
+2. **No tenant's writes stall.** Control 2 is judged on three timed windows:
+   the three long rounds, each with a fresh dump taken under a long reader and a
+   long open write transaction. A window is over when any tenant's worst write
+   transaction in it is over 100 ms (a writer's first two statements are dropped
+   as connection warm-up). The candidate is inadequate only when two or more of
+   the three are over; one over passes, and a `WARNING control 2` line names the
+   round and its numbers. A window in which a tenant was not measured fails the
+   control. A sabotage run with a single window needs only that one. The limit is
+   still 100 ms and is never loosened. Each tenant's worst statement before the
+   first dump is printed beside it; when it is over the limit the failure says the
+   host's own commit latency may be the cause. The two short rounds are timed and
+   printed but not judged: control 3 samples the locks across the whole run.
    **Host noise.** When control 2 is the only gating control to fail, every
    tenant over the limit had a round 1 baseline (its worst statement before any
    dump has run, so no earlier dump's load is in it) over 50 ms

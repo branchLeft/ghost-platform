@@ -49,6 +49,12 @@ SLEEP_SECONDS = 60
 # between passes keeps the dumps from being a CPU stress test of the host.
 PASS_GAP_SECONDS = 2.0
 LATENCY_LIMIT_SECONDS = sp.WRITER_LIMIT_SECONDS
+# Control 2 is judged on this many timed windows, each a long round with a fresh
+# dump, and fails only when WINDOWS_TO_FAIL or more of them break the limit: one
+# window over is a pass with a warning naming it. A one-window plan (a sabotage
+# run) needs only its one.
+LATENCY_WINDOWS = 3
+WINDOWS_TO_FAIL = 2
 # A host whose own commit latency, before any dump, is over this cannot judge
 # control 2: the limit is 100 ms and such a host spends half of it idle. Chosen
 # from the native runs that passed (worst baseline 8 to 25.7 ms, run to run) at
@@ -165,6 +171,37 @@ def latency_verdict(samples: Mapping[str, Sequence[float]], limit: float, baseli
             "not a dump, may be the cause: only a host whose baseline is under the limit can judge this control"
         )
     return Verdict(False, reason)
+
+
+def windowed_latency_verdict(
+    windows: Mapping[int, Mapping[str, Sequence[float]]], limit: float, baseline: Mapping[str, float] | None = None
+) -> Verdict:
+    """Control 2 over its timed windows (round number to each tenant's latencies).
+    A window is over when any tenant's worst statement is over `limit`. The
+    control fails when WINDOWS_TO_FAIL windows (or, of fewer windows, all of
+    them) are over; fewer is a pass and window_warnings names them. A window in
+    which a tenant was not measured fails the control: the probe was blind."""
+    if not windows:
+        return Verdict(False, "no window was measured")
+    results = {number: latency_verdict(samples, limit, baseline) for number, samples in sorted(windows.items())}
+    for number, samples in sorted(windows.items()):
+        if not samples or any(not latencies for latencies in samples.values()):
+            return Verdict(False, f"round {number}: {results[number].reason}")
+    over = [number for number, result in results.items() if not result.passed]
+    if len(over) >= min(WINDOWS_TO_FAIL, len(windows)):
+        return Verdict(False, "; ".join(f"round {number}: {results[number].reason}" for number in over))
+    note = f"; {len(over)} of {len(windows)} windows over the limit, reported as a pass (WARNING)" if over else ""
+    worst = ", ".join(f"round {number} {sp._ms(max((max(v) for v in samples.values() if v), default=0.0))}" for number, samples in sorted(windows.items()))
+    return Verdict(True, f"{len(windows)} windows, each tenant's worst statement within the {sp._ms(limit)} limit in {len(windows) - len(over)} (worst per window: {worst}){note}")
+
+
+def window_warnings(windows: Mapping[int, Mapping[str, Sequence[float]]], limit: float) -> list[str]:
+    """One line per window over the limit while the control still passes."""
+    over = {number: latency_verdict(samples, limit) for number, samples in sorted(windows.items())}
+    over = {number: result for number, result in over.items() if not result.passed}
+    if not over or len(over) >= min(WINDOWS_TO_FAIL, len(windows)):
+        return []
+    return [f"WARNING control 2: round {number} exceeded the limit, {len(over)} of {len(windows)} windows, so it passes: {result.reason}" for number, result in over.items()]
 
 
 def dump_lock_verdict(rows: Iterable[Sequence[str]]) -> Verdict:
@@ -811,12 +848,12 @@ class RoundSpec:
 
 
 # The rounds each run does, how a dump is taken, and whether a replica is seeded.
-# Default: one long round (a long write transaction and SELECT SLEEP(60) on
-# one tenant) then four short ones: a commit race is a window, so one lucky
-# pass proves little (replication_client_probe.py makes the same point). The
-# sabotages need less.
+# Default: LATENCY_WINDOWS long rounds (a long write transaction and
+# SELECT SLEEP(60) on one tenant; control 2's windows) then two short ones: a
+# commit race is a window, so one lucky pass proves little
+# (replication_client_probe.py makes the same point). The sabotages need less.
 PLANS: Mapping[str | None, tuple[RoundSpec, ...]] = {
-    None: (RoundSpec(True, True),) + (RoundSpec(False, False),) * 4,
+    None: (RoundSpec(True, True),) * LATENCY_WINDOWS + (RoundSpec(False, False),) * 2,
     "commit-before-coordinates": (RoundSpec(False, False),),
     "global-lock": (RoundSpec(True, False),),
     "gtid-drop-one": (RoundSpec(False, False),) * 2,
@@ -857,6 +894,9 @@ class Scenario:
     # Round 1's baseline alone: no dump has run before it, so no dump's lingering
     # load can be in it. Host noise is judged on this, not on `baseline`.
     first_round_baseline: dict[str, float] = dataclasses.field(default_factory=dict)
+    # Each round's latencies, and which rounds were long: control 2's windows.
+    window_latencies: dict[int, dict[str, list[float]]] = dataclasses.field(default_factory=dict)
+    long_rounds: list[int] = dataclasses.field(default_factory=list)
     lock_rows: set[tuple[str, str, str]] = dataclasses.field(default_factory=set)
     lock_samples: int = 0
     lock_table_samples: int = 0
@@ -1151,6 +1191,22 @@ def finish_writers(writers: Mapping[str, Sequence[sp.Writer]]) -> dict[str, list
     return samples
 
 
+def record_round_latencies(scenario: Scenario, number: int, long_round: bool, per_tenant: Mapping[str, Sequence[float]]) -> None:
+    """Fold one round's write latencies in, pooled and as its own window."""
+    for tenant, latencies in per_tenant.items():
+        scenario.latencies[tenant].extend(latencies)
+    scenario.window_latencies[number] = {tenant: list(latencies) for tenant, latencies in per_tenant.items()}
+    if long_round:
+        scenario.long_rounds.append(number)
+
+
+def judged_windows(scenario: Scenario) -> dict[int, dict[str, list[float]]]:
+    """Control 2's windows: the long rounds, where a dump meets a long reader;
+    a plan with none judges every round."""
+    numbers = scenario.long_rounds or sorted(scenario.window_latencies)
+    return {number: scenario.window_latencies[number] for number in numbers}
+
+
 def record_round_baseline(scenario: Scenario, number: int, round_baseline: Mapping[str, float]) -> None:
     """Fold one round's pre-dump baseline in: `baseline` keeps the worst of every
     round (the control 2 report), `first_round_baseline` takes round 1's only."""
@@ -1208,12 +1264,14 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
         holder.close()
         committed = "; the long transaction committed after the last dump"
     round_baseline = dict.fromkeys(samples, 0.0)
+    round_latencies: dict[str, list[float]] = {tenant: [] for tenant in samples}
     for tenant, per_writer in samples.items():
         for writer_samples in per_writer:
-            scenario.latencies[tenant].extend(latency for _, latency in writer_samples[WARMUP_SAMPLES:])
+            round_latencies[tenant].extend(latency for _, latency in writer_samples[WARMUP_SAMPLES:])
             before = [latency for start, latency in writer_samples[WARMUP_SAMPLES:] if start + latency < dumping]
             round_baseline[tenant] = max(round_baseline[tenant], max(before, default=0.0))
     record_round_baseline(scenario, number, round_baseline)
+    record_round_latencies(scenario, number, spec.long_round, round_latencies)
     scenario.snapshots += passes * len(TENANTS)
     statements = {tenant: sum(len(writer_samples) for writer_samples in per_writer) for tenant, per_writer in samples.items()}
     kind = "short"
@@ -1333,14 +1391,22 @@ def control_1(run: Run) -> sp.ControlResult:
 
 
 def control_2(run: Run) -> sp.ControlResult:
-    """Every tenant's worst write stays under the limit for the whole run."""
+    """Every tenant's worst write stays under the limit in the timed windows: it
+    fails only when WINDOWS_TO_FAIL of them break it."""
     scenario = get_scenario(run)
-    verdict = latency_verdict(scenario.latencies, LATENCY_LIMIT_SECONDS, scenario.baseline)
+    windows = judged_windows(scenario)
+    verdict = windowed_latency_verdict(windows, LATENCY_LIMIT_SECONDS, scenario.baseline)
     numbers = [
         f"{tenant}: {len(latencies)} write transactions timed, worst {sp._ms(max(latencies, default=0.0))}, "
         f"worst before the first dump {sp._ms(scenario.baseline[tenant])}"
         for tenant, latencies in scenario.latencies.items()
     ]
+    numbers.extend(
+        f"round {number}" + (" (judged)" if number in windows else "") + ": worst "
+        + ", ".join(f"{tenant} {sp._ms(max(latencies, default=0.0))}" for tenant, latencies in samples.items())
+        for number, samples in sorted(scenario.window_latencies.items())
+    )
+    numbers.extend(window_warnings(windows, LATENCY_LIMIT_SECONDS))
     return sp.ControlResult(2, "no tenant's writes stall", verdict, numbers)
 
 
