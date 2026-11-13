@@ -62,21 +62,49 @@ describe('loadConfig', () => {
   });
 
   describe('outcomes', () => {
-    it('turns on only when both the return path and the notification directory are set', () => {
+    it('turns on only when the return path, the notification directory and the trusted authserv-id are all set', () => {
       expect(
         loadConfig({
           ...BASE_ENV,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'MX1.Collector.Example',
         }).outcomes
-      ).toEqual({ returnPath: 'outcomes@collector.example', dsnDir: '/var/dsn', pollMs: 30000 });
+      ).toEqual({
+        returnPath: 'outcomes@collector.example',
+        dsnDir: '/var/dsn',
+        trustedAuthservId: 'mx1.collector.example',
+        pollMs: 30000,
+      });
     });
 
     it.each([
       ['COLLECTOR_OUTCOMES_RETURN_PATH', 'outcomes@collector.example'],
       ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
-    ])('refuses %s without its partner', (name, value) => {
+      ['COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID', 'mx1.collector.example'],
+    ])('refuses %s without its partners', (name, value) => {
       expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
+    });
+
+    it('refuses an outcome path with no trusted authserv-id, so a forged bounce can never be read', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+        })
+      ).toThrow(/COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID/);
+    });
+
+    it('refuses a trusted authserv-id that is not a host name', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1 (spoof)',
+        })
+      ).toThrow(/must be a host name/);
     });
 
     describe('the bulk return path', () => {
@@ -84,6 +112,7 @@ describe('loadConfig', () => {
         ...BASE_ENV,
         COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
         COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+        COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1.collector.example',
       };
 
       it('is read when the outcome path is on', () => {
@@ -96,6 +125,7 @@ describe('loadConfig', () => {
           returnPath: 'login-bounces@collector.example',
           bulkReturnPath: 'bulk-bounces@collector.example',
           dsnDir: '/var/dsn',
+          trustedAuthservId: 'mx1.collector.example',
           pollMs: 30000,
         });
       });

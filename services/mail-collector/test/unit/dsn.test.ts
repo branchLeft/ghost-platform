@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseDsn, toOutcome } from '../../src/dsn.js';
+import { isFromTrustedMta, parseDsn, readDsn, toOutcome } from '../../src/dsn.js';
 
 const MESSAGE_ID = '<4cfbf575-9efc-4508-bc4f-e0f9314e4844.1@746e616e742d61.outcomes.invalid>';
 
@@ -135,5 +135,93 @@ describe('toOutcome', () => {
       diagnostic: 'x'.repeat(900),
     });
     expect(out?.message).toHaveLength(500);
+  });
+});
+
+describe('isFromTrustedMta', () => {
+  const ID = 'mx1.collector.example';
+  const withHeaders = (...lines: string[]): string =>
+    [...lines, 'Subject: Delivery Status Notification', '', 'body'].join('\r\n');
+
+  it('accepts exactly one header naming our id, with or without an instance number', () => {
+    expect(isFromTrustedMta(withHeaders(`Authentication-Results: ${ID}; spf=pass`), ID)).toBe(true);
+    expect(isFromTrustedMta(withHeaders(`Authentication-Results: ${ID} 1; spf=pass`), ID)).toBe(
+      true
+    );
+    expect(
+      isFromTrustedMta(withHeaders(`AUTHENTICATION-RESULTS: ${ID.toUpperCase()}; none`), ID)
+    ).toBe(true);
+  });
+
+  it('accepts ours when headers for other hosts ride along before or after it', () => {
+    expect(
+      isFromTrustedMta(
+        withHeaders(
+          'Authentication-Results: mx.attacker.example; dkim=pass',
+          `Authentication-Results: ${ID}; spf=pass`,
+          'Authentication-Results: (c) mx2.other.example; none'
+        ),
+        ID
+      )
+    ).toBe(true);
+  });
+
+  it.each([
+    ['no Authentication-Results header', ['From: a@b']],
+    ['only another host', ['Authentication-Results: mx.attacker.example; spf=pass']],
+    ['a lookalike host', [`Authentication-Results: ${ID}.attacker.example; spf=pass`]],
+    [
+      'a second header carrying our id',
+      [`Authentication-Results: ${ID}; spf=pass`, `Authentication-Results: ${ID}; spf=pass`],
+    ],
+    ['an unbalanced comment in our header', [`Authentication-Results: ${ID} (oops; spf=pass`]],
+    ['junk after the instance number', [`Authentication-Results: ${ID} 1 extra; spf=pass`]],
+    [
+      'a header block that is not RFC 5322',
+      ['this is not a header', `Authentication-Results: ${ID}`],
+    ],
+  ])('refuses %s', (_name, lines) => {
+    expect(isFromTrustedMta(withHeaders(...lines), ID)).toBe(false);
+  });
+
+  it('reads only the top-level headers: a stamp quoted in the body does not count', () => {
+    const raw = `From: a@b\r\n\r\nAuthentication-Results: ${ID}; spf=pass\r\n`;
+    expect(isFromTrustedMta(raw, ID)).toBe(false);
+  });
+
+  it('refuses a header block with a NUL', () => {
+    expect(isFromTrustedMta(withHeaders(`Authentication-Results: ${ID}; x=\0`), ID)).toBe(false);
+  });
+
+  it('is linear: a very long header block is refused quickly, not backtracked over', () => {
+    const raw = withHeaders(
+      ...Array.from({ length: 5000 }, (_, i) => `X-${i}: ${'a '.repeat(50)}`)
+    );
+    const started = Date.now();
+    expect(isFromTrustedMta(raw, ID)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+});
+
+describe('readDsn', () => {
+  const ID = 'mx1.collector.example';
+  const stamped = (stamp: string | null): string =>
+    [...(stamp ? [stamp] : []), dsn('Action: failed\r\nStatus: 5.1.1')].join('\r\n');
+
+  it('returns the notification when it is structurally sound and stamped by our MTA', () => {
+    const read = readDsn(stamped(`Authentication-Results: ${ID}; spf=pass`), ID);
+    expect(read).toMatchObject({ ok: true, dsn: { action: 'failed', status: '5.1.1' } });
+  });
+
+  it('names the reason: unauthenticated when unstamped, not_a_dsn when not a notification', () => {
+    expect(readDsn(stamped(null), ID)).toEqual({ ok: false, reason: 'unauthenticated' });
+    expect(readDsn(stamped('Authentication-Results: mx.attacker.example; spf=pass'), ID)).toEqual({
+      ok: false,
+      reason: 'unauthenticated',
+    });
+    expect(readDsn(`Authentication-Results: ${ID}; spf=pass\r\n\r\nhello`, ID)).toEqual({
+      ok: false,
+      reason: 'not_a_dsn',
+    });
   });
 });

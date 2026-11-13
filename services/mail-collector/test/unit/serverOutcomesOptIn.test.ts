@@ -122,6 +122,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     const received = await submitOneMessage({
       COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
       COLLECTOR_OUTCOMES_DSN_DIR: dir,
+      COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1.collector.example',
     });
     expect(received.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
     expect(received.envelopeFrom).toBe('outcomes@collector.example');
@@ -134,6 +135,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
   const TWO_PATHS = {
     COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
     COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
+    COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1.collector.example',
   };
 
   it('with a bulk return path set, a bulk message leaves from it', async () => {

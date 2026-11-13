@@ -6,6 +6,7 @@
  * carry them is "no outcome", never a guess.
  * See ../README.md#outcomes-carried-back-to-the-spool.
  */
+import { parseHeaders, splitBlock, trustedAuthResults } from './mailHeaders.js';
 
 export interface ParsedDsn {
   /** The Message-ID of the original message, from the returned headers. */
@@ -37,6 +38,42 @@ function unfold(block: string): Map<string, string> {
     }
   }
   return fields;
+}
+
+/**
+ * True only when the message carries exactly one Authentication-Results header
+ * naming `trustedAuthservId` (the id our own receiving MTA stamps), and no
+ * other header does. Any other header is skipped, and anything that cannot be
+ * read exactly is untrusted, so a notification a stranger mailed to the return
+ * path cannot pass. Reads the top-level header block only, with the same
+ * linear parser the ARF reader uses (mailHeaders.ts). `trustedAuthservId` must
+ * already be normalised with `normaliseAuthservId`.
+ */
+export function isFromTrustedMta(raw: string, trustedAuthservId: string): boolean {
+  const { head } = splitBlock(raw.replace(/\r\n/g, '\n'));
+  if (head.includes('\0')) {
+    return false;
+  }
+  const headers = parseHeaders(head);
+  return headers !== null && trustedAuthResults(headers, trustedAuthservId) !== null;
+}
+
+export type DsnReading =
+  { ok: true; dsn: ParsedDsn } | { ok: false; reason: 'not_a_dsn' | 'unauthenticated' };
+
+/**
+ * The only way the collector reads a notification: structure first, then the
+ * trust gate. A forged or unstamped bounce is refused here, so it never
+ * reaches `toOutcome` and can never suppress a recipient.
+ */
+export function readDsn(raw: string, trustedAuthservId: string): DsnReading {
+  const dsn = parseDsn(raw);
+  if (!dsn) {
+    return { ok: false, reason: 'not_a_dsn' };
+  }
+  return isFromTrustedMta(raw, trustedAuthservId)
+    ? { ok: true, dsn }
+    : { ok: false, reason: 'unauthenticated' };
 }
 
 export function parseDsn(raw: string): ParsedDsn | null {

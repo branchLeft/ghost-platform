@@ -197,6 +197,7 @@ const outcomes = config.outcomes
         store,
         drainClient,
         log,
+        trustedAuthservId: config.outcomes.trustedAuthservId,
       }),
       intervalMs: config.outcomes.pollMs,
     }

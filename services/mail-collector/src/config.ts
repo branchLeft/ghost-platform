@@ -1,4 +1,5 @@
 import { dirname, join } from 'node:path';
+import { normaliseAuthservId } from './mailHeaders.js';
 import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
 export interface CollectorConfig {
@@ -155,8 +156,9 @@ export interface CollectorConfig {
    */
   heartbeatFailureThreshold: number;
   /**
-   * Opt-in outcome path; absent unless BOTH COLLECTOR_OUTCOMES_RETURN_PATH
-   * and COLLECTOR_OUTCOMES_DSN_DIR are set (one without the other throws).
+   * Opt-in outcome path; absent unless COLLECTOR_OUTCOMES_RETURN_PATH,
+   * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID are
+   * all set (a partial set throws).
    * Absent, submissions and the drain loop are exactly as before.
    */
   outcomes?: {
@@ -166,6 +168,8 @@ export interface CollectorConfig {
     bulkReturnPath?: string;
     /** Directory the notifications arrive in, one .eml file each. */
     dsnDir: string;
+    /** The authserv-id our own receiving MTA stamps in Authentication-Results; a notification without exactly one such header is ignored. Lower-cased. */
+    trustedAuthservId: string;
     pollMs: number;
   };
 }
@@ -229,18 +233,25 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
   const bulkReturnPath = env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH;
-  if (!returnPath && !dsnDir) {
+  const authservId = env.COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID;
+  if (!returnPath && !dsnDir && !authservId) {
     if (bulkReturnPath) {
       throw new Error(
-        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR'
+        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID'
       );
     }
     return undefined;
   }
-  if (!returnPath || !dsnDir) {
+  if (!returnPath || !dsnDir || !authservId) {
     throw new Error(
-      'COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR must be set together'
+      'COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID must be set together'
     );
+  }
+  let trustedAuthservId: string;
+  try {
+    trustedAuthservId = normaliseAuthservId(authservId);
+  } catch {
+    throw new Error('COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID must be a host name');
   }
   if (bulkReturnPath && bulkReturnPath.toLowerCase() === returnPath.toLowerCase()) {
     throw new Error(
@@ -251,6 +262,7 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
     returnPath,
     ...(bulkReturnPath ? { bulkReturnPath } : {}),
     dsnDir,
+    trustedAuthservId,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
 }

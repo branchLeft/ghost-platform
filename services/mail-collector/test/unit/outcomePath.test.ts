@@ -19,6 +19,7 @@ const TOKEN = 'test-drain-token';
 
 function bounceFor(messageId: string): string {
   return [
+    'Authentication-Results: mx1.collector.example 1; spf=pass',
     'Content-Type: multipart/report; report-type=delivery-status; boundary="B"',
     '',
     '--B',
@@ -104,6 +105,7 @@ describe('outcome path, end to end through the real runtime', () => {
           store,
           drainClient,
           log,
+          trustedAuthservId: 'mx1.collector.example',
         }),
         intervalMs: 30,
       },

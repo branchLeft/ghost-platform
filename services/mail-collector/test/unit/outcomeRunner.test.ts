@@ -10,9 +10,18 @@ import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
 
 const TOKEN = 'test-drain-token';
 const MSG = '4cfbf575-9efc-4508-bc4f-e0f9314e4844';
+const AUTHSERV = 'mx1.collector.example';
+const STAMP = `Authentication-Results: ${AUTHSERV} 1; spf=pass smtp.mailfrom=mailer-daemon.example`;
 
-function dsnFor(messageId: string, action: string, status: string, diagnostic?: string): string {
+function dsnFor(
+  messageId: string,
+  action: string,
+  status: string,
+  diagnostic?: string,
+  stamps: string[] = [STAMP]
+): string {
   return [
+    ...stamps,
     'Content-Type: multipart/report; report-type=delivery-status; boundary="B"',
     '',
     '--B',
@@ -71,6 +80,7 @@ describe('outcomeRunner', () => {
       store: createFakeTargetStore(targets),
       drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
       log: createLogger(() => {}),
+      trustedAuthservId: AUTHSERV,
     });
   }
 
@@ -103,6 +113,69 @@ describe('outcomeRunner', () => {
       ],
     ]);
     expect(processed).toEqual(['1.eml', '2.eml']);
+  });
+
+  it('ignores and retires a forged bounce that carries no Authentication-Results header, so it cannot suppress a recipient', async () => {
+    const { mailbox, processed } = memoryMailbox([
+      {
+        ref: 'forged.eml',
+        receivedAtMs: Date.now(),
+        raw: dsnFor(idFor(1), 'failed', '5.1.1', 'smtp; 550 5.1.1 no such user', []),
+      },
+    ]);
+    expect(await runnerFor(mailbox).runOnce()).toEqual({ reported: 0, retired: 1, left: 0 });
+    expect(shim.outcomeRequests).toEqual([]);
+    expect(processed).toEqual(['forged.eml']);
+  });
+
+  it('ignores a bounce stamped with another authserv-id, a lookalike, or one header of ours plus a forged copy', async () => {
+    const forged = (stamps: string[]) =>
+      dsnFor(idFor(1), 'failed', '5.1.1', 'smtp; 550 5.1.1 no such user', stamps);
+    const { mailbox, processed } = memoryMailbox([
+      {
+        ref: 'other-host.eml',
+        receivedAtMs: Date.now(),
+        raw: forged(['Authentication-Results: mx.attacker.example 1; spf=pass']),
+      },
+      {
+        ref: 'lookalike.eml',
+        receivedAtMs: Date.now(),
+        raw: forged(['Authentication-Results: mx1.collector.example.attacker.example 1; spf=pass']),
+      },
+      { ref: 'two-of-ours.eml', receivedAtMs: Date.now(), raw: forged([STAMP, STAMP]) },
+    ]);
+    expect(await runnerFor(mailbox).runOnce()).toEqual({ reported: 0, retired: 3, left: 0 });
+    expect(shim.outcomeRequests).toEqual([]);
+    expect(processed).toEqual(['other-host.eml', 'lookalike.eml', 'two-of-ours.eml']);
+  });
+
+  it('still honours a genuine bounce when a forged header for another host rides along', async () => {
+    const { mailbox, processed } = memoryMailbox([
+      {
+        ref: 'genuine.eml',
+        receivedAtMs: Date.now(),
+        raw: dsnFor(idFor(1), 'failed', '5.1.1', 'smtp; 550 5.1.1 no such user', [
+          STAMP,
+          'Authentication-Results: mx.attacker.example 1; dkim=pass header.d=attacker.example',
+        ]),
+      },
+    ]);
+    expect(await runnerFor(mailbox).runOnce()).toEqual({ reported: 1, retired: 1, left: 0 });
+    expect(shim.outcomeRequests[0]).toMatchObject([{ id: MSG, drainCount: 1, outcome: 'failed' }]);
+    expect(processed).toEqual(['genuine.eml']);
+  });
+
+  it('refuses to be built without a host name for the trusted authserv-id', () => {
+    const { mailbox } = memoryMailbox([]);
+    expect(() =>
+      createOutcomeRunner({
+        mailbox,
+        store: createFakeTargetStore([]),
+        drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
+        log: createLogger(() => {}),
+        trustedAuthservId: '',
+      })
+    ).toThrow(/host name/);
   });
 
   it('reports nothing for a relayed notice, mail that is not a DSN, or a DSN for a Message-ID it did not mint, but retires them', async () => {
@@ -198,6 +271,7 @@ describe('outcomeRunner', () => {
       store: createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]),
       drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
       log: createLogger(() => {}),
+      trustedAuthservId: AUTHSERV,
       unknownGraceMs: 1000,
       now: () => clock,
     });

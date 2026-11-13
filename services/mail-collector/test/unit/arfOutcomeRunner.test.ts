@@ -36,6 +36,7 @@ function memoryMailbox(items: RawDsn[]) {
 
 function dsnFor(messageId: string): string {
   return [
+    'Authentication-Results: mx1.collector.example 1; spf=pass',
     'Content-Type: multipart/report; report-type=delivery-status; boundary="B"',
     '',
     '--B',
@@ -77,6 +78,7 @@ describe('outcomeRunner with a complaint reader', () => {
       store: createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]),
       drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
       log: createLogger(() => {}),
+      trustedAuthservId: 'mx1.collector.example',
       ...(withReader ? { complaintReader: reader } : {}),
     });
 
