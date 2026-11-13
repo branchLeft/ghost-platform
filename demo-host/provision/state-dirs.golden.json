@@ -9,5 +9,6 @@
   "brokerSlotsDir": "/var/lib/branchleft/broker-slots",
   "brokerSlotsDirOwner": "broker",
   "brokerSlotsDirMode": "0755",
-  "brokerSlotsFile": "/var/lib/branchleft/broker-slots/slots.json"
+  "brokerSlotsFile": "/var/lib/branchleft/broker-slots/slots.json",
+  "dockerVolumeRoot": "/var/lib/docker/volumes"
 }

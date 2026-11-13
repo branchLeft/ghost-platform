@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "ghost": "6.55.0",
+  "ghost": "6.76.0",
   "themes": [
     {
       "name": "casper",
@@ -31,8 +31,8 @@
           "reason": "The PhotoSwipe project page named in a comment or licence banner; not a request"
         }
       ],
-      "version": "5.12.1",
-      "treeSha256": "a3241eac551cd9fb014ca4201774033c9dd602f31eed225980f7e1c01ee33b6c"
+      "version": "5.12.5",
+      "treeSha256": "eebbf81e34fb78c0af7ff254495b7449b1929cee29c4454c69de3ff358d4b8c4"
     },
     {
       "name": "source",
@@ -69,8 +69,8 @@
           "reason": "A tutorial URL crediting the colour-contrast script named in a comment or licence banner; not a request"
         }
       ],
-      "version": "1.7.1",
-      "treeSha256": "66af1d2b363b208f8498adcf5234341a08c70aae694b51155f2bdb76af50b075",
+      "version": "1.7.6",
+      "treeSha256": "271a32923c21c06530ea3c2ffed9a9b24ec5f76c6495aacce9092901b688ac89",
       "embeddedFonts": [
         {
           "family": "EB Garamond",

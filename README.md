@@ -135,7 +135,9 @@ Every push to `main` publishes `ghcr.io/branchleft/ghost-tenant`
 (`registry-push.yml`). `ghcr.io/branchleft/portal-apps` (`portal-apps-image.yml`)
 is published by a push to `main` that changes `portal/`, `services/identity/` or
 `services/request-guard/`,
-or by a manual dispatch. Each push that publishes signs the pushed digest with a
+or by a manual dispatch. `ghcr.io/branchleft/demo-gate` (`demo-gate-image.yml`)
+is published the same way, for changes under `services/demo-gate/`, `render-core/`
+or `services/request-guard/`. Each push that publishes signs the pushed digest with a
 keyless GitHub artifact attestation (SLSA build provenance, Sigstore
 public-good). Before it signs, the publish workflow scans the pushed digest with
 `branchLeft/github-workflows`' `image-scan.yml` (Grype, failing on any critical
@@ -153,8 +155,9 @@ by digest:
   branchLeft/ghost-platform/.github/workflows/registry-push.yml
 ```
 
-The signer workflow is `registry-push.yml` for `ghost-tenant` and
-`portal-apps-image.yml` for `portal-apps`; the source ref is always
+The signer workflow is `registry-push.yml` for `ghost-tenant`,
+`portal-apps-image.yml` for `portal-apps` and `demo-gate-image.yml` for
+`demo-gate`; the source ref is always
 `refs/heads/main`. Exit 0 means verified. Add `--bundle-from-oci` to read the
 signed bundle from the registry instead of the GitHub API. `scripts/verify-image-attestation.md`
 has the detail.
