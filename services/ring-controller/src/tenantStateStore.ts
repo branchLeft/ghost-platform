@@ -1,6 +1,6 @@
 import { mkdir, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { BumpState } from './bumpStateMachine.js';
+import type { BumpDependencies, BumpState, PersistSnapshot } from './bumpStateMachine.js';
 import { removeFileIfPresent, writeFileAtomic } from './atomicFile.js';
 
 // Spelled out instead of NodeJS.ErrnoException so this file has no
@@ -27,6 +27,38 @@ export interface PersistedTenantState {
   abortRequested?: boolean;
   /** Only meaningful for `state: 'failed-unsafe'`: the reason `page()` would be (or was) called with. */
   reason?: string;
+}
+
+/**
+ * The one place a state-machine snapshot becomes a saved record. Every field
+ * is named, never spread, so a field added to `PersistSnapshot` that is not
+ * copied here is a type error rather than a silent loss. `abortRequested`
+ * above all: a restart honours the abort the crashed process had saved only
+ * if it reaches the record.
+ */
+export function recordFromSnapshot(
+  tenantId: string,
+  snapshot: PersistSnapshot,
+  updatedAt: string
+): PersistedTenantState {
+  return {
+    tenantId,
+    state: snapshot.state,
+    pageSent: snapshot.pageSent,
+    abortRequested: snapshot.abortRequested,
+    bumpId: snapshot.bumpId,
+    reason: snapshot.reason,
+    updatedAt,
+  };
+}
+
+/** A `BumpDependencies.persist` that saves each snapshot of one tenant's machine to `store`. */
+export function persistToStore(
+  store: TenantStateStore,
+  tenantId: string,
+  now: () => string = () => new Date().toISOString()
+): NonNullable<BumpDependencies['persist']> {
+  return (snapshot) => store.save(recordFromSnapshot(tenantId, snapshot, now()));
 }
 
 export interface TenantStateStore {

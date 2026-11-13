@@ -9,7 +9,11 @@ export type {
 } from './bumpStateMachine.js';
 export { createApplyLock } from './applyLock.js';
 export type { ApplyLock } from './applyLock.js';
-export { createFileTenantStateStore } from './tenantStateStore.js';
+export {
+  createFileTenantStateStore,
+  persistToStore,
+  recordFromSnapshot,
+} from './tenantStateStore.js';
 export type { PersistedTenantState, TenantStateStore } from './tenantStateStore.js';
 export { acquireProcessLock, ProcessLockHeldError, DEFAULT_LOCK_PATH } from './processLock.js';
 export type { ProcessLock, ProcessLockOptions } from './processLock.js';
@@ -82,7 +86,9 @@ export type {
 export { runReleaseFromProcess } from './processEntry.js';
 export {
   DEFAULT_CALL_DEADLINES,
+  DEFAULT_RECOVERY_DEADLINES,
   DeadlineExceededError,
   resolveCallDeadlines,
+  resolveRecoveryDeadlines,
 } from './deadlines.js';
-export type { CallDeadlines } from './deadlines.js';
+export type { CallDeadlines, RecoveryDeadlines } from './deadlines.js';
