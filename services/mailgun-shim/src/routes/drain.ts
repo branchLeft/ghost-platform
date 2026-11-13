@@ -3,7 +3,11 @@ import { Router as createRouter } from 'express';
 import { asyncHandler } from '../asyncHandler.js';
 import { requireDrainToken } from '../drainAuth.js';
 import type { DrainWake } from '../drainWake.js';
-import { dropUnresolvedListUnsubscribeEntries, resolveRecipientTokens } from '../mailgunFields.js';
+import {
+  dropListUnsubscribePostWithoutHttps,
+  dropUnresolvedListUnsubscribeEntries,
+  resolveRecipientTokens,
+} from '../mailgunFields.js';
 import type { Logger } from '../log.js';
 import type { AckRequest, DrainedRecipient, OutcomeRequest, ShimStore } from '../store.js';
 import type { Throttle } from '../throttle.js';
@@ -43,20 +47,21 @@ interface WireMessage {
 
 function toWireMessage(row: DrainedRecipient): WireMessage {
   const vars = row.payload.recipientVariables[row.recipient] ?? {};
-  const headers: Record<string, string> = {};
+  const resolved: Record<string, string> = {};
   for (const [name, value] of Object.entries(row.payload.headers)) {
     if (name === 'Reply-To' || name === 'Sender') {
       continue;
     }
-    if (name === 'List-Unsubscribe') {
+    if (name.toLowerCase() === 'list-unsubscribe') {
       const kept = dropUnresolvedListUnsubscribeEntries(resolveRecipientTokens(value, vars));
-      if (kept !== '') {
-        headers[name] = kept;
+      if (kept.trim() !== '') {
+        resolved[name] = kept;
       }
       continue;
     }
-    headers[name] = resolveRecipientTokens(value, vars);
+    resolved[name] = resolveRecipientTokens(value, vars);
   }
+  const headers = dropListUnsubscribePostWithoutHttps(resolved);
   if (row.emailId) {
     // Carried through as a header for the drainer's own MTA logs, the same
     // correlation value Ghost's analytics job matches events back on (see

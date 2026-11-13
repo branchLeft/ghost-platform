@@ -389,19 +389,60 @@ export function resolveRecipientTokens(content: string, variables: Record<string
 }
 
 const MAILGUN_ONLY_TOKEN = /%tag_[^%]+%/;
+// A %recipient.<var>% token still present after resolution had no variable.
+// Only this exact shape is matched: a bare %...% would also hit the
+// percent-encoding in a valid URL (e.g. %2F...%2F).
+const UNRESOLVED_RECIPIENT_TOKEN = /%recipient\.[^%]+%/;
+const EMPTY_ENTRY = /^<\s*>$/;
+const HTTPS_ENTRY = /^<\s*https:/i;
 const ANGLE_BRACKET_ENTRY = /<[^>]*>/g;
 
+function isDeliverableListUnsubscribeEntry(entry: string): boolean {
+  return (
+    !EMPTY_ENTRY.test(entry) &&
+    !MAILGUN_ONLY_TOKEN.test(entry) &&
+    !UNRESOLVED_RECIPIENT_TOKEN.test(entry)
+  );
+}
+
 /**
- * Drops `List-Unsubscribe` entries that still carry a Mailgun-only tag token
- * (e.g. `<%tag_unsubscribe_email%>`) after recipient tokens are resolved.
- * Such an entry is not a valid URI, so it is removed rather than sent. A value
- * with no angle-bracketed entries is returned unchanged. Returns '' when every
- * entry was dropped, so the caller can omit the header.
+ * Drops `List-Unsubscribe` entries that are not a usable URI after recipient
+ * tokens are resolved: an empty `<>`, a Mailgun-only tag token (e.g.
+ * `<%tag_unsubscribe_email%>`), or a `%recipient.*%` token that had no
+ * variable. A value with no angle-bracketed entries is returned unchanged.
+ * Returns '' when every entry was dropped, so the caller can omit the header.
+ *
+ * Out of scope, by decision on workspace#3542: Mailgun tokens other than
+ * `%tag_*%` and `%recipient.*%` are not recognised, and RFC 2369 comments
+ * outside angle brackets are still stripped. Ghost sends neither.
  */
 export function dropUnresolvedListUnsubscribeEntries(value: string): string {
   const entries = value.match(ANGLE_BRACKET_ENTRY);
   if (!entries) {
     return value;
   }
-  return entries.filter((entry) => !MAILGUN_ONLY_TOKEN.test(entry)).join(', ');
+  return entries.filter(isDeliverableListUnsubscribeEntry).join(', ');
+}
+
+/**
+ * RFC 8058 allows `List-Unsubscribe-Post` only alongside an https entry in
+ * `List-Unsubscribe`. Given headers whose List-Unsubscribe has already been
+ * filtered, returns them with every `List-Unsubscribe-Post` removed unless a
+ * `List-Unsubscribe` still carries an https entry. Both names match
+ * case-insensitively.
+ */
+export function dropListUnsubscribePostWithoutHttps(
+  headers: Record<string, string>
+): Record<string, string> {
+  const hasHttpsEntry = Object.entries(headers).some(
+    ([name, value]) =>
+      name.toLowerCase() === 'list-unsubscribe' &&
+      (value.match(ANGLE_BRACKET_ENTRY) ?? []).some((entry) => HTTPS_ENTRY.test(entry))
+  );
+  if (hasHttpsEntry) {
+    return headers;
+  }
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'list-unsubscribe-post')
+  );
 }
