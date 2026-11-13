@@ -401,7 +401,12 @@ includes the live other colour's, which goes on rewriting and removing
 only its own. A sidecar left by an older release as one file, `{"owners":
 {...}, "stuck": {...}}`, is split into one entry per owner at start-up;
 the bytes are read first and put back if a release or sweep removed them
-while no sidecar stood. `test/unit/hold-release-cross-process.test.mjs`
+while no sidecar stood. The old file is renamed to a dotfile aside copy
+before the first entry is written, and removed after the last. A process
+killed between leaves the aside copy, and the next start-up, and every
+orphan sweep, finishes the split from it before it looks for orphaned
+bytes; a split another process has begun is finished the same way before
+an owner adopts its entries. `test/unit/hold-release-cross-process.test.mjs`
 runs a releaser and a holder as two real processes, pausing the releaser
 before it gives up its entry, before it moves the bytes aside and after.
 

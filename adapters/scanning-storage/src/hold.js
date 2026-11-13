@@ -205,20 +205,23 @@ function bytesMatchSync(quarantinePath, digest, computeDigest) {
 
 // An older release wrote the sidecar as one file, {"owners": {...},
 // "stuck": {...}}, read-modify-written by every owner. At start-up it is
-// split into one entry per owner. No sidecar stands between moving the old
-// file aside and the first entry landing, so a release or the orphan sweep
-// may remove the bytes then; they are read first and put back after, as
-// hold() does. Throws, leaving the file in place, when it has no owners map
-// or the bytes do not match their digest.
-function migrateSingleFileSidecarSync(quarantinePath, digest, computeDigest) {
-  const file = sidecarPath(quarantinePath, digest);
-  const stat = fsSync.lstatSync(file, { throwIfNoEntry: false });
-  if (!stat || !stat.isFile()) return;
-  const bytes = fsSync.readFileSync(path.join(quarantinePath, digest));
-  if (computeDigest(bytes) !== digest) {
-    throw new Error('the quarantined bytes do not match their digest');
-  }
-  const parsed = JSON.parse(fsSync.readFileSync(file, 'utf8'));
+// split into one entry per owner. A directory cannot take the file's name,
+// so the file is first renamed to a dotfile "aside" copy, then one entry per
+// owner is written, then the aside copy is removed. The aside copy is the
+// record of the split: a process that dies part way leaves it, and
+// finishInterruptedSplitsSync completes the split from it, at the next
+// start-up and before the orphan sweep, which would otherwise see old bytes
+// with no sidecar and remove them. Entries have a name fixed by their owner,
+// and one that exists is left, so finishing a split twice, or from two
+// processes at once, writes each owner once.
+const ASIDE_NAME = /^\.(.+?)\.holds\.json\.[^.]+\.json$/;
+
+function splitEntryName(owner) {
+  return `split-${crypto.createHash('sha256').update(owner).digest('hex').slice(0, 16)}.json`;
+}
+
+function parseLegacySidecar(raw) {
+  const parsed = JSON.parse(raw);
   if (
     !parsed ||
     typeof parsed !== 'object' ||
@@ -228,23 +231,117 @@ function migrateSingleFileSidecarSync(quarantinePath, digest, computeDigest) {
   ) {
     throw new Error('hold sidecar has no owners map');
   }
-  const aside = path.join(quarantinePath, `.${digest}${HOLDS_SUFFIX}.${holderFileName()}`);
-  try {
-    fsSync.renameSync(file, aside);
-  } catch (err) {
-    if (err.code === 'ENOENT') return; // another process is splitting it
-    throw err;
-  }
+  return parsed;
+}
+
+// Writes every owner's entry that is missing, puts the bytes back if a
+// sweep or release removed them while no sidecar stood, then removes the
+// aside copy. `bytes` were read, and matched their digest, by the caller.
+function completeSplitSync(quarantinePath, digest, aside, parsed, bytes, computeDigest) {
+  const dir = sidecarPath(quarantinePath, digest);
   for (const [owner, targets] of Object.entries(parsed.owners)) {
+    const name = splitEntryName(owner);
+    if (fsSync.existsSync(path.join(dir, name))) continue;
     const holder = { owner, targets };
     const stuck = parsed.stuck && parsed.stuck[owner];
     if (stuck) holder.stuck = stuck;
-    writeHolderSync(file, holderFileName(), JSON.stringify(holder));
+    writeHolderSync(dir, name, JSON.stringify(holder));
   }
   if (!bytesMatchSync(quarantinePath, digest, computeDigest)) {
     writeFileAtomicSync(path.join(quarantinePath, digest), bytes);
   }
   fsSync.rmSync(aside, { force: true });
+}
+
+function asideNamesSync(quarantinePath, onlyDigest) {
+  let names;
+  try {
+    names = fsSync.readdirSync(quarantinePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const found = [];
+  for (const name of names) {
+    const match = ASIDE_NAME.exec(name);
+    if (match && (onlyDigest === undefined || match[1] === onlyDigest)) {
+      found.push({ name, digest: match[1] });
+    }
+  }
+  return found;
+}
+
+// Finishes one interrupted split from its aside copy. Throws, leaving the
+// copy in place, when the copy cannot be read or its bytes are missing or
+// do not match their digest: it is then the only record of the hold.
+function finishAsideSync(quarantinePath, { name, digest }, computeDigest) {
+  const aside = path.join(quarantinePath, name);
+  let raw;
+  try {
+    raw = fsSync.readFileSync(aside, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return; // another process finished it
+    throw err;
+  }
+  const parsed = parseLegacySidecar(raw);
+  const bytes = fsSync.readFileSync(path.join(quarantinePath, digest));
+  if (computeDigest(bytes) !== digest) {
+    throw new Error('the quarantined bytes do not match their digest');
+  }
+  completeSplitSync(quarantinePath, digest, aside, parsed, bytes, computeDigest);
+}
+
+// Start-up, and every orphan sweep, runs this first. One interrupted split
+// failing is logged and leaves its aside copy; the others still finish.
+function finishInterruptedSplitsSync(quarantinePath, computeDigest, logger) {
+  for (const aside of asideNamesSync(quarantinePath)) {
+    try {
+      finishAsideSync(quarantinePath, aside, computeDigest);
+    } catch (err) {
+      logger.error(
+        `ScanningStorageAdapter: could not finish splitting the hold sidecar for ${aside.digest}; its aside copy ${aside.name} is kept`,
+        err
+      );
+    }
+  }
+}
+
+// Throws, leaving the file in place, when it has no owners map or the bytes
+// do not match their digest. A split another process has begun is finished
+// first, so an owner never adopts a half-written directory.
+function migrateSingleFileSidecarSync(quarantinePath, digest, computeDigest) {
+  for (const aside of asideNamesSync(quarantinePath, digest)) {
+    finishAsideSync(quarantinePath, aside, computeDigest);
+  }
+  const file = sidecarPath(quarantinePath, digest);
+  const stat = fsSync.lstatSync(file, { throwIfNoEntry: false });
+  if (!stat || !stat.isFile()) return;
+  const bytes = fsSync.readFileSync(path.join(quarantinePath, digest));
+  if (computeDigest(bytes) !== digest) {
+    throw new Error('the quarantined bytes do not match their digest');
+  }
+  const parsed = parseLegacySidecar(fsSync.readFileSync(file, 'utf8'));
+  const asideName = `.${digest}${HOLDS_SUFFIX}.${holderFileName()}`;
+  try {
+    fsSync.renameSync(file, path.join(quarantinePath, asideName));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    // Another process is splitting it: finish that split alongside it.
+    for (const aside of asideNamesSync(quarantinePath, digest)) {
+      finishAsideSync(quarantinePath, aside, computeDigest);
+    }
+    return;
+  }
+  // The bytes read above are what is put back if a sweep removed them
+  // between the rename and the first entry landing.
+  completeSplitSync(
+    quarantinePath,
+    digest,
+    path.join(quarantinePath, asideName),
+    parsed,
+    bytes,
+    computeDigest
+  );
 }
 
 // A holder killed between making the directory and its entry landing
@@ -566,7 +663,10 @@ class HoldRegistry {
   // and a failed sweep must neither stop start-up nor kill the process.
   #sweepOrphansLogged() {
     try {
-      // Pruned first, so bytes an abandoned sidecar was keeping are swept.
+      // Interrupted splits first: old bytes with only an aside copy of their
+      // sidecar look like orphans until the split is finished.
+      finishInterruptedSplitsSync(this.quarantinePath, this.computeDigest, this.logger);
+      // Pruned next, so bytes an abandoned sidecar was keeping are swept.
       pruneAbandonedSidecarsSync(this.quarantinePath, {
         minAgeMs: this.orphanMinAgeMs,
         nowMs: this.now(),
