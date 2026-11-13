@@ -67,6 +67,18 @@ export const CASES = [
     'false',
   ],
   [
+    'contract: the in-development tables are not filtered out of the expected tables',
+    'contract.mjs',
+    'if (skipped.has(table)) continue;',
+    '',
+  ],
+  [
+    'proof: the old image in-development list is not passed to the contract',
+    'proof.mjs',
+    '          await session.readLiveColumns(),\n          inDevelopment\n',
+    '          await session.readLiveColumns()\n',
+  ],
+  [
     'proof: findings never turn the schema check red, so never warn',
     'proof.mjs',
     'if (findings.length > 0) {',

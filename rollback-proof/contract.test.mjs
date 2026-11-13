@@ -139,6 +139,37 @@ describe('what else breaks the old code', () => {
   });
 });
 
+describe('tables a production database never creates', () => {
+  // Ghost 6.76.0 lists these in schema.js and in IN_DEVELOPMENT_TABLES; knex-migrator
+  // creates them only in development and testing.
+  const schema = { posts: { id: {} }, user_accounts: { id: {}, user_id: {} } };
+  const rows = [col('posts', 'id', req)];
+
+  it('an absent in-development table raises no finding', () => {
+    assert.deepEqual(checkContract(schema, rows, rows, ['user_accounts']), []);
+  });
+
+  it('CONTROL: the same table, not listed as in development, is missing', () => {
+    assert.deepEqual(
+      checkContract(schema, rows, rows).map((f) => [f.kind, f.table]),
+      [['missing-table', 'user_accounts']]
+    );
+  });
+
+  it('only the named tables are excused', () => {
+    assert.deepEqual(
+      checkContract({ ...schema, tags: { id: {} } }, rows, rows, ['user_accounts']).map(
+        (f) => f.table
+      ),
+      ['tags']
+    );
+  });
+
+  it('refuses an in-development list that is not an array', () => {
+    assert.throws(() => expectedColumns(schema, 'user_accounts'), /not an array/);
+  });
+});
+
 describe('input it cannot trust', () => {
   it('refuses a schema that is not an object of tables, or has none', () => {
     for (const bad of [null, [], 'x', 3, {}]) {

@@ -15,7 +15,15 @@ const LABEL = 'branchleft.agent=rollback-proof';
 const MYSQL_READY_MS = 120_000;
 const BOOT_MS = 300_000;
 const SCHEMA_MODULE = '/var/lib/ghost/current/core/server/data/schema/schema.js';
-const READ_SCHEMA = `process.stdout.write(JSON.stringify(require(${JSON.stringify(SCHEMA_MODULE)})))`;
+// Ghost 6.76.0 (TryGhost/Ghost commit b2c46790) lists tables in schema.js that
+// production never creates, in this module. An older image has no such file.
+const IN_DEVELOPMENT_MODULE = '/var/lib/ghost/current/core/server/data/schema/in-development.js';
+const READ_SCHEMA = `const fs = require('node:fs');
+const tables = require(${JSON.stringify(SCHEMA_MODULE)});
+const inDevelopment = fs.existsSync(${JSON.stringify(IN_DEVELOPMENT_MODULE)})
+  ? require(${JSON.stringify(IN_DEVELOPMENT_MODULE)}).IN_DEVELOPMENT_TABLES
+  : [];
+process.stdout.write(JSON.stringify({ tables, inDevelopment }));`;
 
 const PLATFORM_STORAGE_ENV = Object.freeze({
   BRANCHLEFT_ALLOW_LOCAL_STORAGE: 'true',

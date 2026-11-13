@@ -15,14 +15,22 @@ const byName = ([a], [b]) => a.localeCompare(b);
 /**
  * The old image's expected tables, from its schema module as JSON:
  * `{ table: { column: { ... }, '@@INDEXES@@': [...] } }`.
+ * `inDevelopment` names tables the schema module defines but a production
+ * database never creates (Ghost's IN_DEVELOPMENT_TABLES); the old image cannot
+ * use them on any database it runs against, so they are not expected.
  * Returns `Map<table, Set<column>>`.
  */
-export function expectedColumns(tables) {
+export function expectedColumns(tables, inDevelopment = []) {
   if (tables === null || typeof tables !== 'object' || Array.isArray(tables)) {
     throw new Error('the old image schema is not an object of tables');
   }
+  if (!Array.isArray(inDevelopment)) {
+    throw new Error('the old image in-development table list is not an array');
+  }
+  const skipped = new Set(inDevelopment);
   const out = new Map();
   for (const [table, columns] of Object.entries(tables)) {
+    if (skipped.has(table)) continue;
     if (columns === null || typeof columns !== 'object') {
       throw new Error(`table ${table} in the old image schema is not an object`);
     }
@@ -108,9 +116,9 @@ export function compareContract(expected, before, after) {
 }
 
 /** The old image's tables and the two catalogue reads to findings in one step. */
-export function checkContract(schemaTables, beforeRows, afterRows) {
+export function checkContract(schemaTables, beforeRows, afterRows, inDevelopment = []) {
   return compareContract(
-    expectedColumns(schemaTables),
+    expectedColumns(schemaTables, inDevelopment),
     liveColumns(beforeRows),
     liveColumns(afterRows)
   );
