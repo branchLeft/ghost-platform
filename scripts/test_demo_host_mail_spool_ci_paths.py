@@ -1,29 +1,7 @@
 """The demo host mail spool CI path filter must list every input the job reads.
 
 Run: python3 -m unittest discover -s scripts -p 'test_demo_host_mail_spool_ci_paths.py'
-
-`.github/workflows/demo-host-mail-spool-ci.yml` starts only when a diff touches
-a path in its `paths:` filter. A filter that lists one source file while the job
-builds all of render-core and mounts all of demo-host/provision lets a change to
-any other input merge without the job ever running. This test derives the job's
-real inputs from the places that decide them, and fails for any input outside
-the filter, for the two events differing, and for a filter entry that matches
-nothing (a renamed file leaves one behind, silently).
-
-Where the inputs come from:
-  - render-core build: the `include` list of render-core/tsconfig.build.json,
-    its relative `extends`, the import closure of src/index.ts (which must stay
-    inside src/), and the files the workflow's Setup Node and Setup pnpm steps
-    read (node-version-file, cache-dependency-path, render-core/package.json,
-    the root package.json that pnpm/action-setup reads its version from).
-  - render-core/package.json and the .npmrc beside it, which `pnpm install`
-    reads from its working directory.
-  - the scripts the workflow runs, and every $HERE path those shell scripts
-    read, directories expanded to the files under them (the proof mounts the
-    whole of demo-host/provision and copies the whole of scripts/mail-spool-proof).
-  - every path a .mjs input joins onto its own directory (the compose test
-    reads render-core's golden file that way).
-No network, no docker: it reads the tree and the workflow only.
+Where the inputs come from, and what each failure means: test_demo_host_mail_spool_ci_paths.md.
 """
 
 from __future__ import annotations
@@ -156,6 +134,8 @@ def derive_inputs(root: Path, workflow_text: str) -> Dict[str, str]:
     """Every tracked file the job reads, mapped to why."""
     files = tracked_files(root)
     fileset = set(files)
+    # Comments name files the job does not run, so they are not read as inputs.
+    workflow_text = re.sub(r"(?m)^\s*#.*$", "", workflow_text)
     inputs: Dict[str, str] = {WORKFLOW: "the workflow itself"}
 
     def add(path: str, why: str) -> None:
