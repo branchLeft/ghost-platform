@@ -174,6 +174,13 @@ jobs:
       - name: Demo host provisioning script tests
         run: python3 -m unittest discover -s demo-host/provision -p 'test_*.py'
 
+      # The demo host mail spool workflow starts only on a path in its filter.
+      # This derives the job's real inputs (render-core's build, the scripts it
+      # runs, the whole of demo-host/provision) and fails for one outside the
+      # filter, for the two events differing, or for an entry matching nothing.
+      - name: Demo host mail spool CI path filter tests
+        run: python3 -m unittest discover -s scripts -p 'test_demo_host_mail_spool_ci_paths.py'
+
       # Each gate of the demo site block broken in a scratch copy: the suite must
       # go red for every one, and green on the real copy.
       - name: Demo site block sabotage proof
