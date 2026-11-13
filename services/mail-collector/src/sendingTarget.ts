@@ -34,9 +34,16 @@ export function failureKindOf(error: unknown): SubmissionFailureKind {
   return error instanceof TargetSubmissionError ? error.kind : 'ambiguous';
 }
 
-/** The one place a message's class is decided from the wire. */
-export function mailClassOf(emailId: string | null): MailClass {
-  return emailId === null ? 'transactional' : 'bulk';
+/**
+ * The one place a message's class is decided from the wire. Both the sending
+ * target resolver and the throttle lanes (`laneOf`) read it, so they cannot
+ * disagree about a message. Only a non-empty string names a campaign: a null,
+ * missing or empty id is sign-in mail, as the shim writes no X-Ghost-Email-Id
+ * header for it. An unknown id therefore never takes the bulk throttle, and
+ * bulk mail always carries a real id so it never rides the login lane.
+ */
+export function mailClassOf(emailId: string | null | undefined): MailClass {
+  return typeof emailId === 'string' && emailId !== '' ? 'bulk' : 'transactional';
 }
 
 /**

@@ -35,10 +35,11 @@ function healthy(overrides: Partial<SendingContext> = {}): SendingContext {
 }
 
 describe('mail class comes from the wire emailId', () => {
-  it('is transactional for a null emailId and bulk for any other', () => {
+  it('is transactional for a null, missing or empty emailId and bulk for any other', () => {
     expect(mailClassOf(null)).toBe('transactional');
+    expect(mailClassOf(undefined)).toBe('transactional');
+    expect(mailClassOf('')).toBe('transactional');
     expect(mailClassOf('email-1')).toBe('bulk');
-    expect(mailClassOf('')).toBe('bulk');
   });
 });
 
