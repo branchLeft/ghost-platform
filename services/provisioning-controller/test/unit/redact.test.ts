@@ -107,6 +107,53 @@ describe('redactSecrets', () => {
     );
   });
 
+  // The rules above add coverage; none may stop catching what the original single
+  // field rule removed (a flag with a spaced separator, a quoted value ending in a backslash).
+  it.each([
+    ['a flag with a spaced equals sign', 'run --password = SECRETX9 next', 'SECRETX9'],
+    ['a flag with a spaced colon', 'run --password : SECRETX9 next', 'SECRETX9'],
+    ['a flag with a colon', 'run --password: SECRETX9 next', 'SECRETX9'],
+    ['a flag with an equals sign and extra spaces', 'run --token=  SECRETX9 next', 'SECRETX9'],
+    ['a private-key flag with a spaced equals sign', 'run --private-key = SECRETX9', 'SECRETX9'],
+    ['an access-key flag with a spaced equals sign', 'run --x-access-key = SECRETX9', 'SECRETX9'],
+    [
+      'a double-quoted value with spaces ending in a backslash',
+      'password="ab SECRETX9\\"',
+      'SECRETX9',
+    ],
+    [
+      'a double-quoted value ending in a backslash, then more text',
+      'password="ab SECRETX9\\" next',
+      'SECRETX9',
+    ],
+    [
+      'a single-quoted value with spaces ending in a backslash',
+      "password='ab SECRETX9\\'",
+      'SECRETX9',
+    ],
+    ['a JSON value with spaces ending in a backslash', '{"password":"ab SECRETX9\\"}', 'SECRETX9'],
+    [
+      'a quoted flag value with spaces ending in a backslash',
+      'run --password "ab SECRETX9\\"',
+      'SECRETX9',
+    ],
+  ])('still removes %s', (_name, text, secret) => {
+    const out = redactSecrets(text);
+    expect(out).not.toContain(secret);
+    expect(out).toContain(REDACTED);
+  });
+
+  it('redacts a flag with a spaced equals sign exactly as the field rule always did', () => {
+    expect(redactSecrets('run --password = hunter2 next')).toBe(
+      `run --password = ${REDACTED} next`
+    );
+  });
+
+  it('redacts a quoted value ending in a backslash exactly as the field rule always did', () => {
+    expect(redactSecrets('password="ab cd\\"')).toBe(`password=${REDACTED}`);
+    expect(redactSecrets("password='ab cd\\'")).toBe(`password=${REDACTED}`);
+  });
+
   it('stays fast on a long run of dashes', () => {
     const text = '-'.repeat(50_000);
     const started = performance.now();

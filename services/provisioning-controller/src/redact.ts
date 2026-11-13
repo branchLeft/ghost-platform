@@ -4,8 +4,12 @@ export const REDACTED = '[redacted]';
 const SECRET_WORD =
   '(?:secret|token|passw(?:or)?d|passphrase|pwd|api[_-]?key|credential|authorization|private[_-]?key|access[_-]?key)';
 const SECRET_FIELD = `[\\w.-]*${SECRET_WORD}[\\w.-]*`;
-/** A quoted value may hold backslash escapes (\" or \\); an unterminated quote falls to the bare form. */
-const VALUE = '"(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|[^\\s,;]+';
+/**
+ * A quoted value may hold backslash escapes (\" or \\). When no closing quote follows that way
+ * (a value that ends in a backslash), the plain quote-to-quote form still takes the whole value,
+ * as the original rule did; only an unterminated quote falls to the bare form.
+ */
+const VALUE = '"(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|"[^"]*"|\'[^\']*\'|[^\\s,;]+';
 /** Auth schemes that stand before the credential in an Authorization header. */
 const AUTH_SCHEME = '(?:bearer|basic|token|digest|negotiate|apikey|bot|hmac|oauth)';
 
@@ -24,8 +28,10 @@ const RULES: readonly (readonly [RegExp, string])[] = [
   [/\b(bearer|basic)\s+[\w.~+/=-]{8,}/gi, `$1 ${REDACTED}`],
   // A command-line flag whose value is the next word: --password hunter2. The lookbehind
   // lets only the first dash of a run start a match, which keeps a long dash run linear.
+  // A "value" that starts with - = or : is the next flag or a separator (--password = x),
+  // which the field rule below handles.
   [
-    new RegExp(`((?<![\\w-])--[\\w-]*${SECRET_WORD}[\\w-]*[ \\t]+)(?!-)(${VALUE})`, 'gi'),
+    new RegExp(`((?<![\\w-])--[\\w-]*${SECRET_WORD}[\\w-]*[ \\t]+)(?![-=:])(${VALUE})`, 'gi'),
     `$1${REDACTED}`,
   ],
   // A field name, then an optional closing quote (JSON, Python repr), a separator and a value.
