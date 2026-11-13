@@ -6,7 +6,7 @@
 
 # The registry comes from one build argument whose default is the public
 # source, so a local build pulls this exact digest with no credential. CI alone
-# passes IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private; the digest, and so
+# passes IMAGE_REGISTRY=ghcr.io/branchleft/mirror-private2; the digest, and so
 # the bytes, are the same either way. The digest is the multi-platform index of
 # 8.0 at 8.0.46-37, the one .github/image-mirror/images.json lists.
 ARG IMAGE_REGISTRY
