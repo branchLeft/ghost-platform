@@ -187,6 +187,9 @@ class FakeSlotOps:
     def unit_is_stopped(self, unit: str) -> bool:
         return False
 
+    def ensure_slot_volumes(self, slot_dir: str, slot: str) -> None:
+        self.calls.append(("ensure_slot_volumes", slot_dir, slot))
+
     def load_image(self, path: str) -> None:
         self.calls.append(("load_image", path))
 
@@ -228,7 +231,13 @@ class PerformDispatchTests(unittest.TestCase):
     def test_colour_start_calls_systemctl_start_on_the_named_units_instance(self):
         ops = FakeSlotOps()
         bs.perform(bs.ColourInvocation(slot="3", colour="a", verb="start"), ops)
-        self.assertEqual(ops.calls, [("systemctl", "start", "branchleft-compose@demo-3-a")])
+        self.assertEqual(
+            ops.calls,
+            [
+                ("ensure_slot_volumes", "/opt/branchleft/demo-3", "3"),
+                ("systemctl", "start", "branchleft-compose@demo-3-a"),
+            ],
+        )
 
     def test_colour_stop_calls_systemctl_stop_on_the_named_units_instance(self):
         ops = FakeSlotOps()
@@ -1281,6 +1290,243 @@ class ReadContentVolumeNameTests(unittest.TestCase):
         )
         with self.assertRaises(bs.RefusedVolume):
             self._read()
+
+
+class SlotVolumeNamesTests(unittest.TestCase):
+    """`_slot_volume_names` decides which volumes `start` creates, from a file
+    the broker wrote, for a root process that runs `docker volume create` on
+    each: only this slot's own data volume and a legal content or adapters
+    name may come out."""
+
+    def test_the_golden_rendered_compose_names_its_three_external_volumes(self):
+        self.assertEqual(
+            bs._slot_volume_names("0", GOLDEN_COMPOSE.read_text()),
+            ["ghost-demo-1-adapters", "ghost-demo-1-content", "ghost-demo-30001-data"],
+        )
+
+    def test_a_shaped_compose_names_its_three_volumes(self):
+        self.assertEqual(
+            bs._slot_volume_names("1", _compose_text()),
+            ["ghost-demo-2-adapters", "ghost-demo-2-content", "ghost-demo-30002-data"],
+        )
+
+    def test_another_slots_data_volume_is_never_named(self):
+        self.assertEqual(
+            bs._slot_volume_names("3", _compose_text()),
+            ["ghost-demo-2-adapters", "ghost-demo-2-content"],
+        )
+
+    def test_a_data_volume_name_that_only_looks_like_this_slots_is_not_named(self):
+        for name in ("ghost-demo-300020-data", "ghost-demo-3002-data", "ghost-demo-30002-data2",
+                     "ghost-demo-030002-data"):
+            with self.subTest(name=name):
+                self.assertEqual(bs._slot_volume_names("1", f"volumes:\n  {name}:\n"), [])
+
+    def test_a_quoted_key_is_named(self):
+        text = "volumes:\n  'ghost-demo-3-content':\n  \"ghost-demo-3-adapters\":\n"
+        self.assertEqual(
+            bs._slot_volume_names("0", text), ["ghost-demo-3-adapters", "ghost-demo-3-content"]
+        )
+
+    def test_volumes_the_wrapper_does_not_own_are_never_named(self):
+        text = (
+            "volumes:\n  branchleft-mail-spool-data:\n  ghost-demo-1-metrics:\n"
+            "  postgres-data:\n  ghost-demo-1-content:\n"
+        )
+        self.assertEqual(bs._slot_volume_names("0", text), ["ghost-demo-1-content"])
+
+    def test_a_name_with_a_path_separator_or_an_option_shape_is_never_named(self):
+        for name in ("ghost-../x-content", "ghost-a/b-adapters", "-ghost-a-content", "ghost-Demo-1-content",
+                     "ghost--adapters", "../ghost-a-content"):
+            with self.subTest(name=name):
+                self.assertEqual(bs._slot_volume_names("0", f"volumes:\n  {name}:\n"), [])
+
+    def test_the_slug_is_capped_at_the_length_render_core_allows(self):
+        self.assertEqual(
+            bs._slot_volume_names("0", f"volumes:\n  ghost-{'a' * 63}-content:\n"),
+            [f"ghost-{'a' * 63}-content"],
+        )
+        self.assertEqual(bs._slot_volume_names("0", f"volumes:\n  ghost-{'a' * 64}-adapters:\n"), [])
+
+    def test_a_key_outside_the_top_level_volumes_block_is_ignored(self):
+        text = (
+            "services:\n  ghost-a:\n    volumes:\n      - 'ghost-demo-9-content:/x'\n"
+            "    ghost-demo-8-adapters:\n"
+            "networks:\n  ghost-demo-7-content:\n"
+        )
+        self.assertEqual(bs._slot_volume_names("0", text), [])
+
+    def test_two_distinct_content_volumes_are_refused_not_guessed(self):
+        with self.assertRaises(bs.RefusedVolume):
+            bs._slot_volume_names("0", "volumes:\n  ghost-demo-1-content:\n  ghost-demo-2-content:\n")
+
+    def test_two_distinct_adapters_volumes_are_refused_not_guessed(self):
+        with self.assertRaises(bs.RefusedVolume):
+            bs._slot_volume_names("0", "volumes:\n  ghost-demo-1-adapters:\n  ghost-demo-2-adapters:\n")
+
+    def test_the_same_name_twice_is_one_volume(self):
+        text = "volumes:\n  ghost-demo-1-content:\nvolumes:\n  ghost-demo-1-content:\n"
+        self.assertEqual(bs._slot_volume_names("0", text), ["ghost-demo-1-content"])
+
+    def test_garbage_and_empty_text_name_no_volume(self):
+        for text in ("", "\x00\xff not yaml {{{", "volumes:\n", "volumes: [ghost-demo-1-content]\n"):
+            with self.subTest(text=text):
+                self.assertEqual(bs._slot_volume_names("0", text), [])
+
+
+class StartCreatesSlotVolumesTests(unittest.TestCase):
+    """`start` creates the slot's external volumes before it starts the unit,
+    because the rendered `compose.yml` declares them `external: true` and
+    `docker compose up` fails on a volume that does not exist. `reset` still
+    never creates one."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._patch = mock.patch.object(bs, "LOCK_DIR", self._tmp.name)
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def test_start_creates_the_volumes_then_starts_the_unit(self):
+        ops = FakeSlotOps()
+        bs.perform(bs.ColourInvocation(slot="2", colour="b", verb="start"), ops)
+        self.assertEqual(
+            [call[0] for call in ops.calls], ["ensure_slot_volumes", "systemctl"]
+        )
+        self.assertEqual(ops.calls[0][1:], ("/opt/branchleft/demo-2", "2"))
+
+    def test_a_failure_creating_a_volume_stops_before_the_unit_is_started(self):
+        ops = FakeSlotOps()
+        ops.ensure_slot_volumes = mock.Mock(side_effect=subprocess.CalledProcessError(1, "docker"))
+        with self.assertRaises(subprocess.CalledProcessError):
+            bs.perform(bs.ColourInvocation(slot="2", colour="a", verb="start"), ops)
+        self.assertEqual(ops.calls, [])
+
+    def test_stop_never_creates_a_volume(self):
+        ops = FakeSlotOps()
+        bs.perform(bs.ColourInvocation(slot="2", colour="a", verb="stop"), ops)
+        self.assertEqual([call[0] for call in ops.calls], ["systemctl"])
+
+    def test_reset_never_creates_a_volume(self):
+        ops = FakeSlotOps()
+        bs.perform(bs.ResetInvocation(slot="2"), ops)
+        self.assertNotIn("ensure_slot_volumes", [call[0] for call in ops.calls])
+
+
+class RealEnsureSlotVolumesTests(unittest.TestCase):
+    """`RealSlotOps.ensure_slot_volumes` against a scratch slot directory with
+    `subprocess.run` patched: the one Docker CLI use `start` makes."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.slot_dir = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+        run_patch = mock.patch("branchleft_slot.subprocess.run")
+        self.run = run_patch.start()
+        self.addCleanup(run_patch.stop)
+
+    def _ensure(self, slot: str = "1") -> None:
+        bs.RealSlotOps().ensure_slot_volumes(self.slot_dir, slot)
+
+    def _write_compose(self, text: str) -> None:
+        Path(self.slot_dir, "compose.yml").write_text(text)
+
+    def test_creates_each_named_volume_with_an_explicit_argv_and_no_shell(self):
+        self._write_compose(_compose_text())
+        self._ensure()
+        self.assertEqual(
+            [call.args[0] for call in self.run.call_args_list],
+            [
+                ["docker", "volume", "create", "ghost-demo-2-adapters"],
+                ["docker", "volume", "create", "ghost-demo-2-content"],
+                ["docker", "volume", "create", "ghost-demo-30002-data"],
+            ],
+        )
+        for call in self.run.call_args_list:
+            self.assertTrue(call.kwargs.get("check"))
+            self.assertFalse(call.kwargs.get("shell", False))
+            self.assertIn("timeout", call.kwargs)
+
+    def test_a_second_start_makes_the_same_calls_so_an_existing_volume_is_left_alone(self):
+        # `docker volume create <existing name>` exits zero and changes nothing,
+        # so the second start is the same argv, not a "does it exist" branch.
+        self._write_compose(_compose_text())
+        self._ensure()
+        first = [call.args[0] for call in self.run.call_args_list]
+        self.run.reset_mock()
+        self._ensure()
+        self.assertEqual([call.args[0] for call in self.run.call_args_list], first)
+
+    def test_nothing_is_created_for_another_slots_data_volume(self):
+        self._write_compose(_compose_text())
+        self._ensure(slot="4")
+        names = [call.args[0][-1] for call in self.run.call_args_list]
+        self.assertNotIn("ghost-demo-30002-data", names)
+
+    def test_a_missing_compose_file_creates_nothing(self):
+        self._ensure()
+        self.run.assert_not_called()
+
+    def test_a_symlinked_compose_file_is_not_followed(self):
+        outside = Path(self.slot_dir, "elsewhere.yml")
+        outside.write_text(_compose_text())
+        os.symlink(outside, Path(self.slot_dir, "compose.yml"))
+        self._ensure()
+        self.run.assert_not_called()
+
+    def test_a_fifo_named_compose_yml_is_skipped_without_blocking(self):
+        os.mkfifo(Path(self.slot_dir, "compose.yml"))
+        self._ensure()
+        self.run.assert_not_called()
+
+    def test_an_ambiguous_compose_file_is_refused_and_creates_nothing(self):
+        self._write_compose("volumes:\n  ghost-demo-1-content:\n  ghost-demo-2-content:\n")
+        with self.assertRaises(bs.RefusedVolume):
+            self._ensure()
+        self.run.assert_not_called()
+
+    def test_a_failing_docker_volume_create_raises(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.CalledProcessError(1, ["docker"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self._ensure()
+
+    def test_a_docker_that_cannot_run_raises(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = FileNotFoundError("docker")
+        with self.assertRaises(FileNotFoundError):
+            self._ensure()
+
+    def test_a_docker_that_hangs_raises_rather_than_blocking_the_start(self):
+        self._write_compose(_compose_text())
+        self.run.side_effect = subprocess.TimeoutExpired(["docker"], 1)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self._ensure()
+
+
+class ResetOnVolumesThatDoNotExistYetTests(unittest.TestCase):
+    """A slot that was never started has no volumes, since they are now made
+    by `start`. `reset` of it must still finish, and must not make one."""
+
+    def test_reset_empties_the_slot_when_none_of_its_volumes_exist_and_runs_no_docker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            slot_dir = Path(tmp, "demo-1")
+            slot_dir.mkdir()
+            (slot_dir / "compose.yml").write_text(_compose_text())
+            volumes = Path(tmp, "volumes")
+            volumes.mkdir()
+            with mock.patch.object(bs, "LOCK_DIR", tmp), \
+                mock.patch.object(bs, "SLOT_DIR", os.path.join(tmp, "demo-{slot}")), \
+                mock.patch.object(bs, "ETC_DIR", tmp), \
+                mock.patch.object(bs, "DOCKER_VOLUME_ROOT", volumes), \
+                mock.patch("branchleft_slot.subprocess.run") as run:
+                bs.perform(bs.ResetInvocation(slot="1"), bs.RealSlotOps())
+            self.assertEqual(list(slot_dir.iterdir()), [])
+            self.assertEqual(list(volumes.iterdir()), [])
+        for call in run.call_args_list:
+            self.assertEqual(call.args[0][0], "systemctl")
 
 
 class VolumeEmptyingResetTests(unittest.TestCase):

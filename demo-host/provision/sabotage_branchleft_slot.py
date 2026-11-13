@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sabotage proof for branchleft_slot: loosen one control at a time (the mount-point
-refusal, the reset's stopped-unit ruling) in a scratch copy and require the suite red, then the untouched copy green.
+refusal, the reset's stopped-unit ruling, the volumes `start` creates) in a scratch copy and require the suite red, then the untouched copy green.
 
 Usage: sabotage_branchleft_slot.py
 
@@ -60,6 +60,25 @@ SABOTAGES = [
     ('a stop error that is not a failed exit is swallowed too',
      '    except subprocess.CalledProcessError:\n        if ops.unit_is_stopped',
      '    except Exception:\n        if ops.unit_is_stopped'),
+    ('start no longer creates the slot volumes',
+     '                ops.ensure_slot_volumes(SLOT_DIR.format(slot=invocation.slot), invocation.slot)\n',
+     '                pass\n'),
+    ('stop and read verbs create the slot volumes too',
+     '            if invocation.verb == "start":\n',
+     '            if True:\n'),
+    ("another slot's data volume is named for creation",
+     '        if line.rstrip() in data_keys:\n            data.add(data_key)\n',
+     '        if re.fullmatch(r"  \'?ghost-demo-[0-9]+-data\'?:", line.rstrip()):\n'
+     '            data.add(line.strip().strip("\':"))\n'),
+    ('two content or adapters volumes are no longer refused',
+     '        if len(found) > 1:\n',
+     '        if False:\n'),
+    ('a failed docker volume create is no longer an error (check=True dropped)',
+     '                ["docker", "volume", "create", name],\n                check=True,\n',
+     '                ["docker", "volume", "create", name],\n'),
+    ('docker volume create has no timeout',
+     '                timeout=_VOLUME_CREATE_TIMEOUT_SECONDS,\n',
+     ''),
 ]
 
 

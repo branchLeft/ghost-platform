@@ -119,3 +119,24 @@ permission error, a timeout) must raise with nothing wiped, not even the read of
 the content volume name. `sabotage_branchleft_slot.py` loosens each of these in a
 scratch copy and requires the suite red against a baseline run of the untouched
 copy, then green.
+
+## SlotVolumeNamesTests, StartCreatesSlotVolumesTests, RealEnsureSlotVolumesTests
+
+`start` creates the slot's external volumes before it starts the unit, since
+nothing else does. `_slot_volume_names` is tested as a pure function of a
+compose text: this slot's data volume, one content and one adapters volume,
+and nothing else (another slot's data volume, near-miss data names, the mail
+spool, path-shaped names, keys outside the top-level `volumes:` block, two
+content or two adapters volumes). `perform` is tested with `FakeSlotOps` for
+the order (create, then start) and for what must never create: `stop`, and
+`reset`. `RealSlotOps.ensure_slot_volumes` is tested with `subprocess.run`
+patched: the exact `docker volume create <name>` argv with `check=True`, a
+timeout and no shell; the same argv again on a second start; no compose file,
+a symlink or a FIFO creates nothing; a refused file creates nothing; a failing,
+missing or hanging `docker` raises.
+
+## ResetOnVolumesThatDoNotExistYetTests
+
+A slot never started has no volumes. `reset` of it, run for real against a
+scratch tree, must empty the slot directory, create nothing under the volume
+root and run only `systemctl`.

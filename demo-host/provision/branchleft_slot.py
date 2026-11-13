@@ -185,6 +185,54 @@ def _content_directory(name: str) -> Path:
     return DOCKER_VOLUME_ROOT / name / "_data"
 
 
+_ADAPTERS_VOLUME_KEY = re.compile(rf"  (['\"]?)ghost-({_SLUG_PATTERN})-adapters\1:[ \t]*")
+_VOLUME_CREATE_TIMEOUT_SECONDS = 60
+
+
+def _slot_volume_names(slot: str, compose_text: str) -> list[str]:
+    """The external volumes `start` creates for `slot`, sorted, from the
+    rendered `compose.yml`: this slot's own data volume, and the one content
+    and one adapters volume with a legal slug. Read from the top-level
+    `volumes:` block only. Any other key -- another slot's data volume, the
+    mail spool, a name holding `/` or `..` -- is never named, and two distinct
+    content or two distinct adapters volumes raise `RefusedVolume` rather than
+    pick one. The text is written by the broker, so it is input to a root
+    process that runs `docker volume create` on every name returned.
+    Reasons: branchleft_slot.md#start-creates-the-slots-volumes.
+    """
+    data_key = f"ghost-demo-{UID_BASE + int(slot)}-data"
+    data_keys = (f"  {data_key}:", f"  '{data_key}':", f'  "{data_key}":')
+    content: set[str] = set()
+    adapters: set[str] = set()
+    data: set[str] = set()
+    in_volumes = False
+    for line in compose_text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_volumes = line.rstrip() == "volumes:"
+            continue
+        if not in_volumes:
+            continue
+        if line.rstrip() in data_keys:
+            data.add(data_key)
+            continue
+        for pattern, found, kind in (
+            (_CONTENT_VOLUME_KEY, content, "content"),
+            (_ADAPTERS_VOLUME_KEY, adapters, "adapters"),
+        ):
+            match = pattern.fullmatch(line)
+            if match and len(match.group(2)) <= _MAX_SLUG_LENGTH:
+                found.add(f"ghost-{match.group(2)}-{kind}")
+    for found, kind in ((content, "content"), (adapters, "adapters")):
+        if len(found) > 1:
+            raise RefusedVolume(
+                f"refused: the slot's compose.yml declares {len(found)} {kind} volumes "
+                f"({', '.join(sorted(found))}); will not guess which one to create"
+            )
+    return sorted(content | adapters | data)
+
+
 def _empty_directory_by_fd(dir_fd: int, dev: int, depth: int) -> None:
     """Removes everything inside the directory open as `dir_fd`, never
     following a link. Every name is resolved relative to a directory
@@ -509,6 +557,7 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
 class SlotOps(Protocol):
     def systemctl(self, action: str, unit: str) -> None: ...
     def unit_is_stopped(self, unit: str) -> bool: ...
+    def ensure_slot_volumes(self, slot_dir: str, slot: str) -> None: ...
     def read_content_volume_name(self, slot_dir: str) -> str | None: ...
     def remove_volume_contents(self, volume_dir: str) -> None: ...
     def remove_dir_contents(self, path: str) -> None: ...
@@ -672,13 +721,12 @@ class RealSlotOps:
         finally:
             os.close(fd)
 
-    def read_content_volume_name(self, slot_dir: str) -> str | None:
-        """The slot's content volume name from `<slot_dir>/compose.yml`, or
-        None when there is nothing to read: no file, a link or other
-        non-regular file, one over `_COMPOSE_MAX_BYTES`, or no content volume
-        in it. Opened `O_NOFOLLOW | O_NONBLOCK`, so a planted link or FIFO is
-        skipped rather than followed or waited on. Raises `RefusedVolume` for
-        an ambiguous file. Reasons: branchleft_slot.md#content-volume-emptying.
+    @staticmethod
+    def _read_compose_text(slot_dir: str) -> str | None:
+        """`<slot_dir>/compose.yml` as text, or None when there is nothing to
+        read: no file, a link or other non-regular file, or one over
+        `_COMPOSE_MAX_BYTES`. Opened `O_NOFOLLOW | O_NONBLOCK`, so a planted
+        link or FIFO is skipped rather than followed or waited on.
         """
         path = os.path.join(slot_dir, "compose.yml")
         try:
@@ -694,7 +742,37 @@ class RealSlotOps:
             os.close(fd)
         if len(data) > _COMPOSE_MAX_BYTES:
             return None
-        return _content_volume_name(data.decode("utf-8", errors="replace"))
+        return data.decode("utf-8", errors="replace")
+
+    def read_content_volume_name(self, slot_dir: str) -> str | None:
+        """The slot's content volume name from `<slot_dir>/compose.yml`, or
+        None when there is nothing to read (see `_read_compose_text`) or no
+        content volume in it. Raises `RefusedVolume` for an ambiguous file.
+        Reasons: branchleft_slot.md#content-volume-emptying.
+        """
+        text = self._read_compose_text(slot_dir)
+        return None if text is None else _content_volume_name(text)
+
+    def ensure_slot_volumes(self, slot_dir: str, slot: str) -> None:
+        """Creates each external volume `<slot_dir>/compose.yml` declares for
+        `slot` (`_slot_volume_names`) with `docker volume create <name>`, which
+        exits zero and changes nothing for a volume that already exists. No
+        compose file to read creates nothing. Raises `RefusedVolume` for an
+        ambiguous file, and `CalledProcessError`, `TimeoutExpired` or
+        `OSError` when a create fails, so the unit is never started on a
+        missing volume. Reasons:
+        branchleft_slot.md#start-creates-the-slots-volumes.
+        """
+        text = self._read_compose_text(slot_dir)
+        if text is None:
+            return
+        for name in _slot_volume_names(slot, text):
+            subprocess.run(
+                ["docker", "volume", "create", name],
+                check=True,
+                capture_output=True,
+                timeout=_VOLUME_CREATE_TIMEOUT_SECONDS,
+            )
 
     def remove_volume_contents(self, volume_dir: str) -> None:
         """Empties `volume_dir`, which must be exactly
@@ -813,6 +891,12 @@ def perform(invocation: Invocation, ops: SlotOps) -> None:
     try:
         if isinstance(invocation, ColourInvocation):
             unit = UNIT_TEMPLATE.format(slot=invocation.slot, colour=invocation.colour)
+            if invocation.verb == "start":
+                # The slot's `compose.yml` declares its volumes `external: true`,
+                # so `docker compose up` fails on one that does not exist yet.
+                # Created here, before the unit starts, and a no-op once they
+                # exist. See branchleft_slot.md#start-creates-the-slots-volumes.
+                ops.ensure_slot_volumes(SLOT_DIR.format(slot=invocation.slot), invocation.slot)
             ops.systemctl(invocation.verb, unit)
             return
 

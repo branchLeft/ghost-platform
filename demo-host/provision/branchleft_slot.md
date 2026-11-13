@@ -35,10 +35,11 @@ stop both of a slot's colour units and wipe the slot's own state: the slot
 directory, the two env files, and the contents of the slot's Ghost data
 volume and content volume (see "Content volume emptying" below; the
 adapters volume is never touched). For
-every slot/colour/reset invocation it never touches the Docker socket
-(systemctl is the only privileged primitive it uses there -- a docker
+every slot/colour/reset invocation it never touches the Docker socket,
+with one exception, `start` (see "Start creates the slot's volumes" below):
+systemctl is the privileged primitive everywhere else -- a docker
 command is root with no gradation, which is the exact erosion enumeration
-exists to avoid), never accepts a path as an argument, never writes
+exists to avoid. It never accepts a path as an argument, never writes
 `/etc/branchleft/<slot>-<colour>.env` (the broker writes that,
 unprivileged, before ever asking for a start), and never reads or touches
 anything outside the one slot its argv names.
@@ -114,6 +115,38 @@ mounts this same volume into *both* `ghost-a` and `ghost-b` -- one shared
 SQLite file per slot, not one per colour -- so a colour argument changes
 nothing about which file this opens. `reset` empties this same directory,
 see the next section.
+
+## Start creates the slot's volumes
+
+The rendered `compose.yml` declares the slot's three volumes `external: true`
+(content, adapters, and the colour pair's shared data volume), so `docker
+compose up` fails on one that does not exist. Nothing else in the slot route
+creates them, so `start` does, before it starts the unit:
+`RealSlotOps.ensure_slot_volumes` reads `<slot dir>/compose.yml` (the same
+guarded reader `reset` uses) and runs `docker volume create <name>` for each
+name `_slot_volume_names` returns. `docker volume create` on a volume that
+exists exits zero and changes nothing, so a second lease, and the colour swap's
+`start`, repeat it harmlessly. A create that fails, times out or cannot run
+raises and the unit is never started.
+
+This is the one place besides `load` that this process runs the Docker CLI,
+and it is narrow on the same terms: the argv is the fixed three words plus a
+name that has passed an anchored pattern; there is no shell; there is no path.
+`_slot_volume_names` returns only this slot's own `ghost-demo-<uid>-data`
+(never another slot's), one `ghost-<slug>-content` and one
+`ghost-<slug>-adapters` with a legal slug (the grammar `reset` already
+reads), and refuses a file naming two of either kind. Any other key, such as
+the mail spool, is never named: those are created elsewhere.
+
+Residual risk, as for `reset`: the names come from a broker-written file, so
+a compromised broker can make this process create an empty volume with a legal
+content or adapters name. It cannot name another slot's data volume, replace
+or empty an existing volume, or reach a path. The data volume is created
+root-owned, as `docker volume create` by hand makes it.
+
+`reset` never creates a volume and never removes one: a slot that was never
+started has none, and the reset skips a volume directory that is missing (see
+below), so it finishes and the next `start` creates them.
 
 ## Content volume emptying
 
