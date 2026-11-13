@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import datetime
+import gc
 import io
 import os
 import pathlib
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from unittest import mock
 
 import backup_manifest as bm
@@ -887,6 +889,17 @@ class MainTests(unittest.TestCase):
             code, _, err, run = self._main()
         self.assertEqual(code, 2)
         run.assert_not_called()
+
+    def test_a_lock_that_cannot_be_taken_leaves_no_file_handle_open(self):
+        # The drill.lock handle is opened before flock is tried. When flock
+        # refuses, nothing used to close it, so its ResourceWarning fired at
+        # some later garbage collection, inside another test's captured stderr.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            with mock.patch.object(rd.fcntl, "flock", side_effect=BlockingIOError("held")):
+                self._main()
+            gc.collect()
+        self.assertEqual([str(w.message) for w in caught if issubclass(w.category, ResourceWarning)], [])
 
     def test_content_timeout_from_the_environment(self):
         self.env["BACKUP_DRILL_CONTENT_TIMEOUT_S"] = "42"
