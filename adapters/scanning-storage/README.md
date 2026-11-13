@@ -59,7 +59,7 @@ the same rule on every feature and through both `save()` and `saveRaw()`.
 (`src/media-kind.md` lists the families and what is not recognised). One
 fact about the tier decides the rest: `storage__<feature>__tier`.
 
-| Upload | Demo | Hobbyist (entry) | Professional | Tier unknown or malformed |
+| Upload | Demo | Essentials (entry) | Professional | Tier unknown or malformed |
 |---|---|---|---|---|
 | Image | existing check | existing check | existing check | existing check |
 | Non-video media (a video's poster image), arbitrary files, bytes the detector does not recognise | existing check | existing check | existing check | existing check |
@@ -82,7 +82,9 @@ fact about the tier decides the rest: `storage__<feature>__tier`.
 - **The tier key.** Only the exact string `professional` accepts video and
   audio (`src/tier-policy.md`). Unset, empty, a different case, a stray
   space, a boolean, `entry`, `demo`, `hobbyist` or a typo all refuse, so a
-  mistake can only fail closed. It is read from boot config only.
+  mistake can only fail closed. `hobbyist` is the retired name for the entry
+  tier, kept in this list so an old value still fails closed. It is read from
+  boot config only.
 - **Not yet reachable.** render-core renders no `tier` key for any tenant or
   demo, so every rendered configuration refuses video and audio on all three
   features today. Accepting them on a Professional tenant needs a tier field
