@@ -4,6 +4,7 @@ import {
   type BumpState,
 } from '../../../src/bumpStateMachine.js';
 import { createApplyLock } from '../../../src/applyLock.js';
+import type { CallDeadlines } from '../../../src/deadlines.js';
 import type { GateReport } from '../../../src/gates.js';
 import type { PromotionRecord } from '../../../src/promotionChainLog.js';
 import type { RingBakeConfig, RingName } from '../../../src/rings.js';
@@ -55,6 +56,11 @@ export interface TenantBehaviour {
   applyOk?: boolean;
   /** Milliseconds the fake clock moves while this tenant's apply runs. */
   applyTakesMs?: number;
+  /**
+   * Holds one step open on a real (fakeable) timer: `ms` milliseconds, or
+   * forever when `ms` is absent. A hung host, not a slow fake clock.
+   */
+  stall?: { step: 'backup' | 'apply'; ms?: number };
 }
 
 export interface FleetOptions {
@@ -71,6 +77,8 @@ export interface FleetOptions {
   runGatesThrows?: boolean;
   /** Replaces the default recorder, which accepts every record. */
   recordPromotion?: (record: PromotionRecord) => Promise<void>;
+  /** Passed through as `deps.deadlines`; absent means the controller's defaults. */
+  deadlines?: Partial<CallDeadlines>;
 }
 
 /** Counts how many `run()` calls are in flight at once. */
@@ -96,6 +104,11 @@ class CountingMachine extends BumpStateMachine {
 }
 
 const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+const stallFor = (ms: number | undefined): Promise<void> =>
+  ms === undefined
+    ? new Promise<void>(() => undefined)
+    : new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * A whole fleet of fakes with a fake clock. Real `BumpStateMachine`s over
@@ -135,11 +148,13 @@ export function makeFleet(options: FleetOptions = {}) {
     return {
       backup: async () => {
         await macrotask();
+        if (behaviour.stall?.step === 'backup') await stallFor(behaviour.stall.ms);
         return { ok: true };
       },
       apply: async () => {
         events.push(`apply:${tenantId}`);
         nowMs += behaviour.applyTakesMs ?? 0;
+        if (behaviour.stall?.step === 'apply') await stallFor(behaviour.stall.ms);
         return behaviour.applyOk === false
           ? { ok: false, reason: 'migration failed' }
           : { ok: true };
@@ -210,6 +225,7 @@ export function makeFleet(options: FleetOptions = {}) {
       holds.push(held);
     },
     clock,
+    ...(options.deadlines === undefined ? {} : { deadlines: options.deadlines }),
   };
 
   return {

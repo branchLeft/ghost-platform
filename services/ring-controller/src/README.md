@@ -254,8 +254,36 @@ The deny-list is documented as exported constants: any `*_API_KEY`, any
 ignoring case. A listed variable whose value is `undefined` is absent. The
 error names the variable or binary and never a value, because it reaches
 logs and the hold sink. The function reads only the environment passed to
-it. Nothing in `src/` reads the process environment, so a test can hand it
-any environment and a real child process can hand it its own.
+it, so a test can hand it any environment.
+
+## processEntry.ts
+
+`runReleaseFromProcess` is the entry a real process calls, and the one file
+in `src/` that reads the process environment. It takes no environment
+argument and hands `process.env` to `runRelease` as it stands, so a caller
+cannot pass a scrubbed copy while the process itself holds a model key. A
+static test pins it as the only reader and pins the exact call; sabotage
+pairs pass an empty or filtered environment and watch a key get through.
+
+## deadlines.ts
+
+Every outside call `runRelease` awaits has a bound: `runGates()` once,
+each member's `machine.run()`, and each `health()` and `reportedErrors()`
+call on every soak pass. The caller sets them in `deps.deadlines`; any left
+out take `DEFAULT_CALL_DEADLINES` (30 minutes, 60 minutes, 30 seconds, 30
+seconds), which are incidental. A bound that is not a finite number above
+zero is refused before anything is touched, because one that could never
+fire puts the hang back.
+
+A call that misses its bound is read exactly as if it had thrown: hung gates
+hold as `gate-red`, a hung probe holds as `probe-failed` and reverts
+nothing. A hung bump fails its member as `bump-not-done`, later members are
+never touched, and the machine is asked to `abort()`: a promise cannot be
+cancelled, so the request lands at the machine's own safe point (cancel
+before apply, never interrupt apply, revert after it). A bump that finishes
+late therefore ends reverted or cancelled, never `done` with nobody watching
+its bake. The calls are wrapped once, where `runRelease` takes its
+dependencies, so no call site can forget one.
 
 ## ringController.ts
 
@@ -274,7 +302,7 @@ order.
   is separate from `BumpDependencies.page` so the written register of what
   may page is untouched.
 - **Serial.** Members of a ring are bumped one at a time. A member that
-  does not reach `done` (or whose bump throws) stops the release, later
+  does not reach `done` (or whose bump throws or misses its deadline) stops the release, later
   members are never touched, and nothing is undone fleet-wide. One shared
   `ApplyLock`, created by the caller and handed to every machine
   `newBump` builds, is the structural backstop beneath this loop.
@@ -285,7 +313,7 @@ order.
   reported errors, never stopping at the first healthy one, and a last pass
   runs at or after the window's end. A tenant is healthy only if it says so
   and reports the release digest read from the running instance. A probe
-  that throws blocks the ring (`probe-failed`) but reverts nothing, because
+  that throws or misses its deadline blocks the ring (`probe-failed`) but reverts nothing, because
   failing to look is not evidence of a regression. Reported errors are read
   since the ring started.
 - **Regression.** Each tenant with affirmative evidence of trouble gets the
