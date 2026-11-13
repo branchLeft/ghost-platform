@@ -475,6 +475,20 @@ minutes; a shorter one only finds an orphan sooner. Neither setting accepts
 zero, a negative or a non-numeric value: such a value falls back to the
 default, because an age of zero would sweep a live writer's bytes.
 
+**Crash-residue temp files.** Every quarantine write goes to a dotfile temp
+file named `.<name>.<pid>.<12 hex digits>.tmp` and is then renamed into
+place, so a crash between the write and the rename leaves the temp file
+behind. The orphan sweep skips dotfiles, so the same sweep, at the same
+moments, has a rule of its own for these: it removes a file that is a regular
+file, whose name is exactly that shape, and that is older than
+`holdOrphanMinAgeMs` (10 minutes by default) and never younger than 60
+seconds, the default write timeout, however small that setting is. A younger
+file may belong to a live writer and is left alone. Each removal is logged
+with the fixed prefix `ScanningStorageAdapter: crash-residue quarantine temp
+file`, then the name and the age. A temp file holds no verdict and is never
+served, so nothing else is checked. Every other dotfile, and every byte,
+sidecar, refusal record and aside copy, is untouched by this rule.
+
 ## What Ghost's extension point does, and the traps in it
 
 Ghost 6.55.0's `handle-image-sizes.js` (`frontend/web/middleware`) reads,
