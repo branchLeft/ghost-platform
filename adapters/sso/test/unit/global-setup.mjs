@@ -14,6 +14,8 @@ const OVERLAY_DIR = path.join(SSO_DIR, 'ghost-core-overlay');
 const DERIVED_DIR = path.join(OVERLAY_DIR, 'derived');
 const BASELINE_DIR = path.join(DERIVED_DIR, 'baseline');
 const DOCKERFILE = path.resolve(SSO_DIR, '../../Dockerfile');
+// The same generic script the root Dockerfile runs for this layer.
+const APPLY_SCRIPT = path.resolve(SSO_DIR, '../ghost-core-overlay/apply-patch.sh');
 const GHOST_FILE = '/var/lib/ghost/current/core/server/auth/session/session-from-token.js';
 
 function pinnedImage() {
@@ -53,9 +55,16 @@ export default function setup() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'sso-overlay-derive-'));
   try {
     fs.copyFileSync(baseline, path.join(work, 'session-from-token.js'));
-    execFileSync(path.join(OVERLAY_DIR, 'apply-session-from-token-patch.sh'), [work], {
-      stdio: 'inherit',
-    });
+    execFileSync(
+      APPLY_SCRIPT,
+      [
+        work,
+        'session-from-token.js',
+        path.join(OVERLAY_DIR, 'session-from-token.patch'),
+        path.join(OVERLAY_DIR, 'session-from-token.patched.sha256'),
+      ],
+      { stdio: 'inherit' }
+    );
     fs.copyFileSync(
       path.join(work, 'session-from-token.js'),
       path.join(DERIVED_DIR, 'session-from-token.js')
