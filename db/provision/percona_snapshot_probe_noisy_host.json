@@ -1,39 +1,205 @@
 {
-  "note": "Recorded control-2 inputs from native x86_64 runs of the Percona proof, un-sabotaged, same candidate digest and runner image. Latencies are in seconds. 'worst' is each tenant's worst statement over the whole run, 'baseline' its worst statement before the first dump (as logged: the worst across rounds, which is what these runs recorded; the probe now judges round 1 only). The quiet run passed on main; the two noisy runs were slow shared runners whose own commit latency alone broke the 100 ms limit.",
-  "quiet": {
-    "worst": {
-      "t1": 0.0235,
-      "t2": 0.0251,
-      "t3": 0.0257
+  "note": "Recorded control-2 inputs, one entry per judged round: each tenant's worst statement before that round's first dump ('baseline') and over the round ('worst'), in seconds. Runs come from native x86_64 runs of the Percona proof, un-sabotaged, same candidate digest and runner image. The logs of older runs gave one baseline and one worst for the whole run, so those are repeated for each round. quiet_fast passed on main. quiet_real_stall is a quiet host (baselines 5.6 to 16.7 ms) whose writers still hit 94 to 107 ms. degraded_after_round_1 is a run whose worst statements were 267 to 527 ms in every judged round: its logged baseline was the worst across rounds (382 ms), and the run exited 3 when only round 1 was judged, so round 1's own baseline was quiet (taken as 20 ms) and rounds 2 and 3 carry the logged 382 ms. noisy_all_rounds are two runs a slow shared runner failed.",
+  "runs": {
+    "quiet_fast": {
+      "rounds": [
+        {
+          "baseline": {
+            "t1": 0.015,
+            "t2": 0.0102,
+            "t3": 0.0128
+          },
+          "worst": {
+            "t1": 0.0235,
+            "t2": 0.0251,
+            "t3": 0.0257
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.015,
+            "t2": 0.0102,
+            "t3": 0.0128
+          },
+          "worst": {
+            "t1": 0.0235,
+            "t2": 0.0251,
+            "t3": 0.0257
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.015,
+            "t2": 0.0102,
+            "t3": 0.0128
+          },
+          "worst": {
+            "t1": 0.0235,
+            "t2": 0.0251,
+            "t3": 0.0257
+          }
+        }
+      ]
     },
-    "baseline": {
-      "t1": 0.0235,
-      "t2": 0.0251,
-      "t3": 0.0257
-    }
-  },
-  "noisy": {
-    "worst": {
-      "t1": 0.4114,
-      "t2": 0.43,
-      "t3": 0.4099
+    "quiet_real_stall": {
+      "rounds": [
+        {
+          "baseline": {
+            "t1": 0.0139,
+            "t2": 0.0056,
+            "t3": 0.0167
+          },
+          "worst": {
+            "t1": 0.107,
+            "t2": 0.0944,
+            "t3": 0.1027
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.0139,
+            "t2": 0.0056,
+            "t3": 0.0167
+          },
+          "worst": {
+            "t1": 0.107,
+            "t2": 0.0944,
+            "t3": 0.1027
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.0139,
+            "t2": 0.0056,
+            "t3": 0.0167
+          },
+          "worst": {
+            "t1": 0.107,
+            "t2": 0.0944,
+            "t3": 0.1027
+          }
+        }
+      ]
     },
-    "baseline": {
-      "t1": 0.2057,
-      "t2": 0.2044,
-      "t3": 0.2128
-    }
-  },
-  "noisy_second": {
-    "worst": {
-      "t1": 0.1859,
-      "t2": 0.1848,
-      "t3": 0.1856
+    "degraded_after_round_1": {
+      "rounds": [
+        {
+          "baseline": {
+            "t1": 0.02,
+            "t2": 0.02,
+            "t3": 0.02
+          },
+          "worst": {
+            "t1": 0.3313,
+            "t2": 0.2672,
+            "t3": 0.334
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.3825,
+            "t2": 0.3814,
+            "t3": 0.3836
+          },
+          "worst": {
+            "t1": 0.5094,
+            "t2": 0.5242,
+            "t3": 0.5275
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.3825,
+            "t2": 0.3814,
+            "t3": 0.3836
+          },
+          "worst": {
+            "t1": 0.4217,
+            "t2": 0.4375,
+            "t3": 0.4371
+          }
+        }
+      ]
     },
-    "baseline": {
-      "t1": 0.1045,
-      "t2": 0.1025,
-      "t3": 0.1047
+    "noisy_all_rounds": {
+      "rounds": [
+        {
+          "baseline": {
+            "t1": 0.2057,
+            "t2": 0.2044,
+            "t3": 0.2128
+          },
+          "worst": {
+            "t1": 0.4114,
+            "t2": 0.43,
+            "t3": 0.4099
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.2057,
+            "t2": 0.2044,
+            "t3": 0.2128
+          },
+          "worst": {
+            "t1": 0.4114,
+            "t2": 0.43,
+            "t3": 0.4099
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.2057,
+            "t2": 0.2044,
+            "t3": 0.2128
+          },
+          "worst": {
+            "t1": 0.4114,
+            "t2": 0.43,
+            "t3": 0.4099
+          }
+        }
+      ]
+    },
+    "noisy_all_rounds_second": {
+      "rounds": [
+        {
+          "baseline": {
+            "t1": 0.1045,
+            "t2": 0.1025,
+            "t3": 0.1047
+          },
+          "worst": {
+            "t1": 0.1859,
+            "t2": 0.1848,
+            "t3": 0.1856
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.1045,
+            "t2": 0.1025,
+            "t3": 0.1047
+          },
+          "worst": {
+            "t1": 0.1859,
+            "t2": 0.1848,
+            "t3": 0.1856
+          }
+        },
+        {
+          "baseline": {
+            "t1": 0.1045,
+            "t2": 0.1025,
+            "t3": 0.1047
+          },
+          "worst": {
+            "t1": 0.1859,
+            "t2": 0.1848,
+            "t3": 0.1856
+          }
+        }
+      ]
     }
   }
 }
