@@ -68,10 +68,9 @@ project the platform owner has ruled this bucket belongs in — provisioning
 it is an owner action, and it is REQUIRED: main() refuses to run at all
 without it. "secondary" is the off-supplier second copy the estate's
 custody figure names ("Second copy, off-supplier — survives losing the
-account, not merely losing a host"); which provider holds it is a still-open
-decision this module does not make, so it is OPTIONAL until that decision
-names one — entirely absent, this worker still runs with the primary copy
-alone, which is the interim plan. A copy that is PARTIALLY configured (some
+account, not merely losing a host"); this module does not choose the provider,
+and the copy is OPTIONAL — entirely absent, this worker still runs with the
+primary copy alone. A copy that is PARTIALLY configured (some
 but not all of its five credential vars set) is never accepted either way,
 required or optional: that shape is far more likely to be a typo or a
 half-finished rollout than a deliberate choice, and running on it would
@@ -97,7 +96,7 @@ The monitored signal is "the age of the newest successful backup, per
 tenant, reported by the side that would notice it stopping" — this worker,
 on the org/control side, never the tenant host, which under the pull model
 holds no way to report anything about its own backups at all.
-hetzner/monitoring already has one collector shaped exactly like this one
+hetzner/monitoring in branchLeft/shared-infra already has one collector shaped exactly like this one
 needs to be (snds-collector: a node_exporter textfile-collector file,
 written atomically, read back and merged rather than overwritten) — reused
 here rather than re-derived. Outside /opt/branchleft/ for the same reason
@@ -158,8 +157,7 @@ coordinator session times the lock wait directly, from issuing
 `LOCK TABLES` to its grant, and the hold, from grant to the server
 confirming `UNLOCK TABLES`. `_snapshot_measurements` uses those whenever
 the transport reports them. This timer remains only for a transport that
-measures nothing (the `LocalProcessTransport` test double). The rest of
-this section describes the proxy as it was.
+measures nothing (the `LocalProcessTransport` test double).
 
 Times the gap from construction — just before `pull_encrypt_and_store`
 is called, so before `RemoteMysqldumpTransport.run` spawns anything — to
@@ -170,9 +168,7 @@ MySQL directly; `--source-data=2` writes its binlog-position comment only
 once the lock is granted and released, so the elapsed time is dominated
 by that wait, not by the dump itself.
 
-**What the gap includes, now that `RemoteMysqldumpTransport` is real
-(previously this section described an unwired channel and called the
-non-lock portion unverified — that channel is gone)**: `mysqldump` is a
+**What the gap includes**: `mysqldump` is a
 local subprocess on whichever host runs this worker, connecting directly
 over TLS to db1's existing port. There is no separate dial-in/RPC layer
 any more, so the non-lock portion of the gap is exactly `Popen`'s own

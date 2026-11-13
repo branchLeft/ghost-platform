@@ -491,7 +491,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         this.reservedNames.size + this.lapsedReservations.size >= this.reservationMaxEntries
       ) {
         throw new Error(
-          'ScanningStorageAdapter: too many upload names are reserved and not yet saved; retry later'
+          'ScanningStorageAdapter: too many upload names are reserved or lapsed and not yet saved; ' +
+            'a lapsed name clears only when its file is promised again or this process restarts'
         );
       }
       const result = await unique(withRandomName(file));

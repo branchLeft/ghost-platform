@@ -1,6 +1,6 @@
 # Ghost core overlay: session-from-token.js
 
-The only Ghost-core file this platform patches: `core/server/services/auth/session/session-from-token.js`.
+The only Ghost-core file this platform patches: `core/server/auth/session/session-from-token.js`.
 **No copy of Ghost's source is committed here.** The baseline is the file already inside the digest-pinned
 Ghost image the root `Dockerfile` builds on, so a Ghost security release reaches us through that image's
 Dependabot or release-watcher bump, never hidden behind a copy that keeps shipping the old bytes. What is
@@ -31,7 +31,7 @@ Either way re-deriving is a deliberate step (below), not automatic.
 ## What it changes
 
 Upstream, the token-to-session middleware (`SessionFromToken`, used by `createSessionFromToken()` in
-`core/server/services/auth/session/index.js`) calls `next()` immediately after `createSession(req, res, user)`
+`core/server/auth/session/index.js`) calls `next()` immediately after `createSession(req, res, user)`
 returns. `express-session`'s own `res.end` override then does two independent things when the response
 ends: it flushes headers (including `Set-Cookie`) synchronously, and only afterwards asynchronously writes
 the session to its store. A client that acts on the headers before that background write lands can have its
@@ -76,7 +76,7 @@ A Ghost bump arrives as a change to the `FROM` line. If the build then fails wit
    ```sh
    cid=$(docker create ghost:<new-version>-alpine@sha256:<digest>)
    mkdir -p /tmp/a /tmp/b
-   docker cp "$cid:/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js" /tmp/a/session-from-token.js
+   docker cp "$cid:/var/lib/ghost/current/core/server/auth/session/session-from-token.js" /tmp/a/session-from-token.js
    docker rm "$cid"
    cp /tmp/a/session-from-token.js /tmp/b/session-from-token.js
    ```
