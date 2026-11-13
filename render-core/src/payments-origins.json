@@ -1,0 +1,8 @@
+{
+  "generatedBy": "csp/derive/derive-payment-origins.mjs",
+  "origins": {
+    "script-src": ["https://js.stripe.com"],
+    "frame-src": ["https://js.stripe.com"],
+    "connect-src": []
+  }
+}
