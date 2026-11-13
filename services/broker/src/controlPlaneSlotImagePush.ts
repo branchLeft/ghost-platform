@@ -4,7 +4,9 @@
  * workflow that must have attested it) and hands the rest to `pushOciImage`.
  * Narrative: controlPlaneSlotImagePush.md.
  */
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, open, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   type ImageProvenanceDeps,
   type PushOciImageResult,
@@ -19,7 +21,6 @@ export interface SlotImagePushEnv {
   readonly manifestDigest: string;
   readonly baseUrl: string;
   readonly keyPath: string;
-  readonly tarPath: string;
 }
 
 export interface SlotImagePushOutcome extends PushOciImageResult {
@@ -49,7 +50,6 @@ export function slotImagePushEnv(
     manifestDigest: required(env, 'SLOT_IMAGE_MANIFEST_DIGEST'),
     baseUrl: required(env, 'PUSH_BASE_URL'),
     keyPath: required(env, 'PUSH_KEY_PATH'),
-    tarPath: required(env, 'PUSH_TAR_PATH'),
   };
 }
 
@@ -59,16 +59,43 @@ export async function pushDemoSlotImage(
   nowSeconds?: number
 ): Promise<SlotImagePushOutcome> {
   const privateKeyRaw = await readFile(config.keyPath);
-  const result = await pushOciImage({
-    imageRef: SLOT_IMAGE_REF,
-    manifestDigest: config.manifestDigest,
-    signerWorkflow: SLOT_IMAGE_SIGNER_WORKFLOW,
-    baseUrl: config.baseUrl,
-    privateKeyRaw,
-    tarPath: config.tarPath,
-    deps,
-    ...(nowSeconds === undefined ? {} : { nowSeconds }),
-  });
-  const imageRef = result.push.ok ? `${SLOT_IMAGE_REF}@${config.manifestDigest}` : undefined;
-  return { ...result, imageRef };
+  // A fresh owner-only directory, and in it a file created with `wx`, so the
+  // tar is never written through a path or a link that already existed.
+  const dir = await mkdtemp(join(tmpdir(), 'slot-image-push-'));
+  try {
+    const tarPath = join(dir, 'image.tar');
+    await (await open(tarPath, 'wx', 0o600)).close();
+    const result = await pushOciImage({
+      imageRef: SLOT_IMAGE_REF,
+      manifestDigest: config.manifestDigest,
+      signerWorkflow: SLOT_IMAGE_SIGNER_WORKFLOW,
+      baseUrl: config.baseUrl,
+      privateKeyRaw,
+      tarPath,
+      deps,
+      ...(nowSeconds === undefined ? {} : { nowSeconds }),
+    });
+    const imageRef = hostConfirmed(result)
+      ? `${SLOT_IMAGE_REF}@${config.manifestDigest}`
+      : undefined;
+    return { ...result, imageRef };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The host accepted the push and its reply names the digest of the tar this
+ * caller sent. A bare 2xx is not enough: the reply body is what the receiver
+ * wrote after checking and loading the bytes.
+ */
+function hostConfirmed(result: PushOciImageResult): boolean {
+  const { body } = result.push;
+  return (
+    result.push.ok &&
+    typeof body === 'object' &&
+    body !== null &&
+    'digest' in body &&
+    body.digest === result.tarDigest
+  );
 }
