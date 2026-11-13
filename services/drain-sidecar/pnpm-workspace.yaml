@@ -1,0 +1,5 @@
+# body-parser reaches the sidecar through express. 2.3.0 carries a high
+# finding whose fixed release is 2.4.0, so the override pins the transitive
+# copy to the fixed line. pnpm reads overrides here, not from package.json.
+overrides:
+  body-parser: ^2.4.0
