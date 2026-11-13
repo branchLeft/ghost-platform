@@ -58,10 +58,24 @@ contributor's checkout already use.
 
 ## Install (first boot)
 
-Run from a workstation checkout with SSH access to demo1 -- an operator
-step; nothing here runs from CI (`services/broker/**`'s
+Run from the root of a ghost-platform workstation checkout with SSH access to
+demo1 -- an operator step; nothing here runs from CI (`services/broker/**`'s
 `.claude/delivery-paths.json` row is `not_merge_delivered`/`version_pin`,
 because no publish path exists yet either -- see "Delivery path" below).
+
+**Pin the commit first.** This install comes from one ghost-platform commit,
+named here and nowhere else in this runbook: the commit demo1 runs today
+(release `1dbed88-20261011T105328Z`, built from the same commit as
+`ghost-platform-docs/demo1-host-build-and-broker-runbook.md`). Check it out
+before step 4, and stop if the check fails:
+
+```bash
+BROKER_PIN_COMMIT=1dbed8818e31a788f8d53b1399b69bdb57dc39b4
+git fetch origin && git checkout --detach "${BROKER_PIN_COMMIT}" && test "$(git rev-parse HEAD)" = "${BROKER_PIN_COMMIT}"
+```
+
+To move to a later commit, change that one line and redo the check; step 4
+then builds from whatever is checked out.
 
 **Reach demo1 first.** Every `ssh` and `rsync` below uses `${DEMO1_IPV4}` and
 `${DEMO1_SSH_USER}`; set them once per terminal, each in its own paste. demo1
@@ -163,12 +177,18 @@ The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge
    ```
 
 6. **Write `/etc/branchleft/broker.env`** on demo1 from
-   `systemd/broker.env.example`, root:root, mode 0600:
+   `systemd/broker.env.example`, root:root, mode 0600. The create runs only
+   when the file is absent, so a re-run leaves a filled file untouched:
 
    ```bash
-   sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
-   sudo $EDITOR /etc/branchleft/broker.env   # fill in the real values; never echo them to a shell history
+   if [ ! -e /etc/branchleft/broker.env ]; then
+     sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
+   fi
+   sudo $EDITOR /etc/branchleft/broker.env   # first boot only: fill in the real values; never echo them to a shell history
    ```
+
+   On a re-run, skip the editor line unless a value has to change. Opening the
+   file to fill it in is the only thing that touches its contents here.
 
    Fill in a real `BROKER_VERIFY_KEY_FILE` at the path it names, 32 raw
    Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
