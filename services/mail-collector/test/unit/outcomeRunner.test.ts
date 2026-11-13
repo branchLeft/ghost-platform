@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDrainClient } from '../../src/drainClient.js';
+import type { DrainTarget } from '../../src/descriptorTargets.js';
 import type { DsnMailbox, RawDsn } from '../../src/dsnMailbox.js';
 import { createLogger } from '../../src/log.js';
 import { encodeOutcomeMessageId } from '../../src/outcomeId.js';
@@ -61,7 +62,10 @@ describe('outcomeRunner', () => {
     await shim.close();
   });
 
-  function runnerFor(mailbox: DsnMailbox, targets = [{ id: 'tenant-a', baseUrl }]) {
+  function runnerFor(
+    mailbox: DsnMailbox,
+    targets: DrainTarget[] = [{ id: 'tenant-a', baseUrl, route: 'mx1' }]
+  ) {
     return createOutcomeRunner({
       mailbox,
       store: createFakeTargetStore(targets),
@@ -191,7 +195,7 @@ describe('outcomeRunner', () => {
     ]);
     const runner = createOutcomeRunner({
       mailbox,
-      store: createFakeTargetStore([{ id: 'tenant-a', baseUrl }]),
+      store: createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]),
       drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
       log: createLogger(() => {}),
       unknownGraceMs: 1000,
@@ -221,8 +225,8 @@ describe('outcomeRunner', () => {
       },
     ]);
     await runnerFor(mailbox, [
-      { id: 'tenant-a', baseUrl },
-      { id: 'tenant-b', baseUrl: otherUrl },
+      { id: 'tenant-a', baseUrl, route: 'mx1' },
+      { id: 'tenant-b', baseUrl: otherUrl, route: 'mx1' },
     ]).runOnce();
     expect(shim.outcomeRequests).toHaveLength(1);
     expect(other.outcomeRequests).toHaveLength(1);

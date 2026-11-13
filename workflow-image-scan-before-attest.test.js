@@ -26,9 +26,11 @@ const PUBLISHERS = {
   'registry-push.yml': 'ghcr.io/branchleft/ghost-tenant',
   'portal-apps-image.yml': 'ghcr.io/branchleft/portal-apps',
   'demo-edge-image.yml': 'ghcr.io/branchleft/demo-edge',
+  'demo-gate-image.yml': 'ghcr.io/branchleft/demo-gate',
   'mail-collector-image.yml': 'ghcr.io/branchleft/mail-collector',
   'drain-sidecar-image.yml': 'ghcr.io/branchleft/drain-sidecar',
   'recovery-image.yml': 'ghcr.io/branchleft/db-recovery',
+  'percona-image.yml': 'ghcr.io/branchleft/percona-server',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
@@ -353,7 +355,7 @@ test('every workflow that pushes an image is covered here or named with a reason
 });
 
 test('the build-only image workflows push nothing, so they need no scan', () => {
-  for (const file of ['demo-gate-image.yml', 'odask-image.yml']) {
+  for (const file of ['odask-image.yml']) {
     const text = uncommented(read(file));
     assert.doesNotMatch(text, PUSHES, `${file} pushes an image`);
     assert.doesNotMatch(text, /packages:\s*write|id-token/, `${file} holds a publish credential`);
@@ -390,9 +392,138 @@ test('every workflow calls the scan at one revision, as the scan workflow requir
   assert.deepEqual([...refs], [PIN]);
 });
 
-test('no exemption file exists, so no workflow wires one', () => {
-  assert.equal(fs.existsSync(path.join(ROOT, '.image-scan-exemptions.json')), false);
+// The scan reads this file by default, so a workflow that passes no
+// `exemptions-path` still gets it. Format: the v1.1.0 image-scan README.
+const EXEMPTIONS_FILE = '.image-scan-exemptions.json';
+const EXEMPTION_KEYS = [
+  'vulnerability',
+  'package',
+  'image',
+  'reason',
+  'granted',
+  'expires',
+  'approved-by',
+];
+const EXEMPTION_REQUIRED = EXEMPTION_KEYS.filter((k) => k !== 'approved-by');
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// workflow file -> the exemptions-path it passes. Empty today: the default
+// path is the file, so no workflow needs to name it. Adding a name here is a
+// conscious edit, and the checker above must then allow the extra scan input.
+const WIRES_EXEMPTIONS = {};
+
+function dayOf(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return NaN;
+  const t = Date.parse(`${value}T00:00:00Z`);
+  return new Date(t).toISOString().startsWith(value) ? t : NaN;
+}
+
+// Problems with an exemption file's text, per the v1.1.0 format. Only what can
+// be known without the scan: the scan itself judges expiry against today.
+export function exemptionProblems(source) {
+  let data;
+  try {
+    data = JSON.parse(source);
+  } catch {
+    return ['the exemption file is not JSON'];
+  }
+  if (!data || Array.isArray(data) || !Array.isArray(data.exemptions)) {
+    return ['the exemption file has no exemptions array'];
+  }
+  if (Object.keys(data).some((k) => k !== 'exemptions')) {
+    return ['the exemption file has a key other than exemptions'];
+  }
+  const found = [];
+  const images = new Set(Object.values(PUBLISHERS));
+  for (const entry of data.exemptions) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      found.push('an exemption is not an object');
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!EXEMPTION_KEYS.includes(key)) found.push(`an exemption has the unknown key ${key}`);
+    }
+    for (const key of EXEMPTION_REQUIRED) {
+      if (typeof entry[key] !== 'string' || entry[key].trim() === '') {
+        found.push(`an exemption has no ${key}`);
+      }
+    }
+    if ('approved-by' in entry && String(entry['approved-by']).trim() === '') {
+      found.push('an exemption has a blank approved-by');
+    }
+    if (typeof entry.reason === 'string' && entry.reason.length > 500) {
+      found.push('an exemption reason is over 500 characters');
+    }
+    if (typeof entry.image === 'string' && !images.has(entry.image)) {
+      found.push(`an exemption names an image no workflow here publishes: ${entry.image}`);
+    }
+    const granted = dayOf(entry.granted);
+    const expires = dayOf(entry.expires);
+    if (Number.isNaN(granted) || Number.isNaN(expires)) {
+      found.push('an exemption date is not a real YYYY-MM-DD');
+    } else if (expires < granted || expires - granted > 30 * DAY_MS) {
+      found.push('an exemption expires before it is granted or more than 30 days after');
+    }
+  }
+  return found;
+}
+
+// The file the scan reads, when there is one. A missing file means no exemptions.
+const exemptionsPath = path.join(ROOT, EXEMPTIONS_FILE);
+const exemptionsText = () => fs.readFileSync(exemptionsPath, 'utf8');
+
+test('an exemption file, when present, is in the v1.1.0 format', () => {
+  if (!fs.existsSync(exemptionsPath)) return;
+  assert.deepEqual(exemptionProblems(exemptionsText()), []);
+});
+
+test('the checker reports each way the exemption file can be malformed', () => {
+  const entry = {
+    vulnerability: 'CVE-2026-0001',
+    package: 'libexample',
+    image: PUBLISHERS['demo-edge-image.yml'],
+    reason: 'a reason',
+    granted: '2026-11-10',
+    expires: '2026-12-10',
+  };
+  const file = (changes) => JSON.stringify({ exemptions: [{ ...entry, ...changes }] });
+  assert.deepEqual(exemptionProblems(file({})), []);
+  const cases = [
+    ['{', 'is not JSON'],
+    ['[]', 'no exemptions array'],
+    [JSON.stringify({ exemptions: [], extra: 1 }), 'key other than exemptions'],
+    [file({ image: undefined }), 'has no image'],
+    [file({ reason: ' ' }), 'has no reason'],
+    [file({ reason: 'x'.repeat(501) }), 'over 500 characters'],
+    [file({ image: 'ghcr.io/branchleft/not-published' }), 'no workflow here publishes'],
+    [file({ 'approved-by': ' ' }), 'blank approved-by'],
+    [file({ owner: 'someone' }), 'unknown key owner'],
+    [file({ granted: '2026-02-31' }), 'not a real YYYY-MM-DD'],
+    [file({ expires: '2026-12-11' }), 'more than 30 days after'],
+    [file({ expires: '2026-11-09' }), 'before it is granted'],
+  ];
+  for (const [text, expected] of cases) {
+    const found = exemptionProblems(text);
+    assert.ok(hasProblem(found, expected), `expected "${expected}", got ${JSON.stringify(found)}`);
+  }
+});
+
+test('only the allow-listed workflows pass exemptions-path, each at a file that exists', () => {
+  const wired = {};
   for (const file of Object.keys(PUBLISHERS)) {
-    assert.doesNotMatch(read(file), /exemptions-path/);
+    const m = /^\s*exemptions-path:\s*(\S+)\s*$/m.exec(uncommented(read(file)));
+    if (m) wired[file] = m[1];
+  }
+  assert.deepEqual(wired, WIRES_EXEMPTIONS);
+  for (const [file, wiredPath] of Object.entries(wired)) {
+    assert.ok(
+      fs.existsSync(path.join(ROOT, wiredPath)),
+      `${file} points at ${wiredPath}, which is missing`
+    );
+  }
+  // The input name appears nowhere else in a publisher, in any spelling.
+  for (const file of Object.keys(PUBLISHERS)) {
+    const count = (uncommented(read(file)).match(/exemptions-path/g) ?? []).length;
+    assert.equal(count, file in WIRES_EXEMPTIONS ? 1 : 0, `${file} mentions exemptions-path`);
   }
 });

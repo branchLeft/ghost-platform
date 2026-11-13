@@ -1,125 +1,260 @@
-# Code owners for gating files only. A file listed here
-# judges or gates a merge or a deploy, so the owner approves it. Every other
-# file is unowned: an agent PR touching only those merges on the reviewer App's
-# approval. There is deliberately no catch-all line, and none may be added.
-# GitHub matches case-sensitively and has no character classes, so a name word
-# is listed in its lower-case, Capitalised and UPPER-case spellings. Check an
-# edit with the codeowners/errors API: an empty list is the only signal that
-# every entry resolved (an owner without write access is dropped silently).
+# Code owners: the files whose change can do harm that no later check would
+# catch (the owner's review criteria 1 to 8). Every other file is
+# unowned: an agent pull request touching only those merges on the reviewer
+# App's approval. There is deliberately no catch-all line, and none may be added.
+#
+# GitHub applies the LAST matching line. So each kept directory is listed first,
+# the documents, tests, lockfiles and pins inside it that are released follow
+# with no owner, and the owner's own words, the rules and the workflows come
+# after those so they win. The five template lines of branchLeft/standards
+# (SYNC-1) are the final lines of the file.
+#
+# Check an edit with the codeowners/errors API: an empty list is the only signal
+# that every entry resolved. A directory whose scripts a secret-bearing job runs
+# is owned whole (a new file there would otherwise shadow a module those scripts
+# import), and only named files inside it are released, last. A Dockerfile, its
+# .dockerignore and what it copies and runs are owned where such a job builds
+# it. infra/provisioning/scripts/test_codeowners_ownership.py fails if not.
 
-# CI workflows, actions and CI config: they decide pass or fail on every PR.
-/.github/                                        @branchLeft/branchleft-admin
-**/.github/workflows/                            @branchLeft/branchleft-admin
-**/.github/actions/                              @branchLeft/branchleft-admin
-
-# CODEOWNERS and ruleset or branch-protection files: they say who must approve.
-**/CODEOWNERS                                    @branchLeft/branchleft-admin
-**/codeowners                                    @branchLeft/branchleft-admin
-**/CodeOwners                                    @branchLeft/branchleft-admin
-**/*ruleset*                                     @branchLeft/branchleft-admin
-**/*Ruleset*                                     @branchLeft/branchleft-admin
-**/*RULESET*                                     @branchLeft/branchleft-admin
-**/*branch-protection*                           @branchLeft/branchleft-admin
-**/*Branch-Protection*                           @branchLeft/branchleft-admin
-**/*BRANCH-PROTECTION*                           @branchLeft/branchleft-admin
-**/*branch_protection*                           @branchLeft/branchleft-admin
-**/*Branch_Protection*                           @branchLeft/branchleft-admin
-**/*BRANCH_PROTECTION*                           @branchLeft/branchleft-admin
-**/*branchprotection*                            @branchLeft/branchleft-admin
-**/*BranchProtection*                            @branchLeft/branchleft-admin
-**/*BRANCHPROTECTION*                            @branchLeft/branchleft-admin
-
-# Standards escape hatches and the registry: the merge script refuses them at any depth.
-**/.standardsignore                              @branchLeft/branchleft-admin
-**/.standards.mode                               @branchLeft/branchleft-admin
-**/.standards-db-tooling                         @branchLeft/branchleft-admin
-**/AUTHORISATIONS.md                             @branchLeft/branchleft-admin
-
-# Gate scripts at any depth (merge script: a scripts dir, or guard, approv, deploy in a name).
-**/scripts/                                      @branchLeft/branchleft-admin
-**/*guard*                                       @branchLeft/branchleft-admin
-**/*Guard*                                       @branchLeft/branchleft-admin
-**/*GUARD*                                       @branchLeft/branchleft-admin
-**/*approv*                                      @branchLeft/branchleft-admin
-**/*Approv*                                      @branchLeft/branchleft-admin
-**/*APPROV*                                      @branchLeft/branchleft-admin
-**/*deploy*                                      @branchLeft/branchleft-admin
-**/*Deploy*                                      @branchLeft/branchleft-admin
-**/*DEPLOY*                                      @branchLeft/branchleft-admin
-
-# Root CI inputs: what format, lint and the root guard tests run, and what they skip.
-/package.json                                    @branchLeft/branchleft-admin
+# --- Criterion 1: the rules, the gates, the floors and the exemptions ---
+/gate-set/                                       @branchLeft/branchleft-admin
+/csp/gate/                                       @branchLeft/branchleft-admin
+/csp/derive/                                     @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
+# What the gate set pins or reads: the overlay file whose own hash is the pin (gate-set/gates.mjs
+# repoFile), the fixtures of the storage image tests, the gate's attack harness, the theme list.
+/adapters/scanning-storage/ghost-core-overlay/   @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/fixtures/       @branchLeft/branchleft-admin
+/csp/proof/                                      @branchLeft/branchleft-admin
+/themes/manifest.json                            @branchLeft/branchleft-admin
+**/*.sha256                                      @branchLeft/branchleft-admin
+/widgets/pins.json                               @branchLeft/branchleft-admin
+/widgets/verify-pins.test.mjs                    @branchLeft/branchleft-admin
+/widgets/scripts/verify-pins.mjs                 @branchLeft/branchleft-admin
+/vendor/kalotyp/verify-kalotyp.test.mjs          @branchLeft/branchleft-admin
+/.image-scan-exemptions.json                     @branchLeft/branchleft-admin
+/tools/floors.tsv                                @branchLeft/branchleft-admin
+/*.test.js                                       @branchLeft/branchleft-admin
+/test-support/                                   @branchLeft/branchleft-admin
 /eslint.config.js                                @branchLeft/branchleft-admin
 /.prettierignore                                 @branchLeft/branchleft-admin
 /.gitignore                                      @branchLeft/branchleft-admin
 /.pre-commit-config.yaml                         @branchLeft/branchleft-admin
-/.python-version                                 @branchLeft/branchleft-admin
-/*.test.js                                       @branchLeft/branchleft-admin
-
-# Test runner configs: they set the coverage floors and which files are excluded.
 **/vitest.config.*                               @branchLeft/branchleft-admin
 **/vitest.local.config.*                         @branchLeft/branchleft-admin
+**/*ruleset*.json                                @branchLeft/branchleft-admin
+**/.standardsignore                              @branchLeft/branchleft-admin
+**/.standards.mode                               @branchLeft/branchleft-admin
+**/.standards-db-tooling                         @branchLeft/branchleft-admin
 
-# Image build inputs push workflows ship: digest pins, non-root user, fail-closed entrypoint.
-/Dockerfile                                      @branchLeft/branchleft-admin
-/docker-entrypoint.branchleft.sh                 @branchLeft/branchleft-admin
-/portal/Dockerfile                               @branchLeft/branchleft-admin
-/services/*/Dockerfile                           @branchLeft/branchleft-admin
-**/*.sha256                                      @branchLeft/branchleft-admin
-
-# Upload block: scanning decorator verdict client, policy, refusals, theme gate, image proof.
-/adapters/scanning-storage/src/                  @branchLeft/branchleft-admin
-/adapters/scanning-storage/ghost-core-overlay/   @branchLeft/branchleft-admin
-/adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
-
-# Storage gateway: its signature, credential and tenant-scope refusals stop cross-tenant requests.
-/services/storage-gateway/src/                   @branchLeft/branchleft-admin
-
-# Tenant isolation: the CI check that fails the build when a tenant table is not isolated.
+# Criterion 1, gates in the pull-request and image path: judges of a merge, an image or a deploy.
+# Criterion 1, 3 and 7: these directories hold gates and the programs that secret-bearing jobs run.
+# Each is owned whole, so a new file cannot arrive unowned beside a script they run and shadow a
+# module it imports. Only the named probes, checkers and documents are released, last.
+/scripts/                                        @branchLeft/branchleft-admin
+/db/percona/                                     @branchLeft/branchleft-admin
+/db/recovery/                                    @branchLeft/branchleft-admin
+/services/release-classifier/src/                @branchLeft/branchleft-admin
+/services/release-classifier/test/               @branchLeft/branchleft-admin
+/services/ring-controller/src/                   @branchLeft/branchleft-admin
+/services/ring-controller/test/                  @branchLeft/branchleft-admin
+/services/broker/src/controlPlaneImagePush.ts    @branchLeft/branchleft-admin
+/services/broker/test/unit/controlPlaneImagePush.test.ts @branchLeft/branchleft-admin
+/infra/scripts/                                  @branchLeft/branchleft-admin
+/infra/tenant/scripts/                           @branchLeft/branchleft-admin
 /portal/data/src/checkIsolation.ts               @branchLeft/branchleft-admin
 /portal/data/src/isolation.ts                    @branchLeft/branchleft-admin
 
-# Provisioning refusals, and the escrow public key that tenant passphrases are encrypted to.
-/infra/provisioning/                             @branchLeft/branchleft-admin
+# Criterion 3 and 2: programs and inputs a secret-bearing job runs on the host
+# (a registry, release or watcher token, an App key, a protected environment).
+/services/broker/release/                        @branchLeft/branchleft-admin
+/services/release-watcher/                       @branchLeft/branchleft-admin
+/speckify.yaml                                   @branchLeft/branchleft-admin
+/services/broker/esbuild.bundle.mjs              @branchLeft/branchleft-admin
 
-# Pulumi programs CI applies to production, with their project and location guards.
+# Criterion 3 and 2: build.yml declares no permissions block, so its `build` job holds the
+# repository's default workflow token, which is write. Every test, helper and import it
+# runs on the host is owned, as for any job that holds a token.
+/themes/image/                                   @branchLeft/branchleft-admin
+/themes/lib/                                     @branchLeft/branchleft-admin
+/services/export-bundler/test/image/             @branchLeft/branchleft-admin
+/adapters/stripe-connect-limit/test/image/       @branchLeft/branchleft-admin
+/adapters/sso/test/image/                        @branchLeft/branchleft-admin
+/adapters/sso/test/helpers/                      @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/helpers/docker-ghost.mjs @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/helpers/recording-s3-double.cjs @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/helpers/theme-zip.mjs @branchLeft/branchleft-admin
+
+# Criterion 2: package manifests and workspace files that a secret-bearing job installs,
+# builds, runs scripts from or publishes. CODEOWNERS cannot split a version bump from a
+# scripts, lifecycle-hook or main edit, so the manifest stays owned; lockfiles are released.
+/package.json                                    @branchLeft/branchleft-admin
+/render-core/package.json                        @branchLeft/branchleft-admin
+/services/*/package.json                         @branchLeft/branchleft-admin
+/services/*/pnpm-workspace.yaml                  @branchLeft/branchleft-admin
+/adapters/*/package.json                         @branchLeft/branchleft-admin
+/adapters/*/pnpm-workspace.yaml                  @branchLeft/branchleft-admin
+/portal/apps/package.json                        @branchLeft/branchleft-admin
+/portal/apps/pnpm-workspace.yaml                 @branchLeft/branchleft-admin
+/portal/data/package.json                        @branchLeft/branchleft-admin
+/portal/data/pnpm-workspace.yaml                 @branchLeft/branchleft-admin
+/deadmans-switch/package.json                    @branchLeft/branchleft-admin
+/infra/tenant/package.json                       @branchLeft/branchleft-admin
+/infra/tenant/pnpm-workspace.yaml                @branchLeft/branchleft-admin
+**/.npmrc                                        @branchLeft/branchleft-admin
+/services/demo-gate/Dockerfile                   @branchLeft/branchleft-admin
+/services/drain-sidecar/Dockerfile               @branchLeft/branchleft-admin
+/services/mail-collector/Dockerfile              @branchLeft/branchleft-admin
+/services/mailgun-shim/Dockerfile                @branchLeft/branchleft-admin
+/services/odask/Dockerfile                       @branchLeft/branchleft-admin
+/services/sweego-webhook-receiver/Dockerfile     @branchLeft/branchleft-admin
+/portal/Dockerfile                               @branchLeft/branchleft-admin
+# Criterion 2 and 3: what a job that holds a token builds into an image: the Dockerfile, its
+# ignore file (what keeps .git, and the token it holds, out of the build) and what it copies and runs.
+/Dockerfile                                      @branchLeft/branchleft-admin
+/docker-entrypoint.branchleft.sh                 @branchLeft/branchleft-admin
+/services/demo-edge/Dockerfile                   @branchLeft/branchleft-admin
+/adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh @branchLeft/branchleft-admin
+/adapters/ghost-core-overlay/apply-patch.sh      @branchLeft/branchleft-admin
+/themes/fetch.mjs                                @branchLeft/branchleft-admin
+/themes/verify.mjs                               @branchLeft/branchleft-admin
+/db/provision/install_host_prereqs.py            @branchLeft/branchleft-admin
+**/.dockerignore                                 @branchLeft/branchleft-admin
+**/*.dockerignore                                @branchLeft/branchleft-admin
+
+# Criterion 2: keys, secrets, access, break-glass, database grants.
+/db/provision/provision_tenant_db.py             @branchLeft/branchleft-admin
+/db/provision/test_provision_tenant_db.py        @branchLeft/branchleft-admin
+/db/provision/test_provision_grant_live.py       @branchLeft/branchleft-admin
+/db/provision/render_exporter_my_cnf.py          @branchLeft/branchleft-admin
+/db/provision/test_render_exporter_my_cnf.py     @branchLeft/branchleft-admin
+/db/tunnel/tunnel_account.py                     @branchLeft/branchleft-admin
+/db/tunnel/test_tunnel_account.py                @branchLeft/branchleft-admin
+/demo-host/provision/render_slot_sudoers.py      @branchLeft/branchleft-admin
+/demo-host/provision/test_render_slot_sudoers.py @branchLeft/branchleft-admin
+/demo-host/provision/branchleft_slot.py          @branchLeft/branchleft-admin
+/demo-host/provision/test_branchleft_slot.py     @branchLeft/branchleft-admin
+/demo-host/provision/sabotage_branchleft_slot.py @branchLeft/branchleft-admin
+/demo-host/provision/provision_socket_dirs.py    @branchLeft/branchleft-admin
+/demo-host/provision/demo_go_live.py             @branchLeft/branchleft-admin
+/demo-host/provision/test_demo_go_live.py        @branchLeft/branchleft-admin
+/demo-host/provision/sabotage_demo_go_live.py    @branchLeft/branchleft-admin
+/app/provision/*.py                              @branchLeft/branchleft-admin
+/adapters/sso/scripts/                           @branchLeft/branchleft-admin
+/adapters/sso/src/break-glass.js                 @branchLeft/branchleft-admin
+/adapters/sso/src/BreakGlassSSO.js               @branchLeft/branchleft-admin
+/adapters/sso/test/unit/break-glass*             @branchLeft/branchleft-admin
+/adapters/sso/test/image/break-glass*            @branchLeft/branchleft-admin
+/adapters/scanning-storage/verdict-host/auth.js  @branchLeft/branchleft-admin
+/services/broker/src/auth.ts                     @branchLeft/branchleft-admin
+/services/broker/test/unit/auth.test.ts          @branchLeft/branchleft-admin
+/services/storage-gateway/src/credentials/       @branchLeft/branchleft-admin
+/services/storage-gateway/src/sigv4-verifier.ts  @branchLeft/branchleft-admin
+/services/storage-gateway/src/admit.ts           @branchLeft/branchleft-admin
+/services/storage-gateway/test/admit.test.ts     @branchLeft/branchleft-admin
+/services/storage-gateway/test/credentials/      @branchLeft/branchleft-admin
+/services/storage-gateway/test/sigv4-*           @branchLeft/branchleft-admin
+**/Pulumi.*.yaml                                 @branchLeft/branchleft-admin
+
+# Criterion 2, 6 and 7: the provisioning refusals, the escrow key, the host-key register,
+# bucket fences and backup identities; the Pulumi programs CI applies to production.
+/infra/provisioning/                             @branchLeft/branchleft-admin
 /infra/hosts/                                    @branchLeft/branchleft-admin
 /infra/demo-host/                                @branchLeft/branchleft-admin
-
-# Reviewed output diff: the golden list of tenant output changes the tests hold to.
 /infra/tenant/test/golden/                       @branchLeft/branchleft-admin
-
-# Root-run host provisioning and database deploy directories, each proven by a CI job.
-/app/                                            @branchLeft/branchleft-admin
-/control/                                        @branchLeft/branchleft-admin
-/db/                                             @branchLeft/branchleft-admin
-/demo-host/                                      @branchLeft/branchleft-admin
-
-# CSP gate verdicts, the hash derivation they use, and the pinned widget and Kalotyp bundles.
-/csp/gate/                                       @branchLeft/branchleft-admin
-/csp/derive/                                     @branchLeft/branchleft-admin
-/widgets/pins.json                               @branchLeft/branchleft-admin
-/widgets/verify-pins.test.mjs                    @branchLeft/branchleft-admin
-/vendor/kalotyp/verify-kalotyp.test.mjs          @branchLeft/branchleft-admin
-
-# Upgrade gates: release classifier's fail-closed allowlist, ring controller's backup-then-apply.
-/services/release-classifier/src/                @branchLeft/branchleft-admin
-/services/ring-controller/src/                   @branchLeft/branchleft-admin
-
-# Speckify config: the contract check's source and the publish target of the broker API package.
-/speckify.yaml                                   @branchLeft/branchleft-admin
-
-# Private-tenant plan register: the owner's attestation that the paid plan and
-# the dedicated private-CI runner exist. Only the owner changes it.
 /registers/private-tenant-plan.*                 @branchLeft/branchleft-admin
+/registers/tenant-names.json                     @branchLeft/branchleft-admin
 
-# The floors file is a gate the standards job reads. It is listed here, with the
-# other gate files, and not in the shared tail below, because the tail must be
-# the template's own lines.
-/tools/floors.tsv        @branchLeft/branchleft-admin
+# Criterion 7: what deletes production data, sets retention or schedules and stops a backup.
+/db/provision/prune_backups.py                   @branchLeft/branchleft-admin
+/db/provision/test_prune_backups.py              @branchLeft/branchleft-admin
+/db/provision/configure_backup_bucket.py         @branchLeft/branchleft-admin
+/db/provision/test_configure_backup_bucket.py    @branchLeft/branchleft-admin
+/db/provision/branchleft-db-prune.*              @branchLeft/branchleft-admin
+/db/provision/branchleft-db-dump.*               @branchLeft/branchleft-admin
+/db/provision/branchleft-db-binlog-ship.*        @branchLeft/branchleft-admin
+/db/provision/dump_*.py                          @branchLeft/branchleft-admin
+/db/provision/test_dump_*.py                     @branchLeft/branchleft-admin
+/db/provision/ship_binlogs.py                    @branchLeft/branchleft-admin
+/db/provision/test_ship_binlogs.py               @branchLeft/branchleft-admin
+/db/provision/extract_tenant_binlog.py           @branchLeft/branchleft-admin
+/db/provision/test_extract_tenant_binlog.py      @branchLeft/branchleft-admin
+/db/provision/gtid_snapshot.py                   @branchLeft/branchleft-admin
+/db/provision/test_gtid_snapshot.py              @branchLeft/branchleft-admin
+/db/provision/bounded_snapshot.py                @branchLeft/branchleft-admin
+/db/provision/test_bounded_snapshot.py           @branchLeft/branchleft-admin
+/db/provision/fake_mysql_clients.py              @branchLeft/branchleft-admin
+/db/provision/objectstorage.py                   @branchLeft/branchleft-admin
+/db/provision/test_objectstorage.py              @branchLeft/branchleft-admin
+/db/provision/naming.py                          @branchLeft/branchleft-admin
+/db/provision/test_naming.py                     @branchLeft/branchleft-admin
+/db/provision/promotion_gate.py                  @branchLeft/branchleft-admin
+/db/provision/test_promotion_gate.py             @branchLeft/branchleft-admin
+/db/provision/prove-promotion-gate.sh            @branchLeft/branchleft-admin
+/db/stack/conf.d/branchleft.cnf                  @branchLeft/branchleft-admin
+/db/provision/test_branchleft_cnf_contract.py    @branchLeft/branchleft-admin
+/control/provision/branchleft-backup-worker*     @branchLeft/branchleft-admin
+/control/provision/branchleft-state-copy.*       @branchLeft/branchleft-admin
+/control/provision/install_backup_worker.py      @branchLeft/branchleft-admin
+/control/provision/test_install_backup_worker.py @branchLeft/branchleft-admin
+/control/provision/install_state_copy.py         @branchLeft/branchleft-admin
+/control/provision/test_install_state_copy.py    @branchLeft/branchleft-admin
+/control/provision/nextcloud_backup.py           @branchLeft/branchleft-admin
+/control/provision/test_nextcloud_backup.py      @branchLeft/branchleft-admin
 
-# SEC-5 image-scan exemptions: an agent must not approve its own exemption.
-/.image-scan-exemptions.json                     @branchLeft/branchleft-admin
+# --- Released: no owner. Documents, probes and proofs, lockfiles and version pins. ---
+/infra/provisioning/scripts/probe-*
+/infra/provisioning/scripts/test_probe_*
+/infra/provisioning/scripts/prove-*
+/infra/provisioning/scripts/media-backup-restore-proof.*
+/infra/provisioning/scripts/media_backup_held_proof.py
+/infra/provisioning/scripts/media_backup_restore_proof_helpers.*
+# Released inside the owned directories above: checkers and probes that no job holding a token runs.
+/scripts/assert-register-holds-no-customer-names.js
+/scripts/assert-release-age-exclude.py
+/scripts/assert-slug-pattern-consistency.py
+/scripts/sync-tenant-name-register.py
+/scripts/select-lockfile-projects.py
+/scripts/resolve-published-image.sh
+/scripts/probe-tokenless-attestation.sh
+/scripts/test-probe-tokenless-attestation.sh
+/scripts/test_probe_private_packages.py
+/scripts/measure-old-colour-schema-drift.sh
+/scripts/render-mail-spool-compose.mjs
+/scripts/render-mail-spool-compose.test.mjs
+/scripts/test-batch-claim-lock.sh
+/scripts/test-colour-swap.sh
+/scripts/test-colour-swap-mysql.sh
+/scripts/test-demo-container-egress.sh
+/scripts/test-demo-mail-spool.sh
+/scripts/test-demo-router-dir-permissions.sh
+/scripts/test-drain-flag-dir-permissions.sh
+/scripts/test-export-bundler.sh
+/scripts/test-odask.sh
+/scripts/mail-spool-proof/dnsprobe.js
+/scripts/mail-spool-proof/drainack.js
+/scripts/mail-spool-proof/drainroute.py
+/scripts/mail-spool-proof/ghostmail.py
+/scripts/mail-spool-proof/ghostprobe.py
+/scripts/mail-spool-proof/pyconnect.py
+/scripts/mail-spool-proof/tcpprobe.js
+**/*.md
+**/pnpm-lock.yaml
+**/package-lock.json
+**/go.sum
+**/.nvmrc
+**/.python-version
+
+# --- Criterion 8 and the rules themselves win over the releases above ---
+/LICENSE                                         @branchLeft/branchleft-admin
+/render-core/LICENSE                             @branchLeft/branchleft-admin
+/infra/tenant/LICENSE                            @branchLeft/branchleft-admin
+/portal/apps/src/tenant/explainerPages.ts        @branchLeft/branchleft-admin
+**/CLAUDE.md                                     @branchLeft/branchleft-admin
+**/AUTHORISATIONS.md                             @branchLeft/branchleft-admin
+**/CODEOWNERS                                    @branchLeft/branchleft-admin
+**/.github/workflows/                            @branchLeft/branchleft-admin
+**/.github/actions/                              @branchLeft/branchleft-admin
 
 # branchLeft/standards templates/codeowners, synced whole (SYNC-1: these five
 # lines must be this file's final lines, in this order — GitHub applies the

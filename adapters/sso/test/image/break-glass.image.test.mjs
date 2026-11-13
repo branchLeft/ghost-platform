@@ -564,7 +564,7 @@ describe(
           const dest = path.join(tmp, 'in-image.js');
           docker(
             'cp',
-            `${cid}:/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js`,
+            `${cid}:/var/lib/ghost/current/core/server/auth/session/session-from-token.js`,
             dest
           );
           inImageBytes = fs.readFileSync(dest);

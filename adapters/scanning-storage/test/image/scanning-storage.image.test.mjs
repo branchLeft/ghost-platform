@@ -1029,13 +1029,15 @@ describe('the hold branch, against a real Ghost', () => {
           path.join(resolveHostDir, `${heldDigest}.json`),
           JSON.stringify({ classification: 'no-known-match' })
         );
-        await sleep(2500);
+        // Promotion happens on the next hold retry; wait for the write rather
+        // than a fixed time, so a slow machine is not read as a failed promotion.
+        let promoted = false;
+        for (let waited = 0; waited < 30_000 && !promoted; waited += 500) {
+          await sleep(500);
+          promoted = await double.objectExists(key);
+        }
 
-        assert.equal(
-          await double.objectExists(key),
-          true,
-          'promotion is a write: the bucket now holds the object'
-        );
+        assert.equal(promoted, true, 'promotion is a write: the bucket now holds the object');
         // Promotion goes through S3Storage.saveRaw, which sends no
         // ContentType itself (content-type.md): without the stamp this is
         // application/octet-stream and the logo or favicon is a broken image.

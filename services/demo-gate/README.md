@@ -12,6 +12,24 @@ contract.
 It authenticates a lease, never a person: no account, no personal data ever
 enters the cookie.
 
+## The image and its publish path
+
+The image is built from `Dockerfile` on `node:26.13.0-alpine`, pinned by digest
+to the same base `portal/Dockerfile` pins. It carries the same zlib upgrade
+(CVE-2026-4738). Its install RUN also removes npm and pnpm, and the pnpm store,
+so the running image holds only the compiled gate, its two `link:` packages and
+no npm package at run time. The shipped Node is 26.13.0; `.nvmrc` stays at
+26.5.0, which is the version the unit tests run on, so the two differ on purpose.
+
+`demo-gate-image.yml` builds the image, runs the real-Caddy proofs and the three
+sabotage runs against that exact image, then saves it. On `main` the push job
+loads the saved bytes, checks the image ID, and pushes
+`ghcr.io/branchleft/demo-gate` tagged with the commit SHA, with no rebuild. The
+pushed digest is scanned, then attested with the signer identity
+`branchLeft/ghost-platform/.github/workflows/demo-gate-image.yml`. The reference
+to pin is the digest form, which the push job prints. The package stays private:
+demo1 takes a `docker save` tar through the broker and never pulls from GHCR.
+
 ## Endpoints
 
 - `GET`/`HEAD /__gate/verify` — the `forward_auth` target. `200` only when a
@@ -51,7 +69,7 @@ and an unset value refuses to start rather than guessing.
 ## The signing key file
 
 The container runs as `node` — uid 1000, the user baked into the
-`node:*-bookworm-slim` base image (`USER node` in the Dockerfile). It never
+`node:26.13.0-alpine` base image (`USER node` in the Dockerfile). It never
 runs as root. A real host gives the key file to the gate's own uid, **mode
 `0400`**: readable by the gate and nobody else, not even its own group.
 `scripts/test-demo-gate.sh` mounts a throwaway key world-readable instead,

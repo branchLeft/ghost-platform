@@ -193,10 +193,7 @@ repository renders the policy and the exact commands, and
 **The standing cost, and the horizon it binds at.** One bucket and one
 credential per tenant, against account-wide caps of 100 buckets and 200 S3
 credentials *across all projects* — so rotation, which needs two credentials for
-one tenant briefly, sits on the credential cap near 100 tenants. Whether the
-caps are raisable has never been asked; branchLeft/workspace#176 is that support
-ticket, and a positive answer removes the constraint outright. The platform is
-at one tenant.
+one tenant briefly, sits on the credential cap near 100 tenants.
 
 ## Breaking changes in 2.0.0
 

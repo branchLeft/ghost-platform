@@ -102,10 +102,14 @@ jobs:
       cancel-in-progress: false
     # `packages: write` is the whole of what publishing needs, and `contents`
     # stays read-only: no tag or release is created, the registry is the record.
-    # Nothing from a pull request runs here: the job is main-only.
+    # `id-token` and `attestations` are the signing grants, held by this one job,
+    # which packs, attests and publishes. Nothing from a pull request runs here:
+    # the job is main-only.
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -173,8 +177,12 @@ jobs:
           jq '{name, version, repository, publishConfig}' "$pkg"
 
       # A version the registry already holds is skipped, as `speckify publish`
-      # does; any other failure to read the registry stops the job.
-      - name: Publish to GitHub Packages
+      # does; any other failure to read the registry stops the job. A version
+      # that is to be published is packed once here; the attest and publish
+      # steps below run only for it, on the same file, so the bytes signed are
+      # the bytes the registry receives.
+      - name: Pack the generated package unless the registry holds it
+        id: pack
         working-directory: .speckify/out/broker-api/typescript
         run: |
           set -euo pipefail
@@ -186,13 +194,41 @@ jobs:
           esac
           if found=$(npm view "$name@$version" version --registry https://npm.pkg.github.com 2>&1); then
             echo "$name@$version is already published; nothing to do"
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
           case "$found" in
             *E404*) ;;
             *) echo "::error::could not read the registry: $found"; exit 1 ;;
           esac
-          npm publish --registry https://npm.pkg.github.com
-          echo "broker-api-typescript: published $name@$version"
+          mkdir -p "${RUNNER_TEMP}/pack"
+          packed="$(npm pack --pack-destination "${RUNNER_TEMP}/pack" --json)"
+          file="$(jq -er '.[0].filename' <<<"${packed}")"
+          test -f "${RUNNER_TEMP}/pack/${file}"
+          {
+            echo "publish=true"
+            echo "tarball=${RUNNER_TEMP}/pack/${file}"
+            echo "package=${name}@${version}"
+          } >> "${GITHUB_OUTPUT}"
         env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+
+      - name: Attest the tarball
+        if: steps.pack.outputs.publish == 'true'
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@a2175a416b57f950fed891837f88f2d1a31e00f4 # v1.2.0
+        with:
+          tarball: ${{ steps.pack.outputs.tarball }}
+          repo: branchLeft/ghost-platform
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/speckify.yml
+          ref: refs/heads/main
+
+      - name: Publish to GitHub Packages
+        if: steps.pack.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          npm publish "${TARBALL}" --registry https://npm.pkg.github.com
+          echo "broker-api-typescript: published ${PACKAGE}"
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          PACKAGE: ${{ steps.pack.outputs.package }}
           NODE_AUTH_TOKEN: ${{ github.token }}

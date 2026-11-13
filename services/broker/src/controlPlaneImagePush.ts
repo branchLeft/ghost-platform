@@ -72,7 +72,9 @@ async function sha256File(path: string): Promise<string> {
 
 export async function pushOciImage(args: PushOciImageArgs): Promise<PushOciImageResult> {
   if (!IMAGE_REF_PATTERN.test(args.imageRef)) {
-    throw new ImageRefusedError(`image ref ${args.imageRef} is not a ghcr.io/branchleft/<name> ref`);
+    throw new ImageRefusedError(
+      `image ref ${args.imageRef} is not a ghcr.io/branchleft/<name> ref`
+    );
   }
   if (!MANIFEST_DIGEST_PATTERN.test(args.manifestDigest)) {
     throw new ImageRefusedError('manifest digest is not sha256:<64 lowercase hex>');
@@ -82,14 +84,18 @@ export async function pushOciImage(args: PushOciImageArgs): Promise<PushOciImage
   const { deps } = args;
 
   if (!(await deps.verifyAttestation(ref, args.signerWorkflow))) {
-    throw new ImageRefusedError(`unattested: ${ref} has no valid attestation from ${args.signerWorkflow}`);
+    throw new ImageRefusedError(
+      `unattested: ${ref} has no valid attestation from ${args.signerWorkflow}`
+    );
   }
 
   await deps.pull(ref);
 
   const digests = await deps.repoDigests(ref);
   if (!digests.includes(ref)) {
-    throw new ImageRefusedError(`pulled image is not the declared manifest digest ${args.manifestDigest}`);
+    throw new ImageRefusedError(
+      `pulled image is not the declared manifest digest ${args.manifestDigest}`
+    );
   }
 
   await deps.save(ref, args.tarPath);
@@ -131,7 +137,13 @@ export function realProvenanceDeps(options: RealProvenanceOptions): ImageProvena
       await run('docker', ['pull', ref]);
     },
     async repoDigests(ref) {
-      const { stdout } = await run('docker', ['image', 'inspect', '--format', '{{json .RepoDigests}}', ref]);
+      const { stdout } = await run('docker', [
+        'image',
+        'inspect',
+        '--format',
+        '{{json .RepoDigests}}',
+        ref,
+      ]);
       const parsed: unknown = JSON.parse(stdout);
       if (!Array.isArray(parsed) || !parsed.every((d) => typeof d === 'string')) {
         throw new ImageRefusedError('docker inspect did not return a RepoDigests string array');

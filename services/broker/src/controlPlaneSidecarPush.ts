@@ -5,10 +5,15 @@
  * Narrative: controlPlaneSidecarPush.md.
  */
 import { readFile } from 'node:fs/promises';
-import { type ImageProvenanceDeps, type PushOciImageResult, pushOciImage } from './controlPlaneImagePush.js';
+import {
+  type ImageProvenanceDeps,
+  type PushOciImageResult,
+  pushOciImage,
+} from './controlPlaneImagePush.js';
 
 export const SIDECAR_IMAGE_REF = 'ghcr.io/branchleft/drain-sidecar';
-export const SIDECAR_SIGNER_WORKFLOW = 'branchLeft/ghost-platform/.github/workflows/drain-sidecar-image.yml';
+export const SIDECAR_SIGNER_WORKFLOW =
+  'branchLeft/ghost-platform/.github/workflows/drain-sidecar-image.yml';
 /** The variable the colour unit reads from the host's sidecar image env file. */
 export const SIDECAR_IMAGE_VARIABLE = 'DEMO_SIDECAR_IMAGE';
 

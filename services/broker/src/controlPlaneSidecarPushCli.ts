@@ -10,6 +10,9 @@ const verifyScript = process.env['VERIFY_SCRIPT'];
 if (verifyScript === undefined || verifyScript === '') {
   throw new Error('VERIFY_SCRIPT is not set');
 }
-const outcome = await pushDemoSidecar(sidecarPushEnv(process.env), realProvenanceDeps({ verifyScript }));
+const outcome = await pushDemoSidecar(
+  sidecarPushEnv(process.env),
+  realProvenanceDeps({ verifyScript })
+);
 process.stdout.write(`${JSON.stringify(outcome)}\n`);
 process.exit(outcome.push.ok ? 0 : 1);

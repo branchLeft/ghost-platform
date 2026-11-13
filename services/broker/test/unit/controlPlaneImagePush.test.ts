@@ -3,10 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeTempDir } from '../../src/atomicFile.js';
-import {
-  type ImageProvenanceDeps,
-  pushOciImage,
-} from '../../src/controlPlaneImagePush.js';
+import { type ImageProvenanceDeps, pushOciImage } from '../../src/controlPlaneImagePush.js';
 import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
 
 const SIGNER = 'branchLeft/ghost-platform/.github/workflows/drain-sidecar-image.yml';

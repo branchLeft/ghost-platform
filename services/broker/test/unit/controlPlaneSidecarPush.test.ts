@@ -81,7 +81,9 @@ describe('pushDemoSidecar', () => {
       Math.floor(broker!.nowMs() / 1000)
     );
 
-    expect(calls[0]).toBe(`verify ghcr.io/branchleft/drain-sidecar@${MANIFEST} branchLeft/ghost-platform/.github/workflows/drain-sidecar-image.yml`);
+    expect(calls[0]).toBe(
+      `verify ghcr.io/branchleft/drain-sidecar@${MANIFEST} branchLeft/ghost-platform/.github/workflows/drain-sidecar-image.yml`
+    );
     expect(out.push.ok).toBe(true);
     expect(out.tarDigest).toBe(`sha256:${createHash('sha256').update(bytes).digest('hex')}`);
     expect(out.envLine).toBe(`DEMO_SIDECAR_IMAGE=ghcr.io/branchleft/drain-sidecar@${MANIFEST}`);
@@ -111,7 +113,10 @@ describe('pushDemoSidecar', () => {
     const unattested: ImageProvenanceDeps = { ...deps, verifyAttestation: async () => false };
 
     await expect(
-      pushDemoSidecar({ manifestDigest: MANIFEST, baseUrl: broker!.baseUrl, keyPath, tarPath }, unattested)
+      pushDemoSidecar(
+        { manifestDigest: MANIFEST, baseUrl: broker!.baseUrl, keyPath, tarPath },
+        unattested
+      )
     ).rejects.toThrow(/unattested/);
     expect(calls).toHaveLength(0);
     expect(broker!.imageLoader.calls).toHaveLength(0);

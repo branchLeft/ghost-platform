@@ -15,6 +15,8 @@ import {
   type Port,
   type TenantUid,
 } from './brand.js';
+import type { MailSpec } from './descriptor.js';
+import { mailRouteOf } from './mail.js';
 import type { YamlValue } from './yaml.js';
 import { toYaml } from './yaml.js';
 
@@ -95,6 +97,25 @@ export const MAIL_SPOOL_SECRETS_PATH = `/etc/branchleft/${MAIL_SPOOL_STACK}.env`
 /** The one secret the spool's Compose file references, never carries. */
 export const MAIL_SPOOL_DRAIN_TOKEN_KEY = 'SHIM_DRAIN_TOKEN';
 
+/** The variable that makes the shim serve `POST /drain/outcomes`. See
+ * spool.md#the-outcomes-route. */
+export const MAIL_SPOOL_DRAIN_OUTCOMES_KEY = 'SHIM_DRAIN_OUTCOMES';
+
+/** The one value the shim honours: it compares the variable to this exact
+ * string, so a boolean, `True`, `1` or `yes` leaves the route off. Rendered as
+ * a quoted string, never a YAML boolean. */
+export const MAIL_SPOOL_DRAIN_OUTCOMES_VALUE = 'true';
+
+/**
+ * Whether a host's spool must serve the outcomes route: exactly when one of
+ * the mail specs it serves routes through Sweego (`mailRouteOf`). The spool is
+ * per host, so a caller passes the mail spec of every descriptor on the host.
+ * An empty list, or only `mx1` and route-less specs, is false.
+ */
+export function mailSpoolNeedsDrainOutcomes(mails: readonly Pick<MailSpec, 'route'>[]): boolean {
+  return mails.some((mail) => mailRouteOf(mail) === 'sweego');
+}
+
 /**
  * The internal network one tenant (or one demo slot) shares with the spool
  * and with nothing else. Keyed on the uid, the stable per-slot identity,
@@ -111,6 +132,12 @@ export interface MailSpoolStackArgs {
   readonly uids: readonly TenantUid[];
   /** The host-loopback port ops1's tunnel lands on. */
   readonly drainPort: Port;
+  /**
+   * Render `SHIM_DRAIN_OUTCOMES: 'true'`. Absent or false renders nothing, so
+   * every spool file written before this field existed is byte-identical. Use
+   * `mailSpoolNeedsDrainOutcomes`. See spool.md#the-outcomes-route.
+   */
+  readonly drainOutcomes?: boolean;
 }
 
 const SPOOL_LIMITS = {
@@ -189,6 +216,9 @@ export function mailSpoolDocument(args: MailSpoolStackArgs): Record<string, Yaml
           PORT: MAIL_SPOOL_HTTP_PORT,
           SHIM_DRAIN_PORT: MAIL_SPOOL_DRAIN_CONTAINER_PORT,
           SHIM_DRAIN_HOST: MAIL_SPOOL_DRAIN_ADDRESS,
+          ...(args.drainOutcomes === true
+            ? { [MAIL_SPOOL_DRAIN_OUTCOMES_KEY]: MAIL_SPOOL_DRAIN_OUTCOMES_VALUE }
+            : {}),
           SMTP_LISTEN_PORT: MAIL_SPOOL_SMTP_PORT,
           SHIM_DB_PATH: DB_PATH,
           [MAIL_SPOOL_DRAIN_TOKEN_KEY]:
@@ -239,8 +269,11 @@ export function renderMailSpoolStack(args: MailSpoolStackArgs): string {
   for (const uid of args.uids) {
     validateTenantUid(uid);
   }
+  if (args.drainOutcomes !== undefined && typeof args.drainOutcomes !== 'boolean') {
+    throw new FieldValidationError('drainOutcomes', 'must be a boolean when given.');
+  }
   const document = mailSpoolDocument(args);
-  assertSpoolPosture(document, args.drainPort);
+  assertSpoolPosture(document, args.drainPort, args.drainOutcomes === true);
   return `${header()}\n${toYaml(document)}`;
 }
 
@@ -388,7 +421,33 @@ function checkDrainHost(
   }
 }
 
-function checkEnvironment(service: Record<string, YamlValue>, at: (message: string) => void): void {
+function checkDrainOutcomes(
+  environment: Record<string, YamlValue>,
+  expected: boolean | undefined,
+  at: (message: string) => void
+): void {
+  const value = environment[MAIL_SPOOL_DRAIN_OUTCOMES_KEY];
+  if (value !== undefined && value !== MAIL_SPOOL_DRAIN_OUTCOMES_VALUE) {
+    at(
+      `${MAIL_SPOOL_DRAIN_OUTCOMES_KEY} must be the string ${JSON.stringify(MAIL_SPOOL_DRAIN_OUTCOMES_VALUE)} ` +
+        `exactly, got ${JSON.stringify(value)}: the shim compares it to that string, so any other ` +
+        'spelling leaves /drain/outcomes off while the file looks as if it were on'
+    );
+  } else if (expected === true && value === undefined) {
+    at(
+      `must set ${MAIL_SPOOL_DRAIN_OUTCOMES_KEY}: this host needs /drain/outcomes, and without it ` +
+        "the collector's dropped-recipient reports get a 404"
+    );
+  } else if (expected === false && value !== undefined) {
+    at(`must not set ${MAIL_SPOOL_DRAIN_OUTCOMES_KEY}: this host did not ask for /drain/outcomes`);
+  }
+}
+
+function checkEnvironment(
+  service: Record<string, YamlValue>,
+  expectOutcomes: boolean | undefined,
+  at: (message: string) => void
+): void {
   const environment = asRecord(service.environment);
   if (!environment) {
     at('must declare an `environment` map');
@@ -408,6 +467,7 @@ function checkEnvironment(service: Record<string, YamlValue>, at: (message: stri
     );
   }
   checkDrainHost(service, environment, at);
+  checkDrainOutcomes(environment, expectOutcomes, at);
   if (environment.SHIM_ALLOW_EPHEMERAL_DB !== undefined) {
     at('must not allow an ephemeral queue: a restart would drop every queued message');
   }
@@ -421,9 +481,15 @@ function checkEnvironment(service: Record<string, YamlValue>, at: (message: stri
  * the spool a route off the host, publish anything but the loopback drain
  * port, serve /drain on the listener the tenant networks reach, bind the
  * drain listener to anything but the drain network's fixed address, carry a
- * secret, or drop the runtime hardening. See spool.md#the-posture-check.
+ * secret, or drop the runtime hardening. `SHIM_DRAIN_OUTCOMES` may be absent
+ * but never anything but the string `true`; when `expectOutcomes` is given the
+ * file must also agree with it. See spool.md#the-posture-check.
  */
-export function assertSpoolPosture(document: Record<string, YamlValue>, drainPort: number): void {
+export function assertSpoolPosture(
+  document: Record<string, YamlValue>,
+  drainPort: number,
+  expectOutcomes?: boolean
+): void {
   const services = asRecord(document.services) ?? {};
   const topLevelNetworks = asRecord(document.networks) ?? {};
   const problems: string[] = [];
@@ -476,7 +542,7 @@ export function assertSpoolPosture(document: Record<string, YamlValue>, drainPor
 
     checkNetworks(service, topLevelNetworks, at);
     checkPorts(service, drainPort, at);
-    checkEnvironment(service, at);
+    checkEnvironment(service, expectOutcomes, at);
   }
 
   if (problems.length > 0) {

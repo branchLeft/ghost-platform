@@ -3,7 +3,8 @@
 // are the ones render-core renders, read from its demo golden. Ghost's own
 // reader send (a sign-up magic link) must end in failure inside BOUND_MS.
 // The negative control boots Ghost with the timeouts omitted: that request
-// must still be open at BOUND_MS. Rationale: ghost-send-timeout.md.
+// must still be open at BOUND_MS, or end clearly later than the rendered
+// greeting timeout. Rationale: ghost-send-timeout.md.
 //
 // Usage:
 //   IMAGE=ghost-platform:ci node --test scripts/mail-spool-proof/ghost-send-timeout.image.test.mjs
@@ -34,6 +35,8 @@ const SITE_URL = 'https://tenant.example.test';
 const BOUND_MS = 15_000;
 // The negative control stops this long after BOUND_MS, not at nodemailer's 30 s.
 const NEGATIVE_MARGIN_MS = 2_000;
+// The untimed Ghost must end at least this much later than the rendered greeting timeout.
+const UNTIMED_LATER_BY_MS = 3_000;
 const CLIENT_DEADLINE_MS = 60_000;
 const BOOT_TIMEOUT_MS = 90_000;
 const LABEL = 'branchleft.agent=ghost-send-timeout-image-test';
@@ -308,10 +311,14 @@ describe('Ghost send against a listener that never greets', () => {
       listener.accepted.length > before,
       `the untimed Ghost never dialled the listener: ${evidence}`
     );
-    assert.equal(
-      outcome,
-      null,
-      `without the timeouts the request finished in ${outcome?.elapsed} ms (${outcome?.status}), inside ${BOUND_MS + NEGATIVE_MARGIN_MS} ms`
+    // Ghost 6.76's mailer has a greeting timeout of its own (10 s), so the untimed
+    // request may now end before the bound. What the control must show is that the
+    // rendered 5 s timeout is what ended the timed request: the untimed one is
+    // still open, or ended clearly later.
+    const greeting = Number(timeouts.mail__options__greetingTimeout);
+    assert.ok(
+      outcome === null || outcome.elapsed >= greeting + UNTIMED_LATER_BY_MS,
+      `without the timeouts the request finished in ${outcome?.elapsed} ms (${outcome?.status}), not clearly later than the ${greeting} ms greeting timeout`
     );
   });
 });

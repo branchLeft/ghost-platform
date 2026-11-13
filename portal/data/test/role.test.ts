@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { connect } from '../src/db.js';
 import { OwnerDb } from '../src/owner/index.js';
+import { ProspectDb } from '../src/prospect/index.js';
 import { ProvisionerDb } from '../src/provisioner/index.js';
 import { TenantDb, bindTenant, type Tx } from '../src/tenant/index.js';
 import { note } from './fixtureSchema.js';
@@ -77,5 +78,15 @@ describe('the provisioner role switch', () => {
 
   it('runs as portal_provisioner for a login that also holds the other roles', async () => {
     expect(await new ProvisionerDb(fx.dual).run(currentUser)).toBe('portal_provisioner');
+  });
+});
+
+describe('the prospect role switch', () => {
+  it('runs a prospect statement as portal_prospect', async () => {
+    expect(await new ProspectDb(fx.prospect).run(currentUser)).toBe('portal_prospect');
+  });
+
+  it('runs as portal_prospect for a login that also holds the other roles', async () => {
+    expect(await new ProspectDb(fx.dual).run(currentUser)).toBe('portal_prospect');
   });
 });
