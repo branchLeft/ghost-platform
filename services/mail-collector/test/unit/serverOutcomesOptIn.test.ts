@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -37,6 +38,8 @@ function findFreePort(): Promise<number> {
     srv.on('error', reject);
   });
 }
+
+const KEY = randomBytes(32).toString('hex');
 
 describe('dist/server.js — outcomes are opt-in from the environment', () => {
   let dir: string;
@@ -122,7 +125,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     const received = await submitOneMessage({
       COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
       COLLECTOR_OUTCOMES_DSN_DIR: dir,
-      COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1.collector.example',
+      COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
     });
     expect(received.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
     expect(received.envelopeFrom).toBe('outcomes@collector.example');
@@ -135,7 +138,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
   const TWO_PATHS = {
     COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
     COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
-    COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1.collector.example',
+    COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
   };
 
   it('with a bulk return path set, a bulk message leaves from it', async () => {

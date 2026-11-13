@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,13 +7,14 @@ import { createArfReader } from '../../src/arf/arfReader.js';
 import { createDrainClient } from '../../src/drainClient.js';
 import type { DsnMailbox, RawDsn } from '../../src/dsnMailbox.js';
 import { createLogger } from '../../src/log.js';
-import { encodeOutcomeMessageId } from '../../src/outcomeId.js';
+import { signOutcomeMessageId } from '../../src/outcomeId.js';
 import { createOutcomeRunner } from '../../src/outcomeRunner.js';
 import { FakeShimServer } from '../helpers/fakeShimServer.js';
 import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
 
 const TOKEN = 'test-drain-token';
 const MSG = '4cfbf575-9efc-4508-bc4f-e0f9314e4844';
+const KEY = randomBytes(32).toString('hex');
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'arf');
 const arf = (name: string): string => readFileSync(join(FIXTURES, name), 'utf8');
 
@@ -36,7 +38,6 @@ function memoryMailbox(items: RawDsn[]) {
 
 function dsnFor(messageId: string): string {
   return [
-    'Authentication-Results: mx1.collector.example 1; spf=pass',
     'Content-Type: multipart/report; report-type=delivery-status; boundary="B"',
     '',
     '--B',
@@ -78,7 +79,7 @@ describe('outcomeRunner with a complaint reader', () => {
       store: createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]),
       drainClient: createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 }),
       log: createLogger(() => {}),
-      trustedAuthservId: 'mx1.collector.example',
+      messageIdKey: KEY,
       ...(withReader ? { complaintReader: reader } : {}),
     });
 
@@ -123,7 +124,13 @@ describe('outcomeRunner with a complaint reader', () => {
       {
         ref: 'dsn.eml',
         receivedAtMs: Date.now(),
-        raw: dsnFor(encodeOutcomeMessageId({ targetId: 'tenant-a', id: MSG, drainCount: 2 })),
+        raw: dsnFor(
+          signOutcomeMessageId(
+            { targetId: 'tenant-a', id: MSG, drainCount: 2 },
+            'r@example.com',
+            KEY
+          )
+        ),
       },
     ]);
     const result = await runnerFor(mailbox, true).runOnce();

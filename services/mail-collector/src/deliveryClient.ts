@@ -1,6 +1,6 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { WireMessage } from './drainClient.js';
-import { encodeOutcomeMessageId } from './outcomeId.js';
+import { signOutcomeMessageId } from './outcomeId.js';
 import { mailClassOf } from './sendingTarget.js';
 
 export interface DeliveryClientOptions {
@@ -16,9 +16,11 @@ export interface DeliveryClientOptions {
    * request for success, failure and delay. Unset, a submission is exactly
    * what it was before this option existed. `bulkReturnPath`, when set, is the
    * envelope sender of bulk (campaign) mail only, so its notifications arrive
-   * apart from login mail's; unset, bulk mail uses `returnPath` too.
+   * apart from login mail's; unset, bulk mail uses `returnPath` too. The
+   * Message-ID is signed with `messageIdKey` (HMAC, bound to the recipient), so
+   * a bounce that quotes it can be told from a forgery.
    */
-  outcomes?: { returnPath: string; bulkReturnPath?: string };
+  outcomes?: { returnPath: string; bulkReturnPath?: string; messageIdKey: string };
   transporterFactory?: (opts: DeliveryClientOptions) => Transporter;
 }
 
@@ -54,11 +56,11 @@ export function createDeliveryClient(opts: DeliveryClientOptions): DeliveryClien
     const outcomeFields =
       opts.outcomes && targetId !== undefined
         ? {
-            messageId: encodeOutcomeMessageId({
-              targetId,
-              id: message.id,
-              drainCount: message.drainCount,
-            }),
+            messageId: signOutcomeMessageId(
+              { targetId, id: message.id, drainCount: message.drainCount },
+              message.to,
+              opts.outcomes.messageIdKey
+            ),
             envelope: { from: returnPathFor(opts.outcomes, message), to: message.to },
             dsn: {
               id: message.id,

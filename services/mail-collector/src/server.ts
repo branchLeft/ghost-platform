@@ -66,6 +66,7 @@ const deliveryClient = createDeliveryClient({
     ? {
         outcomes: {
           returnPath: config.outcomes.returnPath,
+          messageIdKey: config.outcomes.messageIdKey,
           ...(config.outcomes.bulkReturnPath
             ? { bulkReturnPath: config.outcomes.bulkReturnPath }
             : {}),
@@ -197,7 +198,7 @@ const outcomes = config.outcomes
         store,
         drainClient,
         log,
-        trustedAuthservId: config.outcomes.trustedAuthservId,
+        messageIdKey: config.outcomes.messageIdKey,
       }),
       intervalMs: config.outcomes.pollMs,
     }

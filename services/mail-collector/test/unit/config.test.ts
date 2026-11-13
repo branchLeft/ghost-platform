@@ -1,5 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, sweegoUsable } from '../../src/config.js';
+
+const KEY = randomBytes(32).toString('hex');
 
 const BASE_ENV = {
   COLLECTOR_DESCRIPTOR_DIR: '/tmp/descriptors',
@@ -62,18 +65,18 @@ describe('loadConfig', () => {
   });
 
   describe('outcomes', () => {
-    it('turns on only when the return path, the notification directory and the trusted authserv-id are all set', () => {
+    it('turns on only when the return path, the notification directory and the Message-ID key are all set', () => {
       expect(
         loadConfig({
           ...BASE_ENV,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
-          COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'MX1.Collector.Example',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
         }).outcomes
       ).toEqual({
         returnPath: 'outcomes@collector.example',
         dsnDir: '/var/dsn',
-        trustedAuthservId: 'mx1.collector.example',
+        messageIdKey: KEY,
         pollMs: 30000,
       });
     });
@@ -81,30 +84,36 @@ describe('loadConfig', () => {
     it.each([
       ['COLLECTOR_OUTCOMES_RETURN_PATH', 'outcomes@collector.example'],
       ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
-      ['COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID', 'mx1.collector.example'],
+      ['COLLECTOR_OUTCOMES_MESSAGE_ID_KEY', KEY],
     ])('refuses %s without its partners', (name, value) => {
       expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
     });
 
-    it('refuses an outcome path with no trusted authserv-id, so a forged bounce can never be read', () => {
+    it('refuses an outcome path with no Message-ID key, so a forged bounce can never be read', () => {
       expect(() =>
         loadConfig({
           ...BASE_ENV,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
         })
-      ).toThrow(/COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID/);
+      ).toThrow(/COLLECTOR_OUTCOMES_MESSAGE_ID_KEY/);
     });
 
-    it('refuses a trusted authserv-id that is not a host name', () => {
-      expect(() =>
+    it('refuses a key that is too short, without putting it in the error', () => {
+      const short = 'not-a-real-key-but-short';
+      let message = '';
+      try {
         loadConfig({
           ...BASE_ENV,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
-          COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1 (spoof)',
-        })
-      ).toThrow(/must be a host name/);
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: short,
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/at least 32 characters/);
+      expect(message).not.toContain(short);
     });
 
     describe('the bulk return path', () => {
@@ -112,7 +121,7 @@ describe('loadConfig', () => {
         ...BASE_ENV,
         COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
         COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
-        COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID: 'mx1.collector.example',
+        COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
       };
 
       it('is read when the outcome path is on', () => {
@@ -125,7 +134,7 @@ describe('loadConfig', () => {
           returnPath: 'login-bounces@collector.example',
           bulkReturnPath: 'bulk-bounces@collector.example',
           dsnDir: '/var/dsn',
-          trustedAuthservId: 'mx1.collector.example',
+          messageIdKey: KEY,
           pollMs: 30000,
         });
       });

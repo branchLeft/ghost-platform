@@ -45,10 +45,10 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_PIN_TTL_MS` | no (default `3024000000`, 35 days) | How long a pin is remembered, counted from the attempt that made it. It must outlast the longest hold at the Sweego account cap (31 days, the longest UTC month, `MAX_CAP_HOLD_MS` in `sweegoUsage.ts`), so the default adds four days. A value below 31 days (`2678400000`) is refused at start-up. The shim re-offers an unacked row every `SHIM_DRAIN_LEASE_SECONDS` (30 s; `services/mailgun-shim/src/config.ts`) with no attempt cap and no maximum age, and the drain contract sets none, so this TTL is the only time bound on a held pinned message. |
 | `COLLECTOR_HEARTBEAT_URL` | yes | The estate's dead-man's-switch URL (Healthchecks.io, or the local instance standing in for it in proof). Pinged only once **every** descriptor-named host has completed a successful cycle since the last ping — never on a timer of this process's own, which would keep firing while one host is wedged. An empty poll (zero mail) counts as a success; a drain failure or a wedged host against any one target withholds that target's report and silences the whole switch until it recovers. With zero live targets (no tenant/demo descriptor currently exists), the switch withholds every ping by the same rule — deliberately: "zero hosts pages me". Suppressed while `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` consecutive deliveries have failed. |
 | `COLLECTOR_HEARTBEAT_FAILURE_THRESHOLD` | no (default `5`) | Consecutive delivery (SMTP submission) failures that suppress the heartbeat ping — a collector whose loop keeps turning over but cannot submit anything must go silent too. Resets on the next successful delivery. |
-| `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR` and `COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID`, or startup fails. With all unset, submissions and the drain loop are exactly as before. |
+| `COLLECTOR_OUTCOMES_RETURN_PATH` | no (off) | Opt-in outcome path. The envelope sender (return path) mx1 sends delivery status notifications to. Must be set together with `COLLECTOR_OUTCOMES_DSN_DIR` and `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY`, or startup fails. With all unset, submissions and the drain loop are exactly as before. |
 | `COLLECTOR_OUTCOMES_BULK_RETURN_PATH` | no (off) | A second envelope sender, used for bulk (campaign) mail only; `COLLECTOR_OUTCOMES_RETURN_PATH` then serves login (transactional) mail alone. Unset, bulk mail uses the single return path as before. Needs the other two outcome variables, and must differ from `COLLECTOR_OUTCOMES_RETURN_PATH`. Notifications for both addresses must arrive in `COLLECTOR_OUTCOMES_DSN_DIR`: the Message-ID, not the address, names the message. The mailbox for this address and any DNS it needs are set up on the mail host before this is set. |
 | `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications for that return path arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. |
-| `COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID` | yes, when the outcome path is on | The authserv-id our own receiving MTA writes in its `Authentication-Results` header, a plain host name (lower-cased on load). A notification is read only when exactly one header carries it; one with none, or another host's id only, is retired unread and never reported, so a bounce a stranger mails to the return path cannot suppress a recipient. Must be set together with `COLLECTOR_OUTCOMES_RETURN_PATH` and `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. |
+| `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY` | yes, when the outcome path is on | A secret of at least 32 characters (for example 64 hex characters from `openssl rand -hex 32`). Each outgoing Message-ID is signed with it (HMAC-SHA-256, bound to the message, generation, spool and recipient), and a notification is acted on only if the Message-ID it quotes verifies for the recipient it names. Must be set together with `COLLECTOR_OUTCOMES_RETURN_PATH` and `COLLECTOR_OUTCOMES_DSN_DIR`, or startup fails. Never logged. **Nothing provisions it yet:** a deploy step must add it to the collector's secret environment before the outcome path is switched on, and rotating it makes bounces for messages sent under the old key unreadable. |
 | `COLLECTOR_OUTCOMES_POLL_MS` | no (default `30000`) | How often the directory is read. |
 
 ## Design
@@ -67,10 +67,11 @@ recorded run.
 
 "Delivered" has to mean the receiving MTA delivered it, not that mx1 accepted
 the submission. With `COLLECTOR_OUTCOMES_RETURN_PATH`,
-`COLLECTOR_OUTCOMES_DSN_DIR` and `COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID` set (off otherwise), the collector:
+`COLLECTOR_OUTCOMES_DSN_DIR` and `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY` set (off otherwise), the collector:
 
 1. submits each message with a Message-ID that encodes the message id, its claim
-   generation and its spool (`outcomeId.ts`, under the reserved `.invalid` TLD),
+   generation and its spool, plus a MAC over those and the recipient
+   (`outcomeId.ts`, under the reserved `.invalid` TLD),
    an envelope sender of the return path, and a DSN request for success, failure
    and delay. Nothing about an in-flight message is held in memory, so a restart
    loses nothing;
@@ -81,16 +82,21 @@ the submission. With `COLLECTOR_OUTCOMES_RETURN_PATH`,
    Message-ID names, over the same authenticated connection
    (`POST /drain/outcomes`, `outcomeRunner.ts`).
 
-A notification is read only when it carries exactly one `Authentication-Results`
-header naming `COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID`, the id our own receiving
-MTA stamps. A header for any other host is skipped, a second header carrying our id
-rejects, and the check reads the top-level headers only, with the parser the ARF
-reader uses (`mailHeaders.ts`). An unstamped or forged notice is retired with the
-log reason `unauthenticated`, never reported. This is only a control if mx1
-stamps mail to the return-path mailbox and removes any such header already on
-inbound mail (RFC 8601 section 5): unproven until a real notice is seen, as for
-the ARF path (`src/arf/README.md`). It proves the notice passed through our MTA,
-not who sent it; a DSN names no signing domain to pin.
+A notification is acted on only if the original Message-ID it quotes carries a MAC
+that verifies, with `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY`, for one of the recipients the
+report names (`Original-Recipient` or `Final-Recipient`). That is what stops a
+forged bounce: anyone can mail the return path, and mx1 stamps what they send like
+any other mail, so a header check cannot tell a forgery from a genuine bounce; only a
+holder of the key can make an id that verifies. A notice quoting an unsigned id, a
+guessed, truncated or altered MAC, an id signed for another recipient, or no
+recipient at all is retired unread with the log reason `unauthenticated` and never
+reported. What remains: whoever holds a genuine id, which is the recipient or anyone who
+sees the delivered message's headers, can forge a bounce for that one message and
+that one recipient. They cannot choose another recipient, message or generation. A notice quoting an id
+sent before the key was set cannot verify, so turn the outcome path on before
+mail you want outcomes for is sent. The Authentication-Results check of the
+feedback-loop reader (`src/arf/README.md`) is not applied here: it would add
+nothing against a sender mx1 stamps, and a bounce mx1 generates itself may carry no stamp.
 
 Only `Action: delivered` with a `2.x.x` status is delivered. `relayed` and
 `expanded` hand the message to a system that will not report back, so they yield

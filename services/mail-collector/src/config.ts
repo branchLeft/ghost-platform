@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { normaliseAuthservId } from './mailHeaders.js';
+import { MIN_MAC_KEY_LENGTH } from './outcomeId.js';
 import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
 export interface CollectorConfig {
@@ -157,8 +157,8 @@ export interface CollectorConfig {
   heartbeatFailureThreshold: number;
   /**
    * Opt-in outcome path; absent unless COLLECTOR_OUTCOMES_RETURN_PATH,
-   * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID are
-   * all set (a partial set throws).
+   * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY are all
+   * set (a partial set throws).
    * Absent, submissions and the drain loop are exactly as before.
    */
   outcomes?: {
@@ -168,8 +168,8 @@ export interface CollectorConfig {
     bulkReturnPath?: string;
     /** Directory the notifications arrive in, one .eml file each. */
     dsnDir: string;
-    /** The authserv-id our own receiving MTA stamps in Authentication-Results; a notification without exactly one such header is ignored. Lower-cased. */
-    trustedAuthservId: string;
+    /** Signs each outgoing Message-ID (HMAC); a bounce is read only if its quoted id verifies. A secret: never logged. */
+    messageIdKey: string;
     pollMs: number;
   };
 }
@@ -233,25 +233,25 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
   const bulkReturnPath = env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH;
-  const authservId = env.COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID;
-  if (!returnPath && !dsnDir && !authservId) {
+  const messageIdKey = env.COLLECTOR_OUTCOMES_MESSAGE_ID_KEY;
+  if (!returnPath && !dsnDir && !messageIdKey) {
     if (bulkReturnPath) {
       throw new Error(
-        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID'
+        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY'
       );
     }
     return undefined;
   }
-  if (!returnPath || !dsnDir || !authservId) {
+  if (!returnPath || !dsnDir || !messageIdKey) {
     throw new Error(
-      'COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID must be set together'
+      'COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be set together'
     );
   }
-  let trustedAuthservId: string;
-  try {
-    trustedAuthservId = normaliseAuthservId(authservId);
-  } catch {
-    throw new Error('COLLECTOR_OUTCOMES_TRUSTED_AUTHSERV_ID must be a host name');
+  if (messageIdKey.length < MIN_MAC_KEY_LENGTH) {
+    // The value is never put in the message.
+    throw new Error(
+      `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be at least ${MIN_MAC_KEY_LENGTH} characters`
+    );
   }
   if (bulkReturnPath && bulkReturnPath.toLowerCase() === returnPath.toLowerCase()) {
     throw new Error(
@@ -262,7 +262,7 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
     returnPath,
     ...(bulkReturnPath ? { bulkReturnPath } : {}),
     dsnDir,
-    trustedAuthservId,
+    messageIdKey,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
 }

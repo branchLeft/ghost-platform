@@ -6,11 +6,16 @@
  * carry them is "no outcome", never a guess.
  * See ../README.md#outcomes-carried-back-to-the-spool.
  */
-import { parseHeaders, splitBlock, trustedAuthResults } from './mailHeaders.js';
+import { normaliseRecipient } from './outcomeId.js';
 
 export interface ParsedDsn {
   /** The Message-ID of the original message, from the returned headers. */
   originalMessageId: string;
+  /**
+   * Every recipient address the report names for that message (Original- and
+   * Final-Recipient), lower-cased. The Message-ID's MAC must verify for one.
+   */
+  recipients: string[];
   action: string;
   status: string;
   diagnostic: string | null;
@@ -40,40 +45,10 @@ function unfold(block: string): Map<string, string> {
   return fields;
 }
 
-/**
- * True only when the message carries exactly one Authentication-Results header
- * naming `trustedAuthservId` (the id our own receiving MTA stamps), and no
- * other header does. Any other header is skipped, and anything that cannot be
- * read exactly is untrusted, so a notification a stranger mailed to the return
- * path cannot pass. Reads the top-level header block only, with the same
- * linear parser the ARF reader uses (mailHeaders.ts). `trustedAuthservId` must
- * already be normalised with `normaliseAuthservId`.
- */
-export function isFromTrustedMta(raw: string, trustedAuthservId: string): boolean {
-  const { head } = splitBlock(raw.replace(/\r\n/g, '\n'));
-  if (head.includes('\0')) {
-    return false;
-  }
-  const headers = parseHeaders(head);
-  return headers !== null && trustedAuthResults(headers, trustedAuthservId) !== null;
-}
-
-export type DsnReading =
-  { ok: true; dsn: ParsedDsn } | { ok: false; reason: 'not_a_dsn' | 'unauthenticated' };
-
-/**
- * The only way the collector reads a notification: structure first, then the
- * trust gate. A forged or unstamped bounce is refused here, so it never
- * reaches `toOutcome` and can never suppress a recipient.
- */
-export function readDsn(raw: string, trustedAuthservId: string): DsnReading {
-  const dsn = parseDsn(raw);
-  if (!dsn) {
-    return { ok: false, reason: 'not_a_dsn' };
-  }
-  return isFromTrustedMta(raw, trustedAuthservId)
-    ? { ok: true, dsn }
-    : { ok: false, reason: 'unauthenticated' };
+/** The address of a `type; address` recipient field, lower-cased, or null if it is not an rfc822 one. */
+function recipientAddress(field: string | undefined): string | null {
+  const match = field === undefined ? null : /^rfc822\s*;\s*(\S+)$/i.exec(field.trim());
+  return match ? normaliseRecipient(match[1]!) : null;
 }
 
 export function parseDsn(raw: string): ParsedDsn | null {
@@ -94,6 +69,7 @@ export function parseDsn(raw: string): ParsedDsn | null {
   let action: string | undefined;
   let status: string | undefined;
   let diagnostic: string | null = null;
+  const recipients: string[] = [];
   for (const group of statusPart.split(/\r?\n\r?\n/)) {
     const fields = unfold(group);
     const a = fields.get('action');
@@ -101,6 +77,12 @@ export function parseDsn(raw: string): ParsedDsn | null {
       action = a.toLowerCase().split(/\s/)[0];
       status = fields.get('status');
       diagnostic = fields.get('diagnostic-code') ?? null;
+      for (const name of ['original-recipient', 'final-recipient']) {
+        const address = recipientAddress(fields.get(name));
+        if (address !== null) {
+          recipients.push(address);
+        }
+      }
       break;
     }
   }
@@ -112,7 +94,7 @@ export function parseDsn(raw: string): ParsedDsn | null {
   if (!idMatch) {
     return null;
   }
-  return { originalMessageId: idMatch[1]!, action, status, diagnostic };
+  return { originalMessageId: idMatch[1]!, recipients, action, status, diagnostic };
 }
 
 /**

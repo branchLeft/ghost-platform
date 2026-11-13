@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,10 +17,10 @@ import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
 import { startSmtpSink, type SmtpSink } from '../helpers/smtpSink.js';
 
 const TOKEN = 'test-drain-token';
+const KEY = randomBytes(32).toString('hex');
 
 function bounceFor(messageId: string): string {
   return [
-    'Authentication-Results: mx1.collector.example 1; spf=pass',
     'Content-Type: multipart/report; report-type=delivery-status; boundary="B"',
     '',
     '--B',
@@ -85,7 +86,7 @@ describe('outcome path, end to end through the real runtime', () => {
       secure: false,
       user: 'collector',
       pass: 'sink-secret',
-      outcomes: { returnPath: 'outcomes@collector.example' },
+      outcomes: { returnPath: 'outcomes@collector.example', messageIdKey: KEY },
     });
     const log = createLogger(() => {});
     const runtime = createCollectorRuntime({
@@ -105,7 +106,7 @@ describe('outcome path, end to end through the real runtime', () => {
           store,
           drainClient,
           log,
-          trustedAuthservId: 'mx1.collector.example',
+          messageIdKey: KEY,
         }),
         intervalMs: 30,
       },

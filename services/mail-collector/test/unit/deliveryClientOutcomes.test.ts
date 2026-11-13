@@ -1,7 +1,14 @@
+import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createDeliveryClient, type DeliveryClient } from '../../src/deliveryClient.js';
-import { decodeOutcomeMessageId } from '../../src/outcomeId.js';
+import {
+  createDeliveryClient,
+  type DeliveryClient,
+  type DeliveryClientOptions,
+} from '../../src/deliveryClient.js';
+import { decodeOutcomeMessageId, verifyOutcomeMessageId } from '../../src/outcomeId.js';
 import { startSmtpSink, type SmtpSink } from '../helpers/smtpSink.js';
+
+const KEY = randomBytes(32).toString('hex');
 
 const MESSAGE = {
   id: '4cfbf575-9efc-4508-bc4f-e0f9314e4844',
@@ -20,14 +27,16 @@ describe('deliveryClient outcomes (opt-in)', () => {
   let sink: SmtpSink;
   const clients: DeliveryClient[] = [];
 
-  function client(outcomes?: { returnPath: string; bulkReturnPath?: string }): DeliveryClient {
+  function client(
+    outcomes?: Omit<NonNullable<DeliveryClientOptions['outcomes']>, 'messageIdKey'>
+  ): DeliveryClient {
     const c = createDeliveryClient({
       host: '127.0.0.1',
       port: sink.port,
       secure: false,
       user: 'collector',
       pass: 'sink-secret',
-      outcomes,
+      outcomes: outcomes ? { ...outcomes, messageIdKey: KEY } : undefined,
     });
     clients.push(c);
     return c;
@@ -62,6 +71,21 @@ describe('deliveryClient outcomes (opt-in)', () => {
       drainCount: 2,
     });
     expect(received!.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
+  });
+
+  it('on: signs the Message-ID for the recipient it goes to, so only that bounce verifies', async () => {
+    await client({ returnPath: 'outcomes@collector.example' }).deliver(MESSAGE, 'tenant-a');
+    const [received] = await sink.waitForCount(1);
+    const id = received!.parsed.messageId ?? '';
+    expect(verifyOutcomeMessageId(id, ['reader@example.com'], KEY)).toEqual({
+      targetId: 'tenant-a',
+      id: MESSAGE.id,
+      drainCount: 2,
+    });
+    expect(verifyOutcomeMessageId(id, ['other@example.com'], KEY)).toBeNull();
+    expect(
+      verifyOutcomeMessageId(id, ['reader@example.com'], randomBytes(32).toString('hex'))
+    ).toBeNull();
   });
 
   it('on, but no spool named: submits as before rather than minting an unroutable id', async () => {
