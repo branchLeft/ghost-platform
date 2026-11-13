@@ -9,7 +9,7 @@ control plane's database. This script is the one home of that rule.
 It checks, under a root (default: this repository):
 
 1. `registers/tenant-names.json`. The guard holds an explicit list of permitted
-   entries (`PERMITTED_ENTRIES`): the six infrastructure names and tenant zero
+   entries (`PERMITTED_ENTRIES`): the seven infrastructure names and tenant zero
    (`blog`, `branchLeft/ghost-tenant-blog`), as the register at origin/main
    carries them. Every register entry, whatever its kind, must match one of them
    on name, kind and repo, and carry no other field. `kind: 'infrastructure'` is
