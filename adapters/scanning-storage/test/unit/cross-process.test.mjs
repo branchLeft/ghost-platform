@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 const require = createRequire(import.meta.url);
 const { digestBytes } = require('../../src/pdq.js');
 const { RELEASING_INFIX, sweepOrphans, ORPHAN_LOG_PREFIX } = require('../../src/quarantine.js');
+const { HoldRegistry, HOLDS_SUFFIX } = require('../../src/hold.js');
 
 const CRASH_ACTOR = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -173,25 +174,33 @@ describe('a hold landing its sidecar while a start-up sweep finds a dead release
   });
 });
 
+async function crashHold(mode) {
+  await fs.rm(path.join(quarantinePath, DIGEST));
+  const child = spawn(process.execPath, [CRASH_ACTOR, quarantinePath, bytesFile, mode], {
+    env: {},
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const { code, signal } = await new Promise((resolve) => {
+    child.on('exit', (exitCode, exitSignal) => resolve({ code: exitCode, signal: exitSignal }));
+  });
+  expect(signal, `exit code ${code}: ${stderr}`).toBe('SIGKILL');
+}
+
+async function ageAll(dir) {
+  const then = new Date(Date.now() - 60 * 60 * 1000);
+  for (const name of await fs.readdir(dir)) await fs.utimes(path.join(dir, name), then, then);
+}
+
 describe('a process killed between a hold writing its bytes and its sidecar', () => {
   it('leaves orphaned bytes that the next start-up sweep accounts for', async () => {
-    await fs.rm(path.join(quarantinePath, DIGEST));
-    const child = spawn(process.execPath, [CRASH_ACTOR, quarantinePath, bytesFile], {
-      env: {},
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-    });
-    const { code, signal } = await new Promise((resolve) => {
-      child.on('exit', (exitCode, exitSignal) => resolve({ code: exitCode, signal: exitSignal }));
-    });
-    expect(signal, `exit code ${code}: ${stderr}`).toBe('SIGKILL');
+    await crashHold('before-sidecar');
 
     expect(await fs.readdir(quarantinePath)).toEqual([DIGEST]);
-    const then = new Date(Date.now() - 60 * 60 * 1000);
-    await fs.utimes(path.join(quarantinePath, DIGEST), then, then);
+    await ageAll(quarantinePath);
 
     const lines = [];
     const removed = sweepOrphans(quarantinePath, {
@@ -203,5 +212,31 @@ describe('a process killed between a hold writing its bytes and its sidecar', ()
     expect(await fs.readdir(quarantinePath)).toEqual([]);
     expect(lines).toEqual([expect.stringContaining(ORPHAN_LOG_PREFIX)]);
     expect(lines[0]).toContain(DIGEST);
+  });
+
+  it('leaves a sidecar with only a temp file in it, which the next start-up prunes and sweeps', async () => {
+    await crashHold('inside-sidecar');
+
+    const sidecar = path.join(quarantinePath, `${DIGEST}${HOLDS_SUFFIX}`);
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual([DIGEST, `${DIGEST}${HOLDS_SUFFIX}`]);
+    expect(await fs.readdir(sidecar)).toEqual([expect.stringMatching(/^\..*\.tmp$/)]);
+    await ageAll(quarantinePath);
+    await ageAll(sidecar);
+
+    const lines = [];
+    const registry = new HoldRegistry({
+      checks: [],
+      policy: { decide: () => 'hold' },
+      quarantinePath,
+      owner: 'CrashActorStorage:/synthetic',
+      computeDigest: digestBytes,
+      orphanMinAgeMs: 1000,
+      logger: { error: (message) => lines.push(message) },
+    });
+    registry.resumeFromQuarantine(() => ({ onAllow: () => {}, onRefuse: () => {} }));
+    registry.stopAll();
+
+    expect(await fs.readdir(quarantinePath)).toEqual([]);
+    expect(lines).toEqual([expect.stringContaining(ORPHAN_LOG_PREFIX)]);
   });
 });

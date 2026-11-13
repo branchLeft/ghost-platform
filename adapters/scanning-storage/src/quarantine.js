@@ -135,14 +135,40 @@ function isRefused(quarantinePath, digest) {
   );
 }
 
+// An older release wrote the sidecar as one file. Splitting it into one entry
+// per owner renames the file to a dotfile "aside" copy first, and removes the
+// copy only once every entry has landed (see hold.js). While the copy exists
+// it is the only record of the hold, so it is a hold on `digest` exactly as a
+// sidecar is. The first capture is the digest the copy names.
+const SPLIT_ASIDE_NAME = /^\.(.+?)\.holds\.json\.[^.]+\.json$/;
+
+// True when an unfinished split's aside copy names `digest`. Fails closed: a
+// listing error other than a missing directory throws, so no caller reads it
+// as "no hold".
+function hasSplitAside(quarantinePath, digest) {
+  let names;
+  try {
+    names = fsSync.readdirSync(quarantinePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  return names.some((name) => {
+    const match = SPLIT_ASIDE_NAME.exec(name);
+    return match !== null && match[1] === digest;
+  });
+}
+
 // Fails closed like isRefused: only a missing sidecar means "no hold". Only
-// presence is read, so a sidecar nobody can parse still counts as a hold.
+// presence is read, so a sidecar nobody can parse still counts as a hold. An
+// unfinished split's aside copy counts too: a failed split (a full disk, say)
+// leaves the copy with no sidecar, or an empty one, standing, and the bytes
+// stay held until a later split completes.
 function hasHoldSidecar(quarantinePath, digest) {
-  return (
-    fsSync.statSync(path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`), {
-      throwIfNoEntry: false,
-    }) !== undefined
-  );
+  const sidecar = fsSync.statSync(path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`), {
+    throwIfNoEntry: false,
+  });
+  return sidecar !== undefined || hasSplitAside(quarantinePath, digest);
 }
 
 // Returns the verdict a refusal was recorded with, or null when the digest
@@ -397,6 +423,7 @@ function sweepOrphans(quarantinePath, { minAgeMs, now = Date.now, logger, onMove
 module.exports = {
   REFUSED_SUFFIX,
   HOLDS_SUFFIX,
+  SPLIT_ASIDE_NAME,
   ORPHAN_LOG_PREFIX,
   TEMP_LOG_PREFIX,
   TEMP_MIN_AGE_FLOOR_MS,
