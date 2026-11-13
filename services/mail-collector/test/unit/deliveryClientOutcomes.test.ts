@@ -20,7 +20,7 @@ describe('deliveryClient outcomes (opt-in)', () => {
   let sink: SmtpSink;
   const clients: DeliveryClient[] = [];
 
-  function client(outcomes?: { returnPath: string }): DeliveryClient {
+  function client(outcomes?: { returnPath: string; bulkReturnPath?: string }): DeliveryClient {
     const c = createDeliveryClient({
       host: '127.0.0.1',
       port: sink.port,
@@ -68,5 +68,42 @@ describe('deliveryClient outcomes (opt-in)', () => {
     await client({ returnPath: 'outcomes@collector.example' }).deliver(MESSAGE);
     const [received] = await sink.waitForCount(1);
     expect(received!.envelopeFrom).toBe('noreply@tenant-a.example');
+  });
+
+  describe('return path by mail class', () => {
+    const BULK = { ...MESSAGE, emailId: 'email-1' };
+    const paths = {
+      returnPath: 'login-bounces@collector.example',
+      bulkReturnPath: 'bulk-bounces@collector.example',
+    };
+
+    it('sends a bulk message from the bulk return path', async () => {
+      await client(paths).deliver(BULK, 'tenant-a');
+      const [received] = await sink.waitForCount(1);
+      expect(received!.envelopeFrom).toBe('bulk-bounces@collector.example');
+    });
+
+    it('sends a login message from the login return path even when a bulk one is set', async () => {
+      await client(paths).deliver(MESSAGE, 'tenant-a');
+      const [received] = await sink.waitForCount(1);
+      expect(received!.envelopeFrom).toBe('login-bounces@collector.example');
+    });
+
+    it('sends bulk from the single return path when no bulk one is set', async () => {
+      await client({ returnPath: paths.returnPath }).deliver(BULK, 'tenant-a');
+      const [received] = await sink.waitForCount(1);
+      expect(received!.envelopeFrom).toBe('login-bounces@collector.example');
+    });
+
+    it('keeps the correlation id and the DSN request on a bulk message', async () => {
+      await client(paths).deliver(BULK, 'tenant-a');
+      const [received] = await sink.waitForCount(1);
+      expect(decodeOutcomeMessageId(received!.parsed.messageId ?? '')).toEqual({
+        targetId: 'tenant-a',
+        id: MESSAGE.id,
+        drainCount: 2,
+      });
+      expect(received!.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
+    });
   });
 });
