@@ -23,6 +23,8 @@ export interface PersistedTenantState {
   updatedAt: string;
   /** The bump's own stable id -- round-tripped so recovery reconstructs the exact `page()` dedupe key a live crash would have used. See `BumpStateMachineOptions.bumpId`. */
   bumpId: string;
+  /** An abort was asked for and saved. Absent means none (a record written before this field existed). Recovery never lets an aborted tenant end `done`. */
+  abortRequested?: boolean;
   /** Only meaningful for `state: 'failed-unsafe'`: the reason `page()` would be (or was) called with. */
   reason?: string;
 }

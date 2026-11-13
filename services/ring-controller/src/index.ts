@@ -69,7 +69,6 @@ export {
 export type { ModelFreeEnvironment } from './modelFreeEnvironment.js';
 export { createListMembers, parseRingAssignments, RingAssignmentError } from './ringMembership.js';
 export type { EngineOf, RingAssignments } from './ringMembership.js';
-export { runRelease } from './ringController.js';
 export type {
   Health,
   Held,

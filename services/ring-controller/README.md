@@ -141,7 +141,8 @@ already drives at runtime:
   live, successful `apply()` reaches; an outcome that cannot be confirmed
   settled goes straight to `failed-unsafe`, never to `verify()`,
   `revertTraffic()` or `stopColour()`, any of which could act on a colour
-  still mid-migration.
+  still mid-migration. A saved abort on the record turns a settled, healthy
+  outcome into a revert, never `done`.
 - `verifying` / `reverting` -- revert; the process died before finding
   out whether the new colour was healthy, so the same rule as a live
   abort landing here applies.
@@ -153,7 +154,8 @@ already drives at runtime:
 - `done` -- rehydrated with no action: the bake window is still open and
   the state on disk is already correct, but with no machine reconstructed
   for it, a later `closeBakeWindow()` or `abortAfterDone()` would have
-  nothing to act on.
+  nothing to act on. A `done` whose record carries a saved abort is
+  reverted instead: nobody will watch its bake.
 - `closed`, `backup-failed`, `cancelled` -- already resting states; no
   action.
 - `failed-unsafe` -- resting only once `pageSent: true`. A record still
