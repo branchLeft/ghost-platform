@@ -86,7 +86,7 @@ Each call the sweep makes that nothing else bounds has its own limit per
 call, taken from the optional `deadlines` argument (any left out take
 `DEFAULT_RECOVERY_DEADLINES`; a limit that is not a finite number above
 zero is refused before any record is read): `revertTrafficMs`,
-`stopColourMs` and `pageMs`. A call that misses its limit is read as a
+`stopColourMs`, `verifyMs` and `pageMs`. A call that misses its limit is read as a
 throw, so one hung host costs its own record that long and no record
 after it anything. What follows depends on the call:
 
@@ -97,12 +97,16 @@ after it anything. What follows depends on the call:
   throw there, so the sweep pages the record itself, once, with the dedupe
   key `${bumpId}:${reason}`, and reports it in `failed` with `paged: true`.
   The record is left as it is, so the next restart retries the teardown.
+- `verify()` (a recovered `applying` whose migration settled): the machine
+  turns a throw into `failed-unsafe` and pages, so the record is paged by
+  its own machine and the sweep moves on.
 - `page()`: nothing can page for a page. The record stays `failed-unsafe`
   with `pageSent: false`, is reported in `failed` with `paged: false`, and
   is retried on the next restart.
 
-Not bounded here: `verify()` (reached from a recovered `applying`) and
-`persist`. A hang in either still stalls the sweep.
+Not bounded here: `persist`, which is the caller's own write to its store
+and not a call to a host. A `persist` that never settles still stalls the
+sweep and every record after it.
 
 `persistToStore` is what turns each `PersistSnapshot` into a saved
 `PersistedTenantState`. It names every field, `abortRequested` included,

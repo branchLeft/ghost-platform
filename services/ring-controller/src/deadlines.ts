@@ -124,6 +124,8 @@ export interface RecoveryDeadlines {
   readonly revertTrafficMs: number;
   /** One `stopColour()` call. */
   readonly stopColourMs: number;
+  /** One `verify()` call, reached from a recovered `applying` record. */
+  readonly verifyMs: number;
   /** One `page()` call. */
   readonly pageMs: number;
 }
@@ -131,12 +133,14 @@ export interface RecoveryDeadlines {
 export const DEFAULT_RECOVERY_DEADLINES: RecoveryDeadlines = Object.freeze({
   revertTrafficMs: 10 * 60 * 1000,
   stopColourMs: 10 * 60 * 1000,
+  verifyMs: 5 * 60 * 1000,
   pageMs: 60 * 1000,
 });
 
 const RECOVERY_DEADLINE_KEYS = Object.freeze([
   'revertTrafficMs',
   'stopColourMs',
+  'verifyMs',
   'pageMs',
 ] as const satisfies readonly (keyof RecoveryDeadlines)[]);
 

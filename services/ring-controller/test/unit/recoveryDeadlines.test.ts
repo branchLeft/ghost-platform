@@ -21,7 +21,12 @@ import { cleanupSabotageTmp, importSabotaged, type Mutation } from './helpers/so
 type Module = Pick<typeof real, 'recoverPersistedTenants' | 'createApplyLock'>;
 
 // Three different values, so a limit read from the wrong field is caught.
-const LIMITS: RecoveryDeadlines = { revertTrafficMs: 1_000, stopColourMs: 2_000, pageMs: 3_000 };
+const LIMITS: RecoveryDeadlines = {
+  revertTrafficMs: 1_000,
+  stopColourMs: 2_000,
+  pageMs: 3_000,
+  verifyMs: 4_000,
+};
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -133,6 +138,11 @@ const STOP_LIMIT: Mutation = {
   find: "withDeadline(deps.stopColour(which), limits.stopColourMs, 'stopColour()')",
   replace: 'deps.stopColour(which)',
 };
+const VERIFY_LIMIT: Mutation = {
+  file: 'recovery.ts',
+  find: "withDeadline(deps.verify(), limits.verifyMs, 'verify()')",
+  replace: 'deps.verify()',
+};
 const PAGE_LIMIT: Mutation = {
   file: 'recovery.ts',
   find: "withDeadline(deps.page(reason, dedupeKey), limits.pageMs, 'page()')",
@@ -164,6 +174,20 @@ async function hungStop(mod: Module, state: 'reverted' | 'closing') {
   const sweep = startSweep(mod, store, { 'tenant-a': a, 'tenant-b': b });
   const early = await sweep.settledAt(LIMITS.stopColourMs - 1);
   const atLimit = await sweep.settledAt(LIMITS.stopColourMs + 1);
+  return { early, atLimit, a, b, store, sweep };
+}
+
+/** A hung verify for a recovered applying record, then a failed-unsafe record still owed its page. */
+async function hungVerify(mod: Module) {
+  const store = memoryStore([
+    record('tenant-a', 'applying'),
+    record('tenant-b', 'failed-unsafe', { reason: 'earlier failure' }),
+  ]);
+  const a = tenant(store, 'tenant-a', { verify: () => never() });
+  const b = tenant(store, 'tenant-b');
+  const sweep = startSweep(mod, store, { 'tenant-a': a, 'tenant-b': b });
+  const early = await sweep.settledAt(LIMITS.verifyMs - 1);
+  const atLimit = await sweep.settledAt(LIMITS.verifyMs + 1);
   return { early, atLimit, a, b, store, sweep };
 }
 
@@ -243,6 +267,28 @@ describe('recovery -- stopColour() has a per-record limit', () => {
     expect(sabotagedRun.atLimit).toBe(false);
     expect(sabotagedRun.b.pages).toHaveLength(0);
     expect((await hungStop(real, 'reverted')).atLimit).toBe(true);
+  });
+});
+
+describe('recovery -- verify() has a per-record limit', () => {
+  it('a hung verify leaves that record failed-unsafe and paged, and the sweep moves on', async () => {
+    const { early, atLimit, a, b, store, sweep } = await hungVerify(real);
+
+    expect(early).toBe(false);
+    expect(atLimit).toBe(true);
+    expect(a.pages).toHaveLength(1);
+    expect(a.pages[0]?.reason).toBe('verify() did not answer within 4000ms');
+    expect(await store.load('tenant-a')).toMatchObject({ state: 'failed-unsafe', pageSent: true });
+    expect(b.pages).toHaveLength(1);
+    expect(sweep.result().recovered.map((r) => r.tenantId)).toEqual(['tenant-a', 'tenant-b']);
+  });
+
+  it('without the limit, a hung verify stalls every record after it', async () => {
+    const mod = await sabotaged(VERIFY_LIMIT);
+    const sabotagedRun = await hungVerify(mod);
+    expect(sabotagedRun.atLimit).toBe(false);
+    expect(sabotagedRun.b.pages).toHaveLength(0);
+    expect((await hungVerify(real)).atLimit).toBe(true);
   });
 });
 

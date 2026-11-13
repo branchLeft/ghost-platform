@@ -36,7 +36,7 @@ export interface RecoverySweepResult {
 const NO_ACTION_STATES: ReadonlySet<BumpState> = new Set(['closed', 'backup-failed', 'cancelled']);
 
 /**
- * The three calls recovery makes that nothing else bounds, each held to its
+ * The four calls recovery makes that nothing else bounds, each held to its
  * own limit per call. A call that misses its limit rejects, which the
  * machine and the sweep already treat as any other throw. Every member is
  * named, not spread, so a `deps` that is a class instance keeps its `this`.
@@ -46,7 +46,7 @@ function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): 
     backup: () => deps.backup(),
     apply: () => deps.apply(),
     awaitApplySettled: () => deps.awaitApplySettled(),
-    verify: () => deps.verify(),
+    verify: () => withDeadline(deps.verify(), limits.verifyMs, 'verify()'),
     revertTraffic: () =>
       withDeadline(deps.revertTraffic(), limits.revertTrafficMs, 'revertTraffic()'),
     stopColour: (which) =>
@@ -66,9 +66,11 @@ function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): 
  * persisted record still owing something. See README.md in this
  * directory for the recovery table this follows.
  *
- * `revertTraffic()`, `stopColour()` and `page()` each have a per-call limit
- * (`deadlines`, defaults in `DEFAULT_RECOVERY_DEADLINES`), so one hung host
- * costs its own record that long and no record after it anything.
+ * `revertTraffic()`, `stopColour()`, `verify()` and `page()` each have a
+ * per-call limit (`deadlines`, defaults in `DEFAULT_RECOVERY_DEADLINES`), so
+ * a hung call in one of them costs its own record that long and the sweep
+ * moves on. `persist` has no limit: a `persist` that never settles still
+ * stalls the sweep, and every record after it.
  */
 export async function recoverPersistedTenants(
   store: TenantStateStore,

@@ -30,11 +30,13 @@ export interface PersistedTenantState {
 }
 
 /**
- * The one place a state-machine snapshot becomes a saved record. Every field
- * is named, never spread, so a field added to `PersistSnapshot` that is not
- * copied here is a type error rather than a silent loss. `abortRequested`
- * above all: a restart honours the abort the crashed process had saved only
- * if it reaches the record.
+ * The one place a state-machine snapshot becomes a saved record. Every
+ * field is named, never spread, and the literal must satisfy
+ * `Record<keyof PersistedTenantState, unknown>`,
+ * so a field of the record left out here (`abortRequested` above all: a
+ * restart honours the abort the crashed process had saved only if it
+ * reaches the record) fails `tsc`. A field added to `PersistSnapshot` alone
+ * is not caught by that type; the tests pin `abortRequested`.
  */
 export function recordFromSnapshot(
   tenantId: string,
@@ -49,7 +51,7 @@ export function recordFromSnapshot(
     bumpId: snapshot.bumpId,
     reason: snapshot.reason,
     updatedAt,
-  };
+  } satisfies Record<keyof PersistedTenantState, unknown>;
 }
 
 /** A `BumpDependencies.persist` that saves each snapshot of one tenant's machine to `store`. */
