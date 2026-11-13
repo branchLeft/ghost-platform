@@ -103,6 +103,13 @@ describe('a seam that misbehaves', () => {
     return reason;
   }
 
+  it('is refused at the ceiling, not after the answer, when the answer never comes', async () => {
+    const verdicts: LogoVerdictSource = { getVerdict: () => new Promise<never>(() => undefined) };
+    const started = Date.now();
+    expect(await refusedWith(verdicts, 20)).toBe('UNAVAILABLE');
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it('is refused when it throws before it returns a promise', async () => {
     const verdicts: LogoVerdictSource = {
       getVerdict: () => {
