@@ -60,6 +60,7 @@ export function fakeOps(images, { world = fakeWorld(), everythingRenders = false
         world.members.add(member.email);
       },
       async listPosts() {
+        if (faultsAt('old-reads-data')) throw new Error('the post list answered 500');
         return [...world.posts.keys()].map((slug) => ({ slug }));
       },
       async me() {

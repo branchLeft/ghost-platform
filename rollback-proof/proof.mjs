@@ -7,11 +7,12 @@ import { checkContract } from './contract.mjs';
 /** Every check a record must hold, each ok, for a candidate to be accepted. */
 export const REQUIRED_CHECKS = Object.freeze([
   'new-boots',
+  'data-intact',
   'schema-contract',
   'old-boots-on-migrated',
   'session-survives',
   'sign-in',
-  'data-intact',
+  'old-reads-data',
   'publish',
   'member-create',
 ]);
@@ -19,8 +20,9 @@ export const REQUIRED_CHECKS = Object.freeze([
 /**
  * What gates a candidate: red refuses it. The new image must boot on the old
  * data and take a write, and the data must survive (a seeded post that is gone
- * is lost data, broken behaviour, not a missing way back). A candidate that is
- * broken itself is never deployed.
+ * is lost data, broken behaviour, not a missing way back). The new image reads
+ * the data, so the old image's boot never decides whether data was lost. A
+ * candidate that is broken itself is never deployed.
  */
 const GATE_CHECKS = Object.freeze(['new-boots', 'data-intact']);
 /**
@@ -33,7 +35,7 @@ export const ROLLBACK_CHECKS = Object.freeze(
 /** The only rollback route for a candidate whose way back is red. */
 export const RESTORE_ROUTE = 'restore-from-backup';
 
-const REPORT_VERSION = 1;
+const REPORT_VERSION = 2;
 const OWNER = Object.freeze({
   email: 'owner-rollback-proof@example.test',
   password: 'Xk9-rollback-proof-owner-1234',
@@ -177,8 +179,38 @@ async function migrateWithNew({ session, newImage, check, record, clock, log }) 
     return 'the new image booted on the old image data, migrated it and took a write';
   });
   record.timings.newMigrateMs = clock() - t0;
-  if (colour !== undefined) await colour.remove();
+  if (colour === undefined) return booted;
+  try {
+    if (booted) {
+      await check('data-intact', async () => {
+        await readPosts(colour, await colour.signIn(OWNER));
+        return 'the new image lists and renders the seeded post and its own';
+      });
+    }
+  } finally {
+    await colour.remove();
+  }
   return booted;
+}
+
+/**
+ * Throws unless the colour lists the seeded post and the new image's post and
+ * renders both. Control: a page that was never published must not answer, or
+ * "renders" proves nothing.
+ */
+async function readPosts(colour, cookie) {
+  const slugs = (await colour.admin(cookie).listPosts()).map((p) => p.slug);
+  for (const post of [SEED_POST, NEW_POST]) {
+    if (!slugs.includes(post.slug)) throw new Error(`post ${post.slug} is missing`);
+    const page = await colour.page(`/${post.slug}/`);
+    if (page.status !== 200 || !page.text.includes(post.marker)) {
+      throw new Error(`post ${post.slug} does not render (HTTP ${page.status})`);
+    }
+  }
+  const absent = await colour.page(`/${NEVER_PUBLISHED_SLUG}/`);
+  if (absent.status === 200) {
+    throw new Error('the never-published control page answered 200, so rendering proves nothing');
+  }
 }
 
 async function rollBack({ session, oldImage, seeded, check, record, clock, log }) {
@@ -203,24 +235,9 @@ async function rollBack({ session, oldImage, seeded, check, record, clock, log }
       cookie = await colour.signIn(OWNER);
       return 'a fresh owner sign-in succeeds';
     });
-    await check('data-intact', async () => {
-      const admin = colour.admin(seeded.cookie);
-      const slugs = (await admin.listPosts()).map((p) => p.slug);
-      for (const post of [SEED_POST, NEW_POST]) {
-        if (!slugs.includes(post.slug)) throw new Error(`post ${post.slug} is missing`);
-        const page = await colour.page(`/${post.slug}/`);
-        if (page.status !== 200 || !page.text.includes(post.marker)) {
-          throw new Error(`post ${post.slug} does not render (HTTP ${page.status})`);
-        }
-      }
-      // Control: a page that was never published must not answer, or "renders" proves nothing.
-      const absent = await colour.page(`/${NEVER_PUBLISHED_SLUG}/`);
-      if (absent.status === 200) {
-        throw new Error(
-          'the never-published control page answered 200, so rendering proves nothing'
-        );
-      }
-      return 'the seeded post and the post the new image wrote are listed and render';
+    await check('old-reads-data', async () => {
+      await readPosts(colour, seeded.cookie);
+      return 'the old image lists and renders the seeded post and the post the new image wrote';
     });
     await check('publish', async () => {
       if (cookie === undefined) throw new Error('no sign-in, so nothing can be published');
@@ -282,8 +299,10 @@ function recompute(record) {
     if (hits.length === 0) reasons.push(`required check ${name} is missing`);
     else if (hits.length > 1) reasons.push(`check ${name} is recorded ${hits.length} times`);
     else if (hits[0].ok === true) continue;
-    else if (cascaded) warn(name, hits[0].detail);
+    // A gate check is read before the cascade: an old image that did not boot
+    // never waives one, whatever the record says did not run.
     else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);
+    else if (cascaded) warn(name, hits[0].detail);
     else if (unrun)
       reasons.push(`${name} did not run although the old image booted: the record is unfinished`);
     else warn(name, hits[0].detail);

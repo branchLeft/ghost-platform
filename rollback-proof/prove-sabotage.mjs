@@ -140,6 +140,24 @@ export const CASES = [
     "Object.freeze(['new-boots'])",
   ],
   [
+    'gate: an old image that did not boot waives a gate check recorded as not run',
+    'proof.mjs',
+    '    else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);\n    else if (cascaded) warn(name, hits[0].detail);\n',
+    '    else if (cascaded) warn(name, hits[0].detail);\n    else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);\n',
+  ],
+  [
+    'gate: the new image never reads the data, so lost posts go unchecked',
+    'proof.mjs',
+    'await readPosts(colour, await colour.signIn(OWNER));',
+    'void 0;',
+  ],
+  [
+    'gate: posts the old image cannot read are refused, not warned about',
+    'proof.mjs',
+    "Object.freeze(['new-boots', 'data-intact'])",
+    "Object.freeze(['new-boots', 'data-intact', 'old-reads-data'])",
+  ],
+  [
     'half-applied: findings next to a green schema check are ignored',
     'proof.mjs',
     'record.findings.length > 0 && schemaGreen',

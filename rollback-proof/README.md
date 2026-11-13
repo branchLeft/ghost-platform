@@ -21,7 +21,7 @@ Ghost containers. It touches no host and uses no secret.
 1. Boot the old image on an empty database. It migrates to its own schema. Set
    up an owner, sign in, publish a seed post. Stop it. The database stays.
 2. Boot the new image on that database. It migrates the schema forward. Sign in
-   and publish a post of its own. Stop it.
+   and publish a post of its own, then read both posts back through it. Stop it.
 3. Read the old image's own schema module out of the old image, and compare it
    with the migrated database, using the column catalogue read before the new
    image ran as the baseline (see Schema contract).
@@ -33,26 +33,32 @@ old image against migrated data, which is the operation nobody had run.
 ## The checks
 
 Every one of these is recorded once. `new-boots` and `data-intact` are the gate: red
-refuses the candidate. The other six are the rollback test: red is a warning.
+refuses the candidate. The other seven are the rollback test: red is a warning.
 
-| Check                   | Class    | Red when                                                            |
-| ----------------------- | -------- | ------------------------------------------------------------------- |
-| `new-boots`             | gate     | the new image does not serve, or cannot take a first write          |
-| `schema-contract`       | rollback | the migrated database breaks the old image's schema (below)         |
-| `old-boots-on-migrated` | rollback | the old image does not answer 200 on the migrated database          |
-| `session-survives`      | rollback | an owner session opened before the upgrade no longer authenticates  |
-| `sign-in`               | rollback | a fresh owner sign-in fails                                         |
-| `data-intact`           | gate     | the seed post or the new image's post is missing or does not render |
-| `publish`               | rollback | a post published on the old image does not render                   |
-| `member-create`         | rollback | a member cannot be created                                          |
+| Check                   | Class    | Red when                                                                 |
+| ----------------------- | -------- | ------------------------------------------------------------------------ |
+| `new-boots`             | gate     | the new image does not serve, or cannot take a first write               |
+| `data-intact`           | gate     | through the new image, the seed post or its own is missing or not served |
+| `schema-contract`       | rollback | the migrated database breaks the old image's schema (below)              |
+| `old-boots-on-migrated` | rollback | the old image does not answer 200 on the migrated database               |
+| `session-survives`      | rollback | an owner session opened before the upgrade no longer authenticates       |
+| `sign-in`               | rollback | a fresh owner sign-in fails                                              |
+| `old-reads-data`        | rollback | through the old image, either post is missing or does not render         |
+| `publish`               | rollback | a post published on the old image does not render                        |
+| `member-create`         | rollback | a member cannot be created                                               |
 
 `data-intact` is a gate because lost data after an upgrade is broken behaviour,
-not a missing way back. It carries its own control: a page that was never
-published must not answer 200, or "renders" would prove nothing. A check that
-did not run is
-recorded red with the detail `not run`. That is a warning only when the old
-image did not boot on the migrated data (the checks after it cannot run). Any
-other `not run`, a missing, repeated or unknown check, a record for another
+not a missing way back. It reads through the new image, so whether data was lost
+never depends on the old image booting. The same read through the old image is
+`old-reads-data`, a rollback check: posts the data still holds but the old image
+cannot read are a warning under the forward-only ruling. Both reads carry a
+control: a page that was never published must not answer 200, or "renders" would
+prove nothing.
+
+A check that did not run is recorded red with the detail `not run`. That is a
+warning only for a rollback check after the old image's boot, when the old
+image did not boot on the migrated data. A gate check is never waived that way.
+Any other `not run`, a missing, repeated or unknown check, a record for another
 pair, and a run that ended in an error are refusals: they mean the record is
 half-finished, and a half-finished record is never read as an acceptance.
 
@@ -93,10 +99,11 @@ Exit 2 refuses it. Exit 1 is an error (bad arguments, an unreadable record, a
 run that did not finish). A caller must treat every non-zero exit as a refusal.
 `run` needs Docker and writes the record; `verify` is what a gate calls on a
 stored record. It recomputes the verdict and the warnings from the checks and
-never trusts the record's own `ok`. It refuses another pair's record, a red
-`new-boots`, a missing, repeated or unknown check, an unfinished or errored
-run, schema findings next to a green `schema-contract`, and a record that warns
-without naming the rollback route.
+never trusts the record's own `ok`. It refuses a record of another version
+(version 2 is the one where `data-intact` reads through the new image), another
+pair's record, a red or unrun gate check, a missing, repeated or unknown check,
+an unfinished or errored run, schema findings next to a green `schema-contract`,
+and a record that warns without naming the rollback route.
 
 A warned record carries `warnings` (each with its check, its detail and the
 route `restore-from-backup`) and `rollbackRoute`. `run` prints the warning as
@@ -134,8 +141,9 @@ admin surface over shared posts and members. `prove-sabotage.mjs` breaks each
 control in a scratch copy (a finding ignored, a failed check recorded green, the
 new image swapped for the old one so nothing is migrated, the verdict not
 compared with the pair, a warning that does not name the restore route, a
-half-finished record read as accepted, a broken new image only warned about,
-and so on) and requires the tests to go red; the un-broken copy must be green
+half-finished record read as accepted, a broken new image only warned about, a
+gate check waived because the old image did not boot, lost posts read only
+through the old image, and so on) and requires the tests to go red; the un-broken copy must be green
 first.
 
 ## Not proven here
