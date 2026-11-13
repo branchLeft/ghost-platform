@@ -10,11 +10,16 @@ verdict question. There are three outcomes:
   This is the demo, dev and test path, and it is explicit.
 - `storage__<feature>__verdictSource=production` selects the production
   client (`production-verdict-client.md`) over a transport that code passes as
-  the second argument, `{ transport, logger }`. The entry file passes none
-  yet, so naming `production` there is the third outcome below: no source,
-  every upload refused. Budgets are `verdictConnectTimeoutMs` and
-  `verdictTotalTimeoutMs`; a value set but not a positive number is also no
-  source, with the cause in the result's `configError`.
+  the second argument, `{ transport, logger }`. The entry file passes the
+  local socket transport (`verdict-socket.md`) at
+  `storage__<feature>__verdictSocketPath`, which must be an absolute path.
+  With no path, or any other value, the entry file passes no transport, and
+  naming `production` is the third outcome below: no source, every upload
+  refused. Nothing guesses a default path. Budgets are
+  `verdictConnectTimeoutMs` and `verdictTotalTimeoutMs`; a value set but not
+  a positive number is also no source, with the cause in the result's
+  `configError`. A path where nothing listens is not a configuration error:
+  it is an unreachable channel, so uploads are accepted and held.
 - Anything else, including unset, selects no source at all. The decorator
   then refuses every new upload with a typed 503 (it never seals a digest,
   never writes to quarantine, and never reaches the wrapped adapter), and
