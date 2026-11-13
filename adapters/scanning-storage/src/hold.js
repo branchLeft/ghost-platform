@@ -150,6 +150,8 @@ class HoldRegistry {
     orphanMinAgeMs,
     orphanSweepIntervalMs,
     now = Date.now,
+    onBeforeBytesRelease,
+    onBytesMovedAside,
     logger = console,
   }) {
     // Without an owner, a registry resuming after a restart would pick up
@@ -181,6 +183,10 @@ class HoldRegistry {
       DEFAULT_ORPHAN_SWEEP_INTERVAL_MS
     );
     this.now = now;
+    // Test seams for a release: before the bytes are moved aside, and with
+    // them moved aside.
+    this.onBeforeBytesRelease = onBeforeBytesRelease;
+    this.onBytesMovedAside = onBytesMovedAside;
     this.orphanSweepTimer = null;
     this.logger = logger;
     // digest -> { holds: [{targetPath, onAllow, onRefuse}], timer, intervalMs, failures }
@@ -532,9 +538,9 @@ class HoldRegistry {
   // Drops this registry's entry from the sidecar. Only when no other owner
   // is still waiting on the digest are the sidecar and (for a promotion)
   // the bytes removed -- another feature's registry re-reads those bytes
-  // on its own next retry. Bytes a refusal record names are never removed,
-  // even by another process (releaseBytes). Otherwise best-effort: a
-  // leftover file here is untidy, never unsafe.
+  // on its own next retry. Bytes a refusal record names, or that a sidecar
+  // written by another process names, are never removed (releaseBytes).
+  // Otherwise best-effort: a leftover file here is untidy, never unsafe.
   #release(digest, { keepBytes }) {
     const file = sidecarPath(this.quarantinePath, digest);
     try {
@@ -545,8 +551,18 @@ class HoldRegistry {
         writeFileAtomicSync(file, JSON.stringify(sidecar));
         return;
       }
-      if (!keepBytes) releaseBytes(this.quarantinePath, digest);
+      // This registry's own sidecar goes first, so that any sidecar present
+      // while the bytes are released is another process's hold, and
+      // keepIfHeld lets it keep them. Leaving it for last would let that
+      // hold's sidecar land after the check and be removed with ours.
       fsSync.rmSync(file, { force: true });
+      if (!keepBytes) {
+        if (this.onBeforeBytesRelease) this.onBeforeBytesRelease();
+        releaseBytes(this.quarantinePath, digest, {
+          keepIfHeld: true,
+          onMovedAside: this.onBytesMovedAside,
+        });
+      }
     } catch (err) {
       this.logger.error(`ScanningStorageAdapter: quarantine cleanup failed for ${digest}`, err);
     }
