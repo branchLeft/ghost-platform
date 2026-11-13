@@ -31,6 +31,7 @@ export const TENANT_NAME_REGISTER: readonly RegisteredName[] = [
   { name: 'monitoring', kind: 'infrastructure' },
   { name: 'nextcloud1', kind: 'infrastructure' },
   { name: 'mail-spool', kind: 'infrastructure' },
+  { name: 'publicpress-website', kind: 'infrastructure' },
   { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },
 ];
 // END GENERATED FROM registers/tenant-names.json

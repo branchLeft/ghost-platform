@@ -21,6 +21,7 @@ export const PERMITTED_ENTRIES = Object.freeze(
     { name: 'monitoring', kind: 'infrastructure' },
     { name: 'nextcloud1', kind: 'infrastructure' },
     { name: 'mail-spool', kind: 'infrastructure' },
+    { name: 'publicpress-website', kind: 'infrastructure' },
     { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },
   ].map((entry) => Object.freeze(entry))
 );
