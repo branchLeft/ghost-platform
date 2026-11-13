@@ -12,6 +12,7 @@ on:
     branches: [main]
     paths:
       - render-core/src/**/*.ts
+      - render-core/src/payments-origins.json
       - render-core/test/golden/mail-spool-compose.demo1.yml
       - render-core/package.json
       - render-core/pnpm-lock.yaml
@@ -30,6 +31,7 @@ on:
     branches: [main]
     paths:
       - render-core/src/**/*.ts
+      - render-core/src/payments-origins.json
       - render-core/test/golden/mail-spool-compose.demo1.yml
       - render-core/package.json
       - render-core/pnpm-lock.yaml
