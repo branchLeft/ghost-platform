@@ -63,7 +63,11 @@ old image writes on a path no smoke step takes (a bulk send is the measured
 case: the old image writes `email_batches.provider_id`, a later release renames
 it). So the old image's own schema module is read out of the old image and
 compared with the migrated database's information schema, with the catalogue
-read after the old image seeded as the baseline for "required". Findings:
+read after the old image seeded as the baseline for "required". Tables the
+image lists in `IN_DEVELOPMENT_TABLES` (Ghost 6.76.0 and later, in
+`in-development.js`) are left out: production never creates them, so their
+absence is not a break. An older image has no such file and nothing is left
+out. Findings:
 
 - `missing-table`, `missing-column`: the old image uses what is gone.
 - `column-now-required`: a column the old image could omit became not null with

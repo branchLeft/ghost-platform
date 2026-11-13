@@ -1051,11 +1051,14 @@ def main(argv: Sequence[str] | None = None, *, hooks: Hooks | None = None,
     if not tenants:
         print(f"restore_drill: {args.tenants_file} names no tenant", file=sys.stderr)
         return _refuse(args, environ=environ, hooks=hooks, reason="no_tenants")
+    lock = None
     try:
         config.flag_root.mkdir(mode=0o755, parents=True, exist_ok=True)
-        lock = open(config.flag_root / "drill.lock", "w")  # noqa: SIM115 -- held for the whole run
+        lock = open(config.flag_root / "drill.lock", "w")  # noqa: SIM115 -- closed by `with lock` once held, or below if refused
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
+        if lock is not None:
+            lock.close()
         print(f"restore_drill: another drill run holds the lock, or it cannot be taken: {exc}", file=sys.stderr)
         return _refuse(args, environ=environ, hooks=hooks, reason="lock")
     previous = signal.signal(signal.SIGTERM, _on_sigterm)
