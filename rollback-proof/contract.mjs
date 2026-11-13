@@ -6,6 +6,20 @@
 // a code path no boot check reaches, so the comparison is done on the schema
 // itself rather than on whatever the smoke set happens to exercise.
 
+/** What the old image prints just before the schema JSON; Ghost's own log lines may come first. */
+export const SCHEMA_MARKER = '\n@@OLD-IMAGE-SCHEMA@@';
+
+/** The `{ tables, inDevelopment }` the old image printed, after any log lines before the marker. */
+export function parseOldSchemaOutput(out) {
+  const at = out.lastIndexOf(SCHEMA_MARKER);
+  if (at === -1) throw new Error('the old image printed no schema; output starts: ' + out.slice(0, 200));
+  const parsed = JSON.parse(out.slice(at + SCHEMA_MARKER.length));
+  if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.inDevelopment)) {
+    throw new Error('the old image schema output lacks an inDevelopment list');
+  }
+  return parsed;
+}
+
 /** Ghost's schema keys that are table metadata, not columns. */
 const isMetaKey = (key) => key.startsWith('@@');
 

@@ -73,6 +73,12 @@ export const CASES = [
     '',
   ],
   [
+    'contract: the old image output is parsed from its start, not after the marker',
+    'contract.mjs',
+    'out.slice(at + SCHEMA_MARKER.length)',
+    'out',
+  ],
+  [
     'proof: the old image in-development list is not passed to the contract',
     'proof.mjs',
     '          await session.readLiveColumns(),\n          inDevelopment\n',
