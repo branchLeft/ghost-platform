@@ -34,41 +34,43 @@ const VALUE = `${quoted('"')}|${quoted("'")}|"[^"]*"|'[^']*'|[^\\s,;]+`;
 /** Auth schemes that stand before the credential in an Authorization header. */
 const AUTH_SCHEME = '(?:bearer|basic|token|digest|negotiate|apikey|bot|hmac|oauth)';
 
+/** The characters that end a line: an Authorization value never runs across one. */
+const LINE_BREAK = '\\r\\n\\u2028\\u2029\\u0085';
 /**
- * Where the next scheme of a multi-scheme Authorization header starts: a comma, then a known
- * scheme word and a space. Any other comma is part of the credential.
+ * What follows an Authorization header name, whatever the scheme: every character to the end of
+ * the line, so a comma, semicolon, quote, brace, field name or second scheme inside it is part of
+ * the secret and none of them ends it. (A credential is never read word by word: an unknown scheme
+ * word, an odd space or an empty first credential cannot hide a later one.)
  */
-const NEXT_SCHEME = `,[ \\t]*${AUTH_SCHEME}[ \\t]`;
-/**
- * One Authorization credential: every character up to the end of its run (see `unit`), stopping
- * only before a glued secret field name or the next scheme. A comma, semicolon, quote or brace is
- * part of the secret, so none of them ends it.
- */
-const credential = (unit: string): string => `(?:(?!${NEXT_FIELD})(?!${NEXT_SCHEME})${unit})+`;
-/** An unquoted header value: the credential ends at whitespace. */
-const BARE_CREDENTIAL = credential('\\S');
-/** A credential inside a quoted value: it ends at whitespace or the closing quote, and holds escapes. */
-const quotedCredential = (q: string): string => credential(`[^\\s\\\\${q}]|\\\\\\S`);
-/** The further `, Scheme credential` segments of a multi-scheme header. */
-const tailSegments = (value: string): string => `(?:${NEXT_SCHEME}+${value})*`;
+const BARE_VALUE = `[^${LINE_BREAK}]+`;
+/** The same inside quotes: to the closing quote or the end of the line, escapes kept. */
+const quotedValue = (q: string): string =>
+  `(?:[^\\\\${q}${LINE_BREAK}]|\\\\[^${LINE_BREAK}]|\\\\)+`;
 
 /**
- * Redacts the credential of an Authorization header or key: keeps the scheme word, drops the
- * credential after it, and does the same for each further scheme the header names.
+ * Redacts the value of an Authorization or Proxy-Authorization header or key. A known scheme word
+ * (and the whitespace after it, of any Unicode kind) stays so the reader can see what failed;
+ * nothing after it does, and nothing is kept when the first word is not a known scheme.
  */
 function authorizationRule(opening: string, value: string): Rule {
   const rule = new RegExp(
-    `\\b(authorization["']?\\s*[=:]\\s*${opening})(${AUTH_SCHEME}[ \\t]+)?${value}(${tailSegments(value)})`,
+    `\\b(authorization["']?\\s*[=:]\\s*${opening})(?:(${AUTH_SCHEME})([^\\S${LINE_BREAK}]+))?${value}`,
     'gi'
   );
-  const segment = new RegExp(`(${NEXT_SCHEME}+)${value}`, 'gi');
   return (text) =>
     text.replace(
       rule,
-      (_all, head: string, scheme: string | undefined, tail: string) =>
-        `${head}${scheme ?? ''}${REDACTED}${tail.replace(segment, `$1${REDACTED}`)}`
+      (_all, head: string, scheme: string | undefined, gap: string | undefined) =>
+        `${head}${scheme === undefined ? '' : scheme + (gap ?? '')}${REDACTED}`
     );
 }
+const AUTHORIZATION_RULES: readonly Rule[] = [
+  // Not at a quote, and not at whitespace either: the whitespace before the value can give a
+  // character back, which would start an unquoted value at the space before an opening quote.
+  authorizationRule('(?![\\s"\'])', BARE_VALUE),
+  authorizationRule('"', quotedValue('"')),
+  authorizationRule("'", quotedValue("'")),
+];
 
 /** Token shapes with a fixed prefix; a JWT opens with "eyJ" and is checked by hand below. */
 const TOKEN_SHAPE =
@@ -137,13 +139,9 @@ const RULES: readonly Rule[] = [
   // A URL password. The scheme is looked for backwards from the "://", so a long run of dotted
   // words is not rescanned from each word start.
   [/(?<=\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]*@/gi, `${REDACTED}@`],
-  // An Authorization header or JSON key: keep the scheme word, drop the credential after it.
-  // The credential stops before a glued secret field name, which the field rules then handle.
-  // The credential is the whole value up to whitespace (or the closing quote of a quoted value):
-  // a comma, semicolon, quote or brace inside it is part of the secret.
-  authorizationRule('(?!["\'])', BARE_CREDENTIAL),
-  authorizationRule('"', quotedCredential('"')),
-  authorizationRule("'", quotedCredential("'")),
+  // An Authorization or Proxy-Authorization header or JSON key: keep a known scheme word, drop
+  // the whole value after it (to the end of the line or the closing quote).
+  ...AUTHORIZATION_RULES,
   [/\b(bearer|basic)\s+[\w.~+/=-]{8,}/gi, `$1 ${REDACTED}`],
   // The original field rule, unchanged, runs before the wider rules below so that nothing it
   // removed can be left readable by them: a new rule must never read a glued field name or a
