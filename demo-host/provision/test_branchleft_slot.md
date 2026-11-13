@@ -95,3 +95,27 @@ point inside the volume reports another device, so the reset must refuse
 and leave its contents alone. The test fakes `st_dev + 1` for that one
 descriptor, since a real mount needs root. `sabotage_branchleft_slot.py`
 disables the check in a scratch copy: the suite must go red, then green.
+
+## UnitIsStoppedTests
+
+`RealSlotOps.unit_is_stopped` is the whole of the reset's tolerance ruling: a
+colour unit counts as stopped only when it is not loaded (`LoadState=not-found`)
+or already inactive (`ActiveState=inactive`). `subprocess.run` is patched, so
+each test feeds it one `systemctl show` output. Not-found alone and inactive
+alone each get a test, so dropping either branch turns one red. Every other
+active state, every other load state, a property that does not come back, and
+output with no properties at all must read as not stopped. A `systemctl show`
+that fails must raise: the double raises only when the call asked for
+`check=True`, so dropping that argument is caught.
+
+## ResetOfUnitsNotStoppedTests
+
+Drives `perform` for a reset whose `systemctl stop` fails, with the real
+`unit_is_stopped` reading a patched `systemctl show`. The tolerated cases (not
+loaded, already inactive) must end with the slot emptied. Every other state, a
+missing property, a failing `systemctl show`, one colour tolerated and the other
+stuck, and any stop error that is not a failed exit (a missing binary, a
+permission error, a timeout) must raise with nothing wiped, not even the read of
+the content volume name. `sabotage_branchleft_slot.py` loosens each of these in a
+scratch copy and requires the suite red against a baseline run of the untouched
+copy, then green.

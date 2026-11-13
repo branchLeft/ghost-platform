@@ -30,3 +30,20 @@ and `verb` each arrive here already validated against their own closed set
 (`literals.ts`) and are each pushed as their own argv element, so the
 sudoers boundary and this process's own argv agree on where one argument
 ends and the next begins.
+
+## stderr on one line
+
+A failed run rejects with a `WrapperError`. Its `message` is the head line only,
+`slot wrapper failed: ` and the first line of Node's own `err.message` (the
+`Command failed: ...` line), cut at the first CR, LF, U+0085, U+2028 or U+2029
+and with any other control character escaped. That message can reach an HTTP
+body (the colour swap's 503 carries it), so it never holds the child's stderr.
+
+The stderr stays on `WrapperError.stderr`. `WrapperError.logMessage` is the
+message, then ` stderr: ` and the stderr from `stderrOneLine`, and
+`errorLogText(err)` is what the broker's log lines print for a caught error. A
+grep of the log finds the wrapper's reason on the same line as the failure.
+
+`stderrOneLine` trims the stderr, then writes every C0 control character, DEL,
+U+0085, U+2028 and U+2029 as a visible escape: `\r`, `\n` and `\t` by name,
+the rest as `\uXXXX`.
