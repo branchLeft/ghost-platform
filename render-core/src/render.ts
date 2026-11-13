@@ -18,7 +18,13 @@ import type { TenantStackDescriptor } from './descriptor.js';
 import { renderEdgeSiteBlock, THEME_CSP_UNAVAILABLE, type ThemeCsp } from './edge.js';
 import { tenantEnvironment, SECRET_ENV_KEYS } from './environment.js';
 import { renderIdentity } from './identity.js';
-import { imageEnvPath, secretsEnvPath, stackName, validateSlugAvailability } from './naming.js';
+import {
+  imageEnvPath,
+  secretsEnvPath,
+  stackName,
+  validateSlugAvailability,
+  verdictVolumeName,
+} from './naming.js';
 import { uploadLimits } from './runtime.js';
 import { renderSettings } from './settings.js';
 import { mailSpoolNetworkName } from './spool.js';
@@ -228,6 +234,8 @@ export function render(
     caps: descriptor.caps,
     dataMount,
     mailNetwork: descriptor.mail.enabled ? mailSpoolNetworkName(descriptor.uid) : null,
+    verdictVolume:
+      descriptor.safety.verdictSource === 'production' ? verdictVolumeName(descriptor.slug) : null,
     ...(options.activeColour === undefined ? {} : { activeColour: options.activeColour }),
   });
   const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp);

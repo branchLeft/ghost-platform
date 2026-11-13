@@ -220,7 +220,7 @@ const CODE_INJECTION_GRANTED_KEYS = ['kind', 'by', 'reason', 'until'] as const;
 const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
-const SAFETY_KEYS = ['near', 'exact'] as const;
+const SAFETY_KEYS = ['near', 'exact', 'verdictSource'] as const;
 const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
 const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
@@ -487,6 +487,7 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
   assertNoUnknownKeys(descriptor.safety, SAFETY_KEYS, 'safety');
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
+  assertVerdictSource(descriptor.safety);
 
   // Presence of all three, not just their type: a `breakGlass.kind` of
   // "enabled" missing `tenant` (say) fails here with a named error, before
@@ -1076,13 +1077,44 @@ export function servedHostnameOf(
   return normalizeDomain(fqdn);
 }
 
-/** Both flags are on for every tenant today — see SafetySpec's own doc comment. */
+const VERDICT_SOURCE_KINDS: readonly string[] = ['none', 'production'];
+
+/**
+ * `safety.verdictSource` is optional; when present it is exactly one of the
+ * two literals. Anything else (a different case, padding, the adapter's
+ * test-only fake, a boolean) is refused rather than read as either.
+ */
+function assertVerdictSource(safety: Record<string, unknown>): void {
+  if (!('verdictSource' in safety)) return;
+  const value = safety.verdictSource;
+  if (typeof value !== 'string' || !VERDICT_SOURCE_KINDS.includes(value)) {
+    throw new FieldValidationError(
+      'safety.verdictSource',
+      `safety.verdictSource must be "none" or "production" when given, got ${JSON.stringify(value)}.`
+    );
+  }
+}
+
+/**
+ * Both flags are on for every tenant today — see SafetySpec's own doc
+ * comment. A demo may not name the production verdict source: its upload
+ * route stays refusing until the demo's own go-live gate reads a real
+ * source (environment.md#verdict-source).
+ */
 function checkSafety(descriptor: TenantStackDescriptor): void {
   if (!descriptor.safety.near || !descriptor.safety.exact) {
     throw new FieldValidationError(
       'safety',
       `safety.near and safety.exact must both be true, got near=${descriptor.safety.near} ` +
         `exact=${descriptor.safety.exact}.`
+    );
+  }
+  const verdictSource = descriptor.safety.verdictSource;
+  if (descriptor.kind === 'demo' && verdictSource === 'production') {
+    throw new FieldValidationError(
+      'safety.verdictSource',
+      'safety.verdictSource "production" is refused for a demo: a demo keeps refusing uploads ' +
+        'until its go-live gate reads a real verdict source.'
     );
   }
 }

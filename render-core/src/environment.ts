@@ -102,6 +102,32 @@ export const METRICS_MOUNT_PATH = '/var/lib/ghost/metrics';
  * See environment.md#scanner-metrics-export. */
 export const METRICS_TEXTFILE_PATH = `${METRICS_MOUNT_PATH}/scanner.prom`;
 
+/** The directory a slot's verdict volume is mounted at, read-only, in both
+ * colours, when its descriptor names the production verdict source.
+ * `compose.ts` mounts it; the socket below sits in it. */
+export const VERDICT_MOUNT_PATH = '/var/lib/ghost/verdict';
+
+/** The local verdict socket the scanning adapter dials for
+ * `verdictSource=production`. See environment.md#verdict-source. */
+export const VERDICT_SOCKET_PATH = `${VERDICT_MOUNT_PATH}/verdict.sock`;
+
+/**
+ * The verdict source keys for all three storage features: the production
+ * source and its socket when the descriptor names `production`, and nothing
+ * at all otherwise, so the adapter has no source and refuses every upload.
+ * Never the adapter's in-process fake. See environment.md#verdict-source.
+ */
+function verdictEnvironment(safety: SafetySpec): Record<string, string | number | boolean> {
+  const env: Record<string, string | number | boolean> = {};
+  if (safety.verdictSource === 'production') {
+    for (const feature of STORAGE_FEATURES) {
+      env[`storage__${feature}__verdictSource`] = 'production';
+      env[`storage__${feature}__verdictSocketPath`] = VERDICT_SOCKET_PATH;
+    }
+  }
+  return env;
+}
+
 /**
  * The image's fail-closed boot guard refuses this unset for local storage;
  * a demo is its documented escape hatch. See environment.md#local-storage-boot-guard.
@@ -193,10 +219,10 @@ function mediaEnvironment(
         // same guard refuses a decorator wrapping a `Local*Storage` value
         // too — see that constant's own comment.
         env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
-        // No `verdictSource` is rendered, for a demo or a tenant, on
-        // purpose: the decorator then has no verdict source and refuses
-        // every upload until a real one is wired. A demo must not name the
-        // in-process fake here. See environment.md#verdict-source.
+        // No `verdictSource` is rendered for a demo: validate() refuses a
+        // demo that names one, so the decorator has no source and refuses
+        // every upload. A demo must never name the in-process fake. See
+        // environment.md#verdict-source.
         env[`storage__${feature}__wraps`] = LOCAL_WRAPPED_ADAPTER[feature];
         env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
       } else {
@@ -207,6 +233,9 @@ function mediaEnvironment(
       }
     }
     env[ALLOW_LOCAL_STORAGE_ENV_VAR] = true;
+    if (scanningRequired) {
+      Object.assign(env, verdictEnvironment(safety));
+    }
     // Nothing here names an env var for `resize` / `srcsets` — LLD-1 §03b's
     // `media` row and LLD-7 both place responsive-image generation behind
     // the storage adapter itself (`handleImageSizes` reads the original
@@ -252,6 +281,9 @@ function mediaEnvironment(
       env[`storage__${feature}__multipartUploadThresholdBytes`] = MULTIPART_UPLOAD_THRESHOLD_BYTES;
       env[`storage__${feature}__multipartChunkSizeBytes`] = MULTIPART_CHUNK_SIZE_BYTES;
     }
+  }
+  if (scanningRequired) {
+    Object.assign(env, verdictEnvironment(safety));
   }
   return env;
 }

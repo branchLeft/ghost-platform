@@ -183,3 +183,12 @@ export function adaptersVolumeName(slug: Slug): string {
 export function metricsVolumeName(slug: Slug): string {
   return `ghost-${slug}-metrics`;
 }
+
+/**
+ * The directory holding a slot's local verdict socket. Its own volume per
+ * slot, never shared: a shared directory would let one slot ask, or answer,
+ * through another's channel. See compose.md#the-verdict-volume.
+ */
+export function verdictVolumeName(slug: Slug): string {
+  return `ghost-${slug}-verdict`;
+}
