@@ -17,6 +17,7 @@ import tempfile
 import unittest
 
 import extract_tenant_binlog
+import percona_pin
 import percona_snapshot_probe as psp
 import snapshot_probe as sp
 
@@ -578,12 +579,14 @@ class LockSamplerTests(unittest.TestCase):
 
 
 class ImagePinTests(unittest.TestCase):
-    def test_the_wrapper_pins_one_percona_digest(self) -> None:
-        self.assertRegex(psp.pinned_percona(_WRAPPER_TEXT), r"^percona/percona-server@sha256:[0-9a-f]{64}$")
+    def test_the_wrapper_reads_its_percona_digest_from_the_mirror_list(self) -> None:
+        self.assertNotRegex(_WRAPPER_TEXT, r"sha256:[0-9a-f]{64}")
+        self.assertIn("percona_pin.py index", _WRAPPER_TEXT)
 
     def test_that_digest_is_on_the_image_mirror_list(self) -> None:
-        digest = psp.pinned_percona(_WRAPPER_TEXT).split("@", 1)[1]
+        digest = percona_pin.digest_for(_IMAGES["images"], "index")
         mirrored = {image["digest"] for image in _IMAGES["images"] if image["name"] == "percona-server"}
+        self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
         self.assertIn(digest, mirrored)
 
     def test_two_digests_in_the_wrapper_would_be_refused(self) -> None:

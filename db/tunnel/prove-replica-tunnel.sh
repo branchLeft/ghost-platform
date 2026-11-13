@@ -11,7 +11,9 @@ CLIENT_DIR="$SHARED_INFRA_DIR/hetzner/provision"
 [[ -f "$CLIENT_DIR/45-install-db-tunnel.sh" ]] || { echo "no db1 installer under $CLIENT_DIR" >&2; exit 2; }
 
 SOURCE_IMAGE="${SOURCE_IMAGE:-mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b}"
-REPLICA_IMAGE="${REPLICA_IMAGE:-percona/percona-server@sha256:a4ba7d1afd325f40bc6d65b6455fb4f15388638dfa39e3b85f9755755fd9ec2d}"
+# The Percona index digest from the image mirror list (percona_pin.py); no literal here.
+PERCONA_INDEX="$(python3 "$REPO_ROOT/db/provision/percona_pin.py" index)"
+REPLICA_IMAGE="${REPLICA_IMAGE:-percona/percona-server@$PERCONA_INDEX}"
 EXPORTER_IMAGE="${EXPORTER_IMAGE:-prom/mysqld-exporter:v0.20.0@sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e}"
 LAB_IMAGE="branchleft-tunnel-lab:proof"
 P="tunnelproof"
