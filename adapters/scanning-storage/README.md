@@ -371,8 +371,10 @@ with the record and the bytes. A crash between write record and ensure
 bytes leaves the digest refused, and its next refusal rewrites the bytes.
 A refusal cannot leave bytes with no record. A crash between move aside
 and finish leaves an aside copy. Each adapter sweeps them at start-up:
-restored if the digest is refused, deleted otherwise. That is safe against
-a live releaser for the same reason finish is. A record that cannot be read
+restored if the digest is refused or a hold sidecar names it, deleted
+otherwise. A hold that lands its sidecar after the sweep looked puts the
+bytes back itself, since it confirms them after the sidecar write. That is
+safe against a live releaser for the same reason finish is. A record that cannot be read
 for any reason but absence counts as present: a promotion fails (and is
 retried, then stuck), a release puts the bytes back, and a sweep leaves the
 copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as

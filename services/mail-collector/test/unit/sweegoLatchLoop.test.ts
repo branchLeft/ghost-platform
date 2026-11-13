@@ -130,7 +130,7 @@ describe('the allowance latch in the collector loop', () => {
     expect(usage.allowanceReached('tenant-a')).toBe(true);
   });
 
-  it('leaves login mail unaffected by the latch: it still goes to sweego, never through the estate throttle', async () => {
+  it('moves login mail with the latch: a latched tenant sign-in links go to mx1 through the estate throttle', async () => {
     const { shim, baseUrl } = await newShim();
     const mx1 = fakeClient();
     const sweego = fakeClient();
@@ -142,9 +142,9 @@ describe('the allowance latch in the collector loop', () => {
     shim.enqueue(LOGIN('login-2'));
     const { estateTaken } = run({ targets: [tenant(baseUrl, 'tenant-a', 1)], usage, mx1, sweego });
     await until(() => ackedIn(shim).length === 3, 'all acked');
-    expect(sweego.calls.sort()).toEqual(['login-1', 'login-2']);
-    expect(mx1.calls).toEqual(['news-1']);
-    expect(estateTaken()).toBe(1);
+    expect(sweego.calls).toEqual([]);
+    expect(mx1.calls.sort()).toEqual(['login-1', 'login-2', 'news-1']);
+    expect(estateTaken()).toBe(3);
   });
 
   it('counts login mail that sweego took, so the plan total stays true', async () => {

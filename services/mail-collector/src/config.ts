@@ -115,8 +115,14 @@ export interface CollectorConfig {
      * and every message goes through mx1.
      */
     accountCap?: number;
+    /** Messages per UTC month at which every tenant's newsletters move to mx1 while sign-in links stay. Strictly below `accountCap`. Unset, there is no separate threshold. */
+    newsletterCap?: number;
     /** File the monthly counters are kept in, on a volume that outlives the process. Unset, Sweego is treated as not configured too. */
     usageStatePath?: string;
+    /** File the suspension latch is kept in. Defaults to a file beside `usageStatePath`. */
+    suspensionStatePath?: string;
+    /** A file the owner creates to switch Sweego off for as long as it exists. Defaults to a file beside `suspensionStatePath`. */
+    suspendFilePath?: string;
   };
 
   /** Directory the per-message target pins are kept in, on a volume that outlives the process. Unset, a restart forgets them. */
@@ -154,8 +160,10 @@ export interface CollectorConfig {
    * Absent, submissions and the drain loop are exactly as before.
    */
   outcomes?: {
-    /** Envelope sender mx1 returns delivery status notifications to. */
+    /** Envelope sender mx1 returns delivery status notifications to: login mail's, and bulk mail's too unless `bulkReturnPath` is set. */
     returnPath: string;
+    /** Envelope sender for bulk mail only. Absent, bulk mail uses `returnPath`. */
+    bulkReturnPath?: string;
     /** Directory the notifications arrive in, one .eml file each. */
     dsnDir: string;
     pollMs: number;
@@ -220,7 +228,13 @@ function pinTtlEnv(env: CollectorEnv): number {
 function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
+  const bulkReturnPath = env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH;
   if (!returnPath && !dsnDir) {
+    if (bulkReturnPath) {
+      throw new Error(
+        'COLLECTOR_OUTCOMES_BULK_RETURN_PATH needs COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR'
+      );
+    }
     return undefined;
   }
   if (!returnPath || !dsnDir) {
@@ -228,8 +242,14 @@ function outcomesEnv(env: CollectorEnv): CollectorConfig['outcomes'] {
       'COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR must be set together'
     );
   }
+  if (bulkReturnPath && bulkReturnPath.toLowerCase() === returnPath.toLowerCase()) {
+    throw new Error(
+      'COLLECTOR_OUTCOMES_BULK_RETURN_PATH must differ from COLLECTOR_OUTCOMES_RETURN_PATH'
+    );
+  }
   return {
     returnPath,
+    ...(bulkReturnPath ? { bulkReturnPath } : {}),
     dsnDir,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
@@ -253,7 +273,13 @@ const SWEEGO_PARTNERS = [
   'COLLECTOR_SWEEGO_MESSAGES_PER_HOUR',
   'COLLECTOR_SWEEGO_ACCOUNT_CAP',
   'COLLECTOR_SWEEGO_USAGE_STATE_PATH',
+  'COLLECTOR_SWEEGO_NEWSLETTER_CAP',
+  'COLLECTOR_SWEEGO_SUSPENSION_STATE_PATH',
+  'COLLECTOR_SWEEGO_SUSPEND_FILE_PATH',
 ] as const;
+
+const DEFAULT_SUSPENSION_STATE_FILE = 'sweego-suspension.json';
+const DEFAULT_SUSPEND_FILE = 'sweego-suspend';
 
 function accountCapEnv(env: CollectorEnv): number | undefined {
   const raw = env.COLLECTOR_SWEEGO_ACCOUNT_CAP;
@@ -265,6 +291,34 @@ function accountCapEnv(env: CollectorEnv): number | undefined {
     throw new Error('COLLECTOR_SWEEGO_ACCOUNT_CAP must be a positive integer');
   }
   return cap;
+}
+
+/** Unset means no separate threshold. Set, it must sit strictly below the account cap, which must itself be set. */
+function newsletterCapEnv(env: CollectorEnv, accountCap: number | undefined): number | undefined {
+  const raw = env.COLLECTOR_SWEEGO_NEWSLETTER_CAP;
+  if (!raw) {
+    return undefined;
+  }
+  const cap = Number(raw);
+  if (!Number.isSafeInteger(cap) || cap <= 0) {
+    throw new Error('COLLECTOR_SWEEGO_NEWSLETTER_CAP must be a positive integer');
+  }
+  if (accountCap === undefined) {
+    throw new Error(
+      'COLLECTOR_SWEEGO_NEWSLETTER_CAP is set but COLLECTOR_SWEEGO_ACCOUNT_CAP is not'
+    );
+  }
+  if (cap >= accountCap) {
+    throw new Error(
+      'COLLECTOR_SWEEGO_NEWSLETTER_CAP must be strictly below COLLECTOR_SWEEGO_ACCOUNT_CAP'
+    );
+  }
+  return cap;
+}
+
+/** The suspension files default to a place beside the counter file, so one volume carries all Sweego state. */
+function besideUsage(usageStatePath: string | undefined, name: string): string | undefined {
+  return usageStatePath ? join(dirname(usageStatePath), name) : undefined;
 }
 
 /**
@@ -299,6 +353,11 @@ function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
   if (!Number.isFinite(messagesPerHour) || messagesPerHour <= 0) {
     throw new Error('COLLECTOR_SWEEGO_MESSAGES_PER_HOUR must be a positive number');
   }
+  const accountCap = accountCapEnv(env);
+  const usageStatePath = env.COLLECTOR_SWEEGO_USAGE_STATE_PATH || undefined;
+  const suspensionStatePath =
+    env.COLLECTOR_SWEEGO_SUSPENSION_STATE_PATH ||
+    besideUsage(usageStatePath, DEFAULT_SUSPENSION_STATE_FILE);
   return {
     host,
     port: positiveIntEnv(env, 'COLLECTOR_SWEEGO_SMTP_PORT', DEFAULT_SWEEGO_SMTP_PORT),
@@ -308,8 +367,13 @@ function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
     messagesPerHour,
     throttleConfigPath: env.COLLECTOR_SWEEGO_THROTTLE_CONFIG_PATH || undefined,
     timeoutMs: positiveIntEnv(env, 'COLLECTOR_SWEEGO_SMTP_TIMEOUT_MS', DEFAULT_SWEEGO_TIMEOUT_MS),
-    accountCap: accountCapEnv(env),
-    usageStatePath: env.COLLECTOR_SWEEGO_USAGE_STATE_PATH || undefined,
+    accountCap,
+    newsletterCap: newsletterCapEnv(env, accountCap),
+    usageStatePath,
+    suspensionStatePath,
+    suspendFilePath:
+      env.COLLECTOR_SWEEGO_SUSPEND_FILE_PATH ||
+      (suspensionStatePath ? join(dirname(suspensionStatePath), DEFAULT_SUSPEND_FILE) : undefined),
   };
 }
 

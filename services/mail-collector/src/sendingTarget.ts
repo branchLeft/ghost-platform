@@ -53,6 +53,10 @@ export const FALLBACK_EDGES: Readonly<Record<SendingTarget, readonly SendingTarg
 export interface SweegoQuota {
   allowanceReached(targetId: string): boolean;
   accountCapReached(): boolean;
+  /** The account total reached the newsletter threshold. Absent: no separate threshold. */
+  newsletterThresholdReached?(): boolean;
+  /** Sweego is latched off: by a run of refusals, or by the owner. Absent: never suspended. */
+  suspended?(): boolean;
 }
 
 /**
@@ -71,10 +75,14 @@ export interface SendingContext {
   demo: boolean;
   /** False while the process holds no Sweego delivery client. */
   sweegoConfigured: boolean;
-  /** The tenant's Sweego allowance for the period is used up. */
+  /** The tenant's Sweego allowance for the period is used up: its sign-in links and its newsletters both move. */
   allowanceReached: boolean;
   /** The account-wide Sweego cap is reached. */
   accountCapReached: boolean;
+  /** The account total reached the newsletter threshold: every tenant's newsletters move, sign-in links stay. Unset: not reached. */
+  newsletterThresholdReached?: boolean;
+  /** Sweego is latched off. Unset: not suspended. */
+  suspended?: boolean;
   /** An attempt for this message id already reached mx1, in this offer or an earlier one. */
   reachedMx1: boolean;
   /** Set when an attempt for this offer just failed. */
@@ -120,7 +128,16 @@ function decide(route: MailRoute, ctx: SendingContext): SendingDecision {
   if (route !== 'sweego' || ctx.demo || ctx.reachedMx1) {
     return 'mx1';
   }
-  if (!ctx.sweegoConfigured || ctx.allowanceReached || ctx.accountCapReached) {
+  if (!ctx.sweegoConfigured || ctx.suspended === true || ctx.accountCapReached) {
+    return 'mx1';
+  }
+  if (
+    ctx.mailClass === 'bulk' &&
+    (ctx.allowanceReached || ctx.newsletterThresholdReached === true)
+  ) {
+    return 'mx1';
+  }
+  if (ctx.mailClass === 'transactional' && ctx.allowanceReached) {
     return 'mx1';
   }
   return 'sweego';
@@ -131,8 +148,9 @@ function decide(route: MailRoute, ctx: SendingContext): SendingDecision {
  * after a failure, only the one edge in FALLBACK_EDGES, taken by transactional
  * mail after a definite non-acceptance and by nothing else; mx1 for an mx1
  * route and for a demo; never Sweego once mx1 was reached; mx1 when Sweego is
- * unset, the tenant allowance is used or the account cap is reached;
- * otherwise Sweego.
+ * unset, suspended or at the account cap, for every class; a newsletter goes
+ * to mx1 when its tenant is latched or the newsletter threshold is reached; a
+ * sign-in link goes to mx1 when its tenant is latched; otherwise Sweego.
  */
 export function resolveSendingTarget(route: MailRoute, ctx: SendingContext): SendingDecision {
   const decision = decide(route, ctx);
