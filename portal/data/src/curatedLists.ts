@@ -4,9 +4,9 @@
  * table fixes only the slug's shape, so membership is enforced by
  * parseDemoRequest in demoRequest.ts.
  *
- * The members below are PLACEHOLDERS until Rob rules on the curated set, the
+ * The members below are PLACEHOLDERS until the owner rules on the curated set, the
  * font subset and the outlet types. Every label and the landing text are
- * ALL_CAPS placeholders: no reader-facing wording without Rob's authorisation.
+ * ALL_CAPS placeholders: no reader-facing wording without the owner's authorisation.
  */
 
 export interface CuratedChoice {
@@ -31,7 +31,7 @@ export const CURATED_OUTLET_TYPES: readonly CuratedChoice[] = [
   { slug: 'outlet-type-two', label: 'OUTLET_TYPE_TWO_LABEL' },
 ];
 
-/** The landing shown after a verified request: placeholder text until Rob authorises the wording. */
+/** The landing shown after a verified request: placeholder text until the owner authorises the wording. */
 export const LANDING_PLACEHOLDER = {
   heading: 'REQUEST_RECEIVED_HEADING',
   body: 'REQUEST_RECEIVED_BODY',
