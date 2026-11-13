@@ -20,6 +20,7 @@ import {
 } from './sendingTarget.js';
 import type { FailureCounter } from './submissionFailures.js';
 import { failureReasonOf } from './sweegoFailure.js';
+import type { SweegoSuspensionRecorder } from './sweegoSuspension.js';
 import { DEFAULT_PIN_TTL_MS, type SweegoUseCounter } from './sweegoUsage.js';
 import type { Throttle } from './throttle.js';
 
@@ -41,6 +42,8 @@ export interface CollectorLoopDeps {
    * attempt and whether it was accepted; `createSweegoUsage` is the one that does.
    */
   sweegoQuota?: SweegoQuota & Partial<SweegoUseCounter>;
+  /** Told of each Sweego refusal and acceptance, so a run of refusals can latch Sweego off. Unset, nothing latches. */
+  sweegoSuspension?: SweegoSuspensionRecorder;
   /** Ids whose submission has reached mx1; such a message is never offered to Sweego. Memory-only if unset. */
   mx1Pins?: SubmittedTracker;
   /** Ids whose first attempt was at Sweego; a retry stays on Sweego until the login fallback reaches mx1. Memory-only if unset. */
@@ -189,11 +192,12 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     }
     const mailClass = mailClassOf(message.emailId);
     // Asked afresh each time: the quota can change while a message waits on a
-    // throttle. Login mail never consults the tenant's latch (its newsletters
-    // moving to mx1 is no reason to move a sign-in link), but the account cap
-    // is the plan's ceiling and holds for every class. A pinned message
-    // stays on Sweego whatever the tenant's allowance now says, and is counted;
-    // the account cap holds for it too (see `resolveNow`).
+    // throttle. A tenant's latch moves its sign-in links and its newsletters;
+    // the newsletter threshold moves newsletters only; suspension and the
+    // account cap are the plan's ceiling and hold for every class. A pinned
+    // message stays on Sweego whatever the tenant's allowance or the newsletter
+    // threshold now says, and is counted; the account cap and suspension hold
+    // for it too (see `resolveNow`).
     // A pinned message that was already counted (an earlier attempt ended
     // ambiguous, or its reserved place was recounted after a crash) holds its
     // place in the cap: a retry takes no second one, so the cap does not hold it.
@@ -203,24 +207,31 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       mailClass,
       demo: target.demo === true,
       sweegoConfigured: sweegoReady,
-      allowanceReached:
-        pinnedToSweego || mailClass === 'transactional' ? false : quota.allowanceReached(target.id),
+      allowanceReached: pinnedToSweego ? false : quota.allowanceReached(target.id),
+      newsletterThresholdReached: pinnedToSweego
+        ? false
+        : quota.newsletterThresholdReached?.() === true,
+      suspended: quota.suspended?.() === true,
       accountCapReached: holdsPlace() ? false : quota.accountCapReached(),
       reachedMx1,
     });
     const route = pinnedToSweego ? 'sweego' : target.route;
     // A pinned message cannot move to mx1 (its first attempt may have been
-    // taken) and must not go above the cap, so at the cap it waits. Undefined
-    // means exactly that.
+    // taken) and must not go above the cap or to a suspended relay, so at the
+    // cap or under suspension it waits. Undefined means exactly that.
+    let heldEvent = 'sweego_pinned_held_at_cap';
     const resolveNow = (): SendingDecision | undefined => {
       const context = contextNow();
-      return pinnedToSweego && context.accountCapReached
-        ? undefined
-        : resolveSendingTarget(route, context);
+      if (pinnedToSweego && (context.accountCapReached || context.suspended === true)) {
+        heldEvent =
+          context.suspended === true ? 'sweego_pinned_held_suspended' : 'sweego_pinned_held_at_cap';
+        return undefined;
+      }
+      return resolveSendingTarget(route, context);
     };
     const heldAtCap = (): 'held' => {
       heldAtCapIds.add(message.id);
-      deps.log.warn('sweego_pinned_held_at_cap', { target: target.id, message: message.id });
+      deps.log.warn(heldEvent, { target: target.id, message: message.id });
       return 'held';
     };
     let decision = resolveNow();
@@ -270,6 +281,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         }
         const reason = failureReasonOf(error);
         deps.sweegoFailures?.record(reason);
+        deps.sweegoSuspension?.recordRefusal(reason);
         deps.log.warn('sweego_submission_failed', {
           target: target.id,
           message: message.id,
@@ -304,6 +316,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         // rather than sending the message twice.
         deps.dedupe.markSubmitted(message.id, true);
         slot?.settle(true);
+        deps.sweegoSuspension?.recordAcceptance();
         deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
         return 'submitted';
       }
