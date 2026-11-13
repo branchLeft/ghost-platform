@@ -114,14 +114,24 @@ class EmailBatchCheckError(RuntimeError):
     guessed count."""
 
 
+def _slot_uid(slot: str) -> int:
+    """The slot's own uid, which is also its gid: the compose file runs the
+    slot's Ghost as `user: "<uid>:<uid>"`, and the email-batches read drops to
+    the same pair. `slot` is one of `SLOT_NAMES` by the time this is called."""
+    return UID_BASE + int(slot)
+
+
 def _data_directory(slot: str) -> Path:
     """The one, slot-derived path to the colour pair's shared SQLite data
     volume -- never a caller-supplied path, and colour-blind on purpose.
     See branchleft_slot.md#_data_directory for the mirrored constant this
     depends on and why one file is shared across both colours.
     """
-    uid = UID_BASE + int(slot)
-    return DOCKER_VOLUME_ROOT / f"ghost-demo-{uid}-data" / "_data"
+    return DOCKER_VOLUME_ROOT / _data_volume_name(slot) / "_data"
+
+
+def _data_volume_name(slot: str) -> str:
+    return f"ghost-demo-{_slot_uid(slot)}-data"
 
 
 # The slug in `ghost-<slug>-content` arrives with each lease, so `reset` reads
@@ -232,7 +242,7 @@ def _slot_volume_names(slot: str, compose_text: str) -> list[str]:
     process that runs `docker volume create` on every name returned.
     Reasons: branchleft_slot.md#start-creates-the-slots-volumes.
     """
-    data_key = f"ghost-demo-{UID_BASE + int(slot)}-data"
+    data_key = _data_volume_name(slot)
     data_keys = (f"  {data_key}:", f"  '{data_key}':", f'  "{data_key}":')
     content: set[str] = set()
     adapters: set[str] = set()
@@ -789,7 +799,10 @@ class RealSlotOps:
         """Creates each external volume `<slot_dir>/compose.yml` declares for
         `slot` (`_slot_volume_names`) with `docker volume create <name>`, which
         exits zero and changes nothing for a volume that already exists. No
-        compose file to read creates nothing. Raises `RefusedVolume` for an
+        compose file to read creates nothing. Then makes the slot's data
+        volume directory owned by the slot's own uid:gid (`_own_data_directory`);
+        content is writable as docker leaves it and adapters is mounted
+        read-only, so neither is touched. Raises `RefusedVolume` for an
         ambiguous file, `VolumeCreateFailed` (one-line message with docker's
         stderr) when a create fails or runs past
         `_VOLUME_CREATE_TIMEOUT_SECONDS`, and `OSError` when docker cannot
@@ -799,7 +812,8 @@ class RealSlotOps:
         text = self._read_compose_text(slot_dir)
         if text is None:
             return
-        for name in _slot_volume_names(slot, text):
+        names = _slot_volume_names(slot, text)
+        for name in names:
             try:
                 subprocess.run(
                     ["docker", "volume", "create", name],
@@ -815,6 +829,49 @@ class RealSlotOps:
                 raise _volume_create_failure(
                     name, f"timed out after {_VOLUME_CREATE_TIMEOUT_SECONDS}s", exc.stderr
                 ) from exc
+        # A fresh volume's directory is root-owned 0755, and the slot's Ghost
+        # (uid:uid, no capabilities) cannot create its SQLite file in it.
+        data_name = _data_volume_name(slot)
+        if data_name in names:
+            self._own_data_directory(data_name, _slot_uid(slot))
+
+    @classmethod
+    def _own_data_directory(cls, volume_name: str, uid: int) -> None:
+        """Makes `DOCKER_VOLUME_ROOT/<volume_name>/_data` owned by `uid:uid`,
+        and does nothing when it already is, so a repeat `start` changes no
+        state. Each directory is opened `O_NOFOLLOW | O_DIRECTORY` relative to
+        the one before and the owner is set on the open descriptor, so a path
+        swapped for a link afterwards is not followed. Raises `RefusedVolume`
+        for a link or non-directory, `VolumeCreateFailed` when the directory
+        is not there, `OSError` when the chown itself fails. Only the
+        directory itself, never what is inside it. Reasons:
+        branchleft_slot.md#start-creates-the-slots-volumes.
+        """
+        shown = f"{DOCKER_VOLUME_ROOT}/{volume_name}/_data"
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+        missing = VolumeCreateFailed(f"docker volume create {volume_name} left no {shown} to own")
+        try:
+            root_fd = os.open(DOCKER_VOLUME_ROOT, os.O_RDONLY | os.O_DIRECTORY)
+        except FileNotFoundError:
+            raise missing from None
+        try:
+            volume_fd = cls._open_volume_child(volume_name, flags, root_fd, shown)
+            if volume_fd is None:
+                raise missing
+            try:
+                data_fd = cls._open_volume_child("_data", flags, volume_fd, shown)
+                if data_fd is None:
+                    raise missing
+                try:
+                    info = os.fstat(data_fd)
+                    if (info.st_uid, info.st_gid) != (uid, uid):
+                        os.fchown(data_fd, uid, uid)
+                finally:
+                    os.close(data_fd)
+            finally:
+                os.close(volume_fd)
+        finally:
+            os.close(root_fd)
 
     def remove_volume_contents(self, volume_dir: str) -> None:
         """Empties `volume_dir`, which must be exactly

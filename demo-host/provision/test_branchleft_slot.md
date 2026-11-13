@@ -138,6 +138,16 @@ missing or hanging `docker` raises, and a failed or timed-out create raises
 control and non-ASCII characters replaced, cut short, absent stderr tolerated,
 one stderr line out of `main`).
 
+`DataVolumeOwnershipTests` covers the owner of the data volume's `_data`
+directory against a scratch volume root, with `os.fchown` patched (a test
+process is not root) to record the inode it was given: the slot's uid and gid
+(and another slot's), after the last create, on the directory only, once even
+across a repeat start, never on content or adapters or when the compose file
+names no data volume, a link or non-directory refused and not followed (also
+when swapped after the open), a missing directory or volume root an error, and
+a failed chown stopping the start before the unit. `reset` never chowning is
+asserted in `ResetOnVolumesThatDoNotExistYetTests`.
+
 `VolumeCreateTimeoutBudgetTests` pins the per-create timeout: a number above
 zero on every call (so a removed or `None` timeout fails), exactly 5 s, and the
 total at most half the broker's 30 s default. The 30 s is a constant in the

@@ -1415,6 +1415,26 @@ class StartCreatesSlotVolumesTests(unittest.TestCase):
         self.assertNotIn("ensure_slot_volumes", [call[0] for call in ops.calls])
 
 
+def _scratch_volume_root(case: unittest.TestCase, root: Path, data_volumes: tuple[str, ...]) -> None:
+    """Stands `root` in for Docker's volume root, with a `_data` directory for
+    each of `data_volumes`, and patches `os.fchown` (a test process is not
+    root) with a recorder on `case.fchown`. Each call is recorded as
+    `(inode of the directory the descriptor names, uid, gid)`."""
+    for name in data_volumes:
+        (root / name / "_data").mkdir(parents=True)
+    root_patch = mock.patch.object(bs, "DOCKER_VOLUME_ROOT", root)
+    root_patch.start()
+    case.addCleanup(root_patch.stop)
+    case.fchown_calls = []
+
+    def record(fd: int, uid: int, gid: int) -> None:
+        case.fchown_calls.append((os.fstat(fd).st_ino, uid, gid))
+
+    chown_patch = mock.patch("branchleft_slot.os.fchown", side_effect=record)
+    case.fchown = chown_patch.start()
+    case.addCleanup(chown_patch.stop)
+
+
 class RealEnsureSlotVolumesTests(unittest.TestCase):
     """`RealSlotOps.ensure_slot_volumes` against a scratch slot directory with
     `subprocess.run` patched: the one Docker CLI use `start` makes."""
@@ -1423,6 +1443,9 @@ class RealEnsureSlotVolumesTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.slot_dir = self._tmp.name
         self.addCleanup(self._tmp.cleanup)
+        _scratch_volume_root(
+            self, Path(self._tmp.name, "volumes"), ("ghost-demo-30002-data",)
+        )
         run_patch = mock.patch("branchleft_slot.subprocess.run")
         self.run = run_patch.start()
         self.addCleanup(run_patch.stop)
@@ -1514,6 +1537,7 @@ class RealEnsureSlotVolumesTests(unittest.TestCase):
         with self.assertRaises(bs.VolumeCreateFailed):
             self._ensure()
         self.assertEqual(self.run.call_count, 1)
+        self.assertEqual(self.fchown_calls, [])
 
     def test_a_failure_carries_dockers_stderr_on_one_line(self):
         self._write_compose(_compose_text())
@@ -1582,6 +1606,9 @@ class VolumeCreateTimeoutBudgetTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         Path(self._tmp.name, "compose.yml").write_text(_compose_text())
+        _scratch_volume_root(
+            self, Path(self._tmp.name, "volumes"), ("ghost-demo-30002-data",)
+        )
         run_patch = mock.patch("branchleft_slot.subprocess.run")
         self.run = run_patch.start()
         self.addCleanup(run_patch.stop)
@@ -1629,6 +1656,204 @@ class VolumeCreateTimeoutBudgetTests(unittest.TestCase):
         )
 
 
+class DataVolumeOwnershipTests(unittest.TestCase):
+    """A fresh volume's directory is root-owned 0755, and the slot's Ghost runs
+    as `<uid>:<uid>` with no capabilities, so it could not create its SQLite
+    file there. `start` gives the data volume's `_data` directory to the slot,
+    by descriptor, after the create, and touches nothing else. Slot 1 is uid
+    30002; its content volume is writable as docker leaves it and its adapters
+    volume is mounted read-only, so only the data volume needs it."""
+
+    DATA = "ghost-demo-30002-data"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.slot_dir = self._tmp.name
+        self.volumes = Path(self._tmp.name, "volumes")
+        _scratch_volume_root(
+            self, self.volumes, (self.DATA, "ghost-demo-2-content", "ghost-demo-2-adapters")
+        )
+        Path(self.slot_dir, "compose.yml").write_text(_compose_text())
+        self.events: list[str] = []
+        run_patch = mock.patch(
+            "branchleft_slot.subprocess.run",
+            side_effect=lambda *a, **k: self.events.append("create"),
+        )
+        run_patch.start()
+        self.addCleanup(run_patch.stop)
+        self.fchown.side_effect = lambda fd, uid, gid: (
+            self.events.append("chown"),
+            self.fchown_calls.append((os.fstat(fd).st_ino, uid, gid)),
+        )
+
+    def _inode(self, name: str) -> int:
+        return os.stat(self.volumes / name / "_data").st_ino
+
+    def _ensure(self, slot: str = "1") -> None:
+        bs.RealSlotOps().ensure_slot_volumes(self.slot_dir, slot)
+
+    def test_the_data_directory_is_given_to_the_slots_uid_and_gid(self):
+        self._ensure()
+        self.assertEqual(self.fchown_calls, [(self._inode(self.DATA), 30002, 30002)])
+
+    def test_the_owner_follows_the_slot(self):
+        (self.volumes / "ghost-demo-30005-data" / "_data").mkdir(parents=True)
+        Path(self.slot_dir, "compose.yml").write_text(
+            _compose_text().replace("ghost-demo-30002-data", "ghost-demo-30005-data")
+        )
+        self._ensure(slot="4")
+        self.assertEqual(
+            self.fchown_calls, [(self._inode("ghost-demo-30005-data"), 30005, 30005)]
+        )
+
+    def test_the_uid_is_the_one_the_wrapper_already_uses_for_the_slot(self):
+        self.assertEqual(bs._slot_uid("1"), 30002)
+        self.assertEqual(bs._slot_uid("0"), bs.UID_BASE)
+        with mock.patch.object(bs, "UID_BASE", 40000):
+            self.assertEqual(bs._slot_uid("3"), 40003)
+
+    def test_the_owner_is_set_after_every_create_has_finished(self):
+        self._ensure()
+        self.assertEqual(self.events, ["create", "create", "create", "chown"])
+
+    def test_content_and_adapters_are_never_given_to_the_slot(self):
+        self._ensure()
+        owned = {call[0] for call in self.fchown_calls}
+        self.assertNotIn(self._inode("ghost-demo-2-content"), owned)
+        self.assertNotIn(self._inode("ghost-demo-2-adapters"), owned)
+
+    def test_only_the_directory_is_chowned_not_what_is_inside_it(self):
+        inner = self.volumes / self.DATA / "_data" / "inner"
+        inner.mkdir()
+        self._ensure()
+        self.assertEqual(len(self.fchown_calls), 1)
+        self.assertNotIn(os.stat(inner).st_ino, {call[0] for call in self.fchown_calls})
+
+    def test_a_directory_the_slot_already_owns_is_left_alone(self):
+        real_fstat = os.fstat
+        data_inode = self._inode(self.DATA)
+
+        def fstat_as_owned(fd):
+            info = real_fstat(fd)
+            if info.st_ino == data_inode:
+                return SimpleNamespace(st_uid=30002, st_gid=30002, st_ino=info.st_ino)
+            return info
+
+        with mock.patch("branchleft_slot.os.fstat", side_effect=fstat_as_owned):
+            self._ensure()
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_repeat_start_changes_nothing_once_the_directory_is_owned(self):
+        real_fstat = os.fstat
+        data_inode = self._inode(self.DATA)
+        owned = {"yes": False}
+        self.fchown.side_effect = lambda fd, uid, gid: (
+            self.fchown_calls.append((real_fstat(fd).st_ino, uid, gid)),
+            owned.update(yes=True),
+        )
+
+        def fstat_after_chown(fd):
+            info = real_fstat(fd)
+            if owned["yes"] and info.st_ino == data_inode:
+                return SimpleNamespace(st_uid=30002, st_gid=30002, st_ino=info.st_ino)
+            return info
+
+        with mock.patch("branchleft_slot.os.fstat", side_effect=fstat_after_chown):
+            self._ensure()
+            self._ensure()
+        self.assertEqual(len(self.fchown_calls), 1)
+
+    def test_a_compose_file_with_no_data_volume_chowns_nothing(self):
+        Path(self.slot_dir, "compose.yml").write_text(
+            "volumes:\n  ghost-demo-2-content:\n    external: true\n"
+        )
+        self._ensure()
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_another_slots_data_volume_is_never_chowned(self):
+        self._ensure(slot="4")
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_missing_compose_file_chowns_nothing(self):
+        Path(self.slot_dir, "compose.yml").unlink()
+        self._ensure()
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_volume_directory_that_is_a_symlink_is_refused_and_not_followed(self):
+        outside = Path(self._tmp.name, "outside")
+        (outside / "_data").mkdir(parents=True)
+        shutil.rmtree(self.volumes / self.DATA)
+        os.symlink(outside, self.volumes / self.DATA)
+        with self.assertRaises(bs.RefusedVolume):
+            self._ensure()
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_data_directory_that_is_a_symlink_is_refused_and_not_followed(self):
+        outside = Path(self._tmp.name, "outside")
+        outside.mkdir()
+        shutil.rmtree(self.volumes / self.DATA / "_data")
+        os.symlink(outside, self.volumes / self.DATA / "_data")
+        with self.assertRaises(bs.RefusedVolume):
+            self._ensure()
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_data_directory_that_is_a_regular_file_is_refused(self):
+        shutil.rmtree(self.volumes / self.DATA / "_data")
+        (self.volumes / self.DATA / "_data").write_text("not a directory")
+        with self.assertRaises(bs.RefusedVolume):
+            self._ensure()
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_directory_swapped_for_a_symlink_after_the_open_is_not_followed(self):
+        # The owner goes on the descriptor opened `O_NOFOLLOW`, so a swap of the
+        # path afterwards cannot redirect it: the inode chowned is the original.
+        data_inode = self._inode(self.DATA)
+        outside = Path(self._tmp.name, "outside")
+        outside.mkdir()
+        real_fstat = os.fstat
+
+        def swap_after_fstat(fd):
+            info = real_fstat(fd)
+            if info.st_ino == data_inode and (self.volumes / self.DATA / "_data").is_dir() \
+                    and not (self.volumes / self.DATA / "_data").is_symlink():
+                (self.volumes / self.DATA / "_data").rename(self.volumes / self.DATA / "moved")
+                os.symlink(outside, self.volumes / self.DATA / "_data")
+            return info
+
+        with mock.patch("branchleft_slot.os.fstat", side_effect=swap_after_fstat):
+            self._ensure()
+        self.assertEqual([call[0] for call in self.fchown_calls], [data_inode])
+
+    def test_a_missing_data_directory_is_an_error_naming_the_volume(self):
+        shutil.rmtree(self.volumes / self.DATA / "_data")
+        with self.assertRaises(bs.VolumeCreateFailed) as caught:
+            self._ensure()
+        self.assertIn(self.DATA, str(caught.exception))
+        self.assertNotIn("\n", str(caught.exception))
+        self.assertEqual(self.fchown_calls, [])
+
+    def test_a_missing_volume_root_is_an_error(self):
+        shutil.rmtree(self.volumes)
+        with self.assertRaises(bs.VolumeCreateFailed):
+            self._ensure()
+
+    def test_a_chown_that_fails_raises_so_the_unit_is_not_started(self):
+        self.fchown.side_effect = PermissionError(1, "Operation not permitted")
+        with self.assertRaises(PermissionError):
+            self._ensure()
+
+    def test_start_does_not_start_the_unit_when_the_chown_fails(self):
+        self.fchown.side_effect = PermissionError(1, "Operation not permitted")
+        ops = bs.RealSlotOps()
+        started: list[str] = []
+        with mock.patch.object(bs, "LOCK_DIR", self._tmp.name), \
+            mock.patch.object(bs, "SLOT_DIR", self.slot_dir), \
+            mock.patch.object(bs.RealSlotOps, "systemctl", lambda self, a, u: started.append(u)):
+            with self.assertRaises(PermissionError):
+                bs.perform(bs.ColourInvocation(slot="1", colour="a", verb="start"), ops)
+        self.assertEqual(started, [])
+
 class ResetOnVolumesThatDoNotExistYetTests(unittest.TestCase):
     """A slot that was never started has no volumes, since they are now made
     by `start`. `reset` of it must still finish, and must not make one."""
@@ -1644,8 +1869,10 @@ class ResetOnVolumesThatDoNotExistYetTests(unittest.TestCase):
                 mock.patch.object(bs, "SLOT_DIR", os.path.join(tmp, "demo-{slot}")), \
                 mock.patch.object(bs, "ETC_DIR", tmp), \
                 mock.patch.object(bs, "DOCKER_VOLUME_ROOT", volumes), \
+                mock.patch("branchleft_slot.os.fchown") as fchown, \
                 mock.patch("branchleft_slot.subprocess.run") as run:
                 bs.perform(bs.ResetInvocation(slot="1"), bs.RealSlotOps())
+            fchown.assert_not_called()
             self.assertEqual(list(slot_dir.iterdir()), [])
             self.assertEqual(list(volumes.iterdir()), [])
         for call in run.call_args_list:

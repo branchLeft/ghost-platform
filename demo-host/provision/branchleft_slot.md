@@ -161,9 +161,31 @@ content or adapters name. It cannot name another slot's data volume, replace
 or empty an existing volume, or reach a path. The data volume is created
 root-owned, as `docker volume create` by hand makes it.
 
-`reset` never creates a volume and never removes one: a slot that was never
-started has none, and the reset skips a volume directory that is missing (see
-below), so it finishes and the next `start` creates them.
+A volume `docker volume create` makes has a root-owned `_data` directory,
+mode 0755, and the slot's Ghost runs as `<uid>:<uid>` with every capability
+dropped, so it could not create its SQLite file in the data volume. After the
+creates, `RealSlotOps._own_data_directory` gives that one directory,
+`DOCKER_VOLUME_ROOT/ghost-demo-<uid>-data/_data`, to the slot's own `uid:uid`
+(`_slot_uid`, the `UID_BASE + slot` the email-batches read already drops to,
+and the `user:` the compose file runs the slot as). The name is the slot's own,
+never taken from the compose file. The volume directory and `_data` are each
+opened `O_NOFOLLOW | O_DIRECTORY` relative to the one before and the owner is
+set with `fchown` on the open descriptor, so a link, a non-directory or a swap
+after the open is not followed; a link or non-directory raises `RefusedVolume`,
+a missing directory raises `VolumeCreateFailed`, and either stops the start.
+Only the directory is changed, never what is inside it. A directory the slot
+already owns is not touched, so a repeat `start` and the colour swap's `start`
+change nothing.
+
+Content and adapters are left alone on purpose: docker copies the image's own
+content directory into a fresh content volume with its ownership and mode, which
+the slot's uid can write (checked by mounting one that way), and the adapters
+volume is mounted `:ro`, so the slot never writes it. If either changes, so
+must this.
+
+`reset` never creates a volume, never removes one and never changes an owner:
+a slot that was never started has none, and the reset skips a volume directory
+that is missing (see below), so it finishes and the next `start` creates them.
 
 ## Content volume emptying
 
