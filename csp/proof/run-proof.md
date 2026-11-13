@@ -71,6 +71,7 @@ over the internet; that needs no account and no secret.
 Real test mode (PROOF_REAL_TEST_MODE=1, set by csp-checkout-gate.py when the
 owner opts in): the checkout page is Stripe's own (checkout.stripe.com),
 Stripe.js is always the real one, and the card typed is checked against the
-published test card before the browser starts. A violation counts only when
-the tenant's own document raised it; Stripe's pages answer to Stripe's
-policy. Everything this process prints goes through redactSecrets.
+published test card before the browser starts (csp/gate/real_test_mode.py). The
+capture records every violation with its document; the runner then keeps only
+the tenant's own and counts Stripe's pages' apart, since they answer to
+Stripe's policy. Everything this process prints is redacted by the runner.

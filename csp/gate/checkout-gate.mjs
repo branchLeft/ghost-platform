@@ -15,8 +15,8 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PUBLISHED_TEST_CARD } from '../proof/real-test-mode.mjs';
-
+// Stripe's published success test card: the only one capture-checkout.mjs ever types.
+const PUBLISHED_TEST_CARD = '4242 4242 4242 4242';
 const REAL_MODE = 'real-test-mode';
 const STEPS = [
   'member-created',

@@ -80,11 +80,12 @@ only, and returns to the tenant. Green needs everything the fake run needs plus
 the page host, a test-mode session, the card, `paid` read from the tenant's own
 member state (not anything Stripe's page shows), all six steps in order, and
 zero violations raised by the tenant's own documents (Stripe's pages answer to
-Stripe's policy and are counted apart as `foreignViolations`).
+Stripe's policy; the runner counts them apart as `foreignViolations` before the
+judge sees the capture).
 
 What the switch refuses before any container starts, naming the variable and
-never printing a value (`csp/proof/real-test-mode.mjs`, tested in
-`real-test-mode.test.mjs`):
+never printing a value (`csp/gate/real_test_mode.py`, tested in
+`test_real_test_mode.py`):
 
 - a key that is unset or empty;
 - a secret key that is not `^sk_test_[A-Za-z0-9]+$` (a live key and any
@@ -92,10 +93,10 @@ never printing a value (`csp/proof/real-test-mode.mjs`, tested in
 - a publishable key that is not `^pk_test_[A-Za-z0-9]+$`;
 - a webhook secret that is not `^whsec_[A-Za-z0-9]+$`;
 - a tenant origin that is not `http://localhost:<port>` or
-  `http://127.0.0.1:<port>`; the same check stands again before the keys are sent
-  to Ghost and before the browser starts;
+  `http://127.0.0.1:<port>` (checked once, before anything starts: the runner
+  builds the one origin every later step receives);
 - a card number other than `4242 4242 4242 4242` (`CSP_STRIPE_TEST_CARD`, if
-  set; the capture re-checks it);
+  set; the capture only ever types the published card);
 - `--derive` (it measures with no keys), and a switch value other than `1`.
 
 What it lets through: any `sk_test_`/`pk_test_`/`whsec_` value of the right shape
@@ -125,6 +126,7 @@ prints: it passes them to a child only in that child's environment (Ghost gets
 ## Tests
 
 `node --test csp/gate/*.test.mjs csp/derive/*.test.mjs csp/proof/*.test.mjs`
+and `python3 -m unittest discover -s csp/gate -p 'test_*.py' -v`
 (needs `render-core` built). `csp/gate/prove-gates.sh` mutates each verdict rule
 and each derivation refusal and requires the tests to go red, then green.
 `render-core/test/edge.test.ts` pins the rendered policy to exactly the measured
@@ -132,8 +134,7 @@ origins and carries source-mutation sabotage for the allowance, the origin-shape
 check and a stray origin.
 
 The runner itself is Python (`csp-checkout-gate.py`, standard library only).
-`python3 -m unittest discover -s csp/gate -p 'test_csp_checkout_gate.py' -v`
-runs it against recording fakes for docker, node and curl, so it needs no Docker
+`test_csp_checkout_gate.py` runs it against recording fakes for docker, node and curl, so it needs no Docker
 or browser and runs in CI. The same file mutates the real source (a wrong exit
 code, a skipped refusal, a dropped cleanup, a swallowed failure) and requires
 the tests to go red for each. Arguments, environment variables, exit codes and
@@ -141,3 +142,5 @@ output lines are those of the shell script it replaced. Its real-test-mode
 wiring (the refusals before Docker, the keys by environment only, `docker rm -fv`
 cleanup) has its own tests and mutations there, plus a few runs of the real
 program against the real preflight with a docker that fails if it is reached.
+`real_test_mode.py` (every key, tenant and card refusal, and the redaction) is
+the same: `test_real_test_mode.py` mutates it one rule at a time and requires red.

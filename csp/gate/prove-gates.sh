@@ -131,48 +131,10 @@ prove "checkout-real/steps-unchecked" checkout-gate.mjs \
 prove "checkout-real/switch-not-read" checkout-gate.mjs \
     "process.env.CSP_STRIPE_REAL_TEST_MODE === '1'" "false"
 
-# The real test-mode switch itself (csp/proof/real-test-mode.mjs): each refusal,
-# and the rule that no key is ever shown.
-TESTS="$HERE/../proof/real-test-mode.test.mjs"
-REAL="../proof/real-test-mode.mjs"
-node --test "$TESTS" >/dev/null 2>&1 && echo "BASELINE real-test-mode: GREEN" || { echo "BASELINE real-test-mode: RED"; exit 1; }
-prove "real-mode/unset-key-accepted" "$REAL" \
-    "if (typeof value !== 'string' || value === '') {" "if (false) {"
-prove "real-mode/key-shape-unchecked" "$REAL" \
-    "} else if (!rule.pattern.test(value)) {" "} else if (false) {"
-prove "real-mode/live-secret-key-accepted" "$REAL" \
-    'pattern: /^sk_test_[A-Za-z0-9]+$/,' 'pattern: /^sk_(?:test|live)_[A-Za-z0-9]+$/,'
-prove "real-mode/restricted-key-accepted" "$REAL" \
-    'pattern: /^sk_test_[A-Za-z0-9]+$/,' 'pattern: /^(?:sk|rk)_test_[A-Za-z0-9]+$/,'
-prove "real-mode/live-publishable-key-accepted" "$REAL" \
-    'pattern: /^pk_test_[A-Za-z0-9]+$/,' 'pattern: /^pk_(?:test|live)_[A-Za-z0-9]+$/,'
-prove "real-mode/webhook-shape-loosened" "$REAL" \
-    'pattern: /^whsec_[A-Za-z0-9]+$/,' 'pattern: /^whsec_.*$/,'
-prove "real-mode/non-local-tenant-accepted" "$REAL" \
-    "|| !LOCAL_HOSTS.has(url.hostname) ||" "||"
-prove "real-mode/https-or-portless-tenant-accepted" "$REAL" \
-    "url.protocol !== 'http:' || " ""
-prove "real-mode/other-card-accepted" "$REAL" \
-    "if (digits !== PUBLISHED_TEST_CARD.replaceAll(' ', '')) {" "if (false) {"
-prove "real-mode/preflight-skips-tenant-check" "$REAL" \
-    "url = assertLocalTenant(origin);" "url = new URL(origin);"
-prove "real-mode/preflight-skips-card-check" "$REAL" \
-    "assertPublishedTestCard(env.CSP_STRIPE_TEST_CARD);" "void 0;"
-prove "real-mode/key-value-echoed-in-refusal" "$REAL" \
-    '; it must be ${rule.shape}`' '; it must be ${rule.shape} (got ${value})`'
-prove "real-mode/redaction-of-known-values-removed" "$REAL" \
-    "out = out.split(secret).join('[REDACTED]')" "void secret"
-prove "real-mode/redaction-of-key-shapes-removed" "$REAL" \
-    "out = out.replace(pattern, '[REDACTED]');" "void pattern;"
-prove "real-mode/checkout-url-fragment-kept" "$REAL" \
-    "'\$1#[REDACTED]'" "'\$\$&'"
-prove "real-mode/stripe-side-violation-counted-as-tenant" "$REAL" \
-    "return document.origin === new URL(tenantOrigin).origin;" "return true;"
-prove "real-mode/unplaceable-violation-not-counted" "$REAL" \
-    "if (document.protocol !== 'http:' && document.protocol !== 'https:') return true;" "if (false) return true;"
-# The runner's own real-mode wiring (the refusals, the keys by environment only,
-# cleanup with -v) is proved in test_csp_checkout_gate.py, whose last class mutates
-# csp-checkout-gate.py and requires red.
+# The real test-mode switch (real_test_mode.py: each key rule, the tenant and card
+# refusals, the redaction) and the runner's own real-mode wiring (the refusals, the
+# keys by environment only, cleanup with -v) are proved in test_real_test_mode.py and
+# test_csp_checkout_gate.py, whose last classes mutate the Python source and require red.
 
 [ "$FAIL" -eq 0 ] && echo "ALL SABOTAGES DETECTED" || echo "SABOTAGE PROOF FAILED"
 exit "$FAIL"

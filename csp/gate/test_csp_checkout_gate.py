@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +23,10 @@ from pathlib import Path
 from types import ModuleType
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # the gate imports real_test_mode from its own directory
+
+import real_test_mode  # noqa: E402 - after the path is set
+
 SOURCE = HERE / "csp-checkout-gate.py"
 LIB_SH = HERE / "lib.sh"
 PID = 4242
@@ -647,10 +651,9 @@ class BehaviourTests:
     def test_a_real_run_preflights_first_and_starts_no_fake(self) -> None:
         harness = self.harness(environ=REAL_ENV)
         self.assertEqual(harness.go(), 0)
-        labels = harness.labels()
-        self.assertEqual(labels[0], "node real-test-mode.mjs")
+        self.assertIn("real test mode: keys accepted", harness.out.getvalue())
         self.assertEqual(
-            labels[1:],
+            harness.labels(),
             [
                 "docker build csp-gate-ghost:local",
                 "docker build csp-gate-origin:local",
@@ -674,25 +677,44 @@ class BehaviourTests:
             ],
         )
 
-    def test_the_preflight_is_given_this_runs_origin(self) -> None:
-        harness = self.harness(environ=REAL_ENV)
-        harness.go()
-        preflight = harness.calls[0]
-        self.assertEqual(
-            preflight.argv,
-            ("node", "csp/proof/real-test-mode.mjs", "preflight", "--origin", "http://localhost:4321"),
-        )
-        self.assertNotIn("PROOF_REAL_TEST_MODE", preflight.env)
-        other = self.harness(environ={**REAL_ENV, "CSP_CHECKOUT_PORT": "5555"})
-        other.go()
-        self.assertEqual(other.calls[0].argv[-1], "http://localhost:5555")
+    def test_the_preflight_judges_this_runs_origin(self) -> None:
+        for port in ("4321", "5555"):
+            with self.subTest(port=port):
+                environ = {**REAL_ENV, "CSP_CHECKOUT_PORT": port}
+                harness = self.harness(environ=environ)
+                harness.go()
+                seen = harness.out.getvalue()
+                self.assertIn(f"tenant http://localhost:{port}\n", seen)
+                self.assertIn(
+                    f"stripe listen --forward-to http://localhost:{port}/members/webhooks/stripe/",
+                    seen,
+                )
 
-    def test_a_failed_preflight_exits_two_and_starts_nothing(self) -> None:
-        harness = self.harness(
-            environ=REAL_ENV, answers=[self.failing("node real-test-mode.mjs", 1)]
-        )
-        self.assertEqual(harness.go(), 2)
-        self.assertEqual(harness.labels(), ["node real-test-mode.mjs"])
+    def test_a_failed_preflight_exits_two_prints_the_rules_and_starts_nothing(self) -> None:
+        live = made_up("sk_live", "LiveSecretMarker")
+        cases = {
+            "no keys": ({"CSP_STRIPE_REAL_TEST_MODE": "1"}, "STRIPE_TEST_WEBHOOK_SECRET: is not set"),
+            "live key": ({**REAL_ENV, "STRIPE_TEST_SECRET_KEY": live}, "LIVE secret key is refused"),
+            "other card": (
+                {**REAL_ENV, "CSP_STRIPE_TEST_CARD": "4000 0000 0000 0002"},
+                "CSP_STRIPE_TEST_CARD",
+            ),
+            "tenant off this machine": (
+                {**REAL_ENV, "CSP_CHECKOUT_PORT": "4321@tenant.example.com"},
+                "local disposable tenant",
+            ),
+        }
+        for name, (environ, wanted) in cases.items():
+            with self.subTest(case=name):
+                harness = self.harness(environ=environ)
+                self.assertEqual(harness.go(), 2)
+                self.assertEqual(harness.calls, [])
+                self.assertIn("REAL TEST MODE REFUSED:", harness.err.getvalue())
+                self.assertIn(wanted, harness.err.getvalue())
+                self.assertIn(real_test_mode.owner_command(), harness.err.getvalue())
+                self.assertEqual(harness.out.getvalue(), "")
+                self.assert_no_key_shown(harness)
+                self.assertNotIn("LiveSecretMarker", harness.err.getvalue())
 
     def test_a_switch_value_other_than_one_is_refused_before_anything_runs(self) -> None:
         harness = self.harness(environ={**REAL_ENV, "CSP_STRIPE_REAL_TEST_MODE": "yes"})
@@ -710,7 +732,7 @@ class BehaviourTests:
         harness = self.harness(environ={**OWNER_KEYS, "CSP_STRIPE_REAL_TEST_MODE": ""})
         harness.go()
         self.assertIn("docker run stripe", harness.labels())
-        self.assertNotIn("node real-test-mode.mjs", harness.labels())
+        self.assertNotRegex(harness.out.getvalue() + harness.err.getvalue(), r"(?i)real test mode")
 
     def test_real_mode_refuses_derive_even_with_the_real_stripe_js(self) -> None:
         harness = self.harness(environ={**REAL_ENV, "CSP_STRIPE_REAL_JS": "1"})
@@ -723,12 +745,11 @@ class BehaviourTests:
             with self.subTest(flag=flag):
                 harness = self.harness()
                 self.assertEqual(harness.go(flag), 0)
-                self.assertEqual(
-                    [c.argv for c in harness.calls],
-                    [("node", "csp/proof/real-test-mode.mjs", "help")],
+                self.assertEqual(harness.calls, [])
+                self.assertEqual(harness.out.getvalue(), real_test_mode.usage() + "\n")
+                self.assertIn(
+                    "CSP_STRIPE_REAL_TEST_MODE=1 csp/gate/csp-checkout-gate.py", harness.out.getvalue()
                 )
-        failed = self.harness(answers=[self.failing("node real-test-mode.mjs", 1)])
-        self.assertEqual(failed.go("--help"), 0)
 
     def test_real_ghost_has_no_fake_and_the_webhook_secret_only_by_name(self) -> None:
         harness = self.harness(environ=REAL_ENV)
@@ -754,7 +775,7 @@ class BehaviourTests:
         self.assertEqual(paid.env["PROOF_STRIPE_PUBLISHABLE_KEY"], OWNER_PUBLISHABLE)
         self.assertEqual(paid.stdout, "discard")
         for command in harness.calls:
-            if command.argv[0] == "node" and not command.argv[1].endswith("real-test-mode.mjs"):
+            if command.argv[0] == "node":
                 self.assertEqual(
                     command.env.get("PROOF_REAL_TEST_MODE"), "1", " ".join(command.argv)
                 )
@@ -766,11 +787,17 @@ class BehaviourTests:
         self.assert_no_key_shown(harness)
 
     def test_a_missing_owner_key_after_preflight_is_refused_naming_only_the_variable(self) -> None:
+        # Preflight already refuses this; the read of each key checks again by itself.
         env = {k: v for k, v in REAL_ENV.items() if k != "STRIPE_TEST_WEBHOOK_SECRET"}
         harness = self.harness(environ=env)
-        self.assertEqual(harness.go(), 2)
-        self.assertEqual(harness.err.getvalue(), "STRIPE_TEST_WEBHOOK_SECRET is not set\n")
-        self.assertNotIn("docker build", " ".join(harness.labels()))
+        gate = self.gate.Gate(harness.deps, self.gate.parse_args([]))
+        with self.assertRaises(self.gate.GateError) as caught:
+            gate.required_env("STRIPE_TEST_WEBHOOK_SECRET")
+        self.assertEqual(
+            (caught.exception.code, caught.exception.message),
+            (2, "STRIPE_TEST_WEBHOOK_SECRET is not set"),
+        )
+        self.assertEqual(gate.required_env("STRIPE_TEST_SECRET_KEY"), OWNER_SECRET)
 
     def test_without_the_switch_the_owner_variables_are_never_read(self) -> None:
         harness = self.harness(environ=OWNER_KEYS)
@@ -800,6 +827,72 @@ class BehaviourTests:
         self.assertEqual(harness.go(), 5)
         self.assertEqual(harness.labels()[-2:], ["docker rm", "docker network rm"])
         self.assertEqual(harness.commands("docker", "rm")[-1].argv[:3], ("docker", "rm", "-fv"))
+
+    def test_real_mode_takes_every_node_steps_stderr_in_and_the_default_run_does_not(self) -> None:
+        for environ, wanted in ((REAL_ENV, "capture"), ({}, "inherit")):
+            with self.subTest(real=bool(environ)):
+                harness = self.harness(environ=environ)
+                harness.go()
+                nodes = [c for c in harness.calls if c.argv[0] == "node"]
+                self.assertGreater(len(nodes), 4)
+                for command in nodes:
+                    self.assertEqual(command.stderr, wanted, " ".join(command.argv))
+
+    def test_what_a_node_step_says_on_stderr_is_printed_with_every_secret_redacted(self) -> None:
+        odd = "unshaped-env-secret-value-98765"
+        noisy = f"boom {OWNER_SECRET} and {OWNER_WEBHOOK} and {odd}\n"
+
+        def answer(command: object) -> object:
+            if label(command) == "node setup-paid.mjs":
+                return self.gate.Result(0, "", noisy)
+            return None
+
+        harness = self.harness(
+            environ={**REAL_ENV, "WEBHOOK_SECRET": odd}, answers=[answer]
+        )
+        self.assertEqual(harness.go(), 0)
+        self.assertEqual(harness.err.getvalue(), "boom [REDACTED] and [REDACTED] and [REDACTED]\n")
+        self.assertNotIn(odd, harness.out.getvalue() + harness.err.getvalue())
+        self.assert_no_key_shown(harness)
+
+    def test_stderr_of_a_default_run_is_not_touched(self) -> None:
+        harness = self.harness()
+        harness.go()
+        self.assertEqual(harness.err.getvalue(), "")
+
+    def capture_with(self, run: dict[str, object], environ: Mapping[str, str]) -> Harness:
+        def answer(command: object) -> object:
+            if label(command) == "node capture-checkout.mjs":
+                return self.gate.Result(0, json.dumps(run) + "\n")
+            return None
+
+        harness = self.harness(environ=environ, answers=[answer])
+        self.assertEqual(harness.go(), 0)
+        return harness
+
+    def test_a_real_capture_is_redacted_and_stripes_own_violations_are_counted_apart(self) -> None:
+        tenant = {"directive": "script-src", "documentURI": "http://localhost:4321/"}
+        stripe = {"directive": "frame-src", "documentURI": "https://checkout.stripe.com/c/pay/cs_test_x"}
+        run = {
+            "mode": "real-test-mode",
+            "error": f"boom {OWNER_SECRET}",
+            "violations": [tenant, stripe, {"directive": "x"}],
+            "url": "https://checkout.stripe.com/c/pay/cs_test_x#fidkdWxOYHwn",
+        }
+        harness = self.capture_with(run, REAL_ENV)
+        judged = json.loads(harness.node("checkout-gate.mjs").stdin or "")
+        self.assertEqual(judged["violations"], [tenant, {"directive": "x"}])  # unplaceable: ours
+        self.assertEqual(judged["foreignViolations"], 1)
+        self.assertEqual(judged["error"], "boom [REDACTED]")
+        self.assertEqual(judged["url"], "https://checkout.stripe.com/c/pay/cs_test_x#[REDACTED]")
+        self.assertIn(harness.node("checkout-gate.mjs").stdin or "", harness.out.getvalue())
+        self.assert_no_key_shown(harness)
+
+    def test_a_default_capture_is_passed_to_the_judge_untouched(self) -> None:
+        stripe = {"directive": "frame-src", "documentURI": "https://checkout.stripe.com/c/pay/x"}
+        text = json.dumps({"violations": [stripe], "error": f"boom {OWNER_SECRET}"})
+        harness = self.capture_with({"violations": [stripe], "error": f"boom {OWNER_SECRET}"}, {})
+        self.assertEqual(harness.node("checkout-gate.mjs").stdin, text)
 
     def test_a_command_never_shows_its_environment_when_printed(self) -> None:
         command = self.gate.Command(("x",), env={"STRIPE_TEST_SECRET_KEY": OWNER_SECRET})
@@ -868,6 +961,19 @@ class RealRunner(unittest.TestCase):
         result = self.run_py("import os; print(os.getcwd())", stdout="capture")
         self.assertEqual(Path(result.stdout.strip()).resolve(), HERE.resolve())
 
+    def test_captured_stderr_is_returned_and_not_inherited(self) -> None:
+        code = "import sys; sys.stderr.write('said'); raise SystemExit(4)"
+        result = self.run_py(code, stderr="capture")
+        self.assertEqual((result.returncode, result.stderr), (4, "said"))
+
+    def test_a_missing_program_with_captured_stderr_says_so_in_the_result(self) -> None:
+        runner = REAL.run_subprocess(HERE)
+        result = runner(REAL.Command(("no-such-program-for-the-gate-test",), stderr="capture"))
+        self.assertEqual(
+            (result.returncode, result.stderr),
+            (127, "no-such-program-for-the-gate-test: command not found\n"),
+        )
+
     def test_discarded_output_is_not_returned(self) -> None:
         result = self.run_py("print('gone')", stdout="discard")
         self.assertEqual(result.stdout, "")
@@ -899,7 +1005,6 @@ class RealRunner(unittest.TestCase):
         self.assertNotEqual(first, second)
 
 
-@unittest.skipUnless(shutil.which("node"), "node is needed for the real preflight")
 class RealModeCommandLine(unittest.TestCase):
     """The real program and the real preflight, with a docker that records any call.
 
@@ -1055,8 +1160,8 @@ MUTATIONS = [
     ),
     (
         "derive check exit code dropped",
-        "        return self.deps.run(check).returncode",
-        "        self.deps.run(check)\n        return 0",
+        "        return self.execute(check).returncode",
+        "        self.execute(check)\n        return 0",
         "test_derives_exit_code_is_the_checks_exit_code",
     ),
     (
@@ -1073,25 +1178,43 @@ MUTATIONS = [
     ),
     (
         "preflight skipped",
-        "if self.deps.run(preflight).returncode != 0:",
+        "if not checked.ok:",
         "if False:",
         "test_a_failed_preflight_exits_two",
     ),
     (
         "preflight refusal exits 1",
+        'raise GateError(EXIT_REFUSED, "\\n".join(checked.lines))',
+        'raise GateError(1, "\\n".join(checked.lines))',
+        "test_a_failed_preflight_exits_two",
+    ),
+    (
+        "preflight refusal not printed",
+        'raise GateError(EXIT_REFUSED, "\\n".join(checked.lines))',
         "raise GateError(EXIT_REFUSED)",
-        "raise GateError(1)",
         "test_a_failed_preflight_exits_two",
     ),
     (
         "preflight not given the origin",
-        '"preflight", "--origin", self.origin',
-        '"preflight"',
-        "test_the_preflight_is_given_this_runs_origin",
+        "real_test_mode.preflight(self.deps.environ, self.origin)",
+        'real_test_mode.preflight(self.deps.environ, "http://localhost:4321")',
+        "test_the_preflight_judges_this_runs_origin",
+    ),
+    (
+        "preflight not given the environment",
+        "real_test_mode.preflight(self.deps.environ, self.origin)",
+        "real_test_mode.preflight({}, self.origin)",
+        "test_a_failed_preflight_exits_two",
+    ),
+    (
+        "preflight accepted lines not printed",
+        "            for line in checked.lines:\n                self.say(line)\n",
+        "",
+        "test_the_preflight_judges_this_runs_origin",
     ),
     (
         "help not printed",
-        'self.deps.run(Command(("node", REAL_MODE_MODULE, "help")))',
+        "self.say(real_test_mode.usage())",
         "pass",
         "test_help_prints_the_modules_usage",
     ),
@@ -1154,6 +1277,42 @@ MUTATIONS = [
         'self.silently("docker", "rm", "-fv", self.origin_name)',
         'self.silently("docker", "rm", "-f", self.origin_name)',
         "test_every_removal_takes_the_anonymous_volumes",
+    ),
+    (
+        "stderr of a real run not taken in",
+        'errors: Stderr = "capture" if self.real else "inherit"',
+        'errors: Stderr = "inherit"',
+        "test_real_mode_takes_every_node_steps_stderr_in",
+    ),
+    (
+        "stderr of a default run taken in",
+        'errors: Stderr = "capture" if self.real else "inherit"',
+        'errors: Stderr = "capture"',
+        "test_real_mode_takes_every_node_steps_stderr_in",
+    ),
+    (
+        "stderr printed without redaction",
+        "shown = real_test_mode.redact_secrets(result.stderr, self.secrets())",
+        "shown = result.stderr",
+        "test_what_a_node_step_says_on_stderr_is_printed_with_every_secret_redacted",
+    ),
+    (
+        "stderr dropped",
+        'if command.stderr == "capture" and result.stderr:',
+        "if False:",
+        "test_what_a_node_step_says_on_stderr_is_printed_with_every_secret_redacted",
+    ),
+    (
+        "a real capture not scrubbed",
+        "            return real_test_mode.scrub_capture(run_json, self.origin, self.secrets())\n",
+        "            return run_json\n",
+        "test_a_real_capture_is_redacted",
+    ),
+    (
+        "a default capture scrubbed",
+        "        if self.real:\n            # Redacted, and Stripe's own",
+        "        if True:\n            # Redacted, and Stripe's own",
+        "test_a_default_capture_is_passed_to_the_judge_untouched",
     ),
     (
         "a command shows its environment when printed",

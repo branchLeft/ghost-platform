@@ -127,11 +127,12 @@ jobs:
           node --test csp/gate/*.test.mjs
           ./csp/gate/prove-gates.sh
 
-      # The checkout gate's runner (csp/gate/csp-checkout-gate.py): every
-      # program it starts is a recording fake, so no Docker or browser. Its
-      # tests also mutate the real source and require red.
+      # The checkout gate's runner (csp/gate/csp-checkout-gate.py) and its real
+      # Stripe test-mode rules (csp/gate/real_test_mode.py): every program the
+      # runner starts is a recording fake, so no Docker or browser. Both test
+      # files also mutate the real source and require red.
       - name: CSP checkout gate runner tests
-        run: python3 -m unittest discover -s csp/gate -p 'test_csp_checkout_gate.py' -v
+        run: python3 -m unittest discover -s csp/gate -p 'test_*.py' -v
 
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan

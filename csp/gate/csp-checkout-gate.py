@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, TextIO
 
+import real_test_mode
+
 EXIT_REFUSED = 2
 EXIT_NOT_FOUND = 127
 EXIT_INTERRUPTED = 130
@@ -38,9 +40,8 @@ EXIT_TERMINATED = 143
 
 SABOTAGE_NO_STRIPE_ORIGIN = "no-stripe-origin"
 REAL_JS_ENV = "CSP_STRIPE_REAL_JS"
-REAL_MODE_ENV = "CSP_STRIPE_REAL_TEST_MODE"
+REAL_MODE_ENV = real_test_mode.SWITCH
 REAL_MODE_PROOF_FLAG = "PROOF_REAL_TEST_MODE"
-REAL_MODE_MODULE = "csp/proof/real-test-mode.mjs"
 REAL_SECRET_KEY_ENV = "STRIPE_TEST_SECRET_KEY"
 REAL_PUBLISHABLE_KEY_ENV = "STRIPE_TEST_PUBLISHABLE_KEY"
 REAL_WEBHOOK_SECRET_ENV = "STRIPE_TEST_WEBHOOK_SECRET"
@@ -58,7 +59,7 @@ KEY_ALPHABET = string.ascii_letters + string.digits
 KEY_LENGTH = 24
 
 Stdout = Literal["inherit", "capture", "discard"]
-Stderr = Literal["inherit", "discard"]
+Stderr = Literal["inherit", "capture", "discard"]
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class Command:
 class Result:
     returncode: int
     stdout: str = ""
+    stderr: str = ""
 
 
 Runner = Callable[[Command], Result]
@@ -120,6 +122,11 @@ def run_subprocess(repo_root: Path) -> Runner:
         "capture": subprocess.PIPE,
         "discard": subprocess.DEVNULL,
     }
+    errors: dict[Stderr, int | None] = {
+        "inherit": None,
+        "capture": subprocess.PIPE,
+        "discard": subprocess.DEVNULL,
+    }
 
     def run(command: Command) -> Result:
         try:
@@ -129,15 +136,16 @@ def run_subprocess(repo_root: Path) -> Runner:
                 env={**os.environ, **command.env},
                 input=command.stdin,
                 stdout=streams[command.stdout],
-                stderr=subprocess.DEVNULL if command.stderr == "discard" else None,
+                stderr=errors[command.stderr],
                 encoding="utf-8",
                 check=False,
             )
         except FileNotFoundError:
+            message = f"{command.argv[0]}: command not found"
             if command.stderr == "inherit":
-                print(f"{command.argv[0]}: command not found", file=sys.stderr)
-            return Result(EXIT_NOT_FOUND)
-        return Result(done.returncode, done.stdout or "")
+                print(message, file=sys.stderr)
+            return Result(EXIT_NOT_FOUND, stderr=message + "\n" if command.stderr == "capture" else "")
+        return Result(done.returncode, done.stdout or "", done.stderr or "")
 
     return run
 
@@ -258,14 +266,14 @@ class Gate:
             GateError: a refusal (exit 2) or a failed setup step (its exit code).
         """
         # The opt-in real Stripe TEST-mode switch (csp-checkout-gate.md). Every refusal
-        # about the keys lives in real-test-mode.mjs; with the switch unset nothing
+        # about the keys lives in real_test_mode.py; with the switch unset nothing
         # below is read and the fake Stripe runs exactly as before.
         switch = self.deps.environ.get(REAL_MODE_ENV, "")
         if switch not in ("", "1"):
             raise GateError(EXIT_REFUSED, f"{REAL_MODE_ENV} must be 1 (or unset for the fake Stripe)")
         self.real = switch == "1"
         if self.options.help:
-            self.deps.run(Command(("node", REAL_MODE_MODULE, "help")))
+            self.say(real_test_mode.usage())
             return 0
         if self.real and self.options.derive:
             raise GateError(
@@ -275,9 +283,11 @@ class Gate:
             )
         if self.real:
             # Before anything starts: the keys' shapes, a local tenant, the test card.
-            preflight = Command(("node", REAL_MODE_MODULE, "preflight", "--origin", self.origin))
-            if self.deps.run(preflight).returncode != 0:
-                raise GateError(EXIT_REFUSED)
+            checked = real_test_mode.preflight(self.deps.environ, self.origin)
+            if not checked.ok:
+                raise GateError(EXIT_REFUSED, "\n".join(checked.lines))
+            for line in checked.lines:
+                self.say(line)
         if self.options.derive and self.deps.environ.get(REAL_JS_ENV, "") != "1":
             raise GateError(
                 EXIT_REFUSED,
@@ -312,7 +322,7 @@ class Gate:
         Raises:
             GateError: the step exited non-zero, carrying its exit code.
         """
-        result = self.deps.run(command)
+        result = self.execute(command)
         if result.returncode != 0:
             raise GateError(result.returncode)
         return result
@@ -330,9 +340,28 @@ class Gate:
         stdout: Stdout = "capture",
         args: Sequence[str] = (),
     ) -> Command:
-        # Real mode tells every node step so (the capture and the setup read it).
+        # Real mode tells every node step so (the capture and the setup read it), and
+        # takes its stderr in, to print it with every secret redacted.
         marked = {**env, REAL_MODE_PROOF_FLAG: "1"} if self.real else env
-        return Command(("node", f"csp/{script}", *args), env=marked, stdin=stdin, stdout=stdout)
+        errors: Stderr = "capture" if self.real else "inherit"
+        return Command(
+            ("node", f"csp/{script}", *args),
+            env=marked,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=errors,
+        )
+
+    def secrets(self) -> list[str]:
+        return real_test_mode.secret_values(self.deps.environ)
+
+    def execute(self, command: Command) -> Result:
+        """Run a step; what a captured stderr said is printed here, redacted."""
+        result = self.deps.run(command)
+        if command.stderr == "capture" and result.stderr:
+            shown = real_test_mode.redact_secrets(result.stderr, self.secrets())
+            print(shown, end="", file=self.deps.err, flush=True)
+        return result
 
     def say(self, line: str) -> None:
         print(line, file=self.deps.out, flush=True)
@@ -414,7 +443,7 @@ class Gate:
 
     def render_policy(self, payments: str, hashes_json: str) -> Result:
         env = {"CSP_PAYMENTS": payments}
-        return self.deps.run(self.node("proof/render-header.mjs", env, stdin=hashes_json))
+        return self.execute(self.node("proof/render-header.mjs", env, stdin=hashes_json))
 
     def capture(self, label: str, session_cookie: str) -> str:
         env = {
@@ -423,7 +452,11 @@ class Gate:
             "PROOF_SESSION_COOKIE": session_cookie,
             "PROOF_STRIPE_URL": self.stripe_url,
         }
-        return self.check(self.node("proof/capture-checkout.mjs", env)).stdout.rstrip("\n")
+        run_json = self.check(self.node("proof/capture-checkout.mjs", env)).stdout.rstrip("\n")
+        if self.real:
+            # Redacted, and Stripe's own pages' violations split off (their policy, not ours).
+            return real_test_mode.scrub_capture(run_json, self.origin, self.secrets())
+        return run_json
 
     def required_env(self, name: str) -> str:
         """An owner-supplied value, which preflight has already checked.
@@ -467,7 +500,7 @@ class Gate:
 
         # setup-content's own exit status is not checked: the shell `eval "$(...)"`
         # never saw it, and a failure here shows as the next step failing.
-        content_run = self.deps.run(
+        content_run = self.execute(
             self.node("proof/setup-content.mjs", {"PROOF_ORIGIN": self.origin})
         )
         content = parse_assignments(content_run.stdout)
@@ -514,7 +547,7 @@ class Gate:
             stdout="inherit",
             args=("--check",),
         )
-        return self.deps.run(check).returncode
+        return self.execute(check).returncode
 
     def enforce(self, hashes_json: str, session_cookie: str) -> int:
         """Gate: the ENFORCING policy under test. The sabotage serves the same Ghost
@@ -542,7 +575,7 @@ class Gate:
         run_json = self.capture(f"checkout-{sabotage}" if sabotage else "checkout", session_cookie)
         self.say(run_json)
         judge = self.node("gate/checkout-gate.mjs", {}, stdin=run_json, stdout="inherit")
-        status = self.deps.run(judge).returncode
+        status = self.execute(judge).returncode
         elapsed = self.deps.now() - started
         self.say(f"GATE_TIMING seconds={elapsed} sabotage={sabotage or 'none'} exit={status}")
         return status

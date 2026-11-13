@@ -4,14 +4,6 @@
 // what it observed. It sets no policy and renders no verdict.
 // The flow and the frame and Stripe.js notes: csp/proof/run-proof.md (checkout section).
 import { chromium } from 'playwright';
-import {
-  PUBLISHED_TEST_CARD,
-  assertLocalTenant,
-  assertPublishedTestCard,
-  isTenantViolation,
-  redactSecrets,
-  secretValues,
-} from './real-test-mode.mjs';
 
 const ORIGIN = process.env.PROOF_ORIGIN || 'http://localhost:4321';
 const STRIPE = process.env.PROOF_STRIPE_URL || 'http://localhost:4322';
@@ -22,7 +14,6 @@ const REAL_STRIPE_JS = process.env.CSP_STRIPE_REAL_JS === '1' || REAL_MODE;
 const EMAIL = process.env.PROOF_MEMBER_EMAIL || 'checkout-member@example.test';
 // Stripe's published success test card. Nothing else is ever typed.
 const TEST_CARD = '4242 4242 4242 4242';
-const scrub = (text) => (REAL_MODE ? redactSecrets(text, secretValues(process.env)) : text);
 
 const STRIPE_JS_STUB = 'window.Stripe=function(){return{}};window.__stripeStubLoaded=true;';
 // Not the `iframe[src*="portal"]` fallback capture-csp.mjs carries: with the real
@@ -80,10 +71,6 @@ async function payOnStripe(page, card, result) {
 }
 
 async function main() {
-  if (REAL_MODE) {
-    assertLocalTenant(ORIGIN);
-    assertPublishedTestCard(process.env.CSP_STRIPE_TEST_CARD ?? PUBLISHED_TEST_CARD);
-  }
   const result = {
     label: LABEL,
     realStripeJs: REAL_STRIPE_JS,
@@ -99,7 +86,6 @@ async function main() {
   };
   if (REAL_MODE) {
     result.mode = 'real-test-mode';
-    result.foreignViolations = 0;
   }
   if (!COOKIE) {
     console.error(
@@ -111,11 +97,7 @@ async function main() {
   const context = await browser.newContext();
 
   await context.exposeBinding('__reportCsp', (source, violation) => {
-    if (REAL_MODE && !isTenantViolation(violation, ORIGIN)) {
-      result.foreignViolations += 1;
-      return;
-    }
-    result.violations.push({ ...violation, frame: scrub(source.frame.url()) });
+    result.violations.push({ ...violation, frame: source.frame.url() });
   });
   await context.addInitScript(() => {
     document.addEventListener('securitypolicyviolation', (e) => {
@@ -202,7 +184,7 @@ async function main() {
     if (REAL_MODE) {
       await Promise.all([
         page.waitForURL(/[?&]stripe=success/, { timeout: 60000 }),
-        payOnStripe(page, PUBLISHED_TEST_CARD, result),
+        payOnStripe(page, TEST_CARD, result),
       ]);
     } else {
       await page.locator('#cardnumber').fill(TEST_CARD);
@@ -236,7 +218,7 @@ async function main() {
   } catch (err) {
     result.failedAt =
       result.steps.length === 0 ? 'start' : `after ${result.steps[result.steps.length - 1]}`;
-    result.error = scrub(String(err.message || err).split('\n')[0]);
+    result.error = String(err.message || err).split('\n')[0];
     if (process.env.PROOF_DEBUG === '1') {
       // What the visitor was looking at when it stopped, for whoever debugs it.
       for (const frame of page.frames()) {
@@ -249,19 +231,17 @@ async function main() {
           .evaluateAll((els) => els.map((e) => `${e.innerText.trim()}|${e.className}`))
           .catch(() => []);
         console.error(
-          scrub(
-            `[debug] frame ${frame.url()}\n${text.slice(0, 600)}\nbuttons: ${JSON.stringify(buttons)}`
-          )
+          `[debug] frame ${frame.url()}\n${text.slice(0, 600)}\nbuttons: ${JSON.stringify(buttons)}`
         );
       }
     }
   }
 
   await browser.close();
-  console.log(scrub(JSON.stringify(result, null, 2)));
+  console.log(JSON.stringify(result, null, 2));
 }
 
 main().catch((err) => {
-  console.error(REAL_MODE ? scrub(String(err.stack || err)) : err);
+  console.error(err);
   process.exit(2);
 });
