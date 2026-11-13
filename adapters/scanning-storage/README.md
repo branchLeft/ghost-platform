@@ -165,8 +165,10 @@ replacement leaves the old thumbnail in place. The write goes through
 ## Upload names
 
 `save()` stores every new upload as `<stem>-<22 random base32 characters>.<ext>`
-(110 bits from `crypto.randomBytes`), so a URL cannot be derived from a
-neighbouring one. The stem is cut to keep the stored name within 240 bytes.
+(110 bits from `crypto.randomBytes`), so a URL a user's upload gets through
+`save()` cannot be derived from a neighbouring one. The stem is cut to keep the
+stored name within 240 bytes. Names Ghost chooses for media it writes through
+`saveRaw()` are covered under "Limits of the names" below.
 Three small tables, per adapter instance, make Ghost's own flows still find
 what they wrote. None survives a restart. The first expires and drops its
 oldest entry when full; the other two are bounded together and a lapse is
@@ -175,7 +177,7 @@ never dropped.
 | Table | Remembers | Why | Window | Bound |
 | --- | --- | --- | --- | --- |
 | stored names (`storedNames`) | the basename each upload was stored under | Ghost saves an image's original as `<stored basename>_o<ext>` and looks for exactly that; an upload named so keeps that name, once | 60 s | 1000, oldest dropped |
-| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` throws |
+| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference it matches to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` refuses with a 503 |
 | lapsed promises (`lapsedReservations`) | the key of a promise that ran out before its `save()` | the importer has already written the promised path into its references, so a later `save()` of that file is refused rather than stored under another name | until the file is promised a fresh name | counted with the promised names; never evicted |
 
 A promise that lapses moves from the promised table to the lapse table, so the
@@ -200,6 +202,34 @@ ordinary upload and gets its own component. A refused upload leaves no entry
 in any table. When a verdict source is missing, nothing is promised. An
 original that arrives after its window, after a restart, or after eviction is
 stored under a fresh component: Ghost then falls back to the processed image.
+
+### Limits of the names
+
+- **Promises are per file object.** `getUniqueFileName()` called again for one
+  file (same temp path, directory and name) returns the same path, and that
+  holds when the calls overlap: a second ask while the first is still being
+  worked out waits for it. Two different file objects of one name are two files
+  and get two components.
+- **No promise without a temp path.** Ghost's media inliner and oEmbed
+  thumbnails call `getUniqueFileName()` with a name and a directory only, then
+  write with `saveRaw()` to what came back; nothing ever spends a promise for
+  such a file. So none is made: each ask returns a fresh component, and two
+  inlined media of one name share none. The name is stored at the path Ghost
+  was handed, and this adapter does not choose it again at `saveRaw()`.
+- **An imported original is paired with its processed image only in one
+  order.** An original `photo_o.png` asked for while the promise for `photo.png`
+  in the same directory is live and unspent is promised `<promised stem>_o.png`,
+  the name Ghost looks for, once per processed image. An original asked for
+  first, or after the processed image was saved, or after its promise lapsed,
+  keeps its own component, and Ghost's resize lookup then falls back to the
+  processed image. No reference breaks.
+- **Ghost's importer rewrites only the references its own pattern matches.** It
+  builds that pattern from the file name without escaping it, so a name with
+  regular-expression characters, such as `my photo (1).JPG`, is not rewritten
+  in the posts on any store, this one or Ghost's own: the reference dangles the
+  same on both. Nothing in this adapter can change that.
+- **A full or lapsed name table answers 503.** Both refusals are typed (a
+  `MaintenanceError`) and say to run the import again or try later.
 
 ## Configuration
 

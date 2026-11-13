@@ -11,6 +11,8 @@ const {
   buildVerdictPendingError,
   buildUncheckableError,
   buildVideoAudioRefusedError,
+  buildNamesFullError,
+  buildNameLapsedError,
 } = require('./refusal-error');
 const { detectVideoAudioFamily } = require('./media-kind');
 const { stampImageContentType } = require('./content-type');
@@ -189,6 +191,33 @@ function liveReservation(reservations, key, now = Date.now(), lapsed = null) {
   return reservations.get(key)?.name;
 }
 
+// An imported processed image and its original arrive as two files, `photo.png`
+// and `photo_o.png`, and Ghost finds the original of a stored `photo-<c>.png`
+// at `photo-<c>_o.png`. So an original asked for while the processed image's
+// promise is live, in the same directory, is promised that name, once.
+// Only in that order: a promise already handed out is never renamed, so an
+// original asked for first keeps its own component.
+function claimProcessedImageOf(reservations, file, targetDir, now = Date.now()) {
+  const { stem, ext } = splitName(file.name);
+  if (!stem.endsWith(ORIGINAL_SUFFIX) || stem.length <= ORIGINAL_SUFFIX.length) {
+    return undefined;
+  }
+  const processedName = `${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`;
+  for (const entry of reservations.values()) {
+    if (
+      entry.expiresAt > now &&
+      !entry.originalClaimed &&
+      entry.dir === (targetDir || '') &&
+      entry.sourceName === processedName
+    ) {
+      entry.originalClaimed = true;
+      const stored = splitName(entry.name);
+      return { entry, name: `${stored.stem}${ORIGINAL_SUFFIX}${stored.ext}` };
+    }
+  }
+  return undefined;
+}
+
 // The reserved basename, spent, or undefined.
 function takeReservation(reservations, key, now = Date.now(), lapsed = null) {
   const name = liveReservation(reservations, key, now, lapsed);
@@ -316,6 +345,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.storedNames = new Map();
       this.reservedNames = new Map();
       this.lapsedReservations = new Map();
+      // A promise being worked out, so a concurrent ask for the same file
+      // shares it instead of making a second one.
+      this.namesInFlight = new Map();
       // Bounds reservations and lapses together; only a test sets it.
       this.reservationMaxEntries =
         Number(config.reservationMaxEntries) > 0
@@ -425,9 +457,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // would dangle them silently. Kept, so a retry is refused too, until
         // getUniqueFileName() promises this file a fresh name.
         if (this.lapsedReservations.has(key)) {
-          throw new Error(
-            `ScanningStorageAdapter: the name promised to "${file.name}" lapsed after an hour before it was saved, so nothing was stored under another name; run the import again`
-          );
+          throw buildNameLapsedError(GhostErrors, file.name);
         }
         if (takeOriginalOf(file, this.storedNames)) {
           return { fixed: file.name, remember: false };
@@ -471,7 +501,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           : path.join(targetDir || '', named.name);
       const usable = file && typeof file.name === 'string' && file.name.length > 0;
       // A refused upload will never be saved, so there is nothing to reserve.
-      if (!usable || this.refuseUploadsReason) {
+      // Nor is there for a file with no temp path (Ghost's media inliner and
+      // oEmbed thumbnails): they write with saveRaw() to the path returned, which
+      // never takes a reservation, so one would only be kept for an hour and
+      // hand a second file of that name a path that follows the first's.
+      const hasTempPath = usable && typeof file.path === 'string' && file.path.length > 0;
+      if (!hasTempPath || this.refuseUploadsReason) {
         return unique(usable ? withRandomName(file) : file);
       }
       const key = reservationKey(file, targetDir);
@@ -484,25 +519,52 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       if (reserved !== undefined) {
         return unique({ ...file, name: reserved });
       }
+      // Asked again before the first ask has finished: the same promise.
+      const inFlight = this.namesInFlight.get(key);
+      if (inFlight) {
+        return inFlight;
+      }
+      const promise = (async () => {
+        try {
+          return await this.#promiseName(file, targetDir, key, unique);
+        } finally {
+          this.namesInFlight.delete(key);
+        }
+      })();
+      this.namesInFlight.set(key, promise);
+      return promise;
+    }
+
+    async #promiseName(file, targetDir, key, unique) {
       // A file that already lapsed swaps its lapse for the new promise, so it
       // adds nothing to the count and is let through even when the bound is hit.
       if (
         !this.lapsedReservations.has(key) &&
         this.reservedNames.size + this.lapsedReservations.size >= this.reservationMaxEntries
       ) {
-        throw new Error(
-          'ScanningStorageAdapter: too many upload names are reserved or lapsed and not yet saved; ' +
-            'a lapsed name clears only when its file is promised again or this process restarts'
-        );
+        throw buildNamesFullError(GhostErrors);
       }
-      const result = await unique(withRandomName(file));
-      this.reservedNames.set(key, {
-        name: path.basename(result),
-        expiresAt: Date.now() + RESERVATION_WINDOW_MS,
-      });
-      // A fresh promise replaces any earlier lapse of the same file.
-      this.lapsedReservations.delete(key);
-      return result;
+      const original = claimProcessedImageOf(this.reservedNames, file, targetDir);
+      try {
+        const result = await unique(
+          original ? { ...file, name: original.name } : withRandomName(file)
+        );
+        this.reservedNames.set(key, {
+          name: path.basename(result),
+          expiresAt: Date.now() + RESERVATION_WINDOW_MS,
+          dir: targetDir || '',
+          sourceName: file.name,
+          originalClaimed: false,
+        });
+        // A fresh promise replaces any earlier lapse of the same file.
+        this.lapsedReservations.delete(key);
+        return result;
+      } catch (error) {
+        if (original) {
+          original.entry.originalClaimed = false;
+        }
+        throw error;
+      }
     }
 
     // For bytes Ghost writes as a directory tree outside save()/saveRaw()
