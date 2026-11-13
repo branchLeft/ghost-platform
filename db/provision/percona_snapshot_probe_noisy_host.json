@@ -1,323 +1,237 @@
 {
-  "note": "Recorded control-2 inputs, one entry per round of a default run (round 1 long, rounds 2 to 5 short): each tenant's worst statement before that round's first dump ('baseline') and over the round ('worst'), in seconds, from native x86_64 runs of the Percona proof, same candidate digest and runner image. quiet_fast: the five rounds as logged by a run that passed. quiet_real_stall: round 1 is the recorded stall of the retired global-lock dump under the long reader (t1 worst 59898.4 ms on a quiet host, baselines 15.0, 10.2 and 12.8 ms), rounds 2 to 5 are quiet_fast's. degraded_after_round_1: a run whose rounds 1 to 5 worst statements were as logged; the log gave one baseline for the whole run, the worst across rounds (382.5, 381.4 and 383.6 ms), so every round here carries it. ASSUMPTION THAT DECIDES THIS FIXTURE: round 1's own baseline was never logged; 382 ms is an upper bound for it, not a measurement. With a round-1 baseline under about 117 ms the same worst statements are a stall and the run exits 3 (test_percona_host_noise.py pins that); from the logged figure it is inconclusive. Runs now log each round's own baseline, so a later run needs no assumption. noisy_all_rounds, noisy_all_rounds_second: two slow-runner runs whose log gave one baseline and one worst for the whole run, repeated for each round.",
+  "note": "Recorded control-2 inputs, one entry per round of a default run (round 1 long, rounds 2 to 5 short): each tenant's worst statement before that round's first dump ('baseline') and over the round ('worst'), in seconds, from native x86_64 runs of the Percona proof, same candidate digest and runner image, plus each round's slow writes ('slow': [start, latency], seconds on the round's clock) and each tenant's dump windows ('windows': [pass, start, end]). quiet_fast: the five rounds as logged by a run that passed (no write over 50 ms). quiet_real_stall: round 1 is the recorded stall of the retired global-lock dump under the long reader (t1 worst 59898.4 ms on a quiet host, t2 and t3 62.2 and 65.0 ms), rounds 2 to 5 are quiet_fast's. degraded_after_round_1: a run whose rounds 1 to 5 worst statements were as logged; the log gave one baseline for the whole run, the worst across rounds (382.5, 381.4 and 383.6 ms), so every round carries it. noisy_all_rounds, noisy_all_rounds_second: two slow-runner runs whose log gave one baseline and one worst for the whole run, repeated for each round. ASSUMPTIONS THAT DECIDE THIS FIXTURE: the logs of the degraded and slow-runner runs recorded neither start times nor dump windows, so every slow write of those three runs is placed at 0.3 s, before the round's first dump, on every tenant at once (the runner stalls on all tenants before any dump runs: the issue's finding), and the windows are the probe's usual layout (t1, t2, t3 in turn, from 2.0 s). Placed inside its tenant's windows in two passes the same figures are a stall (test_percona_host_noise.py pins that, and the effect of the 382 ms round-1 baseline, an upper bound and not a measurement, as the floor under recurrence). The quiet_real_stall windows are likewise a layout: t1's dump blocked from 2.0 s for the 60 s recorded. Runs now log every slow write's start and each dump window, so a later run needs no assumption.",
   "runs": {
     "quiet_fast": {
       "rounds": [
         {
-          "baseline": {
-            "t1": 0.0121,
-            "t2": 0.01,
-            "t3": 0.0106
+          "baseline": { "t1": 0.0121, "t2": 0.01, "t3": 0.0106 },
+          "worst": { "t1": 0.0163, "t2": 0.0149, "t3": 0.0168 },
+          "windows": {
+            "t1": [
+              [1, 2.0, 5.0],
+              [2, 14.0, 17.0],
+              [3, 26.0, 29.0]
+            ],
+            "t2": [
+              [1, 5.0, 8.0],
+              [2, 17.0, 20.0],
+              [3, 29.0, 32.0]
+            ],
+            "t3": [
+              [1, 8.0, 11.0],
+              [2, 20.0, 23.0],
+              [3, 32.0, 35.0]
+            ]
           },
-          "worst": {
-            "t1": 0.0163,
-            "t2": 0.0149,
-            "t3": 0.0168
-          }
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0213,
-            "t2": 0.0107,
-            "t3": 0.0201
-          },
-          "worst": {
-            "t1": 0.0238,
-            "t2": 0.0267,
-            "t3": 0.0223
-          }
+          "baseline": { "t1": 0.0213, "t2": 0.0107, "t3": 0.0201 },
+          "worst": { "t1": 0.0238, "t2": 0.0267, "t3": 0.0223 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0162,
-            "t2": 0.0128,
-            "t3": 0.0158
-          },
-          "worst": {
-            "t1": 0.0272,
-            "t2": 0.028,
-            "t3": 0.0253
-          }
+          "baseline": { "t1": 0.0162, "t2": 0.0128, "t3": 0.0158 },
+          "worst": { "t1": 0.0272, "t2": 0.028, "t3": 0.0253 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0143,
-            "t2": 0.0075,
-            "t3": 0.0113
-          },
-          "worst": {
-            "t1": 0.0185,
-            "t2": 0.0239,
-            "t3": 0.0175
-          }
+          "baseline": { "t1": 0.0143, "t2": 0.0075, "t3": 0.0113 },
+          "worst": { "t1": 0.0185, "t2": 0.0239, "t3": 0.0175 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0153,
-            "t2": 0.008,
-            "t3": 0.0071
-          },
-          "worst": {
-            "t1": 0.0172,
-            "t2": 0.011,
-            "t3": 0.0176
-          }
+          "baseline": { "t1": 0.0153, "t2": 0.008, "t3": 0.0071 },
+          "worst": { "t1": 0.0172, "t2": 0.011, "t3": 0.0176 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         }
       ]
     },
     "quiet_real_stall": {
       "rounds": [
         {
-          "baseline": {
-            "t1": 0.015,
-            "t2": 0.0102,
-            "t3": 0.0128
-          },
-          "worst": {
-            "t1": 59.8984,
-            "t2": 0.0622,
-            "t3": 0.065
-          }
+          "baseline": { "t1": 0.015, "t2": 0.0102, "t3": 0.0128 },
+          "worst": { "t1": 59.8984, "t2": 0.0622, "t3": 0.065 },
+          "windows": { "t1": [[1, 2.0, 62.0]], "t2": [[1, 62.0, 65.0]], "t3": [[1, 65.0, 68.0]] },
+          "slow": { "t1": [[2.1, 59.8984]], "t2": [[2.2, 0.0622]], "t3": [[2.3, 0.065]] }
         },
         {
-          "baseline": {
-            "t1": 0.0213,
-            "t2": 0.0107,
-            "t3": 0.0201
-          },
-          "worst": {
-            "t1": 0.0238,
-            "t2": 0.0267,
-            "t3": 0.0223
-          }
+          "baseline": { "t1": 0.0213, "t2": 0.0107, "t3": 0.0201 },
+          "worst": { "t1": 0.0238, "t2": 0.0267, "t3": 0.0223 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0162,
-            "t2": 0.0128,
-            "t3": 0.0158
-          },
-          "worst": {
-            "t1": 0.0272,
-            "t2": 0.028,
-            "t3": 0.0253
-          }
+          "baseline": { "t1": 0.0162, "t2": 0.0128, "t3": 0.0158 },
+          "worst": { "t1": 0.0272, "t2": 0.028, "t3": 0.0253 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0143,
-            "t2": 0.0075,
-            "t3": 0.0113
-          },
-          "worst": {
-            "t1": 0.0185,
-            "t2": 0.0239,
-            "t3": 0.0175
-          }
+          "baseline": { "t1": 0.0143, "t2": 0.0075, "t3": 0.0113 },
+          "worst": { "t1": 0.0185, "t2": 0.0239, "t3": 0.0175 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         },
         {
-          "baseline": {
-            "t1": 0.0153,
-            "t2": 0.008,
-            "t3": 0.0071
-          },
-          "worst": {
-            "t1": 0.0172,
-            "t2": 0.011,
-            "t3": 0.0176
-          }
+          "baseline": { "t1": 0.0153, "t2": 0.008, "t3": 0.0071 },
+          "worst": { "t1": 0.0172, "t2": 0.011, "t3": 0.0176 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [], "t2": [], "t3": [] }
         }
       ]
     },
     "degraded_after_round_1": {
       "rounds": [
         {
-          "baseline": {
-            "t1": 0.3825,
-            "t2": 0.3814,
-            "t3": 0.3836
+          "baseline": { "t1": 0.3825, "t2": 0.3814, "t3": 0.3836 },
+          "worst": { "t1": 0.3313, "t2": 0.2672, "t3": 0.334 },
+          "windows": {
+            "t1": [
+              [1, 2.0, 5.0],
+              [2, 14.0, 17.0],
+              [3, 26.0, 29.0]
+            ],
+            "t2": [
+              [1, 5.0, 8.0],
+              [2, 17.0, 20.0],
+              [3, 29.0, 32.0]
+            ],
+            "t3": [
+              [1, 8.0, 11.0],
+              [2, 20.0, 23.0],
+              [3, 32.0, 35.0]
+            ]
           },
-          "worst": {
-            "t1": 0.3313,
-            "t2": 0.2672,
-            "t3": 0.334
-          }
+          "slow": { "t1": [[0.3, 0.3313]], "t2": [[0.3, 0.2672]], "t3": [[0.3, 0.334]] }
         },
         {
-          "baseline": {
-            "t1": 0.3825,
-            "t2": 0.3814,
-            "t3": 0.3836
-          },
-          "worst": {
-            "t1": 0.5094,
-            "t2": 0.5242,
-            "t3": 0.5275
-          }
+          "baseline": { "t1": 0.3825, "t2": 0.3814, "t3": 0.3836 },
+          "worst": { "t1": 0.5094, "t2": 0.5242, "t3": 0.5275 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.5094]], "t2": [[0.3, 0.5242]], "t3": [[0.3, 0.5275]] }
         },
         {
-          "baseline": {
-            "t1": 0.3825,
-            "t2": 0.3814,
-            "t3": 0.3836
-          },
-          "worst": {
-            "t1": 0.4217,
-            "t2": 0.4375,
-            "t3": 0.4371
-          }
+          "baseline": { "t1": 0.3825, "t2": 0.3814, "t3": 0.3836 },
+          "worst": { "t1": 0.4217, "t2": 0.4375, "t3": 0.4371 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.4217]], "t2": [[0.3, 0.4375]], "t3": [[0.3, 0.4371]] }
         },
         {
-          "baseline": {
-            "t1": 0.3825,
-            "t2": 0.3814,
-            "t3": 0.3836
-          },
-          "worst": {
-            "t1": 0.0931,
-            "t2": 0.0949,
-            "t3": 0.096
-          }
+          "baseline": { "t1": 0.3825, "t2": 0.3814, "t3": 0.3836 },
+          "worst": { "t1": 0.0931, "t2": 0.0949, "t3": 0.096 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.0931]], "t2": [[0.3, 0.0949]], "t3": [[0.3, 0.096]] }
         },
         {
-          "baseline": {
-            "t1": 0.3825,
-            "t2": 0.3814,
-            "t3": 0.3836
-          },
-          "worst": {
-            "t1": 0.1553,
-            "t2": 0.1476,
-            "t3": 0.1487
-          }
+          "baseline": { "t1": 0.3825, "t2": 0.3814, "t3": 0.3836 },
+          "worst": { "t1": 0.1553, "t2": 0.1476, "t3": 0.1487 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.1553]], "t2": [[0.3, 0.1476]], "t3": [[0.3, 0.1487]] }
         }
       ]
     },
     "noisy_all_rounds": {
       "rounds": [
         {
-          "baseline": {
-            "t1": 0.2057,
-            "t2": 0.2044,
-            "t3": 0.2128
+          "baseline": { "t1": 0.2057, "t2": 0.2044, "t3": 0.2128 },
+          "worst": { "t1": 0.4114, "t2": 0.43, "t3": 0.4099 },
+          "windows": {
+            "t1": [
+              [1, 2.0, 5.0],
+              [2, 14.0, 17.0],
+              [3, 26.0, 29.0]
+            ],
+            "t2": [
+              [1, 5.0, 8.0],
+              [2, 17.0, 20.0],
+              [3, 29.0, 32.0]
+            ],
+            "t3": [
+              [1, 8.0, 11.0],
+              [2, 20.0, 23.0],
+              [3, 32.0, 35.0]
+            ]
           },
-          "worst": {
-            "t1": 0.4114,
-            "t2": 0.43,
-            "t3": 0.4099
-          }
+          "slow": { "t1": [[0.3, 0.4114]], "t2": [[0.3, 0.43]], "t3": [[0.3, 0.4099]] }
         },
         {
-          "baseline": {
-            "t1": 0.2057,
-            "t2": 0.2044,
-            "t3": 0.2128
-          },
-          "worst": {
-            "t1": 0.4114,
-            "t2": 0.43,
-            "t3": 0.4099
-          }
+          "baseline": { "t1": 0.2057, "t2": 0.2044, "t3": 0.2128 },
+          "worst": { "t1": 0.4114, "t2": 0.43, "t3": 0.4099 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.4114]], "t2": [[0.3, 0.43]], "t3": [[0.3, 0.4099]] }
         },
         {
-          "baseline": {
-            "t1": 0.2057,
-            "t2": 0.2044,
-            "t3": 0.2128
-          },
-          "worst": {
-            "t1": 0.4114,
-            "t2": 0.43,
-            "t3": 0.4099
-          }
+          "baseline": { "t1": 0.2057, "t2": 0.2044, "t3": 0.2128 },
+          "worst": { "t1": 0.4114, "t2": 0.43, "t3": 0.4099 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.4114]], "t2": [[0.3, 0.43]], "t3": [[0.3, 0.4099]] }
         },
         {
-          "baseline": {
-            "t1": 0.2057,
-            "t2": 0.2044,
-            "t3": 0.2128
-          },
-          "worst": {
-            "t1": 0.4114,
-            "t2": 0.43,
-            "t3": 0.4099
-          }
+          "baseline": { "t1": 0.2057, "t2": 0.2044, "t3": 0.2128 },
+          "worst": { "t1": 0.4114, "t2": 0.43, "t3": 0.4099 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.4114]], "t2": [[0.3, 0.43]], "t3": [[0.3, 0.4099]] }
         },
         {
-          "baseline": {
-            "t1": 0.2057,
-            "t2": 0.2044,
-            "t3": 0.2128
-          },
-          "worst": {
-            "t1": 0.4114,
-            "t2": 0.43,
-            "t3": 0.4099
-          }
+          "baseline": { "t1": 0.2057, "t2": 0.2044, "t3": 0.2128 },
+          "worst": { "t1": 0.4114, "t2": 0.43, "t3": 0.4099 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.4114]], "t2": [[0.3, 0.43]], "t3": [[0.3, 0.4099]] }
         }
       ]
     },
     "noisy_all_rounds_second": {
       "rounds": [
         {
-          "baseline": {
-            "t1": 0.1045,
-            "t2": 0.1025,
-            "t3": 0.1047
+          "baseline": { "t1": 0.1045, "t2": 0.1025, "t3": 0.1047 },
+          "worst": { "t1": 0.1859, "t2": 0.1848, "t3": 0.1856 },
+          "windows": {
+            "t1": [
+              [1, 2.0, 5.0],
+              [2, 14.0, 17.0],
+              [3, 26.0, 29.0]
+            ],
+            "t2": [
+              [1, 5.0, 8.0],
+              [2, 17.0, 20.0],
+              [3, 29.0, 32.0]
+            ],
+            "t3": [
+              [1, 8.0, 11.0],
+              [2, 20.0, 23.0],
+              [3, 32.0, 35.0]
+            ]
           },
-          "worst": {
-            "t1": 0.1859,
-            "t2": 0.1848,
-            "t3": 0.1856
-          }
+          "slow": { "t1": [[0.3, 0.1859]], "t2": [[0.3, 0.1848]], "t3": [[0.3, 0.1856]] }
         },
         {
-          "baseline": {
-            "t1": 0.1045,
-            "t2": 0.1025,
-            "t3": 0.1047
-          },
-          "worst": {
-            "t1": 0.1859,
-            "t2": 0.1848,
-            "t3": 0.1856
-          }
+          "baseline": { "t1": 0.1045, "t2": 0.1025, "t3": 0.1047 },
+          "worst": { "t1": 0.1859, "t2": 0.1848, "t3": 0.1856 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.1859]], "t2": [[0.3, 0.1848]], "t3": [[0.3, 0.1856]] }
         },
         {
-          "baseline": {
-            "t1": 0.1045,
-            "t2": 0.1025,
-            "t3": 0.1047
-          },
-          "worst": {
-            "t1": 0.1859,
-            "t2": 0.1848,
-            "t3": 0.1856
-          }
+          "baseline": { "t1": 0.1045, "t2": 0.1025, "t3": 0.1047 },
+          "worst": { "t1": 0.1859, "t2": 0.1848, "t3": 0.1856 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.1859]], "t2": [[0.3, 0.1848]], "t3": [[0.3, 0.1856]] }
         },
         {
-          "baseline": {
-            "t1": 0.1045,
-            "t2": 0.1025,
-            "t3": 0.1047
-          },
-          "worst": {
-            "t1": 0.1859,
-            "t2": 0.1848,
-            "t3": 0.1856
-          }
+          "baseline": { "t1": 0.1045, "t2": 0.1025, "t3": 0.1047 },
+          "worst": { "t1": 0.1859, "t2": 0.1848, "t3": 0.1856 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.1859]], "t2": [[0.3, 0.1848]], "t3": [[0.3, 0.1856]] }
         },
         {
-          "baseline": {
-            "t1": 0.1045,
-            "t2": 0.1025,
-            "t3": 0.1047
-          },
-          "worst": {
-            "t1": 0.1859,
-            "t2": 0.1848,
-            "t3": 0.1856
-          }
+          "baseline": { "t1": 0.1045, "t2": 0.1025, "t3": 0.1047 },
+          "worst": { "t1": 0.1859, "t2": 0.1848, "t3": 0.1856 },
+          "windows": { "t1": [[1, 2.0, 5.0]], "t2": [[1, 5.0, 8.0]], "t3": [[1, 8.0, 11.0]] },
+          "slow": { "t1": [[0.3, 0.1859]], "t2": [[0.3, 0.1848]], "t3": [[0.3, 0.1856]] }
         }
       ]
     }
