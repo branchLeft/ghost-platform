@@ -36,8 +36,14 @@ receive time in epoch seconds. The recipient and every other field are dropped.
   signature inside the window; 404/405/413 for a wrong path, method or size.
   Nothing is stored, logged with content, or counted beyond a counter.
 - A caller holding the secret can enqueue records, bounded by the 5 MiB queue
-  cap and the 50,000-entry replay cap (both answer 503 when reached; neither
-  evicts).
+  cap and the 200,000-entry replay cap (both answer 503 when reached; neither
+  evicts). Each complaint takes two replay entries, and the replay cap is sized
+  above twice what a full 5 MiB queue can hold. Replay entries live the full
+  3-hour TTL even after the collector drains the queue, so while the collector
+  keeps draining, the replay set can still reach its cap before the queue
+  fills. Room in the replay set is checked before anything is queued, so a
+  full replay set refuses with 503 and nothing queued: a retry cannot
+  duplicate, and the refusal ends as entries expire.
 - No caller can read anything: the public listener has no read route and the
   drain routes do not exist on it.
 
@@ -51,6 +57,14 @@ is checked first, constant-time, before the route or any parameter is looked at.
 - `POST /drain/ack` with `{"through":N}`: releases records up to N once the
   collector holds them. This is the only way room is made; nothing is evicted.
 - `GET /stats`: counters and queue size.
+
+**Precondition before the drain token is placed.** The drain port speaks plain
+HTTP, so the bearer token crosses the wire in clear text. The firewall rule
+that limits the drain port to the collector's address must already exist, and
+be read back as present on the host, BEFORE the token is placed on the host or
+on the collector. Place the token first and any host that can reach the port
+can read it off the wire. An owner step that places the token carries this as
+its first check.
 
 Delivery to the collector is at-least-once: a failure between the queue write
 and the replay write costs a duplicate on Sweego's retry, never a loss, so the
@@ -71,6 +85,13 @@ All by environment variable. Secrets and the token are file paths.
 | `WEBHOOK_OUTCOME_HEADER` | optional name of our correlation header in the payload |
 | `WEBHOOK_HEADERS_TIMEOUT_MS`, `WEBHOOK_REQUEST_TIMEOUT_MS`, `WEBHOOK_KEEP_ALIVE_TIMEOUT_MS` | read timeouts (5000, 10000, 5000) |
 
+A wildcard listen address is refused in these spellings: `0.0.0.0` and its short
+and padded IPv4 forms (`0`, `00`, `0x0`, `0.0`, `0.0.0.00`); `::`, `::0`, the
+expanded `0:0:0:0:0:0:0:0`, `[::]`, and the IPv4-mapped forms `::ffff:0.0.0.0`
+and `::ffff:0:0`; and any of the IPv6 spellings with a zone id (`::%eth0`,
+`[::%25eth0]`). A spelling the URL parser rejects is not refused by this check
+and fails when the listener binds. A specific address, with or without a zone
+id, is accepted.
 A missing or malformed value stops startup. The secrets and token are read once
 at start; rotation is a restart.
 

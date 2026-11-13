@@ -14,7 +14,7 @@ const OVERLAY_DIR = path.join(SSO_DIR, 'ghost-core-overlay');
 const DERIVED_DIR = path.join(OVERLAY_DIR, 'derived');
 const BASELINE_DIR = path.join(DERIVED_DIR, 'baseline');
 const DOCKERFILE = path.resolve(SSO_DIR, '../../Dockerfile');
-const GHOST_FILE = '/var/lib/ghost/current/core/server/services/auth/session/session-from-token.js';
+const GHOST_FILE = '/var/lib/ghost/current/core/server/auth/session/session-from-token.js';
 
 function pinnedImage() {
   const froms = fs

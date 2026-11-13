@@ -28,7 +28,7 @@ Clearing a key (`null`) stays allowed. The key is never stored in any arm.
 ## Why arm C reads the log
 
 Ghost runs a content import as a background job. The request answers 200 at once whatever the outcome;
-a failure is logged ("Content import was unsuccessful") and mailed to the owner. So arm C waits for that
+a failure is logged ("[Background Job] site-content-import error") and mailed to the owner. So arm C waits for that
 log line and reads the reason from it. Two imports run per container: one with only a marker tag (it must
 appear, so an absent marker means something) and one with the marker tag plus a Stripe row (the marker must
 be absent, proving nothing was partly applied).
@@ -40,7 +40,7 @@ patch and its pin only.
 
 ## Which failure arm C reads
 
-The container log can hold more than one "Content import was unsuccessful". Arm C counts the failures
+The container log can hold more than one "[Background Job] site-content-import error". Arm C counts the failures
 already logged before its import starts and reads the section of the next one, up to the failure after it
 (`import-log.mjs`, tested without Docker by `import-log.test.mjs`). It does not read from the last
 failure in the log to the end, so a later unrelated failure or a long log cannot change what it reads.

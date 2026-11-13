@@ -41,6 +41,30 @@
       "expires": "2026-12-10"
     },
     {
+      "vulnerability": "CVE-2026-71199",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). Authentication-indicator bypass in the CAMMAC container by a realm user; needs a realm that enforces indicators. This image has no KDC or kadmind and the platform's MySQL options load no Kerberos or LDAP plugin and no realm exists. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-12",
+      "expires": "2026-12-12"
+    },
+    {
+      "vulnerability": "CVE-2026-71200",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). KDC NULL dereference via PKINIT pre-authentication; needs a KDC configured with PKINIT. This image has no KDC or kadmind and the platform's MySQL options load no Kerberos or LDAP plugin and no realm exists. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-12",
+      "expires": "2026-12-12"
+    },
+    {
+      "vulnerability": "CVE-2026-107364",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). Unauthenticated denial of service in the KDC process (ASN.1 decoder read overrun). This image has no KDC or kadmind and the platform's MySQL options load no Kerberos or LDAP plugin and no realm exists. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-12",
+      "expires": "2026-12-12"
+    },
+    {
       "vulnerability": "CVE-2026-112315",
       "package": "krb5-libs",
       "image": "ghcr.io/branchleft/percona-server",
@@ -111,6 +135,14 @@
       "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). The flaw is in KDC or kadmind server code. This image has no krb5-server package and no kadmind or krb5kdc binary, a running mysqld maps no krb5 library, and only optional plugins (LDAP, Kerberos client, group replication, keyring vault) link libkrb5; none is loaded by default. Revisit when UBI ships a krb5 fix.",
       "granted": "2026-11-10",
       "expires": "2026-12-10"
+    },
+    {
+      "vulnerability": "CVE-2026-118380",
+      "package": "krb5-libs",
+      "image": "ghcr.io/branchleft/percona-server",
+      "reason": "No fix: the Red Hat record for RHEL 9 lists no fixed build (Grype fix state not-fixed). Argument alteration in the kadmind RPCSEC_GSS admin service. This image has no KDC or kadmind and the platform's MySQL options load no Kerberos or LDAP plugin and no realm exists. Revisit when UBI ships a krb5 fix.",
+      "granted": "2026-11-12",
+      "expires": "2026-12-12"
     },
     {
       "vulnerability": "CVE-2026-119079",

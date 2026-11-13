@@ -333,6 +333,18 @@ describe('capped queue', () => {
     h.queue = (await import('../src/queue.js')).openQueue(h.dir);
   });
 
+  it('answers 503 without queueing when the replay set is full, so a retry cannot duplicate', async () => {
+    await start({ replayMaxEntries: 2 });
+    expect((await postSigned(h, complaintBody())).status).toBe(200);
+    const second = await postSigned(
+      h,
+      complaintBody({ event_id: 'EVENT_ID_PLACEHOLDER_2', swg_uid: 'SWG_UID_PLACEHOLDER_2' }),
+      { id: 'WEBHOOK_ID_PLACEHOLDER_2' }
+    );
+    expect(second.status).toBe(503);
+    expect(h.queue.read(0, 10).map((r) => r.outcomeId)).toEqual(['SWG_UID_PLACEHOLDER_1']);
+  });
+
   it('never accepts an unverified request into a full queue', async () => {
     await start({ queueMaxBytes: 1 });
     expect((await postSigned(h, complaintBody(), { secret: SECRET_B })).status).toBe(401);
