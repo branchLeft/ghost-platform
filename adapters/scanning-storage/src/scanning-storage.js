@@ -109,17 +109,24 @@ function truncateToBytes(text, maxBytes) {
   return out;
 }
 
-// `<stem>-<random>.<ext>`, the stem cut so the whole name fits; a file with
-// no usable name is left alone for the wrapped adapter to reject or default
-// as it always did.
+// `<stem>-<component>.<ext>`, the stem cut so the whole name fits. An original
+// (`<stem>_o.<ext>`) is named from the same stem and component with `_o` after
+// them, which is the name Ghost looks for beside the processed image.
+function nameWithComponent(file, component, isOriginal) {
+  const { stem, ext } = splitName(file.name);
+  const base = isOriginal ? stem.slice(0, -ORIGINAL_SUFFIX.length) : stem;
+  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
+  const kept = truncateToBytes(base, Math.max(0, room)) || 'upload';
+  return `${kept}-${component}${isOriginal ? ORIGINAL_SUFFIX : ''}${ext}`;
+}
+
+// A file with no usable name is left alone for the wrapped adapter to reject
+// or default as it always did.
 function withRandomName(file) {
   if (!file || typeof file.name !== 'string' || file.name.length === 0) {
     return file;
   }
-  const { stem, ext } = splitName(file.name);
-  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
-  const kept = truncateToBytes(stem, Math.max(0, room)) || 'upload';
-  return { ...file, name: `${kept}-${randomNameComponent()}${ext}` };
+  return { ...file, name: nameWithComponent(file, randomNameComponent(), false) };
 }
 
 function pruneStoredNames(names, now) {
@@ -191,31 +198,72 @@ function liveReservation(reservations, key, now = Date.now(), lapsed = null) {
   return reservations.get(key)?.name;
 }
 
-// An imported processed image and its original arrive as two files, `photo.png`
-// and `photo_o.png`, and Ghost finds the original of a stored `photo-<c>.png`
-// at `photo-<c>_o.png`. So an original asked for while the processed image's
-// promise is live, in the same directory, is promised that name, once.
-// Only in that order: a promise already handed out is never renamed, so an
-// original asked for first keeps its own component.
-function claimProcessedImageOf(reservations, file, targetDir, now = Date.now()) {
+// An imported processed image and its original arrive as two files,
+// `photo.png` and `photo_o.png`, and Ghost finds the original of a stored
+// `photo-<c>.png` at `photo-<c>_o.png`. Ghost's importer asks for every file's
+// name at once, so neither is promised before the other asks. They are paired
+// by what the two share: the directory they will be stored in, the temp
+// directory the zip was extracted to (one per import, so another import's
+// `photo.png` never matches), and the processed image's name. The first of the
+// pair to ask picks the component, the second takes it, and the record goes.
+// A record the second never claims is dropped after the same window as a
+// promise, and the table is bounded, so a full one only leaves files unpaired.
+const FAMILY_WINDOW_MS = RESERVATION_WINDOW_MS;
+
+function isOriginalName(name) {
+  const { stem } = splitName(name);
+  return stem.endsWith(ORIGINAL_SUFFIX) && stem.length > ORIGINAL_SUFFIX.length;
+}
+
+function familyKey(file, targetDir) {
   const { stem, ext } = splitName(file.name);
-  if (!stem.endsWith(ORIGINAL_SUFFIX) || stem.length <= ORIGINAL_SUFFIX.length) {
-    return undefined;
-  }
-  const processedName = `${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`;
-  for (const entry of reservations.values()) {
-    if (
-      entry.expiresAt > now &&
-      !entry.originalClaimed &&
-      entry.dir === (targetDir || '') &&
-      entry.sourceName === processedName
-    ) {
-      entry.originalClaimed = true;
-      const stored = splitName(entry.name);
-      return { entry, name: `${stored.stem}${ORIGINAL_SUFFIX}${stored.ext}` };
+  const processed = isOriginalName(file.name)
+    ? `${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`
+    : file.name;
+  return `${targetDir || ''}\n${path.dirname(file.path)}\n${processed}`;
+}
+
+// The component this file should be named with, or null when it has none to
+// share: its role in the family was already taken (a file promised afresh) or
+// the table is full. `release` hands the role back when the ask fails.
+function claimFamily(families, file, targetDir, maxEntries, now = Date.now()) {
+  for (const [key, family] of families) {
+    if (family.expiresAt > now) {
+      break;
     }
+    families.delete(key);
   }
-  return undefined;
+  const role = isOriginalName(file.name) ? 'original' : 'processed';
+  const key = familyKey(file, targetDir);
+  let family = families.get(key);
+  if (!family) {
+    if (families.size >= maxEntries) {
+      return null;
+    }
+    family = {
+      component: randomNameComponent(),
+      expiresAt: now + FAMILY_WINDOW_MS,
+      taken: { original: false, processed: false },
+    };
+    families.set(key, family);
+  }
+  if (family.taken[role]) {
+    return null;
+  }
+  family.taken[role] = true;
+  if (family.taken.original && family.taken.processed) {
+    families.delete(key);
+  }
+  return {
+    component: family.component,
+    isOriginal: role === 'original',
+    release: () => {
+      family.taken[role] = false;
+      if (!families.has(key)) {
+        families.set(key, family);
+      }
+    },
+  };
 }
 
 // The reserved basename, spent, or undefined.
@@ -348,6 +396,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       // A promise being worked out, so a concurrent ask for the same file
       // shares it instead of making a second one.
       this.namesInFlight = new Map();
+      // Imported processed images awaiting their original, or the reverse.
+      this.nameFamilies = new Map();
       // Bounds reservations and lapses together; only a test sets it.
       this.reservationMaxEntries =
         Number(config.reservationMaxEntries) > 0
@@ -544,24 +594,23 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       ) {
         throw buildNamesFullError(GhostErrors);
       }
-      const original = claimProcessedImageOf(this.reservedNames, file, targetDir);
+      const family = claimFamily(this.nameFamilies, file, targetDir, this.reservationMaxEntries);
       try {
         const result = await unique(
-          original ? { ...file, name: original.name } : withRandomName(file)
+          family
+            ? { ...file, name: nameWithComponent(file, family.component, family.isOriginal) }
+            : withRandomName(file)
         );
         this.reservedNames.set(key, {
           name: path.basename(result),
           expiresAt: Date.now() + RESERVATION_WINDOW_MS,
-          dir: targetDir || '',
-          sourceName: file.name,
-          originalClaimed: false,
         });
         // A fresh promise replaces any earlier lapse of the same file.
         this.lapsedReservations.delete(key);
         return result;
       } catch (error) {
-        if (original) {
-          original.entry.originalClaimed = false;
+        if (family) {
+          family.release();
         }
         throw error;
       }

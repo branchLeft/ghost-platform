@@ -216,13 +216,19 @@ stored under a fresh component: Ghost then falls back to the processed image.
   such a file. So none is made: each ask returns a fresh component, and two
   inlined media of one name share none. The name is stored at the path Ghost
   was handed, and this adapter does not choose it again at `saveRaw()`.
-- **An imported original is paired with its processed image only in one
-  order.** An original `photo_o.png` asked for while the promise for `photo.png`
-  in the same directory is live and unspent is promised `<promised stem>_o.png`,
-  the name Ghost looks for, once per processed image. An original asked for
-  first, or after the processed image was saved, or after its promise lapsed,
-  keeps its own component, and Ghost's resize lookup then falls back to the
-  processed image. No reference breaks.
+- **An imported original is paired with its processed image.** Ghost's importer
+  asks for every file's name at once, so neither of `photo.png` and
+  `photo_o.png` is promised before the other asks. They are matched by the
+  directory they will be stored in, the temp directory the zip was extracted to
+  (one per import) and the processed image's name; whichever asks first picks
+  the component and the other takes it, so the original is promised
+  `<processed stem>_o<ext>`, the name Ghost looks for. Another import's
+  `photo.png` never matches. The record is dropped once both have asked, or after
+  an hour, and the table is bounded by the same limit as the promises: past
+  it a file is simply not paired. A lone original is named
+  `<stem>-<component>_o<ext>`, and a name that is only an extension is never an
+  original. Pairing relies on Ghost extracting one import to one temp
+  directory; a caller that passes no temp path is not paired at all.
 - **Ghost's importer rewrites only the references its own pattern matches.** It
   builds that pattern from the file name without escaping it, so a name with
   regular-expression characters, such as `my photo (1).JPG`, is not rewritten

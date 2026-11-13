@@ -51,8 +51,8 @@ function buildAdapter({ reservationMaxEntries } = {}) {
   });
 }
 
-async function tempFile(name) {
-  const filePath = path.join(tmpDir, `src-${crypto.randomBytes(4).toString('hex')}`);
+async function tempFile(name, dir = tmpDir) {
+  const filePath = path.join(dir, `src-${crypto.randomBytes(4).toString('hex')}`);
   await fs.writeFile(filePath, CLEAN_BYTES);
   return { name, path: filePath, type: 'image/png' };
 }
@@ -147,76 +147,165 @@ describe('concurrent getUniqueFileName() for one file', () => {
   });
 });
 
-describe("an imported processed image and its '_o' original", () => {
+// Ghost's ImageHandler.loadFile: every file's name is asked for in one
+// Promise.all, so nobody's name exists when the others ask; the files are
+// saved afterwards. `dir` is the per-import temp directory the zip was
+// extracted to.
+async function ghostImport(adapter, names, dir = tmpDir) {
+  const files = [];
+  for (const name of names) {
+    const file = await tempFile(name, dir);
+    file.targetDir = path.posix.join('content/images', path.posix.dirname(name));
+    files.push(file);
+  }
+  const promised = await Promise.all(files.map((f) => adapter.getUniqueFileName(f, f.targetDir)));
+  return { files, promised };
+}
+
+async function importDir(label) {
+  const dir = path.join(tmpDir, label);
+  await fs.mkdir(dir, { recursive: true });
+  return dir;
+}
+
+describe("an imported processed image and its '_o' original, asked for as Ghost's importer asks", () => {
   const stored = (p) => path.basename(p);
+  const pairedName = (processed) => stored(processed).replace(/\.png$/, '_o.png');
 
-  it('are promised one component, so Ghost finds the original by its usual name', async () => {
-    const adapter = buildAdapter();
-    const processed = await tempFile('photo.png');
-    const original = await tempFile('photo_o.png');
-    const processedPath = await adapter.getUniqueFileName(processed, DIR);
-    const originalPath = await adapter.getUniqueFileName(original, DIR);
-    // Ghost looks for <stored basename>_o<ext> of the processed image.
-    expect(stored(originalPath)).toBe(stored(processedPath).replace(/\.png$/, '_o.png'));
-    await adapter.save(processed, DIR);
-    await adapter.save(original, DIR);
-    expect(adapter.wrapped.files.has(processedPath)).toBe(true);
-    expect(adapter.wrapped.files.has(originalPath)).toBe(true);
+  it('are promised one component whichever is asked for first, and stored where promised', async () => {
+    for (const order of [
+      ['2019/01/photo.png', '2019/01/photo_o.png'],
+      ['2019/01/photo_o.png', '2019/01/photo.png'],
+    ]) {
+      const adapter = buildAdapter();
+      const { files, promised } = await ghostImport(adapter, order);
+      const processed = promised[order.indexOf('2019/01/photo.png')];
+      const original = promised[order.indexOf('2019/01/photo_o.png')];
+      // Ghost looks for <stored basename>_o<ext> of the processed image.
+      expect(stored(original)).toBe(pairedName(processed));
+      await Promise.all(files.map((f) => adapter.save(f, f.targetDir)));
+      expect(adapter.wrapped.files.has(processed)).toBe(true);
+      expect(adapter.wrapped.files.has(original)).toBe(true);
+      expect(adapter.wrapped.files.size).toBe(2);
+    }
   });
 
-  it('pairs only inside one directory', async () => {
+  it('pairs every pair of a larger batch, and shares no name between them', async () => {
     const adapter = buildAdapter();
-    const processedPath = await adapter.getUniqueFileName(await tempFile('photo.png'), DIR);
-    const originalPath = await adapter.getUniqueFileName(
-      await tempFile('photo_o.png'),
-      'content/images/2019/02'
-    );
-    expect(stored(originalPath)).not.toBe(stored(processedPath).replace(/\.png$/, '_o.png'));
+    const names = [];
+    for (let n = 0; n < 6; n += 1) {
+      names.push(`2019/01/p${n}.png`, `2019/01/p${n}_o.png`);
+    }
+    const { files, promised } = await ghostImport(adapter, names);
+    for (let n = 0; n < 6; n += 1) {
+      expect(stored(promised[names.indexOf(`2019/01/p${n}_o.png`)])).toBe(
+        pairedName(promised[names.indexOf(`2019/01/p${n}.png`)])
+      );
+    }
+    expect(new Set(promised).size).toBe(12);
+    await Promise.all(files.map((f) => adapter.save(f, f.targetDir)));
+    expect(adapter.wrapped.files.size).toBe(12);
   });
 
-  it('pairs an original once: a second one of the same name gets its own component', async () => {
+  it("does not pair an original with another import's processed image of the same name", async () => {
     const adapter = buildAdapter();
-    const processedPath = await adapter.getUniqueFileName(await tempFile('photo.png'), DIR);
-    const first = await adapter.getUniqueFileName(await tempFile('photo_o.png'), DIR);
-    const second = await adapter.getUniqueFileName(await tempFile('photo_o.png'), DIR);
-    const paired = stored(processedPath).replace(/\.png$/, '_o.png');
-    expect(stored(first)).toBe(paired);
-    expect(stored(second)).not.toBe(paired);
-    expect(stored(second)).toMatch(/^photo_o-[a-z2-7]{22}\.png$/);
+    const a = await ghostImport(adapter, ['2019/01/photo.png'], await importDir('import-a'));
+    const b = await ghostImport(adapter, ['2019/01/photo_o.png'], await importDir('import-b'));
+    expect(stored(b.promised[0])).not.toBe(pairedName(a.promised[0]));
+    expect(stored(b.promised[0])).toMatch(/^photo-[a-z2-7]{22}_o\.png$/);
+    expect(stored(b.promised[0])).not.toContain(stored(a.promised[0]).slice(0, -4));
   });
 
-  it('pairs two concurrent originals with one processed image only once', async () => {
+  it('keeps two overlapping imports of the same names each paired within itself', async () => {
     const adapter = buildAdapter();
-    const processedPath = await adapter.getUniqueFileName(await tempFile('photo.png'), DIR);
+    const names = ['2019/01/photo_o.png', '2019/01/photo.png'];
     const [a, b] = await Promise.all([
-      adapter.getUniqueFileName(await tempFile('photo_o.png'), DIR),
-      adapter.getUniqueFileName(await tempFile('photo_o.png'), DIR),
+      ghostImport(adapter, names, await importDir('import-a')),
+      ghostImport(adapter, names, await importDir('import-b')),
     ]);
-    const paired = stored(processedPath).replace(/\.png$/, '_o.png');
-    expect([stored(a), stored(b)].filter((name) => name === paired)).toHaveLength(1);
+    for (const run of [a, b]) {
+      expect(stored(run.promised[0])).toBe(pairedName(run.promised[1]));
+    }
+    expect(new Set([...a.promised, ...b.promised]).size).toBe(4);
   });
 
-  it('does not pair with a promise that has lapsed', async () => {
+  it('pairs only inside one target directory', async () => {
     const adapter = buildAdapter();
+    const dir = await importDir('one-import');
+    const processed = await tempFile('photo.png', dir);
+    const original = await tempFile('photo_o.png', dir);
+    const [p, o] = await Promise.all([
+      adapter.getUniqueFileName(processed, DIR),
+      adapter.getUniqueFileName(original, 'content/images/2019/02'),
+    ]);
+    expect(stored(o)).not.toBe(pairedName(p));
+  });
+
+  it('pairs an original once: a second one of the same name is not paired with the same image', async () => {
+    const adapter = buildAdapter();
+    const dir = await importDir('one-import');
+    const processed = await adapter.getUniqueFileName(await tempFile('photo.png', dir), DIR);
+    const first = await adapter.getUniqueFileName(await tempFile('photo_o.png', dir), DIR);
+    // The pair is complete, so the second starts a record of its own.
+    const second = await adapter.getUniqueFileName(await tempFile('photo_o.png', dir), DIR);
+    expect(stored(first)).toBe(pairedName(processed));
+    expect(stored(second)).not.toBe(pairedName(processed));
+    expect(stored(second)).toMatch(/^photo-[a-z2-7]{22}_o\.png$/);
+    expect(stored(second)).not.toBe(stored(first));
+  });
+
+  it('does not pair across a lapse of the window', async () => {
+    const adapter = buildAdapter();
+    const dir = await importDir('one-import');
     const start = Date.now();
-    const processedPath = await adapter.getUniqueFileName(await tempFile('photo.png'), DIR);
+    const processed = await adapter.getUniqueFileName(await tempFile('photo.png', dir), DIR);
     vi.spyOn(Date, 'now').mockReturnValue(start + 2 * 60 * 60 * 1000);
-    const originalPath = await adapter.getUniqueFileName(await tempFile('photo_o.png'), DIR);
-    expect(stored(originalPath)).not.toBe(stored(processedPath).replace(/\.png$/, '_o.png'));
+    const original = await adapter.getUniqueFileName(await tempFile('photo_o.png', dir), DIR);
+    expect(stored(original)).not.toBe(pairedName(processed));
   });
 
-  it('states its limit: an original promised first is not paired with a processed image after it', async () => {
+  it('leaves a lone original with a name of its own and nothing waiting', async () => {
     const adapter = buildAdapter();
-    const originalPath = await adapter.getUniqueFileName(await tempFile('photo_o.png'), DIR);
-    const processedPath = await adapter.getUniqueFileName(await tempFile('photo.png'), DIR);
-    expect(stored(originalPath)).not.toBe(stored(processedPath).replace(/\.png$/, '_o.png'));
+    const { promised } = await ghostImport(adapter, ['2019/01/solo_o.png']);
+    expect(stored(promised[0])).toMatch(/^solo-[a-z2-7]{22}_o\.png$/);
+  });
+
+  it('hands the role back when the ask fails, so a retry still pairs', async () => {
+    const adapter = buildAdapter();
+    const dir = await importDir('one-import');
+    const processed = await tempFile('photo.png', dir);
+    const original = await tempFile('photo_o.png', dir);
+    const exists = vi.spyOn(adapter.wrapped, 'exists').mockRejectedValueOnce(new Error('down'));
+    await expect(adapter.getUniqueFileName(original, DIR)).rejects.toThrow('down');
+    exists.mockRestore();
+    const [o, p] = await Promise.all([
+      adapter.getUniqueFileName(original, DIR),
+      adapter.getUniqueFileName(processed, DIR),
+    ]);
+    expect(stored(o)).toBe(pairedName(p));
+  });
+
+  it('bounds its records: a full family table leaves new files unpaired, not refused', async () => {
+    const adapter = buildAdapter({ reservationMaxEntries: 3 });
+    const dir = await importDir('one-import');
+    const files = [];
+    for (let n = 0; n < 3; n += 1) {
+      files.push(await tempFile(`f${n}.png`, dir));
+      await adapter.getUniqueFileName(files[n], DIR);
+    }
+    expect(adapter.nameFamilies.size).toBe(3);
+    // Spend one promise to make room in the reservation table.
+    await adapter.save(files[0], DIR);
+    const original = await adapter.getUniqueFileName(await tempFile('g_o.png', dir), DIR);
+    // Room for the promise, none for a record: named, just not paired.
+    expect(path.basename(original)).toMatch(/^g_o-[a-z2-7]{22}\.png$/);
+    expect(adapter.nameFamilies.size).toBe(3);
   });
 
   it('never pairs a name that is only an extension', async () => {
     const adapter = buildAdapter();
-    await adapter.getUniqueFileName(await tempFile('.png'), DIR);
-    const other = await adapter.getUniqueFileName(await tempFile('_o.png'), DIR);
-    expect(stored(other)).toMatch(/^_o-[a-z2-7]{22}\.png$/);
+    const { promised } = await ghostImport(adapter, ['.png', '_o.png']);
+    expect(stored(promised[1])).toMatch(/^_o-[a-z2-7]{22}\.png$/);
   });
 });
 
