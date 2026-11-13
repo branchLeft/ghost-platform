@@ -274,3 +274,68 @@ describe('redactSecrets', () => {
     expect(out).not.toContain('ghp_');
   });
 });
+
+// Found by the old-against-new differential while the rules were made linear: the JWT shape must
+// start at its own "eyJ", as it always did, and must still be tried at an "eyJ" that follows one a
+// token shape swallowed.
+describe('redactSecrets JWT shape', () => {
+  it('cuts a JWT at its eyJ, leaving a glued dotted word for the credential rule', () => {
+    const jwt = `eyJ${filler(11, 'a')}private_key.${filler(11, 'b')}.`;
+    expect(redactSecrets(`host.exampleToken ZQ0A.ZQ1B${jwt}`)).toBe(
+      `host.exampleToken ${REDACTED}${REDACTED}`
+    );
+  });
+
+  it('still reads a JWT that follows an eyJ inside another token shape', () => {
+    const text = `ZQ0Axoxb-ZQ1BeyJgithub_pat_eyJ${filler(11, 'a')}.QQQQQQQQQQghp_.ZQ2C${filler(11, 'b')}`;
+    expect(redactSecrets(text)).toBe(`ZQ0A${REDACTED}_pat_${REDACTED}`);
+  });
+
+  it('redacts a JWT whose first part is exactly ten characters', () => {
+    const jwt = `eyJ${filler(10, 'a')}.${filler(10, 'b')}.sig`;
+    expect(redactSecrets(`got ${jwt} back`)).toBe(`got ${REDACTED} back`);
+  });
+
+  it('leaves an eyJ whose first part is nine characters', () => {
+    const text = `got eyJ${filler(9, 'a')}.${filler(10, 'b')}.sig back`;
+    expect(redactSecrets(text)).toBe(text);
+  });
+});
+
+// Redaction runs on every line the controller logs, so a crafted value must not hold a request.
+// Each shape below made a rule rescan a whole run of name characters from every start inside it,
+// which is quadratic: seconds at 100 KB. The budget is for a loaded CI runner; linear code needs a
+// few milliseconds.
+describe('redactSecrets on adversarial 100 KB input', () => {
+  const SIZE = 100_000;
+  const repeated = (unit: string, prefix = ''): string =>
+    prefix + unit.repeat(Math.ceil((SIZE - prefix.length) / unit.length));
+  // The best of three, so one scheduler pause on a busy runner is not read as slow code.
+  const bestOfThreeMs = (text: string): number => {
+    let best = Infinity;
+    for (let attempt = 0; attempt < 3 && best >= 50; attempt += 1) {
+      const started = performance.now();
+      redactSecrets(text);
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  };
+
+  it.each([
+    ['a long run of dotted words', repeated('ab.')],
+    ['a long run of longer dotted words', repeated('word.')],
+    ['secret words glued together', repeated('token')],
+    ['different secret words glued together', repeated('passwordsecret')],
+    ['dotted secret words', repeated('token.')],
+    ['dotted words around a secret word', repeated('x.token.')],
+    ['glued secret flags', repeated('--token')],
+    ['glued JWT openings', repeated('eyJ')],
+    ['dotted words that could open a URL scheme', repeated('a.b+c-d.')],
+    ['dotted words inside an open quoted value', repeated('token.', 'password="')],
+    ['glued secret words after a separator', repeated('token', 'password=')],
+    ['glued secret words before a separator', `${repeated('token')} =`],
+  ])('finishes %s in under 50 ms', (_name, text) => {
+    expect(text.length).toBeGreaterThanOrEqual(SIZE);
+    expect(bestOfThreeMs(text)).toBeLessThan(50);
+  });
+});
