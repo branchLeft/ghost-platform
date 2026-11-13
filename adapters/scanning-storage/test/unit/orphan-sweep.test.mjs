@@ -4,6 +4,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { holdersOf } from '../helpers/holders.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -512,9 +513,7 @@ describe('a hold racing the orphan sweep for the same digest', () => {
 
     expect(removedBySweep).toBe(1);
     await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
-    expect(
-      JSON.parse(await fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`), 'utf8'))
-    ).toEqual({
+    expect(await holdersOf(quarantinePath, DIGEST)).toEqual({
       owners: { [OWNER]: ['a.png'] },
     });
     expect(registry.isPending(DIGEST)).toBe(true);
@@ -548,10 +547,9 @@ describe('a hold racing the orphan sweep for the same digest', () => {
         .holds.map((hold) => hold.targetPath)
         .sort()
     ).toEqual(['first.png', 'second.png']);
-    expect(
-      JSON.parse(
-        await fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`), 'utf8')
-      ).owners[OWNER].sort()
-    ).toEqual(['first.png', 'second.png']);
+    expect((await holdersOf(quarantinePath, DIGEST)).owners[OWNER].sort()).toEqual([
+      'first.png',
+      'second.png',
+    ]);
   });
 });

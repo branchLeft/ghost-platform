@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const path = require('node:path');
 const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
@@ -103,15 +104,31 @@ function sidecarPath(quarantinePath, digest) {
   return path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`);
 }
 
-// Sidecar shape: {"owners": {"<owner>": ["<targetPath>", ...]},
-// "stuck": {"<owner>": {"reason": "..."}}}. Ghost constructs one decorator
-// per storage feature, and a deployment gives all three the same
-// quarantinePath, so one digest's sidecar can be shared by several
-// registries in one process. Each registry reads and writes only its own
-// owner's entries, and only the last owner to release a digest removes the
-// bytes. Returns null when there is no sidecar; throws when there is one
-// this code cannot attribute to an owner.
-function readSidecarSync(file) {
+// The sidecar is a directory, `<digest>.holds.json/`, holding one entry
+// file per holder: {"owner": "<owner>", "targets": ["<targetPath>", ...],
+// "stuck"?: {"reason": "..."}}. A holder is one registry in one process,
+// so the three features of one Ghost, and both colours of a swap, each
+// write only their own file and never read-modify-write another's. Only
+// presence of the directory is what quarantine.js checks before removing
+// bytes, and rmdir removes it only when no entry is left, atomically.
+function holderFileName() {
+  return `${process.pid}-${crypto.randomBytes(6).toString('hex')}.json`;
+}
+
+// Dotfiles are a writer's temp files, never an entry.
+function holderNames(dir) {
+  try {
+    return fsSync
+      .readdirSync(dir)
+      .filter((name) => name.endsWith('.json') && !name.startsWith('.'));
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+// Returns null when the entry is gone; throws when it names no owner.
+function readHolderSync(file) {
   let raw;
   try {
     raw = fsSync.readFileSync(file, 'utf8');
@@ -124,13 +141,144 @@ function readSidecarSync(file) {
     !parsed ||
     typeof parsed !== 'object' ||
     Array.isArray(parsed) ||
+    typeof parsed.owner !== 'string' ||
+    parsed.owner.length === 0
+  ) {
+    throw new Error('hold sidecar entry names no owner');
+  }
+  return parsed;
+}
+
+function hasTargets(holder) {
+  return (
+    Array.isArray(holder.targets) &&
+    holder.targets.length > 0 &&
+    holder.targets.every((t) => typeof t === 'string')
+  );
+}
+
+// A releaser's rmdir can remove the directory between the mkdir and the
+// temp file's creation; the write then finds no directory and makes it
+// again. Once the temp file exists the directory is not empty, so no rmdir
+// can remove it. A sidecar that is a regular file (one this code cannot
+// attribute) is never overwritten: it may be someone's pending hold.
+function writeHolderSync(dir, name, data) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fsSync.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      if (err.code === 'EEXIST') {
+        throw new Error('hold sidecar is a file, not a directory of owners; left untouched');
+      }
+      throw err;
+    }
+    try {
+      writeFileAtomicSync(path.join(dir, name), data);
+      return;
+    } catch (err) {
+      if (err.code !== 'ENOENT' || attempt >= 8) throw err;
+    }
+  }
+}
+
+// True when the directory is gone. rmdir fails on any entry, so an entry
+// being written, or another holder's, keeps it.
+function removeIfEmptySync(dir) {
+  try {
+    fsSync.rmdirSync(dir);
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT') return true;
+    if (err.code === 'ENOTEMPTY' || err.code === 'EEXIST') return false;
+    throw err;
+  }
+}
+
+function bytesMatchSync(quarantinePath, digest, computeDigest) {
+  try {
+    return computeDigest(fsSync.readFileSync(path.join(quarantinePath, digest))) === digest;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+// An older release wrote the sidecar as one file, {"owners": {...},
+// "stuck": {...}}, read-modify-written by every owner. At start-up it is
+// split into one entry per owner. No sidecar stands between moving the old
+// file aside and the first entry landing, so a release or the orphan sweep
+// may remove the bytes then; they are read first and put back after, as
+// hold() does. Throws, leaving the file in place, when it has no owners map
+// or the bytes do not match their digest.
+function migrateSingleFileSidecarSync(quarantinePath, digest, computeDigest) {
+  const file = sidecarPath(quarantinePath, digest);
+  const stat = fsSync.lstatSync(file, { throwIfNoEntry: false });
+  if (!stat || !stat.isFile()) return;
+  const bytes = fsSync.readFileSync(path.join(quarantinePath, digest));
+  if (computeDigest(bytes) !== digest) {
+    throw new Error('the quarantined bytes do not match their digest');
+  }
+  const parsed = JSON.parse(fsSync.readFileSync(file, 'utf8'));
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
     !parsed.owners ||
     typeof parsed.owners !== 'object' ||
     Array.isArray(parsed.owners)
   ) {
     throw new Error('hold sidecar has no owners map');
   }
-  return parsed;
+  const aside = path.join(quarantinePath, `.${digest}${HOLDS_SUFFIX}.${holderFileName()}`);
+  try {
+    fsSync.renameSync(file, aside);
+  } catch (err) {
+    if (err.code === 'ENOENT') return; // another process is splitting it
+    throw err;
+  }
+  for (const [owner, targets] of Object.entries(parsed.owners)) {
+    const holder = { owner, targets };
+    const stuck = parsed.stuck && parsed.stuck[owner];
+    if (stuck) holder.stuck = stuck;
+    writeHolderSync(file, holderFileName(), JSON.stringify(holder));
+  }
+  if (!bytesMatchSync(quarantinePath, digest, computeDigest)) {
+    writeFileAtomicSync(path.join(quarantinePath, digest), bytes);
+  }
+  fsSync.rmSync(aside, { force: true });
+}
+
+// A holder killed between making the directory and its entry landing
+// leaves the directory empty, or holding only its temp file, and that would
+// keep the bytes from the orphan sweep for good. A temp file older than
+// `minAgeMs` is no live writer's; an empty directory is removed at once,
+// which a live writer survives by making it again. Throws when the
+// quarantine directory cannot be listed; logs anything else and leaves it.
+function pruneAbandonedSidecarsSync(quarantinePath, { minAgeMs, nowMs, logger }) {
+  let names;
+  try {
+    names = fsSync.readdirSync(quarantinePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+  for (const name of names.filter((n) => n.endsWith(HOLDS_SUFFIX))) {
+    const dir = path.join(quarantinePath, name);
+    try {
+      const entries = fsSync.readdirSync(dir);
+      if (entries.some((entry) => !entry.startsWith('.'))) continue;
+      for (const entry of entries) {
+        const temp = path.join(dir, entry);
+        const stat = fsSync.lstatSync(temp, { throwIfNoEntry: false });
+        if (stat && stat.isFile() && nowMs - stat.mtimeMs > minAgeMs) {
+          fsSync.rmSync(temp, { force: true });
+        }
+      }
+      removeIfEmptySync(dir);
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') continue;
+      logger.error(`ScanningStorageAdapter: could not prune sidecar ${name}; left in place`, err);
+    }
+  }
 }
 
 // Tracks bytes accepted with no verdict yet. The quarantine directory, not
@@ -150,6 +298,7 @@ class HoldRegistry {
     orphanMinAgeMs,
     orphanSweepIntervalMs,
     now = Date.now,
+    onBeforeHolderRelease,
     onBeforeBytesRelease,
     onBytesMovedAside,
     logger = console,
@@ -183,12 +332,15 @@ class HoldRegistry {
       DEFAULT_ORPHAN_SWEEP_INTERVAL_MS
     );
     this.now = now;
-    // Test seams for a release: before the bytes are moved aside, and with
-    // them moved aside.
+    // Test seams for a release: before this holder's entry is removed,
+    // before the bytes are moved aside, and with them moved aside.
+    this.onBeforeHolderRelease = onBeforeHolderRelease;
     this.onBeforeBytesRelease = onBeforeBytesRelease;
     this.onBytesMovedAside = onBytesMovedAside;
     this.orphanSweepTimer = null;
     this.logger = logger;
+    // This registry's own entry in every sidecar it writes.
+    this.holderName = holderFileName();
     // digest -> { holds: [{targetPath, onAllow, onRefuse}], timer, intervalMs, failures }
     //
     // Keyed by digest, not by hold: the same content can be held twice from
@@ -238,8 +390,8 @@ class HoldRegistry {
     if (this.stuck.has(digest)) {
       // Terminal: the new target is recorded so an operator clearing the
       // stuck state gets it back on restart, but nothing retries it now.
-      const sidecar = readSidecarSync(sidecarPath(this.quarantinePath, digest));
-      const targets = (sidecar && sidecar.owners[this.owner]) || [];
+      const own = readHolderSync(this.#ownEntry(digest));
+      const targets = (own && hasTargets(own) && own.targets) || [];
       this.#writeOwnTargets(digest, [...targets, targetPath]);
       await this.#reconfirmBytes(digest, buffer);
       this.logger.error(
@@ -320,18 +472,10 @@ class HoldRegistry {
         continue;
       }
 
-      let targetPaths;
-      let stuck;
+      let adopted;
       try {
-        const sidecar = readSidecarSync(path.join(this.quarantinePath, name));
-        if (!sidecar || !Object.prototype.hasOwnProperty.call(sidecar.owners, this.owner)) {
-          continue; // another feature's hold, promoted by that feature's own registry
-        }
-        targetPaths = sidecar.owners[this.owner];
-        if (!Array.isArray(targetPaths) || targetPaths.length === 0) {
-          throw new Error('empty or malformed sidecar');
-        }
-        stuck = sidecar.stuck && sidecar.stuck[this.owner];
+        migrateSingleFileSidecarSync(this.quarantinePath, digest, this.computeDigest);
+        adopted = this.#adoptOwnersEntries(digest);
       } catch (err) {
         this.logger.error(
           `ScanningStorageAdapter: could not read the hold sidecar for ${digest}; leaving it held but unresumed`,
@@ -339,10 +483,13 @@ class HoldRegistry {
         );
         continue;
       }
+      // None of this owner's: another feature's hold, promoted by that
+      // feature's own registry.
+      if (!adopted) continue;
+      const { targetPaths } = adopted;
 
-      if (stuck) {
-        const reason = stuck.reason || 'unknown';
-        this.stuck.set(digest, reason);
+      if (this.stuck.has(digest)) {
+        const reason = this.stuck.get(digest);
         this.logger.error(
           `${STUCK_LOG_PREFIX} for ${digest} (owner ${this.owner}): ${reason}; not resumed`
         );
@@ -364,10 +511,67 @@ class HoldRegistry {
     }
   }
 
+  // Takes over every entry this owner's earlier processes left (and the
+  // other colour's, during a swap: both re-arm the same holds), as one entry
+  // of this registry's own. Each is claimed by rename before it is read, so
+  // a live process that rewrites its entry meanwhile writes a new file
+  // rather than losing it, and removed only once this registry's entry is
+  // written. An entry that cannot be read is logged and left: it keeps the
+  // bytes. Returns null when no entry is this owner's.
+  #adoptOwnersEntries(digest) {
+    const dir = sidecarPath(this.quarantinePath, digest);
+    const mine = [];
+    for (const name of holderNames(dir)) {
+      try {
+        const holder = readHolderSync(path.join(dir, name));
+        if (holder && holder.owner === this.owner) mine.push(name);
+      } catch (err) {
+        this.logger.error(
+          `ScanningStorageAdapter: could not read hold sidecar entry ${name} for ${digest}; leaving it held but unresumed`,
+          err
+        );
+      }
+    }
+    if (mine.length === 0) return null;
+
+    const targetPaths = [];
+    const claimed = [];
+    let stuck = null;
+    for (const name of mine) {
+      const claim = path.join(dir, holderFileName());
+      try {
+        fsSync.renameSync(path.join(dir, name), claim);
+      } catch (err) {
+        if (err.code === 'ENOENT') continue; // released or claimed meanwhile
+        throw err;
+      }
+      claimed.push(claim);
+      const holder = readHolderSync(claim);
+      if (!holder || holder.owner !== this.owner || !hasTargets(holder)) {
+        throw new Error('empty or malformed sidecar entry');
+      }
+      for (const target of holder.targets) {
+        if (!targetPaths.includes(target)) targetPaths.push(target);
+      }
+      if (holder.stuck && !stuck) stuck = holder.stuck;
+    }
+    if (targetPaths.length === 0) return null;
+    if (stuck) this.stuck.set(digest, stuck.reason || 'unknown');
+    this.#writeOwnTargets(digest, targetPaths);
+    for (const claim of claimed) fsSync.rmSync(claim, { force: true });
+    return { targetPaths };
+  }
+
   // Never throws: it runs from the adapter's constructor and from a timer,
   // and a failed sweep must neither stop start-up nor kill the process.
   #sweepOrphansLogged() {
     try {
+      // Pruned first, so bytes an abandoned sidecar was keeping are swept.
+      pruneAbandonedSidecarsSync(this.quarantinePath, {
+        minAgeMs: this.orphanMinAgeMs,
+        nowMs: this.now(),
+        logger: this.logger,
+      });
       sweepOrphans(this.quarantinePath, {
         minAgeMs: this.orphanMinAgeMs,
         now: this.now,
@@ -505,13 +709,12 @@ class HoldRegistry {
   }
 
   #markStuck(digest, reason, err) {
+    const entry = this.entries.get(digest);
+    const targetPaths = entry ? entry.holds.map((h) => h.targetPath) : [];
     this.#forget(digest);
     this.stuck.set(digest, reason);
-    const file = sidecarPath(this.quarantinePath, digest);
     try {
-      const sidecar = readSidecarSync(file) || { owners: {} };
-      sidecar.stuck = { ...(sidecar.stuck || {}), [this.owner]: { reason } };
-      writeFileAtomicSync(file, JSON.stringify(sidecar));
+      this.#writeOwnTargets(digest, targetPaths);
     } catch (writeErr) {
       this.logger.error(
         `ScanningStorageAdapter: could not persist the stuck state for ${digest}`,
@@ -524,38 +727,35 @@ class HoldRegistry {
     );
   }
 
-  // Synchronous read-modify-write, so no other registry sharing this
-  // sidecar can interleave between the read and the write. An existing
-  // sidecar this code cannot attribute throws rather than being
-  // overwritten: it may be someone's pending hold.
-  #writeOwnTargets(digest, targetPaths) {
-    const file = sidecarPath(this.quarantinePath, digest);
-    const sidecar = readSidecarSync(file) || { owners: {} };
-    sidecar.owners[this.owner] = targetPaths;
-    writeFileAtomicSync(file, JSON.stringify(sidecar));
+  #ownEntry(digest) {
+    return path.join(sidecarPath(this.quarantinePath, digest), this.holderName);
   }
 
-  // Drops this registry's entry from the sidecar. Only when no other owner
-  // is still waiting on the digest are the sidecar and (for a promotion)
-  // the bytes removed -- another feature's registry re-reads those bytes
-  // on its own next retry. Bytes a refusal record names, or that a sidecar
-  // written by another process names, are never removed (releaseBytes).
-  // Otherwise best-effort: a leftover file here is untidy, never unsafe.
+  // Writes this registry's own entry whole. No other holder's entry is
+  // read or written, so there is no read-modify-write to interleave with.
+  #writeOwnTargets(digest, targetPaths) {
+    const holder = { owner: this.owner, targets: targetPaths };
+    if (this.stuck.has(digest)) holder.stuck = { reason: this.stuck.get(digest) };
+    writeHolderSync(
+      sidecarPath(this.quarantinePath, digest),
+      this.holderName,
+      JSON.stringify(holder)
+    );
+  }
+
+  // Removes this registry's entry, then the sidecar directory if no other
+  // entry is in it, then (for a promotion) the bytes -- another holder
+  // re-reads those bytes on its own next retry. The entry goes first, so
+  // any entry present while the bytes are released is another holder's:
+  // rmdir fails on it, and releaseBytes, which looks for the directory
+  // after moving the bytes aside, puts them back for one that lands later.
+  // Bytes a refusal record names are never removed. Otherwise best-effort:
+  // a leftover file here is untidy, never unsafe.
   #release(digest, { keepBytes }) {
-    const file = sidecarPath(this.quarantinePath, digest);
     try {
-      const sidecar = readSidecarSync(file) || { owners: {} };
-      delete sidecar.owners[this.owner];
-      if (sidecar.stuck) delete sidecar.stuck[this.owner];
-      if (Object.keys(sidecar.owners).length > 0) {
-        writeFileAtomicSync(file, JSON.stringify(sidecar));
-        return;
-      }
-      // This registry's own sidecar goes first, so that any sidecar present
-      // while the bytes are released is another process's hold, and
-      // keepIfHeld lets it keep them. Leaving it for last would let that
-      // hold's sidecar land after the check and be removed with ours.
-      fsSync.rmSync(file, { force: true });
+      if (this.onBeforeHolderRelease) this.onBeforeHolderRelease();
+      fsSync.rmSync(this.#ownEntry(digest), { force: true });
+      if (!removeIfEmptySync(sidecarPath(this.quarantinePath, digest))) return;
       if (!keepBytes) {
         if (this.onBeforeBytesRelease) this.onBeforeBytesRelease();
         releaseBytes(this.quarantinePath, digest, {

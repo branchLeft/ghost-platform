@@ -305,10 +305,10 @@ shape) builds an absolute, CDN-hosted URL from `wrappedConfig.cdnUrl` (or
 
 **Restart-safety.** The quarantine directory is the only source of truth,
 never this process's memory. A hold's bytes are quarantined immediately
-(exactly as a refusal's are), with a `<digest>.holds.json` sidecar recording
-which target path(s) are waiting on it -- the only way to tell a still-
-pending hold apart from a permanently quarantined refusal, since both live
-at `<quarantinePath>/<digest>`. `ScanningStorageAdapter`'s constructor calls
+(exactly as a refusal's are), with a `<digest>.holds.json/` sidecar
+directory recording which target path(s) are waiting on it -- the only way
+to tell a still-pending hold apart from a permanently quarantined refusal,
+since both live at `<quarantinePath>/<digest>`. `ScanningStorageAdapter`'s constructor calls
 `HoldRegistry#resumeFromQuarantine` synchronously, before it returns, so a
 restarted process resumes every pending hold before it can serve a single
 request. Bytes are never held in memory for a hold's full (potentially
@@ -321,8 +321,8 @@ ever bounding how long a hold itself is allowed to live.
 **One quarantine, three features.** Ghost constructs one decorator per
 storage feature (`images`, `media`, `files`) and never tells it which
 feature it serves, while a deployment gives all three the same
-`quarantinePath`. The sidecar is therefore keyed by owner --
-`{"owners": {"<wraps>:<storagePath>": [targetPaths]}}`, the wrapped
+`quarantinePath`. Each sidecar entry therefore names its owner --
+`{"owner": "<wraps>:<storagePath>", "targets": [targetPaths]}`, the wrapped
 adapter's `storagePath` being what differs between features on both
 backends -- and a restarted decorator resumes only its own owner's
 targets. Without that, whichever feature's decorator polled first would
@@ -330,8 +330,9 @@ promote another feature's hold into its own served tree and delete the
 bytes the owning feature was still waiting on, so the upload would never
 be served. When the same bytes are held by two features, each promotes
 into its own tree and only the last to release the digest removes the
-bytes. A sidecar with no `owners` map is left held and unresumed, and
-logged, rather than guessed at.
+bytes. An entry with no owner, or a sidecar that is a file with no
+`owners` map, is left held and unresumed, and logged, rather than guessed
+at.
 
 **A refusal by any feature is final for every feature.** A refusal --
 synchronous, or a held digest's later match -- writes the bytes, then a
@@ -382,13 +383,32 @@ retried, then stuck), a release puts the bytes back, and a sweep leaves the
 copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as
 two real processes, pausing each between its steps, in all six orders.
 
-The hold sidecar's read-modify-write is still single-process, which is a
-safety-neutral but real availability gap: a held digest is never served
-and never loses sealed bytes, but during a swap both colours re-arm the
-same holds, so a hold one colour promotes can fail its retries in the
-other and raise a false "hold stuck" alert, and two processes updating
-one sidecar at once can drop an owner's entry, leaving a hold that is
-never resumed and never marked stuck, with nothing logged.
+**One entry per holder.** The sidecar is a directory with one entry file
+per holder, a holder being one feature's decorator in one process, so the
+three features of a Ghost and both colours of a swap never write the same
+file, and no holder ever reads, rewrites or removes another's entry. A
+release removes its own entry, then the directory with `rmdir`, which
+fails while any entry is in it, and only then the bytes, through
+`releaseBytes`, which looks for the directory again after moving them
+aside. So a hold that lands in another process at any point of a release
+keeps its entry, and its bytes: before the `rmdir`, it fails; after it,
+`releaseBytes` puts the bytes back, or the hold's own check after writing
+its entry does. A writer whose directory is removed between making it and
+writing its entry makes it again. A restarted decorator takes over every
+entry its owner's earlier processes left, claiming each by `rename` before
+reading it, and writes them as one entry of its own; during a swap that
+includes the live other colour's, which goes on rewriting and removing
+only its own. A sidecar left by an older release as one file, `{"owners":
+{...}, "stuck": {...}}`, is split into one entry per owner at start-up;
+the bytes are read first and put back if a release or sweep removed them
+while no sidecar stood. `test/unit/hold-release-cross-process.test.mjs`
+runs a releaser and a holder as two real processes, pausing the releaser
+before it gives up its entry, before it moves the bytes aside and after.
+
+A digest held in both colours during a swap is still promoted by both, and
+a hold one colour promotes can fail its retries in the other and raise a
+false "hold stuck" alert: safety-neutral, since a held digest is never
+served unverified and never loses sealed bytes.
 
 **Why the registry is shaped as it is.** There is no real verdict channel
 yet, so "a later verdict arrives" means the same in-process `VerdictClient`
@@ -416,11 +436,11 @@ that does not settle within `writeTimeoutMs` counts as a failed retry, and a
 request-path write that does not settle is rejected after the same budget
 (default 60000 ms, set through the adapter's `writeTimeoutMs` config). It is
 logged once with the fixed prefix
-`ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
-`"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
-same line again rather than resuming it. To retry a stuck hold once its
-cause is fixed, remove that owner's `stuck` entry from the sidecar and
-restart Ghost.
+`ScanningStorageAdapter: hold stuck` and recorded in its sidecar entry as
+`"stuck": {"reason": "..."}`; a restart that finds it logs the same line
+again rather than resuming it. To retry a stuck hold once its cause is
+fixed, remove the `stuck` field from that owner's entry in
+`<digest>.holds.json/` and restart Ghost.
 
 **Why the write budget matters.** Ghost's `S3Storage` builds its S3 client with
 only a region, endpoint, path-style flag and credentials, and its config schema
@@ -429,7 +449,10 @@ that budget is the only bound on a write the object store never acknowledges.
 
 **Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
 between the two leaves bytes under `<digest>` with no sidecar and no
-refusal record. They were never served, but nothing would ever resume or
+refusal record, or with a sidecar directory holding no entry, only the
+crashed writer's temp file or nothing. Each sweep first removes such a
+directory, with any temp file in it older than `holdOrphanMinAgeMs`; a live
+writer whose empty directory is removed makes it again. They were never served, but nothing would ever resume or
 remove them, and the sidecar was the only record of the target path they
 were held for, so they cannot be resumed either. The registry therefore
 sweeps them: once at start-up, right after the aside-copy sweep and before
@@ -464,7 +487,8 @@ argument as a releaser: it writes the record before the bytes, so a sweep
 either sees the record and puts the bytes back, or moved them aside first
 and the sealer restores or rewrites them. `test/unit/cross-process.test.mjs`
 runs a sealer and a sweep as two real processes in all six orders, and
-kills a real `hold` between its two writes.
+kills a real `hold` between its two writes, before its sidecar directory
+exists and with only its temp file in it.
 
 The default age is 10 minutes. It has to be far larger than the longest a
 live writer can sit between its two writes: the write timeout is 60 seconds
