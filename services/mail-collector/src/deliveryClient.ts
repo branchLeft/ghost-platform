@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { WireMessage } from './drainClient.js';
 import { encodeOutcomeMessageId } from './outcomeId.js';
+import { mailClassOf } from './sendingTarget.js';
 
 export interface DeliveryClientOptions {
   host: string;
@@ -13,9 +14,11 @@ export interface DeliveryClientOptions {
    * message, its claim generation and its spool, an envelope sender of
    * `returnPath` (where mx1 sends delivery status notifications) and a DSN
    * request for success, failure and delay. Unset, a submission is exactly
-   * what it was before this option existed.
+   * what it was before this option existed. `bulkReturnPath`, when set, is the
+   * envelope sender of bulk (campaign) mail only, so its notifications arrive
+   * apart from login mail's; unset, bulk mail uses `returnPath` too.
    */
-  outcomes?: { returnPath: string };
+  outcomes?: { returnPath: string; bulkReturnPath?: string };
   transporterFactory?: (opts: DeliveryClientOptions) => Transporter;
 }
 
@@ -23,6 +26,16 @@ export interface DeliveryClient {
   /** `targetId` names the spool the message came from; only used when outcomes are on. */
   deliver(message: WireMessage, targetId?: string): Promise<void>;
   close(): void;
+}
+
+/** The envelope sender for one message: the bulk return path for bulk mail when one is set, else the login one. */
+function returnPathFor(
+  outcomes: { returnPath: string; bulkReturnPath?: string },
+  message: Pick<WireMessage, 'emailId'>
+): string {
+  return mailClassOf(message.emailId) === 'bulk' && outcomes.bulkReturnPath !== undefined
+    ? outcomes.bulkReturnPath
+    : outcomes.returnPath;
 }
 
 /**
@@ -46,7 +59,7 @@ export function createDeliveryClient(opts: DeliveryClientOptions): DeliveryClien
               id: message.id,
               drainCount: message.drainCount,
             }),
-            envelope: { from: opts.outcomes.returnPath, to: message.to },
+            envelope: { from: returnPathFor(opts.outcomes, message), to: message.to },
             dsn: {
               id: message.id,
               return: 'headers' as const,

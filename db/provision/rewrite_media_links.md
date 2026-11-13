@@ -55,5 +55,4 @@ includes the trailing `/`.
 `test_rewrite_media_links.py` runs on a SQLite copy with placeholder data
 (`example.invalid`): none remain after apply, apply twice is a no-op, reverse
 is byte for byte (full dump compared), rollback on failure, refusals. The
-MySQL adapter is tested for the SQL it sends and its environment only; it has
-not been run against a server.
+MySQL adapter is tested for the SQL it sends and its environment only.

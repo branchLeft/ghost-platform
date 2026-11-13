@@ -220,7 +220,7 @@ function isVideoOrAudioWithFileType(buffer, boxes, consumed) {
   if (movieBox === undefined) {
     return !consumed;
   }
-  return hasVideoOrSoundTrack(buffer, movieBox);
+  return !consumed || hasVideoOrSoundTrack(buffer, movieBox);
 }
 
 function detectIsoBaseMedia(buffer) {

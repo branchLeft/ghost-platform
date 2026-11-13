@@ -34,7 +34,12 @@ on:
   # tests read), the whole of .github/workflows (the provision-tenant gate
   # tests scan that directory), the tenant name register and the two naming.ts
   # files and the app host's volume script (compared for agreement), the
-  # bucket-fencing runbook, and the pinned Python version. Push to main stays unfiltered as the backstop.
+  # bucket-fencing runbook, and the pinned Python version. It also reaches the
+  # inputs of test_codeowners_ownership.py: the CODEOWNERS file, every package
+  # manifest, workspace file and Dockerfile, and the repository's scripts
+  # directory, which a secret-bearing job runs and CODEOWNERS must own. A file
+  # that such a job imports from elsewhere is caught by the push to main, which
+  # stays unfiltered as the backstop.
   pull_request:
     branches: [main]
     paths:
@@ -48,6 +53,11 @@ on:
       - 'RUNBOOK-bucket-fencing.md'
       - '.python-version'
       - '.github/workflows/**'
+      - '.github/CODEOWNERS'
+      - '**/package.json'
+      - '**/pnpm-workspace.yaml'
+      - '**/Dockerfile'
+      - 'scripts/**'
 
 permissions:
   contents: read
