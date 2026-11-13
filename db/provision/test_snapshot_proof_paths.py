@@ -4,10 +4,11 @@
 The Percona digest the proof pulls lives in .github/image-mirror/images.json,
 and the helper that reads it is db/provision/percona_pin.py. The proof workflow
 is path-filtered, so a re-pin that touches neither file would be merged without
-the proof ever running on it. This test fails when the push or pull_request
-filter of snapshot-proof-ci.yml leaves either one out. The proof's own pattern
-for the helper is a glob, so it stays valid whether the helper is present yet or
-not.
+the proof ever running on it. The three proofs also load db/provision/gtid_snapshot.py
+through extract_tenant_binlog.py, and the job's Python comes from .python-version.
+This test fails when the push or pull_request filter of snapshot-proof-ci.yml
+leaves any of these out. The pattern for the helper is a glob, so it stays valid
+whether the helper is present yet or not.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ WORKFLOW = _REPO / ".github" / "workflows" / "snapshot-proof-ci.yml"
 REQUIRED = (
     ".github/image-mirror/images.json",
     "db/provision/percona_pin*",
+    "db/provision/gtid_snapshot.py",
+    ".python-version",
 )
 TRIGGERS = ("push", "pull_request")
 
@@ -82,19 +85,24 @@ class SnapshotProofPathsTest(unittest.TestCase):
             [f"{t}: .github/image-mirror/images.json" for t in TRIGGERS],
         )
 
-    def test_a_filter_with_the_mirror_list_on_one_trigger_only_is_flagged(self) -> None:
+    def test_dropping_the_gtid_helper_or_the_python_version_is_flagged(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        for dropped in ("db/provision/gtid_snapshot.py", ".python-version"):
+            with self.subTest(dropped=dropped):
+                sabotaged = re.sub(
+                    rf"^ +- '{re.escape(dropped)}'\n", "", text, flags=re.M
+                )
+                self.assertNotEqual(sabotaged, text)
+                self.assertEqual(unwatched(sabotaged), [f"{t}: {dropped}" for t in TRIGGERS])
+
+    def test_a_filter_complete_on_one_trigger_only_is_flagged(self) -> None:
+        entries = "".join(f"      - '{required}'\n" for required in REQUIRED)
         text = (
-            "on:\n  push:\n    paths:\n      - '.github/image-mirror/images.json'\n"
-            "      - 'db/provision/percona_pin*'\n  pull_request:\n    paths:\n"
-            "      - 'db/other'\npermissions:\n  contents: read\n"
+            f"on:\n  push:\n    paths:\n{entries}"
+            "  pull_request:\n    paths:\n      - 'db/other'\n"
+            "permissions:\n  contents: read\n"
         )
-        self.assertEqual(
-            unwatched(text),
-            [
-                "pull_request: .github/image-mirror/images.json",
-                "pull_request: db/provision/percona_pin*",
-            ],
-        )
+        self.assertEqual(unwatched(text), [f"pull_request: {r}" for r in REQUIRED])
 
 
 if __name__ == "__main__":

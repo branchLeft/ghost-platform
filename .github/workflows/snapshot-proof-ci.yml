@@ -4,7 +4,12 @@ name: Snapshot proof (native x86_64)
 # db1 is x86_64; the Mac runs this proof under amd64 emulation, so this is the
 # run that matches the hosts. Path-filtered to the proof and what it loads.
 # The Percona digest it proves is the one in the image mirror list, so that list is
-# in the filter: a re-pin must run the proof.
+# in the filter: a re-pin must run the proof. Until the pin helper
+# (db/provision/percona_pin.py) exists, the Dockerfile digest is held to that
+# list by the equality test in workflow-percona-image.test.js; the proof script
+# keeps its own literal. gtid_snapshot.py is loaded by all three proofs through
+# extract_tenant_binlog.py, and .python-version selects the job's Python, so both
+# are in the filter too.
 # The unit tests for the same code run in repo-tooling-ci.yml on every push.
 
 on:
@@ -15,6 +20,7 @@ on:
       - 'db/provision/replication_client_probe*'
       - 'db/provision/percona_snapshot_probe*'
       - 'db/provision/percona_pin*'
+      - 'db/provision/gtid_snapshot.py'
       - 'db/provision/prove-snapshot-locking.sh'
       - 'db/provision/prove-replication-client.sh'
       - 'db/provision/prove-percona-snapshot.sh'
@@ -23,6 +29,7 @@ on:
       - 'db/RUNBOOK-db.md'
       - 'db/stack/conf.d/branchleft.cnf'
       - '.github/image-mirror/images.json'
+      - '.python-version'
       - '.github/workflows/snapshot-proof-ci.yml'
   pull_request:
     branches: [main]
@@ -31,6 +38,7 @@ on:
       - 'db/provision/replication_client_probe*'
       - 'db/provision/percona_snapshot_probe*'
       - 'db/provision/percona_pin*'
+      - 'db/provision/gtid_snapshot.py'
       - 'db/provision/prove-snapshot-locking.sh'
       - 'db/provision/prove-replication-client.sh'
       - 'db/provision/prove-percona-snapshot.sh'
@@ -39,6 +47,7 @@ on:
       - 'db/RUNBOOK-db.md'
       - 'db/stack/conf.d/branchleft.cnf'
       - '.github/image-mirror/images.json'
+      - '.python-version'
       - '.github/workflows/snapshot-proof-ci.yml'
 
 # Read-only. No secrets are used: the proof runs on local throwaway containers.
