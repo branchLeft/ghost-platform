@@ -254,9 +254,6 @@ describe('--migrate-only on a real server', () => {
     expect(result.err).toEqual([
       `provision failed: migrate refused: role portal_provisioner, ${PROVISIONER} is absent; --migrate-only creates no role, run the full provision first`,
     ]);
-    // SABOTAGE (commit 2, removed in commit 3): plant the state the check guards
-    // against, a provisioner role that can log in. The role was dropped above.
-    await admin('postgres', `CREATE ROLE ${PROVISIONER} LOGIN`);
     const [rows] = await admin(
       'postgres',
       `SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_provisioner', '${PROVISIONER}')`
