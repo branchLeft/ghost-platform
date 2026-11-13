@@ -49,6 +49,12 @@ SLEEP_SECONDS = 60
 # between passes keeps the dumps from being a CPU stress test of the host.
 PASS_GAP_SECONDS = 2.0
 LATENCY_LIMIT_SECONDS = sp.WRITER_LIMIT_SECONDS
+# A host whose own commit latency, before any dump, is over this cannot judge
+# control 2: the limit is 100 ms and such a host spends half of it idle. Chosen
+# from the native runs that passed (worst baseline 8 to 25.7 ms, run to run) at
+# about twice that; the runs a slow shared runner failed measured 133 to 213 ms.
+# It never touches the 100 ms limit and never turns a pass into anything else.
+HOST_BASELINE_BOUND_SECONDS = 0.050
 # A writer's first statements pay for a cold connection and a cold table cache.
 WARMUP_SAMPLES = 2
 DUMP_PASSWORD_FILE = "coord"
@@ -93,6 +99,9 @@ EXIT_SABOTAGE_NOT_DETECTED = sp.EXIT_SABOTAGE_NOT_DETECTED
 EXIT_CANDIDATE_INADEQUATE = sp.EXIT_OPTION_C_UNAVAILABLE
 EXIT_FINDING_NOT_RECORDED = sp.EXIT_FINDING_NOT_RECORDED
 EXIT_REFUSED = sp.EXIT_REFUSED
+# Control 2 failed with nothing else wrong, on a host too slow to judge it. Not
+# the candidate's fault and not a pass: 0 to 5 are snapshot_probe's, 64 is usage.
+EXIT_HOST_TOO_NOISY = 6
 
 Coordinates = tuple[str, int]
 
@@ -582,10 +591,43 @@ def inject_sql(tag: str) -> str:
     )
 
 
-def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool) -> int:
+def noisy_tenants(baseline: Mapping[str, float] | None, bound: float) -> list[str]:
+    """Tenants whose worst statement before the first dump is over `bound`."""
+    return sorted(tenant for tenant, worst in (baseline or {}).items() if worst > bound)
+
+
+def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool, baseline: Mapping[str, float] | None = None) -> int:
     """`outcomes` maps each control run to whether it passed: snapshot_probe's
-    convention, controls 1 to 5 gating and 6 recorded."""
-    return sp.exit_code(outcomes, sabotaged=sabotaged)
+    convention, controls 1 to 5 gating and 6 recorded. The one addition: when
+    control 2 is the only gating control that failed and the host's baseline was
+    over HOST_BASELINE_BOUND_SECONDS, the run is inconclusive, not inadequate.
+    A sabotage run, a pass and any other failure keep snapshot_probe's code."""
+    code = sp.exit_code(outcomes, sabotaged=sabotaged)
+    if code != EXIT_CANDIDATE_INADEQUATE:
+        return code
+    failed = sorted(number for number, passed in outcomes.items() if not passed and number in sp.GATING_CONTROLS)
+    if failed == [2] and noisy_tenants(baseline, HOST_BASELINE_BOUND_SECONDS):
+        return EXIT_HOST_TOO_NOISY
+    return code
+
+
+def outcome_message(code: int, controls: str, baseline: Mapping[str, float] | None = None, sabotage: str | None = None) -> str:
+    """The closing line of a run, by exit code."""
+    if code == EXIT_PASSED:
+        return "ALL PASSED" + (f" (controls {controls})" if controls and controls != "1 2 3 4 5 6" else "")
+    if code == EXIT_RED:
+        return f"RED as expected under sabotage {sabotage}: the control sees the failure"
+    if code == EXIT_SABOTAGE_NOT_DETECTED:
+        return f"SABOTAGE NOT DETECTED: a control stayed green under {sabotage}"
+    if code == EXIT_HOST_TOO_NOISY:
+        worst = ", ".join(f"{tenant} {sp._ms(baseline[tenant])}" for tenant in noisy_tenants(baseline, HOST_BASELINE_BOUND_SECONDS)) if baseline else ""
+        return (
+            f"host too noisy: inconclusive. Control 2 failed, but this host's own commit latency before the first dump ({worst}) "
+            f"is over the {sp._ms(HOST_BASELINE_BOUND_SECONDS)} bound, so the run says nothing about the candidate. Re-run on a quieter host."
+        )
+    if code == EXIT_CANDIDATE_INADEQUATE:
+        return "CANDIDATE INADEQUATE: a control from 1 to 5 failed with nothing sabotaged. Stop and tell the owner."
+    return "the comment-form finding (control 6) could not be recorded"
 
 
 def pinned_percona(wrapper_text: str) -> str:
@@ -1389,6 +1431,7 @@ def run_probe(args: argparse.Namespace) -> int:
     run = Run(ctx, (workdir / f"{DUMP_PASSWORD_FILE}.pw").read_text().strip())
     seed_run(run)
     outcomes: dict[int, bool] = {}
+    baseline: dict[str, float] | None = None
     for number in controls:
         ctx.say(f"== control {number}" + (f" (sabotage: {args.sabotage})" if args.sabotage else ""))
         try:
@@ -1398,19 +1441,14 @@ def run_probe(args: argparse.Namespace) -> int:
         for line in result.numbers:
             ctx.say(f"  {line}")
         outcomes[number] = result.verdict.passed
+        if run.scenario is not None:
+            baseline = dict(run.scenario.baseline)
         label = "FINDING" if number == 6 else ("PASS" if result.verdict.passed else ("RED" if args.sabotage else "FAIL"))
+        if number == 2 and not result.verdict.passed and not args.sabotage and noisy_tenants(baseline, HOST_BASELINE_BOUND_SECONDS):
+            label = "INCONCLUSIVE"
         ctx.say(f"{label} control {number}, {result.title}: {result.verdict.reason}")
-    code = exit_code(outcomes, sabotaged=bool(args.sabotage))
-    if code == EXIT_PASSED:
-        ctx.say("ALL PASSED" + (f" (controls {args.controls})" if args.controls != "1 2 3 4 5 6" else ""))
-    elif code == EXIT_RED:
-        ctx.say(f"RED as expected under sabotage {args.sabotage}: the control sees the failure")
-    elif code == EXIT_SABOTAGE_NOT_DETECTED:
-        ctx.say(f"SABOTAGE NOT DETECTED: a control stayed green under {args.sabotage}")
-    elif code == EXIT_CANDIDATE_INADEQUATE:
-        ctx.say("CANDIDATE INADEQUATE: a control from 1 to 5 failed with nothing sabotaged. Stop and tell the owner.")
-    else:
-        ctx.say("the comment-form finding (control 6) could not be recorded")
+    code = exit_code(outcomes, sabotaged=bool(args.sabotage), baseline=baseline)
+    ctx.say(outcome_message(code, args.controls, baseline, args.sabotage))
     return code
 
 

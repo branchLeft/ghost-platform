@@ -103,6 +103,7 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
 | 3    | `CANDIDATE INADEQUATE`: a control from 1 to 5 failed with nothing sabotaged                     |
 | 4    | the control 6 finding could not be recorded                                                     |
 | 5    | refused before any container                                                                    |
+| 6    | `host too noisy: inconclusive`: control 2 was the only control to fail, on a host whose own baseline was over the bound (see control 2) |
 
 ## The six controls
 
@@ -138,6 +139,17 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
    statement before the first dump is printed beside it. When that baseline is
    already over the limit the failure says the host's own commit latency may be
    the cause. The limit is never loosened.
+   **Host noise.** When control 2 is the only gating control to fail and any
+   tenant's baseline is over 50 ms (`HOST_BASELINE_BOUND_SECONDS`), the run
+   prints `INCONCLUSIVE control 2` and `host too noisy: inconclusive` and exits 6,
+   not 3: the host, not the candidate, broke the limit, so the run is neither a
+   pass nor `CANDIDATE INADEQUATE`, and CI stays red until it is re-run on a
+   quieter host. The bound is about twice the worst baseline of the native runs
+   that passed (8 to 25.7 ms across three runs); the runs a slow shared runner
+   failed measured 133 to 213 ms. A pass is never reclassified, a failure of any
+   other control keeps exit 3, and a sabotage run keeps exits 1 and 2.
+   `percona_snapshot_probe_noisy_host.json` records both kinds of run and
+   `test_percona_host_noise.py` runs them.
 3. **No global or write-blocking lock.** A sampler reads
    `performance_schema.metadata_locks` for the dump accounts' threads, unpaced,
    across the whole run. No `GLOBAL` or `COMMIT` lock and no `TABLE` lock of a
