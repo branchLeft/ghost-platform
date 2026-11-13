@@ -464,7 +464,7 @@ export const hostnameRetirement = portal.table('hostname_retirement', {
 
 /**
  * The role the internet-facing front door writes as: declared as existing like
- * the others. It can insert a request and nothing else.
+ * the others. It can insert a request and read its own, and nothing else.
  */
 export const portalProspect = pgRole('portal_prospect').existing();
 
@@ -473,68 +473,93 @@ export const portalProspect = pgRole('portal_prospect').existing();
  * address the identity service verified and the exact wording shown, with the
  * database's own time. One row per verified address for all time, so a second
  * submission for an address is refused by the table whichever process sends
- * it. Append-only by grant: the front door's role may insert and cannot read,
- * update or delete, and the lifecycle worker and the owner console read. The
+ * it. Append-only by grant: the front door's role may insert and, through a row
+ * policy on the address its transaction binds, read its own row alone, and
+ * cannot update or delete; the lifecycle worker and the owner console read. The
  * demo id is the opaque id the lifecycle will run under; it leads to a person
  * only through this row. Every rule in `demoRequest.ts` is repeated here as a
  * check.
  */
-export const demoRequest = portal.table(
-  'demo_request',
-  {
-    demoId: uuid('demo_id').primaryKey(),
-    verifiedSubject: text('verified_subject').notNull(),
-    verifiedAddress: text('verified_address').notNull(),
-    publicationName: text('publication_name').notNull(),
-    description: text('description'),
-    accentColour: text('accent_colour'),
-    theme: text('theme'),
-    font: text('font'),
-    newToGhost: boolean('new_to_ghost').notNull(),
-    importSource: text('import_source'),
-    outletType: text('outlet_type').notNull(),
-    logoHash: text('logo_hash'),
-    consentWording: text('consent_wording').notNull(),
-    explainerWording: text('explainer_wording').notNull(),
-    submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [
-    unique('demo_request_verified_address_unique').on(table.verifiedAddress),
-    check(
-      'demo_request_address_shape',
-      sql`${table.verifiedAddress} = lower(${table.verifiedAddress}) AND char_length(${table.verifiedAddress}) <= ${sql.raw(String(ADDRESS_MAX))} AND ${table.verifiedAddress} ~ ${sql.raw(`'${ADDRESS_PATTERN}'`)}`
-    ),
-    check(
-      'demo_request_subject_length',
-      sql`char_length(${table.verifiedSubject}) BETWEEN 1 AND ${sql.raw(String(SUBJECT_MAX))}`
-    ),
-    check(
-      'demo_request_name_length',
-      sql`char_length(${table.publicationName}) BETWEEN 1 AND ${sql.raw(String(NAME_MAX))}`
-    ),
-    check(
-      'demo_request_description_length',
-      sql`${table.description} IS NULL OR char_length(${table.description}) BETWEEN 1 AND ${sql.raw(String(DESCRIPTION_MAX))}`
-    ),
-    check(
-      'demo_request_colour_shape',
-      sql`${table.accentColour} IS NULL OR ${table.accentColour} ~ ${sql.raw(`'${COLOUR_PATTERN}'`)}`
-    ),
-    check(
-      'demo_request_choices_shape',
-      sql`(${table.theme} IS NULL OR ${table.theme} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}) AND (${table.font} IS NULL OR ${table.font} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}) AND ${table.outletType} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}`
-    ),
-    check(
-      'demo_request_import_source_length',
-      sql`${table.importSource} IS NULL OR char_length(${table.importSource}) BETWEEN 1 AND ${sql.raw(String(IMPORT_SOURCE_MAX))}`
-    ),
-    check(
-      'demo_request_logo_hash_shape',
-      sql`${table.logoHash} IS NULL OR ${table.logoHash} ~ ${sql.raw(`'${LOGO_HASH_PATTERN}'`)}`
-    ),
-    check(
-      'demo_request_wording_length',
-      sql`char_length(${table.consentWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))} AND char_length(${table.explainerWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))}`
-    ),
-  ]
-);
+export const demoRequest = portal
+  .table(
+    'demo_request',
+    {
+      demoId: uuid('demo_id').primaryKey(),
+      verifiedSubject: text('verified_subject').notNull(),
+      verifiedAddress: text('verified_address').notNull(),
+      publicationName: text('publication_name').notNull(),
+      description: text('description'),
+      accentColour: text('accent_colour'),
+      theme: text('theme'),
+      font: text('font'),
+      newToGhost: boolean('new_to_ghost').notNull(),
+      importSource: text('import_source'),
+      outletType: text('outlet_type').notNull(),
+      logoHash: text('logo_hash'),
+      consentWording: text('consent_wording').notNull(),
+      explainerWording: text('explainer_wording').notNull(),
+      submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      unique('demo_request_verified_address_unique').on(table.verifiedAddress),
+      check(
+        'demo_request_address_shape',
+        sql`${table.verifiedAddress} = lower(${table.verifiedAddress}) AND char_length(${table.verifiedAddress}) <= ${sql.raw(String(ADDRESS_MAX))} AND ${table.verifiedAddress} ~ ${sql.raw(`'${ADDRESS_PATTERN}'`)}`
+      ),
+      check(
+        'demo_request_subject_length',
+        sql`char_length(${table.verifiedSubject}) BETWEEN 1 AND ${sql.raw(String(SUBJECT_MAX))}`
+      ),
+      check(
+        'demo_request_name_length',
+        sql`char_length(${table.publicationName}) BETWEEN 1 AND ${sql.raw(String(NAME_MAX))}`
+      ),
+      check(
+        'demo_request_description_length',
+        sql`${table.description} IS NULL OR char_length(${table.description}) BETWEEN 1 AND ${sql.raw(String(DESCRIPTION_MAX))}`
+      ),
+      check(
+        'demo_request_colour_shape',
+        sql`${table.accentColour} IS NULL OR ${table.accentColour} ~ ${sql.raw(`'${COLOUR_PATTERN}'`)}`
+      ),
+      check(
+        'demo_request_choices_shape',
+        sql`(${table.theme} IS NULL OR ${table.theme} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}) AND (${table.font} IS NULL OR ${table.font} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}) AND ${table.outletType} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}`
+      ),
+      check(
+        'demo_request_import_source_length',
+        sql`${table.importSource} IS NULL OR char_length(${table.importSource}) BETWEEN 1 AND ${sql.raw(String(IMPORT_SOURCE_MAX))}`
+      ),
+      check(
+        'demo_request_logo_hash_shape',
+        sql`${table.logoHash} IS NULL OR ${table.logoHash} ~ ${sql.raw(`'${LOGO_HASH_PATTERN}'`)}`
+      ),
+      check(
+        'demo_request_wording_length',
+        sql`char_length(${table.consentWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))} AND char_length(${table.explainerWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))}`
+      ),
+      // Row security is on, so each role that holds a privilege needs a policy
+      // that admits it (the owner role bypasses row security by attribute). The
+      // front door appends a request and reads the one whose address its
+      // transaction has bound; the lifecycle worker reads every request.
+      pgPolicy('request_insert', {
+        as: 'permissive',
+        for: 'insert',
+        to: portalProspect,
+        withCheck: sql`true`,
+      }),
+      pgPolicy('own_request', {
+        as: 'permissive',
+        for: 'select',
+        to: portalProspect,
+        using: sql`${table.verifiedAddress} = public.bound_address()`,
+      }),
+      pgPolicy('provisioner_read', {
+        as: 'permissive',
+        for: 'select',
+        to: portalProvisioner,
+        using: sql`true`,
+      }),
+    ]
+  )
+  .enableRLS();

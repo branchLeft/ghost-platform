@@ -253,15 +253,14 @@ describe('one request per verified address, enforced by the table', () => {
   });
 });
 
-describe('the front door role inserts a request and does nothing else', () => {
+describe('the front door role inserts a request, reads its own and does nothing else', () => {
   it('inserts (the positive control)', async () => {
     expect(await outcome(asProspect((tx) => tx.insert(demoRequest).values(row())))).toBe('ok');
   });
 
-  it('cannot read a request back: SQLSTATE 42501, not an empty result', async () => {
-    expect(await outcome(asProspect((tx) => tx.select().from(demoRequest)))).toBe(
-      PERMISSION_DENIED
-    );
+  it('reads no request with no address bound, and cannot read back an insert: SQLSTATE 42501', async () => {
+    // The own-row reads are in prospectStatusRead.test.ts; unbound, the policy admits no row.
+    expect(await asProspect((tx) => tx.select().from(demoRequest))()).toEqual([]);
     expect(
       await outcome(asProspect((tx) => tx.insert(demoRequest).values(row()).returning()))
     ).toBe(PERMISSION_DENIED);
@@ -320,20 +319,29 @@ describe('the front door role inserts a request and does nothing else', () => {
     const client = await fx.admin.connect();
     try {
       await client.query('BEGIN');
-      await client.query('GRANT SELECT, UPDATE, DELETE ON portal.demo_request TO portal_prospect');
+      await client.query('GRANT UPDATE, DELETE ON portal.demo_request TO portal_prospect');
       await client.query('SET LOCAL ROLE portal_prospect');
-      expect(
-        (await client.query('SELECT count(*)::int AS n FROM portal.demo_request')).rows[0].n
-      ).toBeGreaterThan(0);
-      await client.query("UPDATE portal.demo_request SET publication_name = 'CHANGED'");
-      await client.query('DELETE FROM portal.demo_request');
+      // The statements are no longer refused. The row policy then admits no row
+      // to them (it is a read policy for the address bound, and none is bound).
+      const update = await client.query(
+        "UPDATE portal.demo_request SET publication_name = 'CHANGED'"
+      );
+      expect(update.rowCount).toBe(0);
+      expect((await client.query('DELETE FROM portal.demo_request')).rowCount).toBe(0);
     } finally {
       await client.query('ROLLBACK');
       client.release();
     }
-    expect(await outcome(asProspect((tx) => tx.select().from(demoRequest)))).toBe(
-      PERMISSION_DENIED
-    );
+    expect(
+      await outcome(
+        asProspect((tx) =>
+          tx
+            .update(demoRequest)
+            .set({ publicationName: 'CHANGED' })
+            .where(sql`true`)
+        )
+      )
+    ).toBe(PERMISSION_DENIED);
     expect((await fx.adminDb.select().from(demoRequest)).length).toBeGreaterThan(0);
   });
 
@@ -481,8 +489,8 @@ describe('the privilege table, role by role, as the catalog holds it', () => {
     return result.rows.filter((r) => r.held).map((r) => r.privilege);
   }
 
-  it('gives the front door INSERT alone, the worker and the console SELECT, the tenant nothing', async () => {
-    expect(await held('portal_prospect')).toEqual(['INSERT']);
+  it('gives the front door INSERT and SELECT (the row policy narrows it), the worker and the console SELECT, the tenant nothing', async () => {
+    expect(await held('portal_prospect')).toEqual(['SELECT', 'INSERT']);
     expect(await held('portal_provisioner')).toEqual(['SELECT']);
     expect(await held('portal_owner')).toEqual(['SELECT']);
     expect(await held('portal_tenant')).toEqual([]);
@@ -492,7 +500,7 @@ describe('the privilege table, role by role, as the catalog holds it', () => {
     const result = await fx.admin.query<{ n: number }>(
       `SELECT count(*)::int AS n
          FROM information_schema.column_privileges
-        WHERE grantee = 'portal_prospect' AND table_schema = 'portal' AND privilege_type <> 'INSERT'`
+        WHERE grantee = 'portal_prospect' AND table_schema = 'portal' AND privilege_type NOT IN ('INSERT', 'SELECT')`
     );
     expect(result.rows[0]!.n).toBe(0);
   });

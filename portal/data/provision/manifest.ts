@@ -66,7 +66,7 @@ export const ROLE_ATTRIBUTES: Record<Principal, RoleAttributes> = {
   ownerRole: { canLogin: false, bypassRls: true },
   // Writes the hostname register and the demo's state events, insert-only.
   provisionerRole: { canLogin: false, bypassRls: false },
-  // The internet-facing front door: inserts a request, and nothing else.
+  // The internet-facing front door: inserts a request and reads its own.
   prospectRole: { canLogin: false, bypassRls: false },
   tenantLogin: { canLogin: true, bypassRls: false },
   ownerLogin: { canLogin: true, bypassRls: false },
@@ -109,7 +109,22 @@ export interface ManifestObject {
   identity: string;
   since: string;
   grants: readonly Grant[];
+  /**
+   * Grants a later migration gave the object: expected once that migration is
+   * applied, and an extra before it, so a server held back still verifies.
+   */
+  added?: readonly { since: string; grants: readonly Grant[] }[];
   ownedBy?: 'migrator' | 'pg_database_owner' | 'bootstrap';
+}
+
+/** The whole ACL the manifest gives `object` once the migrations in `applied` are in. */
+export function grantsAt(object: ManifestObject, applied: readonly string[]): readonly Grant[] {
+  return [
+    ...object.grants,
+    ...(object.added ?? [])
+      .filter((later) => applied.includes(later.since))
+      .flatMap((later) => later.grants),
+  ];
 }
 
 export const INIT = 'init';
@@ -124,6 +139,7 @@ const DEMO_REBUILD = '0007_demo_rebuild_extended';
 const TENANT_NAME = '0008_tenant_name';
 const CUSTOM_DOMAIN = '0009_custom_domain';
 const DEMO_REQUEST = '0010_demo_request';
+export const STATUS_READ = '0011_demo_request_status_read';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -184,6 +200,13 @@ export function manifest(major: number, database: string): readonly ManifestObje
       identity: 'public.bound_organisation()',
       since: FIRST,
       grants: [{ grantee: 'tenantRole', privileges: ['EXECUTE'] }],
+    },
+    // The front door's own-row policy calls this as the invoking role.
+    {
+      kind: 'function',
+      identity: 'public.bound_address()',
+      since: STATUS_READ,
+      grants: [{ grantee: 'prospectRole', privileges: ['EXECUTE'] }],
     },
     {
       kind: 'schema',
@@ -305,8 +328,10 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
-    // ProspectDb.submit inserts and nothing else: the front door cannot read a
-    // request back, change one or remove one. ProvisionerDb.request and
+    // ProspectDb.submit inserts. ProspectDb.ownRequest reads once the status
+    // migration has given the front door SELECT, and the table's row policy
+    // shows it only the row whose address the transaction bound; it cannot
+    // change a request or remove one. ProvisionerDb.request and
     // OwnerDb.listRequests read. No role updates or deletes a request.
     {
       kind: 'table',
@@ -317,12 +342,27 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'provisionerRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
+      added: [
+        { since: STATUS_READ, grants: [{ grantee: 'prospectRole', privileges: ['SELECT'] }] },
+      ],
     },
   ];
 }
 
+/** Whether row security is on, and forced on the owner. `enabledFrom` is the migration that turns it on. */
+export interface RowSecurity {
+  enabled: boolean;
+  forced: boolean;
+  enabledFrom?: string;
+}
+
+/** Whether the manifest expects row security on once the migrations in `applied` are in. */
+export function rowSecurityEnabled(want: RowSecurity, applied: readonly string[]): boolean {
+  return want.enabled && (want.enabledFrom === undefined || applied.includes(want.enabledFrom));
+}
+
 /** Row security on each manifest table, exactly (M08). */
-export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }> = {
+export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.tenant_register': { enabled: true, forced: false },
   'portal.health_reading': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
@@ -333,7 +373,8 @@ export const ROW_SECURITY: Record<string, { enabled: boolean; forced: boolean }>
   'portal.demo_state_event': { enabled: false, forced: false },
   'portal.hostname_register': { enabled: false, forced: false },
   'portal.hostname_retirement': { enabled: false, forced: false },
-  'portal.demo_request': { enabled: false, forced: false },
+  // Off until the status migration turns it on: a server held back verifies.
+  'portal.demo_request': { enabled: true, forced: false, enabledFrom: STATUS_READ },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -354,6 +395,12 @@ export const FUNCTIONS: Record<string, { since: string; fingerprint: string }> =
       'src=9eab2b396e407b7655f4ee175b776f08baf64140c416fa6e04564a12a2ed560c lang=sql ' +
       'volatile=s secdef=false leakproof=false config=null',
   },
+  'public.bound_address()': {
+    since: STATUS_READ,
+    fingerprint:
+      'src=f5c5ee9694e97ebc88efc6da944e52f3fb2ff7a66ea2dc62526e88ed93e82bf6 lang=sql ' +
+      'volatile=s secdef=false leakproof=false config=null',
+  },
 };
 
 /** The row-security policies, exactly (M20), as the server deparses them. */
@@ -361,10 +408,18 @@ export interface PolicyEntry {
   table: string;
   name: string;
   since: string;
+  /** The principal the policy is written `TO`; the tenant role unless stated. */
+  role: 'tenantRole' | 'prospectRole' | 'provisionerRole';
   text: string;
 }
 
 const BOUND = 'tenant_id = public.bound_tenant()';
+
+const POLICY_ROLE_NAMES: Record<PolicyEntry['role'], string> = {
+  tenantRole: TENANT_ROLE,
+  prospectRole: PROSPECT_ROLE,
+  provisionerRole: PROVISIONER_ROLE,
+};
 
 function policy(
   table: string,
@@ -372,13 +427,15 @@ function policy(
   since: string,
   cmd: string,
   using: string,
-  check: string
+  check: string,
+  role: PolicyEntry['role'] = 'tenantRole'
 ): PolicyEntry {
   return {
     table,
     name,
     since,
-    text: `policy ${name} on ${table}: cmd=${cmd} permissive=true roles=${TENANT_ROLE} using=${using} check=${check}`,
+    role,
+    text: `policy ${name} on ${table}: cmd=${cmd} permissive=true roles=${POLICY_ROLE_NAMES[role]} using=${using} check=${check}`,
   };
 }
 
@@ -424,6 +481,29 @@ export const POLICIES: readonly PolicyEntry[] = [
     '*',
     `(${BOUND})`,
     `(${BOUND})`
+  ),
+  // The front door appends a request and reads the one whose address its
+  // transaction bound: an own-row policy, which compares the table's address
+  // column to `public.bound_address()` and nothing else. The lifecycle worker
+  // reads every request. The owner role bypasses row security by attribute.
+  policy('portal.demo_request', 'request_insert', STATUS_READ, 'a', 'null', 'true', 'prospectRole'),
+  policy(
+    'portal.demo_request',
+    'own_request',
+    STATUS_READ,
+    'r',
+    '(verified_address = public.bound_address())',
+    'null',
+    'prospectRole'
+  ),
+  policy(
+    'portal.demo_request',
+    'provisioner_read',
+    STATUS_READ,
+    'r',
+    'true',
+    'null',
+    'provisionerRole'
   ),
 ];
 

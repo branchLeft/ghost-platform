@@ -308,20 +308,33 @@ limitation explainer as it was shown, and the database's own time. The
 lifecycle design (`ghost-platform-docs/19-try-it-now-design/12-demo-lifecycle.html`,
 sections 05 to 07) owns the design; this is the owner side's record of it.
 `portal.demo_request` holds it, one row per request, keyed on the opaque demo id
-the lifecycle will run under. It has no tenant column and no row policy; the
-protection is the grants, as for the lifecycle tables.
+the lifecycle will run under. It has no tenant column. The protection is the
+grants and, for the front door's read, an own-row policy (below).
 
 **Who writes and reads it.** `portal_prospect`, a fourth role, used only by the
 internet-facing prospect application through the `./prospect` export
-(`ProspectDb`). It can `INSERT` a request and holds nothing else: it cannot
-read one back (an `INSERT ... RETURNING` is refused for want of `SELECT`),
-cannot update or delete one, and touches no other portal table. The process a
-stranger can reach therefore appends a request and can neither allocate a name,
-sign a descriptor nor read another prospect's answers. `portal_provisioner`
-(`ProvisionerDb.request`) and `portal_owner` (`OwnerDb.listRequests`,
-`OwnerDb.demoRequest`) read; no role updates or deletes a request. The
-prospect login is a member of the prospect role alone and is admitted to the
-portal database alone, like every login.
+(`ProspectDb`). It can `INSERT` a request and read its own, and holds nothing
+else: it cannot update or delete one, and touches no other portal table. The
+process a stranger can reach therefore appends a request and can neither
+allocate a name, sign a descriptor nor read another prospect's answers.
+`portal_provisioner` (`ProvisionerDb.request`) and `portal_owner`
+(`OwnerDb.listRequests`, `OwnerDb.demoRequest`) read every request; no role
+updates or deletes one. The prospect login is a member of the prospect role
+alone and is admitted to the portal database alone, like every login.
+
+**The front door reads its own row.** `ProspectDb.ownRequest(address)` binds
+the verified address to the transaction (`portal.prospect_address`) and selects
+from the table with no `WHERE`. Row security is on for the table and three
+permissive policies decide who sees what: `own_request` lets `portal_prospect`
+`SELECT` the rows where `verified_address = public.bound_address()` and no
+others; `request_insert` lets it `INSERT`; `provisioner_read` lets
+`portal_provisioner` read. The owner role bypasses row security by attribute.
+`public.bound_address()` reads the binding back and returns null when nothing is
+bound, so an unbound statement sees no request. It returns the request's demo
+id, the publication name and the time it was recorded, which is what a status
+page needs; the lifecycle state is not here, because the front door cannot read
+it. The `SELECT` privilege is table-wide, so the policy is what narrows it: a
+statement that skips the typed read still sees one row at most.
 
 **One request per verified address.** The verified address is unique over all
 time: a second submission for an address is refused by the table
@@ -345,11 +358,23 @@ has passed.
 Control cases (each a test that fails if the mechanism is removed): the
 request recorded with every answer and the database's time; a second request
 for one address refused at the table and, for two simultaneous submissions,
-exactly one winning; the front door's `SELECT`, `UPDATE`, `DELETE` and
-`TRUNCATE` refused with `42501` and shown to be the grant by granting it inside
-a rolled-back transaction; every check refusing a direct insert with `23514`;
-the provisioning command's own smoke test and closed-world fixtures refusing a
-widened or missing grant.
+exactly one winning; the front door's `UPDATE`, `DELETE` and `TRUNCATE` refused
+with `42501` and shown to be the grant by granting it inside a rolled-back
+transaction; every check refusing a direct insert with `23514`; the front door
+reading its own request and no other (`test/prospectStatusRead.test.ts`), shown
+to be the policy by rewriting it to `true`, adding a second permissive policy
+and switching row security off, each inside a rolled-back transaction; the
+provisioning command's own smoke test and closed-world fixtures refusing a
+widened or missing grant and a policy that reads another address (M06, M08,
+M09, M20).
+
+The closed-world manifest holds policies of this shape as well as the tenant
+one: each entry names the role it is written `TO`, its command, and its
+`USING` and `WITH CHECK` text as the server deparses them, so an own-row policy
+rewritten to `true`, a second permissive policy, or a policy for `PUBLIC` is an
+extra, and a dropped one is missing. A grant or row-security switch that a
+later migration adds (`added`, `enabledFrom`) is expected only once that
+migration is applied, so a server held back still verifies.
 
 ## The owner path
 

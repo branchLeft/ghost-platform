@@ -89,6 +89,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0008_tenant_name',
       'applied migration 0009_custom_domain',
       'applied migration 0010_demo_request',
+      'applied migration 0011_demo_request_status_read',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),
@@ -188,11 +189,14 @@ describe('the provisioning lifecycle', () => {
       expect(await privilege('portal_owner', table, 'INSERT')).toBe(false);
       expect(await privilege('portal_tenant', table, 'SELECT')).toBe(false);
     }
-    // The front door inserts a request and does nothing else: it cannot read
-    // one back, change one or remove one. The lifecycle worker and the owner
-    // console read what it wrote and write nothing to it.
-    expect(await privilege('portal_prospect', 'portal.demo_request', 'INSERT')).toBe(true);
-    for (const what of ['SELECT', 'UPDATE', 'DELETE']) {
+    // The front door inserts a request and reads its own, through a row policy
+    // on the address it binds: it cannot change one or remove one. The
+    // lifecycle worker and the owner console read what it wrote and write
+    // nothing to it.
+    for (const what of ['INSERT', 'SELECT']) {
+      expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(true);
+    }
+    for (const what of ['UPDATE', 'DELETE']) {
       expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(false);
     }
     for (const role of ['portal_provisioner', 'portal_owner']) {
@@ -323,7 +327,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 12 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 13 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 
@@ -418,7 +422,49 @@ describe('the provisioning lifecycle', () => {
   });
 
   it.each([
-    ['SELECT', 'reads', 'prospect reads portal.demo_request: expected 42501, got ok'],
+    [
+      'a policy that reads another address',
+      'ALTER POLICY own_request ON portal.demo_request USING (true)',
+      'ALTER POLICY own_request ON portal.demo_request USING (verified_address = public.bound_address())',
+    ],
+    [
+      'a second policy that reads every address',
+      'CREATE POLICY open_all ON portal.demo_request FOR SELECT TO portal_prospect USING (true)',
+      'DROP POLICY open_all ON portal.demo_request',
+    ],
+    [
+      'row security switched off',
+      'ALTER TABLE portal.demo_request DISABLE ROW LEVEL SECURITY',
+      'ALTER TABLE portal.demo_request ENABLE ROW LEVEL SECURITY',
+    ],
+  ])(
+    'the boundary smoke test fails for %s: the prospect role would read another address',
+    async (_label, sabotage, restore) => {
+      expect((await run()).code).toBe(0);
+      await admin(PROV_DB, sabotage);
+      try {
+        await expect(verifyBoundary(provConfig())).rejects.toThrow(
+          /prospect reads only its own row of portal\.demo_request: expected ok, got error without a SQLSTATE: Error/
+        );
+      } finally {
+        await admin(PROV_DB, restore);
+      }
+    }
+  );
+
+  it('the boundary smoke test fails when the prospect role could no longer read its own request', async () => {
+    expect((await run()).code).toBe(0);
+    await admin(PROV_DB, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect');
+    try {
+      await expect(verifyBoundary(provConfig())).rejects.toThrow(
+        'prospect reads only its own row of portal.demo_request: expected ok, got 42501'
+      );
+    } finally {
+      await admin(PROV_DB, 'GRANT SELECT ON portal.demo_request TO portal_prospect');
+    }
+  });
+
+  it.each([
     ['UPDATE', 'updates', 'prospect updates portal.demo_request: expected 42501, got ok'],
     ['DELETE', 'deletes', 'prospect deletes from portal.demo_request: expected 42501, got ok'],
   ])(
@@ -511,7 +557,9 @@ describe("the replay of drizzle's migrator", () => {
     await admin(
       'postgres',
       'CREATE ROLE portal_tenant NOLOGIN',
-      'CREATE ROLE portal_owner NOLOGIN'
+      'CREATE ROLE portal_owner NOLOGIN',
+      'CREATE ROLE portal_provisioner NOLOGIN',
+      'CREATE ROLE portal_prospect NOLOGIN'
     );
   }, 60000);
 

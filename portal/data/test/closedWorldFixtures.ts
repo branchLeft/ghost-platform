@@ -493,10 +493,116 @@ export const MORE_EXTRAS: readonly Tamper[] = [
   },
   {
     id: 'M06',
-    title: 'SELECT on the requests given to the prospect role, which writes and must not read',
-    apply: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
-    undo: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect']],
-    expect: /extra M06: SELECT on table portal.demo_request to portal_prospect/,
+    title: 'SELECT on the requests given to the tenant role, a widened grant',
+    apply: [[P, 'GRANT SELECT ON portal.demo_request TO portal_tenant']],
+    undo: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_tenant']],
+    expect: /extra M06: SELECT on table portal.demo_request to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the requests given to the prospect role, a widened grant',
+    apply: [[P, 'GRANT DELETE ON portal.demo_request TO portal_prospect']],
+    undo: [[P, 'REVOKE DELETE ON portal.demo_request FROM portal_prospect']],
+    expect: /extra M06: DELETE on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M07',
+    title: 'a column grant on the requests to the prospect role',
+    apply: [[P, 'GRANT UPDATE (publication_name) ON portal.demo_request TO portal_prospect']],
+    undo: [[P, 'REVOKE UPDATE (publication_name) ON portal.demo_request FROM portal_prospect']],
+    expect: /extra M07: UPDATE on column portal.demo_request.publication_name to portal_prospect/,
+  },
+  {
+    id: 'M20',
+    title: 'the own-row policy rewritten to read another address (every address)',
+    apply: [[P, 'ALTER POLICY own_request ON portal.demo_request USING (true)']],
+    undo: [
+      [
+        P,
+        'ALTER POLICY own_request ON portal.demo_request USING (verified_address = public.bound_address())',
+      ],
+    ],
+    expect:
+      /extra M20: policy own_request on portal.demo_request: cmd=r permissive=true roles=portal_prospect using=true check=null/,
+  },
+  {
+    id: 'M20',
+    title: 'the own-row policy rewritten to compare another column',
+    apply: [
+      [
+        P,
+        'ALTER POLICY own_request ON portal.demo_request USING (verified_subject = public.bound_address())',
+      ],
+    ],
+    undo: [
+      [
+        P,
+        'ALTER POLICY own_request ON portal.demo_request USING (verified_address = public.bound_address())',
+      ],
+    ],
+    expect: /extra M20: policy own_request on portal.demo_request: .*using=\(verified_subject = /,
+  },
+  {
+    id: 'M20',
+    title: 'a second permissive policy that lets the prospect role read every request',
+    apply: [
+      [
+        P,
+        'CREATE POLICY open_requests ON portal.demo_request FOR SELECT TO portal_prospect USING (true)',
+      ],
+    ],
+    undo: [[P, 'DROP POLICY open_requests ON portal.demo_request']],
+    expect: /extra M20: policy open_requests on portal.demo_request: cmd=r/,
+  },
+  {
+    id: 'M20',
+    title: 'a policy on the requests for PUBLIC',
+    apply: [
+      [P, 'CREATE POLICY open_public ON portal.demo_request FOR SELECT TO PUBLIC USING (true)'],
+    ],
+    undo: [[P, 'DROP POLICY open_public ON portal.demo_request']],
+    expect:
+      /extra M20: policy open_public on portal.demo_request: cmd=r permissive=true roles=PUBLIC/,
+  },
+  {
+    id: 'M08',
+    title: 'row-level security switched off on the requests',
+    apply: [[P, 'ALTER TABLE portal.demo_request DISABLE ROW LEVEL SECURITY']],
+    undo: [[P, 'ALTER TABLE portal.demo_request ENABLE ROW LEVEL SECURITY']],
+    expect: /extra M08: row \S+ on portal.demo_request: enabled=false/,
+  },
+  {
+    id: 'M08',
+    title: 'row-level security forced on the requests',
+    apply: [[P, 'ALTER TABLE portal.demo_request FORCE ROW LEVEL SECURITY']],
+    undo: [[P, 'ALTER TABLE portal.demo_request NO FORCE ROW LEVEL SECURITY']],
+    expect: /extra M08: row \S+ on portal.demo_request: enabled=true forced=true/,
+  },
+  {
+    id: 'M09',
+    title: 'the bound-address function rewritten to return another address',
+    apply: [
+      [
+        P,
+        'CREATE OR REPLACE FUNCTION public.bound_address() RETURNS text LANGUAGE sql STABLE AS $$ SELECT verified_address FROM portal.demo_request LIMIT 1 $$',
+      ],
+    ],
+    undo: [
+      [
+        P,
+        `CREATE OR REPLACE FUNCTION public.bound_address() RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT nullif(current_setting('portal.prospect_address', true), '')
+$$`,
+      ],
+    ],
+    expect: /extra M09: definition of public.bound_address\(\): /,
+  },
+  {
+    id: 'M09',
+    title: 'EXECUTE on the bound-address function given to the tenant role',
+    apply: [[P, 'GRANT EXECUTE ON FUNCTION public.bound_address() TO portal_tenant']],
+    undo: [[P, 'REVOKE EXECUTE ON FUNCTION public.bound_address() FROM portal_tenant']],
+    expect: /extra M09: EXECUTE on function public.bound_address\(\) to portal_tenant/,
   },
   {
     id: 'M06',
@@ -642,6 +748,44 @@ export const MISSING: readonly Tamper[] = [
     apply: [[P, 'REVOKE INSERT ON portal.demo_request FROM portal_prospect']],
     undo: [[P, 'GRANT INSERT ON portal.demo_request TO portal_prospect']],
     expect: /missing M06: INSERT on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M06',
+    title: "the prospect role's SELECT on the requests",
+    apply: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect']],
+    undo: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
+    expect: /missing M06: SELECT on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M09',
+    title: "the prospect role's EXECUTE on the bound-address function",
+    apply: [[P, 'REVOKE EXECUTE ON FUNCTION public.bound_address() FROM portal_prospect']],
+    undo: [[P, 'GRANT EXECUTE ON FUNCTION public.bound_address() TO portal_prospect']],
+    expect: /missing M09: EXECUTE on function public.bound_address\(\) to portal_prospect/,
+  },
+  {
+    id: 'M20',
+    title: 'the own-row policy dropped from the requests',
+    apply: [[P, 'DROP POLICY own_request ON portal.demo_request']],
+    undo: [
+      [
+        P,
+        'CREATE POLICY own_request ON portal.demo_request AS PERMISSIVE FOR SELECT TO portal_prospect USING (verified_address = public.bound_address())',
+      ],
+    ],
+    expect: /missing M20: policy own_request on portal.demo_request: cmd=r permissive=true/,
+  },
+  {
+    id: 'M20',
+    title: "the lifecycle worker's read policy dropped from the requests",
+    apply: [[P, 'DROP POLICY provisioner_read ON portal.demo_request']],
+    undo: [
+      [
+        P,
+        'CREATE POLICY provisioner_read ON portal.demo_request AS PERMISSIVE FOR SELECT TO portal_provisioner USING (true)',
+      ],
+    ],
+    expect: /missing M20: policy provisioner_read on portal.demo_request: cmd=r/,
   },
   {
     id: 'M06',

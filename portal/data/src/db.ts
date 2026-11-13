@@ -21,7 +21,7 @@ export async function enterRole(tx: Tx, role: PortalRole): Promise<void> {
   await tx.execute(sql`SET LOCAL ROLE ${sql.identifier(role)}`);
 }
 
-export type BindingKey = 'portal.tenant_id' | 'portal.organisation_id';
+export type BindingKey = 'portal.tenant_id' | 'portal.organisation_id' | 'portal.prospect_address';
 
 /**
  * Binds a value to the transaction for the policies to read. Local, so it
