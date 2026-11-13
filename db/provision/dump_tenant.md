@@ -16,11 +16,7 @@ Connects over the Unix socket bind-mounted out of the mysql container
 (`./run/mysqld:/var/run/mysqld` in `db/stack/compose.yml`) as the dedicated
 `backup`@`localhost` account -- never TCP, so this never depends on
 `bind-address` covering a loopback or private address for this account.
-`DB_DUMP_MYSQL_PWD` is read from this process's own environment; nothing
-yet specifies how that variable reaches a pull-model invocation of this
-script, since a worker dialling in rather than a local systemd timer is
-what runs it now, and the old push model's answer (an on-host
-`EnvironmentFile`) was built for the timer it is replacing.
+`DB_DUMP_MYSQL_PWD` is read from this process's own environment.
 
 There is no object-storage credential, no encryption key and no bucket,
 endpoint or region to read here. A start-up check refuses to run at all if
@@ -48,8 +44,7 @@ dump. `settings` is not reachable by that path and carries on the order of
 a hundred rows seeded by every install's default-settings fixture, with no
 migration in the tree that truncates it wholesale.
 
-`db1`'s own `dump_nightly.py` is untouched by this file and keeps running
-exactly as it does today.
+`db1`'s own `dump_nightly.py` is untouched by this file.
 
 ## floor-check
 

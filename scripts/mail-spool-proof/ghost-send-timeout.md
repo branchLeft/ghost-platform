@@ -23,8 +23,10 @@ timeout.
   is what ended it.
 - The negative control boots a second Ghost with the three timeout keys
   omitted, against the same listener. Its reader's request is still open at
-  `BOUND_MS`, and the listener saw that Ghost dial in. The check stops 2 s
-  after `BOUND_MS`, so the run does not wait for nodemailer's 30 s default.
+  `BOUND_MS`, or ends at least 3 s after the rendered greeting timeout (Ghost
+  6.76's mailer has a 10 s greeting default of its own, where older Ghost
+  waited 30 s), and the listener saw that Ghost dial in. The check stops 2 s
+  after `BOUND_MS`, so the run does not wait for the default.
 
 ## Why a listener, not `docker pause`
 
@@ -35,8 +37,9 @@ gives Ghost the same observation. This runs in CI with no spool stack.
 ## Sabotage
 
 The negative control runs in CI on every build, so the keys' effect is shown
-each time, not by a manual step. Without the keys, nodemailer keeps its 30 s
-greeting default, so the untimed Ghost's request is still open at `BOUND_MS`.
+each time, not by a manual step. Without the keys, nodemailer keeps its own
+greeting default, so the untimed Ghost's request ends clearly later than the
+rendered 5 s.
 Removing the keys from the golden also fails the positive test's first
 assertion by name: `the golden renders mail__options__connectionTimeout`.
 
