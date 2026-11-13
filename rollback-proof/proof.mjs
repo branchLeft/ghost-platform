@@ -69,7 +69,8 @@ const detailOf = (err) => (err instanceof Error ? err.message : String(err));
  *
  * `ops.open({ mysqlImage })` resolves to a session with
  * `startColour(image, label)`, `readLiveColumns()` and `close()`.
- * `ops.readOldSchema(image)` resolves to the image's schema tables as an object.
+ * `ops.readOldSchema(image)` resolves to `{ tables, inDevelopment }`: the image's schema
+ * tables as an object, and the names of those a production database never creates.
  * `ops.imageId(ref)` resolves to a stable id for the image.
  * A colour has `setupOwner(owner)`, `signIn(owner)`, `admin(cookie)`,
  * `page(path)` and `remove()`.
@@ -120,8 +121,13 @@ export async function runProof({
     const migrated = await migrateWithNew({ session, newImage, check, record, clock, log });
     if (migrated) {
       await check('schema-contract', async () => {
-        const tables = await ops.readOldSchema(oldImage);
-        const findings = checkContract(tables, seeded.columns, await session.readLiveColumns());
+        const { tables, inDevelopment } = await ops.readOldSchema(oldImage);
+        const findings = checkContract(
+          tables,
+          seeded.columns,
+          await session.readLiveColumns(),
+          inDevelopment
+        );
         record.findings = findings;
         if (findings.length > 0) {
           throw new Error(

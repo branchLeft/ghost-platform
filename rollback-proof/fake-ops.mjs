@@ -1,6 +1,6 @@
 // A small in-memory world for the proof's tests: images that migrate a shared
 // schema when they boot, and an admin surface over shared posts and members.
-// An image is `{ schema, migrate?(tables), bootError?(tables), onBoot?(world), fault? }`
+// An image is `{ schema, inDevelopment?, neverCreated?, migrate?(tables), bootError?(tables), onBoot?(world), fault? }`
 // where `fault` names a smoke step that image breaks on.
 
 /** Ghost-shaped schema JSON to the rows the information schema would give. */
@@ -92,7 +92,8 @@ export function fakeOps(images, { world = fakeWorld(), everythingRenders = false
       return `id:${image(ref).id ?? ref}`;
     },
     async readOldSchema(ref) {
-      return clone(image(ref).schema);
+      const spec = image(ref);
+      return { tables: clone(spec.schema), inDevelopment: clone(spec.inDevelopment ?? []) };
     },
     async open() {
       if (failOpen) throw new Error(failOpen);
@@ -101,7 +102,10 @@ export function fakeOps(images, { world = fakeWorld(), everythingRenders = false
         async startColour(ref, label) {
           const spec = image(ref);
           if (world.tables === undefined) {
+            // Like production: the tables the image lists as in development are never created.
             world.tables = clone(spec.schema);
+            for (const table of spec.neverCreated ?? spec.inDevelopment ?? [])
+              delete world.tables[table];
           } else {
             const reason = spec.bootError?.(world.tables);
             if (reason !== undefined) {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as real from '../src/frontdoor/logoCheck.js';
+import type { LogoVerdictSource } from '../src/frontdoor/logoCheck.js';
 import { loadAdapter, LOGO, RowStore, type Answer } from './logoCheckRig.js';
 import { clearMutants, importSabotaged } from './sourceSabotage.js';
 
@@ -10,6 +11,7 @@ const SOURCE = 'frontdoor/logoCheck.ts';
 const GATE = 'if (verdict === CLEAN) return hash;';
 const HASHING = 'const hash = hashLogo(bytes);';
 const EVIDENCE = 'return evidence === hash ? CLEAN : UNAVAILABLE;';
+const DEADLINE = 'return readClassification(await Promise.race([asking, deadline]), hash);';
 
 const adapter = await loadAdapter();
 const LISTED = hashLogo(LOGO);
@@ -67,6 +69,21 @@ async function mutant(name: string, target: string, replacement: string): Promis
   return importSabotaged<LogoCheckModule>(name, target, replacement, SOURCE);
 }
 
+/**
+ * What a seam that never answers produces: the refusal reason, or 'HUNG' if
+ * the write is still waiting when the test's own timer fires.
+ */
+async function neverAnswers(module: LogoCheckModule): Promise<string> {
+  const verdicts: LogoVerdictSource = { getVerdict: () => new Promise<never>(() => undefined) };
+  const rows = new RowStore();
+  const outcome = module.writeWithLogoCheck(LOGO, { verdicts, timeoutMs: 20 }, rows.write).then(
+    () => 'NOT_REFUSED',
+    (error: { reason?: unknown }) => String(error.reason)
+  );
+  const hung = new Promise<string>((resolve) => setTimeout(() => resolve('HUNG'), 300));
+  return Promise.race([outcome, hung]);
+}
+
 beforeAll(clearMutants);
 afterAll(clearMutants);
 
@@ -96,6 +113,19 @@ describe('sabotage: the logo check', () => {
     );
     expect(outcome.listedRows).toBe(0);
     expect(outcome.heldRows).toBe(1);
+  });
+
+  it('holds with the real module: a seam that never answers is refused at the ceiling', async () => {
+    expect(await neverAnswers(real)).toBe('UNAVAILABLE');
+  });
+
+  it('with the deadline removed, a seam that never answers hangs: the ceiling test would be red', async () => {
+    const hung = await mutant(
+      'no-deadline',
+      DEADLINE,
+      'return readClassification(await asking, hash);'
+    );
+    expect(await neverAnswers(hung)).toBe('HUNG');
   });
 
   it('with the wrong hash asked about, a test-listed logo is recorded', async () => {

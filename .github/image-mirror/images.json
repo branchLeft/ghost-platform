@@ -13,6 +13,15 @@
     {
       "name": "ghost",
       "source": "docker.io/library/ghost",
+      "digest": "sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a",
+      "upstreamTags": ["6.76.0-alpine"],
+      "licence": "MIT",
+      "redistribution": "permitted",
+      "licenceSource": "https://github.com/TryGhost/Ghost/blob/main/LICENSE"
+    },
+    {
+      "name": "ghost",
+      "source": "docker.io/library/ghost",
       "digest": "sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5",
       "upstreamTags": ["6-alpine"],
       "licence": "MIT",

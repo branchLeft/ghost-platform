@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkContract, compareContract, expectedColumns, liveColumns } from './contract.mjs';
+import {
+  SCHEMA_MARKER,
+  checkContract,
+  compareContract,
+  expectedColumns,
+  liveColumns,
+  parseOldSchemaOutput,
+} from './contract.mjs';
 
 const col = (table, column, extra = {}) => ({
   table,
@@ -135,6 +142,59 @@ describe('what else breaks the old code', () => {
         'unknown-required-column:aaa',
         'unknown-required-column:zzz',
       ]
+    );
+  });
+});
+
+describe('tables a production database never creates', () => {
+  // Ghost 6.76.0 lists these in schema.js and in IN_DEVELOPMENT_TABLES; knex-migrator
+  // creates them only in development and testing.
+  const schema = { posts: { id: {} }, user_accounts: { id: {}, user_id: {} } };
+  const rows = [col('posts', 'id', req)];
+
+  it('an absent in-development table raises no finding', () => {
+    assert.deepEqual(checkContract(schema, rows, rows, ['user_accounts']), []);
+  });
+
+  it('CONTROL: the same table, not listed as in development, is missing', () => {
+    assert.deepEqual(
+      checkContract(schema, rows, rows).map((f) => [f.kind, f.table]),
+      [['missing-table', 'user_accounts']]
+    );
+  });
+
+  it('only the named tables are excused', () => {
+    assert.deepEqual(
+      checkContract({ ...schema, tags: { id: {} } }, rows, rows, ['user_accounts']).map(
+        (f) => f.table
+      ),
+      ['tags']
+    );
+  });
+
+  it('refuses an in-development list that is not an array', () => {
+    assert.throws(() => expectedColumns(schema, 'user_accounts'), /not an array/);
+  });
+});
+
+describe('the old image output', () => {
+  const body = JSON.stringify({ tables: { posts: { id: {} } }, inDevelopment: ['user_accounts'] });
+
+  it('is read past a log line Ghost writes to stdout first', () => {
+    // CI: loading in-development.js made Ghost's logger print "[2026-11-13 ..." ahead of the JSON.
+    const out = `[2026-11-13 20:12:26] INFO Config loaded${SCHEMA_MARKER}${body}`;
+    assert.deepEqual(parseOldSchemaOutput(out), JSON.parse(body));
+  });
+
+  it('is read when nothing came before it', () => {
+    assert.deepEqual(parseOldSchemaOutput(`${SCHEMA_MARKER}${body}`), JSON.parse(body));
+  });
+
+  it('refuses output with no marker or no in-development list', () => {
+    assert.throws(() => parseOldSchemaOutput(body), /printed no schema/);
+    assert.throws(
+      () => parseOldSchemaOutput(`${SCHEMA_MARKER}${JSON.stringify({ tables: {} })}`),
+      /inDevelopment/
     );
   });
 });
