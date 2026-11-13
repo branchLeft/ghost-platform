@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import gc
 import html
 import io
 import pathlib
@@ -16,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import restore_drill as rd
@@ -395,6 +397,16 @@ class MainTests(unittest.TestCase):
             code, _, err = self.main(trd.FakeDocker(), ["--tenant", TENANT, "--allow-disk-work-dir"])
         self.assertEqual(code, sbs.EXIT_NOT_RUN)
         self.assertIn("holds the lock", err)
+
+    def test_a_refused_lock_leaves_no_file_handle_open(self):
+        (self.dir / "work").mkdir()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            with open(self.dir / "work" / sp.LOCK_NAME, "w") as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                self.main(trd.FakeDocker(), ["--tenant", TENANT, "--allow-disk-work-dir"])
+            gc.collect()
+        self.assertEqual([str(w.message) for w in caught if issubclass(w.category, ResourceWarning)], [])
 
     def test_cleanup_removes_the_labelled_colour_and_the_drain_flag_directories(self):
         stale = self.dir / "flags" / f"{sbs.FLAG_DIR_PREFIX}dead"

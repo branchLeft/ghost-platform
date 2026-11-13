@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Renders the real CSP header value and mode through render-core's own
 // built `renderEdgeSiteBlock` -- never a re-implementation -- for the live
-// proof to hand to Caddy. Reads the derived `ThemeCsp` as JSON from stdin
+// proof to hand to Caddy (CSP_PAYMENTS=stripe adds the measured Stripe
+// origins; see below). Reads the derived `ThemeCsp` as JSON from stdin
 // (the exact shape `derive-script-hashes.mjs` prints on its "computed"
 // path, or `{"kind":"unavailable"}`) and prints
 // `<mode>\t<contentSecurityPolicy value>` to stdout.
@@ -33,5 +34,15 @@ const limits = {
   memoryLimit: '640m',
 };
 
-const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp);
+// The payments allowance, rendered by the same function: CSP_PAYMENTS=stripe
+// (the checkout gate's policy) or unset/none (everything else, byte-identical
+// to before payments existed). Anything else is a typo that must not quietly
+// fall back to "none" and prove the wrong policy.
+const paymentsKind = process.env.CSP_PAYMENTS || 'none';
+if (paymentsKind !== 'stripe' && paymentsKind !== 'none') {
+  console.error(`render-header: CSP_PAYMENTS must be "stripe" or "none", got "${paymentsKind}"`);
+  process.exit(2);
+}
+
+const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp, { kind: paymentsKind });
 process.stdout.write(`${edge.contentSecurityPolicyMode}\t${edge.contentSecurityPolicy}\n`);

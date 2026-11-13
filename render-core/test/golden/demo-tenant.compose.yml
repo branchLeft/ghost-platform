@@ -1,0 +1,239 @@
+# The demo-tenant Ghost stack, deployed as `demo-tenant` under
+# /opt/branchleft/demo-tenant on an app host.
+#
+# Rendered by @branchleft/ghost-platform-render-core. Do not hand-edit on
+# the host: every line below is a runtime-isolation control, and a stack
+# that omits one still starts, still serves, and silently drops the
+# boundary.
+#
+# `${IMAGE}` is written to /etc/branchleft/<stack>.image.env by
+# /usr/local/sbin/branchleft-deploy and is always a digest, never a tag.
+# Any `${GHOST_*}` reference comes from /etc/branchleft/<stack>.env,
+# which is root-owned 0600 and written by an operator alone.
+name: 'demo-tenant'
+services:
+  ghost-a:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    stop_grace_period: '60s'
+    user: '30001:30001'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 256
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '1.0'
+    cpu_shares: 512
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.1.201:8101:2368'
+    environment:
+      url: 'https://demo-tenant.sites.publicpress.co.uk'
+      database__client: 'mysql'
+      database__connection__host: '10.20.1.200'
+      database__connection__port: 3306
+      database__connection__database: 'ghost_demo_tenant'
+      database__connection__user: 'ghost_demo_tenant'
+      database__connection__ssl__rejectUnauthorized: false
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'S3Storage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__images__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__images__metricsTenant: 'demo-tenant'
+      storage__images__wrappedConfig__bucket: 'branchleft-media-demo-tenant'
+      storage__images__wrappedConfig__region: 'hel1'
+      storage__images__wrappedConfig__endpoint: 'https://hel1.your-objectstorage.com'
+      storage__images__wrappedConfig__forcePathStyle: true
+      storage__images__wrappedConfig__staticFileURLPrefix: 'content/images'
+      storage__images__wrappedConfig__cdnUrl: 'https://hel1.your-objectstorage.com/branchleft-media-demo-tenant'
+      storage__images__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__images__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'S3Storage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__media__metricsTenant: 'demo-tenant'
+      storage__media__wrappedConfig__bucket: 'branchleft-media-demo-tenant'
+      storage__media__wrappedConfig__region: 'hel1'
+      storage__media__wrappedConfig__endpoint: 'https://hel1.your-objectstorage.com'
+      storage__media__wrappedConfig__forcePathStyle: true
+      storage__media__wrappedConfig__staticFileURLPrefix: 'content/media'
+      storage__media__wrappedConfig__cdnUrl: 'https://hel1.your-objectstorage.com/branchleft-media-demo-tenant'
+      storage__media__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__media__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'S3Storage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__files__metricsTenant: 'demo-tenant'
+      storage__files__wrappedConfig__bucket: 'branchleft-media-demo-tenant'
+      storage__files__wrappedConfig__region: 'hel1'
+      storage__files__wrappedConfig__endpoint: 'https://hel1.your-objectstorage.com'
+      storage__files__wrappedConfig__forcePathStyle: true
+      storage__files__wrappedConfig__staticFileURLPrefix: 'content/files'
+      storage__files__wrappedConfig__cdnUrl: 'https://hel1.your-objectstorage.com/branchleft-media-demo-tenant'
+      storage__files__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__files__wrappedConfig__multipartChunkSizeBytes: 5242880
+      mail__from: 'hello@demo-tenant.branchleft.co.uk'
+      security__allowWebhookInternalIPs: false
+      hostSettings__limits__limitSocialWeb__disabled: true
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+      database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/demo-tenant.env}'
+      storage__images__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/demo-tenant.env}'
+      storage__images__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/demo-tenant.env}'
+      storage__media__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/demo-tenant.env}'
+      storage__media__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/demo-tenant.env}'
+      storage__files__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/demo-tenant.env}'
+      storage__files__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/demo-tenant.env}'
+    volumes:
+      - 'ghost-demo-tenant-content:/var/lib/ghost/content'
+      - 'ghost-demo-tenant-adapters:/var/lib/ghost/content/adapters:ro'
+      - 'ghost-demo-tenant-metrics:/var/lib/ghost/metrics'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+  ghost-b:
+    image: '${IMAGE}'
+    restart: 'unless-stopped'
+    stop_grace_period: '60s'
+    user: '30001:30001'
+    init: true
+    read_only: true
+    tmpfs:
+      - '/tmp:rw,noexec,nosuid,nodev,size=128m'
+    cap_drop:
+      - 'ALL'
+    security_opt:
+      - 'no-new-privileges:true'
+    pids_limit: 256
+    mem_limit: '640m'
+    memswap_limit: '640m'
+    cpus: '1.0'
+    cpu_shares: 512
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    ports:
+      - '10.20.1.201:8102:2368'
+    environment:
+      url: 'https://demo-tenant.sites.publicpress.co.uk'
+      database__client: 'mysql'
+      database__connection__host: '10.20.1.200'
+      database__connection__port: 3306
+      database__connection__database: 'ghost_demo_tenant'
+      database__connection__user: 'ghost_demo_tenant'
+      database__connection__ssl__rejectUnauthorized: false
+      storage__images__adapter: 'ScanningStorageAdapter'
+      storage__images__wraps: 'S3Storage'
+      storage__images__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__images__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__images__metricsTenant: 'demo-tenant'
+      storage__images__wrappedConfig__bucket: 'branchleft-media-demo-tenant'
+      storage__images__wrappedConfig__region: 'hel1'
+      storage__images__wrappedConfig__endpoint: 'https://hel1.your-objectstorage.com'
+      storage__images__wrappedConfig__forcePathStyle: true
+      storage__images__wrappedConfig__staticFileURLPrefix: 'content/images'
+      storage__images__wrappedConfig__cdnUrl: 'https://hel1.your-objectstorage.com/branchleft-media-demo-tenant'
+      storage__images__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__images__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__media__adapter: 'ScanningStorageAdapter'
+      storage__media__wraps: 'S3Storage'
+      storage__media__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__media__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__media__metricsTenant: 'demo-tenant'
+      storage__media__wrappedConfig__bucket: 'branchleft-media-demo-tenant'
+      storage__media__wrappedConfig__region: 'hel1'
+      storage__media__wrappedConfig__endpoint: 'https://hel1.your-objectstorage.com'
+      storage__media__wrappedConfig__forcePathStyle: true
+      storage__media__wrappedConfig__staticFileURLPrefix: 'content/media'
+      storage__media__wrappedConfig__cdnUrl: 'https://hel1.your-objectstorage.com/branchleft-media-demo-tenant'
+      storage__media__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__media__wrappedConfig__multipartChunkSizeBytes: 5242880
+      storage__files__adapter: 'ScanningStorageAdapter'
+      storage__files__wraps: 'S3Storage'
+      storage__files__quarantinePath: '/var/lib/ghost/content/quarantine'
+      storage__files__metricsTextfilePath: '/var/lib/ghost/metrics/scanner.prom'
+      storage__files__metricsTenant: 'demo-tenant'
+      storage__files__wrappedConfig__bucket: 'branchleft-media-demo-tenant'
+      storage__files__wrappedConfig__region: 'hel1'
+      storage__files__wrappedConfig__endpoint: 'https://hel1.your-objectstorage.com'
+      storage__files__wrappedConfig__forcePathStyle: true
+      storage__files__wrappedConfig__staticFileURLPrefix: 'content/files'
+      storage__files__wrappedConfig__cdnUrl: 'https://hel1.your-objectstorage.com/branchleft-media-demo-tenant'
+      storage__files__wrappedConfig__multipartUploadThresholdBytes: 10485760
+      storage__files__wrappedConfig__multipartChunkSizeBytes: 5242880
+      mail__from: 'hello@demo-tenant.branchleft.co.uk'
+      security__allowWebhookInternalIPs: false
+      hostSettings__limits__limitSocialWeb__disabled: true
+      theme__uploadLimits__compressedBytes: 33554432
+      theme__uploadLimits__entryUncompressedBytes: 33554432
+      theme__uploadLimits__totalUncompressedBytes: 67108864
+      privacy__useUpdateCheck: false
+      logging__transports: '["stdout"]'
+      database__connection__password: '${GHOST_DB_PASSWORD:?set GHOST_DB_PASSWORD in /etc/branchleft/demo-tenant.env}'
+      storage__images__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/demo-tenant.env}'
+      storage__images__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/demo-tenant.env}'
+      storage__media__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/demo-tenant.env}'
+      storage__media__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/demo-tenant.env}'
+      storage__files__wrappedConfig__accessKeyId: '${GHOST_S3_ACCESS_KEY_ID:?set GHOST_S3_ACCESS_KEY_ID in /etc/branchleft/demo-tenant.env}'
+      storage__files__wrappedConfig__secretAccessKey: '${GHOST_S3_SECRET_ACCESS_KEY:?set GHOST_S3_SECRET_ACCESS_KEY in /etc/branchleft/demo-tenant.env}'
+    volumes:
+      - 'ghost-demo-tenant-content:/var/lib/ghost/content'
+      - 'ghost-demo-tenant-adapters:/var/lib/ghost/content/adapters:ro'
+      - 'ghost-demo-tenant-metrics:/var/lib/ghost/metrics'
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'wget'
+        - '-q'
+        - '-O'
+        - '/dev/null'
+        - '--header'
+        - 'X-Forwarded-Proto: https'
+        - 'http://127.0.0.1:2368/'
+      interval: '30s'
+      timeout: '5s'
+      retries: 3
+      start_period: '60s'
+volumes:
+  ghost-demo-tenant-content:
+    external: true
+  ghost-demo-tenant-adapters:
+    external: true
+  ghost-demo-tenant-metrics:
+    external: true

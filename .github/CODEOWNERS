@@ -114,7 +114,6 @@
 /Dockerfile                                      @branchLeft/branchleft-admin
 /docker-entrypoint.branchleft.sh                 @branchLeft/branchleft-admin
 /services/demo-edge/Dockerfile                   @branchLeft/branchleft-admin
-/adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh @branchLeft/branchleft-admin
 /adapters/ghost-core-overlay/apply-patch.sh      @branchLeft/branchleft-admin
 /themes/fetch.mjs                                @branchLeft/branchleft-admin
 /themes/verify.mjs                               @branchLeft/branchleft-admin
