@@ -8,6 +8,8 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
+      // Three lines that only pass the process's own streams to `runCli`.
+      exclude: ['src/bin.ts'],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 90 },
     },
   },
