@@ -59,7 +59,7 @@ the same rule on every feature and through both `save()` and `saveRaw()`.
 (`src/media-kind.md` lists the families and what is not recognised). One
 fact about the tier decides the rest: `storage__<feature>__tier`.
 
-| Upload | Demo | Hobbyist (entry) | Professional | Tier unknown or malformed |
+| Upload | Demo | Essentials (entry) | Professional | Tier unknown or malformed |
 |---|---|---|---|---|
 | Image | existing check | existing check | existing check | existing check |
 | Non-video media (a video's poster image), arbitrary files, bytes the detector does not recognise | existing check | existing check | existing check | existing check |
@@ -82,7 +82,9 @@ fact about the tier decides the rest: `storage__<feature>__tier`.
 - **The tier key.** Only the exact string `professional` accepts video and
   audio (`src/tier-policy.md`). Unset, empty, a different case, a stray
   space, a boolean, `entry`, `demo`, `hobbyist` or a typo all refuse, so a
-  mistake can only fail closed. It is read from boot config only.
+  mistake can only fail closed. `hobbyist` is the retired name for the entry
+  tier, kept in this list so an old value still fails closed. It is read from
+  boot config only.
 - **Not yet reachable.** render-core renders no `tier` key for any tenant or
   demo, so every rendered configuration refuses video and audio on all three
   features today. Accepting them on a Professional tenant needs a tier field
@@ -125,31 +127,16 @@ Every file in the tree is checked, not only those named like images: the
 served directory returns almost any extension, so the name proves nothing.
 `saveRaw()` on the theme storage is declined outright; no Ghost code calls it.
 
-**A refused re-upload leaves the installed theme alone, and that is the
-shim's doing, not Ghost's.** Ghost's `setFromZip` moves an existing theme
-aside to a backup directory *before* it calls `save()`, and its own restore
-after a failed save is not awaited, so the `finally` that removes the backup
-races it, so any failed save can leave the theme it was replacing with files
-missing (a gate that refused inside `save()` did exactly that, intermittently,
-in a replay against a real Ghost). Nothing hands the
-shim the extracted tree before that move, so the shim holds the move itself:
-`rename(<name>, <name>_<24 hex>)` is recorded, not performed, and `save()`
-performs it only after the tree has been screened clean. A refusal moves
-nothing, so there is nothing to restore. Any other rename, Ghost's restore
-among them, passes straight through.
-
-**A copy that fails after a clean screen puts the replaced theme back.**
-Ghost's restore only renames when the theme name is absent, so a copy that
-stopped part way (the name is present, half written) is never restored at all,
-and the backup is then removed. The shim puts the theme back itself: when it
-moved an installed theme aside and the copy it performed then fails, it
-removes the partial directory and moves the backup back, awaited, before the
-error leaves `save()`, so what Ghost does next finds the installed theme in
-place. If that put-back fails too, the installed theme is in the kept backup
-`<name>_<24 hex>`, not in place: the live name holds a partial theme or none,
-the backup must be renamed back by hand, and the delete Ghost makes for it is
-declined and logged. A failure after the copy succeeded (loading or
-activating the theme) is Ghost's own behaviour, unchanged.
+**A refused re-upload leaves the installed theme alone, and that is Ghost's
+flow, which the gate relies on.** Ghost's `setFromZip` copies the extracted
+tree in under a staging name with `save()` first; only after that succeeds does
+it move the installed theme aside to a backup directory and move the staging
+copy into place, awaiting its own restore if a step fails. The gate screens
+inside that first `save()`, so a refusal happens before anything has moved and
+there is nothing to restore. Any other `rename` or `delete` passes straight
+through. (Older Ghost moved the installed theme aside before calling `save()`,
+and the gate held that move; re-read `setFromZip` before trusting this on a
+Ghost upgrade, see the overlay README.)
 
 This holds for one upload of a theme name at a time. Ghost does not serialise
 uploads of one name, so two overlapping uploads of the same name can still
@@ -386,8 +373,10 @@ with the record and the bytes. A crash between write record and ensure
 bytes leaves the digest refused, and its next refusal rewrites the bytes.
 A refusal cannot leave bytes with no record. A crash between move aside
 and finish leaves an aside copy. Each adapter sweeps them at start-up:
-restored if the digest is refused, deleted otherwise. That is safe against
-a live releaser for the same reason finish is. A record that cannot be read
+restored if the digest is refused or a hold sidecar names it, deleted
+otherwise. A hold that lands its sidecar after the sweep looked puts the
+bytes back itself, since it confirms them after the sidecar write. That is
+safe against a live releaser for the same reason finish is. A record that cannot be read
 for any reason but absence counts as present: a promotion fails (and is
 retried, then stuck), a release puts the bytes back, and a sweep leaves the
 copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as
@@ -432,6 +421,11 @@ logged once with the fixed prefix
 same line again rather than resuming it. To retry a stuck hold once its
 cause is fixed, remove that owner's `stuck` entry from the sidecar and
 restart Ghost.
+
+**Why the write budget matters.** Ghost's `S3Storage` builds its S3 client with
+only a region, endpoint, path-style flag and credentials, and its config schema
+has no timeout field. There is no request timeout beneath `writeTimeoutMs`, so
+that budget is the only bound on a write the object store never acknowledges.
 
 **Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
 between the two leaves bytes under `<digest>` with no sidecar and no
@@ -516,10 +510,10 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 ```sh
 pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.55.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.76.0 in Docker
 ```
 
-The image test (`test/image/`) drives a real Ghost 6.55.0 container through
+The image test (`test/image/`) drives a real Ghost 6.76.0 container through
 the real adapter manager: a refused upload (415, typed error, quarantined by
 digest, nothing in the served tree), a clean upload, post creation, the
 public site, the admin API and an on-demand resize -- all still working

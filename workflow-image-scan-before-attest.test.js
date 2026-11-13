@@ -26,9 +26,11 @@ const PUBLISHERS = {
   'registry-push.yml': 'ghcr.io/branchleft/ghost-tenant',
   'portal-apps-image.yml': 'ghcr.io/branchleft/portal-apps',
   'demo-edge-image.yml': 'ghcr.io/branchleft/demo-edge',
+  'demo-gate-image.yml': 'ghcr.io/branchleft/demo-gate',
   'mail-collector-image.yml': 'ghcr.io/branchleft/mail-collector',
   'drain-sidecar-image.yml': 'ghcr.io/branchleft/drain-sidecar',
   'recovery-image.yml': 'ghcr.io/branchleft/db-recovery',
+  'percona-image.yml': 'ghcr.io/branchleft/percona-server',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
@@ -353,7 +355,7 @@ test('every workflow that pushes an image is covered here or named with a reason
 });
 
 test('the build-only image workflows push nothing, so they need no scan', () => {
-  for (const file of ['demo-gate-image.yml', 'odask-image.yml']) {
+  for (const file of ['odask-image.yml']) {
     const text = uncommented(read(file));
     assert.doesNotMatch(text, PUSHES, `${file} pushes an image`);
     assert.doesNotMatch(text, /packages:\s*write|id-token/, `${file} holds a publish credential`);

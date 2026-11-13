@@ -22,6 +22,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import branchleft_slot as bs
 import demo_sidecar as ds
 import health_router as hr
 import provision_socket_dirs as psd
@@ -69,6 +70,12 @@ class GoldenTests(unittest.TestCase):
     def test_the_router_and_the_sidecar_launcher_use_the_golden_router_root(self):
         self.assertEqual(hr.SOCKET_ROOT, golden()["routerRoot"])
         self.assertEqual(ds.SOCKET_ROOT, golden()["routerRoot"])
+
+    def test_the_golden_docker_volume_root_is_the_wrappers_constant(self):
+        # The broker unit makes this path writable (its sandbox is inherited by
+        # the sudo-elevated wrapper); the wrapper's own constant is the one
+        # home of the path, and the golden copies nothing.
+        self.assertEqual(golden()["dockerVolumeRoot"], str(bs.DOCKER_VOLUME_ROOT))
 
     def test_the_router_root_is_a_child_of_the_state_root_and_beside_the_broker_directory(self):
         g = golden()

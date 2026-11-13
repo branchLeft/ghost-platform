@@ -150,7 +150,15 @@ function blogDescriptor() {
 }
 
 describe('the reserved list and tenant zero', () => {
-  const EXPECTED_RESERVED = ['website', 'edge', 'db', 'monitoring', 'nextcloud1', 'mail-spool'];
+  const EXPECTED_RESERVED = [
+    'website',
+    'edge',
+    'db',
+    'monitoring',
+    'nextcloud1',
+    'mail-spool',
+    'publicpress-website',
+  ];
 
   it('is exactly the expected names, with no tenant-zero slug in it', () => {
     expect([...RESERVED_STACK_NAMES].sort()).toEqual([...EXPECTED_RESERVED].sort());

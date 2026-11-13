@@ -5,10 +5,21 @@ name: Demo gate image
 # scripts/test-demo-gate.sh -- never a second-hand copy of what the image
 # ships, because it's the same image handed to the script.
 #
-# Build-only, mirroring drain-sidecar-image.yml's stance: no push, no
-# registry credential. Delivering this gate to the demo edge (an image
-# registry, the edge host's own Compose stack) is a separate story -- see
-# the PR that introduced this workflow for what that leaves owed.
+# On push to `main` (or a manual dispatch from `main`) the proven image is
+# published to ghcr.io/branchleft/demo-gate tagged with the git SHA, the pushed
+# digest is scanned by the shared image-scan workflow, and only then signed with
+# a GitHub build-provenance attestation and verified. The digest-qualified
+# reference that the push job prints is the only thing a consumer may pin; a
+# tag can be re-pointed, a digest cannot. There is deliberately no `latest` tag.
+#
+# Same route as demo-edge-image.yml: the `build` job proves the image and saves
+# it, the `push` job loads that exact image, checks its ID, then tags and pushes
+# it. Nothing is rebuilt, so the proof covers the pushed bytes. The push is one
+# linux/amd64 manifest, so the digest survives `docker save | docker load`
+# unchanged. GHCR authenticates with the workflow's own GITHUB_TOKEN.
+#
+# No `anonymous-pull` job: the one consumer, demo1, takes a `docker save` tar
+# through the broker and never pulls from GHCR, so the package stays private.
 
 on:
   push:
@@ -22,7 +33,10 @@ on:
       - scripts/demo-edge-proof/**
       - demo-host/provision/render_demo_site.py
       - demo-host/provision/render_demo_edge.py
+      - test-support/publish-job-checks.mjs
+      - workflow-demo-gate-image.test.js
       - .github/workflows/demo-gate-image.yml
+  workflow_dispatch:
   pull_request:
     branches: [main]
     paths:
@@ -34,11 +48,13 @@ on:
       - scripts/demo-edge-proof/**
       - demo-host/provision/render_demo_site.py
       - demo-host/provision/render_demo_edge.py
+      - test-support/publish-job-checks.mjs
+      - workflow-demo-gate-image.test.js
       - .github/workflows/demo-gate-image.yml
 
 # `packages: read` because the image's build stage installs
-# `@branchleft/tsconfig` from GitHub Packages -- read-only, and this
-# workflow never requests a write credential at all.
+# `@branchleft/tsconfig` from GitHub Packages -- read-only. Only the push job
+# asks for a write scope, and only the attest job for signing.
 permissions:
   contents: read
   packages: read
@@ -56,22 +72,32 @@ jobs:
     # Generous bound: it builds one image (render-core plus the gate,
     # multi-stage in one Dockerfile) and boots three containers (Caddy, the
     # gate and a stand-in slot) for the live proof's 49 checks.
-    timeout-minutes: 15
+    timeout-minutes: 20
+
+    outputs:
+      image-id: ${{ steps.proven.outputs.image-id }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Built from the repository root: the service depends on render-core
       # through a relative `link:` dependency, so the build context must contain
       # both (see services/demo-gate/Dockerfile). The secret is consumed by
       # a `RUN --mount` there, so it reaches `pnpm install` without entering a
-      # layer or the build history.
-      - name: Build gate image
+      # layer or the build history. The platform is named here, and the
+      # attestation and provenance extras are off, so the digest survives save
+      # and load unchanged.
+      - name: Build gate image (linux/amd64)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             -f services/demo-gate/Dockerfile \
             --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
             --tag demo-gate:ci \
@@ -112,3 +138,169 @@ jobs:
             echo "::error::the uploaded-script probes stayed green with the upload guard dropped"
             exit 1
           fi
+
+      - name: Workflow shape and Dockerfile tests
+        run: node --test workflow-demo-gate-image.test.js
+
+      # Only reached when everything above passed: the four proofs, the three
+      # sabotage steps and the shape lint. The image ID is read from the tag the
+      # proof ran, and travels with the saved tarball so the push job can refuse
+      # anything else.
+      - name: Save the proven image
+        id: proven
+        run: |
+          docker save --output demo-gate.tar demo-gate:ci
+          echo "image-id=$(docker image inspect --format '{{.Id}}' demo-gate:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proven image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo-gate-image
+          path: demo-gate.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the proven demo-gate image
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 20
+
+    # The signing grants are not here: they sit on the `attest` job below,
+    # which runs only after the scan.
+    permissions:
+      contents: read
+      packages: write
+
+    # One publish at a time, none cancelled half-way.
+    concurrency:
+      group: demo-gate-image-push
+      cancel-in-progress: false
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/demo-gate
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the proven image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: demo-gate-image
+
+      # The loaded image must be exactly the one the proof ran against.
+      - name: Load the proven image and check its ID
+        env:
+          PROVEN_ID: ${{ needs.build.outputs.image-id }}
+        run: |
+          docker load --input demo-gate.tar
+          loaded="$(docker image inspect --format '{{.Id}}' demo-gate:ci)"
+          if [ -z "$PROVEN_ID" ] || [ "$loaded" != "$PROVEN_ID" ]; then
+            echo "::error::loaded image '$loaded' is not the proven image '$PROVEN_ID'"
+            exit 1
+          fi
+          docker tag demo-gate:ci "$IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## demo-gate image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+            echo
+            echo 'The scan and attest jobs run next. Nothing consumes this digest yet: the demo1 pin is a later change, made once the scan and attest jobs are green.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The pushed digest, scanned by the shared image-scan workflow before anything
+  # signs it. It fails the run on any critical or high finding no exemption
+  # covers; the threshold is fixed in that workflow and cannot be lowered here.
+  # No exemption file exists in this repository: a finding with no available
+  # fix goes through the exemption route, never a changed threshold.
+  scan:
+    name: Scan the pushed demo-gate image
+    needs: push
+    permissions:
+      contents: read
+      packages: read
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0
+    with:
+      image: ${{ needs.push.outputs.image }}
+
+  # Signs the digest with a keyless GitHub artifact attestation, then verifies
+  # it with the identity below and checks that a wrong identity is rejected. It
+  # needs the scan, so an image that fails the scan is never signed. The
+  # identity is a literal on purpose: read from this run's own
+  # `github.workflow_ref` it would agree with itself and prove nothing. The
+  # same value, with the source ref `refs/heads/main`, is what a host passes to
+  # scripts/verify-image-attestation.sh. `id-token: write` mints the keyless
+  # signing certificate and `attestations: write` stores the attestation; the
+  # registry login needs `packages: write` for the stored bundle.
+  attest:
+    name: Attest and verify the scanned demo-gate image
+    needs: [push, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/branchleft/demo-gate
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest and verify the pushed image
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ needs.push.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/demo-gate-image.yml
+          repo: branchLeft/ghost-platform

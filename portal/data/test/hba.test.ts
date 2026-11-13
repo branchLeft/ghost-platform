@@ -24,6 +24,7 @@ const target = {
       name: 'portal_provisioner_login',
       reaches: ['portal_provisioner_login', 'portal_provisioner'],
     },
+    { name: 'portal_prospect_login', reaches: ['portal_prospect_login', 'portal_prospect'] },
     {
       // The migrator is a member of no role: it reaches itself alone.
       name: 'portal_migrator_login',
@@ -40,6 +41,7 @@ describe('the static pg_hba rule', () => {
       rule(3, ['portal_tenant_login'], ['portal']),
       rule(4, ['portal_owner_login'], ['portal']),
       rule(8, ['portal_provisioner_login'], ['portal']),
+      rule(10, ['portal_prospect_login'], ['portal']),
       rule(9, ['portal_migrator_login'], ['portal']),
       rule(5, ['postgres'], ['postgres', 'zitadel', 'portal']),
       rule(6, ['all'], ['all'], 'reject'),
@@ -50,6 +52,12 @@ describe('the static pg_hba rule', () => {
 
   it.each([
     ['the stock image rule', ['all'], ['all'], /portal_tenant_login \(as all\) reach database all/],
+    [
+      'the prospect role as a group',
+      ['+portal_prospect'],
+      ['postgres'],
+      /portal_prospect_login \(as \+portal_prospect\)/,
+    ],
     [
       'the provisioner role as a group',
       ['+portal_provisioner'],

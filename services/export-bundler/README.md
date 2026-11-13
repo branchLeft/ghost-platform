@@ -277,6 +277,7 @@ far as Ghost 6.55's own settings allow, the colour acts on nothing:
 
 What Ghost still does on the colour's boot, with no setting to stop it, now
 happens to the copy only:
+
 - the member welcome-email poll;
 - resuming, or failing, any newsletter recorded as mid-send;
 - the daily member and gift clean-up jobs and gift reminders;
@@ -334,6 +335,37 @@ accidentally ignore the verdict -- `exportRunner.ts`'s own sabotage test
 function is actually on the path a real export takes, not merely correct
 in isolation.
 
+## Importing a bundle into a promoted tenant
+
+`promotionImport.ts` is the import half of a promotion: the bundle's posts,
+pages and members enter the freshly provisioned tenant through Ghost's own
+import (the content JSON through `POST /ghost/api/admin/db/`, the members
+through `POST /ghost/api/admin/members/upload/`), never as copied files. It
+has no network, key or host of its own; the caller injects each effect
+(`PromotionImportTarget`, and `openArchive`, which hands back the plaintext
+tar once the tenant's key has opened the `.tar.age`). The demo is only read.
+
+`runPromotionImport` returns only when the tenant is verified. Anything else
+throws, and a caller must treat a throw as "the promotion is incomplete; do not
+mark the tenant live":
+
+- `BundleReadError` / `BundleRefusedError`, before anything is copied: the tar
+  is damaged or unsafe, an entry is missing, the manifest does not say members
+  were read in full, or `members.csv` (what is imported) is not the same people
+  as `members.json` (what the export counted).
+- `DestinationNotFreshError`: the tenant already holds members, so a count
+  before and after would not mean anything. Nothing is imported.
+- `ImportStepError`: Ghost refused an import or the destination could not be
+  read; it names the step.
+- `ImportVerificationError`: the imports answered but the tenant does not hold
+  what it held before plus what the bundle carried, in posts, pages or members,
+  or a member who was on a tier at the source is not on it now. It names
+  figures and a count, never a member's address.
+
+Comments and media are other stories; their entries in the bundle are ignored.
+The unit tests use an in-memory stand-in for Ghost (`test/helpers/promotionBundle.ts`);
+nothing here has run against a real Ghost yet.
+
 ## Running it
 
 Inside an open grant, on the tenant's app host, as a user that can read
@@ -374,6 +406,7 @@ The live script runs the built CLI on the MySQL tier. It uses a "live"
 MySQL (db1's pinned image, TLS required) seeded by a real Ghost, with a
 real owner and a real suspended support Administrator, described by a
 descriptor and a rendered stack directory. It proves:
+
 - refusal with no grant, with the wrong recipient, with the Owner as the
   rendered support identity, and with the account suspended, each creating
   nothing;

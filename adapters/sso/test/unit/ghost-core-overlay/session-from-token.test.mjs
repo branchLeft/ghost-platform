@@ -11,7 +11,9 @@ import { describe, expect, it, vi } from 'vitest';
 // applied, built once per run by test/unit/global-setup.mjs from the pinned
 // base image. No copy of Ghost's source is committed.
 const require = createRequire(import.meta.url);
-const SessionFromToken = require('../../../ghost-core-overlay/derived/session-from-token.js');
+const {
+  sessionFromToken: SessionFromToken,
+} = require('../../../ghost-core-overlay/derived/session-from-token.js');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OVERLAY_DIR = path.resolve(__dirname, '../../../ghost-core-overlay');

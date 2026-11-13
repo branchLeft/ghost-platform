@@ -41,9 +41,7 @@ decision.
   mail host, and `mail__from` is the render core's sending address. Since
   render core 0.1.1, both colours also join the tenant's own internal network
   to the spool, `branchleft-mail-<uid>`, declared external, and the base URL
-  is the spool's service name on it. The owner
-  ruled that tenant zero's live switch-over waits until its per-host spool is
-  live.
+  is the spool's service name on it.
 - **`single-renderer`**: the component renders nothing itself (this story's
   Done criterion; LLD-1 §05). Comment-only lines in the Compose and secrets
   headers are now the render core's wording.
@@ -60,6 +58,20 @@ decision.
   key names with empty values, and the host fills it
   (index.md#secrets-on-the-host). Every `secrets.<KEY>` value therefore reads
   empty after, where 4.0.0's golden recorded placeholders.
+- **`render-core-update`**: values the render core changed in its own
+  releases after this baseline, adopted by raising the pin to 0.4.0. Each
+  entry is a paying-tenant change recorded in `render-core/CHANGELOG.md`:
+  `stop_grace_period: 60s` on the Ghost service (0.3.0); the scanner health
+  export's six `storage__<feature>__metricsTextfilePath` and
+  `storage__<feature>__metricsTenant` keys, the
+  `ghost-<slug>-metrics` service volume, its `external` declaration and the
+  `provision.sh` comment (0.3.0); and the hidden Network tab's
+  `hostSettings__limits__limitSocialWeb__disabled` key and `social_web: false`
+  in `ghostSettings` (0.3.0). The mail spool's drain binding, the demo-only
+  keys and the 0.4.0 mail route and one-colour options change nothing in this
+  diff: the spool is not a tenant artefact, the fixture is a paying tenant, and
+  the new options are absent. A host must have the metrics volume (re-run
+  `provision_tenant_volume.py`) before a stack rendered with this pin starts.
 
 ## The slug
 
@@ -67,7 +79,9 @@ The fixture's slug is `zero`, not tenant zero's own. Render core 0.1.0
 reserved tenant zero's slug in `RESERVED_STACK_NAMES`, so this component
 could not render tenant zero at all; 0.1.1 stopped reserving it, and the
 last test in `output-diff.test.ts` now checks that `validateTenantStack()`
-accepts it. `naming.md` in this package records why that slug must stay
+accepts it. Since 0.3.0 the render core also refuses a registered name unless
+the caller passes `options.claimantRepo` naming that name's own repository, and
+the test checks that too. `naming.md` in this package records why that slug must stay
 unreserved. The fixture stays on `zero` because the 4.0.0 baseline was
 recorded with it, and the sending domain below still differs.
 

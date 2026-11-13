@@ -54,6 +54,7 @@ const deps = {
   },
   health: async () => ({ healthy: true, reportedDigest: digest }),
   reportedErrors: async () => [],
+  recordPromotion: async () => undefined,
   hold: async (held) => {
     seen.holds.push(held.reason);
   },

@@ -42,9 +42,9 @@ from the same snapshot; only an account change made in the instant of the
 hold falls outside the position.
 
 The `backup` account needs `LOCK TABLES` (already granted) and
-`BACKUP_ADMIN`, and no longer needs `RELOAD`. Until db1's grant is
-changed, this script fails loudly at the position read: the grant change
-and the copy of this directory to db1 are delivered together, by hand.
+`BACKUP_ADMIN`, and no longer needs `RELOAD`. Without that grant this script
+fails loudly at the position read: the grant change and the copy of this
+directory to db1 are delivered together, by hand.
 
 Object keys are namespaced under MySQL's own `@@server_uuid`, which the
 server mints fresh whenever its data directory is created from scratch --
@@ -84,8 +84,7 @@ changes the run's exit status. An empty `DB_DUMP_METRICS_DIR` turns it off.
 
 ### Who reads it
 
-db1's node_exporter (`hetzner/provision/40-install-node-exporter.sh` in
-shared-infra) reads this directory through its textfile collector. The install
+db1's node_exporter (the `node_exporter` role in shared-infra's `ansible/roles/`) reads this directory through its textfile collector. The install
 steps are the ghost-platform-docs page `db1-node-exporter-install-runbook.md`.
 The alert rules `DbNightlyDumpFailed`, `DbNightlyDumpStale` and
 `DbNightlyDumpMetricAbsent` live in shared-infra's

@@ -20,7 +20,8 @@ import {
 } from './sendingTarget.js';
 import type { FailureCounter } from './submissionFailures.js';
 import { failureReasonOf } from './sweegoFailure.js';
-import type { SweegoUseCounter } from './sweegoUsage.js';
+import type { SweegoSuspensionRecorder } from './sweegoSuspension.js';
+import { DEFAULT_PIN_TTL_MS, type SweegoUseCounter } from './sweegoUsage.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
@@ -41,6 +42,8 @@ export interface CollectorLoopDeps {
    * attempt and whether it was accepted; `createSweegoUsage` is the one that does.
    */
   sweegoQuota?: SweegoQuota & Partial<SweegoUseCounter>;
+  /** Told of each Sweego refusal and acceptance, so a run of refusals can latch Sweego off. Unset, nothing latches. */
+  sweegoSuspension?: SweegoSuspensionRecorder;
   /** Ids whose submission has reached mx1; such a message is never offered to Sweego. Memory-only if unset. */
   mx1Pins?: SubmittedTracker;
   /** Ids whose first attempt was at Sweego; a retry stays on Sweego until the login fallback reaches mx1. Memory-only if unset. */
@@ -97,8 +100,9 @@ export interface CollectorRuntime {
 }
 
 const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
-// UNPROVEN: must outlast the shim's longest retry horizon; read it from the shim before the pin is made persistent.
-const DEFAULT_MX1_PIN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// The shim re-offers an unacked row every SHIM_DRAIN_LEASE_SECONDS (30 s by default)
+// with no attempt cap and no maximum age, so the pin TTL alone bounds a held
+// message. It outlasts the longest cap hold: see ../README.md#dedupe-createsubmittedtracker.
 
 /**
  * Reconciles one drain-and-deliver loop per descriptor-named host on every
@@ -115,11 +119,15 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
-  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
-  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
-  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_MX1_PIN_TTL_MS);
+  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
   const servedByMx1Logged = new Set<string>();
+  // Pinned messages the last offer left held at the account cap. Their pins are
+  // never swept: a swept pin would let the message be decided afresh.
+  const heldAtCapIds = new Set<string>();
+  const isHeldAtCap = (id: string): boolean => heldAtCapIds.has(id);
 
   /**
    * Submits one message through the target the resolver names. `submitted`:
@@ -138,6 +146,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     message: WireMessage,
     target: DrainTarget
   ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop'> {
+    // Asked afresh on every offer: only a message the latest offer left held at
+    // the cap is protected from the pin sweep.
+    heldAtCapIds.delete(message.id);
     if (deps.enforceHeaderFrom) {
       const verdict = checkHeaderFrom(message, target.sendingDomain);
       if (!verdict.ok) {
@@ -181,32 +192,46 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     }
     const mailClass = mailClassOf(message.emailId);
     // Asked afresh each time: the quota can change while a message waits on a
-    // throttle. Login mail never consults the tenant's latch (its newsletters
-    // moving to mx1 is no reason to move a sign-in link), but the account cap
-    // is the plan's ceiling and holds for every class. A pinned message
-    // stays on Sweego whatever the tenant's allowance now says, and is counted;
-    // the account cap holds for it too (see `resolveNow`).
+    // throttle. A tenant's latch moves its sign-in links and its newsletters;
+    // the newsletter threshold moves newsletters only; suspension and the
+    // account cap are the plan's ceiling and hold for every class. A pinned
+    // message stays on Sweego whatever the tenant's allowance or the newsletter
+    // threshold now says, and is counted; the account cap and suspension hold
+    // for it too (see `resolveNow`).
+    // A pinned message that was already counted (an earlier attempt ended
+    // ambiguous, or its reserved place was recounted after a crash) holds its
+    // place in the cap: a retry takes no second one, so the cap does not hold it.
+    const holdsPlace = (): boolean =>
+      pinnedToSweego && deps.sweegoQuota?.holdsPlace?.(message.id) === true;
     const contextNow = (): SendingContext => ({
       mailClass,
       demo: target.demo === true,
       sweegoConfigured: sweegoReady,
-      allowanceReached:
-        pinnedToSweego || mailClass === 'transactional' ? false : quota.allowanceReached(target.id),
-      accountCapReached: quota.accountCapReached(),
+      allowanceReached: pinnedToSweego ? false : quota.allowanceReached(target.id),
+      newsletterThresholdReached: pinnedToSweego
+        ? false
+        : quota.newsletterThresholdReached?.() === true,
+      suspended: quota.suspended?.() === true,
+      accountCapReached: holdsPlace() ? false : quota.accountCapReached(),
       reachedMx1,
     });
     const route = pinnedToSweego ? 'sweego' : target.route;
     // A pinned message cannot move to mx1 (its first attempt may have been
-    // taken) and must not go above the cap, so at the cap it waits. Undefined
-    // means exactly that.
+    // taken) and must not go above the cap or to a suspended relay, so at the
+    // cap or under suspension it waits. Undefined means exactly that.
+    let heldEvent = 'sweego_pinned_held_at_cap';
     const resolveNow = (): SendingDecision | undefined => {
       const context = contextNow();
-      return pinnedToSweego && context.accountCapReached
-        ? undefined
-        : resolveSendingTarget(route, context);
+      if (pinnedToSweego && (context.accountCapReached || context.suspended === true)) {
+        heldEvent =
+          context.suspended === true ? 'sweego_pinned_held_suspended' : 'sweego_pinned_held_at_cap';
+        return undefined;
+      }
+      return resolveSendingTarget(route, context);
     };
     const heldAtCap = (): 'held' => {
-      deps.log.warn('sweego_pinned_held_at_cap', { target: target.id, message: message.id });
+      heldAtCapIds.add(message.id);
+      deps.log.warn(heldEvent, { target: target.id, message: message.id });
       return 'held';
     };
     let decision = resolveNow();
@@ -229,10 +254,18 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }
     }
     if (decision === 'sweego' && sweegoReady) {
+      // The place is reserved, and written down, before the pin and before the
+      // attempt: a crash after this point leaves it counted. Refused, nothing
+      // was sent and nothing is pinned, so the message is held and offered again.
+      const counter = deps.sweegoQuota;
+      const slot = counter?.begin?.(target.id, message.id);
+      if (slot === undefined && counter?.begin !== undefined) {
+        deps.log.warn('sweego_reservation_failed', { target: target.id, message: message.id });
+        return 'held';
+      }
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
-      const slot = deps.sweegoQuota?.begin?.(target.id, message.id);
       let accepted = false;
       try {
         await sweego.deliver(message, target.id);
@@ -248,6 +281,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         }
         const reason = failureReasonOf(error);
         deps.sweegoFailures?.record(reason);
+        deps.sweegoSuspension?.recordRefusal(reason);
         deps.log.warn('sweego_submission_failed', {
           target: target.id,
           message: message.id,
@@ -282,6 +316,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         // rather than sending the message twice.
         deps.dedupe.markSubmitted(message.id, true);
         slot?.settle(true);
+        deps.sweegoSuspension?.recordAcceptance();
         deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
         return 'submitted';
       }
@@ -502,8 +537,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       sweepTimer = setInterval(() => {
         deps.dedupe.sweep();
         mx1Pins.sweep();
-        sweegoPins.sweep();
-        sweegoAmbiguous.sweep();
+        sweegoPins.sweep(isHeldAtCap);
+        sweegoAmbiguous.sweep(isHeldAtCap);
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 
