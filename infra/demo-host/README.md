@@ -86,7 +86,8 @@ the document under a quarter of the limit.
 State is in the same Hetzner Object Storage bucket as every other Hetzner
 stack. The stack config carries no salt and no token (PUL-12). The owner sets
 up the token, the passphrase and `stack init` by hand. The first apply then
-runs from CI after merge, held for approval by the `production` environment.
+runs from CI after merge, held for approval by an environment gate (`production-free` for a plan the
+spend gate calls free, `production-demo-host` otherwise).
 Pull requests run typecheck and unit
 tests only (`.github/workflows/infra-demo-host-ci.yml`), and no cloud
 credential touches PR code.
