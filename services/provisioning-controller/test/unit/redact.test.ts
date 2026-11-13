@@ -154,6 +154,90 @@ describe('redactSecrets', () => {
     expect(redactSecrets("password='ab cd\\'")).toBe(`password=${REDACTED}`);
   });
 
+  // A quoted value that ends in a backslash must not swallow the next secret field on the line.
+  it.each([
+    [
+      'a trailing backslash then a second quoted field',
+      'password="ab cd\\" token="foo"',
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'a trailing backslash then a second quoted field (single quotes)',
+      "password='ab cd\\' token='foo'",
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'an escaped quote then a second quoted field',
+      'password="ab\\"cd" token="foo"',
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'an escaped quote then a second quoted field (single quotes)',
+      "password='ab\\'cd' token='foo'",
+      `password=${REDACTED} token=${REDACTED}`,
+    ],
+    [
+      'three fields, two of them ending in a backslash',
+      'password="a b\\" token="foo" secret="bar\\" api_key="baz"',
+      `password=${REDACTED} token=${REDACTED} secret=${REDACTED} api_key=${REDACTED}`,
+    ],
+    [
+      'three fields in single quotes, mixed with a double-quoted one',
+      "password='a b\\' token=\"foo\" secret='bar\\' api_key='baz'",
+      `password=${REDACTED} token=${REDACTED} secret=${REDACTED} api_key=${REDACTED}`,
+    ],
+    [
+      'a trailing backslash then a second field after a colon',
+      'password: "ab cd\\" token: "foo"',
+      `password: ${REDACTED} token: ${REDACTED}`,
+    ],
+    [
+      'a trailing backslash then a JSON field',
+      '{"password":"ab cd\\","token":"foo"}',
+      `{"password":${REDACTED},"token":${REDACTED}}`,
+    ],
+    [
+      'a JSON-escaped quote then a second JSON field',
+      '{"password":"ab\\"cd","token":"foo"}',
+      `{"password":${REDACTED},"token":${REDACTED}}`,
+    ],
+  ])('removes both secrets after %s', (_name, text, expected) => {
+    expect(redactSecrets(text)).toBe(expected);
+  });
+
+  // Found by the old-against-new differential: a value glued straight onto the next field name
+  // must not hide that field from the rules that removed it before.
+  it.each([
+    ['a value glued to the next field name', 'x-access-key=MARKA9client_secret="MARKB9"', 'MARKB9'],
+    [
+      'a JSON key whose value is glued to the next field',
+      'password":MARKA9token="ab MARKB9"',
+      'MARKB9',
+    ],
+    [
+      'a long run that the passphrase rule would cut in two',
+      'Authorization":ab MARKA9passphrase=MARKB9x-access-key":\'MARKC9\\\'',
+      'MARKA9',
+    ],
+  ])('still removes %s', (_name, text, secret) => {
+    expect(redactSecrets(text)).not.toContain(secret);
+  });
+
+  it('keeps a following field that is not a secret', () => {
+    expect(redactSecrets('password="a" other="keep"')).toBe(`password=${REDACTED} other="keep"`);
+    expect(redactSecrets('{"password":"x\\"y","note":"keep"}')).toBe(
+      `{"password":${REDACTED},"note":"keep"}`
+    );
+  });
+
+  it('stays fast on long quoted values that hold many words or one long word', () => {
+    for (const body of ['ab '.repeat(20_000), 'a'.repeat(50_000), 'ab\\"'.repeat(12_000)]) {
+      const started = performance.now();
+      redactSecrets(`password="${body}" next`);
+      expect(performance.now() - started).toBeLessThan(500);
+    }
+  });
+
   it('stays fast on a long run of dashes', () => {
     const text = '-'.repeat(50_000);
     const started = performance.now();
