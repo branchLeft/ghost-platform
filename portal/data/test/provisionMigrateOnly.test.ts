@@ -256,7 +256,7 @@ describe('--migrate-only on a real server', () => {
     ]);
     const [rows] = await admin(
       'postgres',
-      "SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_provisioner', '${PROVISIONER}')"
+      `SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_provisioner', '${PROVISIONER}')`
     );
     expect(rows!.rows[0].n).toBe(0);
   });
