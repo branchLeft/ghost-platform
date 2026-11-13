@@ -12,7 +12,8 @@ export const SCHEMA_MARKER = '\n@@OLD-IMAGE-SCHEMA@@';
 /** The `{ tables, inDevelopment }` the old image printed, after any log lines before the marker. */
 export function parseOldSchemaOutput(out) {
   const at = out.lastIndexOf(SCHEMA_MARKER);
-  if (at === -1) throw new Error('the old image printed no schema; output starts: ' + out.slice(0, 200));
+  if (at === -1)
+    throw new Error('the old image printed no schema; output starts: ' + out.slice(0, 200));
   const parsed = JSON.parse(out.slice(at + SCHEMA_MARKER.length));
   if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.inDevelopment)) {
     throw new Error('the old image schema output lacks an inDevelopment list');
