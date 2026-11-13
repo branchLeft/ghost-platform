@@ -23,7 +23,9 @@ RUN npm install --global pnpm@11.17.0
 
 WORKDIR /app
 
-COPY .npmrc package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml carries the overrides the lockfile was resolved with;
+# pnpm refuses a frozen install when they are missing.
+COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # `@branchleft/tsconfig` is a build-time dependency hosted on GitHub Packages,
 # which rejects anonymous reads even for a public package. The token arrives
