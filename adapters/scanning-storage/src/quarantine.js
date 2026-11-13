@@ -244,7 +244,9 @@ function releaseBytes(quarantinePath, digest, { onMovedAside, keepIfHeld = false
 }
 
 // Aside copies left by a releaser that died mid-release: kept (as the
-// digest's bytes) when the digest is refused, deleted otherwise. A copy
+// digest's bytes) when the digest is refused or a hold sidecar names it,
+// deleted otherwise. A hold may land its sidecar after the releaser moved the
+// bytes aside, so the copy may be the only one a hold is waiting on. A copy
 // whose digest cannot be checked is left for the next sweep.
 function sweepReleasing(quarantinePath, computeDigest, logger) {
   let names;
@@ -260,7 +262,7 @@ function sweepReleasing(quarantinePath, computeDigest, logger) {
     const aside = path.join(quarantinePath, name);
     const target = path.join(quarantinePath, digest);
     try {
-      if (!isRefused(quarantinePath, digest)) {
+      if (!isRefused(quarantinePath, digest) && !hasHoldSidecar(quarantinePath, digest)) {
         fsSync.rmSync(aside, { force: true });
         continue;
       }
