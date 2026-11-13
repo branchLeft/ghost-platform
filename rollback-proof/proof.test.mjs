@@ -113,14 +113,14 @@ describe('a candidate the old image can still serve', () => {
   });
 });
 
-// The rollback checks; `data-intact` is a gate check, warned about only when it
-// could not run because the old image did not boot.
+// The rollback checks: red is a warning. `data-intact` is not one: the new image
+// reads the data, so lost posts are refused whether or not the old image boots.
 const ROLLBACK_STEPS = [
   'schema-contract',
   'old-boots-on-migrated',
   'session-survives',
   'sign-in',
-  'data-intact',
+  'old-reads-data',
   'publish',
   'member-create',
 ];
@@ -156,7 +156,13 @@ describe('a candidate the old image cannot serve is warned about, not refused', 
     assert.equal(record.outcome, 'warned');
     assert.equal(byName(record, 'old-boots-on-migrated').ok, false);
     assert.match(byName(record, 'old-boots-on-migrated').detail, /unknown column subtitle/);
-    for (const name of ['session-survives', 'sign-in', 'data-intact', 'publish', 'member-create']) {
+    for (const name of [
+      'session-survives',
+      'sign-in',
+      'old-reads-data',
+      'publish',
+      'member-create',
+    ]) {
       assert.equal(byName(record, name).ok, false, `${name} cannot be green when nothing booted`);
       assert.equal(byName(record, name).detail, 'not run');
     }
@@ -181,6 +187,19 @@ describe('a candidate the old image cannot serve is warned about, not refused', 
       assert.ok(warned(record).includes(step));
     });
   }
+
+  it('warns, not refuses, when the old image cannot read posts the data still holds', async () => {
+    const { record } = await run({
+      [OLD]: { schema: oldSchema, fault: 'old-reads-data' },
+      [NEW]: { schema: oldSchema },
+    });
+    assert.equal(byName(record, 'data-intact').ok, true, 'the data itself is intact');
+    assert.equal(byName(record, 'old-reads-data').ok, false);
+    assert.match(byName(record, 'old-reads-data').detail, /post list answered 500/);
+    assert.equal(record.outcome, 'warned');
+    assert.deepEqual(warned(record), ['old-reads-data']);
+    assert.deepEqual(verifyReport(record, { oldImage: OLD, newImage: NEW }), []);
+  });
 
   it('warns when the owner session opened before the upgrade is gone', async () => {
     const { record } = await run({
@@ -207,6 +226,18 @@ describe('a candidate that is itself broken is still refused', () => {
         /data-intact is red/.test(r)
       )
     );
+  });
+
+  it('refuses lost posts even when the old image does not boot to read them', async () => {
+    const { record } = await run({
+      [OLD]: { schema: oldSchema, bootError: () => 'the old image will not boot' },
+      [NEW]: { schema: oldSchema, onBoot: (w) => w.posts.delete('rollback-proof-seed') },
+    });
+    assert.equal(byName(record, 'old-boots-on-migrated').ok, false);
+    assert.equal(byName(record, 'data-intact').ok, false);
+    assert.match(byName(record, 'data-intact').detail, /rollback-proof-seed is missing/);
+    assert.equal(record.outcome, 'refused');
+    assert.ok(!warned(record).includes('data-intact'), 'lost data is never only a warning');
   });
 
   it('does not trust "renders" when a never-published page also answers 200', async () => {
@@ -358,9 +389,39 @@ describe('verifyReport, the gate side', () => {
     assert.ok(ask(half).some((r) => /publish did not run/.test(r)));
   });
 
+  it('refuses a gate check recorded as not run next to an old image that did not boot: a cascade never waives the gate', async () => {
+    const { record } = await run({
+      [OLD]: { schema: oldSchema, bootError: () => 'the old image will not boot' },
+      [NEW]: { schema: oldSchema },
+    });
+    assert.equal(record.outcome, 'warned', 'the control: a real cascade is only a warning');
+    assert.deepEqual(ask(record), []);
+    for (const gate of ['new-boots', 'data-intact']) {
+      const waived = {
+        ...record,
+        checks: record.checks.map((c) =>
+          c.name === gate ? { ...c, ok: false, detail: 'not run' } : c
+        ),
+        warnings: [...record.warnings, { check: gate, detail: 'not run', route: RESTORE_ROUTE }],
+      };
+      assert.ok(
+        ask(waived).some((r) => r === `${gate} is red: not run`),
+        `${gate} waived by the cascade: ${JSON.stringify(ask(waived))}`
+      );
+      assert.ok(
+        !assessReport(waived, { oldImage: OLD, newImage: NEW }).warnings.some(
+          (w) => w.check === gate
+        )
+      );
+    }
+  });
+
   it('refuses things that are not records', () => {
     assert.deepEqual(ask(null), ['the record is not an object']);
     assert.ok(ask({}).length > 0);
-    assert.ok(ask({ v: 2 }).some((r) => /unknown record version/.test(r)));
+    assert.ok(
+      ask({ v: 1 }).some((r) => /unknown record version/.test(r)),
+      'a v1 record read data-intact through the old image'
+    );
   });
 });
