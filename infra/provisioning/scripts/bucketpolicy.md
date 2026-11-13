@@ -97,8 +97,7 @@ the bucket-wide `s3:*` deny already covers it. The read-write and read-only
 keys are both exempt from that deny, so they fall back to the project
 default for these two calls. Nothing else can close that gap: the engine
 refuses any statement that names either action, Allow or Deny, and it
-ignores `NotAction`. It has not been measured whether fsn1 serves the
-ownership-controls API at all.
+ignores `NotAction`.
 
 This is a measurement of one engine at one time, not a specification. If
 Hetzner ships support for any of these, the way to find out is to probe the

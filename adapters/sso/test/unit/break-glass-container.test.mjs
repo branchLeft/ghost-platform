@@ -135,7 +135,7 @@ describe('the host wrapper', () => {
     const { result, docker } = runWrapper(PASSTHROUGH);
     expect(result.status).toBe(0);
     const run = parseRun(['docker', ...docker]);
-    expect(run.image).toMatch(/^node:26\.5\.0-bookworm-slim@sha256:[a-f0-9]{64}$/);
+    expect(run.image).toMatch(/^node:26\.13\.0-alpine@sha256:[a-f0-9]{64}$/);
     expect(run.command).toEqual(['node', TOOL, ...PASSTHROUGH]);
   });
 

@@ -20,7 +20,7 @@ const ROOT = import.meta.dirname;
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
 
 const IMAGE = 'ghcr.io/branchleft/percona-server';
-const MIRROR = 'ghcr.io/branchleft/mirror-private';
+const MIRROR = 'ghcr.io/branchleft/mirror-private2';
 const UBI = ['ubi-9-baseos-rpms', 'ubi-9-appstream-rpms'];
 const MAX_REASON = 500;
 const MAX_DAYS = 30;
@@ -339,8 +339,8 @@ test('the workflow checker reports each way the build or publish can drift', () 
     [
       swap(
         workflow,
-        '    timeout-minutes: 20\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n',
-        '    timeout-minutes: 20\n    permissions:\n      packages: write\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private\n'
+        '    timeout-minutes: 20\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private2\n',
+        '    timeout-minutes: 20\n    permissions:\n      packages: write\n    env:\n      IMAGE_REGISTRY: ghcr.io/branchleft/mirror-private2\n'
       ),
       'only the push job may write',
     ],
