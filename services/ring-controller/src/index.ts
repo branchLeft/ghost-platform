@@ -80,3 +80,10 @@ export type {
   RingControllerDependencies,
   RingMember,
 } from './ringController.js';
+export { runReleaseFromProcess } from './processEntry.js';
+export {
+  DEFAULT_CALL_DEADLINES,
+  DeadlineExceededError,
+  resolveCallDeadlines,
+} from './deadlines.js';
+export type { CallDeadlines } from './deadlines.js';

@@ -29,3 +29,26 @@ report-only policy plus a flag — an enforcing policy is never guessed.
 `style-src 'unsafe-inline'` stays for every tenant: Portal styles the iframe
 it builds for itself inline, and that residual is accepted as materially
 less dangerous than injected script.
+
+## The payments allowance
+
+A paid Ghost loads `https://js.stripe.com/v3/` on every page, which the strict
+policy blocks. `renderEdgeSiteBlock`'s fifth argument, `PaymentsCsp`, adds the
+Stripe origins to `script-src` and to an explicit `frame-src` (`default-src` no
+longer covers a frame once an allowance exists, so `'self'` is written out
+beside the Stripe origin). It defaults to `none`, which renders the policy
+exactly as before: like `ThemeCsp` it is an explicit parameter and not a
+`TenantDescriptor` field, so a tenant with no payments never gets a wider
+`script-src`, and no schema bump is needed.
+
+The origins live in `payments-origins.json` and are **measured**: only
+`csp/derive/derive-payment-origins.mjs` writes it, from a real browser's
+report-only run against a real Ghost loading the real Stripe.js, and
+`csp-checkout-gate.py --derive` fails when the file drifts from a fresh
+measurement. This module renders them and adds none. It also validates each one
+on use: a bare https origin on `stripe.com` or `stripe.network`, nothing else, so
+a hand edit cannot put a wildcard, a path, a third party or CSP syntax into the
+header. The set is exactly `https://js.stripe.com` for `script-src` and
+`frame-src` and nothing for `connect-src` (hosted checkout navigates away to
+Stripe's own page, which a tenant policy does not govern). A site embedding
+Stripe Elements would also need `api.stripe.com` and must be re-measured.

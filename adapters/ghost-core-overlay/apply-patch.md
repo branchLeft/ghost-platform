@@ -23,5 +23,6 @@ changed the lines it touches) or when the patched file is not byte-for-byte the 
 
 ## Who uses it
 
-The root `Dockerfile`, for `adapters/stripe-connect-limit/ghost-core-overlay`. The break-glass overlay keeps
-its own script, `adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh`, unchanged.
+The root `Dockerfile`, for `adapters/sso/ghost-core-overlay` and `adapters/stripe-connect-limit/ghost-core-overlay`.
+`adapters/sso/test/unit/global-setup.mjs` and the sso overlay's unit tests run it against Ghost's file extracted
+from the same pinned image, so the rule that decides whether an overlay is still valid has one home.

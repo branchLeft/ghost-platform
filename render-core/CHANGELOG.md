@@ -4,6 +4,27 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+**The strict content policy can carry Stripe.**
+
+- **Additive:** `renderEdgeSiteBlock()` takes an optional fifth argument,
+  `payments: PaymentsCsp` (`{ kind: 'stripe' }` or `{ kind: 'none' }`), and
+  `render()` takes it as `options.payments`. Absent or `none`, the policy is
+  byte-identical to 0.4.0 (pinned in `test/edge.test.ts`). With `stripe`, the
+  origins in `src/payments-origins.json` are added to `script-src`, and to an
+  explicit `frame-src 'self' ...` (and `connect-src 'self' ...` if a
+  re-measurement ever finds one), because `default-src` no longer covers them.
+  Today that is `https://js.stripe.com` in `script-src` and `frame-src`.
+- The origins are **measured, not written**: `payments-origins.json` is produced
+  only by `csp/derive/derive-payment-origins.mjs` from a real browser's report
+  against the real Stripe.js, and checked by `csp-checkout-gate.py --derive`.
+  `render-core` validates every origin on use (`validatePaymentOrigin`): a bare
+  https origin on `stripe.com` or `stripe.network`, no wildcard, port or path.
+  New exports `PaymentsCsp`, `PAYMENTS_CSP_NONE` and `validatePaymentOrigin`.
+- **Rollout:** nothing passes `payments: stripe` yet, so no rendered tenant
+  artefact changes with this release. A consumer that wants the allowance needs
+  this release and a call that passes it; consumers lag a release by one day.
+  See src/edge.md#the-payments-allowance.
+
 **The mail spool can serve the outcomes route.**
 
 - **Additive:** `MailSpoolStackArgs` takes an optional `drainOutcomes`. When

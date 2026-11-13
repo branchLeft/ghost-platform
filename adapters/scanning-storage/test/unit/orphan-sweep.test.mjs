@@ -4,6 +4,7 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { holdersOf } from '../helpers/holders.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -512,9 +513,7 @@ describe('a hold racing the orphan sweep for the same digest', () => {
 
     expect(removedBySweep).toBe(1);
     await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
-    expect(
-      JSON.parse(await fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`), 'utf8'))
-    ).toEqual({
+    expect(await holdersOf(quarantinePath, DIGEST)).toEqual({
       owners: { [OWNER]: ['a.png'] },
     });
     expect(registry.isPending(DIGEST)).toBe(true);
@@ -548,10 +547,135 @@ describe('a hold racing the orphan sweep for the same digest', () => {
         .holds.map((hold) => hold.targetPath)
         .sort()
     ).toEqual(['first.png', 'second.png']);
-    expect(
-      JSON.parse(
-        await fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`), 'utf8')
-      ).owners[OWNER].sort()
-    ).toEqual(['first.png', 'second.png']);
+    expect((await holdersOf(quarantinePath, DIGEST)).owners[OWNER].sort()).toEqual([
+      'first.png',
+      'second.png',
+    ]);
+  });
+});
+
+// A write error while a single-file sidecar is split (a full disk, EIO,
+// EACCES) leaves its aside copy as the only record of the hold. The sweep
+// that runs in the same pass, and in every later one, must treat that copy
+// as a hold on the bytes it names, until a split completes.
+describe('a split that cannot finish', () => {
+  const OTHER_TARGETS = ['b.mp4'];
+  const ASIDE = `.${DIGEST}.holds.json.1234-abcdef.json`;
+  const legacy = { owners: { [OWNER]: ['a.png'], [OTHER_OWNER]: OTHER_TARGETS } };
+
+  // Every entry written into the digest's sidecar directory fails, as it
+  // does on a full disk. Returns how to lift the failure.
+  function failEntryWrites() {
+    const dir = path.join(quarantinePath, `${DIGEST}.holds.json`);
+    const real = fsSync.renameSync;
+    fsSync.renameSync = (from, to) => {
+      if (path.dirname(String(to)) === dir) {
+        throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+      }
+      return real(from, to);
+    };
+    return () => {
+      fsSync.renameSync = real;
+    };
+  }
+
+  async function agedBytes() {
+    await fs.mkdir(quarantinePath, { recursive: true });
+    await fs.writeFile(path.join(quarantinePath, DIGEST), BYTES);
+    await ageFile(path.join(quarantinePath, DIGEST));
+  }
+
+  async function bytesAreKept() {
+    expect(await fs.readFile(path.join(quarantinePath, DIGEST))).toEqual(BYTES);
+  }
+
+  it('keeps the bytes through every pass while an aside copy cannot be finished, then resumes the hold', async () => {
+    await agedBytes();
+    await fs.writeFile(path.join(quarantinePath, ASIDE), JSON.stringify(legacy));
+
+    const lift = failEntryWrites();
+    const logger = recordingLogger();
+    try {
+      // Start-up, then a restart, then the periodic sweep: none may remove them.
+      resume(buildRegistry({ logger }));
+      resume(buildRegistry({ logger }));
+      const timed = buildRegistry({
+        logger,
+        orphanMinAgeMs: MIN_AGE_MS,
+        orphanSweepIntervalMs: TICK_MS,
+      });
+      resume(timed);
+      await new Promise((resolve) => setTimeout(resolve, TICK_MS * 4));
+      timed.stopAll();
+    } finally {
+      lift();
+    }
+
+    await bytesAreKept();
+    expect(await fs.readFile(path.join(quarantinePath, ASIDE), 'utf8')).toBe(
+      JSON.stringify(legacy)
+    );
+    expect(logger.lines.some((line) => line.includes('could not finish splitting'))).toBe(true);
+    expect(logger.lines.some((line) => line.includes(ORPHAN_LOG_PREFIX))).toBe(false);
+
+    // The disk has room again: the next start-up finishes the split.
+    const recovered = buildRegistry();
+    resume(recovered);
+    expect(recovered.isPending(DIGEST)).toBe(true);
+    await bytesAreKept();
+    expect(await holdersOf(quarantinePath, DIGEST)).toEqual({
+      owners: { [OWNER]: ['a.png'], [OTHER_OWNER]: OTHER_TARGETS },
+    });
+    expect(await listing()).toEqual([DIGEST, `${DIGEST}.holds.json`].sort());
+  });
+
+  it('keeps the bytes when the write fails right after the file is moved aside, with no crash', async () => {
+    await agedBytes();
+    await fs.writeFile(path.join(quarantinePath, `${DIGEST}.holds.json`), JSON.stringify(legacy));
+
+    const lift = failEntryWrites();
+    const logger = recordingLogger();
+    try {
+      resume(buildRegistry({ logger })); // the migration throws after the rename
+      resume(buildRegistry({ logger })); // and again five minutes later
+    } finally {
+      lift();
+    }
+
+    await bytesAreKept();
+    expect(logger.lines.some((line) => line.includes(ORPHAN_LOG_PREFIX))).toBe(false);
+    expect((await listing()).filter((name) => name.startsWith('.'))).toHaveLength(1);
+
+    const recovered = buildRegistry();
+    resume(recovered);
+    expect(recovered.isPending(DIGEST)).toBe(true);
+    expect(await holdersOf(quarantinePath, DIGEST)).toEqual({
+      owners: { [OWNER]: ['a.png'], [OTHER_OWNER]: OTHER_TARGETS },
+    });
+  });
+
+  it('keeps the bytes a split aside copy names from sweepOrphans and from releaseBytes, and removes bytes it does not name', async () => {
+    await agedBytes();
+    const unnamed = Buffer.from('some-other-orphan');
+    const unnamedDigest = await writeOrphan(unnamed);
+    await fs.writeFile(path.join(quarantinePath, ASIDE), JSON.stringify(legacy));
+
+    expect(sweep()).toBe(1);
+    await bytesAreKept();
+    expect(await listing()).not.toContain(unnamedDigest);
+
+    expect(releaseBytes(quarantinePath, DIGEST, { keepIfHeld: true })).toBe(false);
+    await bytesAreKept();
+  });
+
+  it('keeps a releasing copy of the digest an aside copy names', async () => {
+    const { sweepReleasing } = require('../../src/quarantine.js');
+    await fs.mkdir(quarantinePath, { recursive: true });
+    await fs.writeFile(path.join(quarantinePath, `${DIGEST}.releasing.1.abc`), BYTES);
+    await fs.writeFile(path.join(quarantinePath, ASIDE), JSON.stringify(legacy));
+
+    sweepReleasing(quarantinePath, digestBytes, recordingLogger());
+
+    await bytesAreKept();
   });
 });

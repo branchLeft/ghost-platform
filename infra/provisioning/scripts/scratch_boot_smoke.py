@@ -292,11 +292,14 @@ def main(argv: Sequence[str] | None = None, *, hooks: rd.Hooks | None = None,
     except rd.DrillConfigError as exc:
         print(f"scratch_boot_smoke: {exc}", file=sys.stderr)
         return EXIT_NOT_RUN
+    lock = None
     try:
         config.work_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        lock = open(config.work_dir / sp.LOCK_NAME, "w")  # noqa: SIM115 -- held for the whole run
+        lock = open(config.work_dir / sp.LOCK_NAME, "w")  # noqa: SIM115 -- closed by `with lock` once held, or below if refused
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
+        if lock is not None:
+            lock.close()
         print(f"scratch_boot_smoke: another gate run holds the lock, or it cannot be taken: {exc}", file=sys.stderr)
         return EXIT_NOT_RUN
     previous = signal.signal(signal.SIGTERM, rd._on_sigterm)

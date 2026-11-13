@@ -47,9 +47,9 @@ COPY --chown=node:node adapters/sso/src/BreakGlassSSO.js adapters/sso/src/break-
 # re-deriving the patch is then a deliberate step, not automatic. `patch` is
 # a build-time tool only: installed, used and removed in this one layer, and
 # its output is hash-checked, so it never reaches the image.
-COPY adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh adapters/sso/ghost-core-overlay/session-from-token.patch adapters/sso/ghost-core-overlay/session-from-token.patched.sha256 /tmp/session-from-token-overlay/
+COPY adapters/ghost-core-overlay/apply-patch.sh adapters/sso/ghost-core-overlay/session-from-token.patch adapters/sso/ghost-core-overlay/session-from-token.patched.sha256 /tmp/session-from-token-overlay/
 RUN apk add --no-cache patch \
-    && /tmp/session-from-token-overlay/apply-session-from-token-patch.sh /var/lib/ghost/current/core/server/auth/session \
+    && /tmp/session-from-token-overlay/apply-patch.sh /var/lib/ghost/current/core/server/auth/session session-from-token.js /tmp/session-from-token-overlay/session-from-token.patch /tmp/session-from-token-overlay/session-from-token.patched.sha256 \
     && chown node:node /var/lib/ghost/current/core/server/auth/session/session-from-token.js \
     && apk del patch \
     && rm -rf /tmp/session-from-token-overlay

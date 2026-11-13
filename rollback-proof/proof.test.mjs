@@ -35,6 +35,30 @@ const run = (images, options) => {
 const byName = (record, name) => record.checks.find((c) => c.name === name);
 const red = (record) => record.checks.filter((c) => !c.ok).map((c) => c.name);
 
+describe('an old image whose schema lists tables production never creates', () => {
+  const withDevTable = { ...oldSchema, user_accounts: { id: { nullable: false } } };
+
+  it('is accepted: the absent in-development table is not a missing table', async () => {
+    const { record } = await run({
+      [OLD]: { schema: withDevTable, inDevelopment: ['user_accounts'] },
+      [NEW]: { schema: withDevTable, inDevelopment: ['user_accounts'] },
+    });
+    assert.deepEqual(record.findings, []);
+    assert.equal(record.outcome, 'accepted');
+  });
+
+  it('CONTROL: the same schema without the list reports the table missing', async () => {
+    const { record } = await run({
+      [OLD]: { schema: withDevTable, inDevelopment: [], neverCreated: ['user_accounts'] },
+      [NEW]: { schema: withDevTable, inDevelopment: ['user_accounts'] },
+    });
+    assert.deepEqual(
+      record.findings.map((f) => [f.kind, f.table]),
+      [['missing-table', 'user_accounts']]
+    );
+  });
+});
+
 describe('a candidate the old image can still serve', () => {
   it('is accepted, with every required check recorded once and green', async () => {
     const { record } = await run({

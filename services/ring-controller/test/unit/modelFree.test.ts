@@ -249,11 +249,14 @@ describe('static: nothing a model, a network or a package could reach', () => {
     ]);
   });
 
-  it('never reads the process environment itself', () => {
-    const offenders = sources.filter(({ text }) =>
+  it('reads the process environment in one entry only, and passes it on as it stands', () => {
+    const readers = sources.filter(({ text }) =>
       /process\s*\.\s*env|process\[\s*['"]env['"]\s*\]/.test(text)
     );
 
-    expect(offenders.map(({ name }) => name)).toEqual([]);
+    expect(readers.map(({ name }) => name)).toEqual(['processEntry.ts']);
+    const entry = (readers[0] as { text: string }).text;
+    expect(entry.match(/process\s*\.\s*env/g)).toHaveLength(1);
+    expect(entry).toContain('return runRelease(release, deps, config, process.env);');
   });
 });
