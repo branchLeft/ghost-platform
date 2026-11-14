@@ -5,3 +5,6 @@
 **/coverage
 **/*.md
 .git
+# The provisioning contract's in-memory mock and its spec test are for CI, not the image.
+services/provisioning-controller/mock
+services/provisioning-controller/contract

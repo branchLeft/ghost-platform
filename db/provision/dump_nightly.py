@@ -2,15 +2,19 @@
 """Nightly logical dump of every database on db1, encrypted client-side and
 shipped to Object Storage.
 
-The commented resume point (`-- CHANGE MASTER TO ...`, the form
-`--source-data=2` wrote) and `@@server_uuid`-namespaced object keys are both
-load-bearing for restore. The snapshot is `bounded_snapshot`'s: table locks
-with a bounded wait and hold, never `FLUSH TABLES`. See dump_nightly.md.
+The dump is taken one user schema at a time, each under its own
+`bounded_snapshot`: table locks on that schema alone, with a bounded wait and
+hold, never `FLUSH TABLES`. Each schema's section carries its own resume
+point, and the `@@server_uuid`-namespaced object keys, both load-bearing for
+restore. See dump_nightly.md.
 """
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import datetime
+import functools
 import os
 import pathlib
 import re
@@ -57,13 +61,25 @@ def get_server_uuid(*, socket_path: str, password: str, run=subprocess.run) -> s
     return server_uuid
 
 
+# Every dump names its databases with `--databases` after these, one
+# section per user schema; see run_mysqldump.
 DUMP_ARGS = (
-    "--all-databases",
     "--single-transaction",
     "--routines",
     "--triggers",
     "--set-gtid-purged=OFF",
 )
+
+# Dumped with the first section, never locked: the same treatment they had
+# under `--all-databases`. A schema with no base table has nothing to lock
+# and rides with them.
+UNLOCKED_SCHEMAS = ("mysql", "sys")
+
+# One resume point per section, in a form no earlier reader matches: a reader
+# that only knows the bare `-- CHANGE MASTER TO` comment finds none and
+# refuses, instead of replaying every schema from one schema's position.
+# extract_tenant_binlog.SECTION_RESUME_PATTERN reads it back.
+SECTION_PREFIX = "-- BRANCHLEFT-SECTION "
 
 
 # The same metric names the control host's worker publishes, under this
@@ -76,9 +92,37 @@ _ABORTS_LINE = re.compile(
 )
 
 
-def record_lock_metrics(
-    *, metrics_dir: str, report: bounded_snapshot.SnapshotReport | None, aborts: int
-) -> None:
+@dataclasses.dataclass(frozen=True)
+class NightlyReport:
+    """The run's snapshots, one per dumped section. The gauges name the worst
+    single section, since that is what one tenant's writers could wait for;
+    the abort counter adds every section up."""
+
+    sections: tuple[bounded_snapshot.SnapshotReport, ...]
+    skipped_schemas: tuple[str, ...] = ()
+
+    @property
+    def lock_wait_seconds(self) -> float:
+        return max((section.lock_wait_seconds for section in self.sections), default=0.0)
+
+    @property
+    def hold_seconds(self) -> float:
+        return max((section.hold_seconds for section in self.sections), default=0.0)
+
+    @property
+    def tables_locked(self) -> int:
+        return sum(section.tables_locked for section in self.sections)
+
+    @property
+    def attempts(self) -> int:
+        return sum(section.attempts for section in self.sections)
+
+    @property
+    def aborted_attempts(self) -> int:
+        return sum(section.aborted_attempts for section in self.sections)
+
+
+def record_lock_metrics(*, metrics_dir: str, report: NightlyReport | None, aborts: int) -> None:
     """Writes the wait and hold gauges (when a snapshot was taken) and adds
     `aborts` to the cumulative counter. Best-effort: never fails the dump."""
     path = pathlib.Path(metrics_dir) / METRICS_FILENAME
@@ -170,48 +214,64 @@ def record_run_status(*, metrics_dir: str | None, succeeded: bool, now: float | 
         print(f"dump_nightly: could not write run status to {metrics_dir!r}: {exc}", file=sys.stderr)
 
 
-def run_mysqldump(
-    *,
-    socket_path: str,
-    password: str,
-    out_path: str,
-    popen=subprocess.Popen,
-    limits: bounded_snapshot.Limits = bounded_snapshot.Limits(),
-    sleep=time.sleep,
-    metrics_dir: str | None = None,
-) -> bounded_snapshot.SnapshotReport:
-    """Writes the resume-point comment, then the dump, to `out_path`.
-    Every user schema's tables are locked for the snapshot; see
-    dump_nightly.md#the-snapshot for why the system schemas are not."""
-    factory = bounded_snapshot.ClientFactory(
-        connection_args=["--socket", socket_path, "--user", DUMP_MYSQL_USER],
-        password=password,
-        env={"PATH": os.environ.get("PATH", "")},
-        popen=popen,
+def section_comment(report: bounded_snapshot.SnapshotReport) -> bytes:
+    """The resume point of one section, in the form extract_tenant_binlog reads."""
+    return f"{SECTION_PREFIX}CHANGE MASTER TO MASTER_LOG_FILE='{report.log_file}', MASTER_LOG_POS={report.log_position};\n".encode()
+
+
+def _list_names(sql: str, *, factory: bounded_snapshot.ClientFactory, limits: bounded_snapshot.Limits) -> list[str]:
+    """First column of every row `sql` returns, from a one-off mysql session."""
+    process = factory.spawn(
+        "mysql",
+        ["--batch", "--skip-column-names", "--connect-timeout=5", "-e", sql],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
     )
     try:
-        dump, report = bounded_snapshot.take_bounded_snapshot(
-            factory=factory,
-            schemas=None,
-            dump_args=DUMP_ARGS,
-            limits=limits,
-            sleep=sleep,
-            log=lambda message: print(f"dump_nightly: {message}", file=sys.stderr),
-        )
-        if metrics_dir is not None:
-            record_lock_metrics(metrics_dir=metrics_dir, report=report, aborts=report.aborted_attempts)
-    except bounded_snapshot.SnapshotError as exc:
-        if metrics_dir is not None:
-            record_lock_metrics(metrics_dir=metrics_dir, report=None, aborts=exc.aborted_attempts)
-        raise DumpError(
-            f"no consistent snapshot ({exc.aborted_attempts} lock attempt(s) aborted on a bound): {exc}"
-        ) from exc
+        out, err = process.communicate(timeout=limits.setup_timeout_seconds)
+    except subprocess.TimeoutExpired:
+        bounded_snapshot.kill_process(process)
+        process.communicate()
+        raise DumpError(f"listing schemas did not finish within {limits.setup_timeout_seconds}s") from None
+    if process.returncode != 0:
+        raise DumpError(f"listing schemas: mysql exited {process.returncode}: {err.decode(errors='replace').strip()}")
+    return [line.partition("\t")[0] for line in out.decode(errors="replace").splitlines() if line]
 
+
+def list_user_schemas(
+    *, factory: bounded_snapshot.ClientFactory, limits: bounded_snapshot.Limits
+) -> tuple[list[str], list[str]]:
+    """(schemas with at least one base table, the other user schemas), each
+    sorted. Only the first kind has anything to lock."""
+    system = ", ".join("'" + name + "'" for name in bounded_snapshot.SYSTEM_SCHEMAS)
+    everything = _list_names(
+        f"SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ({system}) ORDER BY SCHEMA_NAME;",
+        factory=factory,
+        limits=limits,
+    )
+    with_tables = set(_list_names(bounded_snapshot.list_tables_sql(None), factory=factory, limits=limits))
+    for name in everything:
+        if name.startswith("-"):
+            raise DumpError("a schema name starting with '-' would be read by mysqldump as an option; not dumped")
+    return [name for name in everything if name in with_tables], [name for name in everything if name not in with_tables]
+
+
+def _log(message: str) -> None:
+    print(f"dump_nightly: {message}", file=sys.stderr)
+
+
+def _log_section(where: str, message: str) -> None:
+    _log(f"{where}: {message}")
+
+
+def _stream_section(handle, dump: bounded_snapshot.StartedDump, report: bounded_snapshot.SnapshotReport) -> int:
+    """Writes one section: its resume point, then what its mysqldump prints.
+    Returns that mysqldump's exit code; a failure while writing kills it."""
     try:
-        with open(out_path, "wb") as handle:
-            handle.write(report.coordinates_comment())
-            for chunk in iter(lambda: dump.process.stdout.read(1 << 16), b""):
-                handle.write(chunk)
+        handle.write(section_comment(report))
+        for chunk in iter(lambda: dump.process.stdout.read(1 << 16), b""):
+            handle.write(chunk)
         exit_code = dump.process.wait()
     except BaseException:
         bounded_snapshot.kill_process(dump.process)
@@ -221,13 +281,86 @@ def run_mysqldump(
     dump.stderr.join(5.0)
     if exit_code != 0:
         raise DumpError(f"mysqldump exited {exit_code}: {dump.stderr.text()}")
-    print(
-        f"dump_nightly: snapshot at {report.log_file}:{report.log_position}, lock wait "
-        f"{report.lock_wait_seconds:.3f}s, hold {report.hold_seconds:.3f}s, "
-        f"{report.aborted_attempts} aborted lock attempt(s), {report.tables_locked} tables locked",
-        file=sys.stderr,
+    return exit_code
+
+
+def run_mysqldump(
+    *,
+    socket_path: str,
+    password: str,
+    out_path: str,
+    popen=subprocess.Popen,
+    limits: bounded_snapshot.Limits = bounded_snapshot.Limits(),
+    sleep=time.sleep,
+    metrics_dir: str | None = None,
+) -> NightlyReport:
+    """Writes the dump to `out_path` one user schema at a time: each schema's
+    tables are locked by themselves for its snapshot, and its section opens
+    with its own resume point. No lock ever names two schemas, so a tenant's
+    writers are never held for another tenant's lock. `mysql`, `sys` and any
+    schema with no base table are dumped inside the first section, unlocked.
+    See dump_nightly.md#the-snapshot."""
+    factory = bounded_snapshot.ClientFactory(
+        connection_args=["--socket", socket_path, "--user", DUMP_MYSQL_USER],
+        password=password,
+        env={"PATH": os.environ.get("PATH", "")},
+        popen=popen,
     )
-    return report
+    locked, tableless = list_user_schemas(factory=factory, limits=limits)
+    if not locked:
+        raise DumpError("no base tables to lock in any user schema")
+
+    carried = [*tableless, *UNLOCKED_SCHEMAS]  # dumped with the first section that is taken
+    reports: list[bounded_snapshot.SnapshotReport] = []
+    skipped: list[str] = []
+    aborts = 0
+    with contextlib.ExitStack() as stack:
+        try:
+            handle = None
+            for index, schema in enumerate(locked, start=1):
+                where = f"section {index}/{len(locked)}"
+                try:
+                    dump, report = bounded_snapshot.take_bounded_snapshot(
+                        factory=factory,
+                        schemas=[schema],
+                        dump_args=(*DUMP_ARGS, "--databases", schema, *carried),
+                        limits=limits,
+                        sleep=sleep,
+                        log=functools.partial(_log_section, where),
+                    )
+                except bounded_snapshot.SnapshotError as exc:
+                    aborts += exc.aborted_attempts
+                    # Only a schema the server confirms is gone is left out: it
+                    # has nothing left to lock. Anything else fails the run.
+                    with_tables, without_tables = list_user_schemas(factory=factory, limits=limits)
+                    if schema in (*with_tables, *without_tables):
+                        raise DumpError(
+                            f"no consistent snapshot ({exc.aborted_attempts} lock attempt(s) aborted on a bound): {exc}"
+                        ) from exc
+                    skipped.append(schema)
+                    _log(f"{where}: schema {schema!r} no longer exists, not dumped")
+                    continue
+                reports.append(report)
+                aborts += report.aborted_attempts
+                carried = []
+                if handle is None:
+                    handle = stack.enter_context(open(out_path, "wb"))
+                _stream_section(handle, dump, report)
+                _log(
+                    f"{where}: snapshot at {report.log_file}:{report.log_position}, lock wait "
+                    f"{report.lock_wait_seconds:.3f}s, hold {report.hold_seconds:.3f}s, "
+                    f"{report.aborted_attempts} aborted lock attempt(s), {report.tables_locked} tables locked"
+                )
+            if not reports:
+                raise DumpError("no user schema could be dumped: every one listed had gone by the time it was locked")
+        finally:
+            if metrics_dir is not None:
+                record_lock_metrics(
+                    metrics_dir=metrics_dir,
+                    report=NightlyReport(sections=tuple(reports)) if reports else None,
+                    aborts=aborts,
+                )
+    return NightlyReport(sections=tuple(reports), skipped_schemas=tuple(skipped))
 
 
 def encrypt_with_age(*, in_path: str, out_path: str, recipient: str, run=subprocess.run) -> None:

@@ -37,6 +37,13 @@ IMAGE_VARIABLE = "DEMO_SIDECAR_IMAGE"
 IMAGE_PATTERN = re.compile(r"\A[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}\Z")
 CONTAINER_ID_PATTERN = re.compile(r"\A[0-9a-f]{12,64}\Z")
 
+# The sidecar exits non-zero once nothing has answered on Ghost's address for
+# this long, and `--restart on-failure` starts it again, joining Ghost's
+# current network namespace. Read by services/drain-sidecar/src/config.ts;
+# `test_demo_sidecar.py` fails if the name drifts.
+EXIT_AFTER_VARIABLE = "EXIT_AFTER_GHOST_UNREACHABLE_MS"
+EXIT_AFTER_GHOST_UNREACHABLE_MS = 15000
+
 CONTAINER_SOCKET_DIR = "/run/sidecar"
 CONTAINER_FLAG_DIR = "/run/drain"
 PIDS_LIMIT = "64"
@@ -114,7 +121,7 @@ def run_arguments(
         "--name", container_name(slot, colour),
         "--network", f"container:{ghost_id}",
         "--user", f"{owner_uid}:{owner_uid}",
-        "--restart", "no",
+        "--restart", "on-failure",
         "--pull", "never",
         "--read-only",
         "--cap-drop", "ALL",
@@ -126,6 +133,7 @@ def run_arguments(
         "-e", f"SOCKET_PATH={CONTAINER_SOCKET_DIR}/{SOCKET_NAME}",
         "-e", f"DRAIN_FLAG_PATH={CONTAINER_FLAG_DIR}/{FLAG_FILE.format(slot=slot, colour=colour)}",
         "-e", f"GHOST_HEALTH_URL=http://127.0.0.1:{GHOST_CONTAINER_PORT}/",
+        "-e", f"{EXIT_AFTER_VARIABLE}={EXIT_AFTER_GHOST_UNREACHABLE_MS}",
         image,
     ]  # fmt: skip
 

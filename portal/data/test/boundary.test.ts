@@ -13,12 +13,12 @@ describe('the tenant-facing source', () => {
   });
 
   it.each(files)(
-    '%s never imports the owner path, the provisioner path or the migrator',
+    '%s never imports the owner, provisioner or prospect path, or the migrator',
     (file) => {
       const source = readFileSync(join(TENANT_DIR, file), 'utf8');
       const specifiers = [...source.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1] ?? '');
       for (const specifier of specifiers) {
-        expect(specifier).not.toMatch(/owner|provisioner|migrate/);
+        expect(specifier).not.toMatch(/owner|provisioner|prospect|migrate/);
       }
     }
   );
@@ -38,4 +38,25 @@ describe('the compile-time guarantee', () => {
     void db.run({ tenantId: '11111111-1111-4111-8111-111111111111' }, work).catch(() => undefined);
     expect(bindTenant('11111111-1111-4111-8111-111111111111')).toBeDefined();
   });
+});
+
+const PROSPECT_DIR = join(import.meta.dirname, '../src/prospect');
+
+describe('the prospect-facing source', () => {
+  const files = readdirSync(PROSPECT_DIR).filter((name) => name.endsWith('.ts'));
+
+  it('exists', () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  it.each(files)(
+    '%s never imports the tenant, owner or provisioner path, or the migrator',
+    (file) => {
+      const source = readFileSync(join(PROSPECT_DIR, file), 'utf8');
+      const specifiers = [...source.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1] ?? '');
+      for (const specifier of specifiers) {
+        expect(specifier).not.toMatch(/tenant|owner|provisioner|migrate/);
+      }
+    }
+  );
 });

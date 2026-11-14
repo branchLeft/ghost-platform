@@ -16,13 +16,13 @@ which the client library reaches solely via a socket.
 
 ## 0. Preconditions
 
-`db1` exists as a Hetzner server (created by `infra/hosts`, private-only,
-`10.20.1.20`) but is **base-unprovisioned**: no Docker, no deploy account.
-Base-provision it first, exactly as shared-infra's
+`db1` is a Hetzner server (created by `infra/hosts`, private-only,
+`10.20.1.20`) that must be base-provisioned first (Docker, a deploy account),
+exactly as shared-infra's
 [`RUNBOOK-provision-host.md`](https://github.com/branchLeft/shared-infra/blob/main/hetzner/RUNBOOK-provision-host.md)
 §4 describes for any host with no public address -- through `edge1` as a
-jump host. That is a platform-owner-only step (root SSH); this repo's own
-PR states the exact command. Confirm it completed before anything below:
+jump host. That is a platform-owner-only step (root SSH). Confirm it completed
+before anything below:
 
 **Select the hcloud project first.** The lookups below ask hcloud, so its active context
 must be the one for the project that holds the server. Which of your contexts that is
@@ -56,22 +56,11 @@ versioning, a lifecycle rule and its fence set — see "The backup bucket" below
 
 ## The backup bucket
 
-> **STOP — the fencing half of this step does not run yet.** A bucket policy
-> this repository wrote was accepted by the endpoint and then enforced against
-> nobody: neither the key it exempted nor a key it should have denied was
-> refused. Whether a bucket policy can fence anything at all on this provider is
-> an open question, and `configure_backup_bucket.py` below will refuse to apply
-> one until it has been answered.
->
-> Answer it first with section 0 of
-> [`RUNBOOK-bucket-fencing.md`](../RUNBOOK-bucket-fencing.md) — it is reversible,
-> writes no fence, and takes one command. Then follow what its verdict says. On
-> every reading but one, no fence is applied to this bucket at all and the
-> bucket is left as versioning and the lifecycle rule make it; the estate's
-> offsite backups then rest on the project boundary alone, which is a fact for
-> the platform owner to decide about rather than something to work around here.
->
-> Tracked as branchLeft/workspace#301.
+> **`configure_backup_bucket.py` below refuses to write anything unless it is
+> given `--engine-diagnostic-passed`.** Pass it only after section 0 of
+> [`RUNBOOK-bucket-fencing.md`](../RUNBOOK-bucket-fencing.md) — reversible, writes
+> no fence, one command — has reported that a bucket policy can fence one key
+> from another on this account.
 
 Console-only (no `hcloud` API for Object Storage), one time, before `db.env`
 is written. This repo's PR body carries the exact bucket name, location and
@@ -126,14 +115,25 @@ page that states it.
 
 ## 1. Create the socket directory, copy the stack, install host prerequisites
 
+**Retired to the `db1_stack` role, do not run these by hand:** the socket
+directory, the copy of `db/stack/` and the host prerequisites
+(`install_host_prereqs.py`). The `db1_stack` role of `branchLeft/shared-infra`
+creates `/opt/branchleft/db/run/mysqld`, renders `compose.yml` and
+`conf.d/branchleft.cnf`, and installs the MySQL 8.0 toolchain and `age` from its
+own pinned inputs. It runs in db1's gated pull; the gated apply that converged it
+is [gated apply run](https://github.com/branchLeft/shared-infra/actions/runs/41903489960) (4 Nov 2026). The per-role proof is that apply job's success, on all 4 hosts; the public log withholds per-task lines.
+Once applied, running `install_host_prereqs.py` again would put back the
+repository entry the role removes.
+
+Still a hand step, not in the role: copying `db/provision/` to db1. The units in
+§5 and the scripts the backup timers run come from that directory, and no role
+delivers it yet.
+
 ```bash
 EDGE1_IPV4=$(hcloud server ip edge1)
 DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
 JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'mkdir -p /opt/branchleft/db/run/mysqld && chmod 777 /opt/branchleft/db/run/mysqld'
-scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/stack/. root@"$DB1_PRIVATE_IP":/opt/branchleft/db
 scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" -r db/provision root@"$DB1_PRIVATE_IP":/opt/branchleft/db/
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'python3 /opt/branchleft/db/provision/install_host_prereqs.py'
 ```
 
 `chmod 777` is deliberate, not sloppy: the directory holds nothing but an
@@ -145,11 +145,10 @@ relationship to coordinate a tighter mode around.
 `db/provision/` must ship alongside `db/stack/`: §5 below copies systemd
 units from `/opt/branchleft/db/provision/`, and both units' `ExecStart`
 runs scripts from that same path -- nothing else puts it on the host.
-`install_host_prereqs.py` then installs what those scripts shell out to
-(`age`, and a MySQL-8.0-matched `mysql`/`mysqldump`/`mysqlbinlog` -- see the
-script's own docstring for the exact version-pairing constraints); it is
-idempotent, so re-running this step against an already-provisioned db1
-completes in seconds with no network access at all.
+The `db1_stack` role installs what those scripts shell out to (`age`, and a
+MySQL-8.0-matched `mysql`/`mysqldump`/`mysqlbinlog`; the script's own docstring
+gives the version-pairing constraints). Do not re-run `install_host_prereqs.py`
+by hand.
 
 ## 2. Write `/etc/branchleft/db.env`
 
@@ -194,34 +193,23 @@ error makes bash echo the offending line, password included. Read a single
 key with `sed -n 's/^VAR=//p'`, or hand the whole file to a command with
 `systemd-run --property=EnvironmentFile=/etc/branchleft/db.env`.
 
-## 3. Install the stack's systemd drop-in, pin the image, and start
+## 3. Pin the image and start (the drop-in step is retired to `db1_stack`)
 
-The drop-in goes on **before** the first start. It adds one `ExecStartPre`
-that renders `/etc/branchleft/db-exporter.my.cnf` from `EXPORTER_MYSQL_PWD`,
-and the exporter bind-mounts that file. Docker creates a *directory* at a
-bind-mount source it cannot find, so a start without the drop-in loaded leaves
-a stub directory there. The renderer removes an empty one; a non-empty one it
-refuses, and the stack then fails every start until someone clears it by hand.
+**Retired: the drop-in is no longer installed, do not install it by hand.** The
+`db1_stack` role of `branchLeft/shared-infra` removes the legacy drop-in
+`/etc/systemd/system/branchleft-compose@db.service.d/override.conf` and writes
+`/etc/branchleft/db-exporter.my.cnf` itself, from the exporter password its
+caller supplies, before the stack starts. Putting `db/systemd/db.override.conf`
+back would reinstate the second writer that the role removes. The role applies
+through db1's gated pull (applied in
+[gated apply run](https://github.com/branchLeft/shared-infra/actions/runs/41903489960), 4 Nov 2026). The per-role proof is that apply job's success, on all 4 hosts; the public log withholds per-task lines.
+A rebuilt db1 gets this from a gated run, not from this section.
 
-All three commands run against `db1`, which has no public address -- the same
-`$JUMP` hop through `edge1` as every other remote command in this file:
+Recovery only: a stub directory left at the exporter file's path by an earlier start, which the
+`db1_stack` role does not cover. The stack then fails every start until someone clears it by hand;
+the owner reads the failure first, then clears it.
 
-```bash
-EDGE1_IPV4=$(hcloud server ip edge1)
-DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).IP}}')
-JUMP="ssh -i ~/.ssh/id_ed25519_hetzner -W %h:%p root@$EDGE1_IPV4"
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" \
-  'install -d -m 0755 /etc/systemd/system/branchleft-compose@db.service.d'
-scp -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" db/systemd/db.override.conf \
-  root@"$DB1_PRIVATE_IP":/etc/systemd/system/branchleft-compose@db.service.d/override.conf
-ssh -i ~/.ssh/id_ed25519_hetzner -o ProxyCommand="$JUMP" root@"$DB1_PRIVATE_IP" 'systemctl daemon-reload'
-```
-
-It is installed by hand rather than by shared-infra's
-`install-systemd-drop-ins.sh`. That script would match this file if pointed at
-this checkout, but nothing points it here and no host provisioning run does --
-so **a rebuilt db1 does not get this drop-in back**, and this step has to be
-repeated as part of any rebuild.
+Still a hand step, not in the role: the first pin and the first start below.
 
 The first pin is also the first deploy -- there is no separate bootstrap
 path, because `branchleft-compose@.service`'s `EnvironmentFile` for the pin
@@ -450,8 +438,8 @@ CREATE USER 'exporter'@'localhost' IDENTIFIED BY '<matches EXPORTER_MYSQL_PWD>';
 GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'localhost';
 GRANT SELECT ON performance_schema.* TO 'exporter'@'localhost';
 
--- dump_nightly.py: enough to run mysqldump --all-databases --single-transaction
--- under bounded_snapshot.py's table locks (LOCK TABLES) and read the
+-- dump_nightly.py: enough to run mysqldump --single-transaction, one schema
+-- at a time, under bounded_snapshot.py's table locks (LOCK TABLES) and read the
 -- position from performance_schema.log_status (BACKUP_ADMIN), plus
 -- SELECT @@server_uuid. No RELOAD: this account cannot take a global
 -- read lock.
@@ -612,37 +600,88 @@ changes (a first deploy, or a real rebuild), alongside the escrow entry.
    docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      age -d -i age-private-key.txt -o mysql-bin.NNNNNN "binlogs/<server-uuid>/db1-mysql-bin.NNNNNN.age"
    ```
-4. Load the dump, then replay binlog events up to the target timestamp,
-   both through the recovery image's own `mysql`/`mysqlbinlog` -- `MYSQL_PWD`
-   rather than an interactive `-p` because stdin here is already the piped
-   dump/binlog stream, the same reason step 3's admin bootstrap above uses
-   it. The dump's header (from `--source-data=2`) names the exact
-   `MASTER_LOG_FILE`/`MASTER_LOG_POS` to resume from. **`--stop-datetime` is
-   UTC** -- pick the target timestamp in UTC (step 1) and pass `-e TZ=UTC`
-   to the `mysqlbinlog` container, since it otherwise evaluates the cutoff
-   in whichever timezone the container's own default happens to be in:
+4. Load the dump through the recovery image's own `mysql` -- `MYSQL_PWD`
+   rather than an interactive `-p` because stdin here is the piped dump, the
+   same reason step 3's admin bootstrap above uses it:
    ```bash
    read -rs MYSQL_PWD; export MYSQL_PWD
    docker run --rm -i -e MYSQL_PWD -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
      mysql --host <scratch-host> -uroot < dump.sql
-   docker run --rm -i -e MYSQL_PWD -e TZ=UTC -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
-     bash -c 'mysqlbinlog --start-position=<pos-from-dump-header> --stop-datetime="<target timestamp, UTC>" mysql-bin.NNNNNN | mysql --host <scratch-host> -uroot'
    unset MYSQL_PWD
    ```
-5. Confirm a row known to have changed after the dump and before the target
-   timestamp is present, and that nothing after the target timestamp is.
+   Then replay the binlogs to the target timestamp with one command. db1's
+   nightly dump is taken one schema at a time, and each section opens with
+   its own `-- BRANCHLEFT-SECTION CHANGE MASTER TO ...` line, so no single
+   `--start-position` is right for every database. `--all-databases` does
+   what that needs, in this order:
+   1. **The instance pass**, from the first section's position (where
+      `mysql` was read): every account statement (`CREATE`/`ALTER`/`DROP
+      USER`, `GRANT`, `REVOKE`, `SET PASSWORD`, roles) and the creation of
+      every database the dump does not declare. A per-database replay cannot
+      carry either: mysqlbinlog's `--database` filter drops a statement with
+      no `USE`, which is every account statement an admin session issues,
+      and a database created after the dump is in no section to start from.
+      Nothing in this pass is in the dump, because the dump's `mysql` is at
+      that same position, so each statement is applied once and in order.
+   2. **Each declared database** (the `USE` names in the dump, once each),
+      from its own section's position, without account statements (step 1
+      has applied every one, including any run under a `USE`).
+   3. **Each database step 1 created**, from the first section's position,
+      without its creation event (step 1 applied it; applying it twice
+      fails on a database that exists).
 
-**Scoping the replay to one tenant.** Step 4 above brings back every
-tenant's post-dump writes together -- correct for the instance-level
-scenario Drill A proves, wrong for "we deleted forty posts yesterday", where
-every *other* tenant's writes since the dump must stay out of the restored
-database. `db/provision/extract_tenant_binlog.py` replaces step 4's raw
-`mysqlbinlog | mysql` pipe with a scoped equivalent for that case: it reads
-the dump's own `--source-data=2` resume point, so the position does not
-have to be copied out of the dump header by hand, adds mysqlbinlog's own
-`--database=<tenant>` row-event filter to the replay, and always runs
-`mysqlbinlog` with `TZ=UTC` itself -- **`--stop-datetime` below is UTC**,
-the same as step 4's.
+   Read the scratch-host root password into the shell, as above, and give
+   every binlog shipped since the dump, in order. **`--stop-datetime` is
+   UTC**:
+   ```bash
+   read -rs MYSQL_PWD; export MYSQL_PWD
+   python3 db/provision/extract_tenant_binlog.py \
+     --dump dump.sql \
+     --all-databases \
+     --stop-datetime="<target timestamp, UTC>" \
+     --apply-host <scratch-host> \
+     --apply-user root \
+     mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...]
+   unset MYSQL_PWD
+   ```
+   It prints one line for the instance pass, one for each database it
+   created, and one per database replayed. A single tenant whose events are
+   wanted back on its own is restored with the one-database command below
+   instead.
+5. Confirm a row known to have changed after the dump and before the target
+   timestamp is present, and that nothing after the target timestamp is. Then
+   confirm nothing the binlogs created is missing: list every database and
+   account the shipped binlogs created, and the ones the restored server has,
+   and read the first lists against the second. A name in the first and not
+   the second is either dropped later in the binlogs (check) or lost:
+   ```bash
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     mysqlbinlog --base64-output=DECODE-ROWS mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...] \
+     | grep -oE '^CREATE (DATABASE|SCHEMA) (IF NOT EXISTS )?`?[A-Za-z0-9_$]+' | sort -u
+   docker run --rm -v "$PWD:/work" -w /work "$RECOVERY_IMAGE" \
+     mysqlbinlog --base64-output=DECODE-ROWS mysql-bin.NNNNNN [mysql-bin.NNNNNN+1 ...] \
+     | grep -oE "^CREATE USER (IF NOT EXISTS )?'[^']+'@'[^']+'" | sort -u
+   read -rs MYSQL_PWD; export MYSQL_PWD
+   docker run --rm -e MYSQL_PWD "$RECOVERY_IMAGE" \
+     mysql --host <scratch-host> -uroot -N -e 'SHOW DATABASES; SELECT CONCAT("CREATE USER ", QUOTE(user), "@", QUOTE(host)) FROM mysql.user'
+   unset MYSQL_PWD
+   ```
+   The binlogs are read from their start, so this also catches a database
+   created in the seconds between the nightly run's schema listing and its
+   first snapshot, which the instance pass (it starts at the first snapshot)
+   cannot see.
+
+**The replay, one database at a time.** Step 4's `--all-databases` brings
+back every tenant's post-dump writes together -- the instance-level scenario
+Drill A proves. `--tenant-database <tenant>` instead is the recovery for "we
+deleted forty posts yesterday", where every *other* tenant's writes since the
+dump must stay out of the restored database.
+`db/provision/extract_tenant_binlog.py` reads the resume point of the
+section that declares the database (the bare `--source-data=2` comment, for
+a dump taken that way), so the position does not have to be copied out of
+the dump by hand, adds mysqlbinlog's own `--database=<tenant>` row-event
+filter to the replay, and always runs `mysqlbinlog` with `TZ=UTC` itself --
+**`--stop-datetime` below is UTC**.
 
 Read the scratch-host root password into the shell rather than typing it on
 the command line, where it would land in shell history. The script's own

@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { holdersOf } from '../helpers/holders.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -14,6 +15,25 @@ const {
 } = require('../../src/hold.js');
 const { digestBytes } = require('../../src/pdq.js');
 const { isRefused, sealRefusal } = require('../../src/quarantine.js');
+// The very object hold.js and quarantine.js call through, so a test can
+// land another process's step between two of theirs.
+const fsSync = require('node:fs');
+
+// Runs `fn` with fsSync[name] wrapped: `before(args)` runs ahead of each
+// call until it returns true, then the wrapper stands aside.
+async function withStep(name, before, fn) {
+  const real = fsSync[name];
+  let done = false;
+  fsSync[name] = (...args) => {
+    if (!done) done = before(args) === true;
+    return real(...args);
+  };
+  try {
+    return await fn();
+  } finally {
+    fsSync[name] = real;
+  }
+}
 
 // Real, short timers rather than vi.useFakeTimers(): the retry loop's own
 // cleanup step touches the real filesystem, and a fake clock only fast
@@ -177,23 +197,21 @@ describe('HoldRegistry', () => {
         onAllow: async () => {},
         onRefuse: async () => {},
       });
-      expect(
-        JSON.parse(await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8'))
-      ).toEqual({ owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] } });
+      expect(await holdersOf(quarantinePath, 'digest')).toEqual({
+        owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] },
+      });
 
       first.resolveTo({ classification: 'no-known-match' });
       await vi.waitFor(() => expect(own.isPending('digest')).toBe(false), WAIT);
       expect(own.isPending('digest')).toBe(false);
       expect((await fs.readFile(path.join(quarantinePath, 'digest'))).toString()).toBe('bytes');
-      expect(
-        JSON.parse(await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8'))
-      ).toEqual({ owners: { [OTHER]: ['b.mp4'] } });
+      expect(await holdersOf(quarantinePath, 'digest')).toEqual({ owners: { [OTHER]: ['b.mp4'] } });
 
       second.resolveTo({ classification: 'no-known-match' });
       await vi.waitFor(() => expect(other.isPending('digest')).toBe(false), WAIT);
       expect(other.isPending('digest')).toBe(false);
       await expect(fs.readFile(path.join(quarantinePath, 'digest'))).rejects.toThrow();
-      await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
+      await expect(fs.stat(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
     });
 
     it('never rewrites bytes another owner already quarantined under the same digest', async () => {
@@ -238,6 +256,226 @@ describe('HoldRegistry', () => {
       expect(registry.isPending('digest')).toBe(false);
       expect(logger.error).toHaveBeenCalledTimes(1);
     });
+
+    it('splits a single-file sidecar into one entry per owner at start-up', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      const legacy = {
+        owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] },
+        stuck: { [OTHER]: { reason: 'r' } },
+      };
+      await fs.writeFile(path.join(quarantinePath, 'digest.holds.json'), JSON.stringify(legacy));
+
+      const own = buildRegistry([unavailableCheck()]);
+      own.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      own.stopAll();
+
+      expect(own.isPending('digest')).toBe(true);
+      expect(await holdersOf(quarantinePath, 'digest')).toEqual(legacy);
+      expect((await fs.readdir(quarantinePath)).sort()).toEqual(['digest', 'digest.holds.json']);
+    });
+
+    it('makes the sidecar directory again when another holder removes it before its entry lands', async () => {
+      const dir = path.join(quarantinePath, 'digest.holds.json');
+      const registry = buildRegistry([unavailableCheck()]);
+      await withStep(
+        'openSync',
+        ([target]) => {
+          if (path.dirname(String(target)) !== dir) return false;
+          fsSync.rmdirSync(dir); // another holder's release, finding it empty
+          return true;
+        },
+        () =>
+          registry.hold('digest', Buffer.from('bytes'), {
+            targetPath: 'a.png',
+            onAllow: async () => {},
+            onRefuse: async () => {},
+          })
+      );
+      registry.stopAll();
+      expect(await holdersOf(quarantinePath, 'digest')).toEqual({ owners: { [OWNER]: ['a.png'] } });
+    });
+
+    it('puts the bytes back when a sweep removes them while a single-file sidecar is being split', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      const bytes = path.join(quarantinePath, 'digest');
+      const legacy = path.join(quarantinePath, 'digest.holds.json');
+      await fs.writeFile(bytes, 'bytes');
+      await fs.writeFile(legacy, JSON.stringify({ owners: { [OWNER]: ['a.png'] } }));
+      const registry = buildRegistry([unavailableCheck()]);
+      const realRename = fsSync.renameSync;
+      // A sweep in another process removes the bytes just after the old
+      // file is moved aside, while no sidecar stands.
+      fsSync.renameSync = (from, to) => {
+        realRename(from, to);
+        if (from === legacy) fsSync.rmSync(bytes);
+      };
+      try {
+        registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      } finally {
+        fsSync.renameSync = realRename;
+      }
+      registry.stopAll();
+      expect((await fs.readFile(bytes)).toString()).toBe('bytes');
+      expect(registry.isPending('digest')).toBe(true);
+      expect(await holdersOf(quarantinePath, 'digest')).toEqual({ owners: { [OWNER]: ['a.png'] } });
+    });
+
+    // The bytes are as old as the upload, so a sweep sees them past its
+    // minimum age the moment it runs.
+    async function ageBytes(digest) {
+      const old = new Date(Date.now() - 60 * 60_000);
+      await fs.utimes(path.join(quarantinePath, digest), old, old);
+    }
+
+    const legacyTwoOwners = { owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] } };
+
+    it('finishes a split that was killed after the old file was moved aside, before the orphan sweep can remove the bytes', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await ageBytes('digest');
+      await fs.writeFile(
+        path.join(quarantinePath, 'digest.holds.json'),
+        JSON.stringify(legacyTwoOwners)
+      );
+      const dir = path.join(quarantinePath, 'digest.holds.json');
+
+      // The first process dies as the second owner's entry is about to land:
+      // the throw leaves the aside copy and one entry, as a kill would.
+      const realRename = fsSync.renameSync;
+      let landed = 0;
+      fsSync.renameSync = (from, to) => {
+        if (path.dirname(String(to)) === dir) {
+          landed += 1;
+          if (landed === 2) throw new Error('killed');
+        }
+        return realRename(from, to);
+      };
+      try {
+        const dying = buildRegistry([unavailableCheck()]);
+        dying.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+        dying.stopAll();
+      } finally {
+        fsSync.renameSync = realRename;
+      }
+      expect((await fs.readdir(dir)).length).toBe(1);
+
+      const logger = { error: vi.fn() };
+      const restarted = buildRegistry([unavailableCheck()], { logger });
+      restarted.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      restarted.stopAll();
+
+      expect((await fs.readFile(path.join(quarantinePath, 'digest'))).toString()).toBe('bytes');
+      expect(restarted.isPending('digest')).toBe(true);
+      expect(await holdersOf(quarantinePath, 'digest')).toEqual({
+        owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] },
+      });
+      expect((await fs.readdir(quarantinePath)).sort()).toEqual(['digest', 'digest.holds.json']);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no directory', false],
+      ['an empty directory', true],
+    ])(
+      'keeps the bytes and resumes the hold from an aside copy with %s',
+      async (_label, emptyDir) => {
+        await fs.mkdir(quarantinePath, { recursive: true });
+        await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+        await ageBytes('digest');
+        await fs.writeFile(
+          path.join(quarantinePath, '.digest.holds.json.1234-abcdef.json'),
+          JSON.stringify({ ...legacyTwoOwners, stuck: { [OTHER]: { reason: 'r' } } })
+        );
+        if (emptyDir) await fs.mkdir(path.join(quarantinePath, 'digest.holds.json'));
+
+        const registry = buildRegistry([unavailableCheck()]);
+        registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+        registry.stopAll();
+
+        expect((await fs.readFile(path.join(quarantinePath, 'digest'))).toString()).toBe('bytes');
+        expect(registry.isPending('digest')).toBe(true);
+        expect(await holdersOf(quarantinePath, 'digest')).toEqual({
+          owners: { [OWNER]: ['a.png'], [OTHER]: ['b.mp4'] },
+          stuck: { [OTHER]: { reason: 'r' } },
+        });
+        expect((await fs.readdir(quarantinePath)).sort()).toEqual(['digest', 'digest.holds.json']);
+      }
+    );
+
+    it("resumes its own owner's hold when another process has split the file only part way", async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(
+        path.join(quarantinePath, '.digest.holds.json.1234-abcdef.json'),
+        JSON.stringify(legacyTwoOwners)
+      );
+      // Only the other owner's entry has landed.
+      const dir = path.join(quarantinePath, 'digest.holds.json');
+      await fs.mkdir(dir);
+      await fs.writeFile(
+        path.join(dir, '1-aa.json'),
+        JSON.stringify({ owner: OTHER, targets: ['b.mp4'] })
+      );
+
+      const registry = buildRegistry([unavailableCheck()]);
+      registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      registry.stopAll();
+
+      expect(registry.isPending('digest')).toBe(true);
+      expect(await fs.readdir(quarantinePath)).not.toContain('.digest.holds.json.1234-abcdef.json');
+    });
+
+    it('keeps an aside copy whose bytes are missing, and logs it', async () => {
+      await fs.mkdir(quarantinePath, { recursive: true });
+      await fs.writeFile(
+        path.join(quarantinePath, '.digest.holds.json.1234-abcdef.json'),
+        JSON.stringify(legacyTwoOwners)
+      );
+      const logger = { error: vi.fn() };
+      const registry = buildRegistry([unavailableCheck()], { logger });
+      registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      registry.stopAll();
+      expect(await fs.readdir(quarantinePath)).toEqual(['.digest.holds.json.1234-abcdef.json']);
+      expect(logger.error).toHaveBeenCalled();
+    });
+
+    it('logs an entry it cannot read and leaves it in place, keeping the bytes', async () => {
+      const dir = path.join(quarantinePath, 'digest.holds.json');
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(quarantinePath, 'digest'), 'bytes');
+      await fs.writeFile(path.join(dir, 'unreadable.json'), 'not json');
+      const logger = { error: vi.fn() };
+      const registry = buildRegistry([flippingCheck()], { logger });
+      registry.resumeFromQuarantine(() => ({ onAllow: vi.fn(), onRefuse: vi.fn() }));
+      registry.stopAll();
+      expect(registry.isPending('digest')).toBe(false);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(await fs.readdir(dir)).toEqual(['unreadable.json']);
+      expect((await fs.readFile(path.join(quarantinePath, 'digest'))).toString()).toBe('bytes');
+    });
+
+    it('takes over the entry an earlier process of its owner left, and leaves nothing behind once it promotes', async () => {
+      const earlier = buildRegistry([unavailableCheck()]);
+      await earlier.hold('digest', Buffer.from('bytes'), {
+        targetPath: 'a.png',
+        onAllow: async () => {},
+        onRefuse: async () => {},
+      });
+      earlier.stopAll();
+
+      const check = flippingCheck();
+      const restarted = buildRegistry([check], { maxRetryIntervalMs: RETRY_MS });
+      const onAllow = vi.fn();
+      restarted.resumeFromQuarantine(() => ({ onAllow, onRefuse: vi.fn() }));
+      const entries = await fs.readdir(path.join(quarantinePath, 'digest.holds.json'));
+      expect(entries).toEqual([restarted.holderName]);
+
+      check.resolveTo({ classification: 'no-known-match' });
+      await vi.waitFor(() => expect(restarted.isPending('digest')).toBe(false), WAIT);
+      expect(onAllow).toHaveBeenCalledTimes(1);
+      expect(await fs.readdir(quarantinePath)).toEqual([]);
+    });
   });
 
   it('quarantines the bytes by digest as soon as it is held, exactly as a refusal does', async () => {
@@ -258,9 +496,7 @@ describe('HoldRegistry', () => {
       onAllow: async () => {},
       onRefuse: async () => {},
     });
-    const sidecar = JSON.parse(
-      await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')
-    );
+    const sidecar = await holdersOf(quarantinePath, 'digest');
     expect(sidecar).toEqual({ owners: { [OWNER]: ['a.png'] } });
   });
 
@@ -327,7 +563,7 @@ describe('HoldRegistry', () => {
     expect(registry.isPending('digest')).toBe(false);
     const quarantined = await fs.readFile(path.join(quarantinePath, 'digest'));
     expect(quarantined.toString()).toBe('bytes');
-    await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
+    await expect(fs.stat(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
   });
 
   it('deletes the quarantine bytes and the sidecar once promoted', async () => {
@@ -343,7 +579,7 @@ describe('HoldRegistry', () => {
     await vi.waitFor(() => expect(registry.isPending('digest')).toBe(false), WAIT);
 
     await expect(fs.readFile(path.join(quarantinePath, 'digest'))).rejects.toThrow();
-    await expect(fs.readFile(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
+    await expect(fs.stat(path.join(quarantinePath, 'digest.holds.json'))).rejects.toThrow();
   });
 
   it('the same digest held twice before either resolves shares one retry loop and promotes both on one verdict', async () => {
@@ -366,9 +602,7 @@ describe('HoldRegistry', () => {
       onRefuse: vi.fn(),
     });
 
-    const sidecar = JSON.parse(
-      await fs.readFile(path.join(quarantinePath, 'digest.holds.json'), 'utf8')
-    );
+    const sidecar = await holdersOf(quarantinePath, 'digest');
     expect(sidecar).toEqual({ owners: { [OWNER]: ['a.png', 'b.png'] } });
 
     check.resolveTo({ classification: 'no-known-match' });
@@ -579,8 +813,7 @@ describe('HoldRegistry with real digests', () => {
   }
 
   const bytesPath = () => path.join(quarantinePath, DIGEST);
-  const sidecar = async () =>
-    JSON.parse(await fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`), 'utf8'));
+  const sidecar = () => holdersOf(quarantinePath, DIGEST);
 
   it('requires a computeDigest function', () => {
     expect(() => realRegistry([unavailableCheck()], { computeDigest: undefined })).toThrow(
@@ -609,9 +842,7 @@ describe('HoldRegistry with real digests', () => {
       expect(imagesHold.onAllow).not.toHaveBeenCalled();
       expect(imagesHold.onRefuse).toHaveBeenCalledTimes(1);
       await expect(fs.readFile(bytesPath())).resolves.toEqual(BYTES);
-      await expect(
-        fs.readFile(path.join(quarantinePath, `${DIGEST}.holds.json`))
-      ).rejects.toThrow();
+      await expect(fs.stat(path.join(quarantinePath, `${DIGEST}.holds.json`))).rejects.toThrow();
     });
 
     it('a clean promotion by one feature never removes the bytes another feature then refuses', async () => {
@@ -945,6 +1176,8 @@ describe('HoldRegistry with real digests', () => {
       const registry = realRegistry([check], { logger });
       await registry.hold(DIGEST, BYTES, callbacks());
       await fs.truncate(bytesPath(), 1);
+      // A sidecar that is a file, not a directory, cannot take an entry.
+      await fs.rm(path.join(quarantinePath, `${DIGEST}.holds.json`), { recursive: true });
       await fs.writeFile(path.join(quarantinePath, `${DIGEST}.holds.json`), '[]');
       check.resolveTo({ classification: 'no-known-match' });
 

@@ -26,7 +26,7 @@ function fileTypeBox(majorBrand, compatibleBrands = []) {
 }
 
 // A movie box holding one track whose handler reference names `handlerType`.
-function movieBox(handlerType) {
+export function movieBox(handlerType) {
   const handlerPayload = Buffer.concat([
     uint32(0),
     uint32(0),

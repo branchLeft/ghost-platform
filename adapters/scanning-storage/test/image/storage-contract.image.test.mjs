@@ -18,7 +18,6 @@ import { fileURLToPath } from 'node:url';
 import {
   GhostContainer,
   RecordingDouble,
-  SITE_URL,
   createNetwork,
   removeNetwork,
   sleep,
@@ -39,9 +38,9 @@ if (!IMAGE) {
 // Bumping Ghost fails this on purpose: the shape tests below say whether the
 // new version still fits the gateway's allowlist, and this constant is then
 // raised together with the docs that name the version.
-const PINNED_GHOST_VERSION = '6.55.0';
+const PINNED_GHOST_VERSION = '6.76.0';
 
-// Ghost 6.55's whole storage vocabulary, in the order the gateway lists it.
+// Ghost 6.76's whole storage vocabulary, in the order the gateway lists it.
 const EXPECTED_SHAPES = [
   'AbortMultipartUpload',
   'CompleteMultipartUpload',
@@ -73,12 +72,18 @@ const SCENARIOS = {
     'HeadObject',
     'PutObject',
   ],
+  'icon variant already stored by the upload (no resize on request)': ['HeadObject'],
   'hold release (saveRaw from the scanning decorator)': ['PutObject'],
   'admin media inliner (saveRaw)': ['HeadObject', 'PutObject'],
   'oEmbed thumbnail and icon (saveRaw)': ['PutObject'],
   'same-name media thumbnail (delete becomes an overwrite)': ['HeadObject', 'PutObject'],
 };
 
+// Ghost 6.76 refuses to fetch a host with no top-level domain (so not
+// `localhost`) even for its own site, so the site is given a name with one and
+// the name is pointed at the container itself.
+const SITE = 'http://ghost.test:2368';
+const SITE_HOST_ENTRY = 'ghost.test:127.0.0.1';
 const MULTIPART_THRESHOLD = 5 * 1024 * 1024;
 const BUCKET = 'recording-double';
 
@@ -148,6 +153,8 @@ describe('the storage request contract, against the real Ghost image', () => {
       },
       {
         network,
+        siteUrl: SITE,
+        addHosts: [SITE_HOST_ENTRY],
         volumes: [{ host: resolveDir, container: '/var/lib/ghost/content/verdict-resolve' }],
       }
     );
@@ -163,7 +170,7 @@ describe('the storage request contract, against the real Ghost image', () => {
     fs.rmSync(resolveDir, { recursive: true, force: true });
   });
 
-  it('runs Ghost 6.55', () => {
+  it('runs Ghost 6.76', () => {
     assert.equal(
       ghost.ghostVersion(),
       PINNED_GHOST_VERSION,
@@ -254,6 +261,26 @@ describe('the storage request contract, against the real Ghost image', () => {
     assert.deepEqual(shapesOf(list), SCENARIOS[name]);
   });
 
+  // Ghost core rewrites a stored image's absolute bucket URL to its
+  // size/w256h256 variant for the Publication Icon, and the browser then asks
+  // the bucket for it directly, so only an upload-time write can satisfy it.
+  // A HEAD with no GetObject or PutObject after it means the variant was
+  // already there when Ghost's resize middleware was asked for it.
+  it('icon variant: the upload already stored the 256x256 variant', async () => {
+    const name = 'icon variant already stored by the upload (no resize on request)';
+    assert.ok(imageUrl, 'the image upload scenario must run first');
+    const sizePath = new URL(imageUrl).pathname
+      .replace(`/${BUCKET}`, '')
+      .replace('/content/images/', '/content/images/size/w256h256/');
+    let probe;
+    const list = await scenario(name, async () => {
+      probe = await ghost.probe(sizePath);
+    });
+    assert.equal(probe.status, 301);
+    assert.ok(probe.location.includes('/size/w256h256/'), `redirected to ${probe.location}`);
+    assert.deepEqual(shapesOf(list), SCENARIOS[name]);
+  });
+
   it('hold release: nothing is written while held, then one PutObject on a verdict', async () => {
     const name = 'hold release (saveRaw from the scanning decorator)';
     const heldMark = await double.mark();
@@ -280,14 +307,14 @@ describe('the storage request contract, against the real Ghost image', () => {
   it('admin media inliner: HEAD for a free name, then PutObject', async () => {
     const name = 'admin media inliner (saveRaw)';
     const post = await ghost.json('POST', 'posts/', {
-      posts: [{ title: 'INLINE_POST', status: 'draft', feature_image: `${SITE_URL}/favicon.ico` }],
+      posts: [{ title: 'INLINE_POST', status: 'draft', feature_image: `${SITE}/favicon.ico` }],
     });
     assert.equal(post.status, 201, JSON.stringify(post.body));
     let res;
     const list = await scenario(
       name,
       async () => {
-        res = await ghost.json('POST', 'db/media/inline/', { domains: [SITE_URL] });
+        res = await ghost.json('POST', 'db/media/inline/', { domains: [SITE] });
       },
       { done: (l) => l.some((r) => r.shape === 'PutObject') }
     );
@@ -309,7 +336,7 @@ describe('the storage request contract, against the real Ghost image', () => {
           title: 'OEMBED_POST',
           slug: 'oembed-post',
           status: 'published',
-          feature_image: `${SITE_URL}/favicon.ico`,
+          feature_image: `${SITE}/favicon.ico`,
         },
       ],
     });
@@ -319,7 +346,7 @@ describe('the storage request contract, against the real Ghost image', () => {
       name,
       async () => {
         res = await ghost.get(
-          `oembed/?url=${encodeURIComponent(`${SITE_URL}/oembed-post/`)}&type=bookmark`
+          `oembed/?url=${encodeURIComponent(`${SITE}/oembed-post/`)}&type=bookmark`
         );
       },
       { done: (l) => l.filter((r) => r.shape === 'PutObject').length >= 2 }

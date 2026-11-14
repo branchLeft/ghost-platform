@@ -38,7 +38,7 @@ taken inside this engine's own read-path cache, seconds after the `Deny` was
 applied, which is exactly the reading a stale cache produces regardless of
 whether the policy is enforced.
 
-So the open question `--diagnose-policy-engine` asks is narrower than "is
+So the question `--diagnose-policy-engine` asks is narrower than "is
 anything enforced at all": does naming one access key in a statement separate
 that key from another one, once every read is held past that cache? An engine
 that enforces no policy, an engine on which every credential in a project is
@@ -519,7 +519,7 @@ WINDOW A RUNS LAST, AND ONLY WHEN THE ANSWER TURNS ON IT. It is the only
 window that denies the operator by construction, and the only one whose
 statement covers every caller whatever the engine's principal semantics turn
 out to be -- so it is the one window with a blast radius that does not depend
-on the open question. B, C and D decide four of the five readings without it.
+on the answer. B, C and D decide four of the five readings without it.
 It is sent only in the fifth, where a named ARN denied nobody and the
 remaining question is whether a wildcard does any better.
 

@@ -1,3 +1,4 @@
 # Moved from package.json's `overrides`, which pnpm does not read.
 overrides:
   nodemailer: ^10.3.1
+minimumReleaseAgeExclude: ['@branchleft/*']

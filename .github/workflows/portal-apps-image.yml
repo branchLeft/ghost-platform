@@ -30,6 +30,7 @@ on:
       - portal/**
       - services/identity/**
       - services/request-guard/**
+      - services/provisioning-controller/**
       - .github/workflows/portal-apps-image.yml
   pull_request:
     branches: [main]
@@ -37,6 +38,7 @@ on:
       - portal/**
       - services/identity/**
       - services/request-guard/**
+      - services/provisioning-controller/**
       - .github/workflows/portal-apps-image.yml
   workflow_dispatch:
 
@@ -80,16 +82,24 @@ jobs:
             --tag portal-apps:ci \
             .
 
-      # Both entry points must load: a missing built sibling package fails
+      # Every entry point must load: a missing built sibling package fails
       # here, at import, rather than on the host. The container is removed on
       # exit. PORT and the config files are unset on purpose, so each process
       # must stop at its own configuration check, never at a missing module.
-      - name: Both entry points reach their configuration check
+      - name: Every entry point reaches its configuration check
         run: |
-          for entry in tenant console; do
+          for entry in tenant console collector; do
             output="$(docker run --rm portal-apps:ci node "dist/$entry/main.js" 2>&1 || true)"
             printf '%s\n' "$output" | grep -q 'ConfigError' || { echo "::error::$entry entry point did not reach its configuration check: $output"; exit 1; }
           done
+
+      # The screens import the provisioning-API client from the built
+      # controller package, by its package name, from the portal's own directory.
+      # A missing built file or export fails here, at import, rather than later.
+      - name: The provisioning API client loads from the image
+        run: |
+          docker run --rm portal-apps:ci node --input-type=module \
+            --eval "const api = await import('ghost-platform-provisioning-controller/provisioning-api'); for (const name of ['getDemo', 'createPromotionRequest', 'getTenant', 'listPromotionRequests', 'approvePromotionRequest']) { if (typeof api[name] !== 'function') { console.error('missing ' + name); process.exit(1); } }"
 
   push:
     name: Build and push portal-apps image
@@ -122,7 +132,7 @@ jobs:
           persist-credentials: false
 
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -207,7 +217,7 @@ jobs:
       IMAGE: ghcr.io/branchleft/portal-apps
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

@@ -48,3 +48,10 @@ one would let it overwrite another tenant's metrics file. The host-side
 provisioning script (`app/provision/provision_tenant_volume.py`) mirrors the
 suffix. The volume holds nothing but the scanner's metrics file, so it is not
 tenant data and `identity.ts` does not list it.
+
+## Verdict volume
+
+`verdictVolumeName` is `ghost-<slug>-verdict`: the directory holding one
+slot's local verdict socket, rendered only when its descriptor names the
+production verdict source (compose.md#the-verdict-volume). One per slot,
+never shared between slots. It holds a socket, not tenant data.

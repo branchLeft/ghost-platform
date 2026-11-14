@@ -2,3 +2,4 @@
 # writes a warning from its postinstall and builds nothing this package reads.
 allowBuilds:
   protobufjs: false
+minimumReleaseAgeExclude: ['@branchleft/*']

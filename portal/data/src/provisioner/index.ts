@@ -22,7 +22,8 @@ import {
   type DemoEventView,
   type DemoState,
 } from '../demoLifecycle.js';
-import { eventsOf, hostnameOf, latestEvent } from '../demoReads.js';
+import { eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
+import type { DemoRequestView } from '../demoRequest.js';
 import { demoStateEvent, hostnameRegister, hostnameRetirement } from '../schema.js';
 
 export * from '../demoLifecycle.js';
@@ -189,6 +190,11 @@ export class ProvisionerDb {
 
   hostname(demoId: string): Promise<string | null> {
     return this.run((tx) => hostnameOf(tx, demoId));
+  }
+
+  /** The prospect's request the demo runs under; undefined when there is none. */
+  request(demoId: string): Promise<DemoRequestView | undefined> {
+    return this.run((tx) => requestOf(tx, demoId));
   }
 
   private async latestOrThrow(tx: Tx, demoId: string): Promise<DemoEventView> {

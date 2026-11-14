@@ -11,8 +11,7 @@ owns starting the tenant's image drained, calling Ghost's exports, and
 stopping the image again. Beyond Ghost's two exports it closes three of the
 four gaps §08b names (media, members and subscriptions, comments with their
 moderation state), and names everything it cannot hold. See "Export
-completeness". Analytics beyond the per-post CSV stays out until the
-analytics backend is chosen.
+completeness". Analytics beyond the per-post CSV is not bundled.
 
 ## An export is a support grant
 
@@ -106,7 +105,7 @@ and the audit record carries the same `complete` flag.
   the date after which those addresses stop working. The archive carries
   `media_addresses.json`: one public address per object the content export
   references, plus the tenant's erasure date (`--erasure-date`, a future
-  `YYYY-MM-DD`; no system records it yet, so the operator states it). The
+  `YYYY-MM-DD`, stated by the operator). The
   tenant's scope is the media address plus Ghost's `tenantPrefix` from its own
   rendered environment, never a flag; a bare address with no prefix fails
   closed. A reference under another prefix on the same shard is another
@@ -224,7 +223,12 @@ makes it before any `docker run`, `create`, `network`, `volume` or `compose`.
 remover with `cleanup.ts`: the colour, the relay and its network, the dump
 container, the scratch container and its data, the run network, the volume
 and the env files. The normal path removes them in `finally`, colour first.
-A colour that is created but fails to start is removed at once. On SIGINT
+A colour that is created but fails to start is removed at once. A removal
+that fails never replaces the export's outcome: every step still runs, and the
+failures travel with it. On a failed export the original error is thrown, with
+the teardown failures on its `cleanupErrors` field and a second stderr line.
+On a successful export the CLI prints the archive path, sha256 and manifest
+first (they exist and are audited), then names the failed step and exits 70. On SIGINT
 or SIGTERM the removers run before the process exits. If a remover throws,
 its label is written to stderr as `export-bundler: cleanup step failed on
 <SIGNAL>: <label>` and the process exits with code 70 instead of 130 or 143;
@@ -277,6 +281,7 @@ far as Ghost 6.55's own settings allow, the colour acts on nothing:
 
 What Ghost still does on the colour's boot, with no setting to stop it, now
 happens to the copy only:
+
 - the member welcome-email poll;
 - resuming, or failing, any newsletter recorded as mid-send;
 - the daily member and gift clean-up jobs and gift reminders;
@@ -289,9 +294,10 @@ billing-portal configuration as it boots whenever Stripe keys are present, but
 the run network is `--internal`, so that call has no route off the host and
 fails: Ghost logs `An error occurred with our connection to Stripe.`, carries
 on, and was serving about seven seconds after it started (observed with a
-fake `sk_test_` key in the copy, on both the SQLite and the MySQL tier;
-`scripts/test-export-bundler.sh` seeds the key and keeps the assertion that the
-colour boots on it and cannot reach `api.stripe.com`). The colour's site URL
+fake `sk_test_` key in the copy, on the MySQL tier; `scripts/test-export-bundler.sh`
+reproduces that run, seeds the key and keeps the assertion that the colour
+boots on it and cannot reach `api.stripe.com`. No committed script reproduces
+the SQLite tier). The colour's site URL
 must be `https://`, as every tenant's rendered one is: Ghost refuses to run
 Stripe on a plain `http://` URL. The rows
 those boot paths change on the copy (`emails`, `email_batches`,
@@ -334,6 +340,37 @@ accidentally ignore the verdict -- `exportRunner.ts`'s own sabotage test
 function is actually on the path a real export takes, not merely correct
 in isolation.
 
+## Importing a bundle into a promoted tenant
+
+`promotionImport.ts` is the import half of a promotion: the bundle's posts,
+pages and members enter the freshly provisioned tenant through Ghost's own
+import (the content JSON through `POST /ghost/api/admin/db/`, the members
+through `POST /ghost/api/admin/members/upload/`), never as copied files. It
+has no network, key or host of its own; the caller injects each effect
+(`PromotionImportTarget`, and `openArchive`, which hands back the plaintext
+tar once the tenant's key has opened the `.tar.age`). The demo is only read.
+
+`runPromotionImport` returns only when the tenant is verified. Anything else
+throws, and a caller must treat a throw as "the promotion is incomplete; do not
+mark the tenant live":
+
+- `BundleReadError` / `BundleRefusedError`, before anything is copied: the tar
+  is damaged or unsafe, an entry is missing, the manifest does not say members
+  were read in full, or `members.csv` (what is imported) is not the same people
+  as `members.json` (what the export counted).
+- `DestinationNotFreshError`: the tenant already holds members, so a count
+  before and after would not mean anything. Nothing is imported.
+- `ImportStepError`: Ghost refused an import or the destination could not be
+  read; it names the step.
+- `ImportVerificationError`: the imports answered but the tenant does not hold
+  what it held before plus what the bundle carried, in posts, pages or members,
+  or a member who was on a tier at the source is not on it now. It names
+  figures and a count, never a member's address.
+
+Comments and media are other stories; their entries in the bundle are ignored.
+The unit tests use an in-memory stand-in for Ghost (`test/helpers/promotionBundle.ts`);
+nothing here has run against a real Ghost yet.
+
 ## Running it
 
 Inside an open grant, on the tenant's app host, as a user that can read
@@ -374,6 +411,7 @@ The live script runs the built CLI on the MySQL tier. It uses a "live"
 MySQL (db1's pinned image, TLS required) seeded by a real Ghost, with a
 real owner and a real suspended support Administrator, described by a
 descriptor and a rendered stack directory. It proves:
+
 - refusal with no grant, with the wrong recipient, with the Owner as the
   rendered support identity, and with the account suspended, each creating
   nothing;

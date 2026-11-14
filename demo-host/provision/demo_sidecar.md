@@ -37,6 +37,19 @@ creates it.
   project for this colour, so the sidecar can never join another Ghost's
   network namespace.
 
+## When Docker restarts Ghost
+
+Ghost's Compose service restarts by Docker's own policy, which the colour's
+unit cannot see, and a restarted Ghost gets a new network namespace. The
+sidecar is therefore started with `--restart on-failure` and
+`EXIT_AFTER_GHOST_UNREACHABLE_MS=15000`: after fifteen seconds with nothing
+answering on Ghost's address it exits non-zero, and Docker starts it again
+into Ghost's current namespace (see `services/drain-sidecar/README.md`). The
+colour reads 503 meanwhile, the safe state. `stop` removes the container
+whatever state it is in, so a unit stop is not undone by the restart policy.
+The behaviour comes with the pinned sidecar image: a host whose
+`DEMO_SIDECAR_IMAGE` digest predates it ignores the variable.
+
 ## A failed start leaves nothing running
 
 Once a container may exist, any failure (non-zero `docker run`, timeout,

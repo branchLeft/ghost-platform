@@ -7,7 +7,8 @@ import {
   type DemoSummary,
   type HostnameView,
 } from './demoLifecycle.js';
-import { demoStateEvent, hostnameRegister, hostnameRetirement } from './schema.js';
+import { deriveRequestView, type DemoRequestView } from './demoRequest.js';
+import { demoRequest, demoStateEvent, hostnameRegister, hostnameRetirement } from './schema.js';
 
 /** The demo's latest row: its current state and term; undefined when it was never begun. */
 export async function latestEvent(tx: Tx, demoId: string): Promise<DemoEventView | undefined> {
@@ -70,4 +71,19 @@ export async function listHostnames(tx: Tx): Promise<HostnameView[]> {
     allocatedAt: row.register.allocatedAt,
     retiredAt: row.retiredAt,
   }));
+}
+
+/** One request by its demo id; undefined when there is none. */
+export async function requestOf(tx: Tx, demoId: string): Promise<DemoRequestView | undefined> {
+  const [row] = await tx.select().from(demoRequest).where(eq(demoRequest.demoId, demoId));
+  return row === undefined ? undefined : deriveRequestView(row);
+}
+
+/** Every request, oldest first. */
+export async function listRequests(tx: Tx): Promise<DemoRequestView[]> {
+  const rows = await tx
+    .select()
+    .from(demoRequest)
+    .orderBy(asc(demoRequest.submittedAt), asc(demoRequest.demoId));
+  return rows.map(deriveRequestView);
 }

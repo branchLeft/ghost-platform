@@ -18,10 +18,12 @@ export const OTHER_DB = 'portal_prov_other';
 export const TENANT = 'portal_prov_tenant';
 export const OWNER = 'portal_prov_owner';
 export const PROVISIONER = 'portal_prov_provisioner';
+export const PROSPECT = 'portal_prov_prospect';
 export const MIGRATOR = 'portal_prov_migrator';
 export const TENANT_PW = 'tenant-secret-9f2c41';
 export const OWNER_PW = 'owner-secret-77ab03';
 export const PROVISIONER_PW = 'provisioner-secret-5d19e8';
+export const PROSPECT_PW = 'prospect-secret-c41a7d';
 export const MIGRATOR_PW = 'migrator-secret-3b8e72';
 
 export function provConfig(): ProvisionConfig {
@@ -35,6 +37,8 @@ export function provConfig(): ProvisionConfig {
     ownerPassword: OWNER_PW,
     provisionerLogin: PROVISIONER,
     provisionerPassword: PROVISIONER_PW,
+    prospectLogin: PROSPECT,
+    prospectPassword: PROSPECT_PW,
     migratorLogin: MIGRATOR,
     migratorPassword: MIGRATOR_PW,
   };
@@ -56,13 +60,20 @@ export interface Run {
 /** The command's whole behaviour, in process, from its file inputs. */
 export async function run(
   options: ProvisionOptions = {},
-  passwords: { tenant?: string; owner?: string; provisioner?: string; migrator?: string } = {}
+  passwords: {
+    tenant?: string;
+    owner?: string;
+    provisioner?: string;
+    prospect?: string;
+    migrator?: string;
+  } = {}
 ): Promise<Run> {
   const files: Record<string, string> = {
     admin: testUrl('postgres'),
     tenant: passwords.tenant ?? TENANT_PW,
     owner: passwords.owner ?? OWNER_PW,
     provisioner: passwords.provisioner ?? PROVISIONER_PW,
+    prospect: passwords.prospect ?? PROSPECT_PW,
     migrator: passwords.migrator ?? MIGRATOR_PW,
   };
   const out: string[] = [];
@@ -73,11 +84,13 @@ export async function run(
       PORTAL_TENANT_PASSWORD_FILE: 'tenant',
       PORTAL_OWNER_PASSWORD_FILE: 'owner',
       PORTAL_PROVISIONER_PASSWORD_FILE: 'provisioner',
+      PORTAL_PROSPECT_PASSWORD_FILE: 'prospect',
       PORTAL_MIGRATOR_PASSWORD_FILE: 'migrator',
       PORTAL_DATABASE_NAME: PROV_DB,
       PORTAL_TENANT_LOGIN: TENANT,
       PORTAL_OWNER_LOGIN: OWNER,
       PORTAL_PROVISIONER_LOGIN: PROVISIONER,
+      PORTAL_PROSPECT_LOGIN: PROSPECT,
       PORTAL_MIGRATOR_LOGIN: MIGRATOR,
     },
     [],
@@ -115,10 +128,12 @@ export async function resetServer(): Promise<void> {
       TENANT,
       OWNER,
       PROVISIONER,
+      PROSPECT,
       MIGRATOR,
       'portal_tenant',
       'portal_owner',
       'portal_provisioner',
+      'portal_prospect',
     ]) {
       await pool.query(`DROP ROLE IF EXISTS "${role}"`);
     }
@@ -149,7 +164,7 @@ export async function stateSnapshot(): Promise<string[]> {
     const checkpoint = checkpointFor(
       major,
       PROV_DB,
-      principalNames(TENANT, OWNER, PROVISIONER, MIGRATOR),
+      principalNames(TENANT, OWNER, PROVISIONER, PROSPECT, MIGRATOR),
       readMigrations().map((m) => m.tag)
     );
     return await snapshot(client, checkpoint);

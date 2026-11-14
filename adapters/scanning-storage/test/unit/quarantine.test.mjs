@@ -323,6 +323,45 @@ describe('sweepReleasing', () => {
     expect(logger.lines.some((l) => l.includes('could not sweep'))).toBe(true);
   });
 
+  it('restores an aside copy of a held digest whose bytes are missing', async () => {
+    await fs.writeFile(path.join(quarantinePath, `${digest}.holds.json`), '{"owners":{}}');
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    await expect(fs.readFile(path.join(quarantinePath, digest))).resolves.toEqual(bytes);
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [digest, `${digest}.holds.json`].sort()
+    );
+  });
+
+  it('drops an aside copy of a held digest whose bytes are already in place', async () => {
+    await fs.writeFile(path.join(quarantinePath, `${digest}.holds.json`), '{"owners":{}}');
+    await fs.writeFile(path.join(quarantinePath, digest), bytes);
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    expect((await fs.readdir(quarantinePath)).sort()).toEqual(
+      [digest, `${digest}.holds.json`].sort()
+    );
+  });
+
+  it('counts a sidecar nobody can parse as a hold', async () => {
+    await fs.writeFile(path.join(quarantinePath, `${digest}.holds.json`), 'not json');
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    await expect(fs.readFile(path.join(quarantinePath, digest))).resolves.toEqual(bytes);
+  });
+
+  it('leaves the aside copy, and logs it, when the sidecar cannot be checked', async () => {
+    const sidecar = path.join(quarantinePath, `${digest}.holds.json`);
+    await fs.symlink(sidecar, sidecar);
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    expect(await fs.readdir(quarantinePath)).toContain(`${digest}.releasing.1.abc`);
+    expect(logger.lines.some((l) => l.includes('could not sweep'))).toBe(true);
+  });
+
+  it('does not touch another digest’s sidecar when deleting an unheld aside copy', async () => {
+    const other = digestBytes(Buffer.from('another'));
+    await fs.writeFile(path.join(quarantinePath, `${other}.holds.json`), '{"owners":{}}');
+    sweepReleasing(quarantinePath, digestBytes, logger);
+    expect(await fs.readdir(quarantinePath)).toEqual([`${other}.holds.json`]);
+  });
+
   it('does nothing when there is no quarantine directory', () => {
     expect(() => sweepReleasing(path.join(tmpDir, 'absent'), digestBytes, logger)).not.toThrow();
   });

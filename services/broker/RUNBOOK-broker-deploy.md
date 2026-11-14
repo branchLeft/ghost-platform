@@ -3,12 +3,10 @@
 Scope: this file covers only `services/broker`'s own install and upgrade on
 the demo host, once that host exists. It does not cover:
 
-- bringing demo1 up at all (branchLeft/workspace#1188, open);
+- bringing demo1 up at all;
 - the per-colour systemd unit the wrapper starts and stops, or the uid/dir
-  claim records for each slot (branchLeft/workspace#1448, #1447, both open
-  and both named by branchLeft/workspace#1545 as blocking demo1 alongside
-  this one);
-- the demo host's Pulumi stack or firewall (a separate story).
+  claim records for each slot;
+- the demo host's Pulumi stack or firewall.
 
 A step below that depends on one of those lands as a named gap, not a
 worked step -- see "Left out, deliberately" at the end.
@@ -16,15 +14,9 @@ worked step -- see "Left out, deliberately" at the end.
 ## Runtime: a bundled single file, not a plain `pnpm install --frozen-lockfile` on the host
 
 `services/broker/package.json` depends on
-`@branchleft/ghost-platform-render-core` via `file:../../render-core`.
-Installed locally (`pnpm install --frozen-lockfile` in this checkout), that resolves to a symlink
-four directories up (`node_modules/@branchleft/ghost-platform-render-core
--> ../../../../render-core`) -- proven by running it, not assumed. render-
-core's own `package.json` says why a normal host install can't lean on the
-registry instead: "to be published the same way ... no publish workflow
-exists for it yet" (`CLAUDE.md`). A host install would therefore need the
-whole monorepo checkout staged at that exact relative layout, which is
-fragile to rsync and easy to let drift from what actually shipped.
+`@branchleft/ghost-platform-render-core` at an exact published version, which
+`pnpm install --frozen-lockfile` fetches from GitHub Packages and which needs
+a registry read credential. A host has none, so nothing is installed there.
 
 Instead, `pnpm run bundle` (`esbuild.bundle.mjs`) produces five self-
 contained ESM files with render-core (and this package's own modules)
@@ -58,10 +50,45 @@ contributor's checkout already use.
 
 ## Install (first boot)
 
-Run from a workstation checkout with SSH access to demo1 -- an operator
-step; nothing here runs from CI (`services/broker/**`'s
-`.claude/delivery-paths.json` row is `not_merge_delivered`/`version_pin`,
-because no publish path exists yet either -- see "Delivery path" below).
+Run from the root of a ghost-platform workstation checkout with SSH access to
+demo1 -- an operator step; nothing here runs from CI.
+
+**Pin the commit first.** This install comes from one ghost-platform commit,
+named here and nowhere else in this runbook. The value is the commit the
+broker release `1dbed88-20261011T105328Z` was built from, which demo1 ran as of
+its last read-back on 2026-10-11: [ISSUE branchLeft/workspace#1545](https://github.com/branchLeft/workspace/issues/1545#issuecomment-6108286313)
+(comment 6108286313), and the pinned-sources section of
+`ghost-platform-docs/demo1-host-build-and-broker-runbook.md`. Check it out
+before step 4, and stop if the check fails:
+
+```bash
+BROKER_PIN_COMMIT=1dbed8818e31a788f8d53b1399b69bdb57dc39b4
+git fetch origin && git checkout --detach "${BROKER_PIN_COMMIT}" && test "$(git rev-parse HEAD)" = "${BROKER_PIN_COMMIT}"
+```
+
+**Read the commit demo1 runs now** before you trust the value above, since it
+can go stale. In the Reach demo1 step below, `DEMO1_IPV4` and
+`DEMO1_SSH_USER` are set. Then read the release name on the host, which
+starts with the short commit:
+
+```bash
+ssh -i ~/.ssh/id_ed25519_hetzner "${DEMO1_SSH_USER}@${DEMO1_IPV4}" 'readlink /opt/branchleft/broker/current'
+```
+
+The name is `releases/` followed by the first eight characters of the commit,
+a dash, and a UTC timestamp. Paste those eight characters when asked; in the
+checkout they must resolve to `BROKER_PIN_COMMIT`, or the pin is stale:
+
+```bash
+read -r RUN_SHORT
+test "$(git rev-parse --verify "${RUN_SHORT}^{commit}")" = "${BROKER_PIN_COMMIT}" && echo "pin matches demo1"
+```
+
+If the check fails, demo1 runs a different broker than this pin. Stop, and
+update the pin only by a reviewed change to this file.
+
+To move to a later commit, change that one line and redo the check; step 4
+then builds from whatever is checked out.
 
 **Reach demo1 first.** Every `ssh` and `rsync` below uses `${DEMO1_IPV4}` and
 `${DEMO1_SSH_USER}`; set them once per terminal, each in its own paste. demo1
@@ -117,8 +144,7 @@ The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge
    touches this step.
 
 2. **Create the `broker` account**, if the host build hasn't already
-   (branchLeft/workspace#1188/#1447 own the host's user/uid plan; this is
-   the minimal fallback if it hasn't landed yet):
+   (this is the minimal fallback):
 
    ```bash
    sudo useradd --system --home-dir /var/lib/branchleft-broker --shell /usr/sbin/nologin broker
@@ -156,18 +182,25 @@ The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge
 
    ```bash
    sudo mkdir -p /etc/branchleft
+   sudo mkdir -p /var/lib/docker/volumes
    sudo install -d -o root -g root -m 0755 /var/lib/branchleft
    sudo install -d -o broker -g broker -m 0755 /var/lib/branchleft/broker-slots
    sudo install -d -o broker -g broker -m 0700 /var/lib/branchleft/broker-slots/admin-keys
    ```
 
 6. **Write `/etc/branchleft/broker.env`** on demo1 from
-   `systemd/broker.env.example`, root:root, mode 0600:
+   `systemd/broker.env.example`, root:root, mode 0600. The create runs only
+   when the file is absent, so a re-run leaves a filled file untouched:
 
    ```bash
-   sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
-   sudo $EDITOR /etc/branchleft/broker.env   # fill in the real values; never echo them to a shell history
+   if [ ! -e /etc/branchleft/broker.env ]; then
+     sudo install -o root -g root -m 0600 /dev/null /etc/branchleft/broker.env
+     sudo $EDITOR /etc/branchleft/broker.env   # fill in the real values; never echo them to a shell history
+   fi
    ```
+
+   Both the create and the editor sit inside the `if`, so a re-run never opens
+   the file. To change a value later, run the editor line on its own, by hand.
 
    Fill in a real `BROKER_VERIFY_KEY_FILE` at the path it names, 32 raw
    Ed25519 public-key bytes, owned **`root:broker`, mode 0640**. See
@@ -215,9 +248,7 @@ automates pruning them.
 
 `.github/workflows/broker-release.yml` builds the bundle in CI, signs it and
 publishes it as a GitHub Release. This section is the one home of that
-contract: the shared-infra `broker_deploy` role consumes it, and the hand
-build in the Install and Upgrade steps above stays only until that role
-replaces it.
+contract: the shared-infra `broker_deploy` role consumes it.
 
 **What a release is.** A tag `broker-vX.Y.Z` whose `X.Y.Z` is the `version`
 in `services/broker/package.json`, cut as a signed, annotated tag on a commit
@@ -343,10 +374,9 @@ was the one on `main`. The controls are the pinned digest, which makes
 reviewed code choose which release deploys, and the check above that the
 attested commit is on `main`. This is the same trust in GitHub that
 branchLeft/workspace#2483 accepted for merge signatures; moving to a key of
-our own later changes only the attest step and the flags above. The `release
-tags` repository ruleset covers `v[0-9]*.[0-9]*.[0-9]*` only, so until it also
-names `broker-v*` a `broker-v*` tag has no deletion or update protection; the
-digest pin is what keeps a moved tag from deploying.
+our own later changes only the attest step and the flags above. A `broker-v*`
+tag is protected from deletion and update by the `release tags` repository
+ruleset; the digest pin is what keeps a moved tag from deploying.
 
 **Install from the release.** Unpack into a new release directory and swap
 `current` as in Upgrade above; never unpack over `current/`:
@@ -379,10 +409,9 @@ install steps do, starts the unit under `systemctl`, and:
    for an actual `sudo` session opened for root running the wrapper, not
    merely a 200 response. The fixture installs one trivial, real (not
    faked) `branchleft-compose@.service` template as a stand-in for the
-   per-colour unit `branchleft_slot.py` starts and stops -- content and
-   delivery owned by branchLeft/workspace#1448, out of this issue's scope
-   -- so the wrapper's own real `systemctl stop` calls have something to
-   succeed against.
+   per-colour unit `branchleft_slot.py` starts and stops -- its content and
+   delivery are outside this proof -- so the wrapper's own real
+   `systemctl stop` calls have something to succeed against.
 
 Everything this proof found by actually booting the unit -- not by reading
 the issue or the systemd docs -- is explained in full in `systemd/README.md`,
@@ -408,7 +437,7 @@ docker rm -f broker-boot-proof
 - **`GET /drain` never hands anything over.** That is final, not a gap:
   the shipped drain source answers `502` and logs that mail is collected
   from the mail queue directly.
-- **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
+- **`BROKER_SLOTS_FILE` writability.** The file and
   its containing directory (`/var/lib/branchleft/broker-slots`, broker-owned
   inside a root-owned parent) are created by step 5 above and are in the
   unit's `ReadWritePaths=`, so a real `/reconcile` or

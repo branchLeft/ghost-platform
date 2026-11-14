@@ -15,6 +15,7 @@ export const FIXTURE_DATABASE = 'portal_fixture';
 const TENANT_LOGIN = 'portal_test_tenant_login';
 const OWNER_LOGIN = 'portal_test_owner_login';
 const PROVISIONER_LOGIN = 'portal_test_provisioner_login';
+const PROSPECT_LOGIN = 'portal_test_prospect_login';
 const MIGRATOR_LOGIN = 'portal_test_migrator_login';
 const DUAL_LOGIN = 'portal_test_dual_login';
 const LOGIN_PASSWORD = 'test-only-not-a-secret';
@@ -35,6 +36,8 @@ export interface Fixture {
   owner: pg.Pool;
   /** Connected as a login that is a member of `portal_provisioner` alone. */
   provisioner: pg.Pool;
+  /** Connected as a login that is a member of `portal_prospect` alone. */
+  prospect: pg.Pool;
   /** A login that holds both roles and can itself bypass row-level policies. */
   dual: pg.Pool;
   close(): Promise<void>;
@@ -107,7 +110,14 @@ export async function createFixture(): Promise<Fixture> {
   const bootstrap = testPool('postgres', undefined, undefined, 1);
   // A fixture left behind by an interrupted run would make the command refuse.
   await dropDatabase(bootstrap, database);
-  for (const login of [TENANT_LOGIN, OWNER_LOGIN, PROVISIONER_LOGIN, MIGRATOR_LOGIN, DUAL_LOGIN]) {
+  for (const login of [
+    TENANT_LOGIN,
+    OWNER_LOGIN,
+    PROVISIONER_LOGIN,
+    PROSPECT_LOGIN,
+    MIGRATOR_LOGIN,
+    DUAL_LOGIN,
+  ]) {
     await bootstrap.query(`DROP ROLE IF EXISTS "${login}"`);
   }
   // The database under test is the one the provisioning command builds: the
@@ -123,6 +133,8 @@ export async function createFixture(): Promise<Fixture> {
     ownerPassword: LOGIN_PASSWORD,
     provisionerLogin: PROVISIONER_LOGIN,
     provisionerPassword: LOGIN_PASSWORD,
+    prospectLogin: PROSPECT_LOGIN,
+    prospectPassword: LOGIN_PASSWORD,
     migratorLogin: MIGRATOR_LOGIN,
     migratorPassword: LOGIN_PASSWORD,
   });
@@ -144,7 +156,9 @@ export async function createFixture(): Promise<Fixture> {
   await admin.query('GRANT SELECT, INSERT ON portal_test.note TO portal_tenant');
   await admin.query('GRANT SELECT ON portal_test.leaky TO portal_tenant');
   await admin.query('GRANT SELECT ON portal_test.note, portal_test.leaky TO portal_owner');
-  await admin.query(`GRANT portal_tenant, portal_owner, portal_provisioner TO "${DUAL_LOGIN}"`);
+  await admin.query(
+    `GRANT portal_tenant, portal_owner, portal_provisioner, portal_prospect TO "${DUAL_LOGIN}"`
+  );
 
   const adminDb = connect(admin);
   await adminDb.insert(tenantRegister).values([
@@ -156,6 +170,7 @@ export async function createFixture(): Promise<Fixture> {
   const tenant = testPool(database, TENANT_LOGIN, LOGIN_PASSWORD, 1);
   const owner = testPool(database, OWNER_LOGIN, LOGIN_PASSWORD);
   const provisioner = testPool(database, PROVISIONER_LOGIN, LOGIN_PASSWORD);
+  const prospect = testPool(database, PROSPECT_LOGIN, LOGIN_PASSWORD);
   const dual = testPool(database, DUAL_LOGIN, LOGIN_PASSWORD, 1);
   return {
     admin,
@@ -163,9 +178,17 @@ export async function createFixture(): Promise<Fixture> {
     tenant,
     owner,
     provisioner,
+    prospect,
     dual,
     async close() {
-      await Promise.all([tenant.end(), owner.end(), provisioner.end(), dual.end(), admin.end()]);
+      await Promise.all([
+        tenant.end(),
+        owner.end(),
+        provisioner.end(),
+        prospect.end(),
+        dual.end(),
+        admin.end(),
+      ]);
       await dropDatabase(bootstrap, database);
       // The portal roles are shared by the whole cluster, and the provisioning
       // command refuses a portal role held by a login it did not make, so a
@@ -174,6 +197,7 @@ export async function createFixture(): Promise<Fixture> {
         TENANT_LOGIN,
         OWNER_LOGIN,
         PROVISIONER_LOGIN,
+        PROSPECT_LOGIN,
         MIGRATOR_LOGIN,
         DUAL_LOGIN,
       ]) {

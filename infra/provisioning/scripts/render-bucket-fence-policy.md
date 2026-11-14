@@ -83,8 +83,7 @@ WHAT THIS POLICY HAS TO ACHIEVE.
 
 WHAT THIS FILE CANNOT ESTABLISH. Hetzner documents `NotPrincipal` verbatim but
 publishes no list of supported Actions, Principal formats or Conditions, and
-says nothing about `NotAction`. No policy of this shape has been observed
-working against a live Hetzner bucket. A successful `put-bucket-policy` is not
+says nothing about `NotAction`. A successful `put-bucket-policy` is not
 evidence: an engine that ignores an unsupported element leaves the bucket open
 while reporting success, and one that reads a `NotPrincipal` deny as naming
 everybody locks it. Both directions are settled only by
@@ -139,8 +138,8 @@ An enumerated `Action` list. This statement used to carry a
 enforce: with it in place the workload key keeps the ability
 to read this policy, rewrite it and change versioning, on a
 bucket that reads as fenced. The catch-all property is lost;
-`BUCKET_CONFIGURATION_ACTIONS` is kept wider than Hetzner's
-supported set to buy some of it back.
+`BUCKET_CONFIGURATION_ACTIONS` is exactly as wide as the
+parser's vocabulary, no wider (see `bucketpolicy.md`).
 
 Minus the workload's own bucket reads, so this narrows
 nothing the pipelines already rely on: `ListBucketVersions`

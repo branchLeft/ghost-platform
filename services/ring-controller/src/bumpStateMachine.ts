@@ -28,10 +28,12 @@ export interface StepResult {
   reason?: string;
 }
 
-/** What `persist` durably records: the step, whether the one page has gone out, the bump's own stable id (so recovery can rebuild the identical `page()` dedupe key), and (for `failed-unsafe` only) the reason it would page with. */
+/** What `persist` durably records: the step, whether the one page has gone out, whether an abort has been asked for, the bump's own stable id (so recovery can rebuild the identical `page()` dedupe key), and (for `failed-unsafe` only) the reason it would page with. */
 export interface PersistSnapshot {
   state: BumpState;
   pageSent: boolean;
+  /** Saved by `abort()` itself, so a restart honours an abort the crashed process had already been asked for. */
+  abortRequested: boolean;
   bumpId: string;
   reason?: string;
 }
@@ -105,6 +107,8 @@ export interface BumpDependencies {
 export interface RecoveredBumpState {
   state: BumpState;
   pageSent?: boolean;
+  /** An abort the crashed process had saved. Recovery honours it: an aborted tenant never ends `done`. */
+  abortRequested?: boolean;
 }
 
 export interface BumpStateMachineOptions {
@@ -149,6 +153,8 @@ export class BumpStateMachine {
   private doneTransitionClaimed = false;
   private readonly bumpId: string;
   private readonly applySettleTimeoutMs: number;
+  /** Every `persist` call chains onto the last, so snapshots reach the store in the order they were taken. */
+  private persistTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly deps: BumpDependencies,
@@ -160,6 +166,7 @@ export class BumpStateMachine {
     if (options.recovered) {
       this.state = options.recovered.state;
       this.pageSent = options.recovered.pageSent ?? false;
+      this.abortRequested = options.recovered.abortRequested ?? false;
     }
   }
 
@@ -171,10 +178,14 @@ export class BumpStateMachine {
    * Request an abort. Safe to call at any point in the run; what it does
    * depends on the state the request lands in, per LLD-4 §05's table:
    * `pending`/`backing-up`/`backed-up` cancel cleanly, `applying` is
-   * never interrupted, and `verifying`/`done` revert.
+   * never interrupted, and `verifying`/`done` revert. The flag is set
+   * before this returns its promise, so a running `run()` sees it at its
+   * next check; the promise settles once the request is durably saved,
+   * so a restart honours it too. See README.md in this directory.
    */
-  abort(): void {
+  abort(): Promise<void> {
     this.abortRequested = true;
+    return this.persistSnapshot();
   }
 
   /**
@@ -210,11 +221,6 @@ export class BumpStateMachine {
       return this.state;
     }
 
-    // Nothing yields between the abort check just above and this
-    // assignment, so a request landing in 'backed-up' is indistinguishable
-    // from one landing in 'backing-up' -- the check above already covers
-    // it; a second one here would be dead code, never independently
-    // reachable.
     await this.transition('backed-up');
 
     // 'applying' is persisted only once the lock is actually held and
@@ -223,10 +229,19 @@ export class BumpStateMachine {
     // waiting tenant on disk as 'applying', indistinguishable from one
     // whose migration is genuinely in flight, and would itself violate
     // "at most one tenant ever in applying".
-    const applyResult = await this.lock.run(async () => {
+    const applyResult = await this.lock.run(async (): Promise<StepResult | 'cancel'> => {
+      // The last check before the migration starts. Both the 'backed-up'
+      // write and the wait for the lock yield, so an abort can land after
+      // the check above; it still cancels, because 'backed-up' is a
+      // pre-apply state.
+      if (this.abortRequested) return 'cancel';
       await this.transition('applying');
       return this.deps.apply();
     });
+    if (applyResult === 'cancel') {
+      await this.transition('cancelled');
+      return this.state;
+    }
     // Never interrupted: awaited to completion, abort or not, whether it
     // resolves ok or not. Serialised within this process by the shared
     // lock, so at most one tenant is ever in this state -- fleet-wide only
@@ -414,6 +429,12 @@ export class BumpStateMachine {
 
     if (verifyResult.ok && !this.abortRequested) {
       await this.transition('done');
+      if (this.abortRequested) {
+        // The abort landed while 'done' was being written: the bake this
+        // tenant needed will never be watched, so revert it like any
+        // other abort in 'done'.
+        return this.abortAfterDone();
+      }
       return this.state;
     }
 
@@ -494,13 +515,27 @@ export class BumpStateMachine {
     await this.persistSnapshot();
   }
 
-  private async persistSnapshot(reason?: string): Promise<void> {
-    await this.deps.persist?.({
+  /**
+   * The snapshot is taken now, and written after every earlier write has
+   * settled, so a slow earlier write can never land over a later one (an
+   * abort overwritten by the stale step it interrupted). A failed write
+   * rejects for its own caller only; later writes still go ahead.
+   */
+  private persistSnapshot(reason?: string): Promise<void> {
+    if (this.deps.persist === undefined) return Promise.resolve();
+    const snapshot: PersistSnapshot = {
       state: this.state,
       pageSent: this.pageSent,
+      abortRequested: this.abortRequested,
       bumpId: this.bumpId,
       reason,
-    });
+    };
+    const write = this.persistTail.then(() => this.deps.persist?.(snapshot));
+    this.persistTail = write.then(
+      () => undefined,
+      () => undefined
+    );
+    return write;
   }
 
   /** `${bumpId}:${reason}` -- see `page()`'s own doc for why both halves matter. */

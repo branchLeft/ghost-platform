@@ -214,4 +214,33 @@ describe('classifyMediaKind', () => {
   it('does not take an ISO file with a moov box of picture tracks only as video', () => {
     expect(classifyMediaKind(bytes.imageSequenceBytes('avis'))).toBe(MEDIA_KIND.OTHER);
   });
+
+  it('refuses a cleanly walked image-brand file whose second movie box holds a video track', () => {
+    const twoMovies = Buffer.concat([bytes.imageSequenceBytes('avis'), bytes.movieBox('vide')]);
+    expect(classifyMediaKind(twoMovies)).toBe(MEDIA_KIND.VIDEO_OR_AUDIO);
+  });
+
+  it('refuses a cleanly walked image-brand file whose later movie box holds a sound track', () => {
+    const threeMovies = Buffer.concat([
+      bytes.imageSequenceBytes('avif'),
+      bytes.movieBox('pict'),
+      bytes.movieBox('soun'),
+    ]);
+    expect(classifyMediaKind(threeMovies)).toBe(MEDIA_KIND.VIDEO_OR_AUDIO);
+  });
+
+  it('keeps a cleanly walked image-brand file with several picture-only movie boxes as an image', () => {
+    const pictureOnly = Buffer.concat([bytes.imageSequenceBytes('avis'), bytes.movieBox('pict')]);
+    expect(classifyMediaKind(pictureOnly)).toBe(MEDIA_KIND.OTHER);
+  });
+
+  it('refuses an image-brand file whose box walk stops at an unreadable box before a second movie box', () => {
+    const unreadableBox = Buffer.from([0, 0, 0, 8, 1, 2, 3, 4]);
+    const hidden = Buffer.concat([
+      bytes.imageSequenceBytes('avis'),
+      unreadableBox,
+      bytes.movieBox('vide'),
+    ]);
+    expect(classifyMediaKind(hidden)).toBe(MEDIA_KIND.VIDEO_OR_AUDIO);
+  });
 });

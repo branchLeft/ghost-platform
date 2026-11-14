@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
@@ -27,16 +27,63 @@ import {
   type Sensitivity,
 } from '../moderation.js';
 import {
+  CustomDomainNotAllowedError,
+  CustomDomainNotRequestedError,
+  CustomDomainTakenError,
+  assertOutsideOwnedDomains,
+  newVerificationToken,
+  normaliseCustomDomain,
+  verificationRecordName,
+  verificationRecordValue,
+  type ConnectedDomainView,
+  type CustomDomainView,
+  type PendingDomainView,
+} from '../customDomain.js';
+import {
+  DomainProofInvalidError,
+  isFreshProof,
+  isIssuedProof,
+  type DomainProof,
+} from '../domainCheck.js';
+import { UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
+import {
+  connectedDomain,
+  customDomainRequest,
   documentAcceptance,
   documentVersion,
   healthReading,
   moderationSetting,
+  supportAccessReading,
+  supportAccessRequest,
   tenantRegister,
 } from '../schema.js';
+import {
+  deriveSupportAccessView,
+  type SupportAccessView,
+  type SupportRequestStatus,
+} from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
 import { bindTenant, type TenantScope } from './scope.js';
+
+/** The key that lets one tenant hold a connected domain at a time. */
+const CONNECTED_FQDN_KEY = 'connected_domain_pkey';
+
+function derivePendingView(row: typeof customDomainRequest.$inferSelect): PendingDomainView {
+  return {
+    state: 'pending',
+    fqdn: row.fqdn,
+    verificationToken: row.verificationToken,
+    recordName: verificationRecordName(row.fqdn),
+    recordValue: verificationRecordValue(row.verificationToken),
+    requestedAt: row.requestedAt,
+  };
+}
+
+function deriveConnectedView(row: typeof connectedDomain.$inferSelect): ConnectedDomainView {
+  return { state: 'connected', fqdn: row.fqdn, connectedAt: row.connectedAt };
+}
 
 export interface TenantRegistration {
   tenantId: string;
@@ -119,6 +166,57 @@ export class TenantDb {
     const rows = await this.run(scope, (tx) => tx.select().from(healthReading));
     const row = rows[0];
     return row ? deriveHealthView(row) : null;
+  }
+
+  /**
+   * The bound tenant's support-access state at `now`. With no reading, a
+   * stale one or one dated ahead, the answer is `unknown`; `closed` comes only
+   * from a fresh reading that says so. Row-level isolation limits the read to
+   * the bound tenant, and the tenant role cannot write it.
+   */
+  async ownSupportAccess(scope: TenantScope, now: Date): Promise<SupportAccessView> {
+    const rows = await this.run(scope, (tx) => tx.select().from(supportAccessReading));
+    return deriveSupportAccessView(rows[0] ?? null, now);
+  }
+
+  /**
+   * Records the bound tenant's request for support access: its own row, with
+   * the database's clock and no text. A second request while one is pending
+   * records nothing and returns false; once the owner has dealt with it a new
+   * request is filed, and the old row stays. The request opens nothing.
+   */
+  async requestSupportAccess(scope: TenantScope): Promise<boolean> {
+    const inserted = await this.run(scope, (tx) =>
+      tx
+        .insert(supportAccessRequest)
+        .values({ tenantId: scope.tenantId })
+        .onConflictDoNothing()
+        .returning({ tenantId: supportAccessRequest.tenantId })
+    );
+    return inserted.length > 0;
+  }
+
+  /**
+   * The bound tenant's latest request and its status, or null when it has
+   * none. An older request dealt with never shows ahead of a newer one.
+   */
+  async ownSupportRequest(
+    scope: TenantScope
+  ): Promise<{ requestedAt: Date; status: SupportRequestStatus } | null> {
+    const rows = await this.run(scope, (tx) =>
+      tx
+        .select()
+        .from(supportAccessRequest)
+        .orderBy(
+          desc(supportAccessRequest.requestedAt),
+          desc(sql`${supportAccessRequest.status} = 'open'`)
+        )
+        .limit(1)
+    );
+    const row = rows[0];
+    return row
+      ? { requestedAt: row.requestedAt, status: row.status as SupportRequestStatus }
+      : null;
   }
 
   /**
@@ -313,6 +411,130 @@ export class TenantDb {
             },
           });
       }
+    });
+  }
+
+  /**
+   * The bound tenant's custom domains: the connected ones, then the requests not
+   * yet proven, each oldest first.
+   */
+  async customDomains(scope: TenantScope): Promise<CustomDomainView[]> {
+    const { connected, requests } = await this.run(scope, async (tx) => ({
+      connected: await tx
+        .select()
+        .from(connectedDomain)
+        .orderBy(asc(connectedDomain.connectedAt), asc(connectedDomain.fqdn)),
+      requests: await tx
+        .select()
+        .from(customDomainRequest)
+        .orderBy(asc(customDomainRequest.requestedAt), asc(customDomainRequest.fqdn)),
+    }));
+    return [...connected.map(deriveConnectedView), ...requests.map(derivePendingView)];
+  }
+
+  /**
+   * Starts connecting `domain` for the bound tenant and returns the one-time
+   * record to set. The domain is normalised, and refused when it is not a plain
+   * domain name (`InvalidCustomDomainError`) or is, or is under, a domain the
+   * platform owns (`CustomDomainOwnedError`). Only a real tenant may connect a
+   * domain: a demo slot is refused (`CustomDomainNotAllowedError`). Asking again
+   * for a domain already requested returns the same record and token, and for
+   * one already connected returns the connection. Nothing is connected here: the
+   * domain is not served until `connectCustomDomain`. `ownedDomains` must be the
+   * edge's own list and must not be empty.
+   */
+  async requestCustomDomain(
+    scope: TenantScope,
+    request: { domain: unknown; ownedDomains: readonly string[] },
+    now: Date
+  ): Promise<CustomDomainView> {
+    if (request.ownedDomains.length === 0) {
+      throw new TypeError('the platform-owned domains must be given');
+    }
+    const fqdn = normaliseCustomDomain(request.domain);
+    assertOutsideOwnedDomains(fqdn, request.ownedDomains);
+    if ((await this.ownKind(scope)) !== 'REAL') throw new CustomDomainNotAllowedError();
+    const token = newVerificationToken();
+    return this.run(scope, async (tx) => {
+      const own = await tx.select().from(connectedDomain).where(eq(connectedDomain.fqdn, fqdn));
+      if (own[0]) return deriveConnectedView(own[0]);
+      await tx
+        .insert(customDomainRequest)
+        .values({ tenantId: scope.tenantId, fqdn, verificationToken: token, requestedAt: now })
+        .onConflictDoNothing();
+      const rows = await tx
+        .select()
+        .from(customDomainRequest)
+        .where(eq(customDomainRequest.fqdn, fqdn));
+      if (!rows[0]) throw new CustomDomainNotRequestedError();
+      return derivePendingView(rows[0]);
+    });
+  }
+
+  /**
+   * Connects a requested domain, on the strength of a passing check. The proof
+   * is the one `checkCustomDomain` returns and nothing else is accepted: a
+   * look-alike, or a proof older than ten minutes, is refused
+   * (`DomainProofInvalidError`). The proof must be for a domain this tenant
+   * requested, with the token it was given (`CustomDomainNotRequestedError`),
+   * and the domain must not be connected to another tenant
+   * (`CustomDomainTakenError`, which names neither). Connecting twice returns
+   * the first connection unchanged.
+   */
+  async connectCustomDomain(
+    scope: TenantScope,
+    proof: DomainProof,
+    now: Date
+  ): Promise<ConnectedDomainView> {
+    if (!isIssuedProof(proof) || !isFreshProof(proof, now)) throw new DomainProofInvalidError();
+    try {
+      return await this.run(scope, async (tx) => {
+        const own = await tx
+          .select()
+          .from(connectedDomain)
+          .where(eq(connectedDomain.fqdn, proof.fqdn));
+        if (own[0]) return deriveConnectedView(own[0]);
+        const requests = await tx
+          .select()
+          .from(customDomainRequest)
+          .where(eq(customDomainRequest.fqdn, proof.fqdn));
+        if (!requests[0] || requests[0].verificationToken !== proof.token) {
+          throw new CustomDomainNotRequestedError();
+        }
+        const made = await tx
+          .insert(connectedDomain)
+          .values({ fqdn: proof.fqdn, tenantId: scope.tenantId, connectedAt: now })
+          .returning();
+        await tx.delete(customDomainRequest).where(eq(customDomainRequest.fqdn, proof.fqdn));
+        if (!made[0]) throw new CustomDomainNotRequestedError();
+        return deriveConnectedView(made[0]);
+      });
+    } catch (error) {
+      const info = readDatabaseError(error);
+      if (info?.code === UNIQUE_VIOLATION && info.constraint === CONNECTED_FQDN_KEY) {
+        throw new CustomDomainTakenError();
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Removes the bound tenant's request or connection for `domain`. Once the
+   * connection row is gone the domain is no longer one the edge may serve, and
+   * it is free for any tenant to prove. Returns whether anything was removed.
+   */
+  async removeCustomDomain(scope: TenantScope, domain: unknown): Promise<boolean> {
+    const fqdn = normaliseCustomDomain(domain);
+    return this.run(scope, async (tx) => {
+      const gone = await tx
+        .delete(connectedDomain)
+        .where(eq(connectedDomain.fqdn, fqdn))
+        .returning();
+      const dropped = await tx
+        .delete(customDomainRequest)
+        .where(eq(customDomainRequest.fqdn, fqdn))
+        .returning();
+      return gone.length + dropped.length > 0;
     });
   }
 

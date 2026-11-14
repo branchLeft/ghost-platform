@@ -31,6 +31,7 @@ const DECISIONS = new Set([
   'render-core-artefact',
   'owner-address-secret',
   'secrets-host-render',
+  'render-core-update',
 ]);
 
 interface ReviewedEntry extends DiffEntry {
@@ -170,7 +171,7 @@ describe('the reviewed output diff against tenant 4.0.0', () => {
 
 describe('tenant zero itself', () => {
   // See output-diff.md#the-slug.
-  it('is accepted by the render core since 0.1.1, which stopped reserving its slug', () => {
+  it('is accepted by the render core since 0.1.1, which stopped reserving its slug, from its own repository only', () => {
     const tenantZero = {
       ...tenantZeroEquivalent(),
       slug: 'blog',
@@ -179,6 +180,17 @@ describe('tenant zero itself', () => {
       database: { ...tenantZeroEquivalent().database, name: 'ghost_blog', user: 'ghost_blog' },
       media: { ...tenantZeroEquivalent().media, bucket: 'branchleft-media-blog' },
     } as unknown as TenantStackDescriptor;
-    expect(validateTenantStack(tenantZero, TEST_ZONES)).toBe(tenantZero);
+    // Since 0.4.0 the render core also checks who is claiming a registered name.
+    expect(
+      validateTenantStack(tenantZero, TEST_ZONES, {
+        claimantRepo: 'branchLeft/ghost-tenant-blog',
+      })
+    ).toBe(tenantZero);
+    expect(() => validateTenantStack(tenantZero, TEST_ZONES)).toThrow(/registered to/);
+    expect(() =>
+      validateTenantStack(tenantZero, TEST_ZONES, {
+        claimantRepo: 'branchLeft/ghost-tenant-someone-else',
+      })
+    ).toThrow(/registered to/);
   });
 });

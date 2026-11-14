@@ -181,6 +181,14 @@ export async function receiveBody(
     source.destroy();
     return fail('internal-error');
   }
+  // The same holds for the spool threshold: a NaN never trips the spool
+  // comparison, so the whole body would stay in memory up to the ceiling. A
+  // threshold above the ceiling is harmless (no body can exceed the ceiling
+  // anyway), so only a value that is not a positive whole number is refused.
+  if (!Number.isSafeInteger(threshold) || threshold <= 0) {
+    source.destroy();
+    return fail('internal-error');
+  }
 
   const declared = opts.declaredLength;
   if (declared !== undefined && (!Number.isSafeInteger(declared) || declared < 0)) {

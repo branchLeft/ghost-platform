@@ -15,7 +15,9 @@ cd "$REPO_ROOT"
 # Must match db/RUNBOOK-db.md's pinned db1 image.
 SOURCE_IMAGE="mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b"
 # Percona Server for MySQL 8.0.46-37, its linux/amd64 manifest: the hosts are amd64.
-REPLICA_IMAGE="${REPLICA_IMAGE:-percona/percona-server:8.0@sha256:2fb8f1c992bc86f0bf4fa0aa174bbb1946f8867a7518278beec801a0bd2bf9e3}"
+# The digest comes from the image mirror list (percona_pin.py); no literal here.
+PERCONA_AMD64="$(python3 "$REPO_ROOT/db/provision/percona_pin.py" amd64)"
+REPLICA_IMAGE="${REPLICA_IMAGE:-percona/percona-server:8.0@$PERCONA_AMD64}"
 PW="proofRootPw123!"
 REPL_PW="proofReplPw123!"
 RUN=$$

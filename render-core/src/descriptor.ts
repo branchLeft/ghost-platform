@@ -94,6 +94,30 @@ export interface MailSpec {
   readonly ceiling: number;
   readonly estateCeiling: number;
   readonly identity: SendingIdentitySpec;
+  /**
+   * Which sending target the mail collector uses for this host's drained
+   * mail. Absent means `mx1`, so a descriptor written before this field
+   * existed means exactly what it always did. `render()` ignores it; the host's
+   * mail spool reads it through `mailSpoolNeedsDrainOutcomes`. See
+   * mail.md#mail-route.
+   */
+  readonly route?: MailRouteSpec;
+}
+
+/** The two sending targets the collector may be told to use. */
+export type MailRoute = 'mx1' | 'sweego';
+
+/**
+ * A strict object, not a bare string, so a field can sit beside `primary`
+ * without renaming anything. It carries no credential, no host and no
+ * fallback target: the fallback is fixed in the collector's code and has no
+ * descriptor field. `sweegoAllowance` is the tenant's messages per UTC
+ * calendar month through Sweego, present exactly when `primary` is `sweego`.
+ * See mail.md#mail-route.
+ */
+export interface MailRouteSpec {
+  readonly primary: MailRoute;
+  readonly sweegoAllowance?: number;
 }
 
 /**
@@ -173,7 +197,17 @@ export interface ResourceCaps {
 export interface SafetySpec {
   readonly near: boolean;
   readonly exact: boolean;
+  /**
+   * Which verdict source the scanning adapter is given. Absent is `'none'`:
+   * the adapter has no source and refuses every upload. `'production'`
+   * names the slot's local verdict socket, and a demo may not name it. See
+   * environment.md#verdict-source.
+   */
+  readonly verdictSource?: VerdictSourceKind;
 }
+
+/** The values `safety.verdictSource` may take. See SafetySpec. */
+export type VerdictSourceKind = 'none' | 'production';
 
 /**
  * The break-glass triple: the broker's Ed25519 public key, the tenant name a

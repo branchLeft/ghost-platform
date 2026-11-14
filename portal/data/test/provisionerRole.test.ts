@@ -140,15 +140,31 @@ describe('the provisioner role writes the register and the events, insert only',
 });
 
 describe('no other role can change them either', () => {
+  // Each row is an insert into its own table, so a grant on any one of them is tested.
   const tables = [
-    ['the register', hostnameRegister, { demoId: randomUUID() }],
-    ['the retirements', hostnameRetirement, { label: 'oooooooooooooooooooo' }],
-    ['the events', demoStateEvent, { extensionDays: 0 }],
+    [
+      'the register',
+      hostnameRegister,
+      { demoId: randomUUID() },
+      { label: 'nnnnnnnnnnnnnnnnnnnn', demoId: randomUUID() },
+    ],
+    [
+      'the retirements',
+      hostnameRetirement,
+      { label: 'oooooooooooooooooooo' },
+      { label: 'nnnnnnnnnnnnnnnnnnnn' },
+    ],
+    [
+      'the events',
+      demoStateEvent,
+      { extensionDays: 0 },
+      { demoId: randomUUID(), sequence: 1, toState: 'VERIFIED' },
+    ],
   ] as const;
 
   it.each(tables)(
     'the owner role cannot update, delete or insert into %s',
-    async (_name, table, set) => {
+    async (_name, table, set, row) => {
       expect(
         await outcome(
           asOwner((tx) =>
@@ -162,11 +178,9 @@ describe('no other role can change them either', () => {
       expect(await outcome(asOwner((tx) => tx.delete(table).where(sql`true`)))).toBe(
         PERMISSION_DENIED
       );
-      expect(
-        await outcome(
-          asOwner((tx) => tx.insert(hostnameRetirement).values({ label: 'nnnnnnnnnnnnnnnnnnnn' }))
-        )
-      ).toBe(PERMISSION_DENIED);
+      expect(await outcome(asOwner((tx) => tx.insert(table).values(row as never)))).toBe(
+        PERMISSION_DENIED
+      );
       expect(await outcome(asOwner((tx) => tx.select().from(table)))).toBe('ok');
     }
   );

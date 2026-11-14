@@ -374,7 +374,10 @@ describe('receiveBody: incomplete bodies', () => {
     const controller = new AbortController();
     const pending = receiveBody(source, options({ thresholdBytes: 8, signal: controller.signal }));
     source.write(bytesOf(100));
-    await new Promise((resolve) => setImmediate(resolve));
+    // The spool file is opened asynchronously: wait for it rather than for one tick.
+    for (let i = 0; i < 100 && (await spoolFiles()).length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     expect((await spoolFiles()).length).toBe(1);
     controller.abort();
     const result = await pending;
@@ -627,5 +630,37 @@ describe('receiveBody: a bad ceiling fails closed', () => {
     expect(entries).toEqual([
       { event: 'request-refused', code: 'internal-error', status: 503, method: 'PUT' },
     ]);
+  });
+});
+
+describe('receiveBody: a bad spool threshold fails closed', () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 0, -1, 1.5, 2 ** 53])(
+    'refuses a spool threshold of %s as internal-error before reading any byte',
+    async (thresholdBytes) => {
+      let reads = 0;
+      const source = new Readable({
+        read() {
+          reads += 1;
+          this.push(reads <= 3 ? Buffer.alloc(10) : null);
+        },
+      });
+      const result = await receiveBody(source, options({ thresholdBytes }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.refusal.code).toBe('internal-error');
+        expect(result.refusal.status).toBe(503);
+      }
+      expect(reads).toBe(0);
+      expect(source.destroyed).toBe(true);
+      expect(await spoolFiles()).toEqual([]);
+    }
+  );
+
+  it('accepts a spool threshold equal to the ceiling', async () => {
+    const body = await accepted(sourceOf(bytesOf(1000), 100), {
+      ceilingBytes: 1000,
+      thresholdBytes: 1000,
+    });
+    expect(body.size).toBe(1000);
   });
 });

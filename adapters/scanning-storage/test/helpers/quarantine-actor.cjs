@@ -5,7 +5,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { releaseBytes, sealRefusal, sweepOrphans } = require('../../src/quarantine.js');
+const {
+  releaseBytes,
+  sealRefusal,
+  sweepOrphans,
+  sweepReleasing,
+} = require('../../src/quarantine.js');
 const { digestBytes } = require('../../src/pdq.js');
 
 const [role, quarantinePath, digest, bytesFile, controlDir] = process.argv.slice(2);
@@ -25,6 +30,11 @@ async function main() {
   gate(0);
   if (role === 'release') {
     releaseBytes(quarantinePath, digest, { onMovedAside: () => gate(1) });
+  } else if (role === 'sweep-aside') {
+    // What every adapter does at start-up: no gate inside, one run.
+    sweepReleasing(quarantinePath, digestBytes, {
+      error: (message) => process.stderr.write(`${message}\n`),
+    });
   } else if (role === 'sweep') {
     sweepOrphans(quarantinePath, {
       minAgeMs: 1000,

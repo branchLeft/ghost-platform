@@ -23,11 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_LIST = Path(__file__).resolve().parent.parent / ".github" / "image-mirror" / "images.json"
-MIRROR_REGISTRY = "ghcr.io/branchleft/mirror-private"
-MIRROR_PREFIX = "branchleft/mirror-private/"
-# The retired public namespace stays refused as a hard-coded reference, so a
-# literal left over from before the move cannot pass as an own image.
+MIRROR_REGISTRY = "ghcr.io/branchleft/mirror-private2"
+MIRROR_PREFIX = "branchleft/mirror-private2/"
+# The retired namespaces stay refused as hard-coded references, so a literal
+# left over from before a move cannot pass as an own image.
 RETIRED_MIRROR_PREFIX = "branchleft/mirror/"
+RETIRED_PRIVATE_PREFIX = "branchleft/mirror-private/"
 OWN_PREFIX = "branchleft/"
 SKIP_DIRS = {".git", "node_modules", "dist", "forks", "graphify-out", ".standards"}
 SKIP_SUFFIXES = {
@@ -209,7 +210,7 @@ def classify(ref: str, mirror: set[tuple[str, str]], local: frozenset[str] = fro
         return ("other-registry", f"{registry} reference; mirror it and use the mirror by digest")
     if not path.startswith(OWN_PREFIX):
         return ("other-registry", "ghcr.io reference outside branchleft; mirror it and use the mirror by digest")
-    if path.startswith((MIRROR_PREFIX, RETIRED_MIRROR_PREFIX)):
+    if path.startswith((MIRROR_PREFIX, RETIRED_MIRROR_PREFIX, RETIRED_PRIVATE_PREFIX)):
         return (
             "hard-coded-mirror",
             "mirror path with no public default breaks local builds: use ${IMAGE_REGISTRY:-<public namespace>}/<name>:<tag>@sha256:<digest>",
@@ -917,7 +918,7 @@ def override_findings(root: Path, files: list[str]) -> list[Finding]:
                 continue
             value = m["value"]
             if value.startswith("${{"):
-                found.append(Finding(rel, i + 1, value, UNRESOLVED, "UNRESOLVED reference: the override is an expression; it must be ghcr.io/branchleft/mirror-private"))
+                found.append(Finding(rel, i + 1, value, UNRESOLVED, "UNRESOLVED reference: the override is an expression; it must be ghcr.io/branchleft/mirror-private2"))
                 continue
             if value != MIRROR_REGISTRY:
                 found.append(Finding(rel, i + 1, value, "bad-override", f"CI override must be {MIRROR_REGISTRY}"))
@@ -1029,7 +1030,8 @@ def self_test() -> int:
             ["tag-only"],
         ),
         "digest with no tag": ({"Dockerfile": f"FROM ${{IMAGE_REGISTRY:-docker.io/library}}/ghost@{DIGEST_A}\n"}, ["no-tag"]),
-        "hard-coded mirror reference": ({"Dockerfile": f"FROM ghcr.io/branchleft/mirror-private/ghost@{DIGEST_A}\n"}, ["hard-coded-mirror"]),
+        "hard-coded mirror reference": ({"Dockerfile": f"FROM ghcr.io/branchleft/mirror-private2/ghost@{DIGEST_A}\n"}, ["hard-coded-mirror"]),
+        "hard-coded retired mirror-private reference": ({"Dockerfile": f"FROM ghcr.io/branchleft/mirror-private/ghost@{DIGEST_A}\n"}, ["hard-coded-mirror"]),
         "wrong public default": (
             {"Dockerfile": f"FROM ${{IMAGE_REGISTRY:-docker.io/elsewhere}}/ghost:6@{DIGEST_A}\n"},
             ["bad-default"],

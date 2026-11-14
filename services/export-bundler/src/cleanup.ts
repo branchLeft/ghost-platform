@@ -145,9 +145,11 @@ export function dockerRemoveSync(argv: readonly string[], dockerCommand = 'docke
   });
 }
 
-const GONE_POLLS = 10;
+const GONE_POLLS = 20;
 const GONE_POLL_MS = 200;
-const GONE_CONSECUTIVE_ABSENT = 2;
+// A daemon can take a while to act on a create it was already sent, so absence
+// must hold for about 1.8 s (ten reads) before the container is called gone.
+const GONE_CONSECUTIVE_ABSENT = 10;
 
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -158,7 +160,7 @@ function sleepSync(ms: number): void {
  * client that was still in flight -- keeps removing it until it stays gone.
  * A killed `docker run` may already have sent its create to the daemon, so
  * the container can appear after the first `rm -f` found nothing. Bounded at
- * 10 reads 200 ms apart (about 2 s), stops after 2 absent reads in a row,
+ * 20 reads 200 ms apart (about 4 s), stops after 10 absent reads in a row,
  * repeats `rm -f` whenever the container shows up, and never throws. With
  * nothing killed this is exactly one `rm`, as before.
  */

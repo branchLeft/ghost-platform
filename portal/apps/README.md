@@ -43,6 +43,56 @@ there is no option to forget. A kind that is absent or not exactly `REAL` or
 nothing, and the save answers 400 `REFUSED` and stores nothing. A valid `DEMO`
 keeps the demo notice, no form, and a refused save.
 
+## Support access
+
+`/site-access` shows the signed-in tenant whether support access to its site
+is open, closed or unknown, and the deadline while it is open. The state comes
+from the tenant's own row only (`TenantDb.ownSupportAccess`); a missing,
+stale or unrecognised reading is shown as unknown and never as closed. The page
+carries one button, `POST /site-access/request`, which files the signed-in
+tenant's request: the handler reads no form field, so no tenant id and no text
+can travel with it, and it changes no reading. Once a request is filed the page
+shows the latest request's status word (open, then dealt with) and no time, and
+the button returns when that request is dealt with. The owner console
+lists every request on its landing page on one page, open ones first and oldest
+first; each open one carries a button, `POST /support-requests/dealt-with`,
+that marks it dealt with. Nothing deletes a request. Nothing under
+`portal/` can open or close access, and a test fails if portal source gains a
+revoke, a socket into a host, a child process or an ssh client. All wording is
+`ALL_CAPS` placeholder until the owner supplies it.
+
+### The support-access collector
+
+`src/collector/main.ts` is one run of the collector: it reads one host's
+exporter text from standard input, and for each tenant the text names it calls
+`OwnerDb.recordSupportAccess`. It is built into the same image as the two
+applications and run inside the console container, as
+`docker exec -i <console> node dist/collector/main.js`, so it holds no
+credential the console does not already hold (`CONSOLE_DATABASE_URL_FILE`).
+
+It does not fetch. A container on ops1 has no route to an app host (the
+`DOCKER-USER` policy drops it), so the fetch is `portal/host/`'s native program,
+which pipes each host's text to this one. The text is the five series the host
+writer emits (`branchleft_support_access_state`, `_lane`, `_granted_timestamp_seconds`,
+`_deadline_timestamp_seconds`, `_observed_timestamp_seconds`, each with a
+`tenant` label that is the tenant's slug); anything else in it is ignored.
+
+What it writes, and what it never does:
+
+- A tenant is written only from series the host gave for it. The collector has
+  no path that writes `closed` for a tenant, a host or a text it could not read:
+  silence is how the page learns `unknown`.
+- Nothing is written for a tenant whose slug is not a registered tenant name
+  (`OwnerDb.listTenantSlugs`), for a reading whose host time is more than 900
+  seconds (`SUPPORT_READING_FRESH_SECONDS`) before or after now, or for a tenant
+  whose series contradict the contract (a second state, no host time, a lane or
+  a clock on an account that is not open, a value that is not a number).
+- A line that carries one of the five names but is not a sample refuses the
+  whole text: nothing is written from it.
+- The run log has one line per tenant (`recorded state=...` or `left out: ...`)
+  and one for the run, and never a reason, a clock, a lane or an id. The exit
+  status is `0` only when the text was accepted and every write was made.
+
 ## Support tickets
 
 A signed-in tenant admin can raise a support ticket from the tenant portal. It
@@ -94,9 +144,8 @@ line and the tenant's message. Every line is always present. A value the portal
 does not hold is the marker `NOT_AVAILABLE`, never an omitted or empty line. A
 reading that records no run of mismatching readings shows `MISMATCH_SINCE:
 NO_MISMATCH`; no reading at all makes every health-derived line `NOT_AVAILABLE`.
-`SITE_HOST` and `LAST_DEPLOY` are always `NOT_AVAILABLE` today: the portal's
-tenant data holds neither a site hostname nor a deploy record, and nothing in
-`portal/data` was added to supply them.
+`SITE_HOST` and `LAST_DEPLOY` are always `NOT_AVAILABLE`: the portal's
+tenant data holds neither a site hostname nor a deploy record.
 
 The email is built on the server at submit time. The tenant identifier, health
 and version come from a fresh `ownRegistration(scope)` and `ownHealth(scope)`
@@ -133,6 +182,45 @@ portal's clock: five tickets an hour (`MAX_TICKETS_PER_WINDOW`,
 forgets the counts. Origin and session checks are the shell's: a foreign origin
 is a 403 and no session is a redirect to sign-in, and neither sends anything.
 
+## See my demo
+
+A signed-in tenant admin can see its demo's address, its state and when it
+expires at `/demo`, with a `NAV_DEMO` entry beside the others. The screen holds
+no demo data of its own and does no lifecycle logic: it asks the provisioning
+API for the bound tenant's demo, through the generated client
+(`ghost-platform-provisioning-controller/provisioning-api`, `getDemo`), and shows
+what the API answers. The API's contract is
+`services/provisioning-controller/openapi.yaml`; the screen never calls it by
+hand and never imports the contract's mock (the tests do).
+
+The demo is named from the bound `TenantScope` and nothing else: the page
+function is given the scope, not the request, so a path, query, form field,
+header or cookie cannot name another tenant's demo. The credential presented is
+the one issued for that tenant (the API refuses a tenant credential on any other
+tenant's path), looked up by the scope's tenant id.
+
+```text
+PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback)
+PORTAL_PROVISIONING_CREDENTIALS_FILE  a file of lines <tenant uuid>=<credential>, one per tenant
+```
+
+`createTenantPortal` takes them as the optional `provisioning` option
+(`{ baseUrl, credentialFor }`), so tests point it at the mock. **Without
+`PORTAL_PROVISIONING_URL` there is no `/demo` (404) and no navigation entry.**
+When the URL is set, the credentials file must be readable and well formed, or
+the process stops at start with a `ConfigError` that never holds a credential.
+
+Each state in the contract's `DemoState` has its own placeholder
+(`DEMO_STATE_LIVE`, `DEMO_STATE_EXPIRING` and so on, one per state in
+`portal/data/src/demoStates.ts`); a state the screen does not know renders
+`DEMO_STATE_UNKNOWN`, never a blank page. An address or expiry the API has not
+set yet renders `NO_ADDRESS_YET` or `NO_EXPIRY_YET`; a tenant the API says has
+no demo renders `NO_DEMO_FOUND`. When the API is unreachable, refuses the call,
+redirects, times out (5 seconds) or answers something that is not a demo, the
+page answers 500 `FAILED` and logs one line with the step and the error name
+(`DemoReadError`) and nothing the API or the network said. The read never
+follows a redirect, so the credential goes to the configured host alone.
+
 ## Why two applications
 
 A token issued to one application is refused by the other, by client id, by
@@ -140,6 +228,57 @@ role and by organisation. `test/units.test.ts` fails if anything under
 `src/tenant` imports the owner entry point, the migrator or the console, if
 `src/console` imports the tenant entry point or the portal, or if the shared
 `src/shell` imports either storage entry point.
+
+## Ask for Essentials, and the Professional enquiry
+
+Two pages for a signed-in **demo** tenant (`TenantDb.ownKind` is `DEMO`, read
+fresh from the register row). A tenant of any other kind sees the placeholder
+`NOT_FOR_THIS_TENANT` where the form would be, and a post is refused (`REFUSED`,
+the error name `PromotionError` logged, nothing sent or recorded).
+
+**`/essentials`** is one button and no field. It posts to `/essentials/request`,
+which asks the provisioning API to record one `essentials` promotion request for
+the tenant bound at sign-in, through the generated client
+(`ghost-platform-provisioning-controller/provisioning-api`, `createPromotionRequest`).
+The tenant comes from the `TenantScope` and from nothing the request carries: a
+query, a form field or a header that names another tenant is ignored. The answer
+decides where the tenant lands:
+
+| The API answers | Landing | Placeholder |
+|---|---|---|
+| 201, a pending `essentials` request for this tenant | `/essentials/sent` | `ESSENTIALS_REQUEST_PENDING` |
+| 409 `request-already-open` (the other tier is open) | `/essentials/open-request` | `ANOTHER_REQUEST_ALREADY_OPEN` |
+| 409 `demo-not-promotable`, or 404 | `/essentials/unavailable` | `ESSENTIALS_NOT_AVAILABLE_NOW` |
+| 400, 401, 403, a server error, no answer, or anything the contract does not allow | the shell's 400 `REFUSED` | none; `PromotionError` is logged |
+
+A second submit while the first is pending is the contract's replay (the same
+201, the existing request, nothing new), so it lands on the same pending page and
+creates nothing. The screen holds no state of its own. Without
+`provisioning: { baseUrl, credentialFor }` (the contract's per-tenant credential,
+injected, never in source) the page, the action and the navigation entry
+`NAV_ESSENTIALS` are absent and answer 404. The call waits 5000 ms at most.
+
+**`/professional`** is a contact address and a message. It posts to
+`/professional/send`, which sends one plain-text email through the support mail
+path: the same `SupportMailer`, the same `validateContact` and `validateMessage`
+(so the same refusals, 1000 characters at most) and a `SupportLimiter` of its own
+with the same ceiling (five an hour per tenant, then `/professional/limited`).
+The subject is `PROFESSIONAL_ENQUIRY <tenant id>` and the body is `TENANT_ID` and
+`SCREEN: PROFESSIONAL` lines, the delimiter and the message. The tenant id is
+the session's; no tenant name is asked for or sent. It does not call the
+provisioning API and records nothing: the email is the enquiry, so an open
+Essentials request never blocks it. The contract's `professional-enquiry` tier is
+for the console to count enquiries, which needs the screen to record one: left
+for a later step if the owner wants that count. Without the `support` settings
+the page, the action and `NAV_PROFESSIONAL` are absent (404), as for support.
+
+The code is `src/tenant/promotionRoutes.ts` (assembly), `essentialsRoutes.ts`,
+`professionalRoutes.ts`, `provisioningSettings.ts` (the one place that calls the
+generated client) and `promotionPages.ts`. Tests: `test/tenantEssentials.test.ts`,
+`test/tenantProfessional.test.ts`, `test/provisioningSettings.test.ts` and
+`test/promotionSabotage.test.ts`. They run against the in-memory mock served
+through the generated `createServer` (built from `services/provisioning-controller`,
+imported by tests only), never a hand-rolled fetch.
 
 ## Running
 
@@ -149,6 +288,7 @@ Each application reads its own variables; secrets are read from files.
 PORTAL_ISSUER_URL, PORTAL_PUBLIC_ORIGIN, PORTAL_OUTPUTS_FILE, PORTAL_DATABASE_URL_FILE
 CONSOLE_ISSUER_URL, CONSOLE_PUBLIC_ORIGIN, CONSOLE_OUTPUTS_FILE, CONSOLE_DATABASE_URL_FILE
 PORTAL_TRUSTED_PROXIES, CONSOLE_TRUSTED_PROXIES   optional: switch on the sign-in limit (below)
+CONSOLE_PROVISIONING_URL, CONSOLE_PROVISIONING_CREDENTIAL_FILE   optional together: the request queue (below)
 ```
 
 `*_OUTPUTS_FILE` is the identity reconciler's `outputs.json`. The portal's
@@ -175,8 +315,44 @@ name and the SQLSTATE, never the message.
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity
 verifier first (`pnpm install --frozen-lockfile && pnpm run build` in `portal/data` and
-`services/identity` and `services/request-guard`): this package imports their
+`services/identity`, `services/request-guard` and `services/provisioning-controller`): this package imports their
 built output.
+
+## See the Essentials site
+
+`/site` shows a promoted tenant its site: the state (`provisioning` or `live`),
+the tier, the invoice reference (a manual invoice at launch, shown as text and
+nothing else about billing) and every hostname the provisioning API returns. It
+reads `GET /tenants/{tenant}` through the generated client
+(`ghost-platform-provisioning-controller/provisioning-api`), never a hand-written
+request. The tenant is the bound scope's (`scope.tenantId`): the shell gives a
+page its session value and never the request, so a query string, a form field or
+a path segment cannot name another tenant, and the credential presented is the
+one issued for the bound tenant alone (the contract issues one per tenant, so
+the portal holds one per tenant). An answer that names a different tenant is
+discarded. Hostnames and the invoice reference are escaped with `escapeHtml`; the
+page reads nothing from `portal.connected_domain`.
+
+- A tenant that is still a demo (the API answers tier `demo`) sees
+  `SITE_NOT_PROMOTED` with a link to the Essentials request at `/essentials`.
+- No credential for the tenant, a refusal, an unknown tenant, an unreachable API
+  or a read that throws all show `SITE_UNAVAILABLE` with status 200. The API's
+  body, its address and the credential are never shown. A read that throws is
+  logged as `portal.error` with step `handler` and the error name only.
+- The custom-domain screen has a place on the page: `createSiteRoutes` takes a
+  `customDomainPath`, and with it the page links there (`data-slot="custom-domain"`).
+  Without it nothing is rendered, so no link is made up for a route that is not
+  there. The form itself is not part of this page.
+
+The page uses the portal's one `provisioning` option, loaded from
+`PORTAL_PROVISIONING_URL` and `PORTAL_PROVISIONING_CREDENTIALS_FILE` (see
+"See my demo" above). Without them the portal has no `/site` (404) and no
+navigation entry.
+
+`test/tenantSite.test.ts` runs the page against the provisioning-controller's
+in-memory mock, served through its generated server, with the tenant approved
+through the same client. `test/tenantSiteSabotage.test.ts` breaks the page so it
+takes the tenant from the query string and shows the isolation check fail.
 
 ## Limiting sign-in per client
 
@@ -239,6 +415,46 @@ accept each other's cookie. This is accepted: there is one process per
 application, and a restart costs a ten-minute pending sign-in at worst. It is a
 line to revisit if the portal ever runs more than one process or restarts often.
 
+## Promotion requests (owner console)
+
+The console's `/requests` page lists the promotion requests waiting on the
+owner, oldest first, from `GET /promotion-requests?state=pending`, each with its
+id, tier and when it was made. Under it sit the most recent approved requests
+(`state=approved`). Nav entry `NAV_REQUESTS`. An Essentials request has one
+Approve button, a form post to `/requests/approve` carrying the request id; it
+calls `POST /promotion-requests/{id}/approve`. A professional enquiry is listed
+with no button, because the contract refuses to approve one.
+
+- **Idempotent.** The contract answers a second approve of the same request with
+  the same body, so a double submit or a replayed post leaves one approval, and
+  every post redirects to `/requests`, where the request is no longer pending.
+- **Errors.** An id that is not a request (or not a UUID: it never reaches the
+  API) redirects to `/requests/not-found`; an enquiry to `/requests/not-approvable`.
+  Each is a placeholder line, and nothing is approved. Any other failure of the
+  API (down, wrong credential) is the shell's fixed `FAILED` or `REFUSED`, with
+  only the error name logged.
+- **Who.** The page and the action are behind the console's sign-in, which admits
+  the owner organisation holding the `owner` role and no one else; a tenant portal
+  session has a different cookie and client and is never accepted. The action also
+  checks the session's organisation is the owner's before it calls the API.
+- **The API call** goes only through the generated client
+  (`ghost-platform-provisioning-controller/provisioning-api`). The console
+  presents its own owner credential; the tenant portal's is never given to it.
+  Each call is bounded to five seconds and follows no redirect.
+- **Off by default.** Without `CONSOLE_PROVISIONING_URL` the page, the action and
+  the nav entry do not exist. Setting one of the two variables below without the
+  other stops the process at start.
+
+```text
+CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback only
+CONSOLE_PROVISIONING_CREDENTIAL_FILE  a file holding the owner credential
+```
+
+The tests run against the in-memory provisioning mock served through the
+generated server (`services/provisioning-controller/mock`), with no database:
+`test/ownerRequests*.test.ts`. Build the provisioning controller first, as for
+the other linked packages.
+
 ## Tests
 
 ```sh
@@ -247,3 +463,22 @@ PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres pnpm run co
 ```
 
 The URL is a superuser on a throwaway cluster, as for `portal/data`.
+
+### The browser journey
+
+`pnpm run journey` walks the portal in a real Chromium (Playwright, an exact
+version in `package.json`) against an HTTP test identity provider, with the
+portal on the fixture database, and saves one full-page screenshot per screen
+in `journey-screenshots/journey/` (`JOURNEY_SCREENSHOT_DIR` changes it). It
+needs the same `PORTAL_TEST_DATABASE_URL` as the tests and a browser:
+`pnpm exec playwright install chromium`. CI runs it in
+`.github/workflows/portal-apps-journey.yml` and uploads the screenshots.
+
+- The identity provider is `test/idpServer.ts`: discovery, keys, authorize
+  (code with PKCE) and token, for a list of users given at start. It listens on
+  loopback only, refuses to start under `NODE_ENV=production`, and is kept out
+  of `dist`, the image and every import in `src/` by `test/testOnlyGuard.test.ts`.
+- The walk is the list in `test/journey/steps/index.ts`. To add a screen, add
+  one `JourneyStep` there: how to reach the screen, and the placeholder text it
+  must show. A step whose screen lacks that text fails the walk and is saved as
+  `<position>-<id>-FAILED.png`.

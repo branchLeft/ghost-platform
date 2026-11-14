@@ -26,16 +26,20 @@ const PUBLISHERS = {
   'registry-push.yml': 'ghcr.io/branchleft/ghost-tenant',
   'portal-apps-image.yml': 'ghcr.io/branchleft/portal-apps',
   'demo-edge-image.yml': 'ghcr.io/branchleft/demo-edge',
+  'demo-gate-image.yml': 'ghcr.io/branchleft/demo-gate',
   'mail-collector-image.yml': 'ghcr.io/branchleft/mail-collector',
   'drain-sidecar-image.yml': 'ghcr.io/branchleft/drain-sidecar',
   'recovery-image.yml': 'ghcr.io/branchleft/db-recovery',
+  'storage-gateway-image.yml': 'ghcr.io/branchleft/priv/storage-gateway',
+  'percona-image.yml': 'ghcr.io/branchleft/percona-server',
+  'mysqld-exporter-image.yml': 'ghcr.io/branchleft/mysqld-exporter',
+  'mailgun-shim-image.yml': 'ghcr.io/branchleft/mailgun-shim',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
 // and is in neither list fails the discovery test below.
 const NOT_COVERED = {
   'image-mirror.yml': 'copies third-party images by digest; the mirror has its own change',
-  'mailgun-shim-image.yml': 'its attest step comes from an open change; the scan joins it there',
 };
 
 // The shapes of a step that sends an image to a registry.
@@ -353,7 +357,7 @@ test('every workflow that pushes an image is covered here or named with a reason
 });
 
 test('the build-only image workflows push nothing, so they need no scan', () => {
-  for (const file of ['demo-gate-image.yml', 'odask-image.yml']) {
+  for (const file of ['odask-image.yml']) {
     const text = uncommented(read(file));
     assert.doesNotMatch(text, PUSHES, `${file} pushes an image`);
     assert.doesNotMatch(text, /packages:\s*write|id-token/, `${file} holds a publish credential`);

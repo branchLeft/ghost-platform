@@ -1,0 +1,252 @@
+name: Rollback proof
+
+# Upgrades are forward-only: the way back is the pre-upgrade backup. The proof
+# tries the old Ghost image on data the new image has already migrated; a way
+# back that is red is a warning that names restore-from-backup, not a refusal.
+# A new image that does not boot or take a write, and lost data, are still refused.
+# rollback-proof/README.md has the checks and the exit codes.
+#
+# Three shapes of run:
+#   - `proof`: the unit tests and the sabotage proof. No Docker.
+#   - `live`: the proof for real, on a MySQL pinned to db1's digest. Two pairs,
+#     because a warning only means something next to a clean acceptance: an
+#     image on its own migrated data must be accepted clean, and the real first
+#     bump range (an old image that writes a column a later release renames)
+#     must be accepted with a warning that names that column.
+#   - `candidate`: called by a workflow that has a release candidate. It runs
+#     the same proof on the pair it is given and fails unless it is accepted,
+#     with or without warnings.
+#
+# No secret, no registry login, no write permission: public images, throwaway
+# containers, a runner that is gone at the end.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - rollback-proof/**
+      - test-support/image-harness.mjs
+      - services/export-bundler/test/image/ghost-admin.mjs
+      - services/export-bundler/test/image/ghost-container.mjs
+      - .github/workflows/rollback-proof-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - rollback-proof/**
+      - test-support/image-harness.mjs
+      - services/export-bundler/test/image/ghost-admin.mjs
+      - services/export-bundler/test/image/ghost-container.mjs
+      - .github/workflows/rollback-proof-ci.yml
+  workflow_call:
+    inputs:
+      old-image:
+        description: The image the tenants run now, by digest.
+        required: true
+        type: string
+      new-image:
+        description: The release candidate, by digest.
+        required: true
+        type: string
+      profile:
+        description: platform for the tenant image, stock for an upstream Ghost image.
+        required: false
+        default: platform
+        type: string
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  proof:
+    name: Rollback proof unit tests and sabotage
+    if: ${{ github.event_name != 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Unit tests
+        run: node --test rollback-proof/*.test.mjs
+
+      # Each control is broken in a scratch copy and the tests must go red;
+      # the un-broken copy must be green first.
+      - name: Sabotage proof
+        run: node rollback-proof/prove-sabotage.mjs
+
+  live:
+    name: Live proof, ${{ matrix.case }}
+    if: ${{ github.event_name != 'workflow_call' }}
+    needs: proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The image the Dockerfile pins, on its own migrated data: nothing
+          # moved, so it is accepted. Moves with the Dockerfile's pin.
+          - case: accepted
+            old: ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
+            new: ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
+            expect: '0'
+            outcome: accepted
+          # The first real bump range: 6.58 renames a column the 6.55 code writes.
+          # Accepted with a warning: the way back is the backup. A fixed
+          # historic pair: it does not follow the Dockerfile, because an old
+          # image from 6.58 on no longer writes the renamed column.
+          - case: warned
+            old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
+            new: ghost:6.69.0-alpine@sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5
+            expect: '0'
+            outcome: warned
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      # The one digest db/RUNBOOK-db.md pins, so the proof migrates on the
+      # database engine the tenants run.
+      - name: Read the pinned mysql digest
+        id: mysql
+        run: |
+          pins="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/RUNBOOK-db.md must pin exactly one mysql:8.0 digest, found: $pins" >&2
+            exit 1
+          fi
+          echo "image=$pins" >> "$GITHUB_OUTPUT"
+
+      # Upstream Ghost images, so the stock profile: they have no scanning
+      # storage adapter. The exit code is the verdict: 0 accepted (clean or with
+      # a warning), 2 refused, 1 an error. The case states the exit code and the
+      # outcome it must have, so an error and a warning taken for a clean
+      # acceptance both fail here.
+      - name: Run the proof
+        env:
+          OLD_IMAGE: ${{ matrix.old }}
+          NEW_IMAGE: ${{ matrix.new }}
+          MYSQL_IMAGE: ${{ steps.mysql.outputs.image }}
+          EXPECT: ${{ matrix.expect }}
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          rc=0
+          node rollback-proof/cli.mjs run --profile stock --old "$OLD_IMAGE" --new "$NEW_IMAGE" --mysql "$MYSQL_IMAGE" --out "$REPORT" || rc=$?
+          echo "exit code: $rc (expected $EXPECT)"
+          test "$rc" = "$EXPECT"
+
+      - name: Verify the record the way the gate does
+        env:
+          OLD_IMAGE: ${{ matrix.old }}
+          NEW_IMAGE: ${{ matrix.new }}
+          EXPECT: ${{ matrix.expect }}
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          rc=0
+          node rollback-proof/cli.mjs verify --report "$REPORT" --old "$OLD_IMAGE" --new "$NEW_IMAGE" || rc=$?
+          echo "exit code: $rc (expected $EXPECT)"
+          test "$rc" = "$EXPECT"
+
+      - name: The record states the outcome the case expects
+        env:
+          OUTCOME: ${{ matrix.outcome }}
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          jq -e --arg outcome "$OUTCOME" '.outcome == $outcome' "$REPORT"
+
+      # A warning is only the right warning if it names the measured break and
+      # the rollback route.
+      - name: The warning names the renamed column and the restore route
+        if: ${{ matrix.case == 'warned' }}
+        env:
+          REPORT: ${{ runner.temp }}/rollback-report-warned.json
+        run: |
+          jq -e '.findings | map(select(.kind == "missing-column" and .table == "email_batches" and .column == "provider_id")) | length == 1' "$REPORT"
+          jq -e '.outcome == "warned" and .rollbackRoute == "restore-from-backup" and (.warnings | map(select(.check == "schema-contract" and .route == "restore-from-backup")) | length == 1)' "$REPORT"
+
+      - name: Record how long the proof took
+        if: ${{ always() }}
+        env:
+          REPORT: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+        run: |
+          if [ -f "$REPORT" ]; then
+            jq -r '"timings (ms): " + (.timings | tostring)' "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the record
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rollback-report-${{ matrix.case }}
+          path: ${{ runner.temp }}/rollback-report-${{ matrix.case }}.json
+          if-no-files-found: ignore
+
+  candidate:
+    name: Rollback proof for the release candidate
+    if: ${{ github.event_name == 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Read the pinned mysql digest
+        id: mysql
+        run: |
+          pins="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then
+            echo "db/RUNBOOK-db.md must pin exactly one mysql:8.0 digest, found: $pins" >&2
+            exit 1
+          fi
+          echo "image=$pins" >> "$GITHUB_OUTPUT"
+
+      # Any non-zero exit refuses the candidate: 2 is a refusal, 1 an error.
+      - name: Run the proof
+        env:
+          OLD_IMAGE: ${{ inputs.old-image }}
+          NEW_IMAGE: ${{ inputs.new-image }}
+          PROFILE: ${{ inputs.profile }}
+          MYSQL_IMAGE: ${{ steps.mysql.outputs.image }}
+          REPORT: ${{ runner.temp }}/rollback-report-candidate.json
+        run: node rollback-proof/cli.mjs run --profile "$PROFILE" --old "$OLD_IMAGE" --new "$NEW_IMAGE" --mysql "$MYSQL_IMAGE" --out "$REPORT"
+
+      - name: Verify the record the way the gate does
+        env:
+          OLD_IMAGE: ${{ inputs.old-image }}
+          NEW_IMAGE: ${{ inputs.new-image }}
+          REPORT: ${{ runner.temp }}/rollback-report-candidate.json
+        run: node rollback-proof/cli.mjs verify --report "$REPORT" --old "$OLD_IMAGE" --new "$NEW_IMAGE"
+
+      - name: Upload the record
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rollback-report-candidate
+          path: ${{ runner.temp }}/rollback-report-candidate.json
+          if-no-files-found: ignore

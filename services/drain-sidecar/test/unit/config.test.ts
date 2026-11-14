@@ -34,6 +34,19 @@ describe('loadConfig', () => {
     expect(config.ghostProbeTimeoutMs).toBe(500);
   });
 
+  it('leaves the stale-namespace exit off unless EXIT_AFTER_GHOST_UNREACHABLE_MS is a positive number', () => {
+    const env = { DRAIN_FLAG_PATH: '/f' };
+    expect(loadConfig(env).exitAfterGhostUnreachableMs).toBeNull();
+    expect(loadConfig({ ...env, EXIT_AFTER_GHOST_UNREACHABLE_MS: '15000' })).toMatchObject({
+      exitAfterGhostUnreachableMs: 15000,
+    });
+    for (const bad of ['0', '-5', 'soon', '']) {
+      expect(
+        loadConfig({ ...env, EXIT_AFTER_GHOST_UNREACHABLE_MS: bad }).exitAfterGhostUnreachableMs
+      ).toBeNull();
+    }
+  });
+
   it('falls back on a non-numeric PORT rather than propagating NaN', () => {
     const config = loadConfig({
       DRAIN_FLAG_PATH: '/var/run/branchleft/drain',

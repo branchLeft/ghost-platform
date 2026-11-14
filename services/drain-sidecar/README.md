@@ -143,6 +143,28 @@ on `GHOST_HEALTH_URL`'s own origin — the same loopback call `GET
 /healthz` already makes to the same Ghost, per this sidecar sharing
 Ghost's network namespace rather than reaching it any other way.
 
+## A Ghost that restarts under it
+
+The sidecar reaches Ghost only through the network namespace it joined at
+start (`docker run --network container:<ghost>`). When Docker restarts a
+crashed Ghost, Ghost gets a new namespace and the sidecar keeps the dead
+one: nothing listens at Ghost's address there, so the colour reads `503`
+until something restarts the sidecar.
+
+With `EXIT_AFTER_GHOST_UNREACHABLE_MS` set to a positive number, the sidecar
+probes Ghost's address once a second and exits with status 1 once nothing
+has answered for that long. Any HTTP answer, an error status included,
+counts as an answer and restarts the window; only a refused connection or a
+timeout does not. Started with a restart policy that restarts a non-zero
+exit (the demo host uses `--restart on-failure`), Docker then starts the
+container again and it joins Ghost's current namespace. Unset, or not a
+positive number, the sidecar never exits on its own account.
+
+This is not a health verdict: a Ghost that is down for good keeps the
+sidecar restarting, which is harmless because the colour is `503` either
+way. `scripts/test-drain-sidecar-crash-restart.py` proves the recovery
+against a real Ghost, with a control sidecar that does not recover.
+
 ## Listening on a unix socket
 
 With `SOCKET_PATH` set, the service listens on that unix socket and opens no

@@ -92,13 +92,23 @@ COPY services/broker/test/live/fixtures/systemd-boot/make-verify-key.mjs service
 # `{"slots": []}` shape found by a 500, and the non-empty seed added after a
 # review round found `/reset` on an empty slots file never exercises the
 # real write-rename against the ProtectSystem=strict mount at all).
-RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots \
+RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots /var/lib/docker/volumes \
  && /opt/branchleft/broker/node/bin/node /opt/branchleft/broker/proof/make-verify-key.mjs /etc/branchleft/broker-verify-key.bin /opt/branchleft/broker/proof/signing-key.bin \
  && chown root:broker /etc/branchleft/broker-verify-key.bin \
  && chmod 0640 /etc/branchleft/broker-verify-key.bin \
  && printf '{"slots": [{"host": "proof-leased.demo.trypublicpress.co.uk", "slot": "0", "gate": {"kind": "passphrase", "argon2idHash": "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA"}}]}' > /var/lib/branchleft/broker-slots/slots.json \
  && chown root:root /var/lib/branchleft && chmod 0755 /var/lib/branchleft \
  && chown -R broker:broker /var/lib/branchleft/broker-slots
+
+# A tenant volume with content in it, laid out as Docker's local driver does
+# (`<volume root>/<name>/_data`): the data volume of slot 0, whose name the
+# wrapper derives from the slot (uid 30001 + 0). A plain file, a dotfile and a
+# nested directory with a file inside it, so a reset has real entries to unlink
+# and a subdirectory to remove, which is what a read-only volume root breaks.
+RUN mkdir -p /var/lib/docker/volumes/ghost-demo-30001-data/_data/nested/deeper \
+ && echo seeded > /var/lib/docker/volumes/ghost-demo-30001-data/_data/tenant.db \
+ && echo seeded > /var/lib/docker/volumes/ghost-demo-30001-data/_data/.hidden \
+ && echo seeded > /var/lib/docker/volumes/ghost-demo-30001-data/_data/nested/deeper/inner.txt
 
 COPY services/broker/systemd/broker.env.example /etc/branchleft/broker.env
 RUN chown root:root /etc/branchleft/broker.env && chmod 0600 /etc/branchleft/broker.env

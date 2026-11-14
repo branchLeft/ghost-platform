@@ -2,8 +2,8 @@
 # Applies PATCH to FILE inside DIR with no fuzz, then checks FILE against PIN
 # (a sha256sum line naming FILE). Fails (non-zero, message on stderr) when the
 # patch does not apply cleanly or the result is not exactly the file the pin
-# was taken from. The root Dockerfile is its only caller (for the Stripe-limit
-# overlay); the tests exercise it through the built image, not directly.
+# was taken from. The root Dockerfile runs it for every Ghost-core overlay
+# layer; the sso unit tests also run it directly, against the break-glass patch.
 # PATCH and PIN are paths; FILE is relative to DIR.
 set -eu
 

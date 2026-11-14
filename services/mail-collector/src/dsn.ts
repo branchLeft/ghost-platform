@@ -6,10 +6,16 @@
  * carry them is "no outcome", never a guess.
  * See ../README.md#outcomes-carried-back-to-the-spool.
  */
+import { normaliseRecipient } from './outcomeId.js';
 
 export interface ParsedDsn {
   /** The Message-ID of the original message, from the returned headers. */
   originalMessageId: string;
+  /**
+   * Every recipient address the report names for that message (Original- and
+   * Final-Recipient), lower-cased. The Message-ID's MAC must verify for one.
+   */
+  recipients: string[];
   action: string;
   status: string;
   diagnostic: string | null;
@@ -39,6 +45,12 @@ function unfold(block: string): Map<string, string> {
   return fields;
 }
 
+/** The address of a `type; address` recipient field, lower-cased, or null if it is not an rfc822 one. */
+function recipientAddress(field: string | undefined): string | null {
+  const match = field === undefined ? null : /^rfc822\s*;\s*(\S+)$/i.exec(field.trim());
+  return match ? normaliseRecipient(match[1]!) : null;
+}
+
 export function parseDsn(raw: string): ParsedDsn | null {
   const header =
     /^content-type:\s*message\/delivery-status[^\r\n]*\r?\n(?:[ \t][^\r\n]*\r?\n)*\r?\n/im.exec(
@@ -57,6 +69,7 @@ export function parseDsn(raw: string): ParsedDsn | null {
   let action: string | undefined;
   let status: string | undefined;
   let diagnostic: string | null = null;
+  const recipients: string[] = [];
   for (const group of statusPart.split(/\r?\n\r?\n/)) {
     const fields = unfold(group);
     const a = fields.get('action');
@@ -64,6 +77,12 @@ export function parseDsn(raw: string): ParsedDsn | null {
       action = a.toLowerCase().split(/\s/)[0];
       status = fields.get('status');
       diagnostic = fields.get('diagnostic-code') ?? null;
+      for (const name of ['original-recipient', 'final-recipient']) {
+        const address = recipientAddress(fields.get(name));
+        if (address !== null) {
+          recipients.push(address);
+        }
+      }
       break;
     }
   }
@@ -75,7 +94,7 @@ export function parseDsn(raw: string): ParsedDsn | null {
   if (!idMatch) {
     return null;
   }
-  return { originalMessageId: idMatch[1]!, action, status, diagnostic };
+  return { originalMessageId: idMatch[1]!, recipients, action, status, diagnostic };
 }
 
 /**

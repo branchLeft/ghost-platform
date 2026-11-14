@@ -102,6 +102,26 @@ describe('run (end to end, network and ntfy both faked)', () => {
     expect(await readFile(statePath, 'utf8')).toBe(before);
   });
 
+  it('the page for a new major carries the filing command for its tracked item, within one ntfy message', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const publishNtfy = vi.fn().mockResolvedValue(undefined);
+
+    await run({
+      statePath,
+      ntfy: { url: 'https://ntfy.example/topic' },
+      fetchReleases: async () => MAJOR_6_RELEASES,
+      publishNtfy,
+    });
+
+    const [, msg] = publishNtfy.mock.calls[0] as [unknown, { message: string }];
+    expect(msg.message).toContain('python3 .claude/hooks/board_write.py file');
+    expect(msg.message).toContain('--board 1');
+    expect(msg.message).toContain('--type platform-story');
+    // ntfy truncates a message over 4096 bytes into an attachment; the
+    // command must arrive whole in the page itself.
+    expect(Buffer.byteLength(msg.message, 'utf8')).toBeLessThan(4096);
+  });
+
   it('propagates a state read failure rather than silently notifying', async () => {
     const publishNtfy = vi.fn().mockResolvedValue(undefined);
     await expect(

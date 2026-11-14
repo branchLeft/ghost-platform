@@ -1,27 +1,27 @@
 --- a/settings.js
 +++ b/settings.js
-@@ -9,8 +9,12 @@
+@@ -8,8 +8,12 @@
  const urlUtils = require('../../shared/url-utils').default;
- const {WRITABLE_KEYS_ALLOWLIST} = require('../../shared/labs');
- const {getOrGenerateSiteUuid} = require('../services/settings/settings-utils');
+ const { WRITABLE_KEYS_ALLOWLIST } = require('../../shared/labs');
+ const { getOrGenerateSiteUuid } = require('../services/settings/settings-utils');
 +const config = require('../../shared/config');
  
 +const STRIPE_CONNECT_KEYS = ['stripe_secret_key', 'stripe_publishable_key', 'stripe_connect_secret_key', 'stripe_connect_publishable_key'];
 +
  const messages = {
-+    demoStripeConnectRefused: 'DEMO_STRIPE_CONNECT_REFUSED',
-     valueCannotBeBlank: 'Value in [settings.key] cannot be blank.',
-     unableToFindSetting: 'Unable to find setting to update: {key}',
-     notEnoughPermission: 'You do not have permission to perform this action'
-@@ -138,6 +142,11 @@
++  demoStripeConnectRefused: 'DEMO_STRIPE_CONNECT_REFUSED',
+   valueCannotBeBlank: 'Value in [settings.key] cannot be blank.',
+   unableToFindSetting: 'Unable to find setting to update: {key}',
+   notEnoughPermission: 'You do not have permission to perform this action',
+@@ -189,6 +193,11 @@
      async onValidate(model, attr, options) {
-         await ghostBookshelf.Model.prototype.onValidate.call(this, model, attr, options);
+       await ghostBookshelf.Model.prototype.onValidate.call(this, model, attr, options);
  
-+        // Host limit: no write may store a Stripe key while the limit is on. Clearing one stays allowed.
-+        if (STRIPE_CONNECT_KEYS.includes(model.get('key')) && model.get('value') && config.get('hostSettings:limits:limitStripeConnect:disabled')) {
-+            throw new errors.NoPermissionError({message: messages.demoStripeConnectRefused});
-+        }
++      // Host limit: no write may store a Stripe key while the limit is on. Clearing one stays allowed.
++      if (STRIPE_CONNECT_KEYS.includes(model.get('key')) && model.get('value') && config.get('hostSettings:limits:limitStripeConnect:disabled')) {
++        throw new errors.NoPermissionError({ message: messages.demoStripeConnectRefused });
++      }
 +
-         await Settings.validators.all(model, options);
+       await Settings.validators.all(model, options);
  
-         if (typeof Settings.validators[model.get('key')] === 'function') {
+       if (typeof Settings.validators[model.get('key')] === 'function') {

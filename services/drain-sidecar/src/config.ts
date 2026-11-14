@@ -14,6 +14,13 @@ export interface SidecarConfig {
    * told this process yet. See ../README.md#get-metrics--per-tenant-health-and-version.
    */
   intendedGhostVersion: string | null;
+  /**
+   * Exit non-zero once nothing has answered on Ghost's address for this long,
+   * so a restart policy re-joins Ghost's current network namespace. `null`
+   * (unset or not a positive number) never exits. See
+   * ../README.md#a-ghost-that-restarts-under-it.
+   */
+  exitAfterGhostUnreachableMs: number | null;
 }
 
 // Structurally identical to NodeJS.ProcessEnv, spelled out instead of named
@@ -39,6 +46,7 @@ export function loadConfig(env: SidecarEnv = process.env): SidecarConfig {
   const timeoutRaw = Number(env.GHOST_PROBE_TIMEOUT_MS);
   const ghostHealthUrl = env.GHOST_HEALTH_URL || 'http://127.0.0.1:2368/';
   const intendedGhostVersion = env.GHOST_INTENDED_VERSION?.trim() || null;
+  const exitAfterRaw = Number(env.EXIT_AFTER_GHOST_UNREACHABLE_MS);
 
   return {
     port: Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 8080,
@@ -53,5 +61,9 @@ export function loadConfig(env: SidecarEnv = process.env): SidecarConfig {
     ghostAdminSiteUrl:
       env.GHOST_ADMIN_SITE_URL || new URL('/ghost/api/admin/site/', ghostHealthUrl).toString(),
     intendedGhostVersion,
+    exitAfterGhostUnreachableMs:
+      env.EXIT_AFTER_GHOST_UNREACHABLE_MS && Number.isFinite(exitAfterRaw) && exitAfterRaw > 0
+        ? exitAfterRaw
+        : null,
   };
 }

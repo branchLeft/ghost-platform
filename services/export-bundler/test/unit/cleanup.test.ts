@@ -427,30 +427,53 @@ describe('dockerRemoveUntilGoneSync', () => {
       'rm -f tenant-export-1',
       inspect,
       'rm -f tenant-export-1',
-      inspect,
-      inspect,
+      ...Array.from({ length: 10 }, () => inspect),
     ]);
   });
 
-  it('stops at two absent reads in a row when the container never appeared', async () => {
+  it('stops only after ten absent reads in a row (about 1.8 s) when the container never appeared', async () => {
     const fake = await fakeDocker(0);
     dockerRemoveUntilGoneSync('tenant-export-1', fake.path, registryThatKilled(1));
-    expect(await lines(fake.log)).toEqual([
-      'rm -f tenant-export-1',
-      'inspect --type container tenant-export-1',
-      'inspect --type container tenant-export-1',
-    ]);
+    const all = await lines(fake.log);
+    expect(all[0]).toBe('rm -f tenant-export-1');
+    expect(all.slice(1)).toEqual(
+      Array.from({ length: 10 }, () => 'inspect --type container tenant-export-1')
+    );
   });
 
-  it('is bounded: a container that never goes is read ten times, then given up on, without throwing', async () => {
+  it('removes a container that only appears after a daemon slower than 400 ms sends the create', async () => {
+    // Absent for the first five reads (1 s of 200 ms polls), then it shows up.
+    const log = join(dir, 'late.log');
+    const count = join(dir, 'late-count');
+    const path = join(dir, 'late-docker.sh');
+    await writeFile(
+      path,
+      [
+        '#!/bin/sh',
+        `echo "$@" >> '${log}'`,
+        'if [ "$1" = inspect ]; then',
+        `  n=$(cat '${count}' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '${count}'`,
+        '  if [ $n -eq 6 ]; then exit 0; fi',
+        '  exit 1',
+        'fi',
+        'exit 0',
+      ].join('\n') + '\n'
+    );
+    await chmod(path, 0o755);
+    dockerRemoveUntilGoneSync('tenant-export-1', path, registryThatKilled(1));
+    const all = await lines(log);
+    expect(all.filter((l) => l.startsWith('rm -f'))).toHaveLength(2);
+  });
+
+  it('is bounded: a container that never goes is read twenty times, then given up on, without throwing', async () => {
     const fake = await fakeDocker(1000);
     const started = Date.now();
     expect(() =>
       dockerRemoveUntilGoneSync('tenant-export-1', fake.path, registryThatKilled(1))
     ).not.toThrow();
     const all = await lines(fake.log);
-    expect(all.filter((l) => l.startsWith('inspect'))).toHaveLength(10);
-    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(all.filter((l) => l.startsWith('inspect'))).toHaveLength(20);
+    expect(Date.now() - started).toBeLessThan(15_000);
   });
 
   it('passes the flag it is given to rm (-fv for the scratch database volume)', async () => {

@@ -78,6 +78,7 @@ describe('RESERVED_STACK_NAMES against the shared-infra stack register', () => {
     'nextcloud1',
     'website',
     'db',
+    'publicpress-website',
   ];
 
   // The register also holds `mail-spool`, which shared-infra does not run as

@@ -5,13 +5,13 @@ and for taking it off again. `provision-tenant.yml` does the part an unattended
 run correctly can; everything else here is operator-run, and each of those steps
 is operator-run for a stated reason rather than because nobody automated it yet.
 
-**Provisioning is closed until this runbook has been proven end to end on a real
-host.** `provision-tenant.yml` refuses unless the
+`provision-tenant.yml` refuses unless the
 `TENANT_PROVISIONING_FLOW_HETZNERISED` repository variable on
 `branchLeft/ghost-platform` is `true`. **Step 0 opens it, immediately before the
-run, and closes it again if the run fails** — until the flow is proven, only for
-a disposable subject. What keeps a failed first run affordable is that the
-subject is disposable, not that the gate is shut while you work.
+run, and closes it again if the run fails.**
+`provisioning-gate-watch.yml` goes red when the variable is `true` and no
+provisioning run is active or recent, so a close that is skipped is reported
+within the hour.
 
 ## Addresses this runbook uses
 
@@ -992,7 +992,7 @@ ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" \
 #    `docker compose` invocation re-parses and re-interpolates the whole
 #    file itself and fails on the first missing secret before it ever
 #    reaches the Docker daemon -- the same failure RUNBOOK-nextcloud.md
-#    documents for this unit's read path. Plain `docker` with label filters
+#    (in branchLeft/shared-infra) documents for this unit's read path. Plain `docker` with label filters
 #    never re-reads the Compose file at all, so it works regardless.
 ssh -i ~/.ssh/id_ed25519_hetzner root@"$APP1_IPV4" '
   docker ps -q --filter label=com.docker.compose.project=<slug> | xargs -r docker stop

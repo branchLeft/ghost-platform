@@ -46,14 +46,12 @@ different class. To re-pin:
    the class, its `save(file, targetDir)` takes `file.path` as the extracted
    directory, and it has no write method besides `save` and the inherited
    `saveRaw`. If another write method appears, the gate must cover it. Also
-   read `services/themes/storage.js` `setFromZip`: the shim assumes the
-   existing theme is moved aside with `rename(<name>, <name>_<24 hex>)` before
-   `save()` and that nothing else moves a theme. If that order or the backup
-   name changes, the held move no longer matches and a refusal is unsafe
-   again; the image test that re-uploads an installed theme name repeatedly
-   is what catches it. The put-back also assumes the catch and finally of
-   `setFromZip` behave as read at the pinned version (the restore only renames
-   when the name is absent, and is not awaited before the backup is deleted);
+   read `services/themes/storage.js` `setFromZip`: the shim assumes Ghost
+   calls `save()` with the extracted tree under a staging name BEFORE it moves
+   any installed theme, then moves the installed theme aside and the staging
+   copy into place, awaiting its own restore. If a move can come before the
+   `save()`, a refusal inside `save()` is unsafe again; the image test that
+   re-uploads an installed theme name repeatedly is what catches it.
    `test/unit/theme-gate.test.mjs` replays that order from a hand reading, so
    re-read the replay against the new file too.
 3. Write `<sha256 of /tmp/theme-storage.js>  theme-storage.js` into

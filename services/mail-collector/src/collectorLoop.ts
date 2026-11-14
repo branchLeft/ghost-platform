@@ -1,18 +1,82 @@
-import type { SubmittedTracker } from './dedupe.js';
-import type { DrainClient } from './drainClient.js';
+import { createSubmittedTracker, type SubmittedTracker } from './dedupe.js';
+import type { DrainClient, WireMessage } from './drainClient.js';
 import type { DeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
+import type { DroppedOutcomes } from './droppedOutcomes.js';
 import type { HealthState } from './health.js';
+import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
+import { checkHeaderFrom } from './headerFromScope.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
+import {
+  QUOTA_UNKNOWN,
+  failureKindOf,
+  mailClassOf,
+  resolveSendingTarget,
+  type SendingContext,
+  type SendingDecision,
+  type SweegoQuota,
+} from './sendingTarget.js';
+import type { FailureCounter } from './submissionFailures.js';
+import { failureReasonOf } from './sweegoFailure.js';
+import type { SweegoSuspensionRecorder } from './sweegoSuspension.js';
+import { DEFAULT_PIN_TTL_MS, type SweegoUseCounter } from './sweegoUsage.js';
 import type { Throttle } from './throttle.js';
 
 export interface CollectorLoopDeps {
   store: TargetStore;
   drainClient: DrainClient;
+  /** The mx1 delivery client: the only target delivered to when `sweegoDeliveryClient` is unset. */
   deliveryClient: DeliveryClient;
+  /** Unset until a Sweego client exists: a Sweego route is then served by mx1, exactly as before the route existed. */
+  sweegoDeliveryClient?: DeliveryClient;
+  /**
+   * Sweego's own throttle, separate from `throttle` (mx1's). A Sweego client
+   * without one is read as not configured: nothing is sent to Sweego unthrottled.
+   */
+  sweegoThrottle?: Throttle;
+  /**
+   * Unset means unknown, which the resolver reads as "reached": nothing goes
+   * to Sweego. A quota that also counts (`begin`) is told of each Sweego
+   * attempt and whether it was accepted; `createSweegoUsage` is the one that does.
+   */
+  sweegoQuota?: SweegoQuota & Partial<SweegoUseCounter>;
+  /** Told of each Sweego refusal and acceptance, so a run of refusals can latch Sweego off. Unset, nothing latches. */
+  sweegoSuspension?: SweegoSuspensionRecorder;
+  /** Ids whose submission has reached mx1; such a message is never offered to Sweego. Memory-only if unset. */
+  mx1Pins?: SubmittedTracker;
+  /** Ids whose first attempt was at Sweego; a retry stays on Sweego until the login fallback reaches mx1. Memory-only if unset. */
+  sweegoPins?: SubmittedTracker;
+  /**
+   * Ids whose attempt at Sweego ended ambiguous (it may have been taken). Such
+   * a message never falls back to mx1 on a later definite failure: the first
+   * attempt may have been delivered. Memory-only if unset.
+   */
+  sweegoAmbiguous?: SubmittedTracker;
+  /**
+   * Tells the spool a dropped recipient failed for good, once the drop is acked.
+   * Unset, the spool is not told and shows the message as accepted.
+   */
+  droppedOutcomes?: DroppedOutcomes;
+  /**
+   * Counts failures by reason class for the signals that read them: Sweego
+   * failures, and the header From refusals on either target. Counts nothing if unset.
+   */
+  sweegoFailures?: FailureCounter;
+  /**
+   * Checks each message's header From against its host's sending domain before
+   * any target sees it, on both targets. `server.ts` always sets it; it is
+   * optional only so the test doubles that build deps by hand need not.
+   * See ../README.md#header-from-scope.
+   */
+  enforceHeaderFrom?: boolean;
+  /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
   throttle: Throttle;
+  /** Optional login lane: its own bucket, so sign-in mail never spends bulk tokens. */
+  loginThrottle?: Throttle;
+  /** Optional: a receiving-side deferral on a bulk submission halves the bulk rate for a hold period. */
+  bulkCap?: BulkCap;
   dedupe: SubmittedTracker;
   health: HealthState;
   /**
@@ -36,6 +100,9 @@ export interface CollectorRuntime {
 }
 
 const DEFAULT_DEDUPE_SWEEP_MS = 5 * 60 * 1000;
+// The shim re-offers an unacked row every SHIM_DRAIN_LEASE_SECONDS (30 s by default)
+// with no attempt cap and no maximum age, so the pin TTL alone bounds a held
+// message. It outlasts the longest cap hold: see ../README.md#dedupe-createsubmittedtracker.
 
 /**
  * Reconciles one drain-and-deliver loop per descriptor-named host on every
@@ -52,9 +119,261 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
+  const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
+  const quota = deps.sweegoQuota ?? QUOTA_UNKNOWN;
+  const servedByMx1Logged = new Set<string>();
+  // Pinned messages the last offer left held at the account cap. Their pins are
+  // never swept: a swept pin would let the message be decided afresh.
+  const heldAtCapIds = new Set<string>();
+  const isHeldAtCap = (id: string): boolean => heldAtCapIds.has(id);
+
+  /**
+   * Submits one message through the target the resolver names. `submitted`:
+   * a target accepted it. `dropped`: Sweego refused the recipient for good, so
+   * the message is acked and counted, never retried. `refused`: its header From
+   * is not in its host's scope, so it is acked and counted the same way but
+   * never reported to the spool as a bounce (that would suppress an innocent
+   * recipient). `held`: left unacked for
+   * the shim to re-offer, and the rest of the batch carries on (Sweego said
+   * no, mx1 was not tried). `stop`: mx1 failed, so the rest of the batch is
+   * left too, as it always was. Sweego mail spends Sweego's own throttle,
+   * never mx1's, and never touches the mx1 health counter; mx1 mail does
+   * exactly what it did before a second target existed.
+   */
+  async function submit(
+    message: WireMessage,
+    target: DrainTarget
+  ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop'> {
+    // Asked afresh on every offer: only a message the latest offer left held at
+    // the cap is protected from the pin sweep.
+    heldAtCapIds.delete(message.id);
+    if (deps.enforceHeaderFrom) {
+      const verdict = checkHeaderFrom(message, target.sendingDomain);
+      if (!verdict.ok) {
+        deps.sweegoFailures?.record(verdict.reason);
+        // The line names a reason and a message id only: no host, address,
+        // subject or domain.
+        deps.log.warn('header_from_refused', { message: message.id, reason: verdict.reason });
+        if (verdict.reason === 'from-scope-unknown') {
+          // Nothing is wrong with the message: its host has no sending domain
+          // to check against yet. Left unacked, the spool re-offers it.
+          return 'held';
+        }
+        // Permanent, and the same ending as a dropped recipient: marked so a
+        // lost ack is only re-acked on the next offer, never sent or retried.
+        deps.dedupe.markSubmitted(message.id, true);
+        return 'refused';
+      }
+    }
+    const lane = laneOf(message);
+    const sweego = deps.sweegoDeliveryClient;
+    const sweegoThrottle = deps.sweegoThrottle;
+    const sweegoReady = sweego !== undefined && sweegoThrottle !== undefined;
+    const reachedMx1 = mx1Pins.has(message.id);
+    // A message whose first attempt was at Sweego stays there: the route and
+    // the quota may have changed since, but an earlier attempt may have been
+    // taken, so a retry elsewhere could send it twice.
+    const pinnedToSweego = !reachedMx1 && sweegoPins.has(message.id);
+    // A pin file that could not be read has forgotten which targets saw which
+    // messages. A message offered before (drainCount above 1) and not found in
+    // any pin may have been taken by either target, so it is held, never sent
+    // on: a held message waits, a released one can be sent twice.
+    const pinStateLost = mx1Pins.stateLost || sweegoPins.stateLost || sweegoAmbiguous.stateLost;
+    const known = reachedMx1 || pinnedToSweego || sweegoAmbiguous.has(message.id);
+    if (pinStateLost && target.route === 'sweego' && message.drainCount > 1 && !known) {
+      deps.log.warn('pin_state_lost_held', { target: target.id, message: message.id });
+      return 'held';
+    }
+    if (pinnedToSweego && !sweegoReady) {
+      deps.log.warn('sweego_pinned_unavailable', { target: target.id, message: message.id });
+      return 'held';
+    }
+    const mailClass = mailClassOf(message.emailId);
+    // Asked afresh each time: the quota can change while a message waits on a
+    // throttle. A tenant's latch moves its sign-in links and its newsletters;
+    // the newsletter threshold moves newsletters only; suspension and the
+    // account cap are the plan's ceiling and hold for every class. A pinned
+    // message stays on Sweego whatever the tenant's allowance or the newsletter
+    // threshold now says, and is counted; the account cap and suspension hold
+    // for it too (see `resolveNow`).
+    // A pinned message that was already counted (an earlier attempt ended
+    // ambiguous, or its reserved place was recounted after a crash) holds its
+    // place in the cap: a retry takes no second one, so the cap does not hold it.
+    const holdsPlace = (): boolean =>
+      pinnedToSweego && deps.sweegoQuota?.holdsPlace?.(message.id) === true;
+    const contextNow = (): SendingContext => ({
+      mailClass,
+      demo: target.demo === true,
+      sweegoConfigured: sweegoReady,
+      allowanceReached: pinnedToSweego ? false : quota.allowanceReached(target.id),
+      newsletterThresholdReached: pinnedToSweego
+        ? false
+        : quota.newsletterThresholdReached?.() === true,
+      suspended: quota.suspended?.() === true,
+      accountCapReached: holdsPlace() ? false : quota.accountCapReached(),
+      reachedMx1,
+    });
+    const route = pinnedToSweego ? 'sweego' : target.route;
+    // A pinned message cannot move to mx1 (its first attempt may have been
+    // taken) and must not go above the cap or to a suspended relay, so at the
+    // cap or under suspension it waits. Undefined means exactly that.
+    let heldEvent = 'sweego_pinned_held_at_cap';
+    const resolveNow = (): SendingDecision | undefined => {
+      const context = contextNow();
+      if (pinnedToSweego && (context.accountCapReached || context.suspended === true)) {
+        heldEvent =
+          context.suspended === true ? 'sweego_pinned_held_suspended' : 'sweego_pinned_held_at_cap';
+        return undefined;
+      }
+      return resolveSendingTarget(route, context);
+    };
+    const heldAtCap = (): 'held' => {
+      heldAtCapIds.add(message.id);
+      deps.log.warn(heldEvent, { target: target.id, message: message.id });
+      return 'held';
+    };
+    let decision = resolveNow();
+    if (decision === undefined) {
+      return heldAtCap();
+    }
+    if (decision === 'sweego') {
+      if (!sweegoReady) {
+        // Not reachable while the resolver reads `sweegoConfigured`; a message
+        // is never marked submitted without a client having taken it.
+        deps.log.warn('sweego_client_missing', { target: target.id, message: message.id });
+        return 'held';
+      }
+      await sweegoThrottle.waitForToken();
+      // The wait can be long, and other tenants can have used the plan in the
+      // meantime: ask again, and begin the attempt in the same tick.
+      decision = resolveNow();
+      if (decision === undefined) {
+        return heldAtCap();
+      }
+    }
+    if (decision === 'sweego' && sweegoReady) {
+      // The place is reserved, and written down, before the pin and before the
+      // attempt: a crash after this point leaves it counted. Refused, nothing
+      // was sent and nothing is pinned, so the message is held and offered again.
+      const counter = deps.sweegoQuota;
+      const slot = counter?.begin?.(target.id, message.id);
+      if (slot === undefined && counter?.begin !== undefined) {
+        deps.log.warn('sweego_reservation_failed', { target: target.id, message: message.id });
+        return 'held';
+      }
+      // Before the attempt, not after the accept: an attempt that times out
+      // may still have been taken.
+      sweegoPins.markSubmitted(message.id);
+      let accepted = false;
+      try {
+        await sweego.deliver(message, target.id);
+        accepted = true;
+      } catch (error) {
+        const kind = failureKindOf(error);
+        // An attempt that may have been taken is counted, once per message; any
+        // other end (a definite refusal, a bad address) used nothing.
+        if (kind === 'ambiguous') {
+          slot?.ambiguous();
+        } else {
+          slot?.settle(false);
+        }
+        const reason = failureReasonOf(error);
+        deps.sweegoFailures?.record(reason);
+        deps.sweegoSuspension?.recordRefusal(reason);
+        deps.log.warn('sweego_submission_failed', {
+          target: target.id,
+          message: message.id,
+          kind,
+          reason,
+          error: (error as Error).message,
+        });
+        if (kind === 'recipient-rejected') {
+          // Terminal: a bad address is bad everywhere. Marked so a lost ack
+          // is only re-acked on the next offer, never sent or retried.
+          deps.dedupe.markSubmitted(message.id, true);
+          deps.log.warn('recipient_rejected_dropped', { target: target.id, message: message.id });
+          return 'dropped';
+        }
+        // An attempt that may have been taken is remembered, and a later definite
+        // failure is then read as ambiguous too: falling back to mx1 would send
+        // a second copy of what the first attempt may have delivered.
+        if (kind === 'ambiguous') {
+          sweegoAmbiguous.markSubmitted(message.id);
+        }
+        decision = resolveSendingTarget('sweego', {
+          ...contextNow(),
+          failed: {
+            target: 'sweego',
+            kind: sweegoAmbiguous.has(message.id) ? 'ambiguous' : kind,
+          },
+        });
+      }
+      if (accepted) {
+        // Without this a lost ack re-sends the message to Sweego. Marked
+        // before the count, so a crash between the two undercounts by one
+        // rather than sending the message twice.
+        deps.dedupe.markSubmitted(message.id, true);
+        slot?.settle(true);
+        deps.sweegoSuspension?.recordAcceptance();
+        deps.log.info('submitted', { target: target.id, message: message.id, via: 'sweego' });
+        return 'submitted';
+      }
+    }
+    if (decision === 'mx1' && target.route === 'sweego' && !servedByMx1Logged.has(target.id)) {
+      servedByMx1Logged.add(target.id);
+      deps.log.warn('sweego_route_served_by_mx1', { target: target.id });
+    }
+    if (decision !== 'mx1') {
+      // Left unacked: the shim re-offers it and the resolver is asked again.
+      return 'held';
+    }
+    await throttleFor(lane).waitForToken();
+    mx1Pins.markSubmitted(message.id);
+    try {
+      await deps.deliveryClient.deliver(message, target.id, { demo: target.demo === true });
+    } catch (error) {
+      deps.health.recordFailure();
+      if (lane === 'bulk' && deps.bulkCap && isBulkDeferral(error)) {
+        deps.bulkCap.recordDeferral();
+        // The halved rate must not meet a full bucket: empty it, so the lower
+        // rate starts from nothing and no burst follows the deferral. Only
+        // this mx1 branch reaches the cap; the Sweego path never does.
+        throttleFor('bulk').empty();
+        deps.log.warn('bulk_deferred', { target: target.id, message: message.id });
+      }
+      deps.log.warn('submission_failed', {
+        target: target.id,
+        message: message.id,
+        error: (error as Error).message,
+      });
+      return 'stop';
+    }
+    deps.health.recordSuccess();
+    // Awaiting its ack: a batch at a low ramp rate can outlast the TTL, and
+    // the id must not be swept before the shim has taken it.
+    deps.dedupe.markSubmitted(message.id, true);
+    // "submitted", not "delivered" -- see dedupe.ts's own doc comment (LLD-6
+    // M5): this only means the target's SMTP front accepted the message,
+    // never that it confirmed delivery to the recipient.
+    deps.log.info('submitted', { target: target.id, message: message.id });
+    return 'submitted';
+  }
 
   function findTarget(id: string): DrainTarget | undefined {
     return deps.store.targets.find((t) => t.id === id);
+  }
+
+  function throttleFor(lane: Lane): Throttle {
+    return lane === 'login' ? (deps.loginThrottle ?? deps.throttle) : deps.throttle;
+  }
+
+  function inLaneOrder<T extends { emailId: string | null }>(batch: readonly T[]): T[] {
+    return [
+      ...batch.filter((m) => laneOf(m) === 'login'),
+      ...batch.filter((m) => laneOf(m) === 'bulk'),
+    ];
   }
 
   function reconcile(): void {
@@ -117,6 +436,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       // changed, so paying for it once per target per poll costs nothing
       // on the common path.
       deps.throttle.reload();
+      deps.sweegoThrottle?.reload();
 
       let messages;
       try {
@@ -137,59 +457,59 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         continue;
       }
       if (messages.length === 0) {
+        await deps.droppedOutcomes?.flush(target);
         deps.heartbeat?.onCycleComplete(initialTarget.id);
         await sleep(deps.emptyPollBackoffMs);
         continue;
       }
 
       const acks: Array<{ id: string; drainCount: number }> = [];
-      for (const message of messages) {
+      // Login mail first, so a batch that mixes it with a bulk backlog never
+      // makes sign-in mail wait for bulk tokens. Each lane spends its own bucket.
+      for (const message of inLaneOrder(messages)) {
         if (!deps.dedupe.has(message.id)) {
-          await deps.throttle.waitForToken();
-          try {
-            await deps.deliveryClient.deliver(message, initialTarget.id);
-          } catch (error) {
-            deps.health.recordFailure();
-            deps.log.warn('submission_failed', {
-              target: initialTarget.id,
-              message: message.id,
-              error: (error as Error).message,
-            });
+          const result = await submit(message, target);
+          if (result === 'stop') {
             // Leave this message and the rest of the batch unacked -- the
             // shim's lease lapses and re-offers them; nothing here has
             // been marked submitted, so a retry (here or on another
             // collector) still runs deliver() exactly once per id.
             break;
           }
-          deps.health.recordSuccess();
-          deps.dedupe.markSubmitted(message.id);
-          // "submitted", not "delivered" -- see dedupe.ts's own doc
-          // comment (LLD-6 M5): this only means mx1's SMTP front accepted
-          // the message, never that it confirmed delivery to the
-          // recipient.
-          deps.log.info('submitted', { target: initialTarget.id, message: message.id });
+          if (result === 'held') {
+            continue;
+          }
+          if (result === 'dropped') {
+            deps.droppedOutcomes?.dropped(target.id, message.id, message.drainCount);
+          }
         } else {
           deps.log.info('resubmission_skipped', {
             target: initialTarget.id,
             message: message.id,
           });
+          deps.droppedOutcomes?.offered(message.id, message.drainCount);
         }
         acks.push({ id: message.id, drainCount: message.drainCount });
       }
 
       if (acks.length > 0) {
         try {
-          await deps.drainClient.ack(target, acks);
+          const result = await deps.drainClient.ack(target, acks);
+          deps.dedupe.markAcked([...result.acked, ...result.alreadyHandled]);
+          deps.droppedOutcomes?.acked(result);
         } catch (error) {
           deps.log.warn('ack_failed', {
             target: initialTarget.id,
             error: (error as Error).message,
           });
           // The ack is lost, not the submission: dedupe already holds
-          // every id acks contains, so the next re-offer (once the lease
-          // lapses) is recognised and only re-acked, never resubmitted.
+          // every id acks contains, and keeps it past the TTL until an ack
+          // lands, so the next re-offer (once the lease lapses) is
+          // recognised and only re-acked, never resubmitted.
         }
       }
+
+      await deps.droppedOutcomes?.flush(target);
 
       // A cycle that drained and (attempted to) submit something still
       // completed -- report it regardless of whether every delivery in it
@@ -214,10 +534,12 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       }, deps.descriptorRefreshMs);
       refreshTimer.unref?.();
 
-      sweepTimer = setInterval(
-        () => deps.dedupe.sweep(),
-        deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS
-      );
+      sweepTimer = setInterval(() => {
+        deps.dedupe.sweep();
+        mx1Pins.sweep();
+        sweegoPins.sweep(isHeldAtCap);
+        sweegoAmbiguous.sweep(isHeldAtCap);
+      }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 
       const outcomes = deps.outcomes;

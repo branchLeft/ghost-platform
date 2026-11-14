@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 
-IMAGE = 'node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb'
+IMAGE = 'node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a'
 TOOL_DIR = '/usr/local/lib/branchleft/break-glass'
 STATE_DIR = '/var/lib/branchleft/break-glass-grants'
 LOG_DIR = '/var/log/branchleft'

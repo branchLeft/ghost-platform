@@ -45,3 +45,10 @@ read-only filesystem, private `/tmp` and devices.
    `stat -c '%U %G %a' /usr/local/lib/branchleft/demo_sidecar.py` prints
    `root root 755`. Every colour unit's `ExecStartPost=` and `ExecStop=` run
    this path, so a missing file fails every colour start.
+6. A sidecar started by the delivered script restarts into Ghost's current
+   network namespace, once `DEMO_SIDECAR_IMAGE` pins a digest that carries
+   `EXIT_AFTER_GHOST_UNREACHABLE_MS`: `docker inspect -f
+   '{{.HostConfig.RestartPolicy.Name}}' demo-<slot>-<colour>-sidecar` prints
+   `on-failure`, and after Docker restarts that colour's Ghost
+   `docker inspect -f '{{.RestartCount}}'` on the sidecar is at least 1 and
+   the colour answers 200 on the router again without a unit restart.

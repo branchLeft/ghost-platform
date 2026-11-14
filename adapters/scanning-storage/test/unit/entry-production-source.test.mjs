@@ -54,8 +54,9 @@ function build(extra = {}) {
   });
 }
 
-// The entry file builds no transport yet, so naming the production value in
-// config cannot select a client there. It must read as no source at all.
+// The entry file builds a transport only from `verdictSocketPath`, so naming
+// the production value without one cannot select a client there. It must
+// read as no source at all. entry-socket-transport.test.mjs has the path set.
 describe('the entry file and the production value', () => {
   it('control: verdictSource=production with no transport still refuses every upload', async () => {
     const adapter = build({ verdictSource: 'production' });

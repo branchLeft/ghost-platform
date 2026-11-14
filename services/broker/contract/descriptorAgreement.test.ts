@@ -187,7 +187,16 @@ describe('the gate agrees with render-core validate() on every descriptor, both 
   const fixtures: [string, Json][] = [
     ['demo', demoDescriptor() as unknown as Json],
     ['demo, slot 3', descriptorForSlot('3' as never) as unknown as Json],
+    [
+      'demo, mx1 route',
+      setAt(demoDescriptor() as unknown as Json, ['mail', 'route'], { primary: 'mx1' }),
+    ],
     ['tenant', TENANT],
+    ['tenant, mx1 route', setAt(TENANT, ['mail', 'route'], { primary: 'mx1' })],
+    [
+      'tenant, sweego route',
+      setAt(TENANT, ['mail', 'route'], { primary: 'sweego', sweegoAllowance: 100 }),
+    ],
     ['tenant, break-glass enabled', { ...TENANT, breakGlass: BREAK_GLASS }],
     [
       'tenant, code injection granted',

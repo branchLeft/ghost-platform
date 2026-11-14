@@ -24,6 +24,7 @@ import { SECRET_ENV_KEYS } from './environment.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
 import type { SlugClaimant } from './naming.js';
 import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
+import { MAIL_ROUTES, MAX_SWEEGO_ALLOWANCE, mailRouteOf } from './mail.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
 
@@ -204,7 +205,8 @@ const MEDIA_LOCAL_KEYS = ['kind', 'path', 'resize', 'srcsets'] as const;
 const MEDIA_S3_KEYS = ['kind', 'endpoint', 'region', 'bucket', 'resize', 'srcsets'] as const;
 const TRANSPORT_QUEUE_KEYS = ['kind', 'path'] as const;
 const TRANSPORT_SMTP_KEYS = ['kind', 'host', 'port', 'user'] as const;
-const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity'] as const;
+const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity', 'route'] as const;
+const MAIL_ROUTE_KEYS = ['primary', 'sweegoAllowance'] as const;
 const SENDING_IDENTITY_DEMO_KEYS = ['kind', 'localPart'] as const;
 const SENDING_IDENTITY_TENANT_KEYS = ['kind', 'domain', 'dkimSelector'] as const;
 const HOSTNAME_OURS_KEYS = ['kind', 'sub', 'gated'] as const;
@@ -218,7 +220,7 @@ const CODE_INJECTION_GRANTED_KEYS = ['kind', 'by', 'reason', 'until'] as const;
 const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
-const SAFETY_KEYS = ['near', 'exact'] as const;
+const SAFETY_KEYS = ['near', 'exact', 'verdictSource'] as const;
 const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
 const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
@@ -265,6 +267,35 @@ function assertNonNegativeIntegerOrNull(
       `${field} must be a finite non-negative integer of at most ${ceiling}, or null, got ${value}.`
     );
   }
+}
+
+/**
+ * `sweegoAllowance` is the tenant's monthly Sweego messages: a positive
+ * integer, required when the route is `sweego` and refused for any other
+ * route, so an `mx1` tenant never carries a number nothing counts against.
+ */
+function assertSweegoAllowance(route: {
+  readonly primary: string;
+  readonly sweegoAllowance?: unknown;
+}): void {
+  const field = 'mail.route.sweegoAllowance';
+  const allowance = route.sweegoAllowance;
+  if (route.primary !== 'sweego') {
+    if (allowance !== undefined) {
+      throw new FieldValidationError(
+        field,
+        `${field} is only allowed when mail.route.primary is "sweego".`
+      );
+    }
+    return;
+  }
+  if (typeof allowance !== 'number') {
+    throw new FieldValidationError(
+      field,
+      `${field} is required when mail.route.primary is "sweego", and must be a number.`
+    );
+  }
+  assertFinitePositiveInteger(allowance, field, MAX_SWEEGO_ALLOWANCE);
 }
 
 /** A ceiling has no "no cap" spelling — unlike `limits`, `null` is not a
@@ -388,6 +419,18 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
     assertString(descriptor.mail.identity.domain, 'mail.identity.domain');
     assertString(descriptor.mail.identity.dkimSelector, 'mail.identity.dkimSelector');
   }
+  if (descriptor.mail.route !== undefined) {
+    assertObject(descriptor.mail.route, 'mail.route');
+    assertNoUnknownKeys(descriptor.mail.route, MAIL_ROUTE_KEYS, 'mail.route');
+    if (!MAIL_ROUTES.includes(descriptor.mail.route.primary)) {
+      throw new FieldValidationError(
+        'mail.route.primary',
+        `mail.route.primary must be one of ${MAIL_ROUTES.join(', ')}, got ` +
+          `${JSON.stringify(descriptor.mail.route.primary)}.`
+      );
+    }
+    assertSweegoAllowance(descriptor.mail.route);
+  }
 
   if (descriptor.hostname.kind === 'ours') {
     assertNoUnknownKeys(descriptor.hostname, HOSTNAME_OURS_KEYS, 'hostname');
@@ -444,6 +487,7 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
   assertNoUnknownKeys(descriptor.safety, SAFETY_KEYS, 'safety');
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
+  assertVerdictSource(descriptor.safety);
 
   // Presence of all three, not just their type: a `breakGlass.kind` of
   // "enabled" missing `tenant` (say) fails here with a named error, before
@@ -1033,13 +1077,44 @@ export function servedHostnameOf(
   return normalizeDomain(fqdn);
 }
 
-/** Both flags are on for every tenant today — see SafetySpec's own doc comment. */
+const VERDICT_SOURCE_KINDS: readonly string[] = ['none', 'production'];
+
+/**
+ * `safety.verdictSource` is optional; when present it is exactly one of the
+ * two literals. Anything else (a different case, padding, the adapter's
+ * test-only fake, a boolean) is refused rather than read as either.
+ */
+function assertVerdictSource(safety: Record<string, unknown>): void {
+  if (!('verdictSource' in safety)) return;
+  const value = safety.verdictSource;
+  if (typeof value !== 'string' || !VERDICT_SOURCE_KINDS.includes(value)) {
+    throw new FieldValidationError(
+      'safety.verdictSource',
+      `safety.verdictSource must be "none" or "production" when given, got ${JSON.stringify(value)}.`
+    );
+  }
+}
+
+/**
+ * Both flags are on for every tenant today — see SafetySpec's own doc
+ * comment. A demo may not name the production verdict source: its upload
+ * route stays refusing until the demo's own go-live gate reads a real
+ * source (environment.md#verdict-source).
+ */
 function checkSafety(descriptor: TenantStackDescriptor): void {
   if (!descriptor.safety.near || !descriptor.safety.exact) {
     throw new FieldValidationError(
       'safety',
       `safety.near and safety.exact must both be true, got near=${descriptor.safety.near} ` +
         `exact=${descriptor.safety.exact}.`
+    );
+  }
+  const verdictSource = descriptor.safety.verdictSource;
+  if (descriptor.kind === 'demo' && verdictSource === 'production') {
+    throw new FieldValidationError(
+      'safety.verdictSource',
+      'safety.verdictSource "production" is refused for a demo: a demo keeps refusing uploads ' +
+        'until its go-live gate reads a real verdict source.'
     );
   }
 }
@@ -1201,6 +1276,12 @@ function checkTierVariants(descriptor: TenantStackDescriptor): void {
     throw new TierMismatchError(
       `kind "demo" requires mail.identity.kind "demo", got "${descriptor.mail.identity.kind}". ` +
         `Demo slots get no DKIM key, selector or domain of their own.`
+    );
+  }
+  if (mailRouteOf(descriptor.mail) !== 'mx1') {
+    throw new TierMismatchError(
+      `kind "demo" requires mail.route "mx1" (or none), got "${mailRouteOf(descriptor.mail)}". ` +
+        `A demo never sends through any target but the estate's own.`
     );
   }
   if (descriptor.expiresAt === null) {

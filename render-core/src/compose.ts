@@ -5,10 +5,10 @@
  * See compose.md.
  */
 
-import { validatePrivateIpV4 } from './brand.js';
+import { FieldValidationError, validatePrivateIpV4 } from './brand.js';
 import type { ResourceCaps, TenantDescriptor } from './descriptor.js';
 import type { UploadLimits } from './runtime.js';
-import { METRICS_MOUNT_PATH } from './environment.js';
+import { METRICS_MOUNT_PATH, VERDICT_MOUNT_PATH } from './environment.js';
 import { adaptersVolumeName, contentVolumeName, metricsVolumeName, stackName } from './naming.js';
 import type { YamlValue } from './yaml.js';
 import { toYaml } from './yaml.js';
@@ -67,9 +67,35 @@ export interface ComposeStackArgs {
   /** The host spool's internal network for this tenant, non-null exactly
    * when mail is enabled. See compose.md#the-mail-network. */
   readonly mailNetwork: string | null;
+  /**
+   * Optional. The slot's verdict volume, non-null exactly when its
+   * descriptor names the production verdict source; mounted read-only in
+   * both colours. See compose.md#the-verdict-volume.
+   */
+  readonly verdictVolume?: string | null;
+  /**
+   * Optional. When present, only this colour's Ghost service is rendered and
+   * the idle colour is omitted from the document; when absent, both colours
+   * are rendered, exactly as before. See compose.md#one-running-colour.
+   */
+  readonly activeColour?: Colour;
 }
 
-type Colour = 'a' | 'b';
+/** The two slot colours a blue/green deploy swaps between. */
+export type Colour = 'a' | 'b';
+
+const COLOURS: readonly Colour[] = ['a', 'b'];
+
+function coloursToRender(activeColour: Colour | undefined): readonly Colour[] {
+  if (activeColour === undefined) return COLOURS;
+  if (!COLOURS.includes(activeColour)) {
+    throw new FieldValidationError(
+      'activeColour',
+      `activeColour must be "a" or "b" when given, got ${JSON.stringify(activeColour)}.`
+    );
+  }
+  return [activeColour];
+}
 
 /** The address every published port binds to — see the module doc
  * comment's "Load-bearing" note. */
@@ -82,7 +108,8 @@ function ghostService(
   colour: Colour,
   content: string,
   adapters: string,
-  metrics: string | null
+  metrics: string | null,
+  verdict: string | null
 ): Record<string, YamlValue> {
   const hostPort = colour === 'a' ? args.ports.a : args.ports.b;
   const volumes = [`${content}:${CONTENT_MOUNT_PATH}`, `${adapters}:${ADAPTERS_MOUNT_PATH}:ro`];
@@ -90,6 +117,12 @@ function ghostService(
     // Read-write, on purpose: the tenant's own process creates and rewrites
     // the scanner's metrics file here. See compose.md#the-metrics-volume.
     volumes.push(`${metrics}:${METRICS_MOUNT_PATH}`);
+  }
+  if (verdict !== null) {
+    // Read-only, on purpose: Ghost only dials the socket, which a read-only
+    // mount allows, and must not replace it or touch anything beside it.
+    // See compose.md#the-verdict-volume.
+    volumes.push(`${verdict}:${VERDICT_MOUNT_PATH}:ro`);
   }
   if (args.dataMount) {
     volumes.push(`${args.dataMount.volumeName}:${args.dataMount.path}`);
@@ -148,6 +181,7 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   // keys (a paying tenant, whose media is always object storage): a demo
   // mounts no metrics volume and names no metrics key.
   const metrics = args.kind === 'demo' ? null : metricsVolumeName(args.slug);
+  const verdict = args.verdictVolume ?? null;
 
   const volumes: Record<string, YamlValue> = {
     [content]: { external: true },
@@ -156,16 +190,21 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   if (metrics !== null) {
     volumes[metrics] = { external: true };
   }
+  if (verdict !== null) {
+    volumes[verdict] = { external: true };
+  }
   if (args.dataMount) {
     volumes[args.dataMount.volumeName] = { external: true };
   }
 
   return {
     name: stackName(args.slug),
-    services: {
-      'ghost-a': ghostService(args, 'a', content, adapters, metrics),
-      'ghost-b': ghostService(args, 'b', content, adapters, metrics),
-    },
+    services: Object.fromEntries(
+      coloursToRender(args.activeColour).map((colour) => [
+        `ghost-${colour}`,
+        ghostService(args, colour, content, adapters, metrics, verdict),
+      ])
+    ),
     ...(args.mailNetwork
       ? { networks: { [args.mailNetwork]: { name: args.mailNetwork, external: true } } }
       : {}),

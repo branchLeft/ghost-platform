@@ -135,7 +135,17 @@ class StartTests(_Case):
         self.assertEqual(args[args.index("--cap-drop") + 1], "ALL")
         self.assertEqual(args[args.index("--security-opt") + 1], "no-new-privileges:true")
         self.assertEqual(args[args.index("--pull") + 1], "never")
-        self.assertEqual(args[args.index("--restart") + 1], "no")
+
+    def test_it_is_restarted_by_docker_when_it_exits_non_zero(self):
+        self.start()
+        args = self.containers()["demo-2-a-sidecar"]
+        self.assertEqual(args[args.index("--restart") + 1], "on-failure")
+
+    def test_it_exits_once_ghost_is_unreachable_so_the_restart_rejoins_ghosts_namespace(self):
+        self.start()
+        args = self.containers()["demo-2-a-sidecar"]
+        self.assertIn(f"EXIT_AFTER_GHOST_UNREACHABLE_MS={ds.EXIT_AFTER_GHOST_UNREACHABLE_MS}", args)
+        self.assertGreater(ds.EXIT_AFTER_GHOST_UNREACHABLE_MS, 0)
 
     def test_the_image_is_the_pinned_digest_last(self):
         self.start()
@@ -398,6 +408,10 @@ class ContractTests(unittest.TestCase):
             for m in re.finditer(r"GHOST_CONTAINER_PORT\s*=\s*(\d+)", f.read_text())
         ]
         self.assertEqual(found, [str(ds.GHOST_CONTAINER_PORT)])
+
+    def test_the_exit_variable_is_the_one_the_sidecar_reads(self):
+        config = Path(__file__).resolve().parents[2] / "services" / "drain-sidecar" / "src" / "config.ts"
+        self.assertIn(f"env.{ds.EXIT_AFTER_VARIABLE}", config.read_text())
 
     def test_the_sidecar_image_is_never_a_tag(self):
         self.assertIsNone(ds.IMAGE_PATTERN.match("ghcr.io/x/y:1.2.3"))

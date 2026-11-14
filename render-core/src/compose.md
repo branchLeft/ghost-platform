@@ -3,8 +3,8 @@
 ## Two services, not one
 
 `TenantDescriptor.ports` is a `PortTriple` rather than a single port because
-two Ghosts run over one SQLite file with no contention, so blue/green applies
-everywhere, demos included. Every kind gets a colour pair (`ports.a`,
+two Ghosts run over one database, so blue/green applies everywhere, demos
+included. Every kind gets a colour pair (`ports.a`,
 `ports.b`) so a reconciler can start the new colour, verify it and only then
 retire the old one — this module renders both services from one descriptor
 rather than one service per render call, so a single `render()` output is a
@@ -26,11 +26,6 @@ sufficient and the thing that keeps every demo's Ghost from being reachable
 at all except through the gate (and the broker's own `adminApi.configure`
 call, `services/broker/src/app.ts`, which is itself a loopback call for
 exactly this reason).
-
-This makes render's output for a "tenant zero"-equivalent descriptor
-structurally different from what `infra/tenant/compose.ts` renders today
-(one service, one port). See `render.ts`'s own note on that conflict, which
-is called out there rather than silently resolved here.
 
 ## The mail network
 
@@ -66,6 +61,24 @@ only the missing volume. The tenant image must carry the adapter's
 unique-temporary-name write (`adapters/scanning-storage/src/metrics.md`) with
 or before that render, because both colours now write into one directory.
 
+## The verdict volume
+
+When the descriptor names the production verdict source
+(environment.md#verdict-source), both colours mount a fourth named volume,
+`ghost-<slug>-verdict` (`naming.ts#verdictVolumeName`), **read-only** at
+`/var/lib/ghost/verdict`, and declare it `external`. The slot's verdict host
+end creates its unix socket there, and the scanning adapter dials it.
+
+Read-only is enough to dial: connecting to a unix socket needs write
+permission on the socket file, which a read-only mount does not remove. It
+stops Ghost replacing the socket or writing anything beside it. One volume
+per slot, never shared, so one slot cannot ask or answer through another's
+channel.
+
+What runs the host end, and what creates the volume, are not in this
+module yet. With the switch off, nothing here changes and every golden is
+byte-identical.
+
 ## The stop grace period
 
 Each Ghost service sets `stop_grace_period` to `GHOST_STOP_GRACE_PERIOD`
@@ -82,3 +95,28 @@ shipping a stack that is killed mid-batch.
 Every tenant rendered by this module gets the setting: the entry and
 professional tenants, tenant zero, and each demo slot. The mail spool is not
 a Ghost service and keeps its own stop behaviour.
+
+## One running colour
+
+`activeColour` (`'a'` or `'b'`) is an optional input. When present, the
+document carries only that colour's Ghost service; the idle colour is omitted
+outright, not parked behind a Compose profile, because a profile still leaves
+the service one flag away from starting beside the other. The shared volumes,
+the mail network and every posture control are unchanged. When absent, the
+output is byte-identical to a render that never knew the option, which is what
+every existing golden pins.
+
+The option is deploy-time state, so it is an input to `render()` (a fourth
+argument, `{ activeColour }`) rather than a descriptor field: the descriptor
+stays the tenant's desired state and the broker's request schema does not
+change. A value other than `'a'` or `'b'` is refused with a named error.
+
+Why it makes one Ghost run at a time: the generic unit runs
+`docker compose up -d --remove-orphans --wait` with no service name. On a
+one-service document that starts the named colour and stops and removes the
+other colour's container as an orphan, with no change to the unit.
+
+What this does not do: it does not refuse a second simultaneous start. That
+refusal is the broker's apply step, which is not built here. A caller that
+names a service on the command line (the demo host's per-colour drop-ins run
+`up -d --wait ghost-<colour>`) must keep rendering both colours.

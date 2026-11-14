@@ -1,0 +1,57 @@
+name: Mollie test charge
+
+# Creates one test payment, one test customer and one recurring schedule in
+# Mollie's TEST mode, by hand, to prove the payment account and the API path
+# before any platform code depends on them. Nothing here can move real money:
+# the script (scripts/mollie-test-charge.py) refuses any key that is not a
+# Mollie test key before it makes a network call, and fails if a response does
+# not say mode "test". See scripts/mollie-test-charge.md.
+#
+# `workflow_dispatch` only: no push, no schedule, no pull request starts it.
+# The job declares `environment: production`, whose required reviewer is the
+# gate: the run waits for that approval before any step, and so before the key
+# is readable. The key is an ENVIRONMENT secret on it; `secrets.X` falls back to
+# a repository secret of the same name, so keep it off the repository level.
+#
+# Only a run of `main` proceeds: a branch could carry a changed script, and the
+# approver should not have to read the diff of the branch to know what runs.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mollie-test-charge
+  cancel-in-progress: false
+
+jobs:
+  charge:
+    name: Test charge and recurring schedule
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Four API calls and a few seconds of unit tests; set well above that.
+    timeout-minutes: 10
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      # Before the key is in scope: the refusal of a non-test key is proven on
+      # this very commit, with no secret in the environment.
+      - name: Script tests
+        run: python3 -m unittest discover -s scripts -p 'test_mollie_test_charge.py' -v
+
+      - name: Create the test charge and recurring schedule
+        env:
+          MOLLIE_API_KEY_TEST: ${{ secrets.MOLLIE_API_KEY_TEST }}
+        run: python3 scripts/mollie-test-charge.py

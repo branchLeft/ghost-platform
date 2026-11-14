@@ -70,8 +70,8 @@ describe('DescriptorTargetStore', () => {
     await s.refresh();
     expect(s.targets).toEqual(
       expect.arrayContaining([
-        { id: 'a', baseUrl: 'http://10.0.0.11:9090' },
-        { id: 'b', baseUrl: 'http://10.0.0.12:9090' },
+        { id: 'a', baseUrl: 'http://10.0.0.11:9090', route: 'mx1' },
+        { id: 'b', baseUrl: 'http://10.0.0.12:9090', route: 'mx1' },
       ])
     );
     expect(s.targets).toHaveLength(2);
@@ -84,7 +84,9 @@ describe('DescriptorTargetStore', () => {
     );
     const s = store({ shimScheme: 'https', shimPort: 8443 });
     await s.refresh();
-    expect(s.targets).toEqual([{ id: 'a', baseUrl: 'https://mx1.branchleft.co.uk:8443' }]);
+    expect(s.targets).toEqual([
+      { id: 'a', baseUrl: 'https://mx1.branchleft.co.uk:8443', route: 'mx1' },
+    ]);
   });
 
   it('refuses two descriptors sharing one slug, with a named error, and keeps the last good list', async () => {

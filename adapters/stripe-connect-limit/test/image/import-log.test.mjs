@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { importFailureSection, readUntilStable } from './import-log.mjs';
 
-const M = 'Content import was unsuccessful';
+const M = '[Background Job] site-content-import error';
 
 describe('importFailureSection', () => {
   it('returns the section of the failure after the ones already counted', () => {

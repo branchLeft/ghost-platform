@@ -58,8 +58,7 @@ Object Storage by `RUNBOOK-media-backup-lifecycle.md`.
 Prerequisites on the workstation running this: `docker`, `age`
 (`age-keygen`), `openssl`, `curl`, `jq`, `python3`, `comm` (present in
 every base macOS/Linux install). Pulls `quay.io/minio/minio` and
-`quay.io/minio/mc` (Docker Hub's `minio/minio` now refuses anonymous
-pulls).
+`quay.io/minio/mc`.
 
 Usage: `./infra/provisioning/scripts/media-backup-restore-proof.sh` -- run
 from anywhere, it cds to the repo root itself.

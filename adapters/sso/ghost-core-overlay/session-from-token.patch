@@ -1,39 +1,38 @@
 --- a/session-from-token.js
 +++ b/session-from-token.js
-@@ -55,14 +55,35 @@
-                 return next();
-             }
-             await createSession(req, res, user);
--            next();
-         } catch (err) {
-             if (callNextWithError) {
-                 next(err);
-             } else {
-                 next();
-             }
-+            return;
+@@ -19,7 +19,6 @@
+             return next();
          }
-+
-+        // The session save is awaited before next(): express-session flushes
-+        // Set-Cookie before its async store write lands, so a client acting on
-+        // the cookie first would be refused. See
-+        // adapters/sso/ghost-core-overlay/session-from-token.md.
-+        try {
-+            await new Promise((resolve, reject) => {
-+                req.session.save((err) => {
-+                    if (err) {
-+                        reject(err);
-+                        return;
-+                    }
-+                    resolve();
-+                });
-+            });
-+        } catch (err) {
-+            next(err);
-+            return;
-+        }
-+
-+        next();
+         await createSession(req, res, user);
+-        next();
      }
- 
-     return handler;
+     catch (err) {
+         if (callNextWithError) {
+@@ -28,6 +27,27 @@
+         else {
+             next();
+         }
++        return;
+     }
++    // The session save is awaited before next(): express-session flushes
++    // Set-Cookie before its async store write lands, so a client acting on
++    // the cookie first would be refused. See
++    // adapters/sso/ghost-core-overlay/session-from-token.md.
++    try {
++        await new Promise((resolve, reject) => {
++            req.session.save((err) => {
++                if (err) {
++                    reject(err);
++                    return;
++                }
++                resolve();
++            });
++        });
++    }
++    catch (err) {
++        next(err);
++        return;
++    }
++    next();
+ };
+ exports.sessionFromToken = sessionFromToken;

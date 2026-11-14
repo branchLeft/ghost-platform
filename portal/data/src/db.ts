@@ -10,7 +10,8 @@ export function connect(pool: Pool): PortalDb {
   return drizzle(pool, { schema });
 }
 
-export type PortalRole = 'portal_tenant' | 'portal_owner' | 'portal_provisioner';
+export type PortalRole =
+  'portal_tenant' | 'portal_owner' | 'portal_provisioner' | 'portal_prospect';
 
 /**
  * Drops the transaction to one of the portal roles. The role is local to

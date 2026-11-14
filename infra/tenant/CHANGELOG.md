@@ -2,6 +2,18 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## Unreleased
+
+- **Breaking: `validateTenantNameClaim` is removed from `naming.ts` and from the
+  package exports.** The tenant-name claim has one implementation, render core's
+  `validateSlugAvailability`, reached through `validateTenantStack`, which
+  `GhostTenant` already called with `{ claimantRepo: process.env.GITHUB_REPOSITORY }`.
+  Behaviour of `GhostTenant` is unchanged in what it accepts: tenant zero from
+  its own repository is accepted, a duplicate from any other repository is
+  refused, and an unset `GITHUB_REPOSITORY` refuses a registered name. Only the
+  wording of the refusal changes, to render core's. `TENANT_NAMES` and
+  `TENANT_NAME_REGISTER` stay.
+
 ## 8.0.0
 
 **The tenant stack holds no secret value. The host renders the secrets file.**
@@ -49,6 +61,11 @@ All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
   a `<parent>$<type>` chain can present an allowed token as its own. A tenant
   picks this up when it bumps to the release that carries it; the template's
   deploy job runs the guard from the pinned package.
+- **Rollout: before the gated apply, run `app/provision/provision_tenant_volume.py`
+  once per existing tenant to create its metrics volume.** The stack does not
+  start without it. This release pins render core 0.4.0, which mounts the
+  `ghost-<slug>-metrics` external volume. Run the script per tenant slug before
+  the apply; it is idempotent. See `provision_tenant_volume.md`.
 
 ## 7.0.0
 

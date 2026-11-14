@@ -218,7 +218,9 @@ class ThrowawayDocker(trd.FakeDocker):
 # --- a backup like the worker writes ---------------------------------------
 
 
-def dump_lines(*, title="Fixture's Site", newest="Newest Fixture Post", create_schema=True) -> list[str]:
+def dump_lines(
+    *, title="Fixture's Site", newest="Newest Fixture Post", create_schema=True, migration_tables=True,
+) -> list[str]:
     """A mysqldump-shaped dump of a miniature Ghost schema. All of it is made up."""
     title_sql = title.replace("'", "\\'")
     lines = [
@@ -265,6 +267,25 @@ def dump_lines(*, title="Fixture's Site", newest="Newest Fixture Post", create_s
             f"INSERT INTO `posts` VALUES ('p1','Older Post','older','post','published','2026-09-01 10:00:00'),"
             f"('p2','{newest}','newest','post','published','2026-10-01 10:00:00'),"
             "('p3','A Draft','draft','post','draft',NULL);\n",
+        ]
+    if create_schema and migration_tables:
+        lines += [
+            "DROP TABLE IF EXISTS `migrations`;\n",
+            "CREATE TABLE `migrations` (\n",
+            "  `id` int NOT NULL AUTO_INCREMENT,\n",
+            "  `name` varchar(120) NOT NULL,\n",
+            "  `version` varchar(70) NOT NULL,\n",
+            "  PRIMARY KEY (`id`)\n",
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n",
+            "INSERT INTO `migrations` VALUES (1,'1-create-fixture-tables.js','init'),"
+            "(2,'2026-08-01-00-00-00-fixture-one.js','6.55');\n",
+            "DROP TABLE IF EXISTS `migrations_lock`;\n",
+            "CREATE TABLE `migrations_lock` (\n",
+            "  `lock_key` varchar(191) NOT NULL,\n",
+            "  `locked` tinyint(1) DEFAULT '0',\n",
+            "  PRIMARY KEY (`lock_key`)\n",
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n",
+            "INSERT INTO `migrations_lock` VALUES ('km01',0);\n",
         ]
     return lines
 
@@ -344,7 +365,7 @@ class GateRestoreTests(unittest.TestCase):
         self.assertEqual(docker.starts, 1)
         self.assertEqual(
             docker.held_at_removal.split(),
-            [f"{DATABASE}.{table}" for table in ("members", "posts", "settings", "users")],
+            [f"{DATABASE}.{table}" for table in ("members", "migrations", "migrations_lock", "posts", "settings", "users")],
             "the restore did not load the tenant's tables before the server was removed",
         )
         self.assert_nothing_left(docker)
@@ -597,6 +618,69 @@ class GateRefusalTests(unittest.TestCase):
         self.assertTrue(report.interrupted)
         self.assertFalse(report.ok)
         self.assert_cleaned_up(docker)
+
+    # the discard, on every path -------------------------------------------------
+
+    def test_discard_after_an_error_nobody_foresaw(self):
+        def boom(argv):
+            raise RuntimeError("docker returned nonsense")
+
+        docker = trd.FakeDocker(fail={"network create": boom})
+        report = self.gate(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("UnexpectedError: RuntimeError: docker returned nonsense", report.error)
+        self.assert_cleaned_up(docker)
+
+    def test_discard_when_removing_the_server_fails_still_removes_the_network_and_the_plaintext(self):
+        def gone(argv):
+            raise OSError("docker went away")
+
+        docker = trd.FakeDocker(fail={
+            "network create": trd._completed([], code=1, err="no space"),
+            "rm -f -v scratch-preflight-mysql-abcd": gone,
+        })
+        report = self.gate(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("no space", report.error)
+        self.assertIn("could not remove the scratch copy", report.error)
+        self.assert_cleaned_up(docker)
+
+    def test_a_passing_gate_whose_network_cannot_be_removed_is_refused(self):
+        docker = trd.FakeDocker(
+            snapshot="Fixture's Site\t1\t2\t3\tNewest Fixture Post\n",
+            fail={"network rm": trd._completed([], code=1, err="network has active endpoints")},
+        )
+        report = self.gate(docker)
+        self.assertFalse(report.ok, "a copy that could not be removed must refuse the swap")
+        self.assertIn("network has active endpoints", report.error)
+        self.assertIsNone(report.scratch)
+        self.assert_cleaned_up(docker)
+
+    def test_control_the_same_gate_passes_when_the_removal_succeeds(self):
+        docker = trd.FakeDocker(snapshot="Fixture's Site\t1\t2\t3\tNewest Fixture Post\n")
+        self.assertTrue(self.gate(docker).ok)
+
+    def test_a_thing_docker_says_is_gone_is_not_a_failed_removal(self):
+        for wording in ("Error: No such network: scratch-preflight-abcd", "Error response from daemon: network scratch-preflight-abcd not found"):
+            with self.subTest(wording=wording):
+                docker = trd.FakeDocker(
+                    snapshot="Fixture's Site\t1\t2\t3\tNewest Fixture Post\n",
+                    fail={"network rm": trd._completed([], code=1, err=wording)},
+                )
+                self.assertTrue(self.gate(docker).ok)
+
+    def test_a_removal_that_is_interrupted_is_held_until_the_others_are_tried(self):
+        calls: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if argv[:2] == ["docker", "rm"]:
+                raise rd.DrillInterrupted()
+            return trd._completed(argv)
+
+        with self.assertRaises(rd.DrillInterrupted):
+            sp.run_removals(runner, [["docker", "rm", "-f", "-v", "c"], ["docker", "network", "rm", "n"]])
+        self.assertEqual([c[:2] for c in calls], [["docker", "rm"], ["docker", "network"]])
 
     def test_the_decrypted_dump_is_private_and_gone_afterwards(self):
         seen = {}

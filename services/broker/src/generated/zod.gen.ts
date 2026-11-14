@@ -58,8 +58,23 @@ export const zCodeInjectionSpec = z.union([
 export const zColour = z.enum(['a', 'b']);
 
 export const zErrorBody = z.object({
-    error: z.string()
+    error: z.string(),
+    reason: z.enum([
+        'locked',
+        'held-evidence',
+        'occupied',
+        'nothing-to-freeze'
+    ]).optional()
 });
+
+/**
+ * The held-evidence marker, and nothing else about it. `frozen` means a freeze has begun and is not yet confirmed (a marker value the broker does not recognise also reads `frozen`); `detached` means the held set is confirmed in the held area; `absent` means none was ever taken.
+ */
+export const zEvidenceStatus = z.enum([
+    'absent',
+    'frozen',
+    'detached'
+]);
 
 /**
  * The edge-level gate in front of a site. Tied to `hostname.kind` -- the broker only ever reconciles a `demo` descriptor, and render-core's own invariant requires a `demo` descriptor's gate to be `passphrase` (see POST /reconcile's 500 response, which documents the unreachable branch this invariant leaves behind).
@@ -109,6 +124,14 @@ export const zImagePushResult = z.object({
 export const zLimitsSpec = z.object({
     membersCap: z.int().nullable(),
     staffCap: z.int().nullable()
+});
+
+/**
+ * Which sending target the mail collector uses for this host's drained mail. Optional on `MailSpec`: an absent route means `mx1`. A `demo` descriptor whose route is `sweego` is refused by render-core's own validator, which this wire shape does not duplicate. So is the pairing of `sweegoAllowance` with the route: render-core requires it when `primary` is `sweego` and refuses it when `primary` is `mx1`.
+ */
+export const zMailRouteSpec = z.object({
+    primary: z.enum(['mx1', 'sweego']),
+    sweegoAllowance: z.int().gte(1).lte(100000000).optional()
 });
 
 /**
@@ -213,13 +236,29 @@ export const zMailSpec = z.object({
     ceiling: z.int(),
     enabled: z.boolean(),
     estateCeiling: z.int(),
-    identity: zSendingIdentitySpec
+    identity: zSendingIdentitySpec,
+    route: zMailRouteSpec.optional()
 });
 
 /**
  * General slot-name shape (1-63 lowercase letters, digits and inner hyphens). The host additionally enforces a closed-set membership check against its own configured slot literals (by default "0" through "6", set via BROKER_SLOT_LITERALS) -- a value that is shaped like a slot name but is not one of these literals is still refused, with 422 in a request body or 404 in the /status path.
  */
 export const zSlotName = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
+
+export const zFreezePending = z.object({
+    evidence: z.enum(['frozen']),
+    phase: z.enum(['detaching']),
+    slot: zSlotName
+});
+
+export const zFreezeSuccess = z.object({
+    bytes: z.int().gte(0),
+    entry: z.string(),
+    evidence: z.enum(['detached']),
+    phase: z.enum(['error']),
+    sha256: z.string(),
+    slot: zSlotName
+});
 
 export const zMediaHashItem = z.object({
     path: z.string(),
@@ -266,6 +305,7 @@ export const zSlotRequest = z.object({
 });
 
 export const zStatusResponse = z.object({
+    evidence: zEvidenceStatus,
     healthy: z.boolean(),
     interim: z.array(z.string()),
     notReal: z.array(z.string()),
@@ -347,6 +387,19 @@ export const zPollDrainQueueHeaders = z.object({
  * Either real queued items, or an empty payload if nothing arrived before the poll's own deadline.
  */
 export const zPollDrainQueueResponse = zDrainPayload;
+
+export const zFreezeSlotBody = zSlotRequest;
+
+export const zFreezeSlotHeaders = z.object({
+    'X-Broker-Timestamp': z.string().regex(/^[0-9]{1,20}$/),
+    'X-Broker-Nonce': z.string().regex(/^[A-Za-z0-9._-]{16,128}$/),
+    'X-Broker-Signature': z.string()
+});
+
+/**
+ * The detach is confirmed. The receipt names the held entry, its manifest digest and its byte count, and nothing else about what was held.
+ */
+export const zFreezeSlotResponse = zFreezeSuccess;
 
 /**
  * The raw bytes of a container image tar (e.g. produced by `docker save`), streamed, never buffered whole by the sender.
