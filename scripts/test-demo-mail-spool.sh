@@ -103,8 +103,7 @@ on_slot_network() {
 case "$SPOOL_IMAGE" in
     ghcr.io/*)
         if [ -z "$GHCR_USER" ] || [ -z "$GHCR_TOKEN" ]; then
-            echo "FAIL: $SPOOL_IMAGE is a private package: set GHCR_USER and GHCR_TOKEN (a token with packages: read) so the stand-in host can pull it"
-            exit 1
+            echo "FAIL: $SPOOL_IMAGE is a private package: set GHCR_USER and GHCR_TOKEN (a token with packages: read) so the stand-in host can pull it"; exit 1
         fi
         ;;
 esac
