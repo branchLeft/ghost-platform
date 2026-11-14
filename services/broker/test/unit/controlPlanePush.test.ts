@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -162,6 +162,80 @@ describe('pushImage (the control-plane side of push delivery)', () => {
       await expect(push(baseUrl, await tarOnDisk())).rejects.toThrow(
         `image push did not finish within ${String(TIMEOUT_MS)} ms`
       );
+    });
+  });
+
+  describe('when a 2xx answer arrives but its body cannot be read', () => {
+    let receiver: Server | undefined;
+    const sockets = new Set<Socket>();
+
+    afterEach(async () => {
+      for (const socket of sockets) socket.destroy();
+      sockets.clear();
+      const server = receiver;
+      receiver = undefined;
+      if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    /** A receiver whose answer to the push is whatever `answer` does with the response. */
+    async function receiverAnswering(
+      answer: (res: ServerResponse) => void
+    ): Promise<{ baseUrl: string; tarPath: string; digest: string }> {
+      receiver = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => answer(res));
+      });
+      receiver.on('connection', (socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      await new Promise<void>((resolve) => receiver?.listen(0, '127.0.0.1', resolve));
+      const dir = await makeTempDir('control-plane-push-');
+      const tarPath = join(dir, 'image.tar');
+      const bytes = Buffer.from('bytes the receiver answers but whose answer cannot be read');
+      await writeFile(tarPath, bytes);
+      return {
+        baseUrl: `http://127.0.0.1:${String((receiver.address() as AddressInfo).port)}`,
+        tarPath,
+        digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      };
+    }
+
+    function push(target: { baseUrl: string; tarPath: string; digest: string }) {
+      return pushImage({
+        baseUrl: target.baseUrl,
+        digest: target.digest,
+        tarPath: target.tarPath,
+        privateKeyRaw: Buffer.alloc(32, 7),
+      });
+    }
+
+    it('a connection reset in the middle of a 200 body is thrown as a failed body read, never reported ok: true', async () => {
+      const target = await receiverAnswering((res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '200' });
+        res.write('{"digest":');
+        // Let the half body reach the client, then reset the connection.
+        setTimeout(() => res.socket?.resetAndDestroy(), 50);
+      });
+      await expect(push(target)).rejects.toThrow(/response body could not be read/);
+    });
+
+    it('invalid JSON on a 200 is thrown as a failed body read, never reported ok: true', async () => {
+      const target = await receiverAnswering((res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"digest": not json');
+      });
+      await expect(push(target)).rejects.toThrow(/response body could not be read/);
+    });
+
+    it('a 200 with a really empty body is still a success, so only an unreadable body is a failure', async () => {
+      const target = await receiverAnswering((res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end();
+      });
+      const result = await push(target);
+      expect(result.ok).toBe(true);
+      expect(result.status).toBe(200);
     });
   });
 });
