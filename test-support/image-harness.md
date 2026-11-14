@@ -41,6 +41,18 @@ Three different causes showed up as "a whole suite cancelled within a second".
   timer; a hung attempt is logged and the poll continues. `detail` holds the
   last error and the container's `Running` state.
 
+- `labelArgs(component)`, `removeContainerProven(name)`, `assertNothingLeft(component)`,
+  `reclaimHostOwnership(image, hostDir)` and `teardownOnce(parts)`: teardown that
+  is proven rather than assumed. Containers and networks carry a component and a
+  process label; a container is removed with its anonymous volumes and the removal
+  is read back; a leftover with this process's label fails; a bind mount the image
+  chowned to its own user is handed back before it is removed (a sticky `/tmp`
+  otherwise refuses the removal with `EPERM`); and every teardown part runs even if
+  an earlier one fails. `teardownOnce` is for the suite's last test as well as
+  `after`: `node:test` on Node 22 reports a failing `after` hook as `not ok` and
+  exits 0. `adapters/scanning-storage/test/unit/image-teardown.test.ts` shows each
+  red and then green against a fake `docker`.
+
 ## Self-test
 
 `adapters/sso/test/image/image-harness.selftest.test.mjs` runs on every pull

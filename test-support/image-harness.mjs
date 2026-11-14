@@ -332,3 +332,152 @@ export async function pollHttp200(
     detail: `no 200 from ${url} in ${deadlineMs}ms (${attempts} attempt(s)); last error: ${lastError}; ${state}`,
   };
 }
+
+// ------------------------------------------------------------- teardown
+
+const ANONYMOUS_VOLUME = /^[0-9a-f]{64}$/;
+
+/**
+ * The `--label` arguments for every container and network a test creates:
+ * the component that made it, and this process's id. A leftover is
+ * attributable, and `assertNothingLeft` can tell this run's from another
+ * process's that is still running.
+ */
+export function labelArgs(component) {
+  return [
+    '--label',
+    `branchleft.component=${component}`,
+    '--label',
+    `branchleft.run=${process.pid}`,
+  ];
+}
+
+// `docker ps` names its column `.Names`; `network ls` and `volume ls` name it `.Name`.
+function listLabelled(kind, component) {
+  const field = kind[0] === 'ps' ? '{{.Names}}' : '{{.Name}}';
+  const filters = [
+    `label=branchleft.component=${component}`,
+    `label=branchleft.run=${process.pid}`,
+  ];
+  const out = spawnSync(
+    'docker',
+    [...kind, ...filters.flatMap((f) => ['--filter', f]), '--format', field],
+    { encoding: 'utf8' }
+  );
+  if (out.error || out.status !== 0) {
+    throw new Error(
+      `cannot list ${kind[0]} leftovers: ${(out.error?.message ?? out.stderr).trim()}`
+    );
+  }
+  return out.stdout.split('\n').filter(Boolean);
+}
+
+// `docker inspect` that tells "no such object" from "docker did not answer":
+// only the first is evidence that something is gone.
+function isGone(args) {
+  const out = spawnSync('docker', args, { encoding: 'utf8' });
+  if (out.status === 0) return false;
+  if (out.error || !/no such/i.test(out.stderr ?? '')) {
+    throw new Error(
+      `cannot tell whether it is gone (docker ${args.join(' ')}): ${(out.error?.message ?? out.stderr).trim()}`
+    );
+  }
+  return true;
+}
+
+/**
+ * Removes one container with its anonymous volumes (`rm -f -v`) and proves it:
+ * the anonymous volumes the container held are read first, and after the
+ * removal neither the container nor any of them may still exist. Throws
+ * naming what is left; a container that is already gone has nothing to prove.
+ */
+export function removeContainerProven(name) {
+  const before = spawnSync(
+    'docker',
+    [
+      'inspect',
+      '--format',
+      '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\\n"}}{{end}}{{end}}',
+      name,
+    ],
+    { encoding: 'utf8' }
+  );
+  let volumes = [];
+  if (before.status === 0) {
+    volumes = before.stdout.split('\n').filter((v) => ANONYMOUS_VOLUME.test(v));
+  } else if (before.error || !/no such/i.test(before.stderr ?? '')) {
+    throw new Error(
+      `teardown of ${name}: cannot inspect it: ${(before.error?.message ?? before.stderr).trim()}`
+    );
+  }
+  const removal = spawnSync('docker', ['rm', '-f', '-v', name], { encoding: 'utf8' });
+  const left = [];
+  if (!isGone(['container', 'inspect', name])) left.push(`container ${name}`);
+  for (const volume of volumes) {
+    if (!isGone(['volume', 'inspect', volume])) left.push(`volume ${volume}`);
+  }
+  if (left.length > 0) {
+    throw new Error(
+      `teardown of ${name} left ${left.join(', ')} behind (docker rm exit ${removal.status}: ${String(removal.stderr).trim()})`
+    );
+  }
+}
+
+/** Throws if any container, network or volume this process labelled for `component` still exists. */
+export function assertNothingLeft(component) {
+  const left = [
+    ...listLabelled(['ps', '-a'], component).map((n) => `container ${n}`),
+    ...listLabelled(['network', 'ls'], component).map((n) => `network ${n}`),
+    ...listLabelled(['volume', 'ls'], component).map((n) => `volume ${n}`),
+  ];
+  if (left.length > 0) throw new Error(`teardown left behind: ${left.join(', ')}`);
+}
+
+/**
+ * Chowns a bind mount back to this process's user from a throwaway container
+ * of `image`. The image's entrypoint chowns everything under the content
+ * directory to `node` on every boot, bind mounts included, and a directory
+ * under /tmp (sticky) can then be removed only by its owner: without this the
+ * teardown's `rmSync` fails with EPERM.
+ */
+export function reclaimHostOwnership(image, hostDir) {
+  docker(
+    'run',
+    '--rm',
+    '-v',
+    `${hostDir}:/reclaim`,
+    image,
+    'chown',
+    '-R',
+    `${process.getuid()}:${process.getgid()}`,
+    '/reclaim'
+  );
+}
+
+/**
+ * Runs the teardown parts in order, every one even when an earlier one threw,
+ * and throws one error naming each that failed. Returns a function that runs
+ * them once: call it from the suite's last `it` and again from `after`.
+ *
+ * Why the last `it`: node:test on Node 22 and later reports a throwing hook as
+ * `not ok` (`hookFailed`) but does not count it, and `node --test` exits 0, so
+ * a teardown that fails only inside `after` leaves the step green. A failing
+ * test is what fails the step. The `after` call is the backstop for a run in
+ * which `before` failed and the tests never ran.
+ */
+export function teardownOnce(parts) {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const failures = [];
+    for (const [name, fn] of Object.entries(parts)) {
+      try {
+        fn();
+      } catch (err) {
+        failures.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (failures.length > 0) throw new Error(`teardown failed:\n  ${failures.join('\n  ')}`);
+  };
+}

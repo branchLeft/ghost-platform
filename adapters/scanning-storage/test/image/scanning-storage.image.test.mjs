@@ -11,8 +11,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  assertNothingLeft,
   docker,
+  labelArgs,
   pollHttp200,
+  reclaimHostOwnership as reclaimOwnership,
+  removeContainerProven,
   reservePort,
   runStep,
   sleep,
@@ -26,6 +30,10 @@ const IMAGE = process.env.IMAGE;
 if (!IMAGE) {
   throw new Error('IMAGE must name the built Ghost image, e.g. IMAGE=ghost-platform:ci');
 }
+
+// Every container and network this file makes carries this component label and
+// the process id (`labelArgs`); the last test fails if any is left.
+const COMPONENT = 'scanning-storage-test';
 
 const OWNER_EMAIL = 'owner@example.com';
 const OWNER_PASSWORD = crypto.randomBytes(24).toString('hex');
@@ -43,7 +51,7 @@ function dockerOk(...args) {
 // a container needs to reach another container. A named network is
 // portable in both.
 function createNetwork(name) {
-  docker('network', 'create', name);
+  docker('network', 'create', ...labelArgs(COMPONENT), name);
 }
 
 function removeNetwork(name) {
@@ -55,17 +63,7 @@ function removeNetwork(name) {
 // cannot mask an assertion failure already in flight.
 function reclaimHostOwnership(hostDir) {
   try {
-    docker(
-      'run',
-      '--rm',
-      '-v',
-      `${hostDir}:/reclaim`,
-      IMAGE,
-      'chown',
-      '-R',
-      `${process.getuid()}:${process.getgid()}`,
-      '/reclaim'
-    );
+    reclaimOwnership(IMAGE, hostDir);
   } catch (err) {
     // Best-effort: `fs.chmodSync(..., 0o777)` at setup is what makes
     // teardown work even if this step fails outright (container already
@@ -117,6 +115,7 @@ class GhostContainer {
       'create',
       '--name',
       name,
+      ...labelArgs(COMPONENT),
       '--network',
       network,
       '-p',
@@ -278,7 +277,7 @@ class GhostContainer {
   }
 
   stop() {
-    dockerOk('rm', '-f', '-v', this.name);
+    removeContainerProven(this.name);
   }
 }
 
@@ -305,6 +304,7 @@ class S3MockDouble {
       '-d',
       '--name',
       name,
+      ...labelArgs(COMPONENT),
       '--network',
       network,
       '-p',
@@ -357,7 +357,7 @@ class S3MockDouble {
   }
 
   stop() {
-    dockerOk('rm', '-f', '-v', this.name);
+    removeContainerProven(this.name);
   }
 }
 
@@ -1413,4 +1413,13 @@ describe('a theme upload, against a real Ghost', () => {
       }
     }
   );
+});
+
+// Last on purpose: describes in a file run in order. Each test's `finally`
+// proves its own containers are gone (`removeContainerProven`); this proves no
+// container or network labelled for this run, in any test, was missed.
+describe('teardown', () => {
+  it('leaves no container, volume or network behind', () => {
+    assertNothingLeft(COMPONENT);
+  });
 });
