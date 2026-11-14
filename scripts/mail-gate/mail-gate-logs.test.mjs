@@ -80,3 +80,96 @@ test('an Authorization: Ghost token is replaced', () => {
   assert.equal(out.includes(jwt), false, out);
   assert.equal(out.includes('eyJ'), false, out);
 });
+
+// Shapes no emitter prints today; each is a secret in a form the first redactor
+// did not cover. Every value is an obvious fake.
+test('a cookie inside an escaped JSON string is replaced', () => {
+  const out = redact('{"log":"{\\"cookie\\":\\"ghost-admin.session=esc-c00kie-FAKE\\"}"}', []);
+  assert.equal(out.includes('esc-c00kie-FAKE'), false, out);
+});
+
+test('a set-cookie array, as JSON or as util.inspect prints it, is replaced', () => {
+  const json = redact(
+    '{"set-cookie":["ghost-admin-api-session=arr-one-FAKE; Path=/","b=arr-two-FAKE"]}',
+    []
+  );
+  assert.equal(json.includes('arr-one-FAKE'), false, json);
+  assert.equal(json.includes('arr-two-FAKE'), false, json);
+  const inspected = redact(
+    "{ 'set-cookie': [ 'ghost-admin-api-session=arr-three-FAKE; Path=/' ] }",
+    []
+  );
+  assert.equal(inspected.includes('arr-three-FAKE'), false, inspected);
+  assert.ok(inspected.trimEnd().endsWith('}'), inspected);
+});
+
+test('an Authorization header with any other scheme is replaced', () => {
+  const out = redact('Authorization: Token t0ken-scheme-FAKE-123', []);
+  assert.equal(out.includes('t0ken-scheme-FAKE-123'), false, out);
+});
+
+test('a bare Authorization value is replaced, whatever follows it', () => {
+  const crlf = redact('Authorization: key-0123456789abcdefFAKE\r\nHost: x.example.test', []);
+  assert.equal(crlf.includes('key-0123456789abcdefFAKE'), false, crlf);
+  assert.ok(crlf.includes('Host: x.example.test'), crlf);
+  const sameLine = redact('authorization: deadbeefcafe-FAKE status=401', []);
+  assert.equal(sameLine.includes('deadbeefcafe-FAKE'), false, sameLine);
+});
+
+test('a magic-link token after an HTML-escaped ampersand is replaced', () => {
+  const out = redact(
+    'href="https://gate.example.test/?action=signin&amp;token=amp-t0ken-FAKE&amp;x=1"',
+    []
+  );
+  assert.equal(out.includes('amp-t0ken-FAKE'), false, out);
+  assert.ok(out.includes('action=signin'), out);
+  assert.ok(out.includes('x=1'), out);
+});
+
+test('a magic link percent-encoded inside another URL is replaced, once or twice encoded', () => {
+  const once = redact(
+    'https://redirect.example.test/go?u=https%3A%2F%2Fgate.example.test%2F%3Faction%3Dsignin%26token%3Dpct-t0ken-FAKE%26x%3D1&y=2',
+    []
+  );
+  assert.equal(once.includes('pct-t0ken-FAKE'), false, once);
+  assert.ok(once.includes('action%3Dsignin'), once);
+  assert.ok(once.includes('x%3D1'), once);
+  const twice = redact(
+    'https://r.example.test/go?u=https%253A%252F%252Fg.example.test%252F%253Ftoken%253Dtwice-FAKE',
+    []
+  );
+  assert.equal(twice.includes('twice-FAKE'), false, twice);
+});
+
+test('the base64 of a secret with its padding stripped is replaced', () => {
+  // One `=` of padding (29 bytes) and two (28 bytes).
+  for (const secret of ['pad-key-0123456789abcdef-FAKE', 'pad-key-0123456789abcdef-FAK']) {
+    const padded = b64(secret);
+    assert.ok(padded.endsWith('='), 'the fixture must need padding');
+    const stripped = padded.replace(/=+$/, '');
+    const out = redact(`seen ${stripped} here`, [secret]);
+    assert.equal(out.includes(stripped), false, out);
+  }
+});
+
+test('headers in the rawHeaders array form are replaced', () => {
+  const out = redact(
+    "rawHeaders: [ 'Host', 'x.example.test', 'Cookie', 'ghost-admin.session=raw-c00kie-FAKE', 'Authorization', 'Token raw-t0ken-FAKE', 'Accept', '*/*' ]",
+    []
+  );
+  assert.equal(out.includes('raw-c00kie-FAKE'), false, out);
+  assert.equal(out.includes('raw-t0ken-FAKE'), false, out);
+  assert.ok(out.includes('x.example.test'), out);
+  assert.ok(out.includes("'Accept', '*/*'"), out);
+});
+
+test('text that only looks like the new shapes passes through unchanged', () => {
+  for (const line of [
+    'href="https://gate.example.test/?action=signin&amp;x=1"',
+    'refreshed the session token for slot0',
+    'https://r.example.test/go?u=https%3A%2F%2Fg.example.test%2F%3Faction%3Dsignin&y=2',
+    "rawHeaders: [ 'Host', 'x.example.test', 'Accept', '*/*' ]",
+  ]) {
+    assert.equal(redact(line, []), line);
+  }
+});
