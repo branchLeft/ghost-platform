@@ -21,6 +21,7 @@ import threading
 import time
 import unittest
 import uuid
+from collections.abc import Callable
 from unittest import mock
 
 import backup_worker as bw
@@ -44,6 +45,7 @@ WORKER_PASSWORD = "throwaway-worker-pwd"
 DB1_BACKUP_PASSWORD = "throwaway-db1-backup-pwd"
 TENANTS = ("alpha", "bravo", "charlie")
 WRITER_BOUND_SECONDS = 2.0
+HELD_TRANSACTION_WATCHDOG_SECONDS = 60.0
 SOCKET = "/var/run/mysqld/mysqld.sock"
 CA_IN_CONTAINER = "/var/lib/mysql/ca.pem"
 
@@ -337,6 +339,42 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         self._await(lambda: f"SLEEP({seconds})" in self.container.root_ok("SELECT INFO FROM information_schema.PROCESSLIST;"))
         return session
 
+    def _hold_open_transaction_until_released(self, schema: str) -> Callable[[], None]:
+        """The same uncommitted write as `_hold_open_transaction`, but with no
+        timer: it stays open until the returned `release` commits it. It
+        returns only once the server lists that very session's transaction in
+        `information_schema.INNODB_TRX`, so the dump can never start before
+        the transaction is open or find it already closed. A watchdog
+        releases it after `HELD_TRANSACTION_WATCHDOG_SECONDS` so a dump that
+        never gives up its wait (the bound removed) ends in the assertions
+        rather than hanging the run; a bounded dump is released long before."""
+        session = self.container.root_session()
+        self.addCleanup(self._end_session, session)
+        session.stdin.write(
+            f"BEGIN; UPDATE {schema}.users SET name = 'HELD' WHERE id = 1; SELECT CONNECTION_ID();\n".encode()
+        )
+        session.stdin.flush()
+        connection_id = int(session.stdout.readline().strip())
+        in_trx = f"SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id = {connection_id};"
+        self._await(lambda: self.container.root_ok(in_trx).strip() == "1")
+        guard = threading.Lock()
+        released = threading.Event()
+
+        def release() -> None:
+            with guard:
+                if released.is_set():
+                    return
+                released.set()
+                session.stdin.write(b"COMMIT;\n")
+                session.stdin.flush()
+            self._await(lambda: self.container.root_ok(in_trx).strip() == "0")
+
+        watchdog = threading.Timer(HELD_TRANSACTION_WATCHDOG_SECONDS, release)
+        watchdog.daemon = True
+        watchdog.start()
+        self.addCleanup(watchdog.cancel)
+        return release
+
     def _end_session(self, session: subprocess.Popen) -> None:
         for row in self.container.root_ok(
             "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT SLEEP%';"
@@ -401,11 +439,15 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         self.assertTrue(by_tenant["bravo"].ok and by_tenant["charlie"].ok)
         self.assertRegex(self._read_metrics(), r'backup_worker_lock_aborts_total\{tenant="alpha"\} [1-9]')
 
-    def _db1_dump(self) -> tuple[bounded_snapshot.SnapshotReport, str]:
+    def _db1_dump(self, *, sleep: Callable[[float], None] = time.sleep) -> tuple[bounded_snapshot.SnapshotReport, str]:
         out_path = os.path.join(self.metrics_dir, "db1.sql")
         with contextlib.redirect_stderr(io.StringIO()):
             report = dump_nightly.run_mysqldump(
-                socket_path=SOCKET, password=DB1_BACKUP_PASSWORD, out_path=out_path, popen=self.container.popen
+                socket_path=SOCKET,
+                password=DB1_BACKUP_PASSWORD,
+                out_path=out_path,
+                popen=self.container.popen,
+                sleep=sleep,
             )
         with open(out_path, encoding="utf-8") as handle:
             return report, handle.read()
@@ -421,11 +463,25 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
             extract_tenant_binlog.find_resume_point(io.StringIO(plaintext), tenant_database=f"ghost_{tenant}")
 
     def test_db1s_nightly_dump_retries_past_an_open_transaction(self) -> None:
+        """The dump runs one schema after another, so how long it takes to
+        reach charlie depends on the machine. The transaction therefore is not
+        timed: it is open before the dump starts, and it is committed from the
+        dump's own back-off, which `take_bounded_snapshot` enters only after
+        an attempt has given up on a bound. The retry then runs with the
+        transaction closed, whatever the machine's speed."""
+        backoffs: list[float] = []
         with _writers(self.container) as (writers, window):
-            self._hold_open_transaction("ghost_charlie", 3.5)
-            report, _ = self._db1_dump()
+            release = self._hold_open_transaction_until_released("ghost_charlie")
+
+            def back_off_after_an_abort(seconds: float) -> None:
+                backoffs.append(seconds)
+                release()
+                time.sleep(seconds)
+
+            report, _ = self._db1_dump(sleep=back_off_after_an_abort)
         self._assert_no_writer_stalled(writers, window)
         self.assertGreaterEqual(report.aborted_attempts, 1)
+        self.assertGreaterEqual(len(backoffs), 1)
 
     @staticmethod
     def _checksums(container: _Container, schema: str) -> dict[str, str]:
