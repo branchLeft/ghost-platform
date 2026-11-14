@@ -2,6 +2,18 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
+## Unreleased
+
+- **Breaking: `validateTenantNameClaim` is removed from `naming.ts` and from the
+  package exports.** The tenant-name claim has one implementation, render core's
+  `validateSlugAvailability`, reached through `validateTenantStack`, which
+  `GhostTenant` already called with `{ claimantRepo: process.env.GITHUB_REPOSITORY }`.
+  Behaviour of `GhostTenant` is unchanged in what it accepts: tenant zero from
+  its own repository is accepted, a duplicate from any other repository is
+  refused, and an unset `GITHUB_REPOSITORY` refuses a registered name. Only the
+  wording of the refusal changes, to render core's. `TENANT_NAMES` and
+  `TENANT_NAME_REGISTER` stay.
+
 ## 8.0.0
 
 **The tenant stack holds no secret value. The host renders the secrets file.**
