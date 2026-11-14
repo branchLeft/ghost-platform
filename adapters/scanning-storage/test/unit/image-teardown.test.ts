@@ -24,6 +24,13 @@ const ANON_B = 'b'.repeat(64);
 
 const FAKE_DOCKER = `#!/bin/sh
 state="$FAKE_DOCKER_STATE"
+# Real Docker fails a --format that names a field the listing does not have:
+# \`ps\` has .Names, not .Name, and a fake that accepts either hides that.
+need_field() {
+  want="$1"; shift
+  case " $* " in *" $want "*) return 0 ;; esac
+  echo "template: can't evaluate field: want $want" >&2; exit 1
+}
 case "$1" in
   inspect)
     if [ -f "$state/containers/$4" ]; then cat "$state/containers/$4"; exit 0; fi
@@ -36,9 +43,9 @@ case "$1" in
       if [ -f "$state/volumes/$3" ]; then exit 0; fi
       echo "Error: No such volume: $3" >&2; exit 1
     fi
-    cat "$state/labelled-volumes" 2>/dev/null; exit 0 ;;
-  network) cat "$state/labelled-networks" 2>/dev/null; exit 0 ;;
-  ps) cat "$state/labelled-containers" 2>/dev/null; exit 0 ;;
+    need_field '{{.Name}}' "$@"; cat "$state/labelled-volumes" 2>/dev/null; exit 0 ;;
+  network) need_field '{{.Name}}' "$@"; cat "$state/labelled-networks" 2>/dev/null; exit 0 ;;
+  ps) need_field '{{.Names}}' "$@"; cat "$state/labelled-containers" 2>/dev/null; exit 0 ;;
   rm)
     name=""; withv=no
     for a in "$@"; do

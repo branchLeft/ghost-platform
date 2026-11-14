@@ -352,14 +352,16 @@ export function labelArgs(component) {
   ];
 }
 
+// `docker ps` names its column `.Names`; `network ls` and `volume ls` name it `.Name`.
 function listLabelled(kind, component) {
+  const field = kind[0] === 'ps' ? '{{.Names}}' : '{{.Name}}';
   const filters = [
     `label=branchleft.component=${component}`,
     `label=branchleft.run=${process.pid}`,
   ];
   const out = spawnSync(
     'docker',
-    [...kind, ...filters.flatMap((f) => ['--filter', f]), '--format', '{{.Name}}'],
+    [...kind, ...filters.flatMap((f) => ['--filter', f]), '--format', field],
     { encoding: 'utf8' }
   );
   if (out.error || out.status !== 0) {

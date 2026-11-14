@@ -25,6 +25,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DOUBLE_SCRIPT = path.join(HERE, 'recording-s3-double.cjs');
 
 export const COMPONENT = 'storage-contract-test';
+// Kept for scripts/mail-gate/mail-gate.mjs, which labels its own containers with it.
+export const LABEL = `branchleft.component=${COMPONENT}`;
 export const SITE_URL = 'http://localhost:2368';
 const BOOT_TIMEOUT_MS = 90_000;
 const OWNER_EMAIL = 'owner@example.com';
