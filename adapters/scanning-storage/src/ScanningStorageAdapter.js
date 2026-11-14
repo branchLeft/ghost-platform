@@ -27,6 +27,22 @@ function loadWrappedAdapterClass(name) {
   return (moduleExport && moduleExport.default) || moduleExport;
 }
 
+// Ghost's own image resizer, which Ghost core already depends on and so
+// resolves from this directory as it does Ghost's errors module. The decorator
+// uses it to write the size variants Ghost core asks the object store for
+// directly (scanning-storage.js, "Icon variants"). Loaded when the adapter is
+// built, not when this file is: a missing module must not stop Ghost starting.
+// null makes the decorator log ICON_VARIANTS_UNAVAILABLE on the object-storage
+// images tier.
+function loadImageTransform() {
+  try {
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    return require('@tryghost/image-transform');
+  } catch (error) {
+    return null;
+  }
+}
+
 const Adapter = defineScanningStorageAdapter(StorageBase, { loadWrappedAdapterClass, GhostErrors });
 
 // The verdict channel is a separate story in a separate repo and does not
@@ -53,6 +69,7 @@ module.exports = class ScanningStorageAdapter extends Adapter {
         }),
       ],
       policy: new SafetyPolicy(),
+      imageTransform: loadImageTransform(),
       computeDigest: digestBytes,
       refuseUploadsReason,
       allowVideoAudio: resolveTierPolicy(config).allowVideoAudio,
