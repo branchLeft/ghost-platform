@@ -98,6 +98,52 @@ async function drainUntil(port, token, done, deadline) {
   return seen;
 }
 
+// The `docker run` argument list for the gate's spool. Pure, so the drain-host
+// test can check the arguments the gate really passes, not the text that builds them.
+export function spoolRunArgs({ spool, net, token, drainPort, spoolImage }) {
+  return [
+    'run',
+    '-d',
+    '--name',
+    spool,
+    '--label',
+    LABEL,
+    '--network',
+    net,
+    '--ip',
+    GATE_SPOOL_ADDRESS,
+    '--network-alias',
+    'mail-spool',
+    '--user',
+    '31000:31000',
+    '--read-only',
+    '--tmpfs',
+    '/data:rw,uid=31000,gid=31000,mode=0700',
+    '-e',
+    'PORT=8080',
+    '-e',
+    'SHIM_DRAIN_PORT=8081',
+    '-e',
+    `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,
+    '-e',
+    'SMTP_LISTEN_PORT=2525',
+    '-e',
+    'SHIM_DB_PATH=/data/spool.sqlite',
+    '-e',
+    `SHIM_DRAIN_TOKEN=${token}`,
+    // The shim releases mail at 50 messages an hour by default, so each message after
+    // the first waits 72 s. The gate needs three released (the owner's welcome mail,
+    // the magic link, the newsletter), which takes about 144 s and misses the drain
+    // deadline. Nothing is delivered from the spool during the gate, so a fast release
+    // only shortens the wait; the gate runs it at 3600 an hour.
+    '-e',
+    'SHIM_MESSAGES_PER_HOUR=3600',
+    '-p',
+    `127.0.0.1:${drainPort}:8081`,
+    spoolImage,
+  ];
+}
+
 /**
  * Runs the gate. Never throws: a setup failure is a failed check, so the caller
  * always gets { passed, durationMs, checks }, plus `logs` ({ ghost, spool }: the
@@ -127,47 +173,7 @@ export async function runMailGate({
   try {
     const drainPort = await reservePort();
     createNetwork(net, GATE_SUBNET);
-    docker(
-      'run',
-      '-d',
-      '--name',
-      spool,
-      '--label',
-      LABEL,
-      '--network',
-      net,
-      '--ip',
-      GATE_SPOOL_ADDRESS,
-      '--network-alias',
-      'mail-spool',
-      '--user',
-      '31000:31000',
-      '--read-only',
-      '--tmpfs',
-      '/data:rw,uid=31000,gid=31000,mode=0700',
-      '-e',
-      'PORT=8080',
-      '-e',
-      'SHIM_DRAIN_PORT=8081',
-      '-e',
-      `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,
-      '-e',
-      'SMTP_LISTEN_PORT=2525',
-      '-e',
-      'SHIM_DB_PATH=/data/spool.sqlite',
-      '-e',
-      `SHIM_DRAIN_TOKEN=${token}`,
-      // The shim releases mail at 50 messages an hour by default, so each message after
-      // the first waits 72 s. The gate needs three released (the owner's welcome mail,
-      // the magic link, the newsletter), which takes about 144 s and misses the drain
-      // deadline. Nothing is delivered from the spool during the gate, so a fast release
-      // only shortens the wait; the gate runs it at 3600 an hour.
-      '-e',
-      'SHIM_MESSAGES_PER_HOUR=3600',
-      '-p',
-      `127.0.0.1:${drainPort}:8081`,
-      spoolImage
-    );
+    docker(...spoolRunArgs({ spool, net, token, drainPort, spoolImage }));
     const spoolUp = await pollHttp200(`http://127.0.0.1:${drainPort}/metrics`, {
       containerName: spool,
       deadlineMs: 90_000,

@@ -431,6 +431,22 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
       /exactly the ipam pool subnet/,
     ],
     [
+      'the drain network ipam pool given an ip_range, which narrows the addresses Docker hands out',
+      (d) => {
+        const pool = ((networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipam as Rec).config as Rec[];
+        pool[0].ip_range = '10.231.200.2/32';
+      },
+      /exactly the ipam pool subnet/,
+    ],
+    [
+      'the drain network ipam pool given aux_addresses, which reserves addresses Docker must skip',
+      (d) => {
+        const pool = ((networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipam as Rec).config as Rec[];
+        pool[0].aux_addresses = { reserved: '10.231.200.5' };
+      },
+      /exactly the ipam pool subnet/,
+    ],
+    [
       'the drain network with no ipam block',
       (d) => {
         delete (networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).ipam;
