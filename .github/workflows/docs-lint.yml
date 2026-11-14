@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
 
+# The called workflow narrows itself to this too; stated here so the caller's
+# grant is not the repository default (scripts/test_workflow_permissions.py).
+permissions:
+  contents: read
+
 # One run per pull request: a newer push cancels the superseded run. A push,
 # merge_group, schedule or manual run is its own group and is never cancelled.
 concurrency:

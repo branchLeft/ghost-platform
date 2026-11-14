@@ -21,6 +21,14 @@ on:
 # build — see that file's header for why the rebuild there is accepted
 # rather than shared), nothing more.
 
+# Read-only, stated rather than inherited: with no `permissions` key a
+# same-repo pull request's token gets the repository default, which is write
+# to contents, packages and actions, and the image-test steps below run
+# PR-authored code. Checkout is the only step that uses the token.
+# scripts/test_workflow_permissions.py fails a workflow without this key.
+permissions:
+  contents: read
+
 # One run per pull request: a newer push cancels the superseded run. A push,
 # merge_group, schedule or manual run is its own group and is never cancelled.
 concurrency:
@@ -38,6 +46,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No later step talks to GitHub, so the token is not left in
+        # .git/config for the PR-authored steps to read.
+        with:
+          persist-credentials: false
 
       - name: Build image
         run: docker build --tag ghost-platform:ci .
