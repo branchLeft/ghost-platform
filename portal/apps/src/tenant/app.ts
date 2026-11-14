@@ -11,6 +11,12 @@ import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { renderSupportAccess } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
+import {
+  explainerLinks,
+  payingOnlyBody,
+  renderExplainerPage,
+  renderFaqPage,
+} from './explainerPages.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import { createSupportRoutes } from './supportRoutes.js';
@@ -97,10 +103,19 @@ export function createTenantPortal(options: TenantPortalOptions) {
       const pending = await options.db.pendingAcceptances(scope, now());
       const notice =
         pending.length === 0 ? '' : '<p><a href="/documents">DOCUMENTS_AWAIT_ACCEPTANCE</a></p>';
-      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}${support.linkFrom('HOME')}`;
+      const explainer = explainerLinks(await options.db.ownKind(scope));
+      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${explainer}${renderHealth(health)}${support.linkFrom('HOME')}`;
     },
     pages: {
       ...support.pages,
+      '/explainer': async (scope) =>
+        payingOnlyBody(scope, (bound) => options.db.ownKind(bound), renderExplainerPage),
+      '/faq': async (scope) =>
+        payingOnlyBody(
+          scope,
+          (bound) => options.db.ownKind(bound),
+          () => renderFaqPage(options.support !== undefined)
+        ),
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
