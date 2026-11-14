@@ -296,6 +296,28 @@ function parseAmzDate(value: string | undefined): number {
   return ms;
 }
 
+/**
+ * What identifies one signed request, read from a request the verifier has
+ * already accepted: the hex signature, which covers the key id, date, method,
+ * path, query and payload hash, and the instant the request was signed.
+ * Undefined when either cannot be read.
+ */
+export function requestIdentity(
+  request: GatewayRequest
+): { readonly signature: string; readonly requestTimeMs: number } | undefined {
+  try {
+    const headers = collectHeaders(request.headers);
+    const match = AUTHORIZATION.exec(single(headers, 'authorization') ?? '');
+    if (match === null) return undefined;
+    return {
+      signature: match[3] as string,
+      requestTimeMs: parseAmzDate(single(headers, 'x-amz-date')),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function checkPayloadHash(headers: ReadonlyMap<string, readonly string[]>): string {
   const declared = single(headers, 'x-amz-content-sha256');
   if (declared === undefined) return refuse('signed-header-absent');
@@ -335,7 +357,8 @@ function parseSignedHeaders(line: string): string[] {
 export class SigV4Verifier implements SignatureVerifier {
   private readonly region: string;
   private readonly service: string;
-  private readonly clockWindowMs: number;
+  /** How far a request's date may be from now, either way. A replay guard must remember for this long. */
+  readonly clockWindowMs: number;
   private readonly secrets: SigningSecretSource;
   private readonly now: () => number;
 

@@ -23,6 +23,8 @@ export interface RefusalLogEntry {
   readonly folder?: string;
   /** The operation named, when the request got as far as being routed. */
   readonly operation?: AllowedOperation;
+  /** A finer reason inside the code, for the log only; never sent to the caller. */
+  readonly reason?: string;
 }
 
 export interface GatewayLogger {

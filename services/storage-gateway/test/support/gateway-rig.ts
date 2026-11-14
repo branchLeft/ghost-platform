@@ -6,7 +6,7 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
-import { createServer, request as httpRequest, type Server } from 'node:http';
+import { Agent, createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,6 +136,40 @@ export function call(
   });
 }
 
+/**
+ * `call` from a client that asks to keep its connection, as the AWS SDK does.
+ * `call` itself sends `Connection: close`, so the gateway's reply would say
+ * close whatever it chose; here only the gateway can make the reply say it.
+ */
+export function callKeepAlive(
+  port: number,
+  method: string,
+  target: string,
+  headers: Readonly<Record<string, string>>,
+  body?: string | Buffer
+): Promise<HttpResult> {
+  const agent = new Agent({ keepAlive: true });
+  return new Promise<HttpResult>((resolve, reject) => {
+    const req = httpRequest(
+      { host: '127.0.0.1', port, method, path: target, headers, agent },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            text: Buffer.concat(chunks).toString('utf8'),
+          })
+        );
+        res.on('error', reject);
+      }
+    );
+    req.on('error', reject);
+    req.end(body);
+  }).finally(() => agent.destroy());
+}
+
 export interface Minted {
   readonly keyId: string;
   readonly secret: string;
@@ -180,6 +214,8 @@ export interface Rig {
 
 export interface RigOptions {
   readonly env?: Record<string, string>;
+  /** How many accepted signatures the replay guard remembers; the service default when absent. */
+  readonly replayLimit?: number;
 }
 
 let folderCounter = 0;
@@ -240,6 +276,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     sink: (line) => lines.push(line),
     trustedUid: process.getuid?.() ?? 0,
     adminClock: () => startMs + clockOffsetMs,
+    ...(options.replayLimit === undefined ? {} : { replayLimit: options.replayLimit }),
   });
   const port = gateway.address.port;
   const adminPort = (gateway.adminAddress as AddressInfo).port;

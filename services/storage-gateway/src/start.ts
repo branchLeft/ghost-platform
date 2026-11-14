@@ -15,6 +15,7 @@ import { createLog, type LogSink } from './logging.js';
 import { readOwnerOnlyFile } from './secretFile.js';
 import { createGatewayListener } from './server.js';
 import { SigV4Verifier } from './sigv4-verifier.js';
+import { createInMemoryReplayGuard } from './replay.js';
 import { createInMemoryUploadBindings } from './uploads.js';
 import { UpstreamCredentials, createUpstream } from './upstream.js';
 
@@ -46,6 +47,8 @@ export interface StartOptions {
   readonly trustedUid?: number;
   /** Test seam: the admin interface's clock, in milliseconds. */
   readonly adminClock?: () => number;
+  /** Test seam: how many accepted signatures the replay guard remembers. */
+  readonly replayLimit?: number;
 }
 
 export interface RunningGateway {
@@ -114,6 +117,11 @@ export async function startGateway(
       region: config.region,
       secrets: createSigningSecretSource(store, master),
     });
+    // One window for both: the guard must remember a signature as long as the verifier would still accept it.
+    const replay = createInMemoryReplayGuard({
+      windowMs: verifier.clockWindowMs,
+      ...(options.replayLimit === undefined ? {} : { limit: options.replayLimit }),
+    });
     const upstream = createUpstream({
       endpoint: config.upstream.endpoint,
       region: config.upstream.region,
@@ -149,6 +157,8 @@ export async function startGateway(
           : { spoolThresholdBytes: config.spoolThresholdBytes }),
         maxBodyBytes: config.maxBodyBytes,
         maxConcurrentUploads: config.maxConcurrentUploads,
+        maxConcurrentUploadsPerTenant: config.maxConcurrentUploadsPerTenant,
+        replay,
         readiness,
       },
       {
