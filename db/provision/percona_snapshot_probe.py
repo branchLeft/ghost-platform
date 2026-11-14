@@ -33,6 +33,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import extract_tenant_binlog  # noqa: E402
+import gtid_snapshot  # noqa: E402
 import replication_client_probe as rcp  # noqa: E402
 import snapshot_probe as sp  # noqa: E402
 
@@ -819,6 +820,94 @@ def outcome_message(code: int, controls: str, rounds: Mapping[int, RoundReading]
     return "the comment-form finding (control 6) could not be recorded"
 
 
+class RedReason(NamedTuple):
+    """The reason a sabotage's red must give: which control goes red, and the
+    text its RED line carries. Exit 1 alone is not the stated reason: the
+    wrapper also exits 1 on a setup failure and the probe reports a crash as a
+    red control titled "did not complete"."""
+
+    control: int
+    needles: tuple[str, ...]
+
+
+_LOST = "committed rows LOST (in the seeding set, not in the snapshot)"
+_DUPLICATED = "rows DUPLICATED (in the snapshot, not in the seeding set)"
+
+RED_REASONS: Mapping[str, tuple[RedReason, ...]] = {
+    # A transaction committed after the snapshot is in the set read afterwards,
+    # not in the dump: the oracle counts it lost.
+    "commit-before-coordinates": (RedReason(1, (_LOST,)),),
+    # The long reader stalls the writers past the limit, and the dump holds a
+    # global lock the sampler sees.
+    "global-lock": (
+        RedReason(2, (f"exceeds the {sp._ms(LATENCY_LIMIT_SECONDS)} limit",)),
+        RedReason(3, ("the dump accounts held", "GLOBAL/")),
+    ),
+    "gtid-drop-one": (RedReason(1, (_DUPLICATED,)),),
+    "gtid-extra-one": (RedReason(1, (_LOST,)),),
+}
+
+_CONTROL_LINE = re.compile(r"^(?P<label>PASS|FAIL|RED|FINDING|INCONCLUSIVE) control (?P<number>\d+), (?P<rest>.*)$")
+_LOG_BOUNDARY = re.compile(r"^(?:(?:PASS|FAIL|RED|FINDING|INCONCLUSIVE) control \d+, |== |RED as expected|SABOTAGE NOT DETECTED|CANDIDATE INADEQUATE|host too noisy)")
+_DID_NOT_COMPLETE = "did not complete"
+
+
+def red_control_texts(log: str) -> dict[int, str]:
+    """Each control that went RED in a probe log, to its whole RED entry (the
+    line and any lines that follow it before the next control or the outcome)."""
+    texts: dict[int, str] = {}
+    current: int | None = None
+    for line in log.splitlines():
+        match = _CONTROL_LINE.match(line)
+        if match is not None:
+            current = int(match["number"]) if match["label"] == "RED" else None
+            if current is not None:
+                texts[current] = match["rest"]
+        elif current is not None and not _LOG_BOUNDARY.match(line):
+            texts[current] += "\n" + line
+        else:
+            current = None
+    return texts
+
+
+def red_log_problems(sabotage: str, log: str) -> list[str]:
+    """Why a sabotage run's log does not show its stated reason, empty when it
+    does: the probe reached its own verdict (not a setup failure), exactly the
+    controls the sabotage targets went red, none of them by a crash, and each
+    RED entry carries the reason `RED_REASONS` states for it."""
+    wanted = RED_REASONS.get(sabotage)
+    if wanted is None:
+        return [f"no stated reason is recorded for sabotage {sabotage!r}; known: {sorted(RED_REASONS)}"]
+    problems = []
+    if f"RED as expected under sabotage {sabotage}: the control sees the failure" not in log.splitlines():
+        problems.append("the probe never reached its verdict: no 'RED as expected' line, so this is a setup or harness failure, not the control going red")
+    red = red_control_texts(log)
+    for number, text in sorted(red.items()):
+        if text.startswith(_DID_NOT_COMPLETE):
+            problems.append(f"control {number} went red because it {text}: a crash, not the stated reason")
+    targeted = {reason.control for reason in wanted}
+    for number in sorted(set(red) - targeted):
+        problems.append(f"control {number} went red but sabotage {sabotage} does not target it")
+    for reason in wanted:
+        text = red.get(reason.control)
+        if text is None:
+            problems.append(f"control {reason.control} did not go red")
+            continue
+        for needle in reason.needles:
+            if needle not in text:
+                problems.append(f"control {reason.control} went red without the stated reason {needle!r}")
+    return problems
+
+
+def check_red(args: argparse.Namespace) -> int:
+    problems = red_log_problems(args.sabotage, pathlib.Path(args.log).read_text(errors="replace"))
+    for problem in problems:
+        print(f"RED FOR THE WRONG REASON ({args.sabotage}): {problem}", file=sys.stderr)
+    if not problems:
+        print(f"red for the stated reason ({args.sabotage}): " + "; ".join(f"control {r.control}: {', '.join(r.needles)}" for r in RED_REASONS[args.sabotage]))
+    return 1 if problems else 0
+
+
 _OK = ("mysql-bin.000003", 1461)
 _NEXT = ("mysql-bin.000003", 1700)
 _SETTINGS = {"log_bin": "1", "binlog_format": "ROW", "sync_binlog": "1", "gtid_mode": "ON", "enforce_gtid_consistency": "ON"}
@@ -1080,26 +1169,30 @@ def revoke_old_path(run: Run) -> None:
 
 
 def dump_argv(run: Run, tenant: str, *, coordinates: bool = False) -> list[str]:
-    """The per-tenant dump, as dump_tenant.py takes it, plus --no-tablespaces
-    (the account has no PROCESS). On Percona it writes the snapshot's GTID set
-    (--set-gtid-purged=ON) and no file and position: `coordinates` adds
+    """The per-tenant dump: the production command, `gtid_snapshot.dump_args`,
+    called and not copied, so a change to the production flags changes what
+    this proof dumps with. On Percona it is that command unchanged
+    (--set-gtid-purged=ON, no file and position): `coordinates` adds
     --source-data=2 for control 6 alone, which only records the comment. The
-    stock no-lock case reads the set itself after the dump, and a stock account
+    stock no-lock case reads the set itself after the dump, so it carries
+    --set-gtid-purged=OFF in the GTID option's place, and a stock account
     without RELOAD cannot use --source-data. The retired path takes it."""
     old_path = run.mode == "old-path"
-    argv = [
+    percona = run.mode == "percona"
+    flags = gtid_snapshot.dump_args(tenant)
+    if flags[-2:] != ["--databases", tenant]:
+        raise sp.ProofError(f"gtid_snapshot.dump_args({tenant!r}) no longer ends with --databases {tenant}: {flags}")
+    options = flags[:-2]
+    if not percona:
+        options = ["--set-gtid-purged=OFF" if option == gtid_snapshot.GTID_OPTION else option for option in options]
+    return [
         "mysqldump",
         f"--user={run.account(tenant)}",
-        "--single-transaction",
-        *(["--source-data=2"] if old_path or (coordinates and run.mode == "percona") else []),
-        "--routines",
-        "--triggers",
-        f"--set-gtid-purged={'ON' if run.mode == 'percona' else 'OFF'}",
-        "--no-tablespaces",
+        *options,
+        *(["--source-data=2"] if old_path or (coordinates and percona) else []),
         "--databases",
         tenant,
     ]
-    return argv
 
 
 def source_gtid_executed(server: sp.Server) -> str:
@@ -1477,6 +1570,20 @@ def get_scenario(run: Run) -> Scenario:
 # --------------------------------------------------------------------------
 
 
+def undetected_mutation(mutation: str, oracle: OracleCount) -> Verdict | None:
+    """Under `gtid-drop-one` and `gtid-extra-one` a red counts only when the
+    oracle itself, reading the source's binary log, saw the one changed
+    transaction: a drop shows as a duplicated row, an extra as a lost one. None
+    when it did; otherwise the green verdict (the sabotage went undetected, so
+    the proof exits 2), whatever the replica did."""
+    if mutation not in ("drop", "extra"):
+        raise ValueError(f"unknown mutation {mutation!r}")
+    seen = oracle.duplicated if mutation == "drop" else oracle.lost
+    if seen:
+        return None
+    return Verdict(True, f"the oracle did not see the {mutation} of one transaction ({oracle.lost} lost, {oracle.duplicated} duplicated)")
+
+
 def control_1(run: Run) -> sp.ControlResult:
     """The variables exist, GTID mode is on, and a replica seeded from each
     dump's GTID set matches every table of every tenant. The oracle beside it
@@ -1507,11 +1614,9 @@ def control_1(run: Run) -> sp.ControlResult:
     if mutation is not None:
         # Red only counts when the oracle itself saw the one changed
         # transaction: a drop shows as a duplicated row, an extra as a lost one.
-        seen = scenario.oracle.duplicated if mutation == "drop" else scenario.oracle.lost
-        if not seen:
-            return sp.ControlResult(
-                1, title, Verdict(True, f"the oracle did not see the {mutation} of one transaction ({scenario.oracle.lost} lost, {scenario.oracle.duplicated} duplicated)"), numbers
-            )
+        undetected = undetected_mutation(mutation, scenario.oracle)
+        if undetected is not None:
+            return sp.ControlResult(1, title, undetected, numbers)
     if run.sabotage:
         verdict = rounds
     elif rounds.passed:
@@ -1711,6 +1816,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner.add_argument("--source-kind", choices=SOURCE_KINDS, default="percona")
     runner.add_argument("--controls", default="1 2 3 4 5 6")
     runner.add_argument("--sabotage", default=None)
+    check = sub.add_parser("check-red", help="check that a sabotage run's log shows the stated reason, not just exit 1")
+    check.add_argument("--sabotage", required=True)
+    check.add_argument("--log", required=True)
     args = parser.parse_args(argv)
     if args.self_test:
         failed = self_test()
@@ -1720,6 +1828,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1 if failed else 0
     if args.command == "run":
         return run_probe(args)
+    if args.command == "check-red":
+        return check_red(args)
     parser.print_help()
     return 64
 

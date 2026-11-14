@@ -3,11 +3,23 @@ name: CodeQL
 on:
   push:
     branches: [main]
+    paths:
+      - '**/*.js'
+      - '**/*.jsx'
+      - '**/*.mjs'
+      - '**/*.cjs'
+      - '**/*.ts'
+      - '**/*.tsx'
+      - '**/*.mts'
+      - '**/*.cts'
+      - '**/*.vue'
+      - '**/*.html'
+      - '.github/workflows/codeql.yml'
   # A pull request starts this only when its diff touches a file the
-  # javascript-typescript extractor reads, so a documentation-only or
-  # YAML-only pull request does not take a runner slot for an analysis whose
-  # input did not change. Push to main and the weekly schedule stay unfiltered
-  # and analyse the whole tree.
+  # javascript-typescript extractor reads, so a documentation-only or YAML-only
+  # pull request does not take a runner slot for an analysis whose input did not
+  # change. A push to main starts it on the same paths; the weekly schedule is
+  # unfiltered and analyses the whole tree.
   pull_request:
     branches: [main]
     paths:

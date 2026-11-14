@@ -145,6 +145,15 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+// A resizer that transforms nothing: these tests are about the type a stored
+// object is served with, and a tier with no resizer logs at boot
+// (icon-size-variants.test.ts covers the variants themselves).
+const NO_TRANSFORM = {
+  canTransformFileExtension: () => false,
+  shouldResizeFileExtension: () => false,
+  canTransformToFormat: () => false,
+};
+
 function buildS3Adapter({ unavailable = [], wrappedConfig = {}, logger } = {}) {
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
     loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ S3Storage: FakeS3Storage }),
@@ -161,6 +170,7 @@ function buildS3Adapter({ unavailable = [], wrappedConfig = {}, logger } = {}) {
     computeDigest: digestBytes,
     holdRetryMs: 20,
     holdLogger: logger ?? { error: () => {} },
+    imageTransform: NO_TRANSFORM,
   });
   return { instance, verdictClient };
 }

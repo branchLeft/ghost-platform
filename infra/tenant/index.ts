@@ -17,7 +17,6 @@ import {
   type TenantStackDescriptor,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
-import { validateTenantNameClaim } from './naming';
 
 export interface GhostTenantArgs {
   /** The paying tenant's descriptor, as the render core defines it, without
@@ -129,11 +128,10 @@ export class GhostTenant extends pulumi.ComponentResource {
           `is reconciled by the broker, never by this component.`
       );
     }
-    // A registered tenant name is taken only from its own repository. Runs
-    // first: a duplicate of tenant zero must not get as far as rendering.
-    validateTenantNameClaim(args.descriptor.slug);
-    // Render core 0.4.0 enforces the same register and needs the claimant: with
-    // none, even tenant zero's own repository is refused. Same source as above.
+    // Render core's claim rule is the only one: a registered tenant name is taken
+    // only from its own repository, which Actions reports in GITHUB_REPOSITORY.
+    // With the variable unset (a local run) render core refuses a registered
+    // name, so this fails closed. See naming.md#the-tenant-name-claim.
     const descriptor = validateTenantStack(args.descriptor, args.zones, {
       claimantRepo: process.env['GITHUB_REPOSITORY'],
     });
@@ -233,7 +231,6 @@ export {
   sqlIdentifier,
   stackDirectory,
   stackName,
-  validateTenantNameClaim,
   validateTenantSlug,
 } from './naming';
 export type { RegisteredName } from './naming';

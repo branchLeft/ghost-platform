@@ -195,6 +195,12 @@ jobs:
       - name: Demo host mail spool CI path filter tests
         run: python3 -m unittest discover -s scripts -p 'test_demo_host_mail_spool_ci_paths.py'
 
+      # A workflow that filters pull requests by path must filter its push to
+      # main the same way, or every merge re-runs it on a diff it never reads.
+      # Fails for a path-less push not listed, with a reason, as an exception.
+      - name: Workflow push path filter test
+        run: python3 -m unittest discover -s scripts -p 'test_workflow_push_paths.py'
+
       # Each gate of the demo site block broken in a scratch copy: the suite must
       # go red for every one, and green on the real copy.
       - name: Demo site block sabotage proof
@@ -205,6 +211,14 @@ jobs:
       # change on either side fails here rather than on the host.
       - name: Control host provisioning script tests
         run: python3 -m unittest discover -s control/provision -p 'test_*.py'
+
+      # The app host's support-access textfile writer (adapters/sso/scripts/host/
+      # branchleft-break-glass-textfile.py): its file is the contract the portal's
+      # collector reads, and a tenant it cannot read must have no series, never
+      # `closed`. Stand-in docker and wrapper executables; no Docker, no root.
+      # The sabotage cases break the real source and require the matching check red.
+      - name: Support-access textfile writer tests and sabotage proof
+        run: python3 -m unittest discover -s adapters/sso/scripts/host -p 'test_*.py' -v
 
       # registers/tenant-names.json is the only list of taken tenant names. The
       # two published TypeScript packages carry generated copies of it, and a
