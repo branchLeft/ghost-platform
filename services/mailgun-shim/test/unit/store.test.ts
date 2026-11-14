@@ -531,6 +531,118 @@ describe('createSqliteStore — the drain handover (claimForDrain / ackDrain)', 
     expect(drained[0]!.payload).toEqual(payload());
   });
 
+  it('claims login mail (no email id) ahead of an older bulk batch, and keeps oldest-first within each class', () => {
+    store.enqueueBatch({
+      batchId: 'bulk-old',
+      domain: DOMAIN,
+      emailId: 'campaign-1',
+      payload: payload(),
+      recipients: ['bulk-1@example.com', 'bulk-2@example.com', 'bulk-3@example.com'],
+      now: 100,
+    });
+    store.enqueueBatch({
+      batchId: 'login-a',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['login-a@example.com'],
+      now: 200,
+    });
+    store.enqueueBatch({
+      batchId: 'login-b',
+      domain: DOMAIN,
+      emailId: '',
+      payload: payload(),
+      recipients: ['login-b@example.com'],
+      now: 300,
+    });
+
+    const drained = store.claimForDrain(400, 30, 10);
+    expect(drained.map((r) => r.recipient)).toEqual([
+      'login-a@example.com',
+      'login-b@example.com',
+      'bulk-1@example.com',
+      'bulk-2@example.com',
+      'bulk-3@example.com',
+    ]);
+  });
+
+  it('a login message arriving while a bulk batch is mid-drain takes the next claim before the rest of that batch', () => {
+    store.enqueueBatch({
+      batchId: 'bulk-old',
+      domain: DOMAIN,
+      emailId: 'campaign-1',
+      payload: payload(),
+      recipients: ['bulk-1@example.com', 'bulk-2@example.com', 'bulk-3@example.com'],
+      now: 100,
+    });
+    const first = store.claimForDrain(150, 30, 1);
+    expect(first.map((r) => r.recipient)).toEqual(['bulk-1@example.com']);
+
+    store.enqueueBatch({
+      batchId: 'login-a',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['login-a@example.com'],
+      now: 160,
+    });
+
+    const second = store.claimForDrain(170, 30, 1);
+    expect(second.map((r) => r.recipient)).toEqual(['login-a@example.com']);
+    const third = store.claimForDrain(171, 30, 2);
+    expect(third.map((r) => r.recipient)).toEqual(['bulk-2@example.com', 'bulk-3@example.com']);
+  });
+
+  it('a lapsed bulk lease is re-offered behind login mail, not ahead of it', () => {
+    store.enqueueBatch({
+      batchId: 'bulk-old',
+      domain: DOMAIN,
+      emailId: 'campaign-1',
+      payload: payload(),
+      recipients: ['bulk-1@example.com'],
+      now: 0,
+    });
+    const [claimed] = store.claimForDrain(0, 30, 10);
+    store.enqueueBatch({
+      batchId: 'login-a',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['login-a@example.com'],
+      now: 20,
+    });
+
+    const reoffer = store.claimForDrain(31, 30, 10);
+    expect(reoffer.map((r) => r.recipient)).toEqual(['login-a@example.com', 'bulk-1@example.com']);
+    expect(reoffer[1]!.id).toBe(claimed!.id);
+  });
+
+  it('under the throttle, login mail takes the tokens first and the bulk rows wait untouched', () => {
+    store.enqueueBatch({
+      batchId: 'bulk-old',
+      domain: DOMAIN,
+      emailId: 'campaign-1',
+      payload: payload(),
+      recipients: ['bulk-1@example.com'],
+      now: 0,
+    });
+    store.enqueueBatch({
+      batchId: 'login-a',
+      domain: DOMAIN,
+      emailId: null,
+      payload: payload(),
+      recipients: ['login-a@example.com'],
+      now: 10,
+    });
+    let tokens = 1;
+    const canSend = () => tokens-- > 0;
+
+    const drained = store.claimForDrain(20, 30, 10, canSend);
+    expect(drained.map((r) => r.recipient)).toEqual(['login-a@example.com']);
+    expect(store.countUndrainedRecipients()).toBe(2);
+  });
+
   it('a limit caps how many rows a single claim returns, and the rest stay pending for the next call', () => {
     store.enqueueBatch({
       batchId: 'batch-1',
