@@ -212,6 +212,14 @@ jobs:
       - name: Control host provisioning script tests
         run: python3 -m unittest discover -s control/provision -p 'test_*.py'
 
+      # The app host's support-access textfile writer (adapters/sso/scripts/host/
+      # branchleft-break-glass-textfile.py): its file is the contract the portal's
+      # collector reads, and a tenant it cannot read must have no series, never
+      # `closed`. Stand-in docker and wrapper executables; no Docker, no root.
+      # The sabotage cases break the real source and require the matching check red.
+      - name: Support-access textfile writer tests and sabotage proof
+        run: python3 -m unittest discover -s adapters/sso/scripts/host -p 'test_*.py' -v
+
       # registers/tenant-names.json is the only list of taken tenant names. The
       # two published TypeScript packages carry generated copies of it, and a
       # register edit that was not regenerated, or a hand edit to a copy, fails
