@@ -466,19 +466,38 @@ The URL is a superuser on a throwaway cluster, as for `portal/data`.
 
 ### The browser journey
 
-`pnpm run journey` walks the portal in a real Chromium (Playwright, an exact
-version in `package.json`) against an HTTP test identity provider, with the
-portal on the fixture database, and saves one full-page screenshot per screen
-in `journey-screenshots/journey/` (`JOURNEY_SCREENSHOT_DIR` changes it). It
-needs the same `PORTAL_TEST_DATABASE_URL` as the tests and a browser:
-`pnpm exec playwright install chromium`. CI runs it in
-`.github/workflows/portal-apps-journey.yml` and uploads the screenshots.
+`pnpm run journey` walks the promotion journey in a real Chromium (Playwright,
+an exact version in `package.json`) and saves one full-page screenshot per
+screen under `journey-screenshots/` (`JOURNEY_SCREENSHOT_DIR` changes it). It
+needs the same `PORTAL_TEST_DATABASE_URL` as the tests, a browser
+(`pnpm exec playwright install chromium`) and `pnpm run build` here, in
+`services/provisioning-controller` and in the other linked packages.
 
-- The identity provider is `test/idpServer.ts`: discovery, keys, authorize
-  (code with PKCE) and token, for a list of users given at start. It listens on
-  loopback only, refuses to start under `NODE_ENV=production`, and is kept out
-  of `dist`, the image and every import in `src/` by `test/testOnlyGuard.test.ts`.
-- The walk is the list in `test/journey/steps/index.ts`. To add a screen, add
-  one `JourneyStep` there: how to reach the screen, and the placeholder text it
-  must show. A step whose screen lacks that text fails the walk and is saved as
-  `<position>-<id>-FAILED.png`.
+The tenant portal and the owner console run as their own processes, each
+configured only by the variables and files it reads in production, against the
+fixture database, an HTTP test identity provider (`test/idpServer.ts`), the
+provisioning mock (`services/provisioning-controller/dist/mock`) as its own
+process, and an SMTP server standing in for the mail host. Set `JOURNEY_IMAGE`
+to a `registry/name@sha256:...` reference and the two applications run from that
+image instead, on the host network; a tag is refused. The rig, the identity
+provider and the mail double are never in the image.
+
+- The walk is the list in `test/journey/steps/index.ts`: sign in, See my demo,
+  Ask for Essentials, the owner's console sign-in, the queue with Approve, the
+  Essentials site, with the tenant's home, the request's confirmation and the
+  queue after the click photographed between. `PROFESSIONAL_JOURNEY` is the
+  second run, the Professional enquiry to its confirmation, with the mail
+  double holding one message. To add a screen, add one `JourneyStep`: whose page
+  it is, how to reach the screen, and the placeholder text it must show.
+- A step whose screen lacks that text fails the walk and is saved as
+  `<position>-<id>-FAILED.png`. The control case drops the owner's Approve: the
+  Essentials site screen then shows the demo placeholder and the walk fails
+  there.
+- The identity provider listens on loopback only, refuses to start under
+  `NODE_ENV=production`, and is kept out of `dist`, the image and every import
+  in `src/` by `test/testOnlyGuard.test.ts`.
+- CI: `.github/workflows/portal-apps-journey.yml` walks the build of the
+  checkout on every pull request, and walks the pushed image after
+  `portal-apps-image.yml` has passed on main, or by hand with a digest. It
+  verifies the digest's attestation first, shows that an unattested image is
+  refused, and checks the image holds no test identity provider or credential.
