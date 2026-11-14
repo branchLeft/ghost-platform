@@ -89,7 +89,6 @@ export type {
 } from './minorEligibility.js';
 export { runUnattendedMinor } from './unattendedMinor.js';
 export type { UnattendedMinorRequest, UnattendedOutcome } from './unattendedMinor.js';
-export { runRelease } from './ringController.js';
 export type {
   Health,
   Held,
