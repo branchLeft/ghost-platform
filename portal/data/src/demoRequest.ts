@@ -73,6 +73,27 @@ export interface DemoRequestView {
   submittedAt: Date;
 }
 
+/**
+ * What a prospect reads back about their own request: which request it is,
+ * what they named the publication and when it was recorded. Never another
+ * address's: the database's row policy returns the bound address's row alone.
+ */
+export interface OwnRequestView {
+  demoId: string;
+  publicationName: string;
+  submittedAt: Date;
+}
+
+export function deriveOwnRequestView(
+  row: Pick<typeof demoRequest.$inferSelect, 'demoId' | 'publicationName' | 'submittedAt'>
+): OwnRequestView {
+  return {
+    demoId: row.demoId,
+    publicationName: row.publicationName,
+    submittedAt: row.submittedAt,
+  };
+}
+
 export function deriveRequestView(row: typeof demoRequest.$inferSelect): DemoRequestView {
   return {
     demoId: row.demoId,
@@ -169,16 +190,26 @@ function listed(
 }
 
 /**
+ * The address as the table holds it: lower-case, one `@`, a dotted domain. The
+ * submission and the status read both go through it, so the address a request
+ * is stored under and the address a prospect reads it back with are one shape.
+ */
+export function parseVerifiedAddress(value: unknown): string {
+  const address = text('verifiedAddress', value, ADDRESS_MAX, true)!;
+  if (address !== address.toLowerCase() || !ADDRESS.test(address)) {
+    throw new InvalidDemoRequestError('verifiedAddress');
+  }
+  return address;
+}
+
+/**
  * Parses a submission into the row the table takes, or refuses it naming the
  * first field at fault. The table repeats every rule as a check, so a caller
  * that skips this is refused by the database; this gives the application a
  * typed error before a statement is spent.
  */
 export function parseDemoRequest(input: DemoRequestInput): NewDemoRequest {
-  const address = text('verifiedAddress', input.verifiedAddress, ADDRESS_MAX, true)!;
-  if (address !== address.toLowerCase() || !ADDRESS.test(address)) {
-    throw new InvalidDemoRequestError('verifiedAddress');
-  }
+  const address = parseVerifiedAddress(input.verifiedAddress);
   if (typeof input.newToGhost !== 'boolean') throw new InvalidDemoRequestError('newToGhost');
   const consent = text('consentWording', input.consentWording, WORDING_MAX, true, true)!;
   const explainer = text('explainerWording', input.explainerWording, WORDING_MAX, true, true)!;

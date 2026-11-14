@@ -123,3 +123,20 @@ export function grantStatements(
   }
   return out;
 }
+
+/**
+ * The statements for what migration `tag` added to an object an earlier
+ * migration made: only the grants the manifest records as added by `tag`.
+ */
+export function addedGrantStatements(object: ManifestObject, tag: string, names: Names): string[] {
+  const word = OBJECT_WORD[object.kind];
+  const target = identity(object.identity);
+  return (object.added ?? [])
+    .filter((later) => later.since === tag)
+    .flatMap((later) => later.grants)
+    .filter((grant) => grant.grantee !== 'PUBLIC')
+    .map(
+      (grant) =>
+        `GRANT ${grant.privileges.join(', ')} ON ${word} ${target} TO ${ident(names[grant.grantee as Principal])}`
+    );
+}

@@ -114,6 +114,11 @@ portal/data/test/registerWrites.test.ts
 # the request table's checks and grants inside a rolled-back transaction to
 # prove each control fails closed, and reads the role's catalog facts back.
 portal/data/test/prospectRole.test.ts
+# Test of the prospect's own-row read: as an administrator it rewrites the
+# request table's row policy, adds one and turns row security off, each inside
+# a rolled-back transaction, to prove the read then widens, and reads the
+# table's grants and policies back from the catalog.
+portal/data/test/prospectStatusRead.test.ts
 # The rollback proof: reads the column catalogue of a throwaway MySQL that a
 # candidate image has migrated, to compare it with the old image's schema.
 rollback-proof/live-schema.mjs
