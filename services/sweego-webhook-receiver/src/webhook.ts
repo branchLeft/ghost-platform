@@ -186,10 +186,14 @@ export function createWebhookListener(deps: WebhookDeps): RequestListener {
       return;
     }
 
-    // Queue first, replay second: a failure between them costs a duplicate on
-    // Sweego's retry, never a lost complaint.
+    // Room in the replay set is checked before the queue is touched, so a full
+    // replay set answers 503 with nothing queued and a retry cannot duplicate.
+    // Then queue first, replay second: a failure between them costs a
+    // duplicate on Sweego's retry, never a lost complaint.
+    const replayKeys = eventKey === null ? [idKey] : [idKey, eventKey];
+    deps.replay.assertRoom(replayKeys);
     deps.queue.append({ outcomeId, class: pickClass(payload), at: Math.floor(deps.now() / 1000) });
-    deps.replay.add(eventKey === null ? [idKey] : [idKey, eventKey]);
+    deps.replay.add(replayKeys);
     deps.stats.increment('accepted');
     finish(res, 200);
   }

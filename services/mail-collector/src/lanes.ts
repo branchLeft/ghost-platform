@@ -2,16 +2,18 @@ import { readFileSync, statSync } from 'node:fs';
 import { writeFileAtomic } from './atomicWrite.js';
 import type { WireMessage } from './drainClient.js';
 import type { Logger } from './log.js';
+import { mailClassOf } from './sendingTarget.js';
 
 /**
  * Two lanes share the drain loop. Login (transactional) mail is a wire
- * message with no emailId; bulk (campaign) mail carries one. This is the
- * same rule the shim applies when it writes X-Ghost-Email-Id.
+ * message with no emailId; bulk (campaign) mail carries one. The class is
+ * decided by `mailClassOf`, the same function the sending target resolver
+ * reads, so the lane and the resolver never disagree about a message.
  */
 export type Lane = 'login' | 'bulk';
 
-export function laneOf(message: Pick<WireMessage, 'emailId'>): Lane {
-  return message.emailId ? 'bulk' : 'login';
+export function laneOf(message: { readonly emailId?: WireMessage['emailId'] | undefined }): Lane {
+  return mailClassOf(message.emailId) === 'bulk' ? 'bulk' : 'login';
 }
 
 const GOOGLE_UNUSUAL_RATE = /^4\d\d[ -]4\.7\.28(?![\d.])/;

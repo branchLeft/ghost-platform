@@ -36,8 +36,7 @@ The policy matches on the bridge interface (`docker0` and `br-+`), not on an
 address range. A network created with a subnet of its own is still covered.
 
 A host service that a container must reach, such as a mail spool bound on a
-bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`. None
-exists today.
+bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`.
 
 ## Known limits
 

@@ -137,6 +137,12 @@ class ValidationTests(unittest.TestCase):
                 with self.assertRaises(ptv.ProvisionError):
                     ptv.validate_slug(slug)
 
+    def test_rejects_the_reserved_website_stack_slug(self):
+        # The platform's own website runs as a stack on the shared host under
+        # this slug; a tenant must not take its project directory or unit name.
+        with self.assertRaises(ptv.ProvisionError):
+            ptv.validate_slug("publicpress-website")
+
     def test_accepts_tenant_zero_and_an_unregistered_slug(self):
         # Controls: the refusal above is the register's infrastructure
         # entries only, not every registered name.

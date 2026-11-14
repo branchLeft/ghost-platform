@@ -160,14 +160,13 @@ same CI rule.
 
 ## Installing
 
-`--out` writes unchecked. Only `demo_go_live.py` (PR #385) may place the live
+`--out` writes unchecked. Only `demo_go_live.py` may place the live
 Caddyfile; treat this output as a candidate for its `--caddyfile`.
 
 ## Not proven here
 
-The content policy is report-only in the only demo fixture, because render-core
-has no caller yet that supplies a computed script-hash set. #1254's
-"enforcing policy on the demo host" waits on #1238's hash wiring.
+The content policy is report-only in the only demo fixture, because nothing in
+this renderer supplies a computed script-hash set to render-core.
 
 ## Why the members-import refusal is not one literal path
 

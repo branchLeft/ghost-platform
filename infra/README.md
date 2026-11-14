@@ -51,13 +51,16 @@ This repo's IaC, split by shape rather than lumped into one program:
   Object Storage backend under the passphrase provider, and the
   stack's config carries no salt and no token. Applied by CI on merge to
   `main` (`.github/workflows/infra-hosts-ci.yml`): plan job first, preview
-  in the job summary, then an apply paused by the `production` environment's
-  required-reviewer rule -- failing closed if that rule is absent -- with
+  in the job summary, then an apply held by an environment approval gate
+  (`production-free` for a plan the spend gate calls free, `production`
+  otherwise) -- failing closed if that gate is absent -- with
   the delete guard (`../scripts/assert-no-hetzner-deletes.py`) refusing any
   plan that destroys a protected resource. Pull requests run typecheck and
   unit tests only; no cloud credential touches PR code. The one hand-run
   operation is the stack bootstrap (`pulumi stack init` -- state only, no
-  cloud resources). Base
+  cloud resources). `pulumi stack rm` also deletes the stack's committed
+  `Pulumi.production.yaml` unless `--preserve-config` is passed, here and in
+  `demo-host/`, so restore the file from git afterwards. Base
   pattern only: nothing here installs MySQL, Ghost or Compose -- those are
   delivered onto the hosts separately.
 

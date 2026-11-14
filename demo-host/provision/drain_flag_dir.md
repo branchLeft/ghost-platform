@@ -19,9 +19,10 @@ The decision this module settles: the flag directory is its own path,
 outside every slot directory, owned and writable by the broker account
 alone, under the broker unit's own state directory
 (`/var/lib/branchleft-broker`, systemd `StateDirectory=`), which is the path
-the broker's `BROKER_DRAIN_FLAG_DIR` already names. It is never touched by `reset` (which only ever wipes
-`/opt/branchleft/demo-<slot>/` and the two
-`/etc/branchleft/demo-<slot>-<colour>.env` files -- `branchleft_slot.py`'s
+the broker's `BROKER_DRAIN_FLAG_DIR` already names. It is never touched by `reset` (which wipes
+`/opt/branchleft/demo-<slot>/`, the two
+`/etc/branchleft/demo-<slot>-<colour>.env` files and the contents of the
+slot's data and content volumes -- `branchleft_slot.py`'s
 `perform()`), so a flag this module preseeds at host build stays present
 across every reset a slot ever goes through, without the wrapper needing
 to know the flag directory exists at all. This matches

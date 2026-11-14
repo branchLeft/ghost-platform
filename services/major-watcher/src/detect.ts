@@ -1,4 +1,5 @@
 import { parseGhostTag } from './semver.js';
+import { upstreamMajorItem, type UpstreamMajorItem } from './filing.js';
 import type { GhostRelease } from './ghostReleases.js';
 
 // The dedupe state this watcher persists between runs. `lastNotifiedMajor`
@@ -15,6 +16,8 @@ export interface DecideResult {
   /** Present only when shouldNotify is true. */
   readonly title?: string;
   readonly message?: string;
+  /** The tracked item the same announcement files; present only when shouldNotify is true. */
+  readonly tracked?: UpstreamMajorItem;
   readonly nextState: WatcherState;
 }
 
@@ -55,10 +58,19 @@ export function decide(releases: readonly GhostRelease[], state: WatcherState): 
     ? `Public preview of Ghost ${highestMajor}.0.0 announced upstream: ${earliest.tagName}, published ${earliest.publishedAt}. https://github.com/TryGhost/Ghost/releases/tag/${earliest.tagName}`
     : `Ghost ${highestMajor}.0.0 announced upstream: ${earliest.tagName}, published ${earliest.publishedAt}. https://github.com/TryGhost/Ghost/releases/tag/${earliest.tagName}`;
 
+  const tracked = upstreamMajorItem({
+    major: highestMajor,
+    tagName: earliest.tagName,
+    publishedAt: earliest.publishedAt,
+    prerelease: earliest.prerelease !== null,
+    releaseUrl: `https://github.com/TryGhost/Ghost/releases/tag/${earliest.tagName}`,
+  });
+
   return {
     shouldNotify: true,
     title,
     message,
+    tracked,
     nextState: { lastNotifiedMajor: highestMajor },
   };
 }

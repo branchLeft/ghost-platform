@@ -6,10 +6,18 @@ import { RUN_EVENTS, STEP_EVENTS, type StateRecord, type StateStore } from './ex
 
 const NEWLINE = 0x0a;
 const OTHERS = 0o077;
-/** Never follow a link at the final path component. */
-const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW;
+/**
+ * Never follow a link at the final path component, and never wait for a peer:
+ * a named pipe opened for reading blocks until a writer appears, before the
+ * type check could refuse it. O_NONBLOCK changes nothing for a regular file.
+ */
+const READ_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 const APPEND_FLAGS =
-  constants.O_RDWR | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW;
+  constants.O_RDWR |
+  constants.O_APPEND |
+  constants.O_CREAT |
+  constants.O_NOFOLLOW |
+  constants.O_NONBLOCK;
 
 type Handle = Awaited<ReturnType<typeof open>>;
 

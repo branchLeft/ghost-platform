@@ -71,7 +71,7 @@ deliberately no current-version `Expiration` element — see that file's
 had its first upload answered with an `x-amz-expiration` header naming a date
 31 days out, attributed to the rule, on the CURRENT version of a freshly
 uploaded object. In real S3 semantics a noncurrent-only rule produces no such
-header at all. Two readings are open:
+header at all. The probe distinguishes two readings:
 
   READING A (optimistic, and the likelier one): RGW's header code answers "when
   would this version expire once it becomes noncurrent" from the only day-count

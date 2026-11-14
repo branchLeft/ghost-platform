@@ -15,6 +15,8 @@ export type UsageReason =
   | 'tenant-latched'
   /** The messages sent by every tenant together reached the account-wide cap. */
   | 'account-cap-reached'
+  /** The messages sent by every tenant together reached the newsletter threshold: newsletters move to mx1, sign-in links stay. */
+  | 'newsletter-threshold-reached'
   /** The UTC calendar month changed and every counter started again from zero. */
   | 'month-rolled'
   /** The state file could not be parsed: usage is unknown, so nothing goes to Sweego for the rest of the month. */
@@ -73,7 +75,7 @@ export interface TenantLatchState {
   used: number;
   /** The tenant's allowance, or undefined when its route carries none. */
   allowance: number | undefined;
-  /** True when this tenant's newsletters go through mx1: its own latch, the account cap, or unknown usage. */
+  /** True when this tenant's sign-in links and newsletters go through mx1: its own latch, the account cap, or unknown usage. */
   latched: boolean;
 }
 
@@ -83,6 +85,12 @@ export interface AccountState {
   total: number;
   accountCap: number;
   capReached: boolean;
+  /** The newsletter threshold, or undefined when none is set. */
+  newsletterCap: number | undefined;
+  /** The total reached the newsletter threshold (or usage is unknown): every tenant's newsletters go to mx1. */
+  newsletterThresholdReached: boolean;
+  /** Sweego is latched off: every class goes to mx1 until the owner clears it. */
+  suspended: boolean;
   /** Usage was unknown at load: everything is latched until the month changes. */
   degraded: boolean;
   /** The state file vanished: everything is latched until the owner deletes the marker. */
@@ -90,6 +98,8 @@ export interface AccountState {
 }
 
 export interface SweegoUsage extends SweegoQuota, SweegoUseCounter {
+  newsletterThresholdReached(): boolean;
+  suspended(): boolean;
   /** Per-tenant latch state, for the signals that read it. A plain function, never a label. */
   tenantLatchState(): readonly TenantLatchState[];
   accountState(): AccountState;
@@ -102,6 +112,14 @@ export interface SweegoUsageOptions {
   statePath: string;
   /** Messages per UTC month across every tenant together. A positive integer, set from the Sweego plan. */
   accountCap: number;
+  /**
+   * Messages per UTC month at which every tenant's newsletters move to mx1 and
+   * sign-in links stay. A positive integer strictly below `accountCap`; unset,
+   * there is no separate threshold.
+   */
+  newsletterCap?: number;
+  /** Answers whether Sweego is latched off; its answer is exposed in `accountState`. Absent, never suspended. */
+  suspension?: { suspended(): boolean };
   /** The allowance a tenant's route carries, or undefined. Read at each check, so a descriptor change is seen. */
   allowanceOf: (tenantId: string) => number | undefined;
   /** Injectable so a test crosses a month boundary without waiting. */
@@ -242,6 +260,13 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
   const { statePath, accountCap, allowanceOf, witness } = options;
   if (!Number.isSafeInteger(accountCap) || accountCap <= 0) {
     throw new Error('the Sweego account cap must be a positive integer');
+  }
+  const { newsletterCap } = options;
+  if (
+    newsletterCap !== undefined &&
+    (!Number.isSafeInteger(newsletterCap) || newsletterCap <= 0 || newsletterCap >= accountCap)
+  ) {
+    throw new Error('the Sweego newsletter cap must be a positive integer below the account cap');
   }
   const now = options.now ?? Date.now;
   const reasonCounts: Partial<Record<UsageReason, number>> = {};
@@ -447,6 +472,21 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     return totalUsed + pendingTotal >= accountCap;
   }
 
+  // In flight counts, as it does for the account cap. Unknown usage reads as reached.
+  function newsletterThresholdReached(): boolean {
+    if (newsletterCap === undefined) {
+      return false;
+    }
+    if (blocked()) {
+      return true;
+    }
+    return totalUsed + pendingTotal >= newsletterCap;
+  }
+
+  function suspended(): boolean {
+    return options.suspension?.suspended() ?? false;
+  }
+
   function addUse(tenantId: string): void {
     const use = tenants.get(tenantId) ?? { used: 0, latched: false };
     use.used += 1;
@@ -456,6 +496,9 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
     if (!use.latched && allowance !== undefined && use.used >= allowance) {
       use.latched = true;
       note('tenant-latched');
+    }
+    if (newsletterCap !== undefined && totalUsed === newsletterCap) {
+      note('newsletter-threshold-reached');
     }
     if (totalUsed === accountCap) {
       note('account-cap-reached');
@@ -568,6 +611,9 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
       total: totalUsed,
       accountCap,
       capReached: totalUsed >= accountCap,
+      newsletterCap,
+      newsletterThresholdReached: newsletterCap !== undefined && totalUsed >= newsletterCap,
+      suspended: suspended(),
       degraded,
       vanished,
     };
@@ -579,6 +625,8 @@ export function createSweegoUsage(options: SweegoUsageOptions): SweegoUsage {
   return {
     allowanceReached,
     accountCapReached,
+    newsletterThresholdReached,
+    suspended,
     begin,
     holdsPlace,
     tenantLatchState,

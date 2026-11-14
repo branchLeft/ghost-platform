@@ -796,6 +796,13 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
           callback(err);
           return;
         }
+        // Bytes this handler actually holds when the stream ends, measured from
+        // the buffer itself. The cap-exceeded line above snapshots retainedBytes
+        // once, at the flip, so it cannot show retention after the cap.
+        log.info('smtp_data_held', {
+          submitter: submitterId,
+          heldBytes: chunks.reduce((n, c) => n + c.length, 0),
+        });
         if (stream.sizeExceeded) {
           const err = new Error('Message too large') as Error & { responseCode: number };
           err.responseCode = 552;

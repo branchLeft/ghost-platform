@@ -1226,8 +1226,7 @@ treat the bucket as unfenced and stop.
 HTTP 400. The least bad outcome: nothing was applied and the bucket is exactly
 as it was. Record the verbatim error. Do not retry with elements removed until
 the call succeeds — a shape that gets accepted by deletion is a shape nobody has
-reasoned about, and the most likely thing to drop first is the `NotAction`
-catch-all that makes an unenumerated action fall closed.
+reasoned about.
 
 ---
 

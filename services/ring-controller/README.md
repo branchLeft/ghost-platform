@@ -32,10 +32,6 @@ reimplementing:
   design keeps unreachable for the whole bake window, and this component
   does not open it.
 
-Wiring these dependencies to the real broker `/reconcile` call, the
-backup worker, and the drain flag is integration work for whatever
-constructs a `BumpStateMachine` for a real tenant -- not built here.
-
 ## Rings
 
 `runRelease` (`src/ringController.ts`) takes one already-published image
@@ -79,6 +75,45 @@ clock included, so the tests drive whole releases against fakes and a fake
 clock. `package.json` declares no runtime dependencies, and a test asserts it.
 The narrative is in `src/README.md`.
 
+## Unattended minors: the decision, switched off
+
+`src/minorEligibility.ts` is a pure function, `decideUnattendedMinor`, that
+says whether a release may reach tenants with no person in the loop, and
+`src/unattendedMinor.ts` is the thin entry (`runUnattendedMinor`) that asks it
+and then hands an eligible release to `runRelease` unchanged. Nothing calls
+that entry yet, and the flag is off, so this changes no behaviour.
+
+A release is eligible only when all of these hold, checked in this order:
+
+1. **The flag is on.** `RING_CONTROLLER_UNATTENDED_MINOR` in the environment
+   handed to the controller, exactly the word `on`. Absent, empty or any other
+   text (`true`, `1`, `ON`) is off. Off returns `declined`: nothing runs and
+   nothing is raised, because an off switch is not an incident.
+2. **Both versions are plain `X.Y.Z` tags.** A pre-release, a build suffix or
+   anything else is unreadable and refused, as an unreadable version is
+   treated as a major elsewhere in the upgrade path.
+3. **It is not a major.** A higher major is refused even when the route says
+   `fast-path`, so a mislabelled route cannot carry a major through.
+4. **It is newer than the running version, in the same major.**
+5. **The route is `fast-path`.** The release classifier's refusal stands.
+6. **A restore drill has passed recently.** The caller supplies the drill's
+   latest record (`passed` or `failed`, and when it finished). A missing,
+   failed, future-dated or non-finite record is unmet, as is one older than
+   `RESTORE_DRILL_MAX_AGE_MS` (eight days, since the drill is weekly).
+
+The rollback route under the owner's forward-only ruling is a restore of the
+backup taken just before a tenant's bump, never an automatic migration down.
+That is why the drill is a precondition and not a courtesy: while it has not
+passed, the controller refuses every release even with the flag on, and the
+refusal is a hold (an operational alert and a filed work item, the same sink
+as every other hold), not a page. A refusal maps onto the existing hold
+reasons (`consent-required` for a major or a consent route) plus two new ones,
+`restore-drill-unmet` and `version-not-eligible`.
+
+What this does not do: read the drill's record from wherever it is kept, read
+the running version from the fleet, or enable anything. Those are the wiring
+the caller supplies, and switching the flag on waits on the drill passing.
+
 ## Running this: one long-lived process, not a pipeline job
 
 This runs as a single, long-lived controller process, not as a scheduled
@@ -118,7 +153,7 @@ while production always uses the default abstract path. A second,
 coarser layer lives outside this code: deploy as a plain
 `ring-controller.service` systemd unit (never a templated
 `ring-controller@.service`), so systemd itself only ever manages one
-instance -- see the PR body's runbook for the unit file.
+instance.
 
 ## Crash recovery
 
@@ -141,7 +176,8 @@ already drives at runtime:
   live, successful `apply()` reaches; an outcome that cannot be confirmed
   settled goes straight to `failed-unsafe`, never to `verify()`,
   `revertTraffic()` or `stopColour()`, any of which could act on a colour
-  still mid-migration.
+  still mid-migration. A saved abort on the record turns a settled, healthy
+  outcome into a revert, never `done`.
 - `verifying` / `reverting` -- revert; the process died before finding
   out whether the new colour was healthy, so the same rule as a live
   abort landing here applies.
@@ -153,7 +189,8 @@ already drives at runtime:
 - `done` -- rehydrated with no action: the bake window is still open and
   the state on disk is already correct, but with no machine reconstructed
   for it, a later `closeBakeWindow()` or `abortAfterDone()` would have
-  nothing to act on.
+  nothing to act on. A `done` whose record carries a saved abort is
+  reverted instead: nobody will watch its bake.
 - `closed`, `backup-failed`, `cancelled` -- already resting states; no
   action.
 - `failed-unsafe` -- resting only once `pageSent: true`. A record still
@@ -180,18 +217,14 @@ Four things are load-bearing, all proven by test
    process, on a kernel primitive (a bound Unix domain socket) rather
    than a lock file and a reclaim protocol: a second process's bind fails
    with `EADDRINUSE`. Proven against a real, separate process, killed
-   with `SIGKILL`, twice: on this dev machine, against the portable
-   filesystem-backed seam (`test/unit/processLock.test.ts`); and on real
-   Linux, against the actual abstract-namespace path production uses,
-   confirmed via `/proc/net/unix` -- via a standalone harness run in a
-   `node:26` container against the compiled module (the PR body has the
-   command and its output), because the borrowed `node_modules` this
-   session runs `vitest` from is built for macOS and its native
-   dependencies (`esbuild`) cannot load inside a Linux container. The
-   equivalent `it.skipIf(process.platform !== 'linux')` test in the
-   suite itself passes when run directly on a Linux host or container
-   with its own `pnpm install`; it is not run by `vitest` inside the
-   harness above. `recoverFromApplying` holds the same lock for its
+   with `SIGKILL`, twice: against the portable filesystem-backed seam
+   (`test/unit/processLock.test.ts`); and on real Linux, against the
+   actual abstract-namespace path production uses, confirmed via
+   `/proc/net/unix` -- via a standalone harness run in a `node:26`
+   container against the compiled module. The equivalent
+   `it.skipIf(process.platform !== 'linux')` test in the suite itself
+   passes when run directly on a Linux host or container with its own
+   `pnpm install`; it is not run by `vitest` inside the harness above. `recoverFromApplying` holds the same lock for its
    whole settle-and-verify tail, so the invariant holds structurally
    during recovery too, not by convention.
 4. `failed-unsafe` pages **at least once**, ever, per bump -- not exactly

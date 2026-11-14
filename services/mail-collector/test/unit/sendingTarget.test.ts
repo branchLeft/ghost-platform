@@ -35,10 +35,11 @@ function healthy(overrides: Partial<SendingContext> = {}): SendingContext {
 }
 
 describe('mail class comes from the wire emailId', () => {
-  it('is transactional for a null emailId and bulk for any other', () => {
+  it('is transactional for a null, missing or empty emailId and bulk for any other', () => {
     expect(mailClassOf(null)).toBe('transactional');
+    expect(mailClassOf(undefined)).toBe('transactional');
+    expect(mailClassOf('')).toBe('transactional');
     expect(mailClassOf('email-1')).toBe('bulk');
-    expect(mailClassOf('')).toBe('bulk');
   });
 });
 
@@ -105,6 +106,73 @@ describe('hard rule: a latched allowance or a reached account cap sends everythi
   it('reads an unknown quota as reached, so nothing goes to sweego without a counter', () => {
     expect(QUOTA_UNKNOWN.allowanceReached('any')).toBe(true);
     expect(QUOTA_UNKNOWN.accountCapReached()).toBe(true);
+  });
+});
+
+describe('the latch rules, in order', () => {
+  it('sends a latched tenant sign-in link to mx1, as it sends its newsletters', () => {
+    expect(
+      resolveSendingTarget(
+        'sweego',
+        healthy({ mailClass: 'transactional', allowanceReached: true })
+      )
+    ).toBe('mx1');
+    expect(
+      resolveSendingTarget('sweego', healthy({ mailClass: 'bulk', allowanceReached: true }))
+    ).toBe('mx1');
+  });
+
+  it('moves newsletters at the newsletter threshold and leaves sign-in links on sweego', () => {
+    expect(
+      resolveSendingTarget(
+        'sweego',
+        healthy({ mailClass: 'bulk', newsletterThresholdReached: true })
+      )
+    ).toBe('mx1');
+    expect(
+      resolveSendingTarget(
+        'sweego',
+        healthy({ mailClass: 'transactional', newsletterThresholdReached: true })
+      )
+    ).toBe('sweego');
+  });
+
+  it('moves both classes at the account ceiling, threshold or not', () => {
+    for (const newsletterThresholdReached of [true, false]) {
+      for (const mailClass of CLASSES) {
+        expect(
+          resolveSendingTarget(
+            'sweego',
+            healthy({ mailClass, accountCapReached: true, newsletterThresholdReached })
+          )
+        ).toBe('mx1');
+      }
+    }
+  });
+
+  it('moves both classes while sweego is suspended, whatever else is clear', () => {
+    for (const mailClass of CLASSES) {
+      expect(resolveSendingTarget('sweego', healthy({ mailClass, suspended: true }))).toBe('mx1');
+    }
+  });
+
+  it('reads an unset threshold or suspension as not reached', () => {
+    for (const mailClass of CLASSES) {
+      expect(resolveSendingTarget('sweego', healthy({ mailClass }))).toBe('sweego');
+    }
+  });
+
+  it('keeps mx1 for good: suspension and threshold never send a pinned mx1 message back', () => {
+    for (const mailClass of CLASSES) {
+      for (const suspended of [true, false]) {
+        expect(
+          resolveSendingTarget(
+            'sweego',
+            healthy({ mailClass, suspended, reachedMx1: true, newsletterThresholdReached: false })
+          )
+        ).toBe('mx1');
+      }
+    }
   });
 });
 

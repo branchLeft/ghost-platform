@@ -16,6 +16,7 @@ done
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+. "$REPO_ROOT/csp/gate/lib.sh"
 
 NET="csp-gate-net-$$"
 GHOST_NAME="csp-gate-ghost-$$"
@@ -49,41 +50,7 @@ fi
 docker build -q -f csp/proof/Dockerfile -t csp-gate-origin:local . >/dev/null
 docker network create "$NET" >/dev/null
 
-wait_for() { # description, deadline-seconds, command...
-    desc="$1"; secs="$2"; shift 2
-    deadline=$(($(date +%s) + secs))
-    until "$@" 2>/dev/null; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "FAILED: $desc not ready within ${secs}s" >&2
-            exit 2
-        fi
-        sleep 1
-    done
-}
-
-docker run -d --name "$GHOST_NAME" --network "$NET" \
-    -e url="$ORIGIN" \
-    -e database__client=sqlite3 \
-    -e database__connection__filename=/var/lib/ghost/content/data/ghost-csp-gate.db \
-    -e privacy__useUpdateCheck=false \
-    -e BRANCHLEFT_ALLOW_LOCAL_STORAGE=true \
-    -e storage__images__adapter=ScanningStorageAdapter \
-    -e storage__images__wraps=LocalImagesStorage \
-    -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
-    -e storage__media__adapter=ScanningStorageAdapter \
-    -e storage__media__wraps=LocalMediaStorage \
-    -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
-    -e storage__files__adapter=ScanningStorageAdapter \
-    -e storage__files__wraps=LocalFilesStorage \
-    -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
-    -e storage__images__verdictSource=in-process-fake \
-    -e storage__media__verdictSource=in-process-fake \
-    -e storage__files__verdictSource=in-process-fake \
-    -e logging__transports='["stdout"]' \
-    -e portal__url="$ORIGIN/bl-assets/portal.min.js" \
-    -e sodoSearch__url="$ORIGIN/bl-assets/sodo-search.min.js" \
-    -e sodoSearch__styles="$ORIGIN/bl-assets/sodo-search.min.css" \
-    "$IMAGE" >/dev/null
+ghost_start "$GHOST_NAME" "$NET" "$ORIGIN" "$IMAGE"
 wait_for "Ghost" 90 docker exec "$GHOST_NAME" wget -q -O /dev/null http://127.0.0.1:2368/
 
 start_origin() { # header name, header value

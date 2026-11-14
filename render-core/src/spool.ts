@@ -345,7 +345,13 @@ function checkNetworks(
       const ipam = asRecord(network.ipam);
       const config = Array.isArray(ipam?.config) ? ipam.config : [];
       const pool = config.length === 1 ? asRecord(config[0]) : undefined;
-      if (pool?.subnet !== MAIL_SPOOL_DRAIN_SUBNET || pool?.gateway !== MAIL_SPOOL_DRAIN_GATEWAY) {
+      const poolKeysExact =
+        pool !== undefined && Object.keys(pool).sort().join(',') === 'gateway,subnet';
+      if (
+        !poolKeysExact ||
+        pool?.subnet !== MAIL_SPOOL_DRAIN_SUBNET ||
+        pool?.gateway !== MAIL_SPOOL_DRAIN_GATEWAY
+      ) {
         at(
           `network "${name}" must declare exactly the ipam pool subnet ${MAIL_SPOOL_DRAIN_SUBNET} ` +
             `and gateway ${MAIL_SPOOL_DRAIN_GATEWAY}, the fixed addresses the drain listener binds within`

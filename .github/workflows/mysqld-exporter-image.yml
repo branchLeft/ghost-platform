@@ -1,0 +1,247 @@
+name: mysqld-exporter image
+
+# Builds services/mysqld-exporter/Dockerfile (the upstream mysqld_exporter
+# release, rebuilt from its source with patched Go modules) and proves the
+# built image still does what the db1 stack's compose service needs of it.
+# The proof starts the exporter and runs the tools the stack's healthcheck
+# runs. services/mysqld-exporter/README.md says what is pinned and why.
+#
+# A pull request builds and proves only, with no credential. On push to
+# `main` (or a manual dispatch from `main`) a second job pushes the proven
+# image to ghcr.io/branchleft/mysqld-exporter tagged with the git SHA, reads
+# the pushed digest back from the image store, refuses to finish without a
+# well-formed sha256, and publishes `ghcr.io/branchleft/mysqld-exporter@sha256:...`
+# as the job's `image` output and in its summary. The stack pins that
+# digest-qualified reference and nothing else. There is deliberately no
+# `latest` tag.
+#
+# The push job publishes the very image the proof tested: the proof job saves
+# it as an artifact and outputs its image ID, and the push job loads it,
+# checks the ID matches, then tags and pushes it. Nothing is rebuilt. The
+# scan and attest jobs follow the push, so an image that fails the scan is
+# never signed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/mysqld-exporter/**
+      - .github/workflows/mysqld-exporter-image.yml
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - services/mysqld-exporter/**
+      - .github/workflows/mysqld-exporter-image.yml
+
+# Nothing here installs from GitHub Packages, and this workflow's top level
+# never requests a write credential: only the push and attest jobs below ask
+# for one, each for itself.
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: docker build + serve proof (mysqld-exporter)
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 20
+
+    outputs:
+      image-id: ${{ steps.proven.outputs.image-id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # linux/amd64 is the platform db1 runs and the platform the scan reads.
+      - name: Build image
+        run: docker build --platform linux/amd64 --tag mysqld-exporter:ci services/mysqld-exporter
+
+      # The version line is the release the Dockerfile pins, and the image runs
+      # as the unprivileged user the stack expects.
+      - name: Version and user
+        run: |
+          docker run --rm mysqld-exporter:ci --version 2>&1 | grep -q '^mysqld_exporter, version 0\.21\.0 '
+          test "$(docker image inspect --format '{{.Config.User}}' mysqld-exporter:ci)" = nobody
+
+      # No MySQL is reachable here, so the exporter reports mysql_up 0. What
+      # this proves is that it starts, serves /metrics, and that wget and
+      # grep, the tools the stack's healthcheck pipes together, are in the
+      # image and read the page.
+      - name: Serve metrics and run the healthcheck tools
+        run: |
+          printf '[client]\nuser=exporter\npassword=unused\nsocket=/var/run/mysqld/mysqld.sock\n' > "$RUNNER_TEMP/exporter.my.cnf"
+          chmod 0644 "$RUNNER_TEMP/exporter.my.cnf"
+          docker run --detach --name exporter-proof \
+            --volume "$RUNNER_TEMP/exporter.my.cnf:/etc/mysqld-exporter/.my.cnf:ro" \
+            mysqld-exporter:ci \
+            --config.my-cnf=/etc/mysqld-exporter/.my.cnf \
+            --mysqld.address=unix:///var/run/mysqld/mysqld.sock \
+            --web.listen-address=127.0.0.1:9104
+          for _ in $(seq 1 30); do
+            if docker exec exporter-proof sh -c 'wget -qO- http://127.0.0.1:9104/metrics | grep -qx "mysql_up 0"'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs exporter-proof
+          echo "::error::the exporter did not serve mysql_up on /metrics"
+          exit 1
+
+      # Only reached when the proof above passed. The image ID is read after
+      # the proof, from the tag the proof ran, and travels with the saved
+      # tarball so the push job can refuse anything else.
+      - name: Save the proven image
+        id: proven
+        run: |
+          docker save --output mysqld-exporter.tar mysqld-exporter:ci
+          echo "image-id=$(docker image inspect --format '{{.Id}}' mysqld-exporter:ci)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the proven image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mysqld-exporter-image
+          path: mysqld-exporter.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  push:
+    name: Push the proven mysqld-exporter image
+    runs-on: ubuntu-latest
+    needs: build
+    # `main` for every trigger: a manual dispatch from another ref must not
+    # publish an image.
+    if: |
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.digest.outputs.image }}
+      digest: ${{ steps.digest.outputs.digest }}
+
+    env:
+      IMAGE: ghcr.io/branchleft/mysqld-exporter
+      IMAGE_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Download the proven image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mysqld-exporter-image
+
+      # The loaded image must be exactly the one the proof ran against.
+      - name: Load the proven image and check its ID
+        env:
+          PROVEN_ID: ${{ needs.build.outputs.image-id }}
+        run: |
+          docker load --input mysqld-exporter.tar
+          loaded="$(docker image inspect --format '{{.Id}}' mysqld-exporter:ci)"
+          if [ -z "$PROVEN_ID" ] || [ "$loaded" != "$PROVEN_ID" ]; then
+            echo "::error::loaded image '$loaded' is not the proven image '$PROVEN_ID'"
+            exit 1
+          fi
+          docker tag mysqld-exporter:ci "$IMAGE:$IMAGE_TAG"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: docker push "$IMAGE:$IMAGE_TAG"
+
+      # The digest is read from the image store after the push, never
+      # assembled from the tag or the commit. A missing or malformed digest
+      # fails the job, so no run ends green without a reference to pin.
+      - name: Read and verify the pushed digest
+        id: digest
+        run: |
+          reference="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMAGE:$IMAGE_TAG" | grep "^$IMAGE@" | head -n 1)"
+          digest="${reference#*@}"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no well-formed sha256 digest for $IMAGE:$IMAGE_TAG (got: '$reference')"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Write outcome to job summary
+        if: always()
+        env:
+          PINNED_IMAGE: ${{ steps.digest.outputs.image }}
+        run: |
+          {
+            echo '## mysqld-exporter image push'
+            echo
+            echo "Commit: \`$IMAGE_TAG\`"
+            echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
+            echo "The scan and attest jobs follow: use this digest only once both are green."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The pushed digest, scanned by the shared image-scan workflow before anything
+  # signs it. It fails the run on any critical or high finding no exemption
+  # covers; the threshold is fixed in that workflow and cannot be lowered here.
+  # No exemption file exists in this repository: a finding with no available
+  # fix goes through the exemption route, never a changed threshold.
+  scan:
+    name: Scan the pushed mysqld-exporter image
+    needs: push
+    permissions:
+      contents: read
+      packages: read
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0
+    with:
+      image: ${{ needs.push.outputs.image }}
+
+  # Signs the digest with a keyless GitHub artifact attestation, then verifies
+  # it with the identity below and checks that a wrong identity is rejected. It
+  # needs the scan, so an image that fails the scan is never signed. The
+  # identity is a literal on purpose: read from this run's own
+  # `github.workflow_ref` it would agree with itself and prove nothing. The
+  # same value, with the source ref `refs/heads/main`, is what a host passes to
+  # scripts/verify-image-attestation.sh. `id-token: write` mints the keyless
+  # signing certificate and `attestations: write` stores the attestation; the
+  # registry login needs `packages: write` for the stored bundle.
+  attest:
+    name: Attest and verify the scanned mysqld-exporter image
+    needs: [push, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/branchleft/mysqld-exporter
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest and verify the pushed image
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0
+        with:
+          image: ${{ env.IMAGE }}
+          digest: ${{ needs.push.outputs.digest }}
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/mysqld-exporter-image.yml
+          repo: branchLeft/ghost-platform

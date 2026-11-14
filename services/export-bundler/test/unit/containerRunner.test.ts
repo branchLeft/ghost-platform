@@ -8,6 +8,7 @@ import { CleanupRegistry } from '../../src/cleanup.js';
 import { writeFakeDocker } from '../helpers/fakeDocker.js';
 import {
   assertDockerEngineAtLeast28,
+  DOCKER_VERSION_TIMEOUT_MS,
   DockerEngineTooOldError,
   startup,
   buildDockerRunArgs,
@@ -441,6 +442,25 @@ describe('assertDockerEngineAtLeast28', () => {
     await expect(
       assertDockerEngineAtLeast28(join(dir, 'no-such-docker'), new CleanupRegistry())
     ).rejects.toThrow(DockerEngineTooOldError);
+  });
+
+  it('gives up on a docker that never answers, instead of hanging, and says it timed out', async () => {
+    const fake = join(dir, 'hung-docker.sh');
+    // exec: the shell is replaced, so the kill reaches the process holding the pipes.
+    await writeFile(fake, '#!/bin/sh\nexec sleep 30\n');
+    await chmod(fake, 0o755);
+    const started = Date.now();
+    const err = await assertDockerEngineAtLeast28(fake, new CleanupRegistry(), 300).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(DockerEngineTooOldError);
+    expect((err as Error).message).toContain('timed out after 300 ms');
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it('has a default timeout, so startup() cannot wait forever on a hung daemon', () => {
+    expect(DOCKER_VERSION_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(DOCKER_VERSION_TIMEOUT_MS).toBeLessThanOrEqual(120_000);
   });
 });
 

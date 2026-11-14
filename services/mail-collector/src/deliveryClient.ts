@@ -1,6 +1,8 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { WireMessage } from './drainClient.js';
-import { encodeOutcomeMessageId } from './outcomeId.js';
+import { laneReturnPath, type Mx1LaneReturnPaths } from './mx1Lane.js';
+import { signOutcomeMessageId } from './outcomeId.js';
+import { mailClassOf } from './sendingTarget.js';
 
 export interface DeliveryClientOptions {
   host: string;
@@ -9,19 +11,32 @@ export interface DeliveryClientOptions {
   user: string;
   pass: string;
   /**
-   * Opt-in. When set, each submission carries a Message-ID that names the
-   * message, its claim generation and its spool, an envelope sender of
-   * `returnPath` (where mx1 sends delivery status notifications) and a DSN
-   * request for success, failure and delay. Unset, a submission is exactly
-   * what it was before this option existed.
+   * The envelope sender of every submission, by lane (`mx1Lane`): mx1 chooses
+   * the source IP by its domain. Independent of `outcomes`. Unset, the
+   * envelope sender is whatever `outcomes` says, else the From address.
    */
-  outcomes?: { returnPath: string };
+  lanes?: Mx1LaneReturnPaths;
+  /**
+   * Opt-in. When set, each submission carries a Message-ID that names the
+   * message, its claim generation and its spool, and a DSN request for
+   * success, failure and delay. `returnPath` is the envelope sender (where mx1
+   * sends delivery status notifications), required without `lanes` and refused
+   * beside it: two settings must not name the one envelope sender. Unset, a
+   * submission is exactly what it was before this option existed. The
+   * Message-ID is signed with `messageIdKey` (HMAC, bound to the recipient), so
+   * a bounce that quotes it can be told from a forgery.
+   */
+  outcomes?: { returnPath?: string; messageIdKey: string };
   transporterFactory?: (opts: DeliveryClientOptions) => Transporter;
 }
 
 export interface DeliveryClient {
-  /** `targetId` names the spool the message came from; only used when outcomes are on. */
-  deliver(message: WireMessage, targetId?: string): Promise<void>;
+  /**
+   * `targetId` names the spool the message came from; only used when outcomes
+   * are on. `context.demo` marks mail from a demo host, which rides the
+   * newsletter lane; only the mx1 client reads it.
+   */
+  deliver(message: WireMessage, targetId?: string, context?: { demo: boolean }): Promise<void>;
   close(): void;
 }
 
@@ -35,18 +50,39 @@ export interface DeliveryClient {
  */
 export function createDeliveryClient(opts: DeliveryClientOptions): DeliveryClient {
   const makeTransporter = opts.transporterFactory ?? defaultTransporterFactory;
+  if (opts.lanes && opts.outcomes?.returnPath !== undefined) {
+    throw new Error(
+      'outcomes.returnPath cannot be set beside lanes: the lane return paths are the envelope sender'
+    );
+  }
+  if (opts.outcomes && !opts.lanes && !opts.outcomes.returnPath) {
+    throw new Error('outcomes need a return path, or lane return paths to send from');
+  }
   const transporter = makeTransporter(opts);
 
-  async function deliver(message: WireMessage, targetId?: string): Promise<void> {
+  async function deliver(
+    message: WireMessage,
+    targetId?: string,
+    context?: { demo: boolean }
+  ): Promise<void> {
+    // The lane return path is the envelope sender of every submission, outcome
+    // path or not. Without lanes, the outcome path's single return path is
+    // used when a spool is named, as before.
+    const sender = opts.lanes
+      ? laneReturnPath(opts.lanes, mailClassOf(message.emailId), context?.demo === true)
+      : opts.outcomes && targetId !== undefined
+        ? opts.outcomes.returnPath
+        : undefined;
+    const envelopeFields =
+      sender !== undefined ? { envelope: { from: sender, to: message.to } } : {};
     const outcomeFields =
       opts.outcomes && targetId !== undefined
         ? {
-            messageId: encodeOutcomeMessageId({
-              targetId,
-              id: message.id,
-              drainCount: message.drainCount,
-            }),
-            envelope: { from: opts.outcomes.returnPath, to: message.to },
+            messageId: signOutcomeMessageId(
+              { targetId, id: message.id, drainCount: message.drainCount },
+              message.to,
+              opts.outcomes.messageIdKey
+            ),
             dsn: {
               id: message.id,
               return: 'headers' as const,
@@ -56,6 +92,7 @@ export function createDeliveryClient(opts: DeliveryClientOptions): DeliveryClien
           }
         : {};
     await transporter.sendMail({
+      ...envelopeFields,
       ...outcomeFields,
       from: message.from,
       to: message.toName ? { name: message.toName, address: message.to } : message.to,

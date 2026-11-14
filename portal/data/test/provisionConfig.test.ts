@@ -483,7 +483,7 @@ describe('the statements the command writes', () => {
 
   it("grants what a later migration added only for that migration, and never at the object's own", () => {
     const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
-    const status = '0011_demo_request_status_read';
+    const status = '0012_demo_request_status_read';
     expect(addedGrantStatements(table, status, names)).toEqual([
       'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"',
     ]);
@@ -503,7 +503,7 @@ describe('the statements the command writes', () => {
 
   it('expects an added grant and row security only once the migration that makes them is applied', () => {
     const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
-    const status = '0011_demo_request_status_read';
+    const status = '0012_demo_request_status_read';
     const held = grantsAt(table, ['0010_demo_request']);
     const done = grantsAt(table, ['0010_demo_request', status]);
     expect(held.find((g) => g.grantee === 'prospectRole')!.privileges).toEqual(['INSERT']);
@@ -527,6 +527,8 @@ describe('the statements the command writes', () => {
     ]);
     expect(all.filter((s) => s.includes('UPDATE'))).toEqual([
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.health_reading TO "portal_owner"',
+      'GRANT INSERT, SELECT, UPDATE ON TABLE portal.support_access_reading TO "portal_owner"',
+      'GRANT SELECT, UPDATE ON TABLE portal.support_access_request TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.moderation_setting TO "portal_tenant"',
     ]);
   });

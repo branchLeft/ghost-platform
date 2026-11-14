@@ -41,7 +41,7 @@ const GHOST_ROOT = '/var/lib/ghost/current/core/server';
 export const OVERLAYS = [
   {
     name: 'session-from-token',
-    imagePath: `${GHOST_ROOT}/services/auth/session/session-from-token.js`,
+    imagePath: `${GHOST_ROOT}/auth/session/session-from-token.js`,
     pin: 'adapters/sso/ghost-core-overlay/session-from-token.patched.sha256',
   },
   {

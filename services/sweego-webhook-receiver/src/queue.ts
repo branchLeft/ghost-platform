@@ -5,11 +5,12 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  rmSync,
   truncateSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 export const QUEUE_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -49,6 +50,28 @@ function parseLines(text: string): QueueRecord[] {
 }
 
 /**
+ * Writes `text` to a temporary file, fsyncs it, renames it over `path` and
+ * fsyncs the directory, so a crash or a full disk leaves the old file whole.
+ */
+function replaceFile(path: string, text: string): void {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, text, { mode: 0o600 });
+  const tmpFd = openSync(tmp, 'r');
+  try {
+    fsyncSync(tmpFd);
+  } finally {
+    closeSync(tmpFd);
+  }
+  renameSync(tmp, path);
+  const dirFd = openSync(dirname(path), 'r');
+  try {
+    fsyncSync(dirFd);
+  } finally {
+    closeSync(dirFd);
+  }
+}
+
+/**
  * Append-only newline-delimited JSON file with a byte cap. `acked` lives in a
  * second file so sequence numbers never repeat after the queue empties. Any
  * unreadable state throws at open: a receiver that cannot trust its queue does
@@ -58,6 +81,8 @@ export function openQueue(dir: string, maxBytes: number = QUEUE_MAX_BYTES): Queu
   const queuePath = join(dir, 'queue.ndjson');
   const metaPath = join(dir, 'queue.meta');
 
+  // A temporary copy is only ever a crash leftover: the real file is replaced by rename.
+  rmSync(`${metaPath}.tmp`, { force: true });
   let acked = 0;
   if (existsSync(metaPath)) {
     acked = (JSON.parse(readFileSync(metaPath, 'utf8')) as { acked: number }).acked;
@@ -111,7 +136,7 @@ export function openQueue(dir: string, maxBytes: number = QUEUE_MAX_BYTES): Queu
       const keep = records.filter((r) => r.seq > through);
       const removed = records.length - keep.length;
       if (through > acked) {
-        writeFileSync(metaPath, JSON.stringify({ acked: through }), { mode: 0o600 });
+        replaceFile(metaPath, JSON.stringify({ acked: through }));
         acked = through;
       }
       if (removed > 0) {

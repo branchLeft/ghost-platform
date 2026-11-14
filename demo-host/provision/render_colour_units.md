@@ -59,9 +59,7 @@ times out the container keeps running and the unit is failed, where
 `systemctl stop` does nothing, so a slot reset would wipe the slot under a
 live Ghost. The same `docker compose stop ghost-<colour>` therefore also
 runs in `ExecStopPost=`, which systemd runs whatever the start's outcome.
-Stop, never down. The tests model this from systemd.service(5); it must be
-confirmed on a real systemd after delivery (force a failing start, check the
-container is gone).
+Stop, never down. The tests model this from systemd.service(5).
 
 The same holds for the sidecar: if `ExecStartPost=` fails after Ghost came
 up, the unit is failed and only `ExecStopPost=` runs, which removes the

@@ -31,6 +31,7 @@ export const TENANT_NAME_REGISTER: readonly RegisteredName[] = [
   { name: 'monitoring', kind: 'infrastructure' },
   { name: 'nextcloud1', kind: 'infrastructure' },
   { name: 'mail-spool', kind: 'infrastructure' },
+  { name: 'publicpress-website', kind: 'infrastructure' },
   { name: 'blog', kind: 'tenant', repo: 'branchLeft/ghost-tenant-blog' },
 ];
 // END GENERATED FROM registers/tenant-names.json
@@ -181,4 +182,13 @@ export function adaptersVolumeName(slug: Slug): string {
  */
 export function metricsVolumeName(slug: Slug): string {
   return `ghost-${slug}-metrics`;
+}
+
+/**
+ * The directory holding a slot's local verdict socket. Its own volume per
+ * slot, never shared: a shared directory would let one slot ask, or answer,
+ * through another's channel. See compose.md#the-verdict-volume.
+ */
+export function verdictVolumeName(slug: Slug): string {
+  return `ghost-${slug}-verdict`;
 }

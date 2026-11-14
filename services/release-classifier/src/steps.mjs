@@ -46,6 +46,11 @@ export function classifyStep({ from, to, previous, next }) {
   const f = parseRelease(from);
   const t = parseRelease(to);
   if (compare(t, f) <= 0) throw new Error(`target ${to} does not follow ${from}`);
+  // Two trees with no migration in either leave nothing read: a reversible answer with
+  // 0 new files would be no evidence at all, so the step is refused as an error.
+  if (previous.length === 0 && next.length === 0) {
+    throw new Error(`no migration in either tree, ${from} or ${to}: nothing is read`);
+  }
   const majorBump = t.major > f.major;
   const fresh = newMigrations(previous, next);
   const forwardOnly = [];

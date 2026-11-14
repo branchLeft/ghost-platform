@@ -7,16 +7,11 @@ hel1 except the throwaway probe bucket in step 9 and its deletion in step 10.
 
 ## What is already true, and what this changes
 
-- **Already live on `branchleft-tenant-backups`:** versioning, the four-rule
-  lifecycle (35-day noncurrent expiry on `dumps/` and `binlogs/`, 1-day on
-  `media/` and `fence-probe/`) and the role-aware fence, with the put-only
-  writer key and the read-only drill key. The fence passed
-  `probe-backup-role-fence.py` live (evidence on branchLeft/workspace#1550).
-- **Why that is not enough:** the writer key is put-only, so nothing deletes.
-  `prune_backups.py` cannot run against this bucket any more, and the rules
-  above only age out *noncurrent* versions. Current `dumps/` and `binlogs/`
-  objects were never removed, so the bucket grew without bound
-  (branchLeft/workspace#1554).
+- **Why the existing rules are not enough:** the writer key is put-only, so
+  nothing deletes. `prune_backups.py` cannot run against this bucket, and the
+  existing rules (35-day noncurrent expiry on `dumps/` and `binlogs/`, 1-day on
+  `media/` and `fence-probe/`) only age out *noncurrent* versions. Current
+  `dumps/` and `binlogs/` objects are never removed.
 - **What this applies:** the same lifecycle document with one more element on
   `dumps/` and `binlogs/`: `<Expiration><Days>10</Days></Expiration>`, the
   same 10 days `prune_backups.py` kept (7-day point-in-time window plus 3 days
@@ -40,10 +35,9 @@ hel1 except the throwaway probe bucket in step 9 and its deletion in step 10.
   `ExpiredObjectDeleteMarker`: a Days expiry cannot share an element with it,
   and a second rule on the same prefix is unproven on this engine. The cost is
   one zero-byte delete marker left per expired object, as on `dumps/`.
-- **The retention figure is the owner's, and none is ruled.** Dated full copies
-  cost the retention in days times the tenant's media size. The owner withdrew
-  the earlier ten-day figure on cost, and the 1-day figure belonged to the
-  design that deleted. Do not run step 5 until step 2b has a figure.
+- **The retention figure is the owner's.** Dated full copies cost the retention
+  in days times the tenant's media size. Do not run step 5 until step 2b has a
+  figure.
 
 ## Prerequisite
 
@@ -303,8 +297,7 @@ It is safe to delete precisely because it is disposable by construction:
 `probe-media-lifecycle-expiration.py` refuses to write anywhere that is not
 prefixed `branchleft-lifecycle-probe-`, and this bucket holds nothing but
 the `setup-split` canaries and their receipt. Its content is already fully
-captured on the issue and — once the docs PR lands — in
-`14-hetzner-migration-programme.md` §16.
+captured on the issue.
 
 **Run this section as the lab credential that created this bucket, never as `PROBE_OPERATOR_*`.** The typed name has to match exactly before anything is deleted, and `probe-media-lifecycle-expiration.py` only ever writes to buckets prefixed `branchleft-lifecycle-probe-`.
 
@@ -413,8 +406,7 @@ it as a real leftover if it is still there after that wait.
 
 **Rollback:** none. A deleted bucket cannot be recreated with its history.
 This is acceptable here because the bucket was created solely for this probe
-and everything it demonstrated is already recorded on the issue and (once
-the companion docs PR lands) in doc 14 §16.
+and everything it demonstrated is already recorded on the issue.
 
 Clear the shell:
 
@@ -432,8 +424,8 @@ branchLeft/workspace#1325 together with step 10e's `list-buckets` output.
 
 ## What this does not unblock
 
-The media backup job itself is now put-only and deletes nothing, but nothing
-schedules it yet, and it must not be scheduled before:
+The media backup job itself is put-only and deletes nothing, and it must not
+be scheduled before:
 
 1. the owner has ruled the media retention figure and step 5 has applied it;
 2. step 9's `media-probe/` result is a PASS;

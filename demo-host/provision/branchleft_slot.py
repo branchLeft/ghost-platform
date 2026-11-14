@@ -114,14 +114,24 @@ class EmailBatchCheckError(RuntimeError):
     guessed count."""
 
 
+def _slot_uid(slot: str) -> int:
+    """The slot's own uid, which is also its gid: the compose file runs the
+    slot's Ghost as `user: "<uid>:<uid>"`, and the email-batches read drops to
+    the same pair. `slot` is one of `SLOT_NAMES` by the time this is called."""
+    return UID_BASE + int(slot)
+
+
 def _data_directory(slot: str) -> Path:
     """The one, slot-derived path to the colour pair's shared SQLite data
     volume -- never a caller-supplied path, and colour-blind on purpose.
     See branchleft_slot.md#_data_directory for the mirrored constant this
     depends on and why one file is shared across both colours.
     """
-    uid = UID_BASE + int(slot)
-    return DOCKER_VOLUME_ROOT / f"ghost-demo-{uid}-data" / "_data"
+    return DOCKER_VOLUME_ROOT / _data_volume_name(slot) / "_data"
+
+
+def _data_volume_name(slot: str) -> str:
+    return f"ghost-demo-{_slot_uid(slot)}-data"
 
 
 # The slug in `ghost-<slug>-content` arrives with each lease, so `reset` reads
@@ -183,6 +193,86 @@ def _content_directory(name: str) -> Path:
     `DOCKER_VOLUME_ROOT` by construction: `name` has passed
     `_content_volume_name`'s anchored pattern, which has no path separator."""
     return DOCKER_VOLUME_ROOT / name / "_data"
+
+
+_ADAPTERS_VOLUME_KEY = re.compile(rf"  (['\"]?)ghost-({_SLUG_PATTERN})-adapters\1:[ \t]*")
+# The broker gives one wrapper call `BROKER_WRAPPER_TIMEOUT_MS` (default 30 s,
+# `services/broker/src/config.ts`) and kills it on expiry. `start` spends that
+# on up to `_MAX_SLOT_VOLUMES` creates in a row and then `systemctl start`, so
+# the creates get 5 s each: 15 s at worst, half the default, and the other half
+# is left for the unit. A create on a healthy daemon takes well under a second.
+# `test_branchleft_slot.py`'s `VolumeCreateTimeoutBudgetTests` pins the value.
+_VOLUME_CREATE_TIMEOUT_SECONDS = 5
+_MAX_SLOT_VOLUMES = 3
+# What of docker's stderr rides in the error message: one line, printable ASCII,
+# cut here. Reasons: branchleft_slot.md#start-creates-the-slots-volumes.
+_DOCKER_STDERR_MAX_CHARS = 300
+
+
+class VolumeCreateFailed(RuntimeError):
+    """Raised when `docker volume create` fails or times out. The message is
+    one line and carries docker's own stderr, so the broker's log says why."""
+
+
+def _stderr_one_line(raw: bytes | str | None) -> str:
+    """A child's stderr as one log-safe line: whitespace runs (newlines
+    included) collapsed to one space, anything outside printable ASCII written
+    as `?`, cut at `_DOCKER_STDERR_MAX_CHARS`. Empty when there was none."""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else (raw or "")
+    flat = re.sub(r"[^\x20-\x7e]", "?", " ".join(text.split()))
+    if len(flat) > _DOCKER_STDERR_MAX_CHARS:
+        return flat[:_DOCKER_STDERR_MAX_CHARS] + "..."
+    return flat
+
+
+def _volume_create_failure(name: str, what: str, stderr: bytes | str | None) -> VolumeCreateFailed:
+    reason = _stderr_one_line(stderr)
+    suffix = f": {reason}" if reason else ""
+    return VolumeCreateFailed(f"docker volume create {name} {what}{suffix}")
+
+
+def _slot_volume_names(slot: str, compose_text: str) -> list[str]:
+    """The external volumes `start` creates for `slot`, sorted, from the
+    rendered `compose.yml`: this slot's own data volume, and the one content
+    and one adapters volume with a legal slug. Read from the top-level
+    `volumes:` block only. Any other key -- another slot's data volume, the
+    mail spool, a name holding `/` or `..` -- is never named, and two distinct
+    content or two distinct adapters volumes raise `RefusedVolume` rather than
+    pick one. The text is written by the broker, so it is input to a root
+    process that runs `docker volume create` on every name returned.
+    Reasons: branchleft_slot.md#start-creates-the-slots-volumes.
+    """
+    data_key = _data_volume_name(slot)
+    data_keys = (f"  {data_key}:", f"  '{data_key}':", f'  "{data_key}":')
+    content: set[str] = set()
+    adapters: set[str] = set()
+    data: set[str] = set()
+    in_volumes = False
+    for line in compose_text.splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_volumes = line.rstrip() == "volumes:"
+            continue
+        if not in_volumes:
+            continue
+        if line.rstrip() in data_keys:
+            data.add(data_key)
+            continue
+        for pattern, found, kind in (
+            (_CONTENT_VOLUME_KEY, content, "content"),
+            (_ADAPTERS_VOLUME_KEY, adapters, "adapters"),
+        ):
+            match = pattern.fullmatch(line)
+            if match and len(match.group(2)) <= _MAX_SLUG_LENGTH:
+                found.add(f"ghost-{match.group(2)}-{kind}")
+    for found, kind in ((content, "content"), (adapters, "adapters")):
+        if len(found) > 1:
+            raise RefusedVolume(
+                f"refused: the slot's compose.yml declares {len(found)} {kind} volumes "
+                f"({', '.join(sorted(found))}); will not guess which one to create"
+            )
+    return sorted(content | adapters | data)
 
 
 def _empty_directory_by_fd(dir_fd: int, dev: int, depth: int) -> None:
@@ -508,6 +598,8 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
 
 class SlotOps(Protocol):
     def systemctl(self, action: str, unit: str) -> None: ...
+    def unit_is_stopped(self, unit: str) -> bool: ...
+    def ensure_slot_volumes(self, slot_dir: str, slot: str) -> None: ...
     def read_content_volume_name(self, slot_dir: str) -> str | None: ...
     def remove_volume_contents(self, volume_dir: str) -> None: ...
     def remove_dir_contents(self, path: str) -> None: ...
@@ -615,6 +707,23 @@ class RealSlotOps:
     def systemctl(self, action: str, unit: str) -> None:
         subprocess.run(["systemctl", action, unit], check=True)
 
+    def unit_is_stopped(self, unit: str) -> bool:
+        """True when systemd has no such unit loaded, or it is inactive.
+        Reads two fixed properties with `systemctl show`; a property that
+        does not come back is never taken as stopped.
+        """
+        shown = subprocess.run(
+            ["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", unit],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        properties = dict(line.split("=", 1) for line in shown.splitlines() if "=" in line)
+        return (
+            properties.get("LoadState") == "not-found"
+            or properties.get("ActiveState") == "inactive"
+        )
+
     def load_image(self, path: str) -> None:
         """Opens `path` (always `IMAGE_LOAD_PATH`) with `O_NOFOLLOW` and
         `O_NONBLOCK`, `fstat`s it to require a regular, size-bounded file
@@ -654,13 +763,12 @@ class RealSlotOps:
         finally:
             os.close(fd)
 
-    def read_content_volume_name(self, slot_dir: str) -> str | None:
-        """The slot's content volume name from `<slot_dir>/compose.yml`, or
-        None when there is nothing to read: no file, a link or other
-        non-regular file, one over `_COMPOSE_MAX_BYTES`, or no content volume
-        in it. Opened `O_NOFOLLOW | O_NONBLOCK`, so a planted link or FIFO is
-        skipped rather than followed or waited on. Raises `RefusedVolume` for
-        an ambiguous file. Reasons: branchleft_slot.md#content-volume-emptying.
+    @staticmethod
+    def _read_compose_text(slot_dir: str) -> str | None:
+        """`<slot_dir>/compose.yml` as text, or None when there is nothing to
+        read: no file, a link or other non-regular file, or one over
+        `_COMPOSE_MAX_BYTES`. Opened `O_NOFOLLOW | O_NONBLOCK`, so a planted
+        link or FIFO is skipped rather than followed or waited on.
         """
         path = os.path.join(slot_dir, "compose.yml")
         try:
@@ -676,7 +784,94 @@ class RealSlotOps:
             os.close(fd)
         if len(data) > _COMPOSE_MAX_BYTES:
             return None
-        return _content_volume_name(data.decode("utf-8", errors="replace"))
+        return data.decode("utf-8", errors="replace")
+
+    def read_content_volume_name(self, slot_dir: str) -> str | None:
+        """The slot's content volume name from `<slot_dir>/compose.yml`, or
+        None when there is nothing to read (see `_read_compose_text`) or no
+        content volume in it. Raises `RefusedVolume` for an ambiguous file.
+        Reasons: branchleft_slot.md#content-volume-emptying.
+        """
+        text = self._read_compose_text(slot_dir)
+        return None if text is None else _content_volume_name(text)
+
+    def ensure_slot_volumes(self, slot_dir: str, slot: str) -> None:
+        """Creates each external volume `<slot_dir>/compose.yml` declares for
+        `slot` (`_slot_volume_names`) with `docker volume create <name>`, which
+        exits zero and changes nothing for a volume that already exists. No
+        compose file to read creates nothing. Then makes the slot's data
+        volume directory owned by the slot's own uid:gid (`_own_data_directory`);
+        content is writable as docker leaves it and adapters is mounted
+        read-only, so neither is touched. Raises `RefusedVolume` for an
+        ambiguous file, `VolumeCreateFailed` (one-line message with docker's
+        stderr) when a create fails or runs past
+        `_VOLUME_CREATE_TIMEOUT_SECONDS`, and `OSError` when docker cannot
+        run, so the unit is never started on a missing volume. Reasons:
+        branchleft_slot.md#start-creates-the-slots-volumes.
+        """
+        text = self._read_compose_text(slot_dir)
+        if text is None:
+            return
+        names = _slot_volume_names(slot, text)
+        for name in names:
+            try:
+                subprocess.run(
+                    ["docker", "volume", "create", name],
+                    check=True,
+                    capture_output=True,
+                    timeout=_VOLUME_CREATE_TIMEOUT_SECONDS,
+                )
+            except subprocess.CalledProcessError as exc:
+                raise _volume_create_failure(
+                    name, f"exited {exc.returncode}", exc.stderr
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise _volume_create_failure(
+                    name, f"timed out after {_VOLUME_CREATE_TIMEOUT_SECONDS}s", exc.stderr
+                ) from exc
+        # A fresh volume's directory is root-owned 0755, and the slot's Ghost
+        # (uid:uid, no capabilities) cannot create its SQLite file in it.
+        data_name = _data_volume_name(slot)
+        if data_name in names:
+            self._own_data_directory(data_name, _slot_uid(slot))
+
+    @classmethod
+    def _own_data_directory(cls, volume_name: str, uid: int) -> None:
+        """Makes `DOCKER_VOLUME_ROOT/<volume_name>/_data` owned by `uid:uid`,
+        and does nothing when it already is, so a repeat `start` changes no
+        state. Each directory is opened `O_NOFOLLOW | O_DIRECTORY` relative to
+        the one before and the owner is set on the open descriptor, so a path
+        swapped for a link afterwards is not followed. Raises `RefusedVolume`
+        for a link or non-directory, `VolumeCreateFailed` when the directory
+        is not there, `OSError` when the chown itself fails. Only the
+        directory itself, never what is inside it. Reasons:
+        branchleft_slot.md#start-creates-the-slots-volumes.
+        """
+        shown = f"{DOCKER_VOLUME_ROOT}/{volume_name}/_data"
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+        missing = VolumeCreateFailed(f"docker volume create {volume_name} left no {shown} to own")
+        try:
+            root_fd = os.open(DOCKER_VOLUME_ROOT, os.O_RDONLY | os.O_DIRECTORY)
+        except FileNotFoundError:
+            raise missing from None
+        try:
+            volume_fd = cls._open_volume_child(volume_name, flags, root_fd, shown)
+            if volume_fd is None:
+                raise missing
+            try:
+                data_fd = cls._open_volume_child("_data", flags, volume_fd, shown)
+                if data_fd is None:
+                    raise missing
+                try:
+                    info = os.fstat(data_fd)
+                    if (info.st_uid, info.st_gid) != (uid, uid):
+                        os.fchown(data_fd, uid, uid)
+                finally:
+                    os.close(data_fd)
+            finally:
+                os.close(volume_fd)
+        finally:
+            os.close(root_fd)
 
     def remove_volume_contents(self, volume_dir: str) -> None:
         """Empties `volume_dir`, which must be exactly
@@ -769,6 +964,20 @@ def _acquire_slot_lock(slot: str):
     return handle
 
 
+def _stop_colour_for_reset(ops: SlotOps, unit: str) -> None:
+    """Stops one colour unit for a reset. `systemctl stop` exits non-zero on
+    a unit that was never installed, which would abort the reset before
+    anything is emptied; a unit that is not loaded, or already inactive, is
+    as stopped as the reset needs it. Any other stop failure still raises.
+    """
+    try:
+        ops.systemctl("stop", unit)
+    except subprocess.CalledProcessError:
+        if ops.unit_is_stopped(unit):
+            return
+        raise
+
+
 def perform(invocation: Invocation, ops: SlotOps) -> None:
     if isinstance(invocation, LoadInvocation):
         # Not slot-scoped, so it never takes `_acquire_slot_lock` -- there is
@@ -781,6 +990,12 @@ def perform(invocation: Invocation, ops: SlotOps) -> None:
     try:
         if isinstance(invocation, ColourInvocation):
             unit = UNIT_TEMPLATE.format(slot=invocation.slot, colour=invocation.colour)
+            if invocation.verb == "start":
+                # The slot's `compose.yml` declares its volumes `external: true`,
+                # so `docker compose up` fails on one that does not exist yet.
+                # Created here, before the unit starts, and a no-op once they
+                # exist. See branchleft_slot.md#start-creates-the-slots-volumes.
+                ops.ensure_slot_volumes(SLOT_DIR.format(slot=invocation.slot), invocation.slot)
             ops.systemctl(invocation.verb, unit)
             return
 
@@ -790,7 +1005,7 @@ def perform(invocation: Invocation, ops: SlotOps) -> None:
         # one (LLD-2 §01b, §02).
         for colour in COLOURS:
             unit = UNIT_TEMPLATE.format(slot=invocation.slot, colour=colour)
-            ops.systemctl("stop", unit)
+            _stop_colour_for_reset(ops, unit)
 
         # The tenant's Ghost data lives in two Docker volumes outside the slot
         # directory. The content volume's name is only on disk in that

@@ -1,4 +1,5 @@
 import { decide, type WatcherState } from './detect.js';
+import { filingCommand, type UpstreamMajorItem } from './filing.js';
 import { fetchGhostReleases, type GhostRelease } from './ghostReleases.js';
 import { publish, type NtfyConfig } from './ntfy.js';
 import { readState, writeState } from './state.js';
@@ -42,9 +43,15 @@ export async function run(options: RunOptions): Promise<RunResult> {
   }
 
   const publishFn = options.publishNtfy ?? publish;
+  const tracked = result.tracked as UpstreamMajorItem;
   await publishFn(options.ntfy, {
     title: result.title as string,
-    message: result.message as string,
+    message: [
+      result.message as string,
+      '',
+      'File the tracked item (run from the branchLeft root, then label it upstream-major):',
+      filingCommand(tracked),
+    ].join('\n'),
     priority: 'high',
     tags: ['ghost', 'major-version'],
   });

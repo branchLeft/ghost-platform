@@ -1,6 +1,6 @@
 # Break-glass SSO adapter
 
-The only code this platform adds to Ghost. It lets an operator holding a short-lived signed token open an Administrator session as **one account fixed per site**, with no standing password anywhere. Design: `ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html`, section 05, break-glass support access.
+It lets an operator holding a short-lived signed token open an Administrator session as **one account fixed per site**, with no standing password anywhere. Design: `ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html`, section 05, break-glass support access.
 
 `src/BreakGlassSSO.js` and `src/break-glass.js` are copied by the root `Dockerfile` into Ghost's internal adapter directory, `core/server/adapters/sso/`. They are never placed in the content directory, which a tenant can write to. The adapter is inert until a tenant's config selects it.
 
@@ -13,7 +13,7 @@ Ghost config, normally set as environment variables on the tenant's container:
 | `adapters__sso__active=BreakGlassSSO` | Selects this adapter. Unset, Ghost uses its own no-op adapter. |
 | `adapters__sso__BreakGlassSSO__publicKey` | Ed25519 public key, base64 SPKI DER. Only the public half is ever on a tenant. |
 | `adapters__sso__BreakGlassSSO__tenant` | This tenant's name. A token's `aud` must equal it. |
-| `adapters__sso__BreakGlassSSO__supportIdentity` | The one account the adapter can produce: the support account on a paying site, the prospect's account on a demo. |
+| `adapters__sso__BreakGlassSSO__supportIdentity` | The one account the adapter can produce: the support account on a paying site. A demo never carries break-glass. |
 
 If any of the three is missing, is not a string, or the key is not an Ed25519 key, the adapter logs `break-glass: disabled (<reason>)` once at boot and refuses every token. The site boots regardless. Ghost parses environment values as JSON where it can, so a tenant name such as `2024` arrives as a number and disables break-glass. The renderer should never produce one.
 
@@ -62,11 +62,13 @@ The rest of LLD-5 section 05 is in `scripts/`. The owner runs it, and no agent d
 - `scripts/break-glass-mint.mjs` runs on `ops1`. It holds the only private key, at `/etc/branchleft/break-glass/`, mints for at most 600 seconds, and builds `/ghost/` URLs only. See `scripts/break-glass-mint.md`.
 - `scripts/break-glass-grant.mjs` runs on the tenant's host, in a pinned Node container started by `scripts/host/branchleft-break-glass.py`, so the host needs no Node. It opens the consented or incident lane, closes it, and runs every minute from `scripts/systemd/branchleft-break-glass-expire.service` and its timer to close any grant past its four hours. See `scripts/break-glass-grant.md`.
 
+`break-glass-grant.mjs` goes through Ghost's own knex. Ghost rewrites a configured `sqlite3` client to `better-sqlite3`, so the script reads either name, and a knex built separately against a tenant's file has to ask for `better-sqlite3`.
+
 The host steps are in `ghost-platform-docs`, `break-glass-runbook.md`. `test/image/break-glass-lanes.image.test.mjs` proves both scripts against the built image.
 
 ## What Ghost's extension point does, and the traps in it
 
-Ghost 6.55.0 constructs the adapter while building the admin app (`core/server/services/auth/session/index.js:76`) and validates configured adapters at boot (`adapter-manager` `init()`).
+Ghost 6.55.0 constructs the adapter while building the admin app (`core/server/auth/session/index.js:76`) and validates configured adapters at boot (`adapter-manager` `init()`).
 
 1. **It runs on the boot path.** A throw from the module load, the constructor, or a static `validate` stops Ghost starting, and readers are not served. The constructor cannot throw, there is no static `validate`, and the adapter requires only `node:crypto` and modules Ghost already resolves from its own directory.
 2. **The obvious adapter lets a token log in as anybody.** An adapter that resolves the token's subject can mint an Owner session. This one checks the subject against its configuration and only ever looks up the configured identity.
@@ -85,7 +87,7 @@ So before returning the account, the adapter asks Ghost's `User` model whether t
 ```sh
 pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.55.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.76.0 in Docker
 ```
 
 The image test (`test/image/`) runs the built image through every case the design measured: a suspended and an active account, no token, a tampered, forged, expired or other-tenant token, a replay, a revoke, a token naming the owner, boot and 200 with a malformed key and with each value missing, and a planted content adapter. It also covers a replay across a Ghost restart, and a token sent to the site root. Every refusal asserts both Ghost's 403 and the adapter's logged reason. `build.yml` runs it on every PR.

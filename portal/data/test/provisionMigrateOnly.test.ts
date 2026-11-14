@@ -188,7 +188,8 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0008_tenant_name',
       'applied migration 0009_custom_domain',
       'applied migration 0010_demo_request',
-      'applied migration 0011_demo_request_status_read',
+      'applied migration 0011_support_access',
+      'applied migration 0012_demo_request_status_read',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -257,7 +258,7 @@ describe('--migrate-only on a real server', () => {
     ]);
     const [rows] = await admin(
       'postgres',
-      "SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_provisioner', '${PROVISIONER}')"
+      `SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_provisioner', '${PROVISIONER}')`
     );
     expect(rows!.rows[0].n).toBe(0);
   });
@@ -316,7 +317,7 @@ describe('--migrate-only on a real server', () => {
     const result = await migrate();
     expect(result.err).toEqual([]);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('applied migration 0011_demo_request_status_read');
+    expect(result.out).toContain('applied migration 0012_demo_request_status_read');
     expect((await admin(PROV_DB, table))[0]!.rows[0].t).toBe('portal.demo_request');
     expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
       i: true,

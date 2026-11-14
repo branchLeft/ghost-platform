@@ -12,6 +12,24 @@ contract.
 It authenticates a lease, never a person: no account, no personal data ever
 enters the cookie.
 
+## The image and its publish path
+
+The image is built from `Dockerfile` on `node:26.13.0-alpine`, pinned by digest
+to the same base `portal/Dockerfile` pins. It carries the same zlib upgrade
+(CVE-2026-4738). Its install RUN also removes npm and pnpm, and the pnpm store,
+so the running image holds only the compiled gate, its two `link:` packages and
+no npm package at run time. The shipped Node is 26.13.0; `.nvmrc` stays at
+26.5.0, which is the version the unit tests run on, so the two differ on purpose.
+
+`demo-gate-image.yml` builds the image, runs the real-Caddy proofs and the three
+sabotage runs against that exact image, then saves it. On `main` the push job
+loads the saved bytes, checks the image ID, and pushes
+`ghcr.io/branchleft/demo-gate` tagged with the commit SHA, with no rebuild. The
+pushed digest is scanned, then attested with the signer identity
+`branchLeft/ghost-platform/.github/workflows/demo-gate-image.yml`. The reference
+to pin is the digest form, which the push job prints. The package stays private:
+demo1 takes a `docker save` tar through the broker and never pulls from GHCR.
+
 ## Endpoints
 
 - `GET`/`HEAD /__gate/verify` — the `forward_auth` target. `200` only when a
@@ -43,7 +61,7 @@ and an unset value refuses to start rather than guessing.
 | `GATE_CEILING_BROAD_ATTEMPTS`    | no       | `1000`        | A second, coarser ceiling: attempts per IPv6 /48 (or the same IPv4 address `GATE_CEILING_ATTEMPTS` already keys on) per window. Bounded `1`–`20000`. Catches a flood spread across many /64s inside one /48, which the narrow ceiling alone cannot see in aggregate. `login()` checks both ceilings before charging either, and charges both together only when both admit — a request either one would refuse costs neither, and creates no new narrow-table entry. **A client that can rotate through many /64s inside its own /48 can still exhaust that /48's own budget** — this tier bounds one /48's contribution to the narrow table, it does not make that /48's visitors immune to each other; `1000` trades off against the narrow table's own `100000` capacity (see `config.ts`'s comment for the reasoning behind the number). |
 | `GATE_CEILING_BROAD_MAX_SOURCES` | no       | `20000`       | Bounded `1`–`2000000`. Also bounds the malformed ceiling's table, so tuning it moves both.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `GATE_CEILING_MALFORMED_ATTEMPTS` | no       | `60`          | Malformed requests per source (IPv6 /64, or the IPv4 address) per window before `429`: a wrong content type, an unreadable or oversized body, or an empty or over-long passphrase. Bounded `1`–`10000`. Charged only on those 400 paths, never on a well-formed attempt, so a flood cannot lock a valid login. Shares `GATE_CEILING_WINDOW_SECONDS`; its table is bounded by `GATE_CEILING_BROAD_MAX_SOURCES`. |
-| `GATE_ARGON2_MAX_CONCURRENT`     | no       | `3`           | Argon2id derivations allowed in flight at once, across every source together — bounds aggregate cost neither ceiling above does. Bounded `1`–`64`. **Keep this below the process's libuv threadpool size** (Node's own default is 4; `UV_THREADPOOL_SIZE` if it is ever changed) — `crypto.argon2` and `fs` share that pool, and `verify` runs on every forward_auth, so saturating the pool with derivations starves every page and asset behind the gate. Measured at the default cap of 4 (equal to the pool): a 112 ms median, 130 ms max added to `verify`'s own file reads under a full queue, against 0.3 ms/1.8 ms at a cap of 3.                                                                                                                                                                                                    |
+| `GATE_ARGON2_MAX_CONCURRENT`     | no       | `3`           | Argon2id derivations allowed in flight at once, across every source together — bounds aggregate cost neither ceiling above does. Bounded `1`–`64`. **Keep this below the process's libuv threadpool size** (Node's own default is 4; `UV_THREADPOOL_SIZE` if it is ever changed) — `crypto.argon2` and `fs` share that pool, and `verify` runs on every forward_auth, so saturating the pool with derivations starves every page and asset behind the gate. Measured at a cap of 4 (equal to the pool): a 112 ms median, 130 ms max added to `verify`'s own file reads under a full queue, against 0.3 ms/1.8 ms at a cap of 3.                                                                                                                                                                                                    |
 | `GATE_ARGON2_MAX_QUEUED`         | no       | `64`          | Waiters past the concurrency cap before a login is refused with `503` (the ceiling attempt it already spent is refunded, not left to count against it) rather than queued without limit. Bounded `1`–`10000`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `PORT`                           | no       | `8080`        | Bounded `1`–`65535`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `LISTEN_HOST`                    | no       | `127.0.0.1`   | Set to `0.0.0.0` in the container image; the address only the edge can reach it on is the operator's decision.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -51,7 +69,7 @@ and an unset value refuses to start rather than guessing.
 ## The signing key file
 
 The container runs as `node` — uid 1000, the user baked into the
-`node:*-bookworm-slim` base image (`USER node` in the Dockerfile). It never
+`node:26.13.0-alpine` base image (`USER node` in the Dockerfile). It never
 runs as root. A real host gives the key file to the gate's own uid, **mode
 `0400`**: readable by the gate and nobody else, not even its own group.
 `scripts/test-demo-gate.sh` mounts a throwaway key world-readable instead,
@@ -187,8 +205,7 @@ Two things address the gap; the second is the one that sets the value:
   `demo-host/provision/render_demo_site.py --gate-env-out FILE` sets
   `GATE_TRUSTED_PROXIES` to the one address the edge dials the gate
   from, taken from the same constant the Caddyfile's upstreams use. It
-  trusts that single address, not the 127/8 range or a wildcard. Nothing in
-  this repo launches the gate, so nothing loads the file yet.
+  trusts that single address, not the 127/8 range or a wildcard.
 
 Trust is by address: any process in the host's network namespace that can
 open the gate's port is a trusted peer and can set its own source with

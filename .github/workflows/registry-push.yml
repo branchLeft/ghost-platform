@@ -81,7 +81,7 @@ jobs:
       # No stored credential exists for this: the run's own token is the whole
       # of it, and it expires with the run.
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -165,8 +165,10 @@ jobs:
   # The pushed digest, scanned by the shared image-scan workflow before anything
   # signs it. It fails the run on any critical or high finding no exemption
   # covers; the threshold is fixed in that workflow and cannot be lowered here.
-  # No exemption file exists in this repository: a finding with no available
-  # fix goes through the exemption route, never a changed threshold.
+  # The shared scan reads this repository's .image-scan-exemptions.json by
+  # default. It carries no entry for this image, so nothing here is exempted:
+  # a finding with no available fix goes through the exemption route, never a
+  # changed threshold.
   scan:
     name: Scan the pushed tenant image
     needs: push
@@ -200,7 +202,7 @@ jobs:
       IMAGE: ghcr.io/branchleft/ghost-tenant
     steps:
       - name: Log in to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

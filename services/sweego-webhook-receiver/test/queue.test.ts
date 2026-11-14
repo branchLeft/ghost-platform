@@ -1,9 +1,17 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openQueue, QueueFullError, QUEUE_MAX_BYTES } from '../src/queue.js';
-import { openReplayStore } from '../src/replay.js';
+import { openReplayStore, REPLAY_MAX_ENTRIES } from '../src/replay.js';
 
 let dir: string;
 
@@ -78,6 +86,39 @@ describe('queue', () => {
   it('refuses to start on a corrupt record', () => {
     appendFileSync(join(dir, 'queue.ndjson'), 'not json\n');
     expect(() => openQueue(dir)).toThrow();
+  });
+
+  it('replaces a torn temporary meta file left by a crash and leaves no temporary behind', () => {
+    const q = openQueue(dir);
+    q.append(rec(1));
+    q.close();
+    writeFileSync(join(dir, 'queue.meta.tmp'), '{"acked":');
+    const again = openQueue(dir);
+    again.ack(1);
+    again.close();
+    expect(existsSync(join(dir, 'queue.meta.tmp'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, 'queue.meta'), 'utf8'))).toEqual({ acked: 1 });
+    expect(openQueue(dir).stats().nextSeq).toBe(2);
+  });
+
+  it('never leaves queue.meta half-written when the new copy cannot be written', () => {
+    const q = openQueue(dir);
+    q.append(rec(1));
+    q.append(rec(2));
+    q.ack(1);
+    // a directory where the temporary file belongs makes the next write fail
+    rmSync(join(dir, 'queue.meta.tmp'), { force: true });
+    mkdirSync(join(dir, 'queue.meta.tmp'));
+    expect(() => q.ack(2)).toThrow();
+    expect(JSON.parse(readFileSync(join(dir, 'queue.meta'), 'utf8'))).toEqual({ acked: 1 });
+    q.close();
+  });
+
+  it('keeps room in the replay set for every record the queue can hold', () => {
+    const smallest = JSON.stringify({ seq: 1, outcomeId: 'a', class: 'a', at: 1_700_000_000 });
+    const mostRecords = Math.floor(QUEUE_MAX_BYTES / (Buffer.byteLength(smallest) + 1));
+    // each accepted complaint adds two keys, so the queue cap must bind first
+    expect(REPLAY_MAX_ENTRIES).toBeGreaterThanOrEqual(2 * mostRecords);
   });
 });
 

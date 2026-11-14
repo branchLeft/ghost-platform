@@ -9,7 +9,11 @@ export type {
 } from './bumpStateMachine.js';
 export { createApplyLock } from './applyLock.js';
 export type { ApplyLock } from './applyLock.js';
-export { createFileTenantStateStore } from './tenantStateStore.js';
+export {
+  createFileTenantStateStore,
+  persistToStore,
+  recordFromSnapshot,
+} from './tenantStateStore.js';
 export type { PersistedTenantState, TenantStateStore } from './tenantStateStore.js';
 export { acquireProcessLock, ProcessLockHeldError, DEFAULT_LOCK_PATH } from './processLock.js';
 export type { ProcessLock, ProcessLockOptions } from './processLock.js';
@@ -69,7 +73,22 @@ export {
 export type { ModelFreeEnvironment } from './modelFreeEnvironment.js';
 export { createListMembers, parseRingAssignments, RingAssignmentError } from './ringMembership.js';
 export type { EngineOf, RingAssignments } from './ringMembership.js';
-export { runRelease } from './ringController.js';
+export {
+  RESTORE_DRILL_MAX_AGE_MS,
+  UNATTENDED_MINOR_FLAG,
+  UNATTENDED_MINOR_ON,
+  decideUnattendedMinor,
+  restoreDrillMet,
+  unattendedMinorEnabled,
+} from './minorEligibility.js';
+export type {
+  MinorDecision,
+  MinorDecisionInput,
+  MinorRefusal,
+  RestoreDrillRecord,
+} from './minorEligibility.js';
+export { runUnattendedMinor } from './unattendedMinor.js';
+export type { UnattendedMinorRequest, UnattendedOutcome } from './unattendedMinor.js';
 export type {
   Health,
   Held,
@@ -80,3 +99,12 @@ export type {
   RingControllerDependencies,
   RingMember,
 } from './ringController.js';
+export { runReleaseFromProcess } from './processEntry.js';
+export {
+  DEFAULT_CALL_DEADLINES,
+  DEFAULT_RECOVERY_DEADLINES,
+  DeadlineExceededError,
+  resolveCallDeadlines,
+  resolveRecoveryDeadlines,
+} from './deadlines.js';
+export type { CallDeadlines, RecoveryDeadlines } from './deadlines.js';

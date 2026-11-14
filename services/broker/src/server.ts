@@ -96,6 +96,7 @@ export function buildDeps(
       command: config.wrapperCommand,
       prefix: config.wrapperPrefix,
       timeoutMs: config.wrapperTimeoutMs,
+      detachTimeoutMs: config.wrapperDetachTimeoutMs,
     }),
     renderer,
     adminApi,

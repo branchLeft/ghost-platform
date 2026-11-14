@@ -1,8 +1,11 @@
+import { execFileSync } from 'node:child_process';
+import { constants } from 'node:fs';
 import {
   appendFile,
   chmod,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   rm,
   stat,
@@ -90,6 +93,26 @@ describe('FileStateStore', () => {
     it('refuses something that is not a regular file', async () => {
       await mkdir(file, { recursive: true, mode: 0o700 });
       await expect(new FileStateStore(file).readAll()).rejects.toBeInstanceOf(StateFileUnsafeError);
+    });
+
+    it('refuses a named pipe at the state path instead of waiting on it', async () => {
+      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+      execFileSync('mkfifo', ['-m', '600', file]);
+      const outcome = (p: Promise<unknown>): Promise<unknown> =>
+        Promise.race([
+          p.then(
+            () => 'returned',
+            (e: unknown) => e
+          ),
+          new Promise((resolve) => setTimeout(() => resolve('hung'), 2000)),
+        ]);
+      const read = await outcome(new FileStateStore(file).readAll());
+      const append = await outcome(new FileStateStore(file).append(rec(1)));
+      // Free any open that is still blocked, so the worker can exit whichever way this went.
+      const release = await open(file, constants.O_RDWR | constants.O_NONBLOCK);
+      await release.close();
+      expect(read).toBeInstanceOf(StateFileUnsafeError);
+      expect(append).toBeInstanceOf(StateFileUnsafeError);
     });
 
     it.each([

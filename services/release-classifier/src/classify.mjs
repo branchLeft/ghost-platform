@@ -53,6 +53,7 @@ export const CONSTRAINT_RULES = Object.freeze([
 // Changes an existing column in place. The old image reads the old name or the old
 // nullability, so a database restore is the only way back. Not part of the whole-range
 // route above (its rollback runs); read by the per-step classifier in steps.mjs.
+// `add-required-column` (addsRequiredColumn) is the same kind of hit, for a new column.
 export const SCHEMA_CHANGE_RULES = Object.freeze([
   { name: 'rename-column', names: ['createRenameColumnMigration'] },
   { name: 'set-nullable', names: ['createSetNullableMigration'] },
@@ -75,6 +76,38 @@ export function parseRelease(tag) {
 }
 
 // A migration folder such as "6.57" holds migrations for that minor line.
+//
+// createAddColumnMigration: a column that is not nullable and has no defaultTo cannot
+// be inserted into by the previous image, which does not write it. Read here only in
+// a definition written as an object literal in the call; a definition held in a
+// variable is not read (see README, Release steps).
+const ADD_COLUMN = 'createAddColumnMigration';
+const keyOf = (p) => {
+  if (p.computed) return null;
+  if (p.key.type === 'Identifier') return p.key.name;
+  return isString(p.key) ? p.key.value : null;
+};
+// Ghost's addTableColumn makes a column NOT NULL unless `nullable` is own-property
+// `true`, so a definition with no `nullable` key is NOT NULL too. The definition is the
+// third argument of createAddColumnMigration(table, column, definition, options); the
+// options object is not read.
+const DEFINITION_ARG = 2;
+function addsRequiredColumn(call) {
+  const def = call.arguments[DEFINITION_ARG];
+  if (def?.type !== 'ObjectExpression') return false;
+  let nullable;
+  let hasDefault = false;
+  for (const p of def.properties) {
+    // A spread can hold a defaultTo or a nullable this reader cannot see. A spread is read
+    // as absent, so it can only add to the refusal.
+    if (p.type !== 'Property') continue;
+    const k = keyOf(p);
+    if (k === 'defaultTo') hasDefault = true;
+    if (k === 'nullable') nullable = p.value;
+  }
+  const nullableTrue = nullable?.type === 'Literal' && nullable.value === true;
+  return !nullableTrue && !hasDefault;
+}
 function parseFolder(name) {
   const m = FOLDER_PATTERN.exec(name);
   if (!m) throw new Error(`unrecognised migration folder: ${name}`);
@@ -231,6 +264,9 @@ function scan(program, source) {
         const c = n.callee;
         const prop = c.type === 'MemberExpression' && !c.computed ? c.property : c;
         if (destructiveName(prop)) destructiveCall = true;
+        if (n.type === 'CallExpression' && isNamed(prop, ADD_COLUMN) && addsRequiredColumn(n)) {
+          found.schemaChange.add('add-required-column');
+        }
         if (
           c.type === 'MemberExpression' &&
           !c.computed &&

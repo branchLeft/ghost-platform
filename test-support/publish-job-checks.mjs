@@ -1,7 +1,8 @@
 // The shape checks for an image publish workflow that follows the
 // drain-sidecar route: a `build` job that proves and saves the image, and a
 // `push` job that loads exactly that image and publishes it. One home, used
-// by workflow-drain-sidecar-publish.test.js and workflow-demo-edge-image.test.js.
+// by workflow-drain-sidecar-publish.test.js, workflow-demo-edge-image.test.js and
+// workflow-demo-gate-image.test.js.
 // Node built-ins only. See publish-job-checks.md.
 
 // Whole-line comments and trailing ones (a `#` after whitespace) both go, so

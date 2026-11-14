@@ -1,0 +1,16 @@
+# Writes each tenant's support-access state to a node_exporter textfile: one run of
+# /usr/local/sbin/branchleft-break-glass-textfile. It runs as root, as the expire
+# service does, and holds no credential of its own; it only runs the host wrapper's
+# read-only `report`. See scripts/host/branchleft-break-glass-textfile.md.
+[Unit]
+Description=Write each tenant's support-access state to the node_exporter textfile
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/branchleft-break-glass-textfile
+NoNewPrivileges=yes
+PrivateTmp=yes
+# One run reads each tenant in turn, each bounded at 30 seconds by the program.
+TimeoutStartSec=10min

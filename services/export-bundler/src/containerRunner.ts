@@ -164,7 +164,8 @@ export function parseInspectedEnv(stdout: string): Record<string, string> {
 export function runDocker(
   dockerCommand: string,
   argv: readonly string[],
-  registry: CleanupRegistry = processCleanup
+  registry: CleanupRegistry = processCleanup,
+  timeoutMs?: number
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     // Explicit, minimal env: PATH only, never the ambient environment this
@@ -173,10 +174,19 @@ export function runDocker(
     const child = execFile(
       dockerCommand,
       [...argv],
-      { env: { PATH: process.env.PATH ?? '' }, maxBuffer: 16 * 1024 * 1024 },
+      {
+        env: { PATH: process.env.PATH ?? '' },
+        maxBuffer: 16 * 1024 * 1024,
+        // No timeout unless asked for: a dump or a copy runs as long as the data needs.
+        ...(timeoutMs === undefined ? {} : { timeout: timeoutMs, killSignal: 'SIGKILL' as const }),
+      },
       (err, stdout, stderr) => {
         untrack();
         if (err) {
+          if (timeoutMs !== undefined && err.killed === true) {
+            reject(new Error(`docker ${argv[0]} timed out after ${String(timeoutMs)} ms`));
+            return;
+          }
           // Never err.message: it repeats the whole argv, env values included.
           reject(new Error(`docker ${argv[0]} failed (exit ${String(err.code)}): ${stderr}`));
           return;
@@ -189,6 +199,9 @@ export function runDocker(
     const untrack = registry.trackChild(child);
   });
 }
+
+/** How long `docker version` may take before the engine is treated as unreadable. */
+export const DOCKER_VERSION_TIMEOUT_MS = 30_000;
 
 /** The oldest Docker Engine this package runs a tenant's data on. */
 export const MIN_DOCKER_ENGINE_MAJOR = 28;
@@ -210,18 +223,22 @@ const ENGINE_VERSION = /^(\d+)\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.+-]*)?$/;
  * Refuses to run on a Docker engine older than 28, before anything is
  * created. Reads the engine (`Server`) version, not the client's, and fails
  * closed: a missing binary, a daemon that does not answer, or output that is
- * not a version is refused the same as an old engine. Returns the version.
+ * not a version is refused the same as an old engine. `docker version` is
+ * killed after `timeoutMs`, so a daemon that accepts the connection and never
+ * answers is refused too instead of hanging the run. Returns the version.
  */
 export async function assertDockerEngineAtLeast28(
   dockerCommand = 'docker',
-  registry: CleanupRegistry = processCleanup
+  registry: CleanupRegistry = processCleanup,
+  timeoutMs: number = DOCKER_VERSION_TIMEOUT_MS
 ): Promise<string> {
   let stdout: string;
   try {
     stdout = await runDocker(
       dockerCommand,
       ['version', '--format', '{{.Server.Version}}'],
-      registry
+      registry,
+      timeoutMs
     );
   } catch (err) {
     throw new DockerEngineTooOldError(

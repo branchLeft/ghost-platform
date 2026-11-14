@@ -1,0 +1,313 @@
+name: Promote candidate
+
+# Independent classification attestation for one candidate image digest. It runs
+# the six gates on the digest, reads the migrations new since the pinned Ghost
+# tag, and signs the verdict onto the digest as a promotion attestation: version,
+# from-version, route (fast-path or consent), the policy file's hash and the
+# per-digest gate results. Its signing identity is this file, which is not the
+# file that pushed the image, so a push cannot also sign the verdict.
+#
+# Fixed code only: no model, no agent and no person in the path. A refusal is a
+# consent predicate, signed like any other, and whoever applies it refuses it.
+# Nothing here pushes an image or calls a host; nothing calls this workflow yet.
+# promote/README.md has the fields, the three jobs and what is not claimed.
+#
+# Three jobs, so the one that can sign installs nothing:
+#   gates   pulls the digest and runs the gate set. Reads packages.
+#   decide  reads Ghost's migrations at both tags and builds the predicate.
+#           Installs the classifier's one dependency. Cannot sign.
+#   attest  checks the predicate file, signs it, verifies it as a host will, and
+#           proves a wrong signer is refused. Installs nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image-digest:
+        description: 'The pushed tenant image digest, sha256:<64 hex>.'
+        required: true
+        type: string
+      from-version:
+        description: 'The pinned Ghost release the tenants run, as a tag such as v6.65.0.'
+        required: true
+        type: string
+      version:
+        description: 'The Ghost release the candidate carries, as a tag such as v6.66.0.'
+        required: true
+        type: string
+      policy-file:
+        description: 'The promotion policy file in this repository, whose hash the predicate carries.'
+        required: true
+        type: string
+
+permissions: {}
+
+# One run per digest. A second dispatch for the same digest waits; it never
+# cancels a run that may be midway through signing.
+concurrency:
+  group: ghost-platform-promote-candidate-${{ inputs.image-digest }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/branchleft/ghost-tenant
+  IMAGE_DIGEST: ${{ inputs.image-digest }}
+  FROM_VERSION: ${{ inputs.from-version }}
+  VERSION: ${{ inputs.version }}
+  POLICY_FILE: ${{ inputs.policy-file }}
+
+jobs:
+  gates:
+    name: Six gates on the candidate digest
+    runs-on: ubuntu-latest
+    # The same budget as the gate set's own CI job: three Ghost boots, a browser
+    # download, the image tests. Cancelled by the timeout, never waved through.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      # A dispatch from a feature branch would run that branch's gates and
+      # signing code, so only main may run this workflow.
+      - name: Refuse any ref other than main
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::the promote-candidate workflow runs from main only (ref was $GITHUB_REF)"
+            exit 1
+          fi
+
+      - name: Refuse an input that is not the expected shape
+        run: |
+          printf '%s' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::image-digest is not sha256:<64 hex>"; exit 1; }
+          printf '%s' "$FROM_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::from-version is not a plain release tag"; exit 1; }
+          printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::version is not a plain release tag"; exit 1; }
+          printf '%s' "$POLICY_FILE" | grep -Eq '^[A-Za-z0-9._/-]+$' || { echo "::error::policy-file is not a plain path"; exit 1; }
+          case "$POLICY_FILE" in /*|*..*) echo "::error::policy-file must stay inside the repository"; exit 1 ;; esac
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: adapters/sso/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+
+      # The content-policy gate renders its policy through render-core's built
+      # output and drives a headless Chromium through Playwright, as the gate
+      # set's own CI job does.
+      - name: Build render-core
+        working-directory: render-core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm run build
+
+      - name: Install the content-policy gate's browser
+        working-directory: csp/proof
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # By digest, never by tag: the gates run on the bytes the attestation names.
+      - name: Pull the candidate by digest
+        run: docker pull "$IMAGE@$IMAGE_DIGEST"
+
+      - name: Build the stand-in spool
+        run: docker build --tag spool-standin:ci scripts/mail-gate/spool-standin
+
+      # The gate set exits 0 green and 1 red; either way it wrote the record,
+      # and a red record is a consent predicate downstream, not a failed job.
+      # Any other exit code, or no record, fails the job. A gate cannot be
+      # skipped: there is no condition on this step.
+      - name: Run the six gates and write the record
+        env:
+          MAIL_GATE_SPOOL_IMAGE: spool-standin:ci
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate"
+          code=0
+          node gate-set/gate-set.mjs run --image "$IMAGE@$IMAGE_DIGEST" --digest "$IMAGE_DIGEST" --out "$RUNNER_TEMP/gate" || code=$?
+          if [ "$code" -gt 1 ]; then
+            echo "::error::the gate set could not run (exit $code)"
+            exit 1
+          fi
+          test -f "$RUNNER_TEMP/gate/gate-report-${IMAGE_DIGEST#sha256:}.json"
+
+      - name: Keep the gate record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-report
+          path: ${{ runner.temp }}/gate/gate-report-*.json
+          if-no-files-found: error
+
+  decide:
+    name: Classify the migrations new since the pinned tag and build the predicate
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      # The classifier's own Node, from its own pin.
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/release-classifier/.nvmrc
+
+      - name: Install the classifier's one dependency
+        working-directory: services/release-classifier
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Fetch Ghost's migrations at the pinned tag
+        id: from
+        run: |
+          commit="$(node promote/fetch-ghost-migrations.mjs --tag "$FROM_VERSION" --dest "$RUNNER_TEMP/ghost-from")"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch Ghost's migrations at the candidate's tag
+        id: to
+        run: |
+          commit="$(node promote/fetch-ghost-migrations.mjs --tag "$VERSION" --dest "$RUNNER_TEMP/ghost-to")"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+      # The steps CLI exits 0 reversible and 2 forward-only or unclassified: both
+      # leave the record on stdout, and a refusal is a consent predicate. Exit 1
+      # is an error and fails the job.
+      - name: Classify the migrations new since the pinned tag
+        env:
+          VERSIONS: ghost/core/core/server/data/migrations/versions
+        run: |
+          code=0
+          node services/release-classifier/src/steps-cli.mjs \
+            --release "$FROM_VERSION=$RUNNER_TEMP/ghost-from/$VERSIONS" \
+            --release "$VERSION=$RUNNER_TEMP/ghost-to/$VERSIONS" \
+            > "$RUNNER_TEMP/steps.json" || code=$?
+          if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+            echo "::error::the classifier could not read the releases (exit $code)"
+            exit 1
+          fi
+
+      - name: Download the gate record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: gate-report
+          path: ${{ runner.temp }}/gate
+
+      # `shell: bash` so the pipe to the summary cannot hide a failed build.
+      - name: Build the predicate
+        shell: bash
+        env:
+          FROM_COMMIT: ${{ steps.from.outputs.commit }}
+          TO_COMMIT: ${{ steps.to.outputs.commit }}
+        run: |
+          node promote/build-predicate.mjs \
+            --digest "$IMAGE_DIGEST" --version "$VERSION" --from-version "$FROM_VERSION" \
+            --policy-file "$POLICY_FILE" \
+            --steps "$RUNNER_TEMP/steps.json" \
+            --gate-report "$RUNNER_TEMP/gate/gate-report-${IMAGE_DIGEST#sha256:}.json" \
+            --from-commit "$FROM_COMMIT" --to-commit "$TO_COMMIT" \
+            --out "$RUNNER_TEMP/predicate.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the predicate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: promotion-predicate
+          path: ${{ runner.temp }}/predicate.json
+          if-no-files-found: error
+
+  # The only job that can sign. It installs nothing and runs only the node
+  # scripts in promote/, which import node built-ins alone. `packages: write`
+  # stores the signed bundle beside the image so a host verifies it with
+  # --bundle-from-oci; it is the only registry write, and it pushes no image.
+  # The identity is a literal: read from this run's own workflow_ref it would
+  # agree with itself and prove nothing.
+  attest:
+    name: Sign, verify and prove a wrong signer is refused
+    needs: decide
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/release-classifier/.nvmrc
+
+      - name: Download the predicate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: promotion-predicate
+          path: ${{ runner.temp }}/promotion
+
+      # The signing job's own check, from the inputs and not from the file: the
+      # predicate must be for this digest and release, well formed, and a
+      # fast-path one must carry its own evidence.
+      - name: Check the predicate before signing it
+        run: |
+          node promote/check-predicate.mjs --predicate "$RUNNER_TEMP/promotion/predicate.json" \
+            --digest "$IMAGE_DIGEST" --version "$VERSION" --from-version "$FROM_VERSION"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest the digest with the promotion predicate
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          predicate-type: https://github.com/branchLeft/ghost-platform/promotion/v1
+          predicate-path: ${{ runner.temp }}/promotion/predicate.json
+          push-to-registry: true
+          create-storage-record: false
+
+      # As a host will read it: through the GitHub API, then from the registry's
+      # copy of the bundle, with the predicate type named and every identity flag
+      # fixed; then a wrong signer through both, which must be refused for its
+      # identity. A fresh attestation can take a moment to be readable, so a
+      # read that fails is retried; the control is never retried.
+      - name: Verify the attestation and prove a wrong signer is refused
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node promote/verify-promotion.mjs \
+            --image "$IMAGE@$IMAGE_DIGEST" \
+            --repo branchLeft/ghost-platform \
+            --signer-workflow branchLeft/ghost-platform/.github/workflows/promote-candidate.yml \
+            --version "$VERSION" --from-version "$FROM_VERSION" | tee -a "$GITHUB_STEP_SUMMARY"

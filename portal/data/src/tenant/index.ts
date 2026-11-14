@@ -55,3 +55,11 @@ export {
   type EdgeTarget,
 } from '../domainCheck.js';
 export { nodeDnsResolver } from '../nodeDnsResolver.js';
+export {
+  SUPPORT_ACCESS_STATES,
+  SUPPORT_READING_FRESH_SECONDS,
+  SUPPORT_REQUEST_STATUSES,
+  type SupportAccessState,
+  type SupportAccessView,
+  type SupportRequestStatus,
+} from '../supportAccess.js';

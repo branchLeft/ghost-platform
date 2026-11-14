@@ -1,5 +1,5 @@
 {
-  "id": "f24f0bb3-286c-468d-bedc-75ce5ca96a2d",
+  "id": "72fdb7a8-034e-4c9c-864c-75fa8c612124",
   "prevId": "2c3b2467-6336-465f-887c-378d8a784dbe",
   "version": "7",
   "dialect": "postgresql",
@@ -237,29 +237,7 @@
           "columns": ["verified_address"]
         }
       },
-      "policies": {
-        "request_insert": {
-          "name": "request_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": ["portal_prospect"],
-          "withCheck": "true"
-        },
-        "own_request": {
-          "name": "own_request",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": ["portal_prospect"],
-          "using": "\"portal\".\"demo_request\".\"verified_address\" = public.bound_address()"
-        },
-        "provisioner_read": {
-          "name": "provisioner_read",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": ["portal_provisioner"],
-          "using": "true"
-        }
-      },
+      "policies": {},
       "checkConstraints": {
         "demo_request_address_shape": {
           "name": "demo_request_address_shape",
@@ -298,7 +276,7 @@
           "value": "char_length(\"portal\".\"demo_request\".\"consent_wording\") BETWEEN 1 AND 2000 AND char_length(\"portal\".\"demo_request\".\"explainer_wording\") BETWEEN 1 AND 2000"
         }
       },
-      "isRLSEnabled": true
+      "isRLSEnabled": false
     },
     "portal.demo_state_event": {
       "name": "demo_state_event",
@@ -826,6 +804,173 @@
         "moderation_setting_sensitivity_known": {
           "name": "moderation_setting_sensitivity_known",
           "value": "\"portal\".\"moderation_setting\".\"sensitivity\" IN ('low', 'medium', 'high')"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "portal.support_access_reading": {
+      "name": "support_access_reading",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lane": {
+          "name": "lane",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "granted_at": {
+          "name": "granted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deadline_at": {
+          "name": "deadline_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "support_access_reading_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "support_access_reading_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "support_access_reading",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"support_access_reading\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"support_access_reading\".\"tenant_id\" = public.bound_tenant()"
+        }
+      },
+      "checkConstraints": {
+        "support_access_reading_state_known": {
+          "name": "support_access_reading_state_known",
+          "value": "\"portal\".\"support_access_reading\".\"state\" IN ('open', 'closed', 'unknown')"
+        },
+        "support_access_reading_lane_known": {
+          "name": "support_access_reading_lane_known",
+          "value": "\"portal\".\"support_access_reading\".\"lane\" IN ('consented', 'incident')"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "portal.support_access_request": {
+      "name": "support_access_request",
+      "schema": "portal",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        }
+      },
+      "indexes": {
+        "support_access_request_one_open": {
+          "name": "support_access_request_one_open",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"portal\".\"support_access_request\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "support_access_request_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "support_access_request_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "support_access_request",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"support_access_request\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"support_access_request\".\"tenant_id\" = public.bound_tenant()"
+        },
+        "tenant_insert_open": {
+          "name": "tenant_insert_open",
+          "as": "RESTRICTIVE",
+          "for": "INSERT",
+          "to": ["portal_tenant"],
+          "withCheck": "\"portal\".\"support_access_request\".\"status\" = 'open'"
+        }
+      },
+      "checkConstraints": {
+        "support_access_request_status_known": {
+          "name": "support_access_request_status_known",
+          "value": "\"portal\".\"support_access_request\".\"status\" IN ('open', 'dealt_with')"
         }
       },
       "isRLSEnabled": true

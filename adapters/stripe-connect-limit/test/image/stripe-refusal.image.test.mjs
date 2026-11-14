@@ -22,7 +22,7 @@ const LIMIT_KEY = 'hostSettings__limits__limitStripeConnect__disabled';
 const PASSWORD = 'Xk9-stripe-refusal-image-test-1234';
 const PLACEHOLDER = 'PLACEHOLDER';
 const SETTINGS_FILE = '/var/lib/ghost/current/core/server/models/settings.js';
-const IMPORT_FAILED = 'Content import was unsuccessful';
+const IMPORT_FAILED = '[Background Job] site-content-import error';
 const IMPORT_WAIT_MS = 60_000;
 
 // The `hostSettings__*` lines of a rendered demo, first colour block only.

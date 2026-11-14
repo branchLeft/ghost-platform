@@ -16,6 +16,7 @@ without Docker. Nothing here reaches a host.
 from __future__ import annotations
 
 import argparse
+import bisect
 import dataclasses
 import os
 import pathlib
@@ -32,6 +33,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import extract_tenant_binlog  # noqa: E402
+import gtid_snapshot  # noqa: E402
 import replication_client_probe as rcp  # noqa: E402
 import snapshot_probe as sp  # noqa: E402
 
@@ -49,6 +51,22 @@ SLEEP_SECONDS = 60
 # between passes keeps the dumps from being a CPU stress test of the host.
 PASS_GAP_SECONDS = 2.0
 LATENCY_LIMIT_SECONDS = sp.WRITER_LIMIT_SECONDS
+# Which tenant's snapshot a slow write belongs to. The probe keeps each tenant's
+# writes slower than SLOW_WRITE_SECONDS, with their start times, and each
+# tenant's own dump windows by pass. A write over the 100 ms limit decides the
+# run only when it overlaps that tenant's own window (within WINDOW_MARGIN_SECONDS
+# either side): a runner that stalls 100 to 500 ms on every tenant at once, with or
+# without a dump running, is the host's, not the candidate's.
+SLOW_WRITE_SECONDS = 0.050
+WINDOW_MARGIN_SECONDS = 0.020
+# A spike on every tenant at once is the host's when each other tenant's
+# slow write, outside its own window, is at least this fraction of the
+# write's own size. A global lock under a long reader stalls the dumped tenant
+# for a minute and the others for a fraction of it: nothing like it.
+SHARED_SPIKE_RATIO = 0.5
+# Slow writes inside their own tenant's windows, in this many passes of the
+# whole run, are the candidate's even when each one was shared with the others.
+RECURRING_PASSES = 2
 # A writer's first statements pay for a cold connection and a cold table cache.
 WARMUP_SAMPLES = 2
 DUMP_PASSWORD_FILE = "coord"
@@ -93,6 +111,9 @@ EXIT_SABOTAGE_NOT_DETECTED = sp.EXIT_SABOTAGE_NOT_DETECTED
 EXIT_CANDIDATE_INADEQUATE = sp.EXIT_OPTION_C_UNAVAILABLE
 EXIT_FINDING_NOT_RECORDED = sp.EXIT_FINDING_NOT_RECORDED
 EXIT_REFUSED = sp.EXIT_REFUSED
+# Control 2 failed with nothing else wrong, on a host too slow to judge it. Not
+# the candidate's fault and not a pass: 0 to 5 are snapshot_probe's, 64 is usage.
+EXIT_HOST_TOO_NOISY = 6
 
 Coordinates = tuple[str, int]
 
@@ -152,6 +173,24 @@ def latency_verdict(samples: Mapping[str, Sequence[float]], limit: float, baseli
             "not a dump, may be the cause: only a host whose baseline is under the limit can judge this control"
         )
     return Verdict(False, reason)
+
+
+def rounds_latency_verdict(
+    rounds: Mapping[int, Mapping[str, Sequence[float]]], limit: float, baselines: Mapping[int, Mapping[str, float]] | None = None
+) -> Verdict:
+    """Control 2 over every round (round number to each tenant's latencies), the
+    whole run: every tenant's worst statement in every round is under `limit`.
+    A round in which a tenant was not measured fails the control: the probe was
+    blind. `baselines` is each round's own worst statement before its first dump;
+    whether a failure is the host's is the exit code's to say (classify_round)."""
+    if not rounds:
+        return Verdict(False, "no round was measured")
+    results = {number: latency_verdict(samples, limit, (baselines or {}).get(number)) for number, samples in sorted(rounds.items())}
+    failed = [number for number, result in results.items() if not result.passed]
+    if failed:
+        return Verdict(False, "; ".join(f"round {number}: {results[number].reason}" for number in failed))
+    worst = ", ".join(f"round {number} {sp._ms(max((max(v) for v in samples.values() if v), default=0.0))}" for number, samples in sorted(rounds.items()))
+    return Verdict(True, f"{len(rounds)} rounds, each tenant's worst statement within the {sp._ms(limit)} limit in every one (worst per round: {worst})")
 
 
 def dump_lock_verdict(rows: Iterable[Sequence[str]]) -> Verdict:
@@ -582,18 +621,291 @@ def inject_sql(tag: str) -> str:
     )
 
 
-def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool) -> int:
+class SlowWrite(NamedTuple):
+    """One write slower than SLOW_WRITE_SECONDS: when it was sent
+    (`time.monotonic()` seconds, the dump windows' clock) and how long it took."""
+
+    start: float
+    latency: float
+
+
+class DumpWindow(NamedTuple):
+    """One snapshot of one tenant: the pass it belongs to and when its dump ran."""
+
+    pass_number: int
+    start: float
+    end: float
+
+
+class RoundReading(NamedTuple):
+    """One judged round: each tenant's worst statement before that round's first
+    dump (`baseline`, the host's own floor) and over the round (`worst`, measured
+    tenants only), its slow writes and its dump windows per tenant."""
+
+    baseline: Mapping[str, float]
+    worst: Mapping[str, float]
+    slow: Mapping[str, Sequence[SlowWrite]] = {}
+    windows: Mapping[str, Sequence[DumpWindow]] = {}
+
+
+class Hit(NamedTuple):
+    """A slow write that overlaps its own tenant's snapshot window. `shared` is
+    judged for writes over the limit only: every other tenant was slow outside
+    its own window at the same moment."""
+
+    tenant: str
+    pass_number: int
+    write: SlowWrite
+    shared: bool
+
+
+ROUND_OK = "ok"
+ROUND_STALL = "stall"
+ROUND_INCONCLUSIVE = "inconclusive"
+
+
+def _reaches(start: float, latency: float, lo: float, hi: float) -> bool:
+    """Whether a write that ran from `start` for `latency` overlaps [lo, hi],
+    with WINDOW_MARGIN_SECONDS of slack either side."""
+    return start <= hi + WINDOW_MARGIN_SECONDS and start + latency >= lo - WINDOW_MARGIN_SECONDS
+
+
+def _own_window(write: SlowWrite, windows: Sequence[DumpWindow]) -> DumpWindow | None:
+    return next((window for window in windows if _reaches(write.start, write.latency, window.start, window.end)), None)
+
+
+class _Outside(NamedTuple):
+    """One tenant's slow writes outside its own windows, by start time."""
+
+    starts: list[float]
+    writes: list[SlowWrite]
+    longest: float
+
+
+def _outside_windows(reading: RoundReading) -> dict[str, _Outside]:
+    index: dict[str, _Outside] = {}
+    for tenant in reading.worst:
+        writes = sorted(
+            (write for write in reading.slow.get(tenant, ()) if write.latency > SLOW_WRITE_SECONDS and _own_window(write, reading.windows.get(tenant, ())) is None),
+            key=lambda write: write.start,
+        )
+        index[tenant] = _Outside([write.start for write in writes], writes, max((write.latency for write in writes), default=0.0))
+    return index
+
+
+def _shared_spike(reading: RoundReading, outside: Mapping[str, _Outside], tenant: str, write: SlowWrite) -> bool:
+    """A write is a spike on every tenant at once when each other measured tenant
+    has a write at the same moment, outside its own windows, at least
+    SHARED_SPIKE_RATIO of this one's size."""
+    others = sorted(set(reading.worst) - {tenant})
+    if not others:
+        return False
+    end = write.start + write.latency
+    for other in others:
+        index = outside[other]
+        first = bisect.bisect_left(index.starts, write.start - index.longest - WINDOW_MARGIN_SECONDS)
+        last = bisect.bisect_right(index.starts, end + WINDOW_MARGIN_SECONDS)
+        if not any(
+            candidate.latency >= SHARED_SPIKE_RATIO * write.latency and _reaches(candidate.start, candidate.latency, write.start, end)
+            for candidate in index.writes[first:last]
+        ):
+            return False
+    return True
+
+
+def round_hits(reading: RoundReading, *, judge_shared: bool = True) -> list[Hit]:
+    """Every slow write that overlaps its own tenant's snapshot window."""
+    outside = _outside_windows(reading) if judge_shared else {}
+    hits: list[Hit] = []
+    for tenant in sorted(reading.slow):
+        for write in reading.slow[tenant]:
+            if write.latency <= SLOW_WRITE_SECONDS:
+                continue
+            window = _own_window(write, reading.windows.get(tenant, ()))
+            if window is not None:
+                shared = judge_shared and write.latency > LATENCY_LIMIT_SECONDS and _shared_spike(reading, outside, tenant, write)
+                hits.append(Hit(tenant, window.pass_number, write, shared))
+    return hits
+
+
+def classify_round(reading: RoundReading) -> str:
+    """One round. Nothing over the limit is ok. A tenant whose worst statement is
+    over the limit with no such slow write on record, or a round with no dump
+    windows, is blind: a stall. Otherwise a write over the limit that overlaps
+    its own tenant's snapshot window and was not a spike on every tenant at
+    once is a stall. Anything else over the limit, outside every window or a
+    spike on all tenants at once, is inconclusive: the host may be the cause."""
+    over = [tenant for tenant, value in reading.worst.items() if value > LATENCY_LIMIT_SECONDS]
+    if not over:
+        return ROUND_OK
+    if not reading.windows or any(not any(write.latency > LATENCY_LIMIT_SECONDS for write in reading.slow.get(tenant, ())) for tenant in over):
+        return ROUND_STALL
+    if any(hit.write.latency > LATENCY_LIMIT_SECONDS and not hit.shared for hit in round_hits(reading)):
+        return ROUND_STALL
+    return ROUND_INCONCLUSIVE
+
+
+def recurring_passes(rounds: Mapping[int, RoundReading]) -> set[tuple[int, int]]:
+    """The passes (round, pass) in which a tenant had a slow write inside its own
+    snapshot window that the host's own floor does not explain: slower than the
+    tenant's baseline before that round's first dump."""
+    return {
+        (number, hit.pass_number)
+        for number, reading in rounds.items()
+        for hit in round_hits(reading, judge_shared=False)
+        if hit.write.latency > max(SLOW_WRITE_SECONDS, reading.baseline.get(hit.tenant, 0.0))
+    }
+
+
+def judge_rounds(rounds: Mapping[int, RoundReading]) -> str:
+    """Control 2 over the whole run. Any round that is a stall, or slow writes
+    inside snapshot windows in RECURRING_PASSES passes, is a stall; otherwise
+    any inconclusive round is inconclusive."""
+    classes = {classify_round(reading) for reading in rounds.values()}
+    if ROUND_STALL in classes or len(recurring_passes(rounds)) >= RECURRING_PASSES:
+        return ROUND_STALL
+    return ROUND_INCONCLUSIVE if ROUND_INCONCLUSIVE in classes else ROUND_OK
+
+
+def exit_code(outcomes: Mapping[int, bool], *, sabotaged: bool, rounds: Mapping[int, RoundReading] | None = None) -> int:
     """`outcomes` maps each control run to whether it passed: snapshot_probe's
-    convention, controls 1 to 5 gating and 6 recorded."""
-    return sp.exit_code(outcomes, sabotaged=sabotaged)
+    convention, controls 1 to 5 gating and 6 recorded. The one addition: when
+    control 2 is the only gating control that failed, its rounds decide. Any
+    attributed stall exits 3 (candidate inadequate); otherwise any inconclusive
+    round exits 6 (host too noisy). No readings, or a round with a tenant nobody
+    measured, exits 3. A sabotage run, a pass and any other failure keep
+    snapshot_probe's code."""
+    code = sp.exit_code(outcomes, sabotaged=sabotaged)
+    if code != EXIT_CANDIDATE_INADEQUATE:
+        return code
+    failed = sorted(number for number, passed in outcomes.items() if not passed and number in sp.GATING_CONTROLS)
+    if failed != [2] or not rounds or any(not reading.worst or set(reading.baseline) - set(reading.worst) for reading in rounds.values()):
+        return code
+    if judge_rounds(rounds) == ROUND_INCONCLUSIVE:
+        return EXIT_HOST_TOO_NOISY
+    return code
 
 
-def pinned_percona(wrapper_text: str) -> str:
-    """The one Percona digest the wrapper pins."""
-    pins = set(re.findall(r"percona/percona-server@sha256:[0-9a-f]{64}", wrapper_text))
-    if len(pins) != 1:
-        raise ValueError(f"expected exactly one Percona digest, found {sorted(pins)}")
-    return pins.pop()
+def attribution_line(number: int, reading: RoundReading) -> str:
+    """One round's slow writes, for the log: how many per tenant, and where the
+    ones over the limit fell against the tenants' own snapshot windows."""
+    hits = [hit for hit in round_hits(reading) if hit.write.latency > LATENCY_LIMIT_SECONDS]
+    over = sum(1 for writes in reading.slow.values() for write in writes if write.latency > LATENCY_LIMIT_SECONDS)
+    spikes = sum(1 for hit in hits if hit.shared)
+    slow = ", ".join(f"{tenant} {sum(1 for write in writes if write.latency > SLOW_WRITE_SECONDS)}" for tenant, writes in sorted(reading.slow.items()))
+    return (
+        f"round {number}: writes over {sp._ms(SLOW_WRITE_SECONDS)}: {slow or 'none'}; over {sp._ms(LATENCY_LIMIT_SECONDS)}: {over}, "
+        f"inside their own tenant's snapshot window {len(hits)} (a spike on every tenant at once: {spikes}), outside every own window {over - len(hits)}"
+    )
+
+
+def outcome_message(code: int, controls: str, rounds: Mapping[int, RoundReading] | None = None, sabotage: str | None = None) -> str:
+    """The closing line of a run, by exit code."""
+    if code == EXIT_PASSED:
+        return "ALL PASSED" + (f" (controls {controls})" if controls and controls != "1 2 3 4 5 6" else "")
+    if code == EXIT_RED:
+        return f"RED as expected under sabotage {sabotage}: the control sees the failure"
+    if code == EXIT_SABOTAGE_NOT_DETECTED:
+        return f"SABOTAGE NOT DETECTED: a control stayed green under {sabotage}"
+    if code == EXIT_HOST_TOO_NOISY:
+        noisy = {number: reading for number, reading in sorted((rounds or {}).items()) if classify_round(reading) == ROUND_INCONCLUSIVE}
+        detail = "; ".join(attribution_line(number, reading) for number, reading in noisy.items())
+        return (
+            f"host too noisy: inconclusive. Control 2 failed in {len(noisy)} of {len(rounds or {})} rounds, and no write over the limit was the dump's: "
+            f"each fell outside its own tenant's snapshot windows or was a spike on every tenant at once ({detail}). "
+            "The run says nothing about the candidate. Re-run."
+        )
+    if code == EXIT_CANDIDATE_INADEQUATE:
+        return "CANDIDATE INADEQUATE: a control from 1 to 5 failed with nothing sabotaged. Stop and tell the owner."
+    return "the comment-form finding (control 6) could not be recorded"
+
+
+class RedReason(NamedTuple):
+    """The reason a sabotage's red must give: which control goes red, and the
+    text its RED line carries. Exit 1 alone is not the stated reason: the
+    wrapper also exits 1 on a setup failure and the probe reports a crash as a
+    red control titled "did not complete"."""
+
+    control: int
+    needles: tuple[str, ...]
+
+
+_LOST = "committed rows LOST (in the seeding set, not in the snapshot)"
+_DUPLICATED = "rows DUPLICATED (in the snapshot, not in the seeding set)"
+
+RED_REASONS: Mapping[str, tuple[RedReason, ...]] = {
+    # A transaction committed after the snapshot is in the set read afterwards,
+    # not in the dump: the oracle counts it lost.
+    "commit-before-coordinates": (RedReason(1, (_LOST,)),),
+    # The long reader stalls the writers past the limit, and the dump holds a
+    # global lock the sampler sees.
+    "global-lock": (
+        RedReason(2, (f"exceeds the {sp._ms(LATENCY_LIMIT_SECONDS)} limit",)),
+        RedReason(3, ("the dump accounts held", "GLOBAL/")),
+    ),
+    "gtid-drop-one": (RedReason(1, (_DUPLICATED,)),),
+    "gtid-extra-one": (RedReason(1, (_LOST,)),),
+}
+
+_CONTROL_LINE = re.compile(r"^(?P<label>PASS|FAIL|RED|FINDING|INCONCLUSIVE) control (?P<number>\d+), (?P<rest>.*)$")
+_LOG_BOUNDARY = re.compile(r"^(?:(?:PASS|FAIL|RED|FINDING|INCONCLUSIVE) control \d+, |== |RED as expected|SABOTAGE NOT DETECTED|CANDIDATE INADEQUATE|host too noisy)")
+_DID_NOT_COMPLETE = "did not complete"
+
+
+def red_control_texts(log: str) -> dict[int, str]:
+    """Each control that went RED in a probe log, to its whole RED entry (the
+    line and any lines that follow it before the next control or the outcome)."""
+    texts: dict[int, str] = {}
+    current: int | None = None
+    for line in log.splitlines():
+        match = _CONTROL_LINE.match(line)
+        if match is not None:
+            current = int(match["number"]) if match["label"] == "RED" else None
+            if current is not None:
+                texts[current] = match["rest"]
+        elif current is not None and not _LOG_BOUNDARY.match(line):
+            texts[current] += "\n" + line
+        else:
+            current = None
+    return texts
+
+
+def red_log_problems(sabotage: str, log: str) -> list[str]:
+    """Why a sabotage run's log does not show its stated reason, empty when it
+    does: the probe reached its own verdict (not a setup failure), exactly the
+    controls the sabotage targets went red, none of them by a crash, and each
+    RED entry carries the reason `RED_REASONS` states for it."""
+    wanted = RED_REASONS.get(sabotage)
+    if wanted is None:
+        return [f"no stated reason is recorded for sabotage {sabotage!r}; known: {sorted(RED_REASONS)}"]
+    problems = []
+    if f"RED as expected under sabotage {sabotage}: the control sees the failure" not in log.splitlines():
+        problems.append("the probe never reached its verdict: no 'RED as expected' line, so this is a setup or harness failure, not the control going red")
+    red = red_control_texts(log)
+    for number, text in sorted(red.items()):
+        if text.startswith(_DID_NOT_COMPLETE):
+            problems.append(f"control {number} went red because it {text}: a crash, not the stated reason")
+    targeted = {reason.control for reason in wanted}
+    for number in sorted(set(red) - targeted):
+        problems.append(f"control {number} went red but sabotage {sabotage} does not target it")
+    for reason in wanted:
+        text = red.get(reason.control)
+        if text is None:
+            problems.append(f"control {reason.control} did not go red")
+            continue
+        for needle in reason.needles:
+            if needle not in text:
+                problems.append(f"control {reason.control} went red without the stated reason {needle!r}")
+    return problems
+
+
+def check_red(args: argparse.Namespace) -> int:
+    problems = red_log_problems(args.sabotage, pathlib.Path(args.log).read_text(errors="replace"))
+    for problem in problems:
+        print(f"RED FOR THE WRONG REASON ({args.sabotage}): {problem}", file=sys.stderr)
+    if not problems:
+        print(f"red for the stated reason ({args.sabotage}): " + "; ".join(f"control {r.control}: {', '.join(r.needles)}" for r in RED_REASONS[args.sabotage]))
+    return 1 if problems else 0
 
 
 _OK = ("mysql-bin.000003", 1461)
@@ -784,6 +1096,15 @@ class Scenario:
     lines: list[str] = dataclasses.field(default_factory=list)
     latencies: dict[str, list[float]] = dataclasses.field(default_factory=lambda: {tenant: [] for tenant in TENANTS})
     baseline: dict[str, float] = dataclasses.field(default_factory=lambda: dict.fromkeys(TENANTS, 0.0))
+    # Each round's own baseline, before that round's first dump: host noise is
+    # judged per judged round on this, not on `baseline`.
+    round_baselines: dict[int, dict[str, float]] = dataclasses.field(default_factory=dict)
+    # Each round's latencies: control 2 judges every round.
+    window_latencies: dict[int, dict[str, list[float]]] = dataclasses.field(default_factory=dict)
+    # Each round's slow writes and dump windows per tenant: a write over the
+    # limit is the candidate's only where it overlaps its own tenant's window.
+    round_slow: dict[int, dict[str, list[SlowWrite]]] = dataclasses.field(default_factory=dict)
+    round_windows: dict[int, dict[str, list[DumpWindow]]] = dataclasses.field(default_factory=dict)
     lock_rows: set[tuple[str, str, str]] = dataclasses.field(default_factory=set)
     lock_samples: int = 0
     lock_table_samples: int = 0
@@ -848,26 +1169,30 @@ def revoke_old_path(run: Run) -> None:
 
 
 def dump_argv(run: Run, tenant: str, *, coordinates: bool = False) -> list[str]:
-    """The per-tenant dump, as dump_tenant.py takes it, plus --no-tablespaces
-    (the account has no PROCESS). On Percona it writes the snapshot's GTID set
-    (--set-gtid-purged=ON) and no file and position: `coordinates` adds
+    """The per-tenant dump: the production command, `gtid_snapshot.dump_args`,
+    called and not copied, so a change to the production flags changes what
+    this proof dumps with. On Percona it is that command unchanged
+    (--set-gtid-purged=ON, no file and position): `coordinates` adds
     --source-data=2 for control 6 alone, which only records the comment. The
-    stock no-lock case reads the set itself after the dump, and a stock account
+    stock no-lock case reads the set itself after the dump, so it carries
+    --set-gtid-purged=OFF in the GTID option's place, and a stock account
     without RELOAD cannot use --source-data. The retired path takes it."""
     old_path = run.mode == "old-path"
-    argv = [
+    percona = run.mode == "percona"
+    flags = gtid_snapshot.dump_args(tenant)
+    if flags[-2:] != ["--databases", tenant]:
+        raise sp.ProofError(f"gtid_snapshot.dump_args({tenant!r}) no longer ends with --databases {tenant}: {flags}")
+    options = flags[:-2]
+    if not percona:
+        options = ["--set-gtid-purged=OFF" if option == gtid_snapshot.GTID_OPTION else option for option in options]
+    return [
         "mysqldump",
         f"--user={run.account(tenant)}",
-        "--single-transaction",
-        *(["--source-data=2"] if old_path or (coordinates and run.mode == "percona") else []),
-        "--routines",
-        "--triggers",
-        f"--set-gtid-purged={'ON' if run.mode == 'percona' else 'OFF'}",
-        "--no-tablespaces",
+        *options,
+        *(["--source-data=2"] if old_path or (coordinates and percona) else []),
         "--databases",
         tenant,
     ]
-    return argv
 
 
 def source_gtid_executed(server: sp.Server) -> str:
@@ -1078,6 +1403,41 @@ def finish_writers(writers: Mapping[str, Sequence[sp.Writer]]) -> dict[str, list
     return samples
 
 
+def record_round_latencies(scenario: Scenario, number: int, per_tenant: Mapping[str, Sequence[float]]) -> None:
+    """Fold one round's write latencies in, pooled and as its own round."""
+    for tenant, latencies in per_tenant.items():
+        scenario.latencies[tenant].extend(latencies)
+    scenario.window_latencies[number] = {tenant: list(latencies) for tenant, latencies in per_tenant.items()}
+
+
+def record_round_baseline(scenario: Scenario, number: int, round_baseline: Mapping[str, float]) -> None:
+    """Fold one round's pre-dump baseline in: `baseline` keeps the worst of every
+    round (the control 2 report), `round_baselines` keeps each round's own."""
+    for tenant, worst in round_baseline.items():
+        scenario.baseline[tenant] = max(scenario.baseline.get(tenant, 0.0), worst)
+    scenario.round_baselines[number] = dict(round_baseline)
+
+
+def record_round_attribution(scenario: Scenario, number: int, slow: Mapping[str, Sequence[SlowWrite]], windows: Mapping[str, Sequence[DumpWindow]]) -> None:
+    """Fold one round's slow writes and dump windows in, by tenant."""
+    scenario.round_slow[number] = {tenant: list(writes) for tenant, writes in slow.items()}
+    scenario.round_windows[number] = {tenant: list(spans) for tenant, spans in windows.items()}
+
+
+def round_readings(scenario: Scenario) -> dict[int, RoundReading]:
+    """Each round's baseline, worst statements, slow writes and dump windows,
+    for the exit code."""
+    return {
+        number: RoundReading(
+            scenario.round_baselines.get(number, {}),
+            {tenant: max(values) for tenant, values in samples.items() if values},
+            scenario.round_slow.get(number, {}),
+            scenario.round_windows.get(number, {}),
+        )
+        for number, samples in scenario.window_latencies.items()
+    }
+
+
 def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> None:
     ctx = run.ctx
     writers = {tenant: [sp.Writer(ctx.source, tenant, sp.blog_statement) for _ in range(WRITERS_PER_TENANT)] for tenant in TENANTS}
@@ -1094,6 +1454,7 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
             writer.start()
     dumping = time.monotonic()
     passes = 0
+    windows: dict[str, list[DumpWindow]] = {tenant: [] for tenant in TENANTS}
     try:
         time.sleep(1.5)
         if spec.long_transaction:
@@ -1104,7 +1465,11 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
         dumping = time.monotonic()
         while True:
             for tenant in TENANTS:
-                records[tenant] = checked_dump(run, tenant, f"{tenant}-round{number}.sql")
+                began = time.monotonic()
+                try:
+                    records[tenant] = checked_dump(run, tenant, f"{tenant}-round{number}.sql")
+                finally:
+                    windows[tenant].append(DumpWindow(passes + 1, began, time.monotonic()))
                 round_dumps.append(records[tenant])
             passes += 1
             if not spec.long_round or done.is_set():
@@ -1125,11 +1490,18 @@ def run_round(run: Run, scenario: Scenario, number: int, spec: RoundSpec) -> Non
         holder.run("COMMIT;")
         holder.close()
         committed = "; the long transaction committed after the last dump"
+    round_baseline = dict.fromkeys(samples, 0.0)
+    round_latencies: dict[str, list[float]] = {tenant: [] for tenant in samples}
+    round_slow: dict[str, list[SlowWrite]] = {tenant: [] for tenant in samples}
     for tenant, per_writer in samples.items():
         for writer_samples in per_writer:
-            scenario.latencies[tenant].extend(latency for _, latency in writer_samples[WARMUP_SAMPLES:])
+            round_latencies[tenant].extend(latency for _, latency in writer_samples[WARMUP_SAMPLES:])
+            round_slow[tenant].extend(SlowWrite(start, latency) for start, latency in writer_samples[WARMUP_SAMPLES:] if latency > SLOW_WRITE_SECONDS)
             before = [latency for start, latency in writer_samples[WARMUP_SAMPLES:] if start + latency < dumping]
-            scenario.baseline[tenant] = max(scenario.baseline[tenant], max(before, default=0.0))
+            round_baseline[tenant] = max(round_baseline[tenant], max(before, default=0.0))
+    record_round_baseline(scenario, number, round_baseline)
+    record_round_latencies(scenario, number, round_latencies)
+    record_round_attribution(scenario, number, {tenant: sorted(writes) for tenant, writes in round_slow.items()}, windows)
     scenario.snapshots += passes * len(TENANTS)
     statements = {tenant: sum(len(writer_samples) for writer_samples in per_writer) for tenant, per_writer in samples.items()}
     kind = "short"
@@ -1198,6 +1570,20 @@ def get_scenario(run: Run) -> Scenario:
 # --------------------------------------------------------------------------
 
 
+def undetected_mutation(mutation: str, oracle: OracleCount) -> Verdict | None:
+    """Under `gtid-drop-one` and `gtid-extra-one` a red counts only when the
+    oracle itself, reading the source's binary log, saw the one changed
+    transaction: a drop shows as a duplicated row, an extra as a lost one. None
+    when it did; otherwise the green verdict (the sabotage went undetected, so
+    the proof exits 2), whatever the replica did."""
+    if mutation not in ("drop", "extra"):
+        raise ValueError(f"unknown mutation {mutation!r}")
+    seen = oracle.duplicated if mutation == "drop" else oracle.lost
+    if seen:
+        return None
+    return Verdict(True, f"the oracle did not see the {mutation} of one transaction ({oracle.lost} lost, {oracle.duplicated} duplicated)")
+
+
 def control_1(run: Run) -> sp.ControlResult:
     """The variables exist, GTID mode is on, and a replica seeded from each
     dump's GTID set matches every table of every tenant. The oracle beside it
@@ -1228,11 +1614,9 @@ def control_1(run: Run) -> sp.ControlResult:
     if mutation is not None:
         # Red only counts when the oracle itself saw the one changed
         # transaction: a drop shows as a duplicated row, an extra as a lost one.
-        seen = scenario.oracle.duplicated if mutation == "drop" else scenario.oracle.lost
-        if not seen:
-            return sp.ControlResult(
-                1, title, Verdict(True, f"the oracle did not see the {mutation} of one transaction ({scenario.oracle.lost} lost, {scenario.oracle.duplicated} duplicated)"), numbers
-            )
+        undetected = undetected_mutation(mutation, scenario.oracle)
+        if undetected is not None:
+            return sp.ControlResult(1, title, undetected, numbers)
     if run.sabotage:
         verdict = rounds
     elif rounds.passed:
@@ -1249,14 +1633,25 @@ def control_1(run: Run) -> sp.ControlResult:
 
 
 def control_2(run: Run) -> sp.ControlResult:
-    """Every tenant's worst write stays under the limit for the whole run."""
+    """Every tenant's worst write stays under the limit in every round, the
+    whole run: issue 1708's rule. Whether a failure is the host's is the exit
+    code's to say, round by round."""
     scenario = get_scenario(run)
-    verdict = latency_verdict(scenario.latencies, LATENCY_LIMIT_SECONDS, scenario.baseline)
+    verdict = rounds_latency_verdict(scenario.window_latencies, LATENCY_LIMIT_SECONDS, scenario.round_baselines)
     numbers = [
         f"{tenant}: {len(latencies)} write transactions timed, worst {sp._ms(max(latencies, default=0.0))}, "
         f"worst before the first dump {sp._ms(scenario.baseline[tenant])}"
         for tenant, latencies in scenario.latencies.items()
     ]
+    readings = round_readings(scenario)
+    numbers.extend(attribution_line(number, reading) for number, reading in sorted(readings.items()))
+    numbers.extend(
+        f"round {number}: worst "
+        + ", ".join(f"{tenant} {sp._ms(max(latencies, default=0.0))}" for tenant, latencies in samples.items())
+        + "; baseline before this round's first dump "
+        + ", ".join(f"{tenant} {sp._ms(value)}" for tenant, value in scenario.round_baselines.get(number, {}).items())
+        for number, samples in sorted(scenario.window_latencies.items())
+    )
     return sp.ControlResult(2, "no tenant's writes stall", verdict, numbers)
 
 
@@ -1389,6 +1784,7 @@ def run_probe(args: argparse.Namespace) -> int:
     run = Run(ctx, (workdir / f"{DUMP_PASSWORD_FILE}.pw").read_text().strip())
     seed_run(run)
     outcomes: dict[int, bool] = {}
+    rounds: dict[int, RoundReading] | None = None
     for number in controls:
         ctx.say(f"== control {number}" + (f" (sabotage: {args.sabotage})" if args.sabotage else ""))
         try:
@@ -1398,19 +1794,14 @@ def run_probe(args: argparse.Namespace) -> int:
         for line in result.numbers:
             ctx.say(f"  {line}")
         outcomes[number] = result.verdict.passed
+        if run.scenario is not None:
+            rounds = round_readings(run.scenario)
         label = "FINDING" if number == 6 else ("PASS" if result.verdict.passed else ("RED" if args.sabotage else "FAIL"))
+        if number == 2 and not result.verdict.passed and not args.sabotage and rounds and judge_rounds(rounds) == ROUND_INCONCLUSIVE:
+            label = "INCONCLUSIVE"
         ctx.say(f"{label} control {number}, {result.title}: {result.verdict.reason}")
-    code = exit_code(outcomes, sabotaged=bool(args.sabotage))
-    if code == EXIT_PASSED:
-        ctx.say("ALL PASSED" + (f" (controls {args.controls})" if args.controls != "1 2 3 4 5 6" else ""))
-    elif code == EXIT_RED:
-        ctx.say(f"RED as expected under sabotage {args.sabotage}: the control sees the failure")
-    elif code == EXIT_SABOTAGE_NOT_DETECTED:
-        ctx.say(f"SABOTAGE NOT DETECTED: a control stayed green under {args.sabotage}")
-    elif code == EXIT_CANDIDATE_INADEQUATE:
-        ctx.say("CANDIDATE INADEQUATE: a control from 1 to 5 failed with nothing sabotaged. Stop and tell the owner.")
-    else:
-        ctx.say("the comment-form finding (control 6) could not be recorded")
+    code = exit_code(outcomes, sabotaged=bool(args.sabotage), rounds=rounds)
+    ctx.say(outcome_message(code, args.controls, rounds, args.sabotage))
     return code
 
 
@@ -1425,6 +1816,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner.add_argument("--source-kind", choices=SOURCE_KINDS, default="percona")
     runner.add_argument("--controls", default="1 2 3 4 5 6")
     runner.add_argument("--sabotage", default=None)
+    check = sub.add_parser("check-red", help="check that a sabotage run's log shows the stated reason, not just exit 1")
+    check.add_argument("--sabotage", required=True)
+    check.add_argument("--log", required=True)
     args = parser.parse_args(argv)
     if args.self_test:
         failed = self_test()
@@ -1434,6 +1828,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1 if failed else 0
     if args.command == "run":
         return run_probe(args)
+    if args.command == "check-red":
+        return check_red(args)
     parser.print_help()
     return 64
 

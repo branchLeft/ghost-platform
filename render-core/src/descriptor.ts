@@ -197,7 +197,17 @@ export interface ResourceCaps {
 export interface SafetySpec {
   readonly near: boolean;
   readonly exact: boolean;
+  /**
+   * Which verdict source the scanning adapter is given. Absent is `'none'`:
+   * the adapter has no source and refuses every upload. `'production'`
+   * names the slot's local verdict socket, and a demo may not name it. See
+   * environment.md#verdict-source.
+   */
+  readonly verdictSource?: VerdictSourceKind;
 }
+
+/** The values `safety.verdictSource` may take. See SafetySpec. */
+export type VerdictSourceKind = 'none' | 'production';
 
 /**
  * The break-glass triple: the broker's Ed25519 public key, the tenant name a

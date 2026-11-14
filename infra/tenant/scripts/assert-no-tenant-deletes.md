@@ -133,8 +133,7 @@ repository, not assumed:
   `_captured_same_stack_step()`).
 
 Confidence: high on structure — both source facts were read from the tagged
-commits, not recalled — but this is still a derived shape, not a substitute
-for a genuine capture once a `2.0.0`-pinned tenant exists to take one from.
+commits, not recalled — but this is a derived shape, not a genuine capture.
 
 Every identity field, not just one, is varied against this shape: the old
 identity here is reachable only through `outputs` and the new one only

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import unittest
 
 from release_watcher import core
@@ -66,9 +67,16 @@ class TagGuardTests(unittest.TestCase):
 
 class PinShapeTests(unittest.TestCase):
     def test_reads_the_pin_from_the_repo_dockerfile(self):
+        # The expected tag and digest are taken from the repo's own Dockerfile,
+        # not hard-coded, so a routine base-image bump does not break this test.
         with open(REPO_DOCKERFILE, encoding="utf-8") as handle:
-            pin = core.read_pin(handle.read())
-        self.assertEqual(pin.tag, "6.55.0-alpine")
+            text = handle.read()
+        match = re.search(r"^FROM ghost:(\S+)@(sha256:[0-9a-f]{64})$", text, re.MULTILINE)
+        self.assertIsNotNone(match, "repo Dockerfile has no digest-pinned ghost FROM line")
+        pin = core.read_pin(text)
+        self.assertEqual(pin.tag, match.group(1))
+        self.assertEqual(pin.digest, match.group(2))
+        self.assertIsNotNone(core.parse_version(pin.tag))
 
     def test_refuses_a_missing_duplicate_or_multi_stage_dockerfile(self):
         with self.assertRaises(ValueError):

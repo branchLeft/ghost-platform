@@ -11,7 +11,7 @@
 //    parser.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -119,5 +119,68 @@ for (const [id, script] of [
     const entry = hookEntry(id);
     assert.match(entry, /pnpm_config_ignore_scripts=true\s+pnpm run /);
     assert.ok(entry.includes(`pnpm run ${script}`), `still runs the ${script} script`);
+  });
+}
+
+// The prettier and eslint hooks run `pnpm run` in the worktree they commit from.
+// A node_modules that is a symlink (a worktree sharing another clone's install)
+// must stop the hook at once with one line naming the cause and the fix. It must
+// not let pnpm reinstall through the link, and a real install must still run.
+// Each hook entry is run as the shell runs it, with a stub `pnpm` that records
+// each call, so nothing is installed.
+for (const id of ['prettier', 'eslint']) {
+  test(`the ${id} hook refuses a symlinked node_modules without reinstalling`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-symlink-'));
+    try {
+      const stubDir = path.join(dir, 'bin');
+      const marker = path.join(dir, 'pnpm-ran');
+      const tree = path.join(dir, 'tree');
+      const target = path.join(dir, 'shared-install');
+      fs.mkdirSync(stubDir);
+      fs.mkdirSync(tree);
+      fs.mkdirSync(target);
+      const stub = path.join(stubDir, 'pnpm');
+      fs.writeFileSync(stub, `#!/bin/sh\necho ran >> "${marker}"\n`);
+      fs.chmodSync(stub, 0o755);
+      fs.symlinkSync(target, path.join(tree, 'node_modules'));
+      const result = spawnSync('sh', ['-c', hookEntry(id)], {
+        cwd: tree,
+        env: { ...process.env, PATH: `${stubDir}${path.delimiter}${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+      assert.notEqual(result.status, 0, 'the hook fails');
+      assert.match(result.stderr, /node_modules is a symlink/, 'the message names the cause');
+      assert.match(
+        result.stderr,
+        /pnpm install --frozen-lockfile --ignore-scripts/,
+        'the message names the fix'
+      );
+      assert.equal(fs.existsSync(marker), false, 'pnpm is not started');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`the ${id} hook still runs pnpm in a real install`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-real-'));
+    try {
+      const stubDir = path.join(dir, 'bin');
+      const marker = path.join(dir, 'pnpm-ran');
+      const tree = path.join(dir, 'tree');
+      fs.mkdirSync(stubDir);
+      fs.mkdirSync(path.join(tree, 'node_modules'), { recursive: true });
+      const stub = path.join(stubDir, 'pnpm');
+      fs.writeFileSync(stub, `#!/bin/sh\necho ran >> "${marker}"\n`);
+      fs.chmodSync(stub, 0o755);
+      const result = spawnSync('sh', ['-c', hookEntry(id)], {
+        cwd: tree,
+        env: { ...process.env, PATH: `${stubDir}${path.delimiter}${process.env.PATH}` },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(fs.existsSync(marker), true, 'pnpm runs');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 }

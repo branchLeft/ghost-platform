@@ -2,9 +2,14 @@
   "extends": "./tsconfig.json",
   // The shared base sets `noEmit`, because most projects extending it only
   // ever type-check. This is the one config here that has to produce output.
+  // `declaration` and `rootDir` because the portal imports the generated client
+  // from the built package (`./provisioning-api` in package.json), and lays the
+  // output out as dist/src and dist/mock the way portal/data does.
   "compilerOptions": {
-    "noEmit": false
+    "noEmit": false,
+    "declaration": true,
+    "rootDir": "."
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "mock/**/*.ts"],
   "exclude": ["test/**/*.ts"]
 }

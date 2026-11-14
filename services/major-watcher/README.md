@@ -3,10 +3,8 @@
 Alerts the platform owner when a new Ghost major version, or its public
 preview, is announced upstream (branchLeft/workspace#1301). Nothing else:
 no PR, no merge, no deploy, no other system touched. Compare with the
-sibling release watcher in branchLeft/workspace#1252, which opens a PR for
-a new *minor* and only sends an owner-digest note (never a page) if it
-happens to see a new major go by -- that story is unbuilt and this one
-does not depend on it.
+sibling release watcher (`services/release-watcher`), which opens a PR for
+a new *minor* and never pages.
 
 Constraint this is built to (branchLeft/workspace#1274, branchLeft/workspace#1159,
 and D38/D39/D42): a scheduled watcher that pages a human is monitoring,
@@ -73,7 +71,7 @@ A missing or malformed state file is a **hard error**, never a default.
 Defaulting `lastNotifiedMajor` to 0 would make the very first run against
 an estate already mid-major-6 fire a page for a major announced over a
 year ago -- proven by sabotage in `test/unit/state.test.ts` and
-`test/unit/check.test.ts` (see the PR body for the actual red/green run).
+`test/unit/check.test.ts`.
 
 ### Bootstrapping
 
@@ -83,28 +81,25 @@ step's `SEED_LAST_NOTIFIED_MAJOR` env var. This value is deliberately
 static in the workflow file, never derived from a live query at bootstrap
 time, so the first-ever run's baseline is an auditable, reviewed number
 rather than whatever the API happened to return that day. It is seeded to
-`6` in this PR, the major line confirmed live at the time this was written.
+`6`.
 
 ## Owed
 
-**The self-hosted ntfy is built but not live until the owner has installed it.**
-It is the monitoring stack's ntfy in `branchLeft/shared-infra`
+The pager is the monitoring stack's ntfy in `branchLeft/shared-infra`
 (`hetzner/monitoring/stack/`), reachable at `https://ntfy.branchleft.co.uk`,
 with one topic, `branchleft-pages`, shared with the Alertmanager page route.
 Anonymous publish is off; this service writes with its own token, which can
 write the topic and cannot read it.
 
-Before the scheduled workflow can page for real, the owner sets two repo
-secrets on `branchLeft/ghost-platform`: `NTFY_URL`
-(`https://ntfy.branchleft.co.uk/branchleft-pages`) and `NTFY_TOKEN` (the
-release watcher's token). The steps are in the private ghost-platform-docs
-page `ntfy-pager-install-runbook.md`, step 9.
+The workflow reads two repo secrets on `branchLeft/ghost-platform`: `NTFY_URL`
+(`https://ntfy.branchleft.co.uk/branchleft-pages`) and `NTFY_TOKEN`. The steps
+are in the private ghost-platform-docs page `ntfy-pager-install-runbook.md`,
+step 9.
 
-The schedule (`major-watcher-run.yml`, every 6 hours) is live from this PR
--- no separate step to enable it once the secret exists. Until `NTFY_URL`
-is set, each run is a deliberate, clean no-op (exit 0) rather than a red
-run: a schedule failing every 6 hours for however long the ntfy story
-takes would desensitise exactly the signal this exists to protect, the
+The schedule (`major-watcher-run.yml`, every 6 hours) needs no separate step
+to enable it. Until `NTFY_URL` is set, each run is a deliberate, clean no-op
+(exit 0) rather than a red run: a schedule failing every 6 hours while ntfy
+is not configured would desensitise exactly the signal this exists to protect, the
 same failure class branchLeft/workspace#1163 calls out ("the control plane
 stops, nothing pages, because the thing that would page is the thing that
 is down"). A red run stays reserved for something actually wrong once the
@@ -136,24 +131,17 @@ directly, no review step in the way, and silently, permanently suppress
 every future real major announcement from then on. This is the specific
 failure mode of the tradeoff, named rather than left implicit.
 
-**Cheap mitigation, an owner step (a repo settings change, not something
-this PR does):** add a ruleset scoped to `refs/heads/state/major-watcher`
-that restricts pushes to the workflow's own identity (a "restrict who can
-push" rule naming the Actions bypass actor, mirroring the shape of this
-repo's existing `Protect default branch` and `release tags` rulesets). A
-related, separate owner option worth deciding alongside it: **`Major
-watcher type check and test` (`major-watcher-ci.yml`) is not currently
-one of this repo's required status checks** (`docker build`, `Tenant type
-check`, `Format and lint`, `docs-lint / docs-lint`, `standards / Standards
-gates` are), so a future PR touching `services/major-watcher/` can merge
-without its own tests having run green.
+**Cheap mitigation, an owner step (a repo settings change):** add a ruleset
+scoped to `refs/heads/state/major-watcher` that restricts pushes to the
+workflow's own identity (a "restrict who can push" rule naming the Actions
+bypass actor, mirroring the shape of this repo's existing
+`Protect default branch` and `release tags` rulesets).
 
 ## Known limitations
 
 - **GitHub disables a scheduled workflow after 60 days with no repository
   activity in it** (the same trap branchLeft/workspace#1252's own story
-  names for its watcher). `ghost-platform` sees frequent commits, so this
-  is immaterial today, but nothing here defends against or alerts on it --
+  names for its watcher). Nothing here defends against or alerts on it --
   a silently disabled schedule and "nothing new to report" look the same
   from outside the Actions UI.
 - **The signal is a published GitHub Release object, never a bare git

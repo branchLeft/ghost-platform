@@ -4,8 +4,13 @@
 
 An export is verified by using it. This takes Ghost's own exports from a
 seeded Ghost, puts them into a different, fresh Ghost, and looks for named
-items there: two posts (one published, one draft, with body and tag), two
-tags, two members (with note and label) and the site title and description.
+items there: two posts (one published, one draft, with body and tag), the
+published post's named image, two tags, two members (with note and label) and
+the site title and description.
+
+The image is a reference, not bytes: media travels as a public address (the
+bundler lists it, it never copies the file), so the image survives when the
+re-imported post still points at that address.
 
 Assertions name items because an empty Ghost answers 200 to everything and
 already holds a default post and tag; a status code or a count cannot tell
@@ -18,7 +23,8 @@ a restored site from a fresh one.
   home page answers 200 there, so the reason for naming items stays visible.
 - **Survival**: after the re-import every named item is present and intact.
 - **Sabotage**: an export with one post removed is caught, and the failure
-  names that post and no other.
+  names that post and no other. An export with the named image removed is
+  caught the same way, naming that image and nothing else.
 
 ## What each part exports
 

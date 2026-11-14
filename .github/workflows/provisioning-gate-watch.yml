@@ -1,0 +1,54 @@
+name: Provisioning gate watch
+
+# Fails when the tenant-provisioning gate is open and no provisioning run is
+# using it. `provision-tenant.yml` refuses unless the
+# TENANT_PROVISIONING_FLOW_HETZNERISED repository variable is "true"; the
+# runbook opens it just before a run and closes it after. Nothing checked that
+# the close happened, and it once stayed open for eight days. A scheduled run
+# that goes red is the alert. The decision is in
+# infra/provisioning/scripts/check_provisioning_gate_left_open.py.
+#
+# The variable is read through the `vars` context, not the REST API: the
+# workflow token has no permission to list repository variables. An unset
+# variable is the healthy state and passes.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  # A manual run only reads state and creates nothing.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ghost-platform-provisioning-gate-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Gate is closed unless a run is using it
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: List recent provisioning runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPO}/actions/workflows/provision-tenant.yml/runs?per_page=20" \
+            > "${RUNNER_TEMP}/runs.json"
+
+      - name: Fail if the gate is left open
+        env:
+          FLOW_READY: ${{ vars.TENANT_PROVISIONING_FLOW_HETZNERISED }}
+        run: |
+          python3 infra/provisioning/scripts/check_provisioning_gate_left_open.py \
+            --runs-file "${RUNNER_TEMP}/runs.json"

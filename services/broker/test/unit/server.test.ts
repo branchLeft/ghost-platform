@@ -38,6 +38,7 @@ function fakeConfig(overrides: Partial<BrokerConfig> = {}): BrokerConfig {
     wrapperCommand: '/bin/true',
     wrapperPrefix: [],
     wrapperTimeoutMs: 1000,
+    wrapperDetachTimeoutMs: 1000,
     zones: TEST_ZONES,
     slotLiterals: ['0'],
     drainPollTimeoutMs: 1000,
@@ -319,6 +320,7 @@ describe('the real dist/server.js entrypoint', () => {
     expect(await statusRes.json()).toEqual({
       slot: '0',
       phase: 'running',
+      evidence: 'absent',
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
@@ -344,6 +346,7 @@ describe('the real dist/server.js entrypoint', () => {
     expect(await shippedStatus.json()).toEqual({
       slot: '0',
       phase: 'free',
+      evidence: 'absent',
       healthy: false,
       notReal: [],
       interim: [],
@@ -621,6 +624,7 @@ describe('the real dist/server.js entrypoint', () => {
     expect(await statusRes.json()).toEqual({
       slot: '2',
       phase: 'error',
+      evidence: 'absent',
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
@@ -641,6 +645,7 @@ describe('the real dist/server.js entrypoint', () => {
     expect(await statusAfterReset.json()).toEqual({
       slot: '2',
       phase: 'free',
+      evidence: 'absent',
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],

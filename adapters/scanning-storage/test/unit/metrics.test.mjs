@@ -566,11 +566,12 @@ describe('the decorator reports through an injected registry', () => {
     const sidecarName = fsSync
       .readdirSync(quarantinePath)
       .find((name) => name.endsWith('.holds.json'));
-    const sidecarFile = path.join(quarantinePath, sidecarName);
-    const sidecar = JSON.parse(fsSync.readFileSync(sidecarFile, 'utf8'));
-    const owner = Object.keys(sidecar.owners)[0];
-    sidecar.stuck = { [owner]: { reason: 'test: gave up' } };
-    fsSync.writeFileSync(sidecarFile, JSON.stringify(sidecar));
+    const sidecarDir = path.join(quarantinePath, sidecarName);
+    const [entryName] = fsSync.readdirSync(sidecarDir);
+    const entryFile = path.join(sidecarDir, entryName);
+    const entry = JSON.parse(fsSync.readFileSync(entryFile, 'utf8'));
+    entry.stuck = { reason: 'test: gave up' };
+    fsSync.writeFileSync(entryFile, JSON.stringify(entry));
 
     const metrics = new ScannerMetrics();
     const second = build({ client: never, metrics, quarantinePath, timeoutMs: 20 });

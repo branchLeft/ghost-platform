@@ -57,7 +57,13 @@ RemoveIPC=yes
 # and permissioned by the host-build/uid-claim work, not this unit -- left
 # writable here so this unit does not itself regress that path once it
 # exists.
-ReadWritePaths=/opt/branchleft /etc/branchleft /var/lib/branchleft/broker-slots
+# /var/lib/docker/volumes: the slot wrapper's `reset` empties each tenant
+# volume's _data directory, and the mount namespace is inherited through
+# `sudo -n`, so without it that unlink fails with `Read-only file system`
+# even as root. Only the volumes directory, never /var/lib/docker. It must
+# exist or the unit fails 226/NAMESPACE. See systemd/README.md
+# ("`/var/lib/docker/volumes` is writable").
+ReadWritePaths=/opt/branchleft /etc/branchleft /var/lib/branchleft/broker-slots /var/lib/docker/volumes
 # The deeper path wins inside a ReadWritePaths entry: this narrows the
 # verify key, broker.env and the installed release tree back to read-only
 # even though the whole directories above are writable. See

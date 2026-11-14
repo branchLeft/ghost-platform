@@ -50,6 +50,7 @@ export type {
   TenantDescriptor,
   TenantKind,
   TenantStackDescriptor,
+  VerdictSourceKind,
   TransportSpec,
 } from './descriptor.js';
 
@@ -88,8 +89,13 @@ export {
   renderSettings,
   renderIdentity,
 } from './render.js';
-export type { EdgeGate, EdgeSiteBlock, ScriptHash, ThemeCsp } from './edge.js';
-export { validateScriptHash, THEME_CSP_UNAVAILABLE } from './edge.js';
+export type { EdgeGate, EdgeSiteBlock, PaymentsCsp, ScriptHash, ThemeCsp } from './edge.js';
+export {
+  validateScriptHash,
+  validatePaymentOrigin,
+  THEME_CSP_UNAVAILABLE,
+  PAYMENTS_CSP_NONE,
+} from './edge.js';
 export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
@@ -143,6 +149,7 @@ export {
   contentVolumeName,
   databaseAndUserName,
   metricsVolumeName,
+  verdictVolumeName,
   secretsEnvPath,
   sqlIdentifier,
   stackDirectory,

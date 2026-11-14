@@ -113,14 +113,14 @@ assert_blocked "images and files correct, media has no storage__media__adapter a
     -e storage__images__wraps=S3Storage \
     -e storage__images__wrappedConfig__bucket=some-bucket \
     -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
-    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__images__wrappedConfig__cdnUrl=https://cdn.example.test/some-bucket \
     -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
     -e storage__files__adapter=ScanningStorageAdapter \
     -e storage__files__wraps=S3Storage \
     -e storage__files__wrappedConfig__bucket=some-bucket \
     -e storage__files__wrappedConfig__staticFileURLPrefix=content/files \
-    -e storage__files__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__files__wrappedConfig__cdnUrl=https://cdn.example.test/some-bucket \
     -e storage__files__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__files__wrappedConfig__multipartChunkSizeBytes=5242880
 
@@ -129,14 +129,14 @@ assert_blocked "images and media correct, files is bare S3Storage (not the decor
     -e storage__images__wraps=S3Storage \
     -e storage__images__wrappedConfig__bucket=some-bucket \
     -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
-    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__images__wrappedConfig__cdnUrl=https://cdn.example.test/some-bucket \
     -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
     -e storage__media__adapter=ScanningStorageAdapter \
     -e storage__media__wraps=S3Storage \
     -e storage__media__wrappedConfig__bucket=some-bucket \
     -e storage__media__wrappedConfig__staticFileURLPrefix=content/media \
-    -e storage__media__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__media__wrappedConfig__cdnUrl=https://cdn.example.test/some-bucket \
     -e storage__media__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__media__wrappedConfig__multipartChunkSizeBytes=5242880 \
     -e storage__files__adapter=S3Storage \
@@ -157,7 +157,7 @@ assert_blocked "no escape hatch, images and files complete, media's decorator is
     -e storage__images__wraps=S3Storage \
     -e storage__images__wrappedConfig__bucket=some-bucket \
     -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
-    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__images__wrappedConfig__cdnUrl=https://cdn.example.test/some-bucket \
     -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
     -e storage__media__adapter=ScanningStorageAdapter \
@@ -167,7 +167,7 @@ assert_blocked "no escape hatch, images and files complete, media's decorator is
     -e storage__files__wraps=S3Storage \
     -e storage__files__wrappedConfig__bucket=some-bucket \
     -e storage__files__wrappedConfig__staticFileURLPrefix=content/files \
-    -e storage__files__wrappedConfig__cdnUrl=https://storage.googleapis.com/some-bucket \
+    -e storage__files__wrappedConfig__cdnUrl=https://cdn.example.test/some-bucket \
     -e storage__files__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__files__wrappedConfig__multipartChunkSizeBytes=5242880
 
@@ -191,10 +191,10 @@ assert_boots "the decorator wrapping a complete S3Storage config on all three fe
     -e storage__images__quarantinePath=/var/lib/ghost/content/quarantine \
     -e storage__images__wrappedConfig__bucket=fake-bucket \
     -e storage__images__wrappedConfig__staticFileURLPrefix=content/images \
-    -e storage__images__wrappedConfig__cdnUrl=https://storage.googleapis.com/fake-bucket \
+    -e storage__images__wrappedConfig__cdnUrl=https://cdn.example.test/fake-bucket \
     -e storage__images__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__images__wrappedConfig__multipartChunkSizeBytes=5242880 \
-    -e storage__images__wrappedConfig__endpoint=https://storage.googleapis.com \
+    -e storage__images__wrappedConfig__endpoint=https://cdn.example.test \
     -e storage__images__wrappedConfig__region=auto \
     -e storage__images__wrappedConfig__forcePathStyle=true \
     -e storage__images__wrappedConfig__accessKeyId=FAKEKEY \
@@ -204,10 +204,10 @@ assert_boots "the decorator wrapping a complete S3Storage config on all three fe
     -e storage__media__quarantinePath=/var/lib/ghost/content/quarantine \
     -e storage__media__wrappedConfig__bucket=fake-bucket \
     -e storage__media__wrappedConfig__staticFileURLPrefix=content/media \
-    -e storage__media__wrappedConfig__cdnUrl=https://storage.googleapis.com/fake-bucket \
+    -e storage__media__wrappedConfig__cdnUrl=https://cdn.example.test/fake-bucket \
     -e storage__media__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__media__wrappedConfig__multipartChunkSizeBytes=5242880 \
-    -e storage__media__wrappedConfig__endpoint=https://storage.googleapis.com \
+    -e storage__media__wrappedConfig__endpoint=https://cdn.example.test \
     -e storage__media__wrappedConfig__region=auto \
     -e storage__media__wrappedConfig__forcePathStyle=true \
     -e storage__media__wrappedConfig__accessKeyId=FAKEKEY \
@@ -217,10 +217,10 @@ assert_boots "the decorator wrapping a complete S3Storage config on all three fe
     -e storage__files__quarantinePath=/var/lib/ghost/content/quarantine \
     -e storage__files__wrappedConfig__bucket=fake-bucket \
     -e storage__files__wrappedConfig__staticFileURLPrefix=content/files \
-    -e storage__files__wrappedConfig__cdnUrl=https://storage.googleapis.com/fake-bucket \
+    -e storage__files__wrappedConfig__cdnUrl=https://cdn.example.test/fake-bucket \
     -e storage__files__wrappedConfig__multipartUploadThresholdBytes=10485760 \
     -e storage__files__wrappedConfig__multipartChunkSizeBytes=5242880 \
-    -e storage__files__wrappedConfig__endpoint=https://storage.googleapis.com \
+    -e storage__files__wrappedConfig__endpoint=https://cdn.example.test \
     -e storage__files__wrappedConfig__region=auto \
     -e storage__files__wrappedConfig__forcePathStyle=true \
     -e storage__files__wrappedConfig__accessKeyId=FAKEKEY \

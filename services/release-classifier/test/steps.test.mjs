@@ -268,3 +268,42 @@ test('cli exits 0 when every step is reversible, 2 when any is not, 1 on an erro
     assert.match(r.err, /release-classifier steps:/);
   }
 });
+
+test('a new NOT NULL column with no default makes the step forward-only', () => {
+  const addRequired = {
+    folder: '6.66',
+    path: '6.66/add-required.js',
+    source:
+      "const { createAddColumnMigration } = require('../../utils');\n" +
+      "module.exports = createAddColumnMigration('posts', 'x', { type: 'string', nullable: false });\n",
+  };
+  const step = classifyStep({
+    from: 'v6.65.0',
+    to: 'v6.66.0',
+    previous: t665,
+    next: [...t665, addRequired],
+  });
+  assert.equal(step.class, CLASS.FORWARD_ONLY, JSON.stringify(step));
+  assert.deepEqual(rules(step.forwardOnly), ['6.66/add-required.js add-required-column']);
+});
+
+test('a step whose two trees hold no migration is an error, never reversible', () => {
+  assert.throws(
+    () => classifyStep({ from: 'v6.65.0', to: 'v6.66.0', previous: [], next: [] }),
+    /no migration/
+  );
+});
+
+test('the steps CLI refuses one directory passed for two tags, and reads two copies of a patch', () => {
+  const root = mkdtempSync(join(tmpdir(), 'rc-same-'));
+  const same = write(root, 'v6.65.0', t665);
+  const bothTags = run(['--release', `v6.65.0=${same}`, '--release', `v6.66.0=${same}`]);
+  assert.equal(bothTags.code, 1, bothTags.out);
+  assert.equal(bothTags.out, '');
+  assert.match(bothTags.err, /same directory/);
+
+  const copyA = write(root, 'v6.57.0', t657);
+  const copyB = write(root, 'v6.57.1', t657);
+  const patch = run(['--release', `v6.57.0=${copyA}`, '--release', `v6.57.1=${copyB}`]);
+  assert.equal(patch.code, 0, patch.err);
+});

@@ -30,6 +30,7 @@ export interface HarnessOptions {
   secrets?: Buffer[];
   maxBodyBytes?: number;
   queueMaxBytes?: number;
+  replayMaxEntries?: number;
   outcomeHeader?: string;
   headersTimeoutMs?: number;
   requestTimeoutMs?: number;
@@ -39,7 +40,9 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const dir = mkdtempSync(join(tmpdir(), 'swh-'));
   const clock = { ms: NOW_MS };
   const queue = openQueue(dir, options.queueMaxBytes);
-  const replay = openReplayStore(dir, () => clock.ms);
+  const replay = openReplayStore(dir, () => clock.ms, {
+    ...(options.replayMaxEntries === undefined ? {} : { maxEntries: options.replayMaxEntries }),
+  });
   const stats = createStats();
   const server = createWebhookServer(
     {

@@ -186,10 +186,10 @@ export function entryTenantDescriptor(): TenantDescriptor {
 }
 
 /**
- * A paying tenant on the professional tier: uncapped members/staff, the
- * larger resource caps, and a `managed` code-injection grant — the one
- * fixture that exercises `settings.ts`'s non-empty `codeinjection_head`/
- * `codeinjection_foot` branch.
+ * A paying tenant on the professional tier: uncapped members/staff and the
+ * larger resource caps. Code injection is `blocked`, as for every kind
+ * (LLD-1); a test that needs the non-empty `managed` branch builds that
+ * variant locally.
  */
 export function professionalTenantDescriptor(): TenantDescriptor {
   return {
@@ -231,11 +231,7 @@ export function professionalTenantDescriptor(): TenantDescriptor {
     },
     gate: { kind: 'none' },
     backup: { kind: 'bucket-native', encryptionRecipient: 'age1qprocoexamplerecipient' },
-    codeInjection: {
-      kind: 'managed',
-      head: '<meta name="analytics-consent" content="required">',
-      foot: '<script src="/analytics.js" defer></script>',
-    },
+    codeInjection: { kind: 'blocked' },
     limits: { membersCap: null, staffCap: null },
     caps: { cpus: '2.0', cpuShares: 1024, pidsLimit: 512, nofile: 8192 },
     safety: { near: true, exact: true },
