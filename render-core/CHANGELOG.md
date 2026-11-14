@@ -4,6 +4,11 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- `assertSpoolPosture` refuses `enable_ipv6` on any network the spool joins
+  (anything but absent or a literal `false`), so a spool network cannot be given
+  an IPv6 route the IPv4-only reasoning does not cover. The renderer never sets
+  it, so no rendered spool file changes.
+
 ## 0.5.0
 
 **The descriptor can name the production verdict source.**

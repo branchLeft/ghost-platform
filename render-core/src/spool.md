@@ -132,6 +132,9 @@ before returning. It refuses:
   that the file does not own;
 - a missing `networks` list (Compose would join the default network, which
   has egress);
+- `enable_ipv6` on any network the spool joins, anything but absent or a
+  literal `false`: the routing reasoning and the host's drain-bridge egress rule
+  are about IPv4, and an IPv6 network is a route they do not cover;
 - the drain network without its fixed bridge name or with masquerade on;
 - the drain network without exactly the fixed ipam pool above;
 - any port other than the one loopback drain port, and any `expose`;
