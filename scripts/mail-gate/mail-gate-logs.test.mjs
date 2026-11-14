@@ -101,6 +101,14 @@ test('a set-cookie array, as JSON or as util.inspect prints it, is replaced', ()
   );
   assert.equal(inspected.includes('arr-three-FAKE'), false, inspected);
   assert.ok(inspected.trimEnd().endsWith('}'), inspected);
+  // util.inspect and JSON.stringify(_, null, 2) break a long array over several lines.
+  const wrapped = redact(
+    "{\n  'set-cookie': [\n    'ghost-admin-api-session=wrap-one-FAKE; Path=/',\n    'b=wrap-two-FAKE'\n  ],\n  host: 'x.example.test'\n}",
+    []
+  );
+  assert.equal(wrapped.includes('wrap-one-FAKE'), false, wrapped);
+  assert.equal(wrapped.includes('wrap-two-FAKE'), false, wrapped);
+  assert.ok(wrapped.includes("host: 'x.example.test'"), wrapped);
 });
 
 test('an Authorization header with any other scheme is replaced', () => {

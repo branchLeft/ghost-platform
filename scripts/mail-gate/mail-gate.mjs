@@ -75,8 +75,8 @@ export function redact(text, secrets = []) {
   return (
     out
       .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
-      // A cookie array, as JSON or util.inspect prints set-cookie: everything up to the `]`.
-      .replace(/(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*\[)[^\]\r\n]*/gi, '$1[redacted]')
+      // A cookie array, as JSON or util.inspect prints set-cookie: everything up to the `]`, across lines (at most 4000 characters).
+      .replace(/(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*\[)[^\]]{0,4000}/gi, '$1[redacted]')
       // A scalar cookie: not an array (done above), and not stopped by an escaped quote.
       .replace(
         /(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*(?:\\?["'])?)(?![\s\[])[^\r\n"'\\]+/gi,
