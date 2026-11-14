@@ -227,7 +227,7 @@ jobs:
 
       - name: Attest the tarball
         if: steps.pack.outputs.publish == 'true'
-        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@a2175a416b57f950fed891837f88f2d1a31e00f4 # v1.2.0
         with:
           tarball: ${{ steps.pack.outputs.tarball }}
           repo: branchLeft/ghost-platform
