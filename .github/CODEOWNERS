@@ -18,7 +18,10 @@
 
 # --- Criterion 1: the rules, the gates, the floors and the exemptions ---
 /gate-set/                                       @branchLeft/branchleft-admin
-/csp/gate/                                       @branchLeft/branchleft-admin
+# Promotion attestation: the workflow that signs a candidate digest's verdict, and the scripts it runs.
+/promote/                                        @branchLeft/branchleft-admin
+/.github/workflows/promote-candidate.yml         @branchLeft/branchleft-admin
+/csp/gate/                                      @branchLeft/branchleft-admin
 /csp/derive/                                     @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
 # What the gate set pins or reads: the overlay file whose own hash is the pin (gate-set/gates.mjs
