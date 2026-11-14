@@ -9,6 +9,7 @@ import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
+import { createRequestsScreen, type ProvisioningOptions } from './requestsScreen.js';
 
 export interface OwnerConsoleOptions {
   readonly issuer: string;
@@ -19,6 +20,11 @@ export interface OwnerConsoleOptions {
   /** The owner's own organisation, and no other. */
   readonly ownerOrgId: string;
   readonly db: OwnerDb;
+  /**
+   * The provisioning API and the owner credential. Absent, the request queue
+   * and Approve are not served and have no nav entry.
+   */
+  readonly provisioning?: ProvisioningOptions;
   readonly secureCookies: boolean;
   readonly clock?: () => number;
   readonly fetch?: typeof fetch;
@@ -49,6 +55,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     clock: options.clock,
     fetchKeys: options.fetchKeys,
   });
+  const requests = createRequestsScreen(options.provisioning, options.ownerOrgId);
   return createShell<true>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -59,7 +66,9 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     verifier,
     secureCookies: options.secureCookies,
     title: 'OWNER_CONSOLE',
-    nav: [{ label: 'NAV_HOME', href: '/' }],
+    nav: [{ label: 'NAV_HOME', href: '/' }, ...requests.nav],
+    pages: requests.pages,
+    actions: requests.actions,
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
     fetch: options.fetch,

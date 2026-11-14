@@ -15,6 +15,16 @@ export const MAILER: Target = {
   folder: 'tenant',
 };
 
+export const CONSOLE: Target = {
+  file: fileURLToPath(new URL('../src/console/app.ts', import.meta.url)),
+  folder: 'console',
+};
+
+export const REQUESTS: Target = {
+  file: fileURLToPath(new URL('../src/console/requestsScreen.ts', import.meta.url)),
+  folder: 'console',
+};
+
 export const POOL: Target = {
   file: fileURLToPath(new URL('../src/shell/pool.ts', import.meta.url)),
   folder: 'shell',
@@ -51,10 +61,15 @@ export async function importSabotaged<T>(
   const source: Target =
     typeof where === 'string' ? { file: `${SOURCE_ROOT}${where}`, folder: dirname(where) } : where;
   const original = readFileSync(source.file, 'utf8');
-  const pointed = original.replace(
-    /from '\.\/([^']+)'/g,
-    (_match, file: string) => `from '../../src/${source.folder}/${file}'`
-  );
+  // `../x` is in another folder under `src`, `./x` a sibling in the module's
+  // own. Both are pointed back at the real tree; the parent form goes first so
+  // its result is not read as a sibling.
+  const pointed = original
+    .replace(/from '\.\.\/([^']+)'/g, (_match, file: string) => `from '../../src/${file}'`)
+    .replace(
+      /from '\.\/([^']+)'/g,
+      (_match, file: string) => `from '../../src/${source.folder}/${file}'`
+    );
   const occurrences = pointed.split(target).length - 1;
   if (occurrences !== 1) {
     throw new Error(`sabotage target must occur exactly once, found ${occurrences}`);
