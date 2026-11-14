@@ -53,6 +53,7 @@ function suppressionKey(domain: string, type: string, email: string): string {
 interface FakeTenant {
   apiKey: string;
   senderDomain: string | null;
+  senderLocalPart: string | null;
 }
 
 export function createFakeStore(): FakeShimStore {
@@ -88,14 +89,20 @@ export function createFakeStore(): FakeShimStore {
     suppressionKeys,
     outcomeCalls,
 
-    registerTenant(domain, apiKey, senderDomain) {
-      tenants.set(domain, { apiKey, senderDomain });
+    // Models none of the real store's refusals (a shared key, an overlapping
+    // sender address): store.test.ts covers those against SQLite.
+    registerTenant(domain, apiKey, senderDomain, senderLocalPart = null) {
+      tenants.set(domain, {
+        apiKey,
+        senderDomain,
+        senderLocalPart: senderLocalPart === null ? null : senderLocalPart.toLowerCase(),
+      });
     },
 
     async verifyTenant(domain, apiKey) {
       const stored = tenants.get(domain);
       return stored !== undefined && stored.apiKey === apiKey
-        ? { domain, senderDomain: stored.senderDomain }
+        ? { domain, senderDomain: stored.senderDomain, senderLocalPart: stored.senderLocalPart }
         : null;
     },
 
@@ -106,7 +113,11 @@ export function createFakeStore(): FakeShimStore {
     listTenants() {
       return [...tenants.entries()]
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([domain, tenant]) => ({ domain, senderDomain: tenant.senderDomain }));
+        .map(([domain, tenant]) => ({
+          domain,
+          senderDomain: tenant.senderDomain,
+          senderLocalPart: tenant.senderLocalPart,
+        }));
     },
 
     setSenderDomain(domain, senderDomain) {
@@ -115,6 +126,15 @@ export function createFakeStore(): FakeShimStore {
         return false;
       }
       stored.senderDomain = senderDomain;
+      return true;
+    },
+
+    setSenderLocalPart(domain, senderLocalPart) {
+      const stored = tenants.get(domain);
+      if (!stored) {
+        return false;
+      }
+      stored.senderLocalPart = senderLocalPart.toLowerCase();
       return true;
     },
 

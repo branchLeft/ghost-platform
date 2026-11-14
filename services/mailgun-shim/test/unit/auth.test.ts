@@ -191,6 +191,7 @@ describe('tenant isolation with a real store — the core property', () => {
     expect(res.locals.tenant).toEqual({
       domain: 'tenant-a.example.com',
       senderDomain: 'tenant-a.example.com',
+      senderLocalPart: null,
     });
   });
 

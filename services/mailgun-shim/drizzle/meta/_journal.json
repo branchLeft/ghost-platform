@@ -22,6 +22,13 @@
       "when": 1790606023943,
       "tag": "0002_sender_domain",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794674665160,
+      "tag": "0003_sender_local_part",
+      "breakpoints": true
     }
   ]
 }

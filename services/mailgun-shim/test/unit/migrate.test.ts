@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
-import { getTableConfig } from 'drizzle-orm/sqlite-core';
+import { getTableConfig, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { failureReason, MIGRATIONS_FOLDER, migrateStore } from '../../src/migrate.js';
 import * as schema from '../../src/schema.js';
@@ -116,6 +116,49 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
       const tables = (c.pragma('table_list') as Array<{ name: string }>).map((t) => t.name);
       expect(tables).not.toContain('__drizzle_migrations');
       expect(tables).not.toContain('events');
+    });
+  });
+
+  it('a database one release behind gains sender_local_part NULL on every row, and the one-address index', async () => {
+    // The previous release's file: the drain-shaped queue, a tenants table with
+    // sender_domain and no sender_local_part, and a tenant row already in it.
+    const previousTenants = sqliteTable('tenants', {
+      domain: text('domain').primaryKey(),
+      apiKeySalt: text('api_key_salt').notNull(),
+      apiKeyHash: text('api_key_hash').notNull(),
+      senderDomain: text('sender_domain'),
+    });
+    const { client, db } = openFixture(dbPath);
+    try {
+      await createTables(db, { ...schema, tenants: previousTenants });
+      db.insert(previousTenants)
+        .values({
+          domain: DOMAIN,
+          apiKeySalt: 'salt',
+          apiKeyHash: 'hash',
+          senderDomain: 'sender.example.com',
+        })
+        .run();
+    } finally {
+      client.close();
+    }
+    expect(columnNames(dbPath, 'tenants')).not.toContain('sender_local_part');
+
+    const store = createSqliteStore(dbPath);
+    try {
+      expect(store.listTenants()).toEqual([
+        { domain: DOMAIN, senderDomain: 'sender.example.com', senderLocalPart: null },
+      ]);
+    } finally {
+      store.close();
+    }
+
+    expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
+    withFixture(dbPath, ({ client: c }) => {
+      const indexes = (
+        c.pragma('index_list(tenants)') as Array<{ name: string; unique: number }>
+      ).filter((index) => index.name === 'idx_tenants_sender_address');
+      expect(indexes).toEqual([expect.objectContaining({ unique: 1 })]);
     });
   });
 });

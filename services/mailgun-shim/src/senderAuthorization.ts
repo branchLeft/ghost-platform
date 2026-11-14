@@ -1,3 +1,4 @@
+import { localPartDiffers } from './localPartBinding.js';
 import { domainToASCII } from 'node:url';
 // nodemailer's own address parser, not a new dependency: `mailparser`
 // (already a dependency here) uses the same parser itself, and nodemailer's
@@ -258,7 +259,8 @@ function extractAddresses(headerValue: string | null | undefined): string[] | nu
  */
 export function senderBelongsToTenant(
   headerValue: string | null | undefined,
-  tenantDomain: string
+  tenantDomain: string,
+  boundLocalPart: string | null = null
 ): boolean {
   if (typeof headerValue === 'string' && refusesEncodedWord(headerValue)) {
     return false;
@@ -271,7 +273,11 @@ export function senderBelongsToTenant(
   if (!normalizedTenantDomain) {
     return false;
   }
-  return addresses.every((address) => extractDomain(address) === normalizedTenantDomain);
+  return addresses.every(
+    (address) =>
+      extractDomain(address) === normalizedTenantDomain &&
+      !localPartDiffers(address, boundLocalPart)
+  );
 }
 
 /** A display name with any control character folded to a space and a trailing backslash or whitespace dropped, so it sits inside one quoted string. */
@@ -324,7 +330,8 @@ function serialiseMailboxes(mailboxes: Mailbox[]): string {
 export function boundSender(
   headerValue: string | null | undefined,
   tenantDomain: string,
-  rawHeaderValue?: string
+  rawHeaderValue?: string,
+  boundLocalPart: string | null = null
 ): string | null {
   if (typeof headerValue === 'string' && refusesEncodedWord(headerValue)) {
     return null;
@@ -340,7 +347,13 @@ export function boundSender(
   if (!normalizedTenantDomain) {
     return null;
   }
-  if (!parsed.every((mailbox) => extractDomain(mailbox.address) === normalizedTenantDomain)) {
+  if (
+    !parsed.every(
+      (mailbox) =>
+        extractDomain(mailbox.address) === normalizedTenantDomain &&
+        !localPartDiffers(mailbox.address, boundLocalPart)
+    )
+  ) {
     return null;
   }
   // The local part is compared and queued as the parser read it, but the domain

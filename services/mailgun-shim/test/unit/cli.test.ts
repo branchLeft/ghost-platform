@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateApiKey, runCli, type CliIO } from '../../src/cli.js';
+import { createSqliteStore, type ShimStore } from '../../src/store.js';
 import { createFakeStore } from './helpers/fakeStore.js';
 
 const KEY_SHAPE = /^[A-Za-z0-9_-]{40,}$/;
@@ -61,6 +65,7 @@ describe('runCli register', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', apiKey!)).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -93,6 +98,7 @@ describe('runCli register', () => {
     await expect(store.verifyTenant('tenant.example.com', 'existing-key')).resolves.toEqual({
       domain: 'tenant.example.com',
       senderDomain: 'tenant.example.com',
+      senderLocalPart: null,
     });
   });
 
@@ -114,6 +120,7 @@ describe('runCli register', () => {
     await expect(store.verifyTenant('tenant.example.com', keyLine!)).resolves.toEqual({
       domain: 'tenant.example.com',
       senderDomain: 'tenant.example.com',
+      senderLocalPart: null,
     });
   });
 
@@ -230,6 +237,7 @@ describe('runCli set-sender-domain', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -274,6 +282,7 @@ describe('runCli set-sender-domain', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'blog.branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -294,6 +303,7 @@ describe('runCli set-sender-domain', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: null,
+      senderLocalPart: null,
     });
   });
 
@@ -350,6 +360,7 @@ describe('runCli remove', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -477,8 +488,8 @@ describe('runCli list', () => {
 
     expect(code).toBe(0);
     expect(stdout).toEqual([
-      'a.example.com (sender domain: a.example.com)',
-      'b.example.com (sender domain: b.example.com)',
+      'a.example.com (sender domain: a.example.com, local part: ANY)',
+      'b.example.com (sender domain: b.example.com, local part: ANY)',
     ]);
     expect(stdout.some((line) => KEY_SHAPE.test(line))).toBe(false);
   });
@@ -495,8 +506,8 @@ describe('runCli list', () => {
 
     expect(code).toBe(0);
     expect(stdout).toEqual([
-      'configured.example.com (sender domain: configured.example.com)',
-      'legacy.example.com (sender domain: NOT SET)',
+      'configured.example.com (sender domain: configured.example.com, local part: ANY)',
+      'legacy.example.com (sender domain: NOT SET, local part: ANY)',
     ]);
   });
 });
@@ -599,5 +610,135 @@ describe('runCli unknown command', () => {
     const code = await runCli([], () => store, io);
     expect(code).toBe(1);
     expect(stderr.length).toBeGreaterThan(0);
+  });
+});
+
+// Against the real store: the refusals live in SQLite-backed registration, which the fake does not model.
+describe('runCli — one credential per key and per sender address', () => {
+  const SENDER = 'demo-mail.example.test';
+  let dir: string;
+  let open: () => ShimStore;
+
+  // runCli closes the store it opens, so each command gets a fresh handle on one file.
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'shim-cli-'));
+    const dbPath = join(dir, 'shim.db');
+    open = () => createSqliteStore(dbPath);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tenants() {
+    const store = open();
+    try {
+      return store.listTenants();
+    } finally {
+      store.close();
+    }
+  }
+
+  function registerArgs(slot: string, localPart: string | null): string[] {
+    return [
+      'register',
+      `slot-${slot}.${SENDER}`,
+      '--sender-domain',
+      SENDER,
+      ...(localPart === null ? [] : ['--sender-local-part', localPart]),
+    ];
+  }
+
+  it('registers a credential bound to a local part and says so, printing the key once', async () => {
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(registerArgs('30001', 'demo-1'), open, io);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(stdout[0]).toBe(`Registered slot-30001.${SENDER} (sender: demo-1@${SENDER}).`);
+    expect(stdout.filter((line) => KEY_SHAPE.test(line))).toHaveLength(1);
+    expect(tenants()).toEqual([
+      { domain: `slot-30001.${SENDER}`, senderDomain: SENDER, senderLocalPart: 'demo-1' },
+    ]);
+  });
+
+  it('refuses a second credential for the same address, printing no key and registering nothing', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(registerArgs('30002', 'demo-1'), open, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual([expect.stringContaining(`already claimed by slot-30001.${SENDER}`)]);
+    expect(tenants().map((t) => t.domain)).toEqual([`slot-30001.${SENDER}`]);
+  });
+
+  it('refuses an unrestricted second credential on a domain another one restricts', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(registerArgs('30002', null), open, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
+  });
+
+  it('refuses a --sender-local-part that is missing, a flag, or not a local part', async () => {
+    for (const bad of [undefined, '--rotate', 'a b', 'a@b', '.a', 'a.', '']) {
+      const { io, stdout, stderr } = captureIo();
+      const args = ['register', `slot-30001.${SENDER}`, '--sender-domain', SENDER];
+      args.push('--sender-local-part');
+      if (bad !== undefined) args.push(bad);
+
+      const code = await runCli(args, open, io);
+
+      expect(code, String(bad)).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(stderr.length).toBeGreaterThan(0);
+      expect(tenants()).toEqual([]);
+    }
+  });
+
+  it('set-sender-local-part binds an existing credential, refuses a claimed address, and reports an unknown one', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    await runCli(registerArgs('30002', 'demo-2'), open, captureIo().io);
+
+    const bound = captureIo();
+    expect(
+      await runCli(['set-sender-local-part', `slot-30002.${SENDER}`, 'demo-3'], open, bound.io)
+    ).toBe(0);
+    expect(bound.stdout).toEqual([`Bound slot-30002.${SENDER} to the From local part demo-3.`]);
+
+    const claimed = captureIo();
+    expect(
+      await runCli(['set-sender-local-part', `slot-30002.${SENDER}`, 'DEMO-1'], open, claimed.io)
+    ).toBe(1);
+    expect(claimed.stderr[0]).toContain('already claimed');
+
+    const unknown = captureIo();
+    expect(
+      await runCli(['set-sender-local-part', `slot-39999.${SENDER}`, 'demo-9'], open, unknown.io)
+    ).toBe(1);
+    expect(unknown.stderr[0]).toContain('is not registered');
+  });
+
+  it('list shows the bound local part, or ANY for an unrestricted credential', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    await runCli(
+      ['register', 'blog.example.com', '--sender-domain', 'example.com'],
+      open,
+      captureIo().io
+    );
+    const { io, stdout } = captureIo();
+
+    await runCli(['list'], open, io);
+
+    expect(stdout).toEqual([
+      'blog.example.com (sender domain: example.com, local part: ANY)',
+      `slot-30001.${SENDER} (sender domain: ${SENDER}, local part: demo-1)`,
+    ]);
   });
 });

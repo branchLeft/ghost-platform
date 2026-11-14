@@ -16,7 +16,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { hashApiKey, verifyApiKey } from './crypto.js';
+import { hashApiKey, keyMatchesSync, verifyApiKey } from './crypto.js';
 import { MAIL_CLASS_RANK } from './mailClass.js';
 import { migrateStore } from './migrate.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
@@ -40,6 +40,33 @@ export interface Tenant {
    * `domain`. See store.md#sender-domain.
    */
   senderDomain: string | null;
+  /**
+   * The one From local part this credential may send as, lower-cased. `null`
+   * means any local part at `senderDomain`. See store.md#sender-local-part.
+   */
+  senderLocalPart: string | null;
+}
+
+/** Why a registration was refused. See store.md#registration-refusals. */
+export type RegistrationRefusal = 'key-bound-to-another-credential' | 'sender-address-claimed';
+
+/**
+ * Thrown, before anything is written, when a registration would let two
+ * credentials act as one. `other` is the credential domain in the way: an
+ * operator-visible label, never a key.
+ */
+export class TenantRegistrationRefused extends Error {
+  constructor(
+    readonly reason: RegistrationRefusal,
+    readonly other: string
+  ) {
+    super(
+      reason === 'key-bound-to-another-credential'
+        ? `That key is already bound to ${other}; every credential needs its own key.`
+        : `The sender address is already claimed by ${other}; one address belongs to one credential.`
+    );
+    this.name = 'TenantRegistrationRefused';
+  }
 }
 
 export interface StoredEvent {
@@ -151,16 +178,39 @@ export interface RecordOutcomesResult {
 export interface ShimStore {
   /**
    * `senderDomain` is required, never defaulted from `domain`; `null` only
-   * reproduces a row that predates the field. See store.md#sender-domain.
+   * reproduces a row that predates the field. `senderLocalPart` binds the
+   * credential to one From local part; omitted or `null` leaves any local part
+   * at the sender domain. Throws `TenantRegistrationRefused` when the key is
+   * already bound to a different credential, or when the registration would
+   * newly overlap another credential's sender address.
+   * See store.md#sender-domain, #sender-local-part and #registration-refusals.
    */
-  registerTenant(domain: string, apiKey: string, senderDomain: string | null): void;
+  registerTenant(
+    domain: string,
+    apiKey: string,
+    senderDomain: string | null,
+    senderLocalPart?: string | null
+  ): void;
   /** Resolves null for an unknown domain and for a wrong key alike: both are the same 401. */
   verifyTenant(domain: string, apiKey: string): Promise<Tenant | null>;
   tenantExists(domain: string): boolean;
   /** Every tenant with its sender domain, sorted by domain; `null` exactly when unset. */
-  listTenants(): Array<{ domain: string; senderDomain: string | null }>;
-  /** Sets a tenant's sender domain without rotating its key; false if the domain is unregistered. */
+  listTenants(): Array<{
+    domain: string;
+    senderDomain: string | null;
+    senderLocalPart: string | null;
+  }>;
+  /**
+   * Sets a tenant's sender domain without rotating its key; false if the domain is unregistered.
+   * Throws `TenantRegistrationRefused` when the move would newly overlap another credential's address.
+   */
   setSenderDomain(domain: string, senderDomain: string): boolean;
+  /**
+   * Binds a tenant to one From local part without rotating its key; false if
+   * the domain is unregistered. Throws `TenantRegistrationRefused` when
+   * another credential already claims that address.
+   */
+  setSenderLocalPart(domain: string, senderLocalPart: string): boolean;
   /**
    * Deletes exactly the one credential row and nothing else: its events,
    * suppressions and queued mail stay. False if the domain is unregistered.
@@ -238,6 +288,42 @@ function assertSuppressionType(type: SuppressionType): void {
   }
 }
 
+/** The address a credential may send as: its sender domain and, when bound, its one local part. */
+interface SenderClaim {
+  senderDomain: string | null;
+  senderLocalPart: string | null;
+}
+
+/**
+ * Domains and local parts are compared lower-cased, so one address cannot be
+ * claimed twice by differing in case. A local part that is empty or holds
+ * whitespace or `@` is a caller error, never stored.
+ */
+function normaliseClaim(senderDomain: string | null, senderLocalPart: string | null): SenderClaim {
+  if (senderLocalPart !== null && !/^[^\s@]+$/.test(senderLocalPart)) {
+    throw new TypeError(`Not a From local part: ${JSON.stringify(senderLocalPart)}`);
+  }
+  return {
+    senderDomain: senderDomain === null ? null : senderDomain.toLowerCase(),
+    senderLocalPart: senderLocalPart === null ? null : senderLocalPart.toLowerCase(),
+  };
+}
+
+/**
+ * Two credentials overlap when they could send as the same address: the same
+ * sender domain, and either side unrestricted or the same local part. A row
+ * with no sender domain claims nothing (it is refused at send time).
+ */
+function claimsOverlap(a: SenderClaim, b: SenderClaim): boolean {
+  if (a.senderDomain === null || b.senderDomain === null) return false;
+  if (a.senderDomain !== b.senderDomain) return false;
+  return (
+    a.senderLocalPart === null ||
+    b.senderLocalPart === null ||
+    a.senderLocalPart === b.senderLocalPart
+  );
+}
+
 /** Exported so the non-WAL branch, unreachable through a real file, can be tested directly. */
 export function assertWalEnabled(filename: string, journalMode: string | undefined): void {
   if (filename === ':memory:') {
@@ -308,14 +394,79 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
     }
   }
 
+  /**
+   * The credential domain, other than `domain`, whose stored hash `apiKey`
+   * matches. A row whose hash is already in `checked` was hashed against this
+   * key by an earlier call and is skipped; every row looked at is added, so a
+   * second call hashes only rows that are new or rotated since the first.
+   */
+  function otherHolderOf(
+    q: Db | Tx,
+    domain: string,
+    apiKey: string,
+    checked: Map<string, string>
+  ): string | undefined {
+    for (const other of q.select().from(tenants).all()) {
+      if (other.domain === domain || checked.get(other.domain) === other.apiKeyHash) continue;
+      if (keyMatchesSync(apiKey, { salt: other.apiKeySalt, hash: other.apiKeyHash })) {
+        return other.domain;
+      }
+      checked.set(other.domain, other.apiKeyHash);
+    }
+    return undefined;
+  }
+
+  /**
+   * Refuses a claim that overlaps another credential's where the credential's
+   * previous claim did not. Narrowing a legacy row, or rotating it unchanged,
+   * therefore always passes: no registration ever creates an overlap.
+   */
+  function assertNoNewOverlap(q: Db | Tx, domain: string, next: SenderClaim): void {
+    const rows = q.select().from(tenants).all();
+    const previous = rows.find((row) => row.domain === domain);
+    for (const other of rows) {
+      if (other.domain === domain) continue;
+      const theirs = normaliseClaim(other.senderDomain, other.senderLocalPart);
+      const alreadyOverlapped =
+        previous !== undefined &&
+        claimsOverlap(normaliseClaim(previous.senderDomain, previous.senderLocalPart), theirs);
+      if (claimsOverlap(next, theirs) && !alreadyOverlapped) {
+        throw new TenantRegistrationRefused('sender-address-claimed', other.domain);
+      }
+    }
+  }
+
   return {
-    registerTenant(domain, apiKey, senderDomain) {
-      const { salt, hash } = hashApiKey(apiKey);
-      const row = { apiKeySalt: salt, apiKeyHash: hash, senderDomain };
-      db.insert(tenants)
-        .values({ domain, ...row })
-        .onConflictDoUpdate({ target: tenants.domain, set: row })
-        .run();
+    registerTenant(domain, apiKey, senderDomain, senderLocalPart = null) {
+      const claim = normaliseClaim(senderDomain, senderLocalPart);
+      // Salts are per row, so a shared key is invisible to a lookup: it is found
+      // by hashing the key under every other credential's salt, one scrypt each.
+      // That runs before the write lock is taken, so a host with many
+      // credentials does not hold up the service's own writes while it does.
+      const checked = new Map<string, string>();
+      const holder = otherHolderOf(db, domain, apiKey, checked);
+      if (holder !== undefined) {
+        throw new TenantRegistrationRefused('key-bound-to-another-credential', holder);
+      }
+      // One immediate transaction, so the remaining checks and the write see the
+      // same rows even with the service or a second CLI process writing meanwhile.
+      db.transaction(
+        (tx) => {
+          // Only a row added or rotated since the scan above still needs hashing.
+          const late = otherHolderOf(tx, domain, apiKey, checked);
+          if (late !== undefined) {
+            throw new TenantRegistrationRefused('key-bound-to-another-credential', late);
+          }
+          assertNoNewOverlap(tx, domain, claim);
+          const { salt, hash } = hashApiKey(apiKey);
+          const row = { apiKeySalt: salt, apiKeyHash: hash, ...claim };
+          tx.insert(tenants)
+            .values({ domain, ...row })
+            .onConflictDoUpdate({ target: tenants.domain, set: row })
+            .run();
+        },
+        { behavior: 'immediate' }
+      );
     },
 
     async verifyTenant(domain, apiKey) {
@@ -324,7 +475,13 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
         return null;
       }
       const ok = await verifyApiKey(apiKey, { salt: row.apiKeySalt, hash: row.apiKeyHash });
-      return ok ? { domain: row.domain, senderDomain: row.senderDomain } : null;
+      return ok
+        ? {
+            domain: row.domain,
+            senderDomain: row.senderDomain,
+            senderLocalPart: row.senderLocalPart,
+          }
+        : null;
     },
 
     tenantExists(domain) {
@@ -339,19 +496,48 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
 
     listTenants() {
       return db
-        .select({ domain: tenants.domain, senderDomain: tenants.senderDomain })
+        .select({
+          domain: tenants.domain,
+          senderDomain: tenants.senderDomain,
+          senderLocalPart: tenants.senderLocalPart,
+        })
         .from(tenants)
         .orderBy(asc(tenants.domain))
         .all();
     },
 
     setSenderDomain(domain, senderDomain) {
-      const result = db
-        .update(tenants)
-        .set({ senderDomain })
-        .where(eq(tenants.domain, domain))
-        .run();
-      return result.changes > 0;
+      return db.transaction(
+        (tx) => {
+          const row = tx.select().from(tenants).where(eq(tenants.domain, domain)).get();
+          if (!row) return false;
+          const claim = normaliseClaim(senderDomain, row.senderLocalPart);
+          assertNoNewOverlap(tx, domain, claim);
+          tx.update(tenants)
+            .set({ senderDomain: claim.senderDomain })
+            .where(eq(tenants.domain, domain))
+            .run();
+          return true;
+        },
+        { behavior: 'immediate' }
+      );
+    },
+
+    setSenderLocalPart(domain, senderLocalPart) {
+      return db.transaction(
+        (tx) => {
+          const row = tx.select().from(tenants).where(eq(tenants.domain, domain)).get();
+          if (!row) return false;
+          const claim = normaliseClaim(row.senderDomain, senderLocalPart);
+          assertNoNewOverlap(tx, domain, claim);
+          tx.update(tenants)
+            .set({ senderLocalPart: claim.senderLocalPart })
+            .where(eq(tenants.domain, domain))
+            .run();
+          return true;
+        },
+        { behavior: 'immediate' }
+      );
     },
 
     removeTenant(domain) {

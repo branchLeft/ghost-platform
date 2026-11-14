@@ -41,11 +41,12 @@ store.
 the versioned migrations drizzle-kit writes from it, with a snapshot per
 migration in `drizzle/meta/`:
 
-| # | Migration | What it does |
-|---|---|---|
-| 0 | `0000_pre_drain_baseline` | The schema as a host running the pre-drain release has it: the baseline. Generated. |
-| 1 | `0001_drain_handover` | Converts the queue to the drain shape in place. Hand-written; see [the drain-handover migration](#the-drain-handover-migration). |
-| 2 | `0002_sender_domain` | Adds `tenants.sender_domain`. Generated. |
+| #   | Migration                 | What it does                                                                                                                     |
+| --- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | `0000_pre_drain_baseline` | The schema as a host running the pre-drain release has it: the baseline. Generated.                                              |
+| 1   | `0001_drain_handover`     | Converts the queue to the drain shape in place. Hand-written; see [the drain-handover migration](#the-drain-handover-migration). |
+| 2   | `0002_sender_domain`      | Adds `tenants.sender_domain`. Generated.                                                                                         |
+| 3   | `0003_sender_local_part`  | Adds `tenants.sender_local_part` (NULL on every existing row) and the unique index `idx_tenants_sender_address`. Generated.      |
 
 To change the schema: edit `schema.ts`, run
 `pnpm exec drizzle-kit generate --name <what-it-does>` in this package, and commit
@@ -77,11 +78,12 @@ A file written before this release has no `__drizzle_migrations` table. When the
 ledger is empty but a `tenants` table exists, the runner records every migration
 the file's shape already reflects, then applies the rest as usual:
 
-| `queue_recipients` columns | `tenants` has `sender_domain` | Recorded as applied |
-|---|---|---|
-| pre-drain (`attempts`, `next_attempt_at`) or no table at all | no | 0 |
-| drain-shaped (`id`, `drain_count`, `available_at`, `held_until`) | no | 0, 1 |
-| drain-shaped | yes | 0, 1, 2 |
+| `queue_recipients` columns                                       | `tenants` has `sender_domain` | Recorded as applied |
+| ---------------------------------------------------------------- | ----------------------------- | ------------------- |
+| pre-drain (`attempts`, `next_attempt_at`) or no table at all     | no                            | 0                   |
+| drain-shaped (`id`, `drain_count`, `available_at`, `held_until`) | no                            | 0, 1                |
+| drain-shaped                                                     | yes                           | 0, 1, 2             |
+| drain-shaped                                                     | yes, and `sender_local_part`  | 0, 1, 2, 3          |
 
 For the first row it also creates any baseline table or index the file lacks,
 which is what the pre-drain release's own `CREATE TABLE IF NOT EXISTS` did on
@@ -175,6 +177,62 @@ zero's credential key is its Mailgun `bulkEmailDomain`
   shim-upgrade runbook's post-redeploy check) needs both: a bare list of
   credential domains shows a tenant with no sender domain identically to a
   fully configured one.
+
+## Sender local part
+
+`Tenant.senderLocalPart` is the one From local part a credential may send as. It
+is held beside `senderDomain` so that credentials which share a sender domain
+(a demo host's slots all send from one domain, one local part each) cannot send
+as each other.
+
+- It is `null` for a credential that owns its whole sender domain, and for every
+  row that predates the column: the migration adds it with every row `NULL`, so
+  an upgrade changes no live credential's reach. `null` means any local part at
+  `senderDomain`, which is the behaviour before the column existed.
+- Set, it is stored lower-cased and compared lower-cased, exactly, never as a
+  prefix or suffix: `demo-1` does not admit `demo-10`, `demo-1.x` or `demo-1+tag`.
+  Both front doors read it from the tenant row at authentication and pass it to
+  the one sender gate (senderAuthorization.md#the-local-part-binding), so the
+  HTTP `from`, the SMTP envelope MAIL FROM and the SMTP header From are all bound
+  by it.
+- `registerTenant` takes it as an optional fourth argument; the CLI's `register`
+  takes `--sender-local-part`. `setSenderLocalPart` (CLI `set-sender-local-part`)
+  binds an existing credential without rotating its key, which is how a row
+  registered before the column is narrowed.
+
+## Registration refusals
+
+Two credentials that could act as one are refused when they are written, before
+anything is stored, by `TenantRegistrationRefused` (its `reason` and the `other`
+credential domain in the way; never a key). The address check and the write run in
+one `IMMEDIATE` transaction, so a second CLI process or the running service
+cannot slip a row between the check and the insert.
+
+- **`key-bound-to-another-credential`.** A key already bound to a different
+  credential is refused by `registerTenant`. Salts are per row, so a shared key
+  cannot be found by lookup: the key is checked against every other row's hash
+  (crypto.md#keymatchessync), before the write lock is taken, so a host with many
+  credentials does not stall the service's own writes. Inside the transaction only
+  a row added or rotated since that scan is hashed again. Re-registering a credential with the key it already
+  holds is allowed (that row is skipped), and a rotation onto another row's key
+  is refused with the old key still working. This covers every credential, not
+  only demo slots: no two credentials hold one key.
+- **`sender-address-claimed`.** A credential claims an address, `local@domain`
+  when bound, the whole domain when `senderLocalPart` is `null`. A registration,
+  `setSenderDomain` or `setSenderLocalPart` is refused when its claim overlaps
+  another credential's claim that its own previous claim did not already overlap.
+  So two unrestricted credentials cannot share a sender domain, nor can an
+  unrestricted one join a domain another credential restricts (or the reverse),
+  nor two credentials claim one local part in any case. A row with no sender
+  domain claims nothing.
+- **Legacy rows are never retro-refused.** Rows registered before the binding
+  (several unrestricted credentials on one sender domain) already overlap. Narrowing
+  one with `setSenderLocalPart`, or rotating it unchanged, adds no overlap and
+  passes, so the host can be converted one slot at a time; a new credential is
+  refused on that domain until every unrestricted row on it is bound. The unique
+  index `idx_tenants_sender_address` backs the rule for bound rows at the data
+  layer (SQLite treats NULLs as distinct, so unrestricted rows are the store's
+  check alone).
 
 `verifyTenant` looks the tenant up by the domain always present in the URL path
 and checks the presented key against that tenant's salted hash. It collapses

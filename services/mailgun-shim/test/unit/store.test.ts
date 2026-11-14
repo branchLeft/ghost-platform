@@ -6,7 +6,12 @@ import { eq } from 'drizzle-orm';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hashApiKey } from '../../src/crypto.js';
-import { MIGRATIONS_FOLDER, SENDER_DOMAIN, migrationsLedger } from '../../src/migrate.js';
+import {
+  MIGRATIONS_FOLDER,
+  SENDER_DOMAIN,
+  SENDER_LOCAL_PART,
+  migrationsLedger,
+} from '../../src/migrate.js';
 import {
   assertWalEnabled,
   createSqliteStore,
@@ -59,6 +64,7 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     await expect(store.verifyTenant(DOMAIN, 'the-secret-key')).resolves.toEqual({
       domain: DOMAIN,
       senderDomain: DOMAIN,
+      senderLocalPart: null,
     });
   });
 
@@ -80,6 +86,7 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     await expect(store.verifyTenant(DOMAIN, 'new-key')).resolves.toEqual({
       domain: DOMAIN,
       senderDomain: DOMAIN,
+      senderLocalPart: null,
     });
   });
 
@@ -90,6 +97,7 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -99,6 +107,7 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -108,8 +117,8 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
   });
 
   it('removeTenant deletes exactly the named credential row: its key stops working and a sibling keeps its own', async () => {
-    store.registerTenant('slot-30001.demo.example.com', 'key-a', 'demo.example.com');
-    store.registerTenant('slot-30002.demo.example.com', 'key-b', 'demo.example.com');
+    store.registerTenant('slot-30001.demo.example.com', 'key-a', 'demo.example.com', 'demo-1');
+    store.registerTenant('slot-30002.demo.example.com', 'key-b', 'demo.example.com', 'demo-2');
     store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
 
     expect(store.removeTenant('slot-30001.demo.example.com')).toBe(true);
@@ -119,10 +128,12 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     await expect(store.verifyTenant('slot-30002.demo.example.com', 'key-b')).resolves.toEqual({
       domain: 'slot-30002.demo.example.com',
       senderDomain: 'demo.example.com',
+      senderLocalPart: 'demo-2',
     });
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
     expect(store.listTenants().map((t) => t.domain)).toEqual([
       'blog.branchleft.co.uk',
@@ -195,6 +206,7 @@ describe('createSqliteStore — migrating a database that predates sender_domain
       await expect(store.verifyTenant('blog.branchleft.co.uk', 'legacy-key')).resolves.toEqual({
         domain: 'blog.branchleft.co.uk',
         senderDomain: null,
+        senderLocalPart: null,
       });
       // The migration touches only the schema, never the row's own credential.
       await expect(store.verifyTenant('blog.branchleft.co.uk', 'wrong-key')).resolves.toBeNull();
@@ -215,6 +227,7 @@ describe('createSqliteStore — migrating a database that predates sender_domain
       await expect(second.verifyTenant('blog.branchleft.co.uk', 'legacy-key')).resolves.toEqual({
         domain: 'blog.branchleft.co.uk',
         senderDomain: 'branchleft.co.uk',
+        senderLocalPart: null,
       });
     } finally {
       second.close();
@@ -249,12 +262,12 @@ describe('createSqliteStore — migrating a database that predates sender_domain
     // The ledger forgets the sender-domain migration its schema already
     // reflects, so re-applying it fails on the column that already exists.
     createSqliteStore(dbPath).close();
-    withFixture(dbPath, ({ db }) =>
-      db
-        .delete(migrationsLedger)
-        .where(eq(migrationsLedger.hash, MIGRATIONS[SENDER_DOMAIN]!.hash))
-        .run()
-    );
+    withFixture(dbPath, ({ db }) => {
+      // Both newer rows go: the runner re-applies from the oldest forgotten one.
+      for (const index of [SENDER_DOMAIN, SENDER_LOCAL_PART]) {
+        db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[index]!.hash)).run();
+      }
+    });
     const ledger = ledgerHashes(dbPath);
 
     expect(() => createSqliteStore(dbPath)).toThrow(
@@ -454,6 +467,7 @@ describe('createSqliteStore — durability and concurrency', () => {
     await expect(reopened.verifyTenant(DOMAIN, 'persisted-key')).resolves.toEqual({
       domain: DOMAIN,
       senderDomain: DOMAIN,
+      senderLocalPart: null,
     });
     expect(reopened.isSuppressed(DOMAIN, 'bounces', 'bounced@example.com')).toBe(true);
     const { events } = reopened.listEvents(DOMAIN, { limit: 10, offset: 0 });
@@ -513,8 +527,8 @@ describe('createSqliteStore — tenant listing', () => {
     store.registerTenant('b.example.com', 'key-b', 'b.example.com');
     store.registerTenant('a.example.com', 'key-a', null);
     expect(store.listTenants()).toEqual([
-      { domain: 'a.example.com', senderDomain: null },
-      { domain: 'b.example.com', senderDomain: 'b.example.com' },
+      { domain: 'a.example.com', senderDomain: null, senderLocalPart: null },
+      { domain: 'b.example.com', senderDomain: 'b.example.com', senderLocalPart: null },
     ]);
   });
 

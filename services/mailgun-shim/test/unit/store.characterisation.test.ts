@@ -144,8 +144,11 @@ describe('store characterisation — tenants', () => {
     await expect(store.verifyTenant(DOMAIN, 'new-key')).resolves.toEqual({
       domain: DOMAIN,
       senderDomain: null,
+      senderLocalPart: null,
     });
-    expect(store.listTenants()).toEqual([{ domain: DOMAIN, senderDomain: null }]);
+    expect(store.listTenants()).toEqual([
+      { domain: DOMAIN, senderDomain: null, senderLocalPart: null },
+    ]);
   });
 });
 

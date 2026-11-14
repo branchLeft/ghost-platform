@@ -406,6 +406,7 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
     withFixture(dbPath, ({ db }) => {
       db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[1]!.hash)).run();
       db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[2]!.hash)).run();
+      db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[3]!.hash)).run();
     });
     const rowsBefore = queueRecipientRows(dbPath);
 
