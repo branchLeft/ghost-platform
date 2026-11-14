@@ -489,10 +489,21 @@ export function sqliteScratchFilename(): string {
   return `${SCRATCH_SQLITE_DIR}/ghost.db`;
 }
 
+/**
+ * The backup container's name. It is named so the run's remover can find it:
+ * a `docker run` killed on a signal may already have sent its create, and an
+ * unnamed container could not be removed.
+ */
+export function sqliteBackupName(runId: string): string {
+  return `${runId}-backup`;
+}
+
 export function buildSqliteBackupArgs(spec: SqliteScratchSpec): readonly string[] {
   const args = [
     'run',
     '--rm',
+    '--name',
+    sqliteBackupName(spec.runId),
     '--user',
     '0:0',
     '--entrypoint',
@@ -544,7 +555,10 @@ export function createSqliteScratch(
   const registry = options.registry ?? processCleanup;
   const volume = sqliteScratchVolume(spec.runId);
   const { network } = mysqlScratchNames(spec.runId);
+  const backup = sqliteBackupName(spec.runId);
   const removeSync = () => {
+    // A backup still running holds the volume; it goes first. Never throws.
+    dockerRemoveUntilGoneSync(backup, docker, registry);
     // Both removals are attempted: a volume that will not go must not leave
     // the run network behind as well. Every failure is then reported.
     const failures: unknown[] = [];
