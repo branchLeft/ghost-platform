@@ -43,6 +43,11 @@ function isAbortError(error: unknown): error is Error {
   return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
 }
 
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : 'unknown error';
+}
+
 export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
   const { size } = await stat(args.tarPath);
   const sizeStr = String(size);
@@ -92,19 +97,35 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
     },
     body: body as unknown as string,
   });
+  // The deadline's own abort is reworded wherever it landed. The generated
+  // client catches an abort during the body read too, and then returns the
+  // error beside a `response` that did arrive (headers only): that answer was
+  // never fully received, so it is not a status to report, ok or otherwise.
+  if (isAbortError(result.error)) {
+    throw new Error(`image push did not finish within ${timeoutMs} ms`, {
+      cause: result.error,
+    });
+  }
   // No response at all means the request itself failed (refused, reset):
   // rethrown, as a rejected `fetch` always was, rather than reported as a
-  // status this module never received. Only the deadline's own abort is
-  // reworded.
+  // status this module never received.
   if (result.response === undefined) {
-    if (isAbortError(result.error)) {
-      throw new Error(`image push did not finish within ${timeoutMs} ms`, {
-        cause: result.error,
-      });
-    }
     throw result.error;
   }
   const { ok, status } = result.response;
+  // The generated client also catches a body that cannot be read or parsed
+  // (a connection reset mid-body, invalid JSON, a response the schema rejects)
+  // and returns the error beside the 2xx `response` whose headers did arrive.
+  // A really empty body is not an error (the client reads it as `{}`), so an
+  // error on a 2xx is always an unreadable body: the receiver may or may not
+  // have loaded the image, which this module cannot know, so it is thrown the
+  // way every other transport failure is, never reported as ok.
+  if (ok && result.error !== undefined) {
+    throw new Error(
+      `image push response body could not be read (HTTP ${String(status)}): ${describeError(result.error)}`,
+      { cause: result.error }
+    );
+  }
   // A non-2xx answer arrives as the parsed JSON, or the raw text when it was
   // not JSON; only the former was ever handed back.
   const responseBody: unknown = ok

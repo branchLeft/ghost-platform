@@ -147,7 +147,7 @@ describe('parseGrantArgs', () => {
   it('parses expire and status with no flags, and refuses other commands', () => {
     expect(parseGrantArgs(['expire'])).toEqual({ command: 'expire' });
     expect(parseGrantArgs(['status'])).toEqual({ command: 'status' });
-    expect(() => parseGrantArgs(['extend'])).toThrow(/grant, revoke, expire or status/);
+    expect(() => parseGrantArgs(['extend'])).toThrow(/grant, revoke, expire, status or report/);
   });
 });
 

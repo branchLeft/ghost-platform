@@ -43,6 +43,24 @@ there is no option to forget. A kind that is absent or not exactly `REAL` or
 nothing, and the save answers 400 `REFUSED` and stores nothing. A valid `DEMO`
 keeps the demo notice, no form, and a refused save.
 
+## Support access
+
+`/site-access` shows the signed-in tenant whether support access to its site
+is open, closed or unknown, and the deadline while it is open. The state comes
+from the tenant's own row only (`TenantDb.ownSupportAccess`); a missing,
+stale or unrecognised reading is shown as unknown and never as closed. The page
+carries one button, `POST /site-access/request`, which files the signed-in
+tenant's request: the handler reads no form field, so no tenant id and no text
+can travel with it, and it changes no reading. Once a request is filed the page
+shows the latest request's status word (open, then dealt with) and no time, and
+the button returns when that request is dealt with. The owner console
+lists every request on its landing page on one page, open ones first and oldest
+first; each open one carries a button, `POST /support-requests/dealt-with`,
+that marks it dealt with. Nothing deletes a request. Nothing under
+`portal/` can open or close access, and a test fails if portal source gains a
+revoke, a socket into a host, a child process or an ssh client. All wording is
+`ALL_CAPS` placeholder until the owner supplies it.
+
 ## Support tickets
 
 A signed-in tenant admin can raise a support ticket from the tenant portal. It
@@ -322,3 +340,22 @@ PORTAL_TEST_DATABASE_URL=postgres://USER:PASSWORD@HOST:PORT/postgres pnpm run co
 ```
 
 The URL is a superuser on a throwaway cluster, as for `portal/data`.
+
+### The browser journey
+
+`pnpm run journey` walks the portal in a real Chromium (Playwright, an exact
+version in `package.json`) against an HTTP test identity provider, with the
+portal on the fixture database, and saves one full-page screenshot per screen
+in `journey-screenshots/journey/` (`JOURNEY_SCREENSHOT_DIR` changes it). It
+needs the same `PORTAL_TEST_DATABASE_URL` as the tests and a browser:
+`pnpm exec playwright install chromium`. CI runs it in
+`.github/workflows/portal-apps-journey.yml` and uploads the screenshots.
+
+- The identity provider is `test/idpServer.ts`: discovery, keys, authorize
+  (code with PKCE) and token, for a list of users given at start. It listens on
+  loopback only, refuses to start under `NODE_ENV=production`, and is kept out
+  of `dist`, the image and every import in `src/` by `test/testOnlyGuard.test.ts`.
+- The walk is the list in `test/journey/steps/index.ts`. To add a screen, add
+  one `JourneyStep` there: how to reach the screen, and the placeholder text it
+  must show. A step whose screen lacks that text fails the walk and is saved as
+  `<position>-<id>-FAILED.png`.

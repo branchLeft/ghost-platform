@@ -12,8 +12,11 @@ name: Hetzner host check CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'infra/hetzner-host-check/**'
+      - '.github/workflows/infra-hetzner-host-check-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the package. Push to main stays unfiltered as the backstop.
+  # reads: the package. A push to main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:

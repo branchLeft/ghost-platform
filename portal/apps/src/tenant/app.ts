@@ -9,6 +9,7 @@ import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-po
 import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
+import { renderSupportAccess } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
 import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
@@ -87,6 +88,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      { label: 'NAV_SITE_ACCESS', href: '/site-access' },
       ...demo.nav,
       ...site.nav,
       ...support.nav,
@@ -119,6 +121,13 @@ export function createTenantPortal(options: TenantPortalOptions) {
           (bound) => options.db.ownKind(bound),
           (bound) => options.db.moderationSettings(bound)
         )) + support.linkFrom('MODERATION'),
+      '/site-access': async (scope) => {
+        const [access, request] = await Promise.all([
+          options.db.ownSupportAccess(scope, now()),
+          options.db.ownSupportRequest(scope),
+        ]);
+        return renderSupportAccess(access, request);
+      },
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([
@@ -149,6 +158,12 @@ export function createTenantPortal(options: TenantPortalOptions) {
           now: now(),
         });
         return '/moderation';
+      },
+      // The only thing the page can do: file the signed-in tenant's request.
+      // It reads no field of the form, so nothing the visitor sends reaches it.
+      '/site-access/request': async (scope) => {
+        await options.db.requestSupportAccess(scope);
+        return '/site-access';
       },
       '/documents/accept': async (scope, identity, form) => {
         const kind = form.get('kind') ?? '';

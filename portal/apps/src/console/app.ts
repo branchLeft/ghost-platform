@@ -8,6 +8,7 @@ import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
+import { renderSupportQueue } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
 
 export interface OwnerConsoleOptions {
@@ -70,11 +71,22 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
       : { clientLimit: { trustedProxies: options.trustedProxies } }),
     bind: async () => true,
     landing: async () => {
-      const tenants = await options.db.listHealth();
+      const [tenants, requests] = await Promise.all([
+        options.db.listHealth(),
+        options.db.listSupportRequests(),
+      ]);
       const rows = tenants
         .map((t) => `<li><code>${escapeHtml(t.tenantId)}</code>${renderHealth(t.health)}</li>`)
         .join('');
-      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><ul>${rows}</ul>`;
+      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><ul>${rows}</ul>${renderSupportQueue(requests)}`;
+    },
+    actions: {
+      // The only thing the queue can do: mark one tenant's open request dealt
+      // with. It writes the status and nothing else, and deletes nothing.
+      '/support-requests/dealt-with': async (_bound, _identity, form) => {
+        await options.db.markSupportRequestDealtWith(form.get('tenant') ?? '');
+        return '/';
+      },
     },
   });
 }

@@ -8,6 +8,7 @@ import type { DrainTarget } from '../../src/descriptorTargets.js';
 import { createDrainClient } from '../../src/drainClient.js';
 import { createHealthState } from '../../src/health.js';
 import { createLogger } from '../../src/log.js';
+import { verifyOutcomeMessageId } from '../../src/outcomeId.js';
 import { TargetSubmissionError, type SweegoQuota } from '../../src/sendingTarget.js';
 import type { Throttle } from '../../src/throttle.js';
 import { FakeShimServer } from '../helpers/fakeShimServer.js';
@@ -168,9 +169,36 @@ describe('lane return paths: every mx1 submission, by class and demo', () => {
       expect(sent[0]!.envelope?.from).toBe(expected);
       // The correlation id and the DSN request follow the outcome path alone.
       expect(sent[0]!.dsn !== undefined).toBe(outcomes);
-      expect(sent[0]!.messageId !== undefined).toBe(outcomes);
+      if (!outcomes) {
+        expect(sent[0]!.messageId).toBeUndefined();
+        return;
+      }
+      expectSignedFor(sent[0]!.messageId, 'm-1');
     }
   );
+
+  /**
+   * The id must verify under the collector's key for the recipient it was sent
+   * to, not merely have the right shape: a bounce is acted on only if it does.
+   */
+  function expectSignedFor(messageId: string | undefined, id: string): void {
+    expect(messageId).toBeDefined();
+    const recipient = `reader-${id}@example.com`;
+    expect(verifyOutcomeMessageId(messageId!, [recipient], MESSAGE_ID_KEY)).toMatchObject({
+      id,
+      targetId: 'tenant-a',
+    });
+    // The same shape with one signature digit changed, another recipient's id,
+    // or another key does not verify.
+    const mac = /\.([0-9a-f]{32})@/.exec(messageId!)![1]!;
+    const tampered = messageId!.replace(mac, `${mac.slice(0, -1)}${mac.endsWith('0') ? '1' : '0'}`);
+    expect(tampered).not.toBe(messageId);
+    expect(verifyOutcomeMessageId(tampered, [recipient], MESSAGE_ID_KEY)).toBeNull();
+    expect(verifyOutcomeMessageId(messageId!, ['other@example.com'], MESSAGE_ID_KEY)).toBeNull();
+    expect(
+      verifyOutcomeMessageId(messageId!, [recipient], randomBytes(32).toString('hex'))
+    ).toBeNull();
+  }
 
   it('leaves a message accepted by Sweego off mx1 altogether', async () => {
     shim.enqueue(NEWSLETTER('m-1'));

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
@@ -53,8 +53,15 @@ import {
   documentVersion,
   healthReading,
   moderationSetting,
+  supportAccessReading,
+  supportAccessRequest,
   tenantRegister,
 } from '../schema.js';
+import {
+  deriveSupportAccessView,
+  type SupportAccessView,
+  type SupportRequestStatus,
+} from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
@@ -159,6 +166,57 @@ export class TenantDb {
     const rows = await this.run(scope, (tx) => tx.select().from(healthReading));
     const row = rows[0];
     return row ? deriveHealthView(row) : null;
+  }
+
+  /**
+   * The bound tenant's support-access state at `now`. With no reading, a
+   * stale one or one dated ahead, the answer is `unknown`; `closed` comes only
+   * from a fresh reading that says so. Row-level isolation limits the read to
+   * the bound tenant, and the tenant role cannot write it.
+   */
+  async ownSupportAccess(scope: TenantScope, now: Date): Promise<SupportAccessView> {
+    const rows = await this.run(scope, (tx) => tx.select().from(supportAccessReading));
+    return deriveSupportAccessView(rows[0] ?? null, now);
+  }
+
+  /**
+   * Records the bound tenant's request for support access: its own row, with
+   * the database's clock and no text. A second request while one is pending
+   * records nothing and returns false; once the owner has dealt with it a new
+   * request is filed, and the old row stays. The request opens nothing.
+   */
+  async requestSupportAccess(scope: TenantScope): Promise<boolean> {
+    const inserted = await this.run(scope, (tx) =>
+      tx
+        .insert(supportAccessRequest)
+        .values({ tenantId: scope.tenantId })
+        .onConflictDoNothing()
+        .returning({ tenantId: supportAccessRequest.tenantId })
+    );
+    return inserted.length > 0;
+  }
+
+  /**
+   * The bound tenant's latest request and its status, or null when it has
+   * none. An older request dealt with never shows ahead of a newer one.
+   */
+  async ownSupportRequest(
+    scope: TenantScope
+  ): Promise<{ requestedAt: Date; status: SupportRequestStatus } | null> {
+    const rows = await this.run(scope, (tx) =>
+      tx
+        .select()
+        .from(supportAccessRequest)
+        .orderBy(
+          desc(supportAccessRequest.requestedAt),
+          desc(sql`${supportAccessRequest.status} = 'open'`)
+        )
+        .limit(1)
+    );
+    const row = rows[0];
+    return row
+      ? { requestedAt: row.requestedAt, status: row.status as SupportRequestStatus }
+      : null;
   }
 
   /**
