@@ -17,6 +17,9 @@ importers:
       ghost-platform-portal-data:
         specifier: link:../data
         version: link:../data
+      ghost-platform-provisioning-controller:
+        specifier: link:../../services/provisioning-controller
+        version: link:../../services/provisioning-controller
       ghost-platform-request-guard:
         specifier: link:../../services/request-guard
         version: link:../../services/request-guard

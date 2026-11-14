@@ -6,8 +6,9 @@ name: Portal applications CI
 # PostgreSQL, because the tenant boundary is the database's row-level policies
 # together with the scope bound at sign-in. The data layer's provisioning
 # command builds that database and checks pg_hba too, so the server runs with
-# the data layer's test pg_hba.conf mounted. The three packages it consumes, the
-# data layer, the identity verifier and the request guard, are built first, as
+# the data layer's test pg_hba.conf mounted. The four packages it consumes, the
+# data layer, the identity verifier, the request guard and the provisioning
+# controller (for its generated provisioning-API client), are built first, as
 # the applications import their built output. A missing PORTAL_TEST_DATABASE_URL fails the
 # suite rather than skipping it.
 
@@ -18,16 +19,18 @@ on:
       - 'portal/**'
       - 'services/identity/**'
       - 'services/request-guard/**'
+      - 'services/provisioning-controller/**'
       - '.github/workflows/portal-apps-ci.yml'
   # Same set as the push filter above: the applications, the data layer they
-  # build first (both under portal/), the identity verifier and the request
-  # guard.
+  # build first (both under portal/), the identity verifier, the request guard
+  # and the provisioning controller.
   pull_request:
     branches: [main]
     paths:
       - 'portal/**'
       - 'services/identity/**'
       - 'services/request-guard/**'
+      - 'services/provisioning-controller/**'
       - '.github/workflows/portal-apps-ci.yml'
 
 # `packages: read` because these packages take a dev dependency on
@@ -91,8 +94,9 @@ jobs:
             portal/data/pnpm-lock.yaml
             services/identity/pnpm-lock.yaml
             services/request-guard/pnpm-lock.yaml
+            services/provisioning-controller/pnpm-lock.yaml
 
-      # The registry token is on the four install steps alone. A compile or
+      # The registry token is on the five install steps alone. A compile or
       # test step runs code from the repository and from what was just
       # installed, and must not be able to read it.
       - name: Install the data layer's dependencies
@@ -123,6 +127,16 @@ jobs:
 
       - name: Build the request guard
         working-directory: services/request-guard
+        run: pnpm run build
+
+      - name: Install the provisioning controller's dependencies
+        working-directory: services/provisioning-controller
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the provisioning controller
+        working-directory: services/provisioning-controller
         run: pnpm run build
 
       - name: Install dependencies

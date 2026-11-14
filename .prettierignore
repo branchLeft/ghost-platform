@@ -28,10 +28,11 @@ vendor/kalotyp/kalotyp.css
 # does not touch it either.
 adapters/sso/ghost-core-overlay/derived/
 
-# Speckify's output for the broker contract, committed as generated and checked
-# byte for byte by scripts/assert-broker-contract-generated.py -- reformatting
-# it would be reported there as drift.
+# Speckify's output for the broker and provisioning contracts, committed as
+# generated and checked byte for byte by scripts/assert-contracts-generated.py
+# -- reformatting it would be reported there as drift.
 services/broker/src/generated/
+services/provisioning-controller/src/generated/
 
 # The rendered demo1 mail-spool Compose file, compared byte for byte with the
 # renderer's output by render-core/test/spool.golden.test.ts. Prettier would
