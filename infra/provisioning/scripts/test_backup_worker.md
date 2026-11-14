@@ -25,6 +25,19 @@ boundary is mocked there specifically so `main()`'s real env-parsing and
 copy-selection logic runs unmocked against synthetic, dummy credential
 values, with no real network call.
 
+## RemoteMysqldumpAgainstARealMysqlContainerTests
+
+Runs `RemoteMysqldumpTransport` against a real MySQL 8.0 server in Docker.
+The `mysql` and `mysqldump` it starts come from that container's own image
+(`_ClientInsideTheContainer`, the transport's `popen` seam, over
+`docker exec`), never from the workstation: the transport's `--ssl-mode` and
+`--set-gtid-purged` are MySQL 8 flags, and a MariaDB or older host client
+rejects them, which made these cases fail locally while CI, whose runner
+carries Oracle's client, passed. `ClientInsideTheContainerArgvTests` proves
+the argv rewrite (host, port and CA path to their in-container values, the
+option-file password to `MYSQL_PWD`) without Docker. Without Docker the
+container cases still skip, with the reason named.
+
 ## WiringSabotageForTheCopySelectionTests
 
 Proves the required/optional distinction is actually load-bearing — not by
