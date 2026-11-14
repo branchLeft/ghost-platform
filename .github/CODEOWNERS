@@ -150,6 +150,8 @@
 /adapters/scanning-storage/verdict-host/auth.js  @branchLeft/branchleft-admin
 /services/broker/src/auth.ts                     @branchLeft/branchleft-admin
 /services/broker/test/unit/auth.test.ts          @branchLeft/branchleft-admin
+/services/broker/src/signedRequestScheme.ts      @branchLeft/branchleft-admin
+/services/broker/test/unit/signedRequestScheme.test.ts @branchLeft/branchleft-admin
 /services/storage-gateway/src/credentials/       @branchLeft/branchleft-admin
 /services/storage-gateway/src/sigv4-verifier.ts  @branchLeft/branchleft-admin
 /services/storage-gateway/src/admit.ts           @branchLeft/branchleft-admin
