@@ -95,12 +95,3 @@ the job, leaves the PR open, and so leaves the poll-age gauge unwritten.
 The merge itself relies on the App being a bypass actor on the default-branch
 ruleset (it does not hold an approval), and on a second ruleset it cannot
 bypass that requires `Digest-only line scope`.
-
-## Not wired yet (named follow-ups)
-
-- The poll-age gauge is not scraped by any monitor, so the stale-age alert
-  cannot fire. The follow-up is named in the pull request that adds this
-  service.
-- The new-major notice is a run annotation only. The owner digest has no input
-  from this job, so the owner is not notified. The follow-up is named in the
-  pull request that adds this service.

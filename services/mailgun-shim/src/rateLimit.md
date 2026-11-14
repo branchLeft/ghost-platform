@@ -18,7 +18,3 @@ on the bare address would let it open a fresh bucket per address and
 walk straight past the ceiling this limiter exists to enforce. The
 helper groups IPv6 addresses by network prefix and leaves IPv4
 addresses untouched.
-
-Limits are generous placeholders for a service with no production
-traffic yet (doc 13 §4's volume band is low hundreds of recipients);
-revisit once real send/poll volume exists to tune against.

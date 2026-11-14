@@ -120,8 +120,7 @@ value.
 
 On an app host, which has no equivalent of demo1's egress policy, the
 "no route off the host" property for this one network rests on a host rule
-that does not exist yet. That host's spool must not be delivered until it
-does.
+outside this package. That host's spool must not be delivered without it.
 
 ## The posture check
 

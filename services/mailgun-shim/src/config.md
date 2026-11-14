@@ -37,7 +37,7 @@ leaves the mail API port with no `/drain` route. It is read as set whenever it
 is defined: an empty or non-numeric value, or one equal to `PORT`, stops
 startup instead of falling back to the combined listener, because the
 combined listener is the one that serves `/drain` to every tenant network. Left
-undefined, the shim serves both on `PORT`, which mx1's shim still relies on.
+undefined, the shim serves both on `PORT`.
 
 `SHIM_DRAIN_HOST` is the one address the drain listener binds. It is required
 whenever `SHIM_DRAIN_PORT` is set and has no default, so leaving it out can

@@ -3,12 +3,10 @@
 Scope: this file covers only `services/broker`'s own install and upgrade on
 the demo host, once that host exists. It does not cover:
 
-- bringing demo1 up at all (branchLeft/workspace#1188, open);
+- bringing demo1 up at all;
 - the per-colour systemd unit the wrapper starts and stops, or the uid/dir
-  claim records for each slot (branchLeft/workspace#1448, #1447, both open
-  and both named by branchLeft/workspace#1545 as blocking demo1 alongside
-  this one);
-- the demo host's Pulumi stack or firewall (a separate story).
+  claim records for each slot;
+- the demo host's Pulumi stack or firewall.
 
 A step below that depends on one of those lands as a named gap, not a
 worked step -- see "Left out, deliberately" at the end.
@@ -53,9 +51,7 @@ contributor's checkout already use.
 ## Install (first boot)
 
 Run from the root of a ghost-platform workstation checkout with SSH access to
-demo1 -- an operator step; nothing here runs from CI (`services/broker/**`'s
-`.claude/delivery-paths.json` row is `not_merge_delivered`/`version_pin`,
-because no publish path exists yet either -- see "Delivery path" below).
+demo1 -- an operator step; nothing here runs from CI.
 
 **Pin the commit first.** This install comes from one ghost-platform commit,
 named here and nowhere else in this runbook. The value is the commit the
@@ -148,8 +144,7 @@ The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge
    touches this step.
 
 2. **Create the `broker` account**, if the host build hasn't already
-   (branchLeft/workspace#1188/#1447 own the host's user/uid plan; this is
-   the minimal fallback if it hasn't landed yet):
+   (this is the minimal fallback):
 
    ```bash
    sudo useradd --system --home-dir /var/lib/branchleft-broker --shell /usr/sbin/nologin broker
@@ -253,9 +248,7 @@ automates pruning them.
 
 `.github/workflows/broker-release.yml` builds the bundle in CI, signs it and
 publishes it as a GitHub Release. This section is the one home of that
-contract: the shared-infra `broker_deploy` role consumes it, and the hand
-build in the Install and Upgrade steps above stays only until that role
-replaces it.
+contract: the shared-infra `broker_deploy` role consumes it.
 
 **What a release is.** A tag `broker-vX.Y.Z` whose `X.Y.Z` is the `version`
 in `services/broker/package.json`, cut as a signed, annotated tag on a commit
@@ -381,10 +374,9 @@ was the one on `main`. The controls are the pinned digest, which makes
 reviewed code choose which release deploys, and the check above that the
 attested commit is on `main`. This is the same trust in GitHub that
 branchLeft/workspace#2483 accepted for merge signatures; moving to a key of
-our own later changes only the attest step and the flags above. The `release
-tags` repository ruleset covers `v[0-9]*.[0-9]*.[0-9]*` only, so until it also
-names `broker-v*` a `broker-v*` tag has no deletion or update protection; the
-digest pin is what keeps a moved tag from deploying.
+our own later changes only the attest step and the flags above. A `broker-v*`
+tag is protected from deletion and update by the `release tags` repository
+ruleset; the digest pin is what keeps a moved tag from deploying.
 
 **Install from the release.** Unpack into a new release directory and swap
 `current` as in Upgrade above; never unpack over `current/`:
@@ -417,10 +409,9 @@ install steps do, starts the unit under `systemctl`, and:
    for an actual `sudo` session opened for root running the wrapper, not
    merely a 200 response. The fixture installs one trivial, real (not
    faked) `branchleft-compose@.service` template as a stand-in for the
-   per-colour unit `branchleft_slot.py` starts and stops -- content and
-   delivery owned by branchLeft/workspace#1448, out of this issue's scope
-   -- so the wrapper's own real `systemctl stop` calls have something to
-   succeed against.
+   per-colour unit `branchleft_slot.py` starts and stops -- its content and
+   delivery are outside this proof -- so the wrapper's own real
+   `systemctl stop` calls have something to succeed against.
 
 Everything this proof found by actually booting the unit -- not by reading
 the issue or the systemd docs -- is explained in full in `systemd/README.md`,
@@ -446,7 +437,7 @@ docker rm -f broker-boot-proof
 - **`GET /drain` never hands anything over.** That is final, not a gap:
   the shipped drain source answers `502` and logs that mail is collected
   from the mail queue directly.
-- **`BROKER_SLOTS_FILE` writability.** This issue's own scope: the file and
+- **`BROKER_SLOTS_FILE` writability.** The file and
   its containing directory (`/var/lib/branchleft/broker-slots`, broker-owned
   inside a root-owned parent) are created by step 5 above and are in the
   unit's `ReadWritePaths=`, so a real `/reconcile` or

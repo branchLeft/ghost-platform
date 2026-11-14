@@ -21,7 +21,7 @@ spool's front doors: the Mailgun route's URL domain
 
 **Decision (workspace#1740).** A demo slot's credential domain is
 `slot-<uid>.<zones.demoMailDomain>`. A paying tenant's stays its own sending
-domain, so a tenant's rendered output is byte-identical to before.
+domain, so this change leaves a tenant's rendered output unchanged.
 
 - **Keyed on the uid.** The uid is the stable per-slot identity: the spool's
   per-slot network already keys on it, a demo's slug changes every lease, and a

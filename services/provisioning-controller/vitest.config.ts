@@ -12,7 +12,9 @@ export default defineConfig({
       // tests live in Speckify, and scripts/assert-contracts-generated.py guards
       // its content. `mock/main.ts` is the process entry point (environment and
       // listen/signal handling); the mock is exercised through `createMock`.
-      exclude: ['src/generated/**', 'mock/main.ts'],
+      // `src/bin.ts` is three lines that only pass the process's own streams
+      // to `runCli`.
+      exclude: ['src/generated/**', 'mock/main.ts', 'src/bin.ts'],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 90 },
     },
   },
