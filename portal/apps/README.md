@@ -133,46 +133,6 @@ portal's clock: five tickets an hour (`MAX_TICKETS_PER_WINDOW`,
 forgets the counts. Origin and session checks are the shell's: a foreign origin
 is a 403 and no session is a redirect to sign-in, and neither sends anything.
 
-## Promotion requests (owner console)
-
-The console's `/requests` page lists the promotion requests waiting on the
-owner, oldest first, from `GET /promotion-requests?state=pending`, each with its
-id, tier and when it was made. Under it sit the most recent approved requests
-(`state=approved`). Nav entry `NAV_REQUESTS`. An Essentials request has one
-Approve button, a form post to `/requests/approve` carrying the request id; it
-calls `POST /promotion-requests/{id}/approve`. A professional enquiry is listed
-with no button, because the contract refuses to approve one.
-
-- **Idempotent.** The contract answers a second approve of the same request with
-  the same body, so a double submit or a replayed post leaves one approval, and
-  every post redirects to `/requests`, where the request is no longer pending.
-- **Errors.** An id that is not a request (or not a UUID: it never reaches the
-  API) redirects to `/requests/not-found`; an enquiry to `/requests/not-approvable`.
-  Each is a placeholder line, and nothing is approved. Any other failure of the
-  API (down, wrong credential) is the shell's fixed `FAILED` or `REFUSED`, with
-  only the error name logged.
-- **Who.** The page and the action are behind the console's sign-in, which admits
-  the owner organisation holding the `owner` role and no one else; a tenant portal
-  session has a different cookie and client and is never accepted. The action also
-  checks the session's organisation is the owner's before it calls the API.
-- **The API call** goes only through the generated client
-  (`ghost-platform-provisioning-controller/provisioning-api`). The console
-  presents its own owner credential; the tenant portal's is never given to it.
-  Each call is bounded to five seconds and follows no redirect.
-- **Off by default.** Without `CONSOLE_PROVISIONING_URL` the page, the action and
-  the nav entry do not exist. Setting one of the two variables below without the
-  other stops the process at start.
-
-```text
-CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback only
-CONSOLE_PROVISIONING_CREDENTIAL_FILE  a file holding the owner credential
-```
-
-The tests run against the in-memory provisioning mock served through the
-generated server (`services/provisioning-controller/mock`), with no database:
-`test/ownerRequests*.test.ts`. Build the provisioning controller first, as for
-the other linked packages.
-
 ## Why two applications
 
 A token issued to one application is refused by the other, by client id, by
@@ -189,7 +149,7 @@ Each application reads its own variables; secrets are read from files.
 PORTAL_ISSUER_URL, PORTAL_PUBLIC_ORIGIN, PORTAL_OUTPUTS_FILE, PORTAL_DATABASE_URL_FILE
 CONSOLE_ISSUER_URL, CONSOLE_PUBLIC_ORIGIN, CONSOLE_OUTPUTS_FILE, CONSOLE_DATABASE_URL_FILE
 PORTAL_TRUSTED_PROXIES, CONSOLE_TRUSTED_PROXIES   optional: switch on the sign-in limit (below)
-CONSOLE_PROVISIONING_URL, CONSOLE_PROVISIONING_CREDENTIAL_FILE   optional together: the request queue (above)
+CONSOLE_PROVISIONING_URL, CONSOLE_PROVISIONING_CREDENTIAL_FILE   optional together: the request queue (below)
 ```
 
 `*_OUTPUTS_FILE` is the identity reconciler's `outputs.json`. The portal's
@@ -279,6 +239,46 @@ A deploy or restart therefore drops every pending sign-in (the visitor sees a
 accept each other's cookie. This is accepted: there is one process per
 application, and a restart costs a ten-minute pending sign-in at worst. It is a
 line to revisit if the portal ever runs more than one process or restarts often.
+
+## Promotion requests (owner console)
+
+The console's `/requests` page lists the promotion requests waiting on the
+owner, oldest first, from `GET /promotion-requests?state=pending`, each with its
+id, tier and when it was made. Under it sit the most recent approved requests
+(`state=approved`). Nav entry `NAV_REQUESTS`. An Essentials request has one
+Approve button, a form post to `/requests/approve` carrying the request id; it
+calls `POST /promotion-requests/{id}/approve`. A professional enquiry is listed
+with no button, because the contract refuses to approve one.
+
+- **Idempotent.** The contract answers a second approve of the same request with
+  the same body, so a double submit or a replayed post leaves one approval, and
+  every post redirects to `/requests`, where the request is no longer pending.
+- **Errors.** An id that is not a request (or not a UUID: it never reaches the
+  API) redirects to `/requests/not-found`; an enquiry to `/requests/not-approvable`.
+  Each is a placeholder line, and nothing is approved. Any other failure of the
+  API (down, wrong credential) is the shell's fixed `FAILED` or `REFUSED`, with
+  only the error name logged.
+- **Who.** The page and the action are behind the console's sign-in, which admits
+  the owner organisation holding the `owner` role and no one else; a tenant portal
+  session has a different cookie and client and is never accepted. The action also
+  checks the session's organisation is the owner's before it calls the API.
+- **The API call** goes only through the generated client
+  (`ghost-platform-provisioning-controller/provisioning-api`). The console
+  presents its own owner credential; the tenant portal's is never given to it.
+  Each call is bounded to five seconds and follows no redirect.
+- **Off by default.** Without `CONSOLE_PROVISIONING_URL` the page, the action and
+  the nav entry do not exist. Setting one of the two variables below without the
+  other stops the process at start.
+
+```text
+CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback only
+CONSOLE_PROVISIONING_CREDENTIAL_FILE  a file holding the owner credential
+```
+
+The tests run against the in-memory provisioning mock served through the
+generated server (`services/provisioning-controller/mock`), with no database:
+`test/ownerRequests*.test.ts`. Build the provisioning controller first, as for
+the other linked packages.
 
 ## Tests
 
