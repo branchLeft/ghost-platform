@@ -32,7 +32,7 @@
     "@branchleft/tsconfig": "^0.8.8",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.6.6",
-    "js-yaml": "^4.3.2",
+    "js-yaml": "^5.5.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.11"
   }
