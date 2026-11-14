@@ -25,6 +25,8 @@ DEFAULT_LIST = REPO_ROOT / ".github" / "image-mirror" / "private-packages.json"
 
 REGISTRY = re.compile(r"\A([a-z0-9.-]+)/([a-z0-9._-]+(?:/[a-z0-9._-]+)*)\Z")
 PACKAGE = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+# A package path under the owner, one or more package-name segments: priv/storage-gateway.
+OWNER_PATH = re.compile(r"\A[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*\Z")
 # Only 401 says "exists, not public". 403 and 404 say "no such package".
 REFUSED_STATUS = 401
 MISSING_STATUSES = frozenset({403, 404})
@@ -120,6 +122,9 @@ class PrivateList:
     derived: list[str]
     control: str
     retired_private: list[str]
+    # Private packages that sit directly under the owner, outside the mirror
+    # namespace (priv/storage-gateway). Probed like the mirror packages.
+    owner_private: list[str]
 
 
 def load_private_list(list_path: Path) -> PrivateList:
@@ -149,11 +154,26 @@ def load_private_list(list_path: Path) -> PrivateList:
     )
     if len(set(retired_private)) != len(retired_private):
         raise ProbeListError("a retired_private name appears more than once")
+    # Absent means no packages outside the mirror namespace; present, it must be
+    # a clean list of owner-relative paths that repeats nothing else in the file.
+    owner_private = (
+        _paths(data["owner_private"], "owner_private")
+        if "owner_private" in data
+        else []
+    )
+    if len(set(owner_private)) != len(owner_private):
+        raise ProbeListError("an owner_private path appears more than once")
+    clash = (set(owner_private) & set(derived)) | (set(owner_private) & {control})
+    if clash:
+        raise ProbeListError(
+            f"owner_private entries repeat the derived or control names: {sorted(clash)}"
+        )
     return PrivateList(
         mirror=mirror,
         derived=derived,
         control=control,
         retired_private=retired_private,
+        owner_private=owner_private,
     )
 
 
@@ -163,6 +183,15 @@ def _names(value: object, key: str) -> list[str]:
     for name in value:
         if not isinstance(name, str) or PACKAGE.match(name) is None:
             raise ProbeListError(f"{key} entry {name!r} is not a package name")
+    return list(value)
+
+
+def _paths(value: object, key: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ProbeListError(f"{key} must be a non-empty list")
+    for path in value:
+        if not isinstance(path, str) or OWNER_PATH.match(path) is None:
+            raise ProbeListError(f"{key} entry {path!r} is not a package path")
     return list(value)
 
 
@@ -241,6 +270,7 @@ def run(images_path: Path, list_path: Path, transport: Transport) -> int:
         return 1
 
     repos = [f"{registry_path}/{name}" for name in private.mirror]
+    repos += [f"{owner}/{path}" for path in private.owner_private]
     failed: list[str] = []
     for repo in repos:
         result = check_package(transport, host, repo)
@@ -278,7 +308,7 @@ def run(images_path: Path, list_path: Path, transport: Transport) -> int:
             f"PRIVATE PROBE FAILED: {len(failed)} package(s) readable, missing or unknown: {failed}"
         )
         return 1
-    print(f"PRIVATE PROBE OK: {len(repos)} mirror package(s) refused, control served")
+    print(f"PRIVATE PROBE OK: {len(repos)} private package(s) refused, control served")
     return 0
 
 

@@ -49,5 +49,6 @@
     "zitadel",
     "dockerfile"
   ],
+  "owner_private": ["priv/storage-gateway"],
   "control": "ghost-tenant"
 }
