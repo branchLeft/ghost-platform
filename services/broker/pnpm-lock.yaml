@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@branchleft/ghost-platform-render-core':
-        specifier: 0.3.0
-        version: 0.3.0
+        specifier: 0.4.0
+        version: 0.4.0
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -60,8 +60,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@branchleft/ghost-platform-render-core@0.3.0':
-    resolution: {integrity: sha512-tpeRT1BhRgplOj4dtAgF6xlkNmyX+iGf6vJy4FZdGnS66d+e0KHmLixwRsBePWBCOy70jL5cKF41Npmm6DPUSw==, tarball: https://npm.pkg.github.com/download/@branchleft/ghost-platform-render-core/0.3.0/12ecb50a0d7e6d5d04fb80b2f50183d5dda9f7e8}
+  '@branchleft/ghost-platform-render-core@0.4.0':
+    resolution: {integrity: sha512-4pfOOXNorxaw1eE/ArOfsJDKp2lsk2JPYnDv/5UJf9+Mvr9PxchiaDyKWyNB0J0shieaUO9CR+RIsDK31gck0g==, tarball: https://npm.pkg.github.com/download/@branchleft/ghost-platform-render-core/0.4.0/0611f2b7d3849190c26ff2c12275b0b781728958}
     engines: {node: '>=20.19'}
 
   '@branchleft/tsconfig@0.4.0':
@@ -728,7 +728,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@branchleft/ghost-platform-render-core@0.3.0': {}
+  '@branchleft/ghost-platform-render-core@0.4.0': {}
 
   '@branchleft/tsconfig@0.4.0': {}
 

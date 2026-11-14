@@ -8,14 +8,14 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-    "typecheck": "pnpm --dir ../../render-core install --frozen-lockfile && pnpm --dir ../../render-core run build && pnpm --dir ../request-guard install --frozen-lockfile && pnpm --dir ../request-guard run build && tsc --noEmit",
+    "typecheck": "pnpm --dir ../request-guard install --frozen-lockfile && pnpm --dir ../request-guard run build && tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@branchleft/ghost-platform-render-core": "0.3.0",
+    "@branchleft/ghost-platform-render-core": "0.4.0",
     "ghost-platform-request-guard": "link:../request-guard"
   },
   "devDependencies": {
