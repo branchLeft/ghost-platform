@@ -694,6 +694,208 @@ describe('upstream: the deadline', () => {
   });
 });
 
+describe('upstream: an upload the service took but never answered', () => {
+  const DIGEST = 'x-amz-meta-gateway-sha256';
+  const VERSION = 'v-0001';
+
+  /**
+   * The storage service as Hetzner was measured behaving: it commits a PUT
+   * and drops the acknowledgement (`hang`), or drops the connection after
+   * the body (`drop`). `committed` decides whether the bytes were kept;
+   * `landsAfter` is how many existence checks miss before the commit shows.
+   */
+  async function lossyService(behaviour: {
+    readonly onPut: 'hang' | 'drop';
+    readonly committed: boolean;
+    readonly landsAfter?: number;
+    readonly storedDigest?: string;
+  }): Promise<Double & { probes(): number }> {
+    let stored: string | undefined;
+    let heads = 0;
+    const double = await startDouble((seen, res) => {
+      if (seen.method === 'PUT') {
+        if (behaviour.committed) {
+          stored = behaviour.storedDigest ?? String(seen.headers[DIGEST]);
+        }
+        if (behaviour.onPut === 'drop') res.socket?.destroy();
+        return;
+      }
+      if (seen.method === 'HEAD') {
+        heads += 1;
+        if (stored === undefined || heads <= (behaviour.landsAfter ?? 0)) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        res.writeHead(200, {
+          etag: '"committed-etag"',
+          'x-amz-version-id': VERSION,
+          [DIGEST]: stored,
+          'content-length': String(PAYLOAD.length),
+          'content-type': 'image/png',
+          'last-modified': 'Mon, 07 Sep 2026 13:36:50 GMT',
+        });
+        res.end();
+      }
+    });
+    return Object.assign(double, { probes: () => heads });
+  }
+
+  const quick = { deadlineMs: 150, confirmWindowMs: 600, confirmIntervalMs: 20 };
+
+  it('writes the digest of the bytes it sends onto the object, under its own signature', async () => {
+    const double = await startDouble((_, res) => ok200(res));
+    const up = createUpstream(rig().options(double));
+    const { request, route } = await prepare(PUT);
+    await up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) });
+    const seen = double.seen[0] as Seen;
+    expect(seen.headers[DIGEST]).toBe(sha256Hex(PAYLOAD));
+    expect(String(seen.headers.authorization)).toMatch(
+      /SignedHeaders=[^,]*x-amz-meta-gateway-sha256/
+    );
+    expect(await signatureAccepted(seen)).toBe(true);
+  });
+
+  it('answers success, once, when the deadline passes but the upload committed', async () => {
+    const double = await lossyService({ onPut: 'hang', committed: true });
+    const r = rig();
+    const up = createUpstream(r.options(double, quick));
+    const { request, route } = await prepare(PUT);
+
+    const answer = await answerWithin(
+      up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) }),
+      3000
+    );
+
+    expect(answer.status).toBe(200);
+    expect(answer.refusal).toBeUndefined();
+    expect(answer.headers).toEqual({ etag: '"committed-etag"', 'x-amz-version-id': VERSION });
+    expect(double.seen.filter((s) => s.method === 'PUT')).toHaveLength(1);
+    const head = double.seen.find((s) => s.method === 'HEAD') as Seen;
+    expect(head.url).toBe(`/${BUCKET}/${FOLDER}/photo%201.png`);
+    expect(await signatureAccepted(head)).toBe(true);
+    expect(r.logs.at(-1)).toMatchObject({
+      outcome: 'committed-unanswered',
+      status: 200,
+      probes: 1,
+    });
+  });
+
+  it('keeps checking inside its window for a commit that lands late', async () => {
+    const double = await lossyService({ onPut: 'hang', committed: true, landsAfter: 3 });
+    const r = rig();
+    const up = createUpstream(r.options(double, quick));
+    const { request, route } = await prepare(PUT);
+    const answer = await answerWithin(
+      up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) }),
+      3000
+    );
+    expect(answer.status).toBe(200);
+    expect(double.probes()).toBe(4);
+    expect(r.logs.at(-1)?.probes).toBe(4);
+  });
+
+  it('answers success when the connection drops after a body that committed', async () => {
+    const double = await lossyService({ onPut: 'drop', committed: true });
+    const r = rig();
+    const up = createUpstream(r.options(double, quick));
+    const { request, route } = await prepare(PUT);
+    const answer = await answerWithin(
+      up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) }),
+      3000
+    );
+    expect(answer.status).toBe(200);
+    expect(r.logs.at(-1)?.outcome).toBe('committed-unanswered');
+  });
+
+  it('still answers a retryable timeout when nothing committed, once the window closes', async () => {
+    const double = await lossyService({ onPut: 'hang', committed: false });
+    const r = rig();
+    const up = createUpstream(r.options(double, quick));
+    const { request, route } = await prepare(PUT);
+    const started = Date.now();
+    const answer = await answerWithin(
+      up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) }),
+      3000
+    );
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(answer.status).toBe(504);
+    expect(answer.refusal?.code).toBe('upstream-timeout');
+    expect(double.probes()).toBeGreaterThan(1);
+    expect(r.logs.at(-1)?.outcome).toBe('timeout');
+  });
+
+  it('still answers unavailable when the connection drops and nothing committed', async () => {
+    const double = await lossyService({ onPut: 'drop', committed: false });
+    const r = rig();
+    const up = createUpstream(r.options(double, quick));
+    const { request, route } = await prepare(PUT);
+    const answer = await answerWithin(
+      up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) }),
+      3000
+    );
+    expect(answer.status).toBe(503);
+    expect(answer.refusal?.code).toBe('upstream-unavailable');
+    expect(r.logs.at(-1)?.outcome).toBe('unreachable');
+  });
+
+  it('never claims an object holding other bytes as this upload', async () => {
+    const double = await lossyService({
+      onPut: 'hang',
+      committed: true,
+      storedDigest: sha256Hex('SOMEONE_ELSES_BYTES'),
+    });
+    const up = createUpstream(rig().options(double, quick));
+    const { request, route } = await prepare(PUT);
+    const answer = await answerWithin(
+      up.forward({ request, route, tenant: TENANT, body: body(PAYLOAD) }),
+      3000
+    );
+    expect(answer.status).toBe(504);
+    expect(answer.refusal?.code).toBe('upstream-timeout');
+  });
+
+  it('checks nothing for a read that times out', async () => {
+    const double = await startDouble(() => undefined);
+    const up = createUpstream(rig().options(double, quick));
+    const get = await prepare(GET);
+    const answer = await answerWithin(up.forward({ ...get, tenant: TENANT }), 3000);
+    expect(answer.refusal?.code).toBe('upstream-timeout');
+    expect(double.seen).toHaveLength(1);
+  });
+
+  it('checks nothing once the client has gone away', async () => {
+    const double = await lossyService({ onPut: 'hang', committed: true });
+    const up = createUpstream(rig().options(double, { ...quick, deadlineMs: 5000 }));
+    const { request, route } = await prepare(PUT);
+    const controller = new AbortController();
+    const pending = up.forward({
+      request,
+      route,
+      tenant: TENANT,
+      body: body(PAYLOAD),
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 50);
+    const answer = await answerWithin(pending, 2000);
+    expect(answer.refusal?.code).toBe('upstream-unavailable');
+    expect(double.probes()).toBe(0);
+  });
+
+  it('rejects a window or interval that is not a positive number', () => {
+    const base = { endpoint: 'http://127.0.0.1:1', region: REGION, deadlineMs: 1000 };
+    const credentials = new UpstreamCredentials(REAL_KEY_ID, REAL_SECRET);
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => createUpstream({ ...base, credentials, confirmWindowMs: bad })).toThrow(
+        RangeError
+      );
+      expect(() => createUpstream({ ...base, credentials, confirmIntervalMs: bad })).toThrow(
+        RangeError
+      );
+    }
+  });
+});
+
 describe('upstream: the storage service asks the gateway to slow down', () => {
   const slowThenOk =
     (slow: number, status = 503) =>

@@ -51,6 +51,17 @@ const GATEWAY_OWNED_HEADER: ReadonlySet<string> = new Set([
   'expect',
 ]);
 
+/**
+ * Object metadata the gateway writes on every `PutObject`: the SHA-256 of the
+ * bytes it sent. A later existence check reads it back to tell whether an
+ * upload whose answer never arrived committed these exact bytes.
+ */
+const DIGEST_METADATA = 'x-amz-meta-gateway-sha256';
+const DEFAULT_CONFIRM_CAP_MS = 15_000;
+const DEFAULT_CONFIRM_INTERVAL_MS = 1000;
+/** The headers of a confirmed upload's answer: what the service would have sent for the PUT. */
+const CONFIRMED_HEADER: ReadonlySet<string> = new Set(['etag', 'x-amz-version-id']);
+
 const RESPONSE_HEADER: RegExp =
   /^(?:content-type|content-length|content-range|accept-ranges|etag|last-modified|cache-control|content-disposition|content-encoding|content-language|expires|x-amz-version-id|x-amz-request-id|x-amz-checksum-[a-z0-9]+)$/;
 
@@ -153,12 +164,15 @@ export interface UpstreamLogEntry {
     | 'throttled'
     | 'unreachable'
     | 'client-aborted'
-    | 'refused-before-send';
+    | 'refused-before-send'
+    | 'committed-unanswered';
   readonly operation: string;
   /** The tenant's key id, never the gateway's own. */
   readonly keyId: string;
   readonly status?: number;
   readonly attempts: number;
+  /** Existence checks made to learn whether an unanswered upload committed. */
+  readonly probes?: number;
   readonly elapsedMs: number;
 }
 
@@ -171,6 +185,14 @@ export interface UpstreamOptions {
   readonly deadlineMs: number;
   /** Silence allowed in a streamed response body before it is cut. Defaults to the deadline. */
   readonly idleTimeoutMs?: number;
+  /**
+   * Time allowed, after a `PutObject` the service took but never answered, to
+   * learn whether it committed before the gateway answers a failure. Defaults
+   * to the deadline, capped at 15 seconds.
+   */
+  readonly confirmWindowMs?: number;
+  /** Pause between existence checks inside that window. Defaults to 1 second. */
+  readonly confirmIntervalMs?: number;
   /** Tries per call when the service asks the gateway to slow down. Defaults to 5. */
   readonly maxAttempts?: number;
   readonly backoff?: { readonly baseMs: number; readonly maxMs: number };
@@ -417,6 +439,16 @@ export function createUpstream(options: UpstreamOptions): Upstream {
   }
   const deadlineMs = options.deadlineMs;
   const idleMs = options.idleTimeoutMs ?? deadlineMs;
+  const confirmWindowMs = options.confirmWindowMs ?? Math.min(deadlineMs, DEFAULT_CONFIRM_CAP_MS);
+  const confirmIntervalMs = options.confirmIntervalMs ?? DEFAULT_CONFIRM_INTERVAL_MS;
+  for (const [name, value] of [
+    ['confirmWindowMs', confirmWindowMs],
+    ['confirmIntervalMs', confirmIntervalMs],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new RangeError(`${name} must be a positive, finite number`);
+    }
+  }
   const maxAttempts = options.maxAttempts ?? 5;
   const backoff = options.backoff ?? { baseMs: 100, maxMs: 2000 };
   const random = options.random ?? Math.random;
@@ -429,6 +461,7 @@ export function createUpstream(options: UpstreamOptions): Upstream {
     const { request, route, tenant, body } = input;
     const started = now();
     let attempts = 0;
+    let probes = 0;
     const log = (outcome: UpstreamLogEntry['outcome'], status?: number): void => {
       options.logger?.upstream({
         event: 'upstream-call',
@@ -437,6 +470,7 @@ export function createUpstream(options: UpstreamOptions): Upstream {
         keyId: tenant.keyId,
         ...(status === undefined ? {} : { status }),
         attempts,
+        ...(probes === 0 ? {} : { probes }),
         elapsedMs: now() - started,
       });
     };
@@ -486,6 +520,85 @@ export function createUpstream(options: UpstreamOptions): Upstream {
     const deadlineAt = started + deadlineMs;
     let streaming = false;
 
+    /** The wire headers for one signed call to the object's path. */
+    const signedWire = (
+      callMethod: string,
+      callQuery: string,
+      base: ReadonlyMap<string, readonly string[]>,
+      hash: string
+    ): Record<string, string> => {
+      const headers = new Map<string, readonly string[]>(base);
+      headers.set('host', [url.host]);
+      headers.set('x-amz-content-sha256', [hash]);
+      const amzDate = amzDateOf(now());
+      headers.set('x-amz-date', [amzDate]);
+      const authorization = credentials.authorize({
+        method: callMethod,
+        path,
+        rawQuery: callQuery,
+        headers,
+        payloadHash: hash,
+        amzDate,
+        region,
+      });
+      const wire: Record<string, string> = { authorization };
+      for (const [name, values] of headers) wire[name] = values.join(',');
+      return wire;
+    };
+
+    /**
+     * After a `PutObject` the service took but never answered: the service may
+     * have committed it and lost only the acknowledgement (branchLeft's lab
+     * measured exactly that). Answering a failure then makes the client write
+     * the object again, or tells a person an upload failed that succeeded. So
+     * check the key, inside a window of its own, for the digest this upload
+     * wrote. A match is the success the service never sent; anything else
+     * leaves the failure standing.
+     */
+    async function confirmCommitted(): Promise<UpstreamAnswer | undefined> {
+      if (route.operation !== 'PutObject' || input.signal?.aborted === true) return undefined;
+      const window = new AbortController();
+      const closeWindow = (): void => window.abort();
+      const windowTimer = setTimeout(closeWindow, confirmWindowMs);
+      input.signal?.addEventListener('abort', closeWindow, { once: true });
+      try {
+        while (!window.signal.aborted) {
+          probes += 1;
+          let response: UpstreamTransportResponse;
+          try {
+            response = await transport({
+              method: 'HEAD',
+              url: new URL(path, endpoint),
+              headers: signedWire('HEAD', '', new Map(), EMPTY_SHA256),
+              signal: window.signal,
+            });
+          } catch {
+            // Out of time, or the service cannot be reached: nothing more to learn.
+            return undefined;
+          }
+          response.body.resume();
+          const raw = response.headers[DIGEST_METADATA];
+          const digest = typeof raw === 'string' ? raw : raw?.[0];
+          if (response.status === 200 && digest === payloadHash) {
+            const headers: Record<string, string> = {};
+            for (const [name, value] of Object.entries(
+              relayHeaders(response.headers, { keepLength: false })
+            )) {
+              if (CONFIRMED_HEADER.has(name)) headers[name] = value;
+            }
+            log('committed-unanswered', 200);
+            return { status: 200, headers };
+          }
+          // Not there yet, or another write's bytes: the commit may still land.
+          await sleep(confirmIntervalMs, window.signal);
+        }
+        return undefined;
+      } finally {
+        clearTimeout(windowTimer);
+        input.signal?.removeEventListener('abort', closeWindow);
+      }
+    }
+
     const stopped = (): UpstreamAnswer => {
       if (deadlineHit) {
         log('timeout');
@@ -526,22 +639,9 @@ export function createUpstream(options: UpstreamOptions): Upstream {
       for (;;) {
         attempts += 1;
         const headers = new Map<string, string[]>(forwarded);
-        headers.set('host', [url.host]);
-        headers.set('x-amz-content-sha256', [payloadHash]);
-        const amzDate = amzDateOf(now());
-        headers.set('x-amz-date', [amzDate]);
         if (body !== undefined) headers.set('content-length', [String(body.size)]);
-        const authorization = credentials.authorize({
-          method,
-          path,
-          rawQuery,
-          headers,
-          payloadHash,
-          amzDate,
-          region,
-        });
-        const wire: Record<string, string> = { authorization };
-        for (const [name, values] of headers) wire[name] = values.join(',');
+        if (route.operation === 'PutObject') headers.set(DIGEST_METADATA, [payloadHash]);
+        const wire = signedWire(method, rawQuery, headers, payloadHash);
 
         let response: UpstreamTransportResponse;
         try {
@@ -553,7 +653,13 @@ export function createUpstream(options: UpstreamOptions): Upstream {
             signal: controller.signal,
           });
         } catch {
-          if (controller.signal.aborted) return stopped();
+          // Unanswered is not unwritten: a deadline or a dropped connection
+          // can follow a commit, so learn which before answering a failure.
+          const timedOut = deadlineHit;
+          if (controller.signal.aborted && !timedOut) return stopped();
+          const committed = await confirmCommitted();
+          if (committed !== undefined) return committed;
+          if (timedOut) return stopped();
           log('unreachable');
           return unavailableAnswer();
         }
