@@ -431,6 +431,11 @@ be scheduled before:
 2. step 9's `media-probe/` result is a PASS;
 3. a restore drill with the read-only key has restored a real tenant's media
    from the newest complete copy, since the put-only job cannot read back what
-   it wrote and the restore is where the bytes are proven.
+   it wrote and the restore is where the bytes are proven;
+4. the manifest signing key (an ed25519 key with no passphrase) exists apart
+   from the bucket put credential, the job reads it from
+   `MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE`, and the restore host holds its
+   public half for `--manifest-public-key-file`. Without it every restore
+   refuses the manifest, by design (branchLeft/workspace#1346).
 
 The hel1 bucket this runbook originally named is out of scope; see the top.
