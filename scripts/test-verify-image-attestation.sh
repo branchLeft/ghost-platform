@@ -221,6 +221,22 @@ run_text "h10. (e2) the live issuer line, a Sigstore fault and the verify line i
 printf '%s\n' "$LIVE_GH" 'Error: the provided token was denied access to the requested resource' "$LIVE_LINE" > "$FAKE_TEXT"
 run_text "h11. (e3) the live issuer line, a token fault and the verify line is not a refusal" nonzero
 
+# (i) the host copy. branchLeft/shared-infra keeps a copy of this script at
+# hetzner/provision/branchleft-verify-image and pins this same digest in its own
+# test. Change the script and VERIFIER_SHA256 here in one change, then carry the
+# same change and digest to the host copy; until then the two are not the same file.
+VERIFIER_SHA256="4739d9e574c5448ce5720e28668c9b03b978f19c2a3a2ef0caec25438ce30fa5"
+if command -v sha256sum > /dev/null 2>&1; then
+  ACTUAL_SHA256="$(sha256sum "$SCRIPT" | cut -d ' ' -f 1)"
+else
+  ACTUAL_SHA256="$(shasum -a 256 "$SCRIPT" | cut -d ' ' -f 1)"
+fi
+if [ "$ACTUAL_SHA256" = "$VERIFIER_SHA256" ]; then
+  pass "i. the script is the file the host copy is pinned to"
+else
+  fail "i. the script's sha256 is $ACTUAL_SHA256, not the pinned $VERIFIER_SHA256: update the pin here and carry the change to the host copy in branchLeft/shared-infra"
+fi
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "$FAILURES check(s) failed"
   exit 1

@@ -42,6 +42,12 @@ quietly dropped `--signer-workflow` would therefore be accepted by the stub.
   matcher rejects a fault marker anywhere in the output. Case h uses a fake
   verify script that prints each text
   exactly, so the wrong-identity check is tested against those texts directly.
+- i: the script's sha256 equals the digest pinned in the test. The host program
+  `hetzner/provision/branchleft-verify-image` in branchLeft/shared-infra is a
+  copy of this script and pins the same digest in its own test. Changing the
+  script fails this case until the pin here is updated, and the same change and
+  digest are then carried to the host copy. Without that, the two are not the
+  same file and nothing may say they are.
 
 ## Showing it red
 
