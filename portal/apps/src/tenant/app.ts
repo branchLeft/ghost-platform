@@ -19,6 +19,7 @@ import {
 } from './explainerPages.js';
 import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
+import { createPromotionRoutes } from './promotionRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import { createSiteRoutes } from './site.js';
@@ -80,6 +81,9 @@ export function createTenantPortal(options: TenantPortalOptions) {
   );
   const site = createSiteRoutes(options.provisioning, { onError: options.onError });
   const demo = createDemoRoutes(options.provisioning);
+  const promotion = createPromotionRoutes(options.provisioning, options.support, options.db, () =>
+    Math.floor(now().getTime() / 1000)
+  );
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -98,6 +102,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       ...demo.nav,
       ...site.nav,
       ...support.nav,
+      ...promotion.nav,
     ],
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
@@ -130,6 +135,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
         ),
       ...site.pages,
       ...demo.pages,
+      ...promotion.pages,
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
@@ -163,6 +169,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     },
     actions: {
       ...support.actions,
+      ...promotion.actions,
       '/moderation/save': async (scope, identity, form) => {
         await saveModeration({
           scope,
