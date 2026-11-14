@@ -10,9 +10,12 @@ name: Provisioning controller CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/provisioning-controller/**'
+      - '.github/workflows/provisioning-controller-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the package or this workflow. Push to main stays unfiltered as the
-  # backstop.
+  # reads: the package or this workflow. A push to main starts it on the same
+  # paths.
   pull_request:
     branches: [main]
     paths:
