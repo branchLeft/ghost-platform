@@ -152,10 +152,14 @@ test('the real Dockerfile pnpm pin is the one the package pins', () => {
   assert.equal(pkg.packageManager, PNPM);
 });
 
-test('the real gate package depends at run time on link: packages only', () => {
+test('the real gate package depends at run time on link: packages and the pinned render-core only', () => {
   const pkg = JSON.parse(read('services/demo-gate/package.json'));
   for (const [name, spec] of Object.entries(pkg.dependencies)) {
-    assert.match(spec, /^link:/, `${name} is a link package, so the image ships no npm package`);
+    if (name === '@branchleft/ghost-platform-render-core') {
+      assert.match(spec, /^\d+\.\d+\.\d+$/, `${name} is pinned to one published version`);
+    } else {
+      assert.match(spec, /^link:/, `${name} is a link package, so the image ships no npm package`);
+    }
   }
 });
 
