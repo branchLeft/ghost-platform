@@ -44,13 +44,29 @@ test only". A demo is exactly that case.
 
 ## Verdict source
 
-No `storage__<feature>__verdictSource` is rendered, for a demo or for a
-tenant. The scanning decorator treats an absent value as no verdict source
-and refuses every upload with a 503 until a real one is wired
-(`adapters/scanning-storage/src/verdict-source.md`). The only value it
-recognises today is its in-process fake, which scans nothing; it is for a
-test harness's own environment and is never rendered into a compose file.
-A demo is not an exception: it is where the scan matters most.
+The descriptor's `safety.verdictSource` decides it, and it is off unless a
+descriptor names it.
+
+- Absent or `"none"`: no `storage__<feature>__verdictSource` is rendered. The
+  scanning decorator treats that as no verdict source and refuses every
+  upload with a 503 (`adapters/scanning-storage/src/verdict-source.md`).
+- `"production"`, on a paying tenant: all three features get
+  `verdictSource=production` and `verdictSocketPath`, the slot's local
+  verdict socket at `/var/lib/ghost/verdict/verdict.sock`, inside the
+  slot's own verdict volume (compose.md#the-verdict-volume). The decorator
+  then asks the slot's verdict host end, and holds any upload it gets no
+  clean answer for.
+- `"production"` on a demo is refused by `validate()`. A demo keeps refusing
+  uploads until its own go-live gate reads a real verdict source; that gate
+  is what lifts this refusal.
+
+Nothing renders the decorator's in-process fake, which scans nothing; it is
+for a test harness's own environment. Any other value of the field, a
+different case or the fake's name included, is refused by `validate()`.
+
+Set the switch only once the slot's verdict host end runs beside it and its
+volume exists. Before then the socket has nobody listening, so every upload
+is accepted and held, never served.
 
 ## Media environment
 

@@ -61,6 +61,24 @@ only the missing volume. The tenant image must carry the adapter's
 unique-temporary-name write (`adapters/scanning-storage/src/metrics.md`) with
 or before that render, because both colours now write into one directory.
 
+## The verdict volume
+
+When the descriptor names the production verdict source
+(environment.md#verdict-source), both colours mount a fourth named volume,
+`ghost-<slug>-verdict` (`naming.ts#verdictVolumeName`), **read-only** at
+`/var/lib/ghost/verdict`, and declare it `external`. The slot's verdict host
+end creates its unix socket there, and the scanning adapter dials it.
+
+Read-only is enough to dial: connecting to a unix socket needs write
+permission on the socket file, which a read-only mount does not remove. It
+stops Ghost replacing the socket or writing anything beside it. One volume
+per slot, never shared, so one slot cannot ask or answer through another's
+channel.
+
+What runs the host end, and what creates the volume, are not in this
+module yet. With the switch off, nothing here changes and every golden is
+byte-identical.
+
 ## The stop grace period
 
 Each Ghost service sets `stop_grace_period` to `GHOST_STOP_GRACE_PERIOD`

@@ -6,6 +6,23 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## 0.5.0
 
+**The descriptor can name the production verdict source.**
+
+- **Additive:** `safety.verdictSource` is optional, `"none"` or
+  `"production"`. With `"production"`, a paying tenant's environment renders
+  `storage__<feature>__verdictSource=production` and
+  `storage__<feature>__verdictSocketPath=/var/lib/ghost/verdict/verdict.sock`
+  for all three features, and both colours mount the slot's own
+  `ghost-<slug>-verdict` volume read-only at `/var/lib/ghost/verdict`.
+  Absent or `"none"`, every artefact is byte-identical to before (the goldens
+  are unchanged). Any other value is refused, and a demo that names
+  `"production"` is refused. New exports `verdictVolumeName` and
+  `VerdictSourceKind`; `ComposeStackArgs` takes an optional `verdictVolume`.
+  See src/environment.md#verdict-source and src/compose.md#the-verdict-volume.
+- **Rollout:** the volume is `external`, and nothing listens on the socket
+  until the slot's verdict host end runs. Do not set the switch on a
+  descriptor before both exist, or uploads are held, never served.
+
 **The strict content policy can carry Stripe.**
 
 - **Additive:** `renderEdgeSiteBlock()` takes an optional fifth argument,

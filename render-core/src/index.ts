@@ -50,6 +50,7 @@ export type {
   TenantDescriptor,
   TenantKind,
   TenantStackDescriptor,
+  VerdictSourceKind,
   TransportSpec,
 } from './descriptor.js';
 
@@ -148,6 +149,7 @@ export {
   contentVolumeName,
   databaseAndUserName,
   metricsVolumeName,
+  verdictVolumeName,
   secretsEnvPath,
   sqlIdentifier,
   stackDirectory,
