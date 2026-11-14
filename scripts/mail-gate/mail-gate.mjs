@@ -52,10 +52,13 @@ function storageEnv() {
 }
 
 // Logs are dumped into a job log on failure, which is public, so every form a
-// secret can take there is replaced: the value in any case and its base64, an
-// SMTP AUTH PLAIN payload, cookies, a magic-link token, and an Authorization
-// value, bare or after its Bearer, Basic or Ghost scheme, including inside an
-// escaped JSON string.
+// secret can take there is replaced: the value in any case, its base64 with and
+// without padding, an SMTP AUTH PLAIN payload, cookies (also inside an escaped
+// JSON string, as a Map entry or as a set-cookie array), a magic-link token
+// (after `?`, `&`, `#`, an HTML-escaped `&amp;` or percent-encoded, once or
+// twice, inside another URL), an Authorization value under any scheme word or
+// none, to the end of its line or quote, and a header written as two elements of
+// Node's rawHeaders array.
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function redact(text, secrets = []) {
@@ -63,16 +66,31 @@ export function redact(text, secrets = []) {
   for (const secret of secrets) {
     if (!secret) continue;
     out = out.replace(new RegExp(escapeRegExp(secret), 'gi'), '[redacted]');
-    out = out.split(Buffer.from(secret).toString('base64')).join('[redacted]');
+    const encoded = Buffer.from(secret).toString('base64');
+    out = out.split(encoded).join('[redacted]');
+    // A log line can drop the `=` padding; the unpadded form is a prefix of the padded one.
+    const unpadded = encoded.replace(/=+$/, '');
+    if (unpadded && unpadded !== encoded) out = out.split(unpadded).join('[redacted]');
   }
-  return out
-    .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
-    .replace(/(\bcookie["']?\s*[:=]\s*["']?)[^\r\n"']+/gi, '$1[redacted]')
-    .replace(/([?&]token=)[^&\s"'<>]+/gi, '$1[redacted]')
-    .replace(
-      /(authorization\W{1,8}(?:(?:bearer|basic|ghost)\s+)?)[A-Za-z0-9+/=._~-]+/gi,
-      '$1[redacted]'
-    );
+  return (
+    out
+      .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
+      // A cookie array, as JSON or util.inspect prints set-cookie: everything up to the `]`, across lines (at most 4000 characters).
+      .replace(/(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*\[)[^\]]{0,4000}/gi, '$1[redacted]')
+      // A scalar cookie: not an array (done above), and not stopped by an escaped quote.
+      .replace(
+        /(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*(?:\\?["'])?)(?![\s\[])[^\r\n"'\\]+/gi,
+        '$1[redacted]'
+      )
+      // rawHeaders: the name and its value are two elements of one array.
+      .replace(/(\b(?:set-cookie|cookie)\\?["']\s*,\s*\\?["'])[^"'\\]+/gi, '$1[redacted]')
+      .replace(
+        /((?:[?&;#]|%(?:25)?(?:3F|26|23))token(?:=|%(?:25)?3D))(?:(?!%(?:25)?26)[^&\s"'<>])+/gi,
+        '$1[redacted]'
+      )
+      // The whole value, whatever its scheme word: a bare value must not be read as a scheme.
+      .replace(/(authorization\W{1,8})[^\r\n"'\\]+/gi, '$1[redacted]')
+  );
 }
 
 const tail = (text, lines = 200) => text.split('\n').slice(-lines).join('\n');

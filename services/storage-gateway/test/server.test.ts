@@ -484,9 +484,11 @@ describe('limits on connections and uploads', () => {
         body.slice(MIB)
       );
       await new Promise((r) => setTimeout(r, 150));
-      const second = await rig.s3(tenant, {
+      // Another tenant: the first one is also at its own cap, which answers with its own code.
+      const other = await rig.mint(nextFolder(), 16);
+      const second = await rig.s3(other, {
         method: 'PUT',
-        path: OBJECT(tenant.folder, 'second.bin'),
+        path: OBJECT(other.folder, 'second.bin'),
         body: 'x',
       });
       expect(second.status).toBe(503);

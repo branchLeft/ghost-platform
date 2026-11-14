@@ -70,7 +70,12 @@ export function createLog(sink: LogSink, now: () => number = Date.now): GatewayL
         code: e.code,
         status: e.status,
         method: e.method,
-        ...defined({ keyId: e.keyId, folder: e.folder, operation: e.operation }),
+        ...defined({
+          keyId: e.keyId,
+          folder: e.folder,
+          operation: e.operation,
+          reason: e.reason,
+        }),
       });
     },
     admin(e: AdminLogEntry): void {

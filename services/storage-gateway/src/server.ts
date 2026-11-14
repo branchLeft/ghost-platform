@@ -10,9 +10,12 @@ import type {
   RefusalCode,
   SignatureVerifier,
 } from './contracts.js';
+import type { TenantLimits } from './limits/index.js';
 import { createManagedListener, type ListenerOptions, type ManagedListener } from './listener.js';
 import { requestContext, type GatewayLog } from './logging.js';
 import { refusal, refusalBody } from './refusal.js';
+import type { ReplayGuard } from './replay.js';
+import { requestIdentity } from './sigv4-verifier.js';
 import type { UploadBindings } from './uploads.js';
 import type { Upstream, UpstreamAnswer } from './upstream.js';
 
@@ -32,6 +35,24 @@ export interface GatewayServerDeps {
   readonly maxBodyBytes: number;
   /** Most authenticated body-bearing requests at once; the next is answered 503 unread. */
   readonly maxConcurrentUploads: number;
+  /**
+   * Most of those one tenant may hold at once, so that one valid key cannot
+   * leave every other tenant refused. Counted per tenant folder, and only for a
+   * request whose signature has verified. Never more than `maxConcurrentUploads`.
+   */
+  readonly maxConcurrentUploadsPerTenant: number;
+  /**
+   * Remembers each accepted signature, so a captured request sent again inside
+   * the clock window is refused. Required, so a caller that forgets it fails typecheck.
+   */
+  readonly replay: ReplayGuard;
+  /**
+   * The tenant's write switches and request rate, asked after the signature has
+   * verified and the replay guard has taken the signature, so a replayed or
+   * forged request never spends the tenant's allowance. Required, so a caller
+   * that forgets it fails typecheck instead of serving without limits.
+   */
+  readonly limits: TenantLimits;
   /** The name of a failing check, or undefined when the service can take traffic. */
   readonly readiness: () => Promise<string | undefined>;
   readonly now?: () => number;
@@ -41,6 +62,11 @@ export interface GatewayServerDeps {
 const BODY_METHODS: ReadonlySet<string> = new Set(['PUT', 'POST', 'PATCH']);
 const XML = { 'content-type': 'application/xml' } as const;
 const SIGNED_PREFIX = 'AWS4-HMAC-SHA256 ';
+
+/** The signature a request holds in the replay guard, once it has claimed one. */
+interface ReplayHold {
+  signature?: string;
+}
 
 /** What is sent back, and what the request log learns about the request. */
 interface Outcome {
@@ -123,11 +149,23 @@ export function createGatewayHandler(
 
   /** Authenticated body-bearing requests being received or forwarded: each may hold a spool file. */
   let uploadsInFlight = 0;
+  /** The same, by tenant folder; an entry is removed when it falls to zero, so the map stays small. */
+  const uploadsByTenant = new Map<string, number>();
+
+  /**
+   * A spent signature stays spent unless the answer was "try again": the
+   * request that holds it either never took effect or may be retried as it is,
+   * and a retry signed in the same second is byte for byte the same request.
+   */
+  function isRetryable(outcome: Outcome): boolean {
+    return outcome.answer.status >= 500 || outcome.answer.refusal?.code === 'body-incomplete';
+  }
 
   async function serve(
     req: IncomingMessage,
     res: ServerResponse,
-    signal: AbortSignal
+    signal: AbortSignal,
+    hold: ReplayHold
   ): Promise<Outcome> {
     const method = (req.method ?? '').toUpperCase();
     const refuse = (code: RefusalCode, extra: Partial<Outcome> = {}): Outcome => {
@@ -149,6 +187,7 @@ export function createGatewayHandler(
     const expectsBody = BODY_METHODS.has(method) || declaresBody(req);
     let body: ReceivedBody | undefined;
     let slotTaken = false;
+    let slotFolder: string | undefined;
     try {
       // Who signed it is settled before a single body byte is read. The
       // signature covers the digest the client declares for its body; the
@@ -167,6 +206,50 @@ export function createGatewayHandler(
       if (!admitted.ok) return refuse(admitted.refusal.code, { closeAfter: expectsBody });
       const { route, tenant } = admitted;
       const known = { keyId: tenant.keyId, operation: route.operation };
+
+      // Only a request that verified gets here, so an unsigned or forged one
+      // can neither burn a signature nor fill the guard. A repeat is refused
+      // before its body is read, and answered as any bad signature is.
+      const identity = requestIdentity(request);
+      const claim =
+        identity === undefined
+          ? 'unreadable'
+          : deps.replay.claim(identity.signature, identity.requestTimeMs, now());
+      if (identity === undefined || claim !== 'claimed') {
+        const code = claim === 'replayed' ? 'signature-refused' : 'internal-error';
+        const r = refusal(code);
+        deps.log.refusal({
+          event: 'request-refused',
+          code,
+          status: r.status,
+          method,
+          keyId: tenant.keyId,
+          folder: tenant.folder,
+          operation: route.operation,
+          reason: claim,
+        });
+        return refuse(code, { ...known, closeAfter: expectsBody });
+      }
+      hold.signature = identity.signature;
+
+      let decision: ReturnType<TenantLimits['check']>;
+      try {
+        decision = deps.limits.check({ keyId: tenant.keyId, operation: route.operation });
+      } catch {
+        decision = { ok: false, refusal: refusal('internal-error') };
+      }
+      if (!decision.ok) {
+        deps.log.refusal({
+          event: 'request-refused',
+          code: decision.refusal.code,
+          status: decision.refusal.status,
+          method,
+          keyId: tenant.keyId,
+          folder: tenant.folder,
+          operation: route.operation,
+        });
+        return refuse(decision.refusal.code, { ...known, closeAfter: expectsBody });
+      }
 
       let forwarded = request;
       let sized: { bytesIn?: number } = {};
@@ -200,9 +283,15 @@ export function createGatewayHandler(
         if (declaredLength !== undefined && declaredLength > capBytes) {
           return refusedWith('body-too-large');
         }
+        // Checked and taken with no await between, or two requests could both pass.
+        if ((uploadsByTenant.get(tenant.folder) ?? 0) >= deps.maxConcurrentUploadsPerTenant) {
+          return refusedWith('tenant-upload-limit');
+        }
         if (uploadsInFlight >= deps.maxConcurrentUploads) return refusedWith('upstream-throttled');
         uploadsInFlight += 1;
+        uploadsByTenant.set(tenant.folder, (uploadsByTenant.get(tenant.folder) ?? 0) + 1);
         slotTaken = true;
+        slotFolder = tenant.folder;
 
         // Only now is the client told to send what it holds back.
         if (req.headers.expect?.toLowerCase() === '100-continue') res.writeContinue();
@@ -256,6 +345,11 @@ export function createGatewayHandler(
     } finally {
       await body?.dispose().catch(() => undefined);
       if (slotTaken) uploadsInFlight -= 1;
+      if (slotFolder !== undefined) {
+        const left = (uploadsByTenant.get(slotFolder) ?? 1) - 1;
+        if (left > 0) uploadsByTenant.set(slotFolder, left);
+        else uploadsByTenant.delete(slotFolder);
+      }
     }
   }
 
@@ -323,7 +417,10 @@ export function createGatewayHandler(
     });
     requestContext
       .run({ requestId }, async () => {
-        const outcome = await serve(req, res, abort.signal);
+        const hold: ReplayHold = {};
+        const outcome = await serve(req, res, abort.signal, hold);
+        if (hold.signature !== undefined && isRetryable(outcome))
+          deps.replay.release(hold.signature);
         meta = outcome;
         send(res, outcome);
       })

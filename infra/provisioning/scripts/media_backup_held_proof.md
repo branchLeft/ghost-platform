@@ -8,7 +8,9 @@ holds, refuses and promotes uploads through the real scanning storage
 decorator, with a directory standing in for the live bucket. This driver then
 runs the real `backup_tenant_media` and `restore_tenant_media` over that
 directory and over two more (the backup bucket and an empty restore target),
-with real `age` and a throwaway identity made in `--key-dir`.
+with real `age`, a throwaway identity made in `--key-dir`, and a throwaway
+ed25519 manifest-signing key pair made there too (private half signs at backup,
+public half verifies at restore).
 
 It touches no network, bucket or host. The three commands print one JSON
 object:

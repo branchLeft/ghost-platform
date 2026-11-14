@@ -12,7 +12,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dockerSync } from '../../../../test-support/image-harness.mjs';
+import {
+  assertNothingLeft,
+  dockerSync,
+  labelArgs,
+} from '../../../../test-support/image-harness.mjs';
 import { mp4Bytes, pdfBytes } from '../helpers/media-bytes.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +29,9 @@ if (!IMAGE) {
 }
 
 const QUARANTINE = '/tmp/importer-quarantine';
+// The throwaway container is `--rm`, which removes it and its anonymous volumes
+// when it exits; the label lets the test prove that nothing was left.
+const COMPONENT = 'importer-handlers-test';
 
 // One decorator per feature, over the local adapters, as the other image tests
 // configure them. `tier` lets the media decorator take an mp4.
@@ -56,6 +63,7 @@ function runInImage(fixtureDir) {
     'run Ghost importer handlers in the image',
     'run',
     '--rm',
+    ...labelArgs(COMPONENT),
     '--user',
     'node',
     '--entrypoint',
@@ -136,6 +144,7 @@ describe("Ghost's real content importer handlers, through the scanning decorator
       assert.equal(facts[2].handlerStoreClass, 'ScanningStorageAdapter');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+      assertNothingLeft(COMPONENT);
     }
   });
 });

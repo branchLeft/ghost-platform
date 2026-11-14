@@ -71,6 +71,11 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'The storage service is busy. Try again.',
     status: 503,
   },
+  'tenant-upload-limit': {
+    code: 'tenant-upload-limit',
+    message: 'Too many uploads of this account are in progress. Try again shortly.',
+    status: 503,
+  },
   'body-too-large': {
     code: 'body-too-large',
     message: 'The upload is larger than this account allows.',
@@ -95,7 +100,12 @@ export function refusalBody(r: Refusal): string {
 
 /** The S3 error code the SDK's retry logic reads: SlowDown and RequestTimeout are both retried. */
 function s3CodeFor(r: Refusal): string {
-  if (r.code === 'rate-limited' || r.code === 'upstream-throttled') return 'SlowDown';
+  if (
+    r.code === 'rate-limited' ||
+    r.code === 'upstream-throttled' ||
+    r.code === 'tenant-upload-limit'
+  )
+    return 'SlowDown';
   if (r.code === 'upstream-timeout') return 'RequestTimeout';
   if (r.code === 'body-too-large') return 'EntityTooLarge';
   if (r.code === 'body-incomplete') return 'IncompleteBody';

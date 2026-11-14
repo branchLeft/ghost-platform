@@ -56,7 +56,7 @@ of old copies is the bucket lifecycle's job, proven against real Hetzner
 Object Storage by `RUNBOOK-media-backup-lifecycle.md`.
 
 Prerequisites on the workstation running this: `docker`, `age`
-(`age-keygen`), `openssl`, `curl`, `jq`, `python3`, `comm` (present in
+(`age-keygen`), `ssh-keygen`, `openssl`, `curl`, `jq`, `python3`, `comm` (present in
 every base macOS/Linux install). Pulls `quay.io/minio/minio` and
 `quay.io/minio/mc`.
 

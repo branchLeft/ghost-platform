@@ -11,16 +11,13 @@ name: Mailgun shim image
 # verifies the attestation (scripts/verify-image-attestation.sh) before it runs
 # the image.
 #
-# Uses GHCR rather than the platform's GCP Artifact Registry
-# (registry-push.yml): mx1, the Hetzner host this image runs on, is outside
-# GCP entirely (doc 13's delivery-host split), so there is no GCP identity
-# for it to federate into and no reason to route this pull through GCP.
-# GHCR authenticates with the workflow's own GITHUB_TOKEN — no new secret,
-# no Workload Identity Federation setup.
+# Uses GHCR, as registry-push.yml does for the tenant image: mx1, the Hetzner
+# host this image runs on, pulls from GHCR, and GHCR authenticates with the
+# workflow's own GITHUB_TOKEN — no new secret, no federated cloud identity.
 #
 # The push job requests `packages: write` only for itself, on the one
 # trigger that ever runs it (push to `main`), for the same reason
-# registry-push.yml scopes `id-token: write` to its own job rather than the
+# registry-push.yml scopes `packages: write` to its own job rather than the
 # workflow: a PR build must never sit in the same permissions block as a
 # publish credential.
 

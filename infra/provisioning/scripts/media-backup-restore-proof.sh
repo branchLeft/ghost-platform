@@ -53,6 +53,9 @@ trap cleanup EXIT
 mkdir -p "$WORKDIR/certs"
 
 note "Generating tenant-a, tenant-b and tenant-c age identities"
+# The manifest signing key pair: the private half signs at backup, the public
+# half verifies at restore, and neither is the bucket credential.
+ssh-keygen -q -t ed25519 -N "" -C "" -f "$WORKDIR/manifest-signing.key"
 age-keygen -o "$WORKDIR/tenant-a.identity" 2>"$WORKDIR/tenant-a.pub.raw"
 TENANT_A_RECIPIENT="$(grep -o 'age1[a-z0-9]*' "$WORKDIR/tenant-a.pub.raw" | head -1)"
 age-keygen -o "$WORKDIR/tenant-b.identity" 2>"$WORKDIR/tenant-b.pub.raw"
@@ -218,6 +221,7 @@ run_backup() {
     MEDIA_LIVE_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_LIVE_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         MEDIA_BACKUP_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_BACKUP_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         AGE_RECIPIENT_PUBLIC_KEY="$recipient" \
+        MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE="$WORKDIR/manifest-signing.key" \
         python3 "$SCRIPTS_DIR/media_backup_restore.py" backup \
         --tenant "$tenant" --live-bucket "$live_bucket" --backup-bucket "$BACKUP_BUCKET" \
         --endpoint "$MINIO_ENDPOINT" --region "$REGION" $confirm_flag
@@ -236,7 +240,8 @@ run_restore() {
         MEDIA_BACKUP_ACCESS_KEY_ID="$MINIO_ROOT_USER" MEDIA_BACKUP_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
         python3 "$SCRIPTS_DIR/media_backup_restore.py" restore \
         --tenant "$tenant" --backup-bucket "$BACKUP_BUCKET" \
-        --endpoint "$MINIO_ENDPOINT" --region "$REGION" --identity-file "$identity" $target_flag $run_id_flag
+        --endpoint "$MINIO_ENDPOINT" --region "$REGION" --identity-file "$identity" \
+        --manifest-public-key-file "$WORKDIR/manifest-signing.key.pub" $target_flag $run_id_flag
 }
 
 # Resolved fresh from the NEWEST generation's manifest immediately before

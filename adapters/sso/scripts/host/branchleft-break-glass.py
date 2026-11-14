@@ -1,6 +1,6 @@
 #!/usr/bin/python3 -I
 # The one way an operator runs the break-glass grant tool on an app host:
-# grant, revoke, status or expire, in the pinned Node container with no
+# grant, revoke, provision, status or expire, in the pinned Node container with no
 # network. Installed root-owned, mode 0700, at /usr/local/sbin/branchleft-break-glass.
 # See branchleft-break-glass.md for what is mounted and why.
 import os

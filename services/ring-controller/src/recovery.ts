@@ -36,7 +36,8 @@ export interface RecoverySweepResult {
 const NO_ACTION_STATES: ReadonlySet<BumpState> = new Set(['closed', 'backup-failed', 'cancelled']);
 
 /**
- * The four calls recovery makes that nothing else bounds, each held to its
+ * The calls recovery makes through a record's machine that nothing else
+ * bounds (`revertTraffic`, `stopColour`, `verify`, `page` and `persist`), each held to its
  * own limit per call. A call that misses its limit rejects, which the
  * machine and the sweep already treat as any other throw. Every member is
  * named, not spread, so a `deps` that is a class instance keeps its `this`.
@@ -56,7 +57,8 @@ function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): 
   };
   const { persist } = deps;
   if (persist !== undefined) {
-    bounded.persist = (snapshot) => persist.call(deps, snapshot);
+    bounded.persist = (snapshot) =>
+      withDeadline(persist.call(deps, snapshot), limits.persistMs, 'persist()');
   }
   return bounded;
 }
@@ -66,11 +68,14 @@ function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): 
  * persisted record still owing something. See README.md in this
  * directory for the recovery table this follows.
  *
- * `revertTraffic()`, `stopColour()`, `verify()` and `page()` each have a
- * per-call limit (`deadlines`, defaults in `DEFAULT_RECOVERY_DEADLINES`), so
- * a hung call in one of them costs its own record that long and the sweep
- * moves on. `persist` has no limit: a `persist` that never settles still
- * stalls the sweep, and every record after it.
+ * `revertTraffic()`, `stopColour()`, `verify()`, `page()` and `persist()`
+ * each have a per-call limit, and `store.list()` has one for the sweep
+ * (`deadlines`, defaults in `DEFAULT_RECOVERY_DEADLINES`), so a hung call
+ * costs its own record that long and the sweep moves on. A `persist()` that
+ * misses its limit fails its record without a page (the record on disk is
+ * untouched and reported in `failed`, so the next restart tries again); a
+ * `store.list()` that misses its limit rejects the whole sweep, before any
+ * record is touched.
  */
 export async function recoverPersistedTenants(
   store: TenantStateStore,
@@ -79,7 +84,7 @@ export async function recoverPersistedTenants(
   deadlines: Partial<RecoveryDeadlines> = {}
 ): Promise<RecoverySweepResult> {
   const limits = resolveRecoveryDeadlines(deadlines);
-  const records = await store.list();
+  const records = await withDeadline(store.list(), limits.listMs, 'store.list()');
   const recovered: RecoveredTenant[] = [];
   const failed: RecoveryFailure[] = [];
 

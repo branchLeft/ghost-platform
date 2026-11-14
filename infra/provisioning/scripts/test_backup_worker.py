@@ -321,6 +321,48 @@ def _docker_answers_within(seconds: float) -> bool:
 
 
 _MYSQL_CONTAINER_NAME = "backup-worker-remote-mysqldump-tls-proof"
+_CONTAINER_CA_PATH = "/var/lib/mysql/ca.pem"
+
+
+class _ClientInsideTheContainer:
+    """The `popen` seam `ClientFactory` is handed, running each `mysql` /
+    `mysqldump` it starts from the container's own MySQL 8.0 image instead
+    of the workstation's. The flags the transport sends (`--ssl-mode`,
+    `--set-gtid-purged`) are MySQL 8's; a host with a MariaDB or older
+    client rejects them, so a test using the host's client agrees with CI
+    only by luck. The option file's password (a passed fd, which cannot
+    cross `docker exec`) becomes the exec's `MYSQL_PWD`; `--host`, `--port`
+    and each `--ssl-ca` path are rewritten to what they are from inside
+    the container (the same loopback the readiness probe uses, port 3306,
+    the CA file copied in)."""
+
+    _OPTION_FILE_PREFIX = "--defaults-extra-file=/dev/fd/"
+
+    def __init__(self, *, container: str, ca_paths_inside: dict[str, str]) -> None:
+        self._container = container
+        self._ca_paths_inside = dict(ca_paths_inside)
+
+    def __call__(self, argv: list[str], *, env=None, pass_fds=(), **kwargs) -> subprocess.Popen:
+        password = ""
+        inner: list[str] = []
+        previous = ""
+        for arg in argv:
+            if arg.startswith(self._OPTION_FILE_PREFIX):
+                fd = int(arg[len(self._OPTION_FILE_PREFIX):])
+                password = os.read(fd, 4096).decode().split("password=", 1)[1].strip()
+                previous = ""
+                continue
+            if previous == "--host":
+                arg = "127.0.0.1"
+            elif previous == "--port":
+                arg = "3306"
+            elif previous == "--ssl-ca":
+                arg = self._ca_paths_inside[arg]
+            inner.append(arg)
+            previous = arg if arg.startswith("--") and "=" not in arg else ""
+        return subprocess.Popen(
+            ["docker", "exec", "-i", "-e", f"MYSQL_PWD={password}", self._container, *inner], **kwargs
+        )
 
 
 class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
@@ -328,7 +370,10 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
     real MySQL 8 server, in a local Docker container, `mysqldump`
     negotiating real TLS against that server's own auto-generated
     certificate, through a TLS-required, grant-limited account -- nothing
-    faked but the container's throwaway data. Skips (never fails) when
+    faked but the container's throwaway data. The `mysql`/`mysqldump`
+    clients run from the container's own MySQL 8.0 image (see
+    `_ClientInsideTheContainer`), never the host's, so a workstation with a
+    MariaDB or older client gives the same result as CI. Skips (never fails) when
     Docker itself doesn't answer within 20s, since it is shared
     infrastructure another session may be restarting."""
 
@@ -364,7 +409,7 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
         cls.addClassCleanup(lambda: shutil.rmtree(cls.ssl_ca_dir, ignore_errors=True))
         cls.ssl_ca_path = os.path.join(cls.ssl_ca_dir, "ca.pem")
         subprocess.run(
-            ["docker", "cp", f"{_MYSQL_CONTAINER_NAME}:/var/lib/mysql/ca.pem", cls.ssl_ca_path],
+            ["docker", "cp", f"{_MYSQL_CONTAINER_NAME}:{_CONTAINER_CA_PATH}", cls.ssl_ca_path],
             check=True,
         )
 
@@ -465,7 +510,13 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
 
     def test_mysqldump_over_real_tls_against_the_grant_limited_account(self) -> None:
         transport = RemoteMysqldumpTransport(
-            host="127.0.0.1", port=self.port, user="backup_ops1", ssl_ca=self.ssl_ca_path
+            host="127.0.0.1",
+            port=self.port,
+            user="backup_ops1",
+            ssl_ca=self.ssl_ca_path,
+            popen=_ClientInsideTheContainer(
+                container=_MYSQL_CONTAINER_NAME, ca_paths_inside={self.ssl_ca_path: _CONTAINER_CA_PATH}
+            ),
         )
         sink = _CollectingSinkForContainerTest()
         exit_code = transport.run(
@@ -499,8 +550,18 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
             capture_output=True,
         )
 
+        wrong_ca_inside = "/tmp/wrong-ca.pem"
+        subprocess.run(
+            ["docker", "cp", wrong_ca_path, f"{_MYSQL_CONTAINER_NAME}:{wrong_ca_inside}"], check=True, capture_output=True
+        )
         transport = RemoteMysqldumpTransport(
-            host="127.0.0.1", port=self.port, user="backup_ops1", ssl_ca=wrong_ca_path
+            host="127.0.0.1",
+            port=self.port,
+            user="backup_ops1",
+            ssl_ca=wrong_ca_path,
+            popen=_ClientInsideTheContainer(
+                container=_MYSQL_CONTAINER_NAME, ca_paths_inside={wrong_ca_path: wrong_ca_inside}
+            ),
         )
         sink = _CollectingSinkForContainerTest()
         captured_stderr = io.StringIO()
@@ -514,6 +575,50 @@ class RemoteMysqldumpAgainstARealMysqlContainerTests(unittest.TestCase):
         self.assertNotEqual(exit_code, 0)
         self.assertEqual(b"".join(sink.chunks), b"")
         self.assertIn("certificate", captured_stderr.getvalue().lower())
+
+
+class ClientInsideTheContainerArgvTests(unittest.TestCase):
+    """The argv rewrite `_ClientInsideTheContainer` does, proven without
+    Docker: the host-side address, port and CA path become the in-container
+    ones, the option file's password becomes `MYSQL_PWD`, and nothing else
+    is touched -- so what the container tests run is the transport's own
+    argv, run from the image's client."""
+
+    def _exec_argv(self, argv_builder) -> list[str]:
+        read_fd, write_fd = os.pipe()
+        self.addCleanup(lambda: os.close(read_fd))
+        os.write(write_fd, b"[client]\npassword=throwaway-pw\n")
+        os.close(write_fd)
+        popen = _ClientInsideTheContainer(container="c1", ca_paths_inside={"/host/ca.pem": "/in/ca.pem"})
+        with mock.patch.object(subprocess, "Popen") as fake_popen:
+            popen(argv_builder(read_fd), env={"PATH": "/x"}, pass_fds=(read_fd,), stdout=subprocess.PIPE)
+        return list(fake_popen.call_args.args[0])
+
+    def test_host_port_and_ca_are_rewritten_and_the_password_moves_to_the_exec_env(self) -> None:
+        argv = self._exec_argv(
+            lambda fd: [
+                "mysqldump", f"--defaults-extra-file=/dev/fd/{fd}",
+                "--host", "10.0.0.9", "--port", "49153", "--user", "backup_ops1",
+                "--ssl-mode=VERIFY_CA", "--ssl-ca", "/host/ca.pem",
+                "-v", "--single-transaction", "--set-gtid-purged=OFF", "--databases", "ghost_blog",
+            ]
+        )
+        self.assertEqual(
+            argv,
+            [
+                "docker", "exec", "-i", "-e", "MYSQL_PWD=throwaway-pw", "c1",
+                "mysqldump",
+                "--host", "127.0.0.1", "--port", "3306", "--user", "backup_ops1",
+                "--ssl-mode=VERIFY_CA", "--ssl-ca", "/in/ca.pem",
+                "-v", "--single-transaction", "--set-gtid-purged=OFF", "--databases", "ghost_blog",
+            ],
+        )
+
+    def test_a_ca_path_it_was_not_told_about_is_refused_not_passed_through(self) -> None:
+        with self.assertRaises(KeyError):
+            self._exec_argv(
+                lambda fd: ["mysql", f"--defaults-extra-file=/dev/fd/{fd}", "--ssl-ca", "/somewhere/else.pem"]
+            )
 
 
 class _CollectingSinkForContainerTest:

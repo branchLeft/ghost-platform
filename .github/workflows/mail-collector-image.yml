@@ -12,7 +12,7 @@ name: Mail collector image
 # to pin by it.
 #
 # Mirrors mailgun-shim-image.yml. GHCR authenticates with the workflow's own
-# GITHUB_TOKEN, so there is no new secret and no GCP identity involved.
+# GITHUB_TOKEN, so there is no new secret.
 #
 # The push job requests `packages: write` only for itself, on the triggers
 # that ever run it (push to `main`, manual dispatch): a PR build must never

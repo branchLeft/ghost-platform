@@ -16,6 +16,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertNothingLeft,
+  reclaimHostOwnership,
+  teardownOnce,
+} from '../../../../test-support/image-harness.mjs';
+import {
+  COMPONENT,
   GhostContainer,
   RecordingDouble,
   createNetwork,
@@ -163,12 +169,22 @@ describe('the storage request contract, against the real Ghost image', () => {
     await ghost.login();
   });
 
-  after(() => {
-    if (ghost) ghost.stop();
-    if (double) double.stop();
-    removeNetwork(network);
-    fs.rmSync(resolveDir, { recursive: true, force: true });
+  // Every part runs even if an earlier one fails. `resolveDir` is chowned back
+  // first: the image's entrypoint chowns the bind mount to `node` on every
+  // boot, and a directory under the sticky /tmp can be removed only by its
+  // owner, so a plain rmSync fails with EPERM (README, "Bind-mount ownership").
+  const teardown = teardownOnce({
+    'remove the Ghost container and its volumes': () => ghost?.stop(),
+    'remove the recording double and its volumes': () => double?.stop(),
+    'remove the network': () => removeNetwork(network),
+    'hand the resolve directory back to this user': () => reclaimHostOwnership(IMAGE, resolveDir),
+    'remove the resolve directory': () => fs.rmSync(resolveDir, { recursive: true, force: true }),
+    'nothing this run labelled is left': () => assertNothingLeft(COMPONENT),
   });
+
+  // The backstop for a run whose `before` failed. The last test below is what
+  // fails the step: node:test on Node 22 does not count a failed hook.
+  after(teardown);
 
   it('runs Ghost 6.76', () => {
     assert.equal(
@@ -444,5 +460,10 @@ describe('the storage request contract, against the real Ghost image', () => {
     for (const r of all.filter((x) => x.shape === 'PutObject' || x.shape === 'UploadPart')) {
       assert.equal(r.signing.crc32Header, true, `${r.shape} ${r.path}: CRC32 header on uploads`);
     }
+  });
+
+  // Last on purpose: see `teardown` above.
+  it('leaves no container, volume, network or directory behind', () => {
+    teardown();
   });
 });

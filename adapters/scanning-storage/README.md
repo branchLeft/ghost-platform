@@ -710,6 +710,22 @@ verdict writes and its teardown. So the test chmods the directory 0777
 before the container starts, and `reclaimHostOwnership` chowns it back
 from a throwaway root container before teardown as a second line of
 defence.
+The storage contract test needs the same: its teardown calls
+`reclaimHostOwnership` before it removes the directory. Without it the
+removal failed with `EPERM` on the CI runner, where `/tmp` is sticky and the
+directory had become the container user's.
+
+**Teardown is proven, and a failed teardown fails the step.** Every container
+and network the image tests make carries `branchleft.component=<test>` and
+`branchleft.run=<pid>` labels, and every container is removed with
+`docker rm -f -v` through `removeContainerProven`
+(`test-support/image-harness.mjs`): it reads the container's anonymous volumes
+first, removes it, then asks Docker for the container and each volume and
+fails naming any that remain. The last test of each file fails if anything
+labelled for the run is left. The storage contract test runs its teardown as
+its last test, not only in `after`: `node:test` on Node 22 reports a failing
+`after` hook as `not ok` but exits 0, so the step stayed green.
+`test/unit/image-teardown.test.ts` proves the helpers against a fake `docker`.
 
 ## Storage request contract
 

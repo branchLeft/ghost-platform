@@ -1,6 +1,7 @@
 /**
  * The start-up recovery sweep bounds every call it makes that the machine
- * does not already bound: `revertTraffic()`, `stopColour()` and `page()`.
+ * does not already bound: `revertTraffic()`, `stopColour()`, `verify()`,
+ * `page()`, `persist()` and `store.list()`.
  * A call that misses its limit is read as a throw, so one hung record never
  * stalls the records after it, and a timed-out record is paged. Each limit
  * is pinned by exact time (not yet settled one millisecond early, settled at
@@ -26,6 +27,8 @@ const LIMITS: RecoveryDeadlines = {
   stopColourMs: 2_000,
   pageMs: 3_000,
   verifyMs: 4_000,
+  persistMs: 5_000,
+  listMs: 6_000,
 };
 
 beforeEach(() => {
@@ -148,6 +151,63 @@ const PAGE_LIMIT: Mutation = {
   find: "withDeadline(deps.page(reason, dedupeKey), limits.pageMs, 'page()')",
   replace: 'deps.page(reason, dedupeKey)',
 };
+
+const PERSIST_LIMIT: Mutation = {
+  file: 'recovery.ts',
+  find: "withDeadline(persist.call(deps, snapshot), limits.persistMs, 'persist()')",
+  replace: 'persist.call(deps, snapshot)',
+};
+const LIST_LIMIT: Mutation = {
+  file: 'recovery.ts',
+  find: "withDeadline(store.list(), limits.listMs, 'store.list()')",
+  replace: 'store.list()',
+};
+
+/** A save that never answers for the first record, then a failed-unsafe record still owed its page. */
+async function hungPersist(mod: Module) {
+  const store = memoryStore([
+    record('tenant-a', 'reverting'),
+    record('tenant-b', 'failed-unsafe', { reason: 'earlier failure' }),
+  ]);
+  const a = tenant(store, 'tenant-a', { persist: () => never() });
+  const b = tenant(store, 'tenant-b');
+  const sweep = startSweep(mod, store, { 'tenant-a': a, 'tenant-b': b });
+  const early = await sweep.settledAt(LIMITS.persistMs - 1);
+  const atLimit = await sweep.settledAt(LIMITS.persistMs + 1);
+  return { early, atLimit, a, b, store, sweep };
+}
+
+/** A store whose listing never answers. */
+async function hungList(mod: Module) {
+  const store = memoryStore([record('tenant-a', 'reverting')]);
+  store.list = () => never();
+  let built = 0;
+  let settled = false;
+  let error: unknown;
+  mod
+    .recoverPersistedTenants(
+      store,
+      mod.createApplyLock(),
+      (tenantId) => {
+        built += 1;
+        return tenant(store, tenantId).deps;
+      },
+      LIMITS
+    )
+    .then(
+      () => {
+        settled = true;
+      },
+      (err: unknown) => {
+        settled = true;
+        error = err;
+      }
+    );
+  await vi.advanceTimersByTimeAsync(LIMITS.listMs - 1);
+  const early = settled;
+  await vi.advanceTimersByTimeAsync(2);
+  return { early, atLimit: settled, error, built };
+}
 
 /** A hung revert for the first record, then a failed-unsafe record still owed its page. */
 async function hungRevert(mod: Module) {
@@ -312,6 +372,49 @@ describe('recovery -- page() has a per-record limit', () => {
     expect(sabotagedRun.atLimit).toBe(false);
     expect(sabotagedRun.b.pages).toHaveLength(0);
     expect((await hungPage(real)).atLimit).toBe(true);
+  });
+});
+
+describe('recovery -- persist() has a per-record limit', () => {
+  it('a hung save fails that record without a page, leaves it on disk, and the sweep moves on', async () => {
+    const { early, atLimit, a, b, store, sweep } = await hungPersist(real);
+
+    expect(early).toBe(false);
+    expect(atLimit).toBe(true);
+    expect(a.pages).toEqual([]);
+    expect(await store.load('tenant-a')).toMatchObject({ state: 'reverting' });
+    expect(b.pages).toHaveLength(1);
+    const { failed, recovered } = sweep.result();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ tenantId: 'tenant-a', paged: false });
+    expect((failed[0]?.error as Error).message).toBe('persist() did not answer within 5000ms');
+    expect(recovered.map((r) => r.tenantId)).toEqual(['tenant-b']);
+  });
+
+  it('without the limit, a hung save stalls every record after it', async () => {
+    const mod = await sabotaged(PERSIST_LIMIT);
+    const sabotagedRun = await hungPersist(mod);
+    expect(sabotagedRun.atLimit).toBe(false);
+    expect(sabotagedRun.b.pages).toHaveLength(0);
+    expect((await hungPersist(real)).atLimit).toBe(true);
+  });
+});
+
+describe('recovery -- store.list() has a limit', () => {
+  it('a hung listing rejects the sweep by its limit, before any record is touched', async () => {
+    const { early, atLimit, error, built } = await hungList(real);
+
+    expect(early).toBe(false);
+    expect(atLimit).toBe(true);
+    expect(error).toBeInstanceOf(real.DeadlineExceededError);
+    expect((error as Error).message).toBe('store.list() did not answer within 6000ms');
+    expect(built).toBe(0);
+  });
+
+  it('without the limit, a hung listing stalls the sweep for ever', async () => {
+    const mod = await sabotaged(LIST_LIMIT);
+    expect((await hungList(mod)).atLimit).toBe(false);
+    expect((await hungList(real)).atLimit).toBe(true);
   });
 });
 

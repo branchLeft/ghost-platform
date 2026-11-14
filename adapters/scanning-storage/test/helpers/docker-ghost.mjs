@@ -1,8 +1,9 @@
 // Docker plumbing for the storage contract test: a labelled network, the
 // recording S3 double (a container from the Ghost image running
 // recording-s3-double.cjs) and a Ghost container. Every resource carries the
-// branchleft.agent label so a leftover is attributable, and every teardown
-// removes its container with its anonymous volumes.
+// component and run labels (`labelArgs`) so a leftover is attributable, and
+// every teardown removes its container with its anonymous volumes and proves
+// both are gone (`removeContainerProven`).
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -10,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import {
   docker,
+  labelArgs,
   pollHttp200,
+  removeContainerProven,
   reservePort,
   runStep,
   sleep,
@@ -21,7 +24,9 @@ export { docker, sleep };
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const DOUBLE_SCRIPT = path.join(HERE, 'recording-s3-double.cjs');
 
-export const LABEL = 'branchleft.component=storage-contract-test';
+export const COMPONENT = 'storage-contract-test';
+// Kept for scripts/mail-gate/mail-gate.mjs, which labels its own containers with it.
+export const LABEL = `branchleft.component=${COMPONENT}`;
 export const SITE_URL = 'http://localhost:2368';
 const BOOT_TIMEOUT_MS = 90_000;
 const OWNER_EMAIL = 'owner@example.com';
@@ -38,7 +43,13 @@ export function uniqueName(prefix) {
 // `subnet` (CIDR, optional) gives the network a fixed address range, for a
 // container that must be started with `--ip`.
 export function createNetwork(name, subnet) {
-  docker('network', 'create', '--label', LABEL, ...(subnet ? ['--subnet', subnet] : []), name);
+  docker(
+    'network',
+    'create',
+    ...labelArgs(COMPONENT),
+    ...(subnet ? ['--subnet', subnet] : []),
+    name
+  );
 }
 
 export function removeNetwork(name) {
@@ -61,8 +72,7 @@ export class RecordingDouble {
       '--rm',
       '--name',
       name,
-      '--label',
-      LABEL,
+      ...labelArgs(COMPONENT),
       '--network',
       network,
       '-p',
@@ -129,7 +139,7 @@ export class RecordingDouble {
   }
 
   stop() {
-    dockerOk('rm', '-f', '-v', this.name);
+    removeContainerProven(this.name);
   }
 }
 
@@ -168,8 +178,7 @@ export class GhostContainer {
       'create',
       '--name',
       name,
-      '--label',
-      LABEL,
+      ...labelArgs(COMPONENT),
       '--network',
       network,
       '-p',
@@ -301,6 +310,6 @@ export class GhostContainer {
   }
 
   stop() {
-    dockerOk('rm', '-f', '-v', this.name);
+    removeContainerProven(this.name);
   }
 }

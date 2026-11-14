@@ -37,6 +37,10 @@ export const ENV = {
   keepAliveTimeoutMs: 'STORAGE_GATEWAY_KEEP_ALIVE_TIMEOUT_MS',
   maxConnections: 'STORAGE_GATEWAY_MAX_CONNECTIONS',
   maxConcurrentUploads: 'STORAGE_GATEWAY_MAX_CONCURRENT_UPLOADS',
+  maxConcurrentUploadsPerTenant: 'STORAGE_GATEWAY_MAX_CONCURRENT_UPLOADS_PER_TENANT',
+  tenantRatePerSecond: 'STORAGE_GATEWAY_TENANT_RATE_PER_SECOND',
+  tenantRateBurst: 'STORAGE_GATEWAY_TENANT_RATE_BURST',
+  writeSwitchesFile: 'STORAGE_GATEWAY_WRITE_SWITCHES_FILE',
   shutdownGraceMs: 'STORAGE_GATEWAY_SHUTDOWN_GRACE_MS',
   adminKeysFile: 'STORAGE_GATEWAY_ADMIN_KEYS_FILE',
   adminListenHost: 'STORAGE_GATEWAY_ADMIN_LISTEN_HOST',
@@ -52,6 +56,13 @@ export const ENV = {
  * tenant's own ceiling applies from the first byte.
  */
 export const MAX_BODY_CAP_MIB = MAX_UPLOAD_CEILING_MIB;
+
+/**
+ * A tenant's request rate when nothing is set. Generous on purpose: nothing in
+ * the repository says how many requests a second one Ghost site makes, so
+ * this stops a runaway client, not ordinary traffic. Tighten it from live logs.
+ */
+export const DEFAULT_TENANT_RATE_PER_SECOND = 100;
 
 export interface ListenConfig {
   readonly host: string;
@@ -97,6 +108,12 @@ export interface GatewayConfig {
   readonly maxConnections: number;
   /** Most authenticated body-bearing requests being received or forwarded at once. */
   readonly maxConcurrentUploads: number;
+  /** Most of those one tenant may hold at once; never more than the total, a quarter of it unless set. */
+  readonly maxConcurrentUploadsPerTenant: number;
+  /** Requests a second one tenant may sustain, and how many it may make at once after a quiet spell. */
+  readonly tenantRate: { readonly perSecond: number; readonly burst: number };
+  /** Where the write kill switches are kept across a restart. Absent: they start off and are forgotten. */
+  readonly writeSwitchesFile?: string;
   readonly shutdownGraceMs: number;
   /** Absent: the admin interface is not served at all. */
   readonly admin?: AdminConfig;
@@ -231,6 +248,37 @@ export function loadConfig(env: Env): GatewayConfig {
     throw new ConfigError(`${ENV.headersTimeoutMs} must not exceed ${ENV.requestTimeoutMs}`);
   }
 
+  const maxConcurrentUploads = whole(env, ENV.maxConcurrentUploads, {
+    fallback: 32,
+    min: 1,
+    max: 10_000,
+  });
+  const maxConcurrentUploadsPerTenant = whole(env, ENV.maxConcurrentUploadsPerTenant, {
+    fallback: Math.max(1, Math.floor(maxConcurrentUploads / 4)),
+    min: 1,
+    max: 10_000,
+  });
+  if (maxConcurrentUploadsPerTenant > maxConcurrentUploads) {
+    throw new ConfigError(
+      `${ENV.maxConcurrentUploadsPerTenant} must not exceed ${ENV.maxConcurrentUploads}`
+    );
+  }
+
+  const tenantRatePerSecond = whole(env, ENV.tenantRatePerSecond, {
+    fallback: DEFAULT_TENANT_RATE_PER_SECOND,
+    min: 1,
+    max: 100_000,
+  });
+  const tenantRateBurst = whole(env, ENV.tenantRateBurst, {
+    fallback: tenantRatePerSecond * 2,
+    min: 1,
+    max: 1_000_000,
+  });
+  const writeSwitchesFile =
+    text(env, ENV.writeSwitchesFile) === undefined
+      ? undefined
+      : absolutePath(env, ENV.writeSwitchesFile);
+
   return {
     region,
     listen,
@@ -267,11 +315,10 @@ export function loadConfig(env: Env): GatewayConfig {
       max: 120_000,
     }),
     maxConnections: whole(env, ENV.maxConnections, { fallback: 512, min: 1, max: 100_000 }),
-    maxConcurrentUploads: whole(env, ENV.maxConcurrentUploads, {
-      fallback: 32,
-      min: 1,
-      max: 10_000,
-    }),
+    maxConcurrentUploads,
+    maxConcurrentUploadsPerTenant,
+    tenantRate: { perSecond: tenantRatePerSecond, burst: tenantRateBurst },
+    ...(writeSwitchesFile === undefined ? {} : { writeSwitchesFile }),
     shutdownGraceMs: whole(env, ENV.shutdownGraceMs, {
       fallback: 30_000,
       min: 0,

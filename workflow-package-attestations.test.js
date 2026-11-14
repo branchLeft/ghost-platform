@@ -22,6 +22,13 @@ const GRANTS = ['contents: read', 'packages: read'];
 
 const uncommented = (text) => text.replace(/^[ \t]*#.*$/gm, '');
 
+// A YAML mapping key, in every spelling that reaches the runner: at the start of
+// a line, as the first key of a list item (`- if:`), quoted (`"if":`), or inside
+// a flow mapping (`{ if: false }`). A bare `^\s+key:` misses the list-item and
+// quoted forms, which would let a step turn the check into a silent pass.
+const hasKey = (text, key) =>
+  new RegExp(`(?:^[ \\t]*(?:- +)?|[{,][ \\t]*)["']?${key}["']?[ \\t]*:`, 'm').test(text);
+
 // The text of the one job: from `  verify:` to the next job or the end.
 function jobBlock(text) {
   const jobsAt = text.indexOf('\njobs:');
@@ -79,8 +86,8 @@ export function problems(source) {
   if (/^\s+with:/m.test(step)) {
     found.push('the verify step passes no inputs: the whole tree is scanned with the run token');
   }
-  if (/^\s+if:/m.test(job)) found.push('the verify job and its steps carry no condition');
-  if (/^\s+continue-on-error:/m.test(text)) found.push('the verify job may not continue on error');
+  if (hasKey(job, 'if')) found.push('the verify job and its steps carry no condition');
+  if (hasKey(text, 'continue-on-error')) found.push('the verify job may not continue on error');
   if (/secrets\./.test(text)) found.push('the workflow uses no secret');
 
   if (!/^ {2}push:\n {4}branches: \[main\]$/m.test(text)) found.push('it must run on push to main');
@@ -135,6 +142,36 @@ breaks('a condition on the step', (t) =>
   t.replace(
     '      - name: Verify package attestations\n',
     "      - name: Verify package attestations\n        if: github.event_name == 'push'\n"
+  )
+);
+breaks('a condition as the first key of the step', (t) =>
+  t.replace(
+    '      - name: Verify package attestations\n',
+    '      - if: false\n        name: Verify package attestations\n'
+  )
+);
+breaks('a quoted condition key on the step', (t) =>
+  t.replace(
+    '      - name: Verify package attestations\n',
+    '      - name: Verify package attestations\n        "if": false\n'
+  )
+);
+breaks('a condition on the job', (t) =>
+  t.replace('    timeout-minutes: 10\n', '    timeout-minutes: 10\n    if: false\n')
+);
+breaks('continue-on-error as the first key of the step', (t) =>
+  t.replace(
+    '      - name: Verify package attestations\n',
+    '      - continue-on-error: true\n        name: Verify package attestations\n'
+  )
+);
+breaks('a quoted continue-on-error key', (t) =>
+  t.replace('    timeout-minutes: 10\n', '    timeout-minutes: 10\n    "continue-on-error": true\n')
+);
+breaks('continue-on-error in a flow mapping', (t) =>
+  t.replace(
+    '    timeout-minutes: 10\n',
+    '    timeout-minutes: 10\n    { continue-on-error: true }\n'
   )
 );
 breaks('continue-on-error', (t) =>

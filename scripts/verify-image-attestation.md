@@ -63,3 +63,12 @@ last line too, and must fail the check rather than pass as a rejection.
 | `ghcr.io/branchleft/demo-gate` | `branchLeft/ghost-platform/.github/workflows/demo-gate-image.yml` |
 
 The test for this script is `scripts/test-verify-image-attestation.sh`.
+
+## The host copy
+
+branchLeft/shared-infra installs a copy of this script on the deploy host as
+`hetzner/provision/branchleft-verify-image`. It is the same file only while both
+repositories pin the same sha256: this repository pins it in case i of the test
+above, and shared-infra pins it in `hetzner/provision/test_branchleft_deploy.py`.
+A change here changes the digest, fails case i, and must be carried to the host
+copy with its new digest in the same pair of changes.

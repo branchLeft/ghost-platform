@@ -8,9 +8,11 @@ Usage:
     probe_private_packages.py [--images PATH] [--list PATH]
 
 The registry prefix comes from the mirror list (images.json "registry"). The
-packages that must stay private ("mirror"), the derived images that are
-inventoried ("derived"), and the control package that must be served
-("control") come from .github/image-mirror/private-packages.json.
+packages that must stay private ("mirror"), the private packages that sit
+directly under the owner and not in the mirror namespace ("owner_private", for
+example priv/storage-gateway), the derived images that are inventoried
+("derived"), and the control package that must be served ("control") come from
+.github/image-mirror/private-packages.json.
 
 For each package the probe asks the registry for an anonymous pull token (the
 token request carries no credential and no Authorization header), then lists
@@ -24,7 +26,14 @@ package's state, and the probe reads exactly that:
 A 403 or 404 is never a pass. A refusal from a namespace that holds nothing
 proves nothing, so a missing package is a failure, the same as a package served.
 
-Verdicts for the mirror packages, fail-closed:
+A "mirror" name is probed at <registry prefix>/<name>; an "owner_private" entry is
+a path probed at <owner>/<path>. Both get the verdicts below. The "owner_private"
+key may be absent; when present it must be a non-empty list of package paths
+(lower-case segments joined by single slashes) with no repeats, none of which is
+a derived or control name. Every private package on registers/packages.json
+under priv/ must be listed there (checked by the tests).
+
+Verdicts for the mirror and owner_private packages, fail-closed:
 
     mirror package served           -> FAIL
     mirror package refused (401)    -> pass
@@ -55,8 +64,8 @@ be absent; when present it must be a non-empty list of package names with no
 repeats. Its names may repeat the current mirror names, since the same images
 were published under both namespaces.
 
-Exit 0: every mirror package refused (401) and the control served, whatever the
+Exit 0: every mirror and owner_private package refused (401) and the control served, whatever the
 derived inventory and the retired namespaces say.
-Exit 1: a mirror package served, missing or unknown, or the control not served.
+Exit 1: a mirror or owner_private package served, missing or unknown, or the control not served.
 Exit 2: a list is unreadable or inconsistent with the mirror list, including an
 unreadable or repeated derived or retired_private name.

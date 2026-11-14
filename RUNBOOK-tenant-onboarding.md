@@ -360,8 +360,8 @@ gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
 ```
 
 The image must be in `ghcr.io/branchleft/`; `provision-tenant.yml` refuses any
-other registry, because the app host is what resolves the reference and an
-Artifact Registry one would need GCP pull credentials on a Hetzner host. Get the
+other registry, because the app host is what resolves the reference and any
+other registry would need its own pull credentials on a Hetzner host. Get the
 digest from the most recent `Push tenant image` run's job summary, or with
 `docker buildx imagetools inspect ghcr.io/branchleft/ghost-tenant:latest`.
 
