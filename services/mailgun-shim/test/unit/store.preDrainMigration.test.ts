@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MIGRATIONS_FOLDER, migrationsLedger } from '../../src/migrate.js';
 import { createDrainRouter } from '../../src/routes/drain.js';
 import { createDrainWake } from '../../src/drainWake.js';
@@ -31,6 +31,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..', '..');
 const serverJsPath = join(projectRoot, 'dist', 'server.js');
 const storeJsPath = join(projectRoot, 'dist', 'store.js');
+// dist/ is built once by test/globalSetup.ts; a test never builds it (see
+// test/noPerFileBuild.test.ts).
 const holdMigrationOpenPath = join(__dirname, '..', 'helpers', 'holdMigrationOpen.mjs');
 
 const DOMAIN = 'tenant1.example.com';
@@ -441,7 +443,6 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
   }, 20_000);
 
   it('a second opener caught mid-migration waits for it, then finds nothing left to do', async () => {
-    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
     const child = spawn(process.execPath, [holdMigrationOpenPath, dbPath, '1500'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -468,8 +469,6 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
   }, 20_000);
 
   it('concurrency: two real processes opening the same pre-drain database at once both succeed, and the result is a single, correctly migrated table', async () => {
-    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
-
     const openScript = `
       import { createSqliteStore } from ${JSON.stringify(storeJsPath)};
       const store = createSqliteStore(${JSON.stringify(dbPath)});
@@ -512,10 +511,6 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
 
 describe('src/server.ts — starts against a pre-drain database and serves /metrics', () => {
   let dir: string;
-
-  beforeAll(() => {
-    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
-  });
 
   afterEach(() => {
     if (dir) {
