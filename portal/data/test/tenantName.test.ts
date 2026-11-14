@@ -150,6 +150,14 @@ describe('the control plane refuses a taken name when it accepts the sign-up', (
     });
     expect((await owner.listTenants()).filter((t) => t.kind === 'DEMO').length).toBeGreaterThan(1);
   });
+
+  it('lists each named tenant under its slug, and leaves out a tenant with no name', async () => {
+    const slugs = await owner.listTenantSlugs();
+    expect(slugs).toEqual([
+      { slug: 'placeholder-one', tenantId: ID_ONE },
+      { slug: 'placeholder-two', tenantId: ID_TWO },
+    ]);
+  });
 });
 
 describe('the table itself refuses a taken name, even to a statement that skips the code', () => {

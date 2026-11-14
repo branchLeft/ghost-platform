@@ -101,6 +101,13 @@ export async function deleteReading(fixture: Fixture, tenantId: string): Promise
   );
 }
 
+/** Gives a fixture tenant the name a host's series carry as its label. */
+export async function nameTenant(fixture: Fixture, tenantId: string, name: string): Promise<void> {
+  await fixture.adminDb.execute(
+    sql`UPDATE portal.tenant_register SET tenant_name = ${name} WHERE tenant_id = ${tenantId}`
+  );
+}
+
 /** What is stored for one tenant's reading, or null. */
 export async function readingRow(
   fixture: Fixture,
