@@ -39,7 +39,10 @@ export interface TenantPortalOptions {
   readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
-  /** Absent, there is no demo page and no navigation entry for it. */
+  /**
+   * How to reach the provisioning API. Absent, no screen that calls it is
+   * served: no page, no action and no navigation entry.
+   */
   readonly provisioning?: ProvisioningSettings;
 }
 
