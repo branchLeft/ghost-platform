@@ -13,7 +13,7 @@ importers:
         version: 0.4.0
       '@pulumi/pulumi':
         specifier: ^3.274.1
-        version: 3.274.1(typescript@5.9.3)
+        version: 3.274.1(typescript@6.0.3)
     devDependencies:
       '@branchleft/tsconfig':
         specifier: ^0.8.8
@@ -28,8 +28,8 @@ importers:
         specifier: ^4.3.2
         version: 4.3.2
       typescript:
-        specifier: ^5.9.0
-        version: 5.9.3
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.1.11
         version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@26.6.6)(vite@8.2.2(@types/node@26.6.6))
@@ -755,8 +755,8 @@ packages:
     resolution: {integrity: sha512-yau8yJdTt989Mm0Bd/236QnzEiPf2xLLTqUZRUJOo/3CB078LSwzei343DgtJVmfJKJE3TMINY1u42SQsP6mXw==}
     engines: {node: '>=14.0.0'}
 
-  typescript@5.9.3:
-    resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
     engines: {node: '>=14.17'}
     hasBin: true
 
@@ -1063,7 +1063,7 @@ snapshots:
 
   '@protobufjs/utf8@1.1.2': {}
 
-  '@pulumi/pulumi@3.274.1(typescript@5.9.3)':
+  '@pulumi/pulumi@3.274.1(typescript@6.0.3)':
     dependencies:
       '@grpc/grpc-js': 1.14.7
       '@logdna/tail-file': 2.2.0
@@ -1090,7 +1090,7 @@ snapshots:
       source-map-support: 0.5.21
       upath: 1.2.0
     optionalDependencies:
-      typescript: 5.9.3
+      typescript: 6.0.3
     transitivePeerDependencies:
       - supports-color
 
@@ -1517,7 +1517,7 @@ snapshots:
 
   tinyrainbow@3.1.1: {}
 
-  typescript@5.9.3: {}
+  typescript@6.0.3: {}
 
   undici-types@8.9.0: {}
 
