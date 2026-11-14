@@ -74,9 +74,11 @@ const PRINCIPALS: readonly Principal[] = [
   'tenantRole',
   'ownerRole',
   'provisionerRole',
+  'prospectRole',
   'tenantLogin',
   'ownerLogin',
   'provisionerLogin',
+  'prospectLogin',
   'migratorLogin',
 ];
 

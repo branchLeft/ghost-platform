@@ -28,6 +28,7 @@ on:
     paths:
       - services/drain-sidecar/**
       - scripts/test-drain-sidecar.sh
+      - scripts/test-drain-sidecar-crash-restart.py
       - Dockerfile
       - .github/workflows/drain-sidecar-image.yml
   workflow_dispatch:
@@ -36,6 +37,7 @@ on:
     paths:
       - services/drain-sidecar/**
       - scripts/test-drain-sidecar.sh
+      - scripts/test-drain-sidecar-crash-restart.py
       - Dockerfile
       - .github/workflows/drain-sidecar-image.yml
 
@@ -89,6 +91,9 @@ jobs:
 
       - name: Real-Ghost proof (Ghost not ready, flag set, flag cleared, unreadable flag directory)
         run: ./scripts/test-drain-sidecar.sh drain-sidecar:ci ghost-platform:ci
+
+      - name: Crash-restart proof (a Ghost restart leaves the sidecar in a live namespace)
+        run: python3 scripts/test-drain-sidecar-crash-restart.py drain-sidecar:ci ghost-platform:ci
 
       # Only reached when the proof above passed. The image ID is read after
       # the proof, from the tag the proof ran, and travels with the saved
@@ -190,8 +195,9 @@ jobs:
   # The pushed digest, scanned by the shared image-scan workflow before anything
   # signs it. It fails the run on any critical or high finding no exemption
   # covers; the threshold is fixed in that workflow and cannot be lowered here.
-  # No exemption file exists in this repository: a finding with no available
-  # fix goes through the exemption route, never a changed threshold.
+  # The repository's .image-scan-exemptions.json holds no entry for this image:
+  # a finding with no available fix goes through the exemption route, never a
+  # changed threshold.
   scan:
     name: Scan the pushed drain-sidecar image
     needs: push

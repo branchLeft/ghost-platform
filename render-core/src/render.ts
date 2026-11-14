@@ -13,9 +13,14 @@ import {
   validateSlug,
   validateTenantUid,
 } from './brand.js';
-import { renderComposeStack, type DemoDataMount } from './compose.js';
+import { renderComposeStack, type Colour, type DemoDataMount } from './compose.js';
 import type { TenantStackDescriptor } from './descriptor.js';
-import { renderEdgeSiteBlock, THEME_CSP_UNAVAILABLE, type ThemeCsp } from './edge.js';
+import {
+  renderEdgeSiteBlock,
+  THEME_CSP_UNAVAILABLE,
+  type PaymentsCsp,
+  type ThemeCsp,
+} from './edge.js';
 import { tenantEnvironment, SECRET_ENV_KEYS } from './environment.js';
 import { renderIdentity } from './identity.js';
 import { imageEnvPath, secretsEnvPath, stackName, validateSlugAvailability } from './naming.js';
@@ -193,6 +198,16 @@ function assertAllocationShape(descriptor: TenantStackDescriptor): void {
   validateDigestPinnedRef(descriptor.image);
 }
 
+/** Optional inputs to `render()` that are deploy-time state, not part of the
+ * descriptor. See compose.md#one-running-colour. */
+export interface RenderOptions {
+  /** When given, `compose.yml` carries only this colour's Ghost service. */
+  readonly activeColour?: Colour;
+  /** Whether the edge policy carries the measured Stripe origins. Absent is
+   * `none`, which renders the policy byte-identically to before payments. */
+  readonly payments?: PaymentsCsp;
+}
+
 /**
  * `descriptor` must already have passed `validate()` — `render()` does not
  * re-run it, but does re-check every field it interpolates into shell, env
@@ -202,7 +217,8 @@ function assertAllocationShape(descriptor: TenantStackDescriptor): void {
 export function render(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
-  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE
+  themeCsp: ThemeCsp = THEME_CSP_UNAVAILABLE,
+  options: RenderOptions = {}
 ): readonly Artefact[] {
   assertAllocationShape(descriptor);
   const dataMount = demoDataMount(descriptor);
@@ -220,8 +236,9 @@ export function render(
     caps: descriptor.caps,
     dataMount,
     mailNetwork: descriptor.mail.enabled ? mailSpoolNetworkName(descriptor.uid) : null,
+    ...(options.activeColour === undefined ? {} : { activeColour: options.activeColour }),
   });
-  const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp);
+  const edge = renderEdgeSiteBlock(descriptor, zones, limits, themeCsp, options.payments);
   const settings = renderSettings(descriptor, zones);
   const identity = renderIdentity(descriptor);
 
@@ -237,7 +254,7 @@ export function render(
 }
 
 export { imageEnvPath, renderEdgeSiteBlock, renderSettings, renderIdentity };
-export { validateScriptHash, THEME_CSP_UNAVAILABLE } from './edge.js';
-export type { EdgeGate, EdgeSiteBlock, ScriptHash, ThemeCsp } from './edge.js';
+export { validateScriptHash, THEME_CSP_UNAVAILABLE, PAYMENTS_CSP_NONE } from './edge.js';
+export type { EdgeGate, EdgeSiteBlock, PaymentsCsp, ScriptHash, ThemeCsp } from './edge.js';
 export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export type { TenantIdentity } from './identity.js';

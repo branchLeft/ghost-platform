@@ -18,6 +18,7 @@ import {
 import { SUPPORT_ACCESS_STATES, SUPPORT_LANES, SUPPORT_REQUEST_STATUSES } from './supportAccess.js';
 import { TENANT_KINDS } from './tenantKind.js';
 import { TENANT_NAME_PATTERN } from './tenantName.js';
+import { CUSTOM_DOMAIN_FQDN_PATTERN, VERIFICATION_TOKEN_PATTERN } from './customDomain.js';
 import {
   DEMO_STATES,
   LABEL_PATTERN,
@@ -26,6 +27,18 @@ import {
   STATES_BEFORE_LEASE,
   STATES_WITH_LEASE,
 } from './demoStates.js';
+import {
+  ADDRESS_MAX,
+  ADDRESS_PATTERN,
+  COLOUR_PATTERN,
+  DESCRIPTION_MAX,
+  IMPORT_SOURCE_MAX,
+  LOGO_HASH_PATTERN,
+  NAME_MAX,
+  SLUG_PATTERN,
+  SUBJECT_MAX,
+  WORDING_MAX,
+} from './demoRequest.js';
 
 /**
  * Both roles are created by provisioning, never by a migration, so they are
@@ -369,6 +382,80 @@ export const moderationSetting = portal
   )
   .enableRLS();
 
+const FQDN_SHAPE = sql.raw(`'${CUSTOM_DOMAIN_FQDN_PATTERN}'`);
+
+/**
+ * A domain a real tenant has asked to connect, not yet proven: one row per
+ * tenant and domain, holding the one-time token its verification record must
+ * carry. Nothing here is served. A request is not unique across tenants, so an
+ * unproven request never blocks the domain's real owner. Isolated like every
+ * tenant table; the row goes when the domain is connected or removed.
+ */
+export const customDomainRequest = portal
+  .table(
+    'custom_domain_request',
+    {
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      fqdn: text('fqdn').notNull(),
+      verificationToken: text('verification_token').notNull(),
+      requestedAt: timestamp('requested_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      primaryKey({ columns: [table.tenantId, table.fqdn] }),
+      check(
+        'custom_domain_request_fqdn_shape',
+        sql`${table.fqdn} ~ ${FQDN_SHAPE} AND length(${table.fqdn}) <= 253`
+      ),
+      check(
+        'custom_domain_request_token_shape',
+        sql`${table.verificationToken} ~ ${sql.raw(`'${VERIFICATION_TOKEN_PATTERN}'`)}`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A domain that was checked (it pointed at the edge and carried its record) and
+ * connected: the only rows the edge may serve. The domain is the key, so it is
+ * connected to one tenant at a time, and a second tenant's connection is
+ * refused by the table even to a statement that skips the code. Isolated like
+ * every tenant table; deleting the row is how a tenant disconnects the domain.
+ */
+export const connectedDomain = portal
+  .table(
+    'connected_domain',
+    {
+      fqdn: text('fqdn').primaryKey(),
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      connectedAt: timestamp('connected_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      check(
+        'connected_domain_fqdn_shape',
+        sql`${table.fqdn} ~ ${FQDN_SHAPE} AND length(${table.fqdn}) <= 253`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
 /** The role that writes the hostname register and the demo's state events; declared as existing like the others. */
 export const portalProvisioner = pgRole('portal_provisioner').existing();
 
@@ -465,3 +552,80 @@ export const hostnameRetirement = portal.table('hostname_retirement', {
     .references(() => hostnameRegister.label),
   retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The role the internet-facing front door writes as: declared as existing like
+ * the others. It can insert a request and nothing else.
+ */
+export const portalProspect = pgRole('portal_prospect').existing();
+
+/**
+ * What a signed-in prospect submitted at the front door: the answers, the
+ * address the identity service verified and the exact wording shown, with the
+ * database's own time. One row per verified address for all time, so a second
+ * submission for an address is refused by the table whichever process sends
+ * it. Append-only by grant: the front door's role may insert and cannot read,
+ * update or delete, and the lifecycle worker and the owner console read. The
+ * demo id is the opaque id the lifecycle will run under; it leads to a person
+ * only through this row. Every rule in `demoRequest.ts` is repeated here as a
+ * check.
+ */
+export const demoRequest = portal.table(
+  'demo_request',
+  {
+    demoId: uuid('demo_id').primaryKey(),
+    verifiedSubject: text('verified_subject').notNull(),
+    verifiedAddress: text('verified_address').notNull(),
+    publicationName: text('publication_name').notNull(),
+    description: text('description'),
+    accentColour: text('accent_colour'),
+    theme: text('theme'),
+    font: text('font'),
+    newToGhost: boolean('new_to_ghost').notNull(),
+    importSource: text('import_source'),
+    outletType: text('outlet_type').notNull(),
+    logoHash: text('logo_hash'),
+    consentWording: text('consent_wording').notNull(),
+    explainerWording: text('explainer_wording').notNull(),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique('demo_request_verified_address_unique').on(table.verifiedAddress),
+    check(
+      'demo_request_address_shape',
+      sql`${table.verifiedAddress} = lower(${table.verifiedAddress}) AND char_length(${table.verifiedAddress}) <= ${sql.raw(String(ADDRESS_MAX))} AND ${table.verifiedAddress} ~ ${sql.raw(`'${ADDRESS_PATTERN}'`)}`
+    ),
+    check(
+      'demo_request_subject_length',
+      sql`char_length(${table.verifiedSubject}) BETWEEN 1 AND ${sql.raw(String(SUBJECT_MAX))}`
+    ),
+    check(
+      'demo_request_name_length',
+      sql`char_length(${table.publicationName}) BETWEEN 1 AND ${sql.raw(String(NAME_MAX))}`
+    ),
+    check(
+      'demo_request_description_length',
+      sql`${table.description} IS NULL OR char_length(${table.description}) BETWEEN 1 AND ${sql.raw(String(DESCRIPTION_MAX))}`
+    ),
+    check(
+      'demo_request_colour_shape',
+      sql`${table.accentColour} IS NULL OR ${table.accentColour} ~ ${sql.raw(`'${COLOUR_PATTERN}'`)}`
+    ),
+    check(
+      'demo_request_choices_shape',
+      sql`(${table.theme} IS NULL OR ${table.theme} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}) AND (${table.font} IS NULL OR ${table.font} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}) AND ${table.outletType} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}`
+    ),
+    check(
+      'demo_request_import_source_length',
+      sql`${table.importSource} IS NULL OR char_length(${table.importSource}) BETWEEN 1 AND ${sql.raw(String(IMPORT_SOURCE_MAX))}`
+    ),
+    check(
+      'demo_request_logo_hash_shape',
+      sql`${table.logoHash} IS NULL OR ${table.logoHash} ~ ${sql.raw(`'${LOGO_HASH_PATTERN}'`)}`
+    ),
+    check(
+      'demo_request_wording_length',
+      sql`char_length(${table.consentWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))} AND char_length(${table.explainerWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))}`
+    ),
+  ]
+);

@@ -49,6 +49,11 @@ All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
   a `<parent>$<type>` chain can present an allowed token as its own. A tenant
   picks this up when it bumps to the release that carries it; the template's
   deploy job runs the guard from the pinned package.
+- **Rollout: before the gated apply, run `app/provision/provision_tenant_volume.py`
+  once per existing tenant to create its metrics volume.** The stack does not
+  start without it. This release pins render core 0.4.0, which mounts the
+  `ghost-<slug>-metrics` external volume. Run the script per tenant slug before
+  the apply; it is idempotent. See `provision_tenant_volume.md`.
 
 ## 7.0.0
 

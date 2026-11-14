@@ -9,8 +9,8 @@
 # Base image pinned to an explicit version *and* digest (not `latest`, not
 # a bare major tag) so a rebuild is reproducible and a base-image swap is
 # always a visible, reviewed diff. Verified locally: `docker pull
-# ghost:6.55.0-alpine` resolves to this digest as of 2026-08-04.
-FROM ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
+# ghost:6.76.0-alpine` resolves to this digest as of 2026-11-11.
+FROM ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
 
 # Ghost's built-in S3Storage adapter (core/server/adapters/storage/S3Storage.js)
 # and its dependency, @aws-sdk/client-s3, already ship inside every official
@@ -47,10 +47,10 @@ COPY --chown=node:node adapters/sso/src/BreakGlassSSO.js adapters/sso/src/break-
 # re-deriving the patch is then a deliberate step, not automatic. `patch` is
 # a build-time tool only: installed, used and removed in this one layer, and
 # its output is hash-checked, so it never reaches the image.
-COPY adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh adapters/sso/ghost-core-overlay/session-from-token.patch adapters/sso/ghost-core-overlay/session-from-token.patched.sha256 /tmp/session-from-token-overlay/
+COPY adapters/ghost-core-overlay/apply-patch.sh adapters/sso/ghost-core-overlay/session-from-token.patch adapters/sso/ghost-core-overlay/session-from-token.patched.sha256 /tmp/session-from-token-overlay/
 RUN apk add --no-cache patch \
-    && /tmp/session-from-token-overlay/apply-session-from-token-patch.sh /var/lib/ghost/current/core/server/services/auth/session \
-    && chown node:node /var/lib/ghost/current/core/server/services/auth/session/session-from-token.js \
+    && /tmp/session-from-token-overlay/apply-patch.sh /var/lib/ghost/current/core/server/auth/session session-from-token.js /tmp/session-from-token-overlay/session-from-token.patch /tmp/session-from-token-overlay/session-from-token.patched.sha256 \
+    && chown node:node /var/lib/ghost/current/core/server/auth/session/session-from-token.js \
     && apk del patch \
     && rm -rf /tmp/session-from-token-overlay
 
@@ -134,6 +134,27 @@ RUN set -e \
          && chown -R node:node "$theme/"; \
        done \
     && rm -rf /tmp/themes /tmp/themes-bundle
+
+# Runtime hardening, one layer: what the tenant container runs is Ghost on
+# Node and nothing else, so what the base image carries for building or
+# installing, and which the image scan flags, is removed rather than kept.
+# - zlib: the floor is stated so a base that carries an older one fails the
+#   build instead of shipping it.
+# - gosu: the base's copy is a Go binary built with an old standard library.
+#   su-exec is a small C program with the same `su-exec USER COMMAND`
+#   behaviour, and the base's own entrypoint still finds it as `gosu`.
+# - pnpm's content store: a build-time download cache (about 560 MB). The
+#   running tree under versions/ does not read it.
+# - TypeScript's native compiler: a Go binary in a peer dependency tree that
+#   nothing loads at runtime (Ghost ships its core compiled).
+# - npm: the Node image's own package manager, with its own bundled
+#   dependency tree. Nothing in this image runs it: Ghost starts with
+#   `node current/index.js`, and the entrypoint never calls npm or npx.
+RUN apk add --no-cache 'zlib>=1.4' su-exec \
+    && ln -sf /sbin/su-exec /usr/local/bin/gosu \
+    && rm -rf /var/lib/ghost/.pnpm-store \
+    && find /var/lib/ghost/versions -type d -path '*/node_modules/.pnpm/@typescript+typescript-*' -prune -exec rm -rf '{}' + \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY docker-entrypoint.branchleft.sh /usr/local/bin/docker-entrypoint.branchleft.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.branchleft.sh

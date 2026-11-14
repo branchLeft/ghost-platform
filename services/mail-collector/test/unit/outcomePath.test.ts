@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +17,7 @@ import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
 import { startSmtpSink, type SmtpSink } from '../helpers/smtpSink.js';
 
 const TOKEN = 'test-drain-token';
+const KEY = randomBytes(32).toString('hex');
 
 function bounceFor(messageId: string): string {
   return [
@@ -76,7 +78,7 @@ describe('outcome path, end to end through the real runtime', () => {
       text: 'hi',
       headers: {},
     });
-    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl }]);
+    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]);
     const drainClient = createDrainClient({ drainToken: TOKEN, drainTimeoutMs: 5000 });
     const deliveryClient = createDeliveryClient({
       host: '127.0.0.1',
@@ -84,7 +86,7 @@ describe('outcome path, end to end through the real runtime', () => {
       secure: false,
       user: 'collector',
       pass: 'sink-secret',
-      outcomes: { returnPath: 'outcomes@collector.example' },
+      outcomes: { returnPath: 'outcomes@collector.example', messageIdKey: KEY },
     });
     const log = createLogger(() => {});
     const runtime = createCollectorRuntime({
@@ -104,6 +106,7 @@ describe('outcome path, end to end through the real runtime', () => {
           store,
           drainClient,
           log,
+          messageIdKey: KEY,
         }),
         intervalMs: 30,
       },
@@ -153,7 +156,7 @@ describe('outcome path, end to end through the real runtime', () => {
       headers: {},
     });
     await writeFile(join(dir, 'bounce.eml'), bounceFor('<x@y.invalid>'));
-    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl }]);
+    const store = createFakeTargetStore([{ id: 'tenant-a', baseUrl, route: 'mx1' }]);
     const deliveryClient = createDeliveryClient({
       host: '127.0.0.1',
       port: sink.port,

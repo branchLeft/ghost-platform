@@ -1,4 +1,12 @@
-import { MIGRATOR, OTHER_DB, OWNER, PROV_DB, PROVISIONER, TENANT } from './provisionSetup.js';
+import {
+  MIGRATOR,
+  OTHER_DB,
+  OWNER,
+  PROSPECT,
+  PROV_DB,
+  PROVISIONER,
+  TENANT,
+} from './provisionSetup.js';
 
 // One "extra" per mechanism on the design note's closed list, each applied to
 // a correctly provisioned database, and one "missing" per ACL family. Each
@@ -590,6 +598,80 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     ],
     expect: /extra M21: portal.demo_state_event trigger zz_trigger/,
   },
+  {
+    id: 'M28',
+    title: 'a pg_hba rule letting the prospect login reach another database',
+    apply: [],
+    undo: [],
+    hba: (original) => `host postgres ${PROSPECT} 192.0.2.0/24 scram-sha-256\n${original}`,
+    expect: new RegExp(
+      `extra M28: pg_hba rule at .*:1 lets ${PROSPECT} \\(as ${PROSPECT}\\) reach database postgres`
+    ),
+  },
+  {
+    id: 'M06',
+    title: 'SELECT on the requests given to the prospect role, which writes and must not read',
+    apply: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
+    undo: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect']],
+    expect: /extra M06: SELECT on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE on the requests given to the prospect role',
+    apply: [[P, 'GRANT UPDATE ON portal.demo_request TO portal_prospect']],
+    undo: [[P, 'REVOKE UPDATE ON portal.demo_request FROM portal_prospect']],
+    expect: /extra M06: UPDATE on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the requests given to the provisioner role',
+    apply: [[P, 'GRANT DELETE ON portal.demo_request TO portal_provisioner']],
+    undo: [[P, 'REVOKE DELETE ON portal.demo_request FROM portal_provisioner']],
+    expect: /extra M06: DELETE on table portal.demo_request to portal_provisioner/,
+  },
+  {
+    id: 'M06',
+    title: 'INSERT on the requests given to the owner role',
+    apply: [[P, 'GRANT INSERT ON portal.demo_request TO portal_owner']],
+    undo: [[P, 'REVOKE INSERT ON portal.demo_request FROM portal_owner']],
+    expect: /extra M06: INSERT on table portal.demo_request to portal_owner/,
+  },
+  {
+    id: 'M06',
+    title: 'a grant on the hostname register to the prospect role',
+    apply: [[P, 'GRANT INSERT ON portal.hostname_register TO portal_prospect']],
+    undo: [[P, 'REVOKE INSERT ON portal.hostname_register FROM portal_prospect']],
+    expect: /extra M06: INSERT on table portal.hostname_register to portal_prospect/,
+  },
+  {
+    id: 'M01',
+    title: 'the prospect role allowed to bypass its row policies',
+    apply: [[PG, 'ALTER ROLE portal_prospect BYPASSRLS']],
+    undo: [[PG, 'ALTER ROLE portal_prospect NOBYPASSRLS']],
+    expect: /extra M01: role portal_prospect: .*bypassrls=true/,
+  },
+  {
+    id: 'M02',
+    title: 'the prospect login also a member of the provisioner role',
+    apply: [[PG, `GRANT portal_provisioner TO ${PROSPECT}`]],
+    undo: [[PG, `REVOKE portal_provisioner FROM ${PROSPECT}`]],
+    expect: new RegExp(`extra M02: ${PROSPECT} is a member of portal_provisioner`),
+  },
+  {
+    id: 'M21',
+    title: 'the unique address constraint dropped from the requests',
+    apply: [
+      [P, 'ALTER TABLE portal.demo_request DROP CONSTRAINT demo_request_verified_address_unique'],
+    ],
+    undo: [
+      [
+        P,
+        'ALTER TABLE portal.demo_request ADD CONSTRAINT demo_request_verified_address_unique UNIQUE (verified_address)',
+      ],
+    ],
+    expect:
+      /missing M21: portal.demo_request constraint demo_request_verified_address_unique UNIQUE/,
+  },
 ];
 
 /** One per ACL family: a manifest grant taken away. */
@@ -670,5 +752,40 @@ export const MISSING: readonly Tamper[] = [
     apply: [[PG, `REVOKE portal_provisioner FROM ${PROVISIONER}`]],
     undo: [[PG, `GRANT portal_provisioner TO ${PROVISIONER}`]],
     expect: new RegExp(`missing M02: ${PROVISIONER} is a member of portal_provisioner`),
+  },
+  {
+    id: 'M06',
+    title: "the prospect role's INSERT on the requests",
+    apply: [[P, 'REVOKE INSERT ON portal.demo_request FROM portal_prospect']],
+    undo: [[P, 'GRANT INSERT ON portal.demo_request TO portal_prospect']],
+    expect: /missing M06: INSERT on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M06',
+    title: "the provisioner role's SELECT on the requests",
+    apply: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_provisioner']],
+    undo: [[P, 'GRANT SELECT ON portal.demo_request TO portal_provisioner']],
+    expect: /missing M06: SELECT on table portal.demo_request to portal_provisioner/,
+  },
+  {
+    id: 'M05',
+    title: "the prospect role's USAGE on schema portal",
+    apply: [[P, 'REVOKE USAGE ON SCHEMA portal FROM portal_prospect']],
+    undo: [[P, 'GRANT USAGE ON SCHEMA portal TO portal_prospect']],
+    expect: /missing M05: USAGE on schema portal to portal_prospect/,
+  },
+  {
+    id: 'M04',
+    title: "the prospect login's CONNECT",
+    apply: [[PG, `REVOKE CONNECT ON DATABASE ${P} FROM ${PROSPECT}`]],
+    undo: [[PG, `GRANT CONNECT ON DATABASE ${P} TO ${PROSPECT}`]],
+    expect: new RegExp(`missing M04: CONNECT on database ${P} to ${PROSPECT}`),
+  },
+  {
+    id: 'M02',
+    title: "the prospect login's membership",
+    apply: [[PG, `REVOKE portal_prospect FROM ${PROSPECT}`]],
+    undo: [[PG, `GRANT portal_prospect TO ${PROSPECT}`]],
+    expect: new RegExp(`missing M02: ${PROSPECT} is a member of portal_prospect`),
   },
 ];

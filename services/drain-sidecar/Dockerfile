@@ -4,15 +4,18 @@
 # guarantees `RUN --mount=type=secret` below rather than leaving it to
 # whichever frontend the local daemon happens to bundle.
 
-# No native dependency needs node-gyp here, so there is no musl-compatibility
-# reason to prefer -alpine. bookworm-slim is chosen instead because it tracks
-# Debian's glibc and Node's own release-testing matrix -- the same choice
-# services/mailgun-shim makes, for the same reason.
-# Pinned by digest as well as tag: the digest is the multi-arch index of
-# node:26.5.0-bookworm-slim as read from Docker Hub with
-# `docker buildx imagetools inspect node:26.5.0-bookworm-slim`, so a re-pointed
-# tag cannot change what ships. Re-read it when the tag is bumped.
-FROM node:26.5.0-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb
+# Alpine (musl, busybox sh, apk) is chosen because its base scans with no
+# unfixable findings, where bookworm-slim carries many without a published
+# fix. Nothing here needs glibc: the dependencies are pure JavaScript, and
+# every shell step below is POSIX sh.
+# Pinned by digest as well as tag: the digest is the linux/amd64 manifest of
+# node:26.13.0-alpine, read from Docker Hub and confirmed against the registry
+# manifest endpoint, so a re-pointed tag cannot change what ships. Re-read it
+# when the tag is bumped.
+FROM node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a
+
+# zlib carries a critical finding whose fixed release is newer than the base.
+RUN apk upgrade --no-cache zlib
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json pins.
@@ -20,7 +23,9 @@ RUN npm install --global pnpm@11.17.0
 
 WORKDIR /app
 
-COPY .npmrc package.json pnpm-lock.yaml ./
+# pnpm-workspace.yaml carries the overrides the lockfile was resolved with;
+# pnpm refuses a frozen install when they are missing.
+COPY .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 
 # `@branchleft/tsconfig` is a build-time dependency hosted on GitHub Packages,
 # which rejects anonymous reads even for a public package. The token arrives
@@ -41,6 +46,14 @@ RUN pnpm run build
 # step above -- pruning them keeps @types/*, tsc and the test toolchain out
 # of the image that actually ships.
 RUN pnpm prune --prod
+
+# npm is only needed to install pnpm, and pnpm only to install, build and
+# prune. The service runs `node` alone, so both package managers, their
+# bundled packages (pnpm carries its own copies of tar and undici) and their
+# caches are removed rather than shipped unused.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm \
+    /usr/local/lib/node_modules/pnpm /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/pn /usr/local/bin/pnx \
+    /root/.local/share/pnpm /root/.cache
 
 USER node
 

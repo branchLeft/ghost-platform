@@ -32,10 +32,10 @@ afterEach(async () => {
 
 const FEATURES = ['images', 'media', 'files'];
 // The decorator is told one fact about the tier: whether video and audio
-// are accepted. Demo and hobbyist (entry) are told false, Professional true.
+// are accepted. Demo and Essentials (entry) are told false, Professional true.
 const TIER_CLASSES = [
   ['demo', false],
-  ['hobbyist (entry)', false],
+  ['Essentials (entry)', false],
   ['Professional', true],
 ];
 const REFUSING_TIER_CLASSES = TIER_CLASSES.filter(([, allowVideoAudio]) => !allowVideoAudio);

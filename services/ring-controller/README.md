@@ -62,6 +62,15 @@ decide, and it has no model in its path (D37).
 5. **No ring 2 without MySQL.** The entry ring is not entered unless ring 0
    held a MySQL tenant that reached `done` and stayed healthy (U6).
 
+Who is in which ring is data the caller supplies, never code in this
+module: `parseRingAssignments` (`src/ringMembership.ts`) refuses anything but
+all four rings named once with each tenant in exactly one, and
+`createListMembers` turns it into `listMembers`. A tenant's engine is read
+through an injected `engineOf`, never from the assignment data, so nothing
+can satisfy rule 5 by being labelled MySQL. The tenant-zero MySQL canary
+joins ring 0 by being listed there; the assignment data is held with the
+controller's own host configuration, not in this public repository.
+
 A red gate, a major release or a regression is a hold, not a page: tenants
 stay on the current version, and the hold is raised as an operational alert
 and a filed work item. No person approves a release to get past it. The only page is the state machine's own `failed-unsafe`.
@@ -132,7 +141,8 @@ already drives at runtime:
   live, successful `apply()` reaches; an outcome that cannot be confirmed
   settled goes straight to `failed-unsafe`, never to `verify()`,
   `revertTraffic()` or `stopColour()`, any of which could act on a colour
-  still mid-migration.
+  still mid-migration. A saved abort on the record turns a settled, healthy
+  outcome into a revert, never `done`.
 - `verifying` / `reverting` -- revert; the process died before finding
   out whether the new colour was healthy, so the same rule as a live
   abort landing here applies.
@@ -144,7 +154,8 @@ already drives at runtime:
 - `done` -- rehydrated with no action: the bake window is still open and
   the state on disk is already correct, but with no machine reconstructed
   for it, a later `closeBakeWindow()` or `abortAfterDone()` would have
-  nothing to act on.
+  nothing to act on. A `done` whose record carries a saved abort is
+  reverted instead: nobody will watch its bake.
 - `closed`, `backup-failed`, `cancelled` -- already resting states; no
   action.
 - `failed-unsafe` -- resting only once `pageSent: true`. A record still
@@ -202,6 +213,25 @@ ever act on a tenant sitting in `done`, and a single synchronous claim
 ever proceeds, even when both are called in the same tick -- otherwise a
 bake-window close and a post-`done` health-regression revert could race
 to stop or revert the same colour.
+
+## Promotion record
+
+`src/promotionChainLog.ts` is the controller's own append-only record of
+every slot promotion: one Ed25519-signed entry per slot per promotion, each
+carrying the hash of the entry before it. `append` verifies the whole file
+first and refuses, writing nothing, when the chain or a signature does not
+verify. Tests: `test/unit/promotionChainLog.test.ts`, and a sabotage pair for
+each check in `test/unit/promotionChainLogSabotage.test.ts`. The format, what
+it detects and the one thing it cannot detect alone (removal of the last
+entries, closed by a head held elsewhere) are in `src/README.md`.
+
+`runRelease` records each member before it stops that member's old colour
+(`recordPromotion`), and holds the release when a record cannot be written.
+`src/signingKeyFile.ts` loads the key from a file only the service account
+can read, and `src/promotionRecorder.ts` keeps the recorded head beside the
+log; the permission model, the four path variables and what the head does and
+does not anchor are in `src/README.md`. The role that makes the key and the
+copy kept off the host are not built here.
 
 ## What this module deliberately does not build
 

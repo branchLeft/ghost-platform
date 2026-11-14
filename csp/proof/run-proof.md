@@ -42,3 +42,36 @@ exact attack a prior spike measured.
 Needs Docker, and `csp/proof`'s own `pnpm install` for Playwright (see
 `csp/proof/package.json`) — kept out of the root `package.json` and out of
 CI deliberately, like `widgets/proof/`.
+
+## checkout proof script (capture-checkout.mjs)
+
+It sets no policy (the origin in front of Ghost does) and renders no verdict
+(csp/gate/checkout-gate.mjs does).
+
+The flow, each step recorded only when it really happened:
+  1. create a free member through the Admin API and follow the sign-in link
+     Ghost's Admin API issues for it (NOT the magic-link email: that round
+     trip waits on the mail programme and is not proven here)
+  2. confirm Ghost now serves a member session
+  3. open Portal's plan chooser, pick the paid plan, and land on the hosted
+     checkout page (csp/proof/fake-stripe.mjs, its own origin)
+  4. pay with Stripe's published test card and come back to ?stripe=success
+  5. confirm the member is paid, from Ghost's own Admin API
+
+Violations come from EVERY frame (Portal is an iframe), through a context
+binding rather than a per-page array, so a blocked script inside Portal's
+frame cannot hide.
+
+Stripe.js. By default js.stripe.com is answered by a stub through Playwright
+routing. A request the policy blocks never reaches routing (Chromium checks
+the source list first), so the browser's own matching is still what is
+tested. CSP_STRIPE_REAL_JS=1 drops the stub and loads the real Stripe.js
+over the internet; that needs no account and no secret.
+
+Real test mode (PROOF_REAL_TEST_MODE=1, set by csp-checkout-gate.py when the
+owner opts in): the checkout page is Stripe's own (checkout.stripe.com),
+Stripe.js is always the real one, and the card typed is checked against the
+published test card before the browser starts (csp/gate/real_test_mode.py). The
+capture records every violation with its document; the runner then keeps only
+the tenant's own and counts Stripe's pages' apart, since they answer to
+Stripe's policy. Everything this process prints is redacted by the runner.

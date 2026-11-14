@@ -23,9 +23,11 @@ const IMAGE_WORKFLOWS = [
   'registry-push.yml',
   'portal-apps-image.yml',
   'demo-edge-image.yml',
+  'demo-gate-image.yml',
   'mail-collector-image.yml',
   'drain-sidecar-image.yml',
   'recovery-image.yml',
+  'percona-image.yml',
 ];
 
 // The text of one job: from its `  name:` line to the next job or the end.

@@ -2,10 +2,14 @@ import {
   BumpStateMachine,
   type BumpDependencies,
   type BumpState,
+  type PersistSnapshot,
 } from '../../../src/bumpStateMachine.js';
 import { createApplyLock } from '../../../src/applyLock.js';
+import type { CallDeadlines } from '../../../src/deadlines.js';
 import type { GateReport } from '../../../src/gates.js';
+import type { PromotionRecord } from '../../../src/promotionChainLog.js';
 import type { RingBakeConfig, RingName } from '../../../src/rings.js';
+import type { PersistedTenantState, TenantStateStore } from '../../../src/tenantStateStore.js';
 import type {
   Health,
   Held,
@@ -54,6 +58,11 @@ export interface TenantBehaviour {
   applyOk?: boolean;
   /** Milliseconds the fake clock moves while this tenant's apply runs. */
   applyTakesMs?: number;
+  /**
+   * Holds one step open on a real (fakeable) timer: `ms` milliseconds, or
+   * forever when `ms` is absent. A hung host, not a slow fake clock.
+   */
+  stall?: { step: 'backup' | 'apply' | 'stopOld' | 'revert'; ms?: number };
 }
 
 export interface FleetOptions {
@@ -68,6 +77,40 @@ export interface FleetOptions {
   ) => readonly string[] | Promise<readonly string[]>;
   listMembers?: (ring: RingName) => Promise<readonly RingMember[]>;
   runGatesThrows?: boolean;
+  /** Replaces the default recorder, which accepts every record. */
+  recordPromotion?: (record: PromotionRecord) => Promise<void>;
+  /** Passed through as `deps.deadlines`; absent means the controller's defaults. */
+  deadlines?: Partial<CallDeadlines>;
+  /** Replaces the default hold sink, which records every hold. */
+  hold?: (held: Held) => Promise<void>;
+  /** Replaces the fake clock's sleep, which moves the clock at once. */
+  sleep?: (ms: number) => Promise<void>;
+  /** When given, every machine persists into it, as a real caller wires `persist`. */
+  store?: TenantStateStore;
+  /**
+   * Milliseconds (on a real, fakeable timer) one write takes before it lands
+   * in `store`, or 'forever'. Absent or undefined means at once.
+   */
+  writeDelay?: (tenantId: string, snapshot: PersistSnapshot) => number | 'forever' | undefined;
+}
+
+/** An in-memory `TenantStateStore`: a record is whatever was saved last. */
+export function memoryStore(records: readonly PersistedTenantState[] = []): TenantStateStore {
+  const map = new Map(records.map((record) => [record.tenantId, record]));
+  return {
+    async save(record) {
+      map.set(record.tenantId, record);
+    },
+    async load(tenantId) {
+      return map.get(tenantId);
+    },
+    async remove(tenantId) {
+      map.delete(tenantId);
+    },
+    async list() {
+      return [...map.values()];
+    },
+  };
 }
 
 /** Counts how many `run()` calls are in flight at once. */
@@ -94,6 +137,11 @@ class CountingMachine extends BumpStateMachine {
 
 const macrotask = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
+export const stallFor = (ms: number | undefined): Promise<void> =>
+  ms === undefined
+    ? new Promise<void>(() => undefined)
+    : new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * A whole fleet of fakes with a fake clock. Real `BumpStateMachine`s over
  * fake hosts, all sharing ONE `ApplyLock`, exactly as a caller must wire them.
@@ -109,6 +157,7 @@ export function makeFleet(options: FleetOptions = {}) {
   const sleeps: number[] = [];
   const events: string[] = [];
   const holds: Held[] = [];
+  const records: PromotionRecord[] = [];
   const pages: string[] = [];
   const counter = { inFlight: 0, highWater: 0 };
   const calls = { newBump: 0, runGates: 0, health: 0, reportedErrors: 0 };
@@ -122,6 +171,7 @@ export function makeFleet(options: FleetOptions = {}) {
     now: () => nowMs,
     sleep: async (ms: number) => {
       sleeps.push(ms);
+      if (options.sleep) return options.sleep(ms);
       nowMs += ms;
     },
   };
@@ -131,11 +181,13 @@ export function makeFleet(options: FleetOptions = {}) {
     return {
       backup: async () => {
         await macrotask();
+        if (behaviour.stall?.step === 'backup') await stallFor(behaviour.stall.ms);
         return { ok: true };
       },
       apply: async () => {
         events.push(`apply:${tenantId}`);
         nowMs += behaviour.applyTakesMs ?? 0;
+        if (behaviour.stall?.step === 'apply') await stallFor(behaviour.stall.ms);
         return behaviour.applyOk === false
           ? { ok: false, reason: 'migration failed' }
           : { ok: true };
@@ -146,16 +198,29 @@ export function makeFleet(options: FleetOptions = {}) {
         return { ok: true };
       },
       revertTraffic: async () => {
+        if (behaviour.stall?.step === 'revert') await stallFor(behaviour.stall.ms);
         events.push(`revert:${tenantId}`);
         return { ok: true };
       },
       stopColour: async (which) => {
+        if (which === 'old' && behaviour.stall?.step === 'stopOld') {
+          await stallFor(behaviour.stall.ms);
+        }
         events.push(`stop-${which}:${tenantId}`);
         if (which === 'old') closedAt.set(tenantId, nowMs);
       },
       page: async (reason) => {
         pages.push(`${tenantId}:${reason}`);
       },
+      ...(options.store === undefined ? {} : { persist: persistFor(tenantId, options.store) }),
+    };
+  }
+
+  function persistFor(tenantId: string, store: TenantStateStore): BumpDependencies['persist'] {
+    return async (snapshot) => {
+      const delay = options.writeDelay?.(tenantId, snapshot);
+      if (delay !== undefined) await stallFor(delay === 'forever' ? undefined : delay);
+      await store.save({ tenantId, ...snapshot, updatedAt: new Date(nowMs).toISOString() });
     };
   }
 
@@ -197,10 +262,17 @@ export function makeFleet(options: FleetOptions = {}) {
       if (options.reportedErrors) return options.reportedErrors(tenantId, sinceMs, nowMs);
       return [];
     },
+    recordPromotion: async (record) => {
+      if (options.recordPromotion) await options.recordPromotion(record);
+      events.push(`record:${record.slot}`);
+      records.push(record);
+    },
     hold: async (held) => {
+      if (options.hold) await options.hold(held);
       holds.push(held);
     },
     clock,
+    ...(options.deadlines === undefined ? {} : { deadlines: options.deadlines }),
   };
 
   return {
@@ -209,6 +281,7 @@ export function makeFleet(options: FleetOptions = {}) {
     sleeps,
     events,
     holds,
+    records,
     pages,
     counter,
     calls,

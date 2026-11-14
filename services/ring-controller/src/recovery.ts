@@ -68,7 +68,11 @@ export async function recoverPersistedTenants(
         // the tenant id only for a record written before this field
         // existed.
         bumpId: record.bumpId ?? record.tenantId,
-        recovered: { state: record.state, pageSent: record.pageSent },
+        recovered: {
+          state: record.state,
+          pageSent: record.pageSent,
+          abortRequested: record.abortRequested === true,
+        },
       });
       const finalState = await runRecoveryAction(machine, record);
       recovered.push({ tenantId: record.tenantId, machine, finalState });
@@ -106,6 +110,12 @@ function runRecoveryAction(
     case 'closing':
       return machine.recoverFromClosing();
     case 'done':
+      if (record.abortRequested === true) {
+        // The crashed process had given up on this tenant's bake: nobody
+        // will ever watch it, so revert, exactly as a live abort in
+        // 'done' does.
+        return machine.abortAfterDone();
+      }
       // Already correct on disk -- only the in-memory object was lost.
       // Rehydrating it (done above) is the entire recovery action.
       return Promise.resolve(machine.getState());

@@ -11,7 +11,15 @@ import {
   type DocumentView,
   type SubprocessorEntry,
 } from '../documents.js';
-import { eventsOf, hostnameOf, listDemos, listHostnames } from '../demoReads.js';
+import {
+  eventsOf,
+  hostnameOf,
+  listDemos,
+  listHostnames,
+  listRequests,
+  requestOf,
+} from '../demoReads.js';
+import type { DemoRequestView } from '../demoRequest.js';
 import type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 import {
   documentVersion,
@@ -31,6 +39,7 @@ export { MalformedScrapeError, type HealthView } from '../reading.js';
 export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
+export type { DemoRequestView } from '../demoRequest.js';
 export {
   InvalidSupportReadingError,
   SUPPORT_REQUEST_STATUSES,
@@ -256,6 +265,16 @@ export class OwnerDb {
   /** The label allocated to a demo; null before it has one. */
   demoHostname(demoId: string): Promise<string | null> {
     return this.run((tx) => hostnameOf(tx, demoId));
+  }
+
+  /** Every demo request, oldest first. */
+  listRequests(): Promise<DemoRequestView[]> {
+    return this.run(listRequests);
+  }
+
+  /** One demo's request; undefined when there is none. */
+  demoRequest(demoId: string): Promise<DemoRequestView | undefined> {
+    return this.run((tx) => requestOf(tx, demoId));
   }
 
   /** The hostname register in full, each label with its retirement when it has one. */

@@ -18,6 +18,14 @@ const HOLDS_SUFFIX = '.holds.json';
 // Every orphan the sweep removes is logged with this prefix, so a log search
 // or alert has one fixed string to match.
 const ORPHAN_LOG_PREFIX = 'ScanningStorageAdapter: orphaned quarantine bytes';
+// The same for a crash-residue temp file the sweep removes.
+const TEMP_LOG_PREFIX = 'ScanningStorageAdapter: crash-residue quarantine temp file';
+// A temp file a live writer owns is only ever as old as the write timeout (60
+// seconds by default). No sweep removes a temp file younger than this, however
+// small the orphan age it was given.
+const TEMP_MIN_AGE_FLOOR_MS = 60_000;
+// Exactly the name tempNameFor makes: `.<target>.<pid>.<12 hex digits>.tmp`.
+const TEMP_NAME_PATTERN = /^\..+\.\d+\.[0-9a-f]{12}\.tmp$/;
 
 function tempNameFor(target) {
   // Leading dot and a trailing .tmp: never a digest, never a sidecar, so no
@@ -127,14 +135,40 @@ function isRefused(quarantinePath, digest) {
   );
 }
 
+// An older release wrote the sidecar as one file. Splitting it into one entry
+// per owner renames the file to a dotfile "aside" copy first, and removes the
+// copy only once every entry has landed (see hold.js). While the copy exists
+// it is the only record of the hold, so it is a hold on `digest` exactly as a
+// sidecar is. The first capture is the digest the copy names.
+const SPLIT_ASIDE_NAME = /^\.(.+?)\.holds\.json\.[^.]+\.json$/;
+
+// True when an unfinished split's aside copy names `digest`. Fails closed: a
+// listing error other than a missing directory throws, so no caller reads it
+// as "no hold".
+function hasSplitAside(quarantinePath, digest) {
+  let names;
+  try {
+    names = fsSync.readdirSync(quarantinePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  return names.some((name) => {
+    const match = SPLIT_ASIDE_NAME.exec(name);
+    return match !== null && match[1] === digest;
+  });
+}
+
 // Fails closed like isRefused: only a missing sidecar means "no hold". Only
-// presence is read, so a sidecar nobody can parse still counts as a hold.
+// presence is read, so a sidecar nobody can parse still counts as a hold. An
+// unfinished split's aside copy counts too: a failed split (a full disk, say)
+// leaves the copy with no sidecar, or an empty one, standing, and the bytes
+// stay held until a later split completes.
 function hasHoldSidecar(quarantinePath, digest) {
-  return (
-    fsSync.statSync(path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`), {
-      throwIfNoEntry: false,
-    }) !== undefined
-  );
+  const sidecar = fsSync.statSync(path.join(quarantinePath, `${digest}${HOLDS_SUFFIX}`), {
+    throwIfNoEntry: false,
+  });
+  return sidecar !== undefined || hasSplitAside(quarantinePath, digest);
 }
 
 // Returns the verdict a refusal was recorded with, or null when the digest
@@ -244,7 +278,9 @@ function releaseBytes(quarantinePath, digest, { onMovedAside, keepIfHeld = false
 }
 
 // Aside copies left by a releaser that died mid-release: kept (as the
-// digest's bytes) when the digest is refused, deleted otherwise. A copy
+// digest's bytes) when the digest is refused or a hold sidecar names it,
+// deleted otherwise. A hold may land its sidecar after the releaser moved the
+// bytes aside, so the copy may be the only one a hold is waiting on. A copy
 // whose digest cannot be checked is left for the next sweep.
 function sweepReleasing(quarantinePath, computeDigest, logger) {
   let names;
@@ -260,7 +296,7 @@ function sweepReleasing(quarantinePath, computeDigest, logger) {
     const aside = path.join(quarantinePath, name);
     const target = path.join(quarantinePath, digest);
     try {
-      if (!isRefused(quarantinePath, digest)) {
+      if (!isRefused(quarantinePath, digest) && !hasHoldSidecar(quarantinePath, digest)) {
         fsSync.rmSync(aside, { force: true });
         continue;
       }
@@ -290,6 +326,12 @@ function isOrphanCandidateName(name) {
     name.endsWith(HOLDS_SUFFIX) ||
     name.endsWith(REFUSED_SUFFIX)
   );
+}
+
+// A dotfile left by writeFileAtomic, by name alone. Any other dotfile is not
+// ours to remove.
+function isCrashResidueTempName(name) {
+  return TEMP_NAME_PATTERN.test(name);
 }
 
 // Milliseconds since a regular file was written; null for anything else
@@ -323,6 +365,18 @@ function removeIfOrphan(quarantinePath, name, { nowMs, minAgeMs, onMovedAside })
   return releaseBytes(quarantinePath, name, { keepIfHeld: true, onMovedAside }) ? ageMs : null;
 }
 
+// Returns the age of the temp file it removed, or null when it left the file
+// alone: too young, or not a regular file. A temp file holds no verdict and is
+// never served, so there is nothing to check beside its age. The name is
+// unique to one write, so it cannot be a file written after the stat.
+function removeIfCrashResidue(quarantinePath, name, { nowMs, minAgeMs }) {
+  const file = path.join(quarantinePath, name);
+  const ageMs = ageOfRegularFile(file, nowMs);
+  if (ageMs === null || ageMs <= Math.max(minAgeMs, TEMP_MIN_AGE_FLOOR_MS)) return null;
+  fsSync.rmSync(file, { force: true });
+  return ageMs;
+}
+
 // Bytes with neither a hold sidecar nor a refusal record, older than
 // `minAgeMs`, are what a crash between a hold's two writes leaves behind:
 // nothing records which target path they were for, so they can only be
@@ -330,12 +384,27 @@ function removeIfOrphan(quarantinePath, name, { nowMs, minAgeMs, onMovedAside })
 // move aside, so a hold or a refusal that lands meanwhile wins. Every
 // failure on a file is logged and leaves it in place. `now` and
 // `onMovedAside` are test seams. Throws when the directory cannot be
-// listed, and returns how many orphans were removed.
+// listed, and returns how many orphans and temp files were removed.
+//
+// The same sweep removes crash-residue temp files (see isCrashResidueTempName):
+// a regular file with exactly the name writeFileAtomic gives its temp file,
+// older than `minAgeMs` and than TEMP_MIN_AGE_FLOOR_MS, because a crash between
+// that write and its rename is the only way one stays.
 function sweepOrphans(quarantinePath, { minAgeMs, now = Date.now, logger, onMovedAside }) {
-  const names = listEntries(quarantinePath).filter(isOrphanCandidateName);
+  const entries = listEntries(quarantinePath);
   const nowMs = now();
   let removed = 0;
-  for (const name of names) {
+  for (const name of entries.filter(isCrashResidueTempName)) {
+    try {
+      const ageMs = removeIfCrashResidue(quarantinePath, name, { nowMs, minAgeMs });
+      if (ageMs === null) continue;
+      removed += 1;
+      logger.error(`${TEMP_LOG_PREFIX} ${name} (${Math.round(ageMs)} ms old); removed`);
+    } catch (err) {
+      logger.error(`ScanningStorageAdapter: could not sweep temp file ${name}; left in place`, err);
+    }
+  }
+  for (const name of entries.filter(isOrphanCandidateName)) {
     try {
       const ageMs = removeIfOrphan(quarantinePath, name, { nowMs, minAgeMs, onMovedAside });
       if (ageMs === null) continue;
@@ -354,7 +423,10 @@ function sweepOrphans(quarantinePath, { minAgeMs, now = Date.now, logger, onMove
 module.exports = {
   REFUSED_SUFFIX,
   HOLDS_SUFFIX,
+  SPLIT_ASIDE_NAME,
   ORPHAN_LOG_PREFIX,
+  TEMP_LOG_PREFIX,
+  TEMP_MIN_AGE_FLOOR_MS,
   quarantineBytes,
   quarantinedBytesMatch,
   writeFileAtomic,

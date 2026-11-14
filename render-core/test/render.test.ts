@@ -220,7 +220,20 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
   });
 
   it('emits the managed head/foot verbatim', () => {
-    const descriptor = validate(professionalTenantDescriptor(), TEST_ZONES);
+    // The managed case is not the professional baseline (that is `blocked`,
+    // per LLD-1), so this test builds the non-baseline variant itself.
+    const base = professionalTenantDescriptor();
+    const descriptor = validate(
+      {
+        ...base,
+        codeInjection: {
+          kind: 'managed',
+          head: '<meta name="analytics-consent" content="required">',
+          foot: '<script src="/analytics.js" defer></script>',
+        },
+      },
+      TEST_ZONES
+    );
     const settings = renderSettings(descriptor, TEST_ZONES);
     expect(settings.codeinjection_head).toContain('analytics-consent');
     expect(settings.codeinjection_foot).toContain('analytics.js');

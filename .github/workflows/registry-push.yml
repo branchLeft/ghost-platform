@@ -165,8 +165,10 @@ jobs:
   # The pushed digest, scanned by the shared image-scan workflow before anything
   # signs it. It fails the run on any critical or high finding no exemption
   # covers; the threshold is fixed in that workflow and cannot be lowered here.
-  # No exemption file exists in this repository: a finding with no available
-  # fix goes through the exemption route, never a changed threshold.
+  # The shared scan reads this repository's .image-scan-exemptions.json by
+  # default. It carries no entry for this image, so nothing here is exempted:
+  # a finding with no available fix goes through the exemption route, never a
+  # changed threshold.
   scan:
     name: Scan the pushed tenant image
     needs: push

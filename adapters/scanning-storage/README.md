@@ -59,7 +59,7 @@ the same rule on every feature and through both `save()` and `saveRaw()`.
 (`src/media-kind.md` lists the families and what is not recognised). One
 fact about the tier decides the rest: `storage__<feature>__tier`.
 
-| Upload | Demo | Hobbyist (entry) | Professional | Tier unknown or malformed |
+| Upload | Demo | Essentials (entry) | Professional | Tier unknown or malformed |
 |---|---|---|---|---|
 | Image | existing check | existing check | existing check | existing check |
 | Non-video media (a video's poster image), arbitrary files, bytes the detector does not recognise | existing check | existing check | existing check | existing check |
@@ -82,7 +82,9 @@ fact about the tier decides the rest: `storage__<feature>__tier`.
 - **The tier key.** Only the exact string `professional` accepts video and
   audio (`src/tier-policy.md`). Unset, empty, a different case, a stray
   space, a boolean, `entry`, `demo`, `hobbyist` or a typo all refuse, so a
-  mistake can only fail closed. It is read from boot config only.
+  mistake can only fail closed. `hobbyist` is the retired name for the entry
+  tier, kept in this list so an old value still fails closed. It is read from
+  boot config only.
 - **Not yet reachable.** render-core renders no `tier` key for any tenant or
   demo, so every rendered configuration refuses video and audio on all three
   features today. Accepting them on a Professional tenant needs a tier field
@@ -125,31 +127,16 @@ Every file in the tree is checked, not only those named like images: the
 served directory returns almost any extension, so the name proves nothing.
 `saveRaw()` on the theme storage is declined outright; no Ghost code calls it.
 
-**A refused re-upload leaves the installed theme alone, and that is the
-shim's doing, not Ghost's.** Ghost's `setFromZip` moves an existing theme
-aside to a backup directory *before* it calls `save()`, and its own restore
-after a failed save is not awaited, so the `finally` that removes the backup
-races it, so any failed save can leave the theme it was replacing with files
-missing (a gate that refused inside `save()` did exactly that, intermittently,
-in a replay against a real Ghost). Nothing hands the
-shim the extracted tree before that move, so the shim holds the move itself:
-`rename(<name>, <name>_<24 hex>)` is recorded, not performed, and `save()`
-performs it only after the tree has been screened clean. A refusal moves
-nothing, so there is nothing to restore. Any other rename, Ghost's restore
-among them, passes straight through.
-
-**A copy that fails after a clean screen puts the replaced theme back.**
-Ghost's restore only renames when the theme name is absent, so a copy that
-stopped part way (the name is present, half written) is never restored at all,
-and the backup is then removed. The shim puts the theme back itself: when it
-moved an installed theme aside and the copy it performed then fails, it
-removes the partial directory and moves the backup back, awaited, before the
-error leaves `save()`, so what Ghost does next finds the installed theme in
-place. If that put-back fails too, the installed theme is in the kept backup
-`<name>_<24 hex>`, not in place: the live name holds a partial theme or none,
-the backup must be renamed back by hand, and the delete Ghost makes for it is
-declined and logged. A failure after the copy succeeded (loading or
-activating the theme) is Ghost's own behaviour, unchanged.
+**A refused re-upload leaves the installed theme alone, and that is Ghost's
+flow, which the gate relies on.** Ghost's `setFromZip` copies the extracted
+tree in under a staging name with `save()` first; only after that succeeds does
+it move the installed theme aside to a backup directory and move the staging
+copy into place, awaiting its own restore if a step fails. The gate screens
+inside that first `save()`, so a refusal happens before anything has moved and
+there is nothing to restore. Any other `rename` or `delete` passes straight
+through. (Older Ghost moved the installed theme aside before calling `save()`,
+and the gate held that move; re-read `setFromZip` before trusting this on a
+Ghost upgrade, see the overlay README.)
 
 This holds for one upload of a theme name at a time. Ghost does not serialise
 uploads of one name, so two overlapping uploads of the same name can still
@@ -178,8 +165,10 @@ replacement leaves the old thumbnail in place. The write goes through
 ## Upload names
 
 `save()` stores every new upload as `<stem>-<22 random base32 characters>.<ext>`
-(110 bits from `crypto.randomBytes`), so a URL cannot be derived from a
-neighbouring one. The stem is cut to keep the stored name within 240 bytes.
+(110 bits from `crypto.randomBytes`), so a URL a user's upload gets through
+`save()` cannot be derived from a neighbouring one. The stem is cut to keep the
+stored name within 240 bytes. Names Ghost chooses for media it writes through
+`saveRaw()` are covered under "Limits of the names" below.
 Three small tables, per adapter instance, make Ghost's own flows still find
 what they wrote. None survives a restart. The first expires and drops its
 oldest entry when full; the other two are bounded together and a lapse is
@@ -188,7 +177,7 @@ never dropped.
 | Table | Remembers | Why | Window | Bound |
 | --- | --- | --- | --- | --- |
 | stored names (`storedNames`) | the basename each upload was stored under | Ghost saves an image's original as `<stored basename>_o<ext>` and looks for exactly that; an upload named so keeps that name, once | 60 s | 1000, oldest dropped |
-| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` throws |
+| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference it matches to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` refuses with a 503 |
 | lapsed promises (`lapsedReservations`) | the key of a promise that ran out before its `save()` | the importer has already written the promised path into its references, so a later `save()` of that file is refused rather than stored under another name | until the file is promised a fresh name | counted with the promised names; never evicted |
 
 A promise that lapses moves from the promised table to the lapse table, so the
@@ -213,6 +202,40 @@ ordinary upload and gets its own component. A refused upload leaves no entry
 in any table. When a verdict source is missing, nothing is promised. An
 original that arrives after its window, after a restart, or after eviction is
 stored under a fresh component: Ghost then falls back to the processed image.
+
+### Limits of the names
+
+- **Promises are per file object.** `getUniqueFileName()` called again for one
+  file (same temp path, directory and name) returns the same path, and that
+  holds when the calls overlap: a second ask while the first is still being
+  worked out waits for it. Two different file objects of one name are two files
+  and get two components.
+- **No promise without a temp path.** Ghost's media inliner and oEmbed
+  thumbnails call `getUniqueFileName()` with a name and a directory only, then
+  write with `saveRaw()` to what came back; nothing ever spends a promise for
+  such a file. So none is made: each ask returns a fresh component, and two
+  inlined media of one name share none. The name is stored at the path Ghost
+  was handed, and this adapter does not choose it again at `saveRaw()`.
+- **An imported original is paired with its processed image.** Ghost's importer
+  asks for every file's name at once, so neither of `photo.png` and
+  `photo_o.png` is promised before the other asks. They are matched by the
+  directory they will be stored in, the temp directory the zip was extracted to
+  (one per import) and the processed image's name; whichever asks first picks
+  the component and the other takes it, so the original is promised
+  `<processed stem>_o<ext>`, the name Ghost looks for. Another import's
+  `photo.png` never matches. The record is dropped once both have asked, or after
+  an hour, and the table is bounded by the same limit as the promises: past
+  it a file is simply not paired. A lone original is named
+  `<stem>-<component>_o<ext>`, and a name that is only an extension is never an
+  original. Pairing relies on Ghost extracting one import to one temp
+  directory; a caller that passes no temp path is not paired at all.
+- **Ghost's importer rewrites only the references its own pattern matches.** It
+  builds that pattern from the file name without escaping it, so a name with
+  regular-expression characters, such as `my photo (1).JPG`, is not rewritten
+  in the posts on any store, this one or Ghost's own: the reference dangles the
+  same on both. Nothing in this adapter can change that.
+- **A full or lapsed name table answers 503.** Both refusals are typed (a
+  `MaintenanceError`) and say to run the import again or try later.
 
 ## Configuration
 
@@ -318,10 +341,10 @@ shape) builds an absolute, CDN-hosted URL from `wrappedConfig.cdnUrl` (or
 
 **Restart-safety.** The quarantine directory is the only source of truth,
 never this process's memory. A hold's bytes are quarantined immediately
-(exactly as a refusal's are), with a `<digest>.holds.json` sidecar recording
-which target path(s) are waiting on it -- the only way to tell a still-
-pending hold apart from a permanently quarantined refusal, since both live
-at `<quarantinePath>/<digest>`. `ScanningStorageAdapter`'s constructor calls
+(exactly as a refusal's are), with a `<digest>.holds.json/` sidecar
+directory recording which target path(s) are waiting on it -- the only way
+to tell a still-pending hold apart from a permanently quarantined refusal,
+since both live at `<quarantinePath>/<digest>`. `ScanningStorageAdapter`'s constructor calls
 `HoldRegistry#resumeFromQuarantine` synchronously, before it returns, so a
 restarted process resumes every pending hold before it can serve a single
 request. Bytes are never held in memory for a hold's full (potentially
@@ -334,8 +357,8 @@ ever bounding how long a hold itself is allowed to live.
 **One quarantine, three features.** Ghost constructs one decorator per
 storage feature (`images`, `media`, `files`) and never tells it which
 feature it serves, while a deployment gives all three the same
-`quarantinePath`. The sidecar is therefore keyed by owner --
-`{"owners": {"<wraps>:<storagePath>": [targetPaths]}}`, the wrapped
+`quarantinePath`. Each sidecar entry therefore names its owner --
+`{"owner": "<wraps>:<storagePath>", "targets": [targetPaths]}`, the wrapped
 adapter's `storagePath` being what differs between features on both
 backends -- and a restarted decorator resumes only its own owner's
 targets. Without that, whichever feature's decorator polled first would
@@ -343,8 +366,9 @@ promote another feature's hold into its own served tree and delete the
 bytes the owning feature was still waiting on, so the upload would never
 be served. When the same bytes are held by two features, each promotes
 into its own tree and only the last to release the digest removes the
-bytes. A sidecar with no `owners` map is left held and unresumed, and
-logged, rather than guessed at.
+bytes. An entry with no owner, or a sidecar that is a file with no
+`owners` map, is left held and unresumed, and logged, rather than guessed
+at.
 
 **A refusal by any feature is final for every feature.** A refusal --
 synchronous, or a held digest's later match -- writes the bytes, then a
@@ -386,20 +410,51 @@ with the record and the bytes. A crash between write record and ensure
 bytes leaves the digest refused, and its next refusal rewrites the bytes.
 A refusal cannot leave bytes with no record. A crash between move aside
 and finish leaves an aside copy. Each adapter sweeps them at start-up:
-restored if the digest is refused, deleted otherwise. That is safe against
-a live releaser for the same reason finish is. A record that cannot be read
+restored if the digest is refused or a hold sidecar names it, deleted
+otherwise. A hold that lands its sidecar after the sweep looked puts the
+bytes back itself, since it confirms them after the sidecar write. That is
+safe against a live releaser for the same reason finish is. A record that cannot be read
 for any reason but absence counts as present: a promotion fails (and is
 retried, then stuck), a release puts the bytes back, and a sweep leaves the
 copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as
 two real processes, pausing each between its steps, in all six orders.
 
-The hold sidecar's read-modify-write is still single-process, which is a
-safety-neutral but real availability gap: a held digest is never served
-and never loses sealed bytes, but during a swap both colours re-arm the
-same holds, so a hold one colour promotes can fail its retries in the
-other and raise a false "hold stuck" alert, and two processes updating
-one sidecar at once can drop an owner's entry, leaving a hold that is
-never resumed and never marked stuck, with nothing logged.
+**One entry per holder.** The sidecar is a directory with one entry file
+per holder, a holder being one feature's decorator in one process, so the
+three features of a Ghost and both colours of a swap never write the same
+file, and no holder ever reads, rewrites or removes another's entry. A
+release removes its own entry, then the directory with `rmdir`, which
+fails while any entry is in it, and only then the bytes, through
+`releaseBytes`, which looks for the directory again after moving them
+aside. So a hold that lands in another process at any point of a release
+keeps its entry, and its bytes: before the `rmdir`, it fails; after it,
+`releaseBytes` puts the bytes back, or the hold's own check after writing
+its entry does. A writer whose directory is removed between making it and
+writing its entry makes it again. A restarted decorator takes over every
+entry its owner's earlier processes left, claiming each by `rename` before
+reading it, and writes them as one entry of its own; during a swap that
+includes the live other colour's, which goes on rewriting and removing
+only its own. A sidecar left by an older release as one file, `{"owners":
+{...}, "stuck": {...}}`, is split into one entry per owner at start-up;
+the bytes are read first and put back if a release or sweep removed them
+while no sidecar stood. The old file is renamed to a dotfile aside copy
+before the first entry is written, and removed after the last. A process
+killed between leaves the aside copy, and the next start-up, and every
+orphan sweep, finishes the split from it before it looks for orphaned
+bytes; a split another process has begun is finished the same way before
+an owner adopts its entries. Finishing a split can fail (a full disk, EIO,
+EACCES): the failure is logged and the aside copy stays. While it stands it
+is a hold on the digest it names, as a sidecar is, for every path that
+removes bytes: the orphan sweep, `releaseBytes` with `keepIfHeld`, and the
+sweep of releasing copies each keep them, on the same pass and on every
+later one, until a split completes. `test/unit/hold-release-cross-process.test.mjs`
+runs a releaser and a holder as two real processes, pausing the releaser
+before it gives up its entry, before it moves the bytes aside and after.
+
+A digest held in both colours during a swap is still promoted by both, and
+a hold one colour promotes can fail its retries in the other and raise a
+false "hold stuck" alert: safety-neutral, since a held digest is never
+served unverified and never loses sealed bytes.
 
 **Why the registry is shaped as it is.** There is no real verdict channel
 yet, so "a later verdict arrives" means the same in-process `VerdictClient`
@@ -427,15 +482,23 @@ that does not settle within `writeTimeoutMs` counts as a failed retry, and a
 request-path write that does not settle is rejected after the same budget
 (default 60000 ms, set through the adapter's `writeTimeoutMs` config). It is
 logged once with the fixed prefix
-`ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
-`"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
-same line again rather than resuming it. To retry a stuck hold once its
-cause is fixed, remove that owner's `stuck` entry from the sidecar and
-restart Ghost.
+`ScanningStorageAdapter: hold stuck` and recorded in its sidecar entry as
+`"stuck": {"reason": "..."}`; a restart that finds it logs the same line
+again rather than resuming it. To retry a stuck hold once its cause is
+fixed, remove the `stuck` field from that owner's entry in
+`<digest>.holds.json/` and restart Ghost.
+
+**Why the write budget matters.** Ghost's `S3Storage` builds its S3 client with
+only a region, endpoint, path-style flag and credentials, and its config schema
+has no timeout field. There is no request timeout beneath `writeTimeoutMs`, so
+that budget is the only bound on a write the object store never acknowledges.
 
 **Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
 between the two leaves bytes under `<digest>` with no sidecar and no
-refusal record. They were never served, but nothing would ever resume or
+refusal record, or with a sidecar directory holding no entry, only the
+crashed writer's temp file or nothing. Each sweep first removes such a
+directory, with any temp file in it older than `holdOrphanMinAgeMs`; a live
+writer whose empty directory is removed makes it again. They were never served, but nothing would ever resume or
 remove them, and the sidecar was the only record of the target path they
 were held for, so they cannot be resumed either. The registry therefore
 sweeps them: once at start-up, right after the aside-copy sweep and before
@@ -444,7 +507,8 @@ the adapter's constructor returns, and then every
 and that `stopAll` ends. A file is an orphan when it is a regular file
 whose name is not a dotfile (a live writer's temp file), an aside copy, a
 sidecar or a refusal record; it is older than `holdOrphanMinAgeMs`; and no
-sidecar of any owner and no refusal record sits beside it. Each removal is
+sidecar of any owner, no unfinished split's aside copy and no refusal record sits
+beside it. Each removal is
 logged with the fixed prefix `ScanningStorageAdapter: orphaned quarantine
 bytes`, then the digest and the age. Nothing about the digest's shape is
 assumed: a name is classified by what it is not.
@@ -470,7 +534,8 @@ argument as a releaser: it writes the record before the bytes, so a sweep
 either sees the record and puts the bytes back, or moved them aside first
 and the sealer restores or rewrites them. `test/unit/cross-process.test.mjs`
 runs a sealer and a sweep as two real processes in all six orders, and
-kills a real `hold` between its two writes.
+kills a real `hold` between its two writes, before its sidecar directory
+exists and with only its temp file in it.
 
 The default age is 10 minutes. It has to be far larger than the longest a
 live writer can sit between its two writes: the write timeout is 60 seconds
@@ -480,6 +545,20 @@ crash's leftover lingers a little longer. The default interval is 5
 minutes; a shorter one only finds an orphan sooner. Neither setting accepts
 zero, a negative or a non-numeric value: such a value falls back to the
 default, because an age of zero would sweep a live writer's bytes.
+
+**Crash-residue temp files.** Every quarantine write goes to a dotfile temp
+file named `.<name>.<pid>.<12 hex digits>.tmp` and is then renamed into
+place, so a crash between the write and the rename leaves the temp file
+behind. The orphan sweep skips dotfiles, so the same sweep, at the same
+moments, has a rule of its own for these: it removes a file that is a regular
+file, whose name is exactly that shape, and that is older than
+`holdOrphanMinAgeMs` (10 minutes by default) and never younger than 60
+seconds, the default write timeout, however small that setting is. A younger
+file may belong to a live writer and is left alone. Each removal is logged
+with the fixed prefix `ScanningStorageAdapter: crash-residue quarantine temp
+file`, then the name and the age. A temp file holds no verdict and is never
+served, so nothing else is checked. Every other dotfile, and every byte,
+sidecar, refusal record and aside copy, is untouched by this rule.
 
 ## What Ghost's extension point does, and the traps in it
 
@@ -516,10 +595,10 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 ```sh
 pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.55.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.76.0 in Docker
 ```
 
-The image test (`test/image/`) drives a real Ghost 6.55.0 container through
+The image test (`test/image/`) drives a real Ghost 6.76.0 container through
 the real adapter manager: a refused upload (415, typed error, quarantined by
 digest, nothing in the served tree), a clean upload, post creation, the
 public site, the admin API and an on-demand resize -- all still working

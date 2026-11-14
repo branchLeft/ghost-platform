@@ -1,10 +1,12 @@
 #!/bin/sh
-# Sabotage proof for the two gates' verdict logic: for each gate,
-# mutate the real source in place, require the gate's tests to go RED, restore
+# Sabotage proof for the gates' verdict logic (the theme-hash, regression and
+# checkout gates, and the payment-origin derivation that feeds the policy): for
+# each, mutate the real source in place, require its tests to go RED, restore
 # it, require them GREEN. A mutation whose target string is not found aborts
 # (a sabotage that changed nothing proves nothing). Needs render-core built.
-# The live-browser sabotages (policy removed, hashes removed) are in
-# csp-regression-gate.sh --sabotage=...; see csp-regression-gate.md.
+# The live-browser sabotages (policy removed, hashes removed, Stripe origin
+# removed) are in csp-regression-gate.sh --sabotage=... and
+# csp-checkout-gate.py --sabotage=...; see their .md files.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
@@ -20,19 +22,24 @@ fs.writeFileSync(file, s.replace(from, to));
 ' "$@"
 }
 
+# The tests that must notice a mutation: this directory's, unless TESTS names one file.
+run_tests() {
+    if [ -n "${TESTS:-}" ]; then node --test "$TESTS"; else node --test "$HERE"/*.test.mjs; fi
+}
+
 prove() { # label, file, from, to
     label="$1"; file="$2"; from="$3"; to="$4"
     cp "$file" "$file.orig"
     trap 'mv -f "$file.orig" "$file"' EXIT INT TERM
     mutate "$file" "$from" "$to" || { mv -f "$file.orig" "$file"; exit 3; }
-    if node --test "$HERE"/*.test.mjs >/dev/null 2>&1; then
+    if run_tests >/dev/null 2>&1; then
         echo "SABOTAGE $label: NOT DETECTED (tests stayed green)"; FAIL=1
     else
         echo "SABOTAGE $label: RED"
     fi
     mv -f "$file.orig" "$file"
     trap - EXIT INT TERM
-    if node --test "$HERE"/*.test.mjs >/dev/null 2>&1; then
+    if run_tests >/dev/null 2>&1; then
         echo "RESTORED $label: GREEN"
     else
         echo "RESTORED $label: STILL RED"; FAIL=1
@@ -65,6 +72,69 @@ prove "regression/uploaded-script-ran-vs-unexercised-confused" csp-regression-ga
     "run.uploadedScriptRan === true" "run.uploadedScriptRan === null"
 prove "theme-hash/report-only-flag-unchecked" theme-hash-gate.mjs  "if (record.flag !== REPORT_ONLY_FLAG)" "if (false)"
 prove "theme-hash/enforcing-mode-unchecked" theme-hash-gate.mjs  "if (edge.contentSecurityPolicyMode !== 'enforcing') {" "if (false) {"
+
+# The checkout gate (Stripe checkout under the strict policy).
+prove "checkout/flow-error-ignored" checkout-gate.mjs \
+    "if (run.failedAt || run.error) {" "if (false) {"
+prove "checkout/member-session-unchecked" checkout-gate.mjs \
+    "if (run.memberSession !== true) {" "if (false) {"
+prove "checkout/checkout-not-opened-ignored" checkout-gate.mjs \
+    "if (run.checkoutOpened !== true) {" "if (false) {"
+prove "checkout/return-from-checkout-unchecked" checkout-gate.mjs \
+    "if (run.returnedFromCheckout !== true) {" "if (false) {"
+prove "checkout/paid-unchecked" checkout-gate.mjs \
+    "if (run.paid !== true) {" "if (false) {"
+prove "checkout/paid-unchecked-treated-as-paid" checkout-gate.mjs \
+    "if (run.paid !== true) {" "if (run.paid === false) {"
+prove "checkout/stripe-js-unloaded-ignored" checkout-gate.mjs \
+    "if (run.stripeJsLoaded !== true) {" "if (false) {"
+prove "checkout/violations-ignored" checkout-gate.mjs \
+    "if (violations.length > 0) {" "if (false) {"
+
+# The payment-origin derivation: the tool that decides what widens script-src.
+TESTS="$HERE/../derive/derive-payment-origins.test.mjs"
+DERIVE="../derive/derive-payment-origins.mjs"
+node --test "$TESTS" >/dev/null 2>&1 && echo "BASELINE derive: GREEN" || { echo "BASELINE derive: RED"; exit 1; }
+prove "derive/stub-stripe-js-accepted" "$DERIVE" \
+    "if (capture.realStripeJs !== true) {" "if (false) {"
+prove "derive/enforced-capture-accepted" "$DERIVE" \
+    "if (v.disposition !== 'report') {" "if (false) {"
+prove "derive/non-stripe-origin-accepted" "$DERIVE" \
+    "if (url.protocol !== 'https:' || !isStripeHost(url.hostname)) {" "if (false) {"
+prove "derive/empty-capture-accepted" "$DERIVE" \
+    "DIRECTIVES.every((d) => origins[d].length === 0)" "false"
+prove "derive/unmapped-directive-ignored" "$DERIVE" \
+    "if (!directive) {" "if (false) {"
+prove "derive/check-never-compares" "$DERIVE" \
+    "if (committed !== text) {" "if (false) {"
+
+# The checkout gate's real Stripe test-mode rules (the owner's opt-in run).
+TESTS="$HERE/checkout-gate.test.mjs"
+prove "checkout-real/fake-capture-accepted-as-real" checkout-gate.mjs \
+    "if (realMode && !capturedReal) {" "if (false) {"
+prove "checkout-real/real-capture-accepted-as-fake" checkout-gate.mjs \
+    "} else if (!realMode && capturedReal) {" "} else if (false) {"
+prove "checkout-real/stub-stripe-js-accepted" checkout-gate.mjs \
+    "if (run.realStripeJs !== true) {" "if (false) {"
+prove "checkout-real/non-stripe-host-accepted" checkout-gate.mjs \
+    "if (run.checkoutHost !== 'checkout.stripe.com') {" "if (false) {"
+prove "checkout-real/live-session-accepted" checkout-gate.mjs \
+    "if (run.checkoutSessionIsTest !== true) {" "if (false) {"
+prove "checkout-real/other-card-accepted" checkout-gate.mjs \
+    "if (run.cardTyped !== PUBLISHED_TEST_CARD) {" "if (false) {"
+prove "checkout-real/paid-source-unchecked" checkout-gate.mjs \
+    "run.paidSource !== 'tenant-member-state' || " ""
+prove "checkout-real/tenant-member-status-unchecked" checkout-gate.mjs \
+    " || run.tenantMemberStatus !== 'paid'" ""
+prove "checkout-real/steps-unchecked" checkout-gate.mjs \
+    "if (!Array.isArray(run.steps) || run.steps.join(',') !== STEPS.join(',')) {" "if (false) {"
+prove "checkout-real/switch-not-read" checkout-gate.mjs \
+    "process.env.CSP_STRIPE_REAL_TEST_MODE === '1'" "false"
+
+# The real test-mode switch (real_test_mode.py: each key rule, the tenant and card
+# refusals, the redaction) and the runner's own real-mode wiring (the refusals, the
+# keys by environment only, cleanup with -v) are proved in test_real_test_mode.py and
+# test_csp_checkout_gate.py, whose last classes mutate the Python source and require red.
 
 [ "$FAIL" -eq 0 ] && echo "ALL SABOTAGES DETECTED" || echo "SABOTAGE PROOF FAILED"
 exit "$FAIL"

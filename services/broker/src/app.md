@@ -147,3 +147,32 @@ refusing rather than guessing, in the order that costs least first:
    `attemptColourSwap`'s own second, independent readiness check: no step
    may ever leave a tenant with no colour serving, and neither check above
    says anything about the survivor's own current health.
+
+## freeze
+
+`POST /freeze` is the only writer of the held-evidence marker, the
+`detaching` phase and `evidence: 'detached'` (T1 to T6 of the freeze-and-detach
+design). Under the per-slot lock it:
+
+1. answers a slot already `detached` from its stored receipt, and refuses a
+   `free` slot with nothing to freeze, or a slot in a phase with a recovery of
+   its own (`preparing`, `swapping`, `stopping`, `resetting`), writing nothing;
+2. writes `detaching` with evidence `frozen` **before any side effect**, so a
+   crash at any later point leaves `/reset` refused;
+3. revokes access (both drain flags, the lease and hash, the Ghost access key),
+   revoking first as `/reset` does;
+4. calls `wrapper.detach`, and takes the receipt only if it parses and names this
+   slot's entry;
+5. in one `releaseHeldEvidence` write, records `detached`, stores the receipt
+   and moves the slot to `error`, the phase every other path already treats as
+   "needs an explicit reset".
+
+Any failure after step 2 answers 503 and leaves the slot `detaching`, `frozen`;
+the retry resumes, because every step is idempotent. The handler never resets
+and never deletes. A test pins that `app.ts` holds the only call of
+`releaseHeldEvidence`. What triggers `/freeze` is the control estate's, not
+this service's (the broker never initiates).
+
+`/reset` and `/freeze` 409s carry a machine-readable `reason` beside `error`
+(`locked` is retry-later, `held-evidence` is never-retry), so a caller never
+parses prose to tell a busy slot from held evidence.

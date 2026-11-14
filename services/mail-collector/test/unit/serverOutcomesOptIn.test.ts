@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -38,6 +39,8 @@ function findFreePort(): Promise<number> {
   });
 }
 
+const KEY = randomBytes(32).toString('hex');
+
 describe('dist/server.js — outcomes are opt-in from the environment', () => {
   let dir: string;
   let shim: FakeShimServer;
@@ -62,16 +65,22 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function submitOneMessage(extraEnv: Record<string, string>) {
+  async function submitOneMessage(extraEnv: Record<string, string>, emailId: string | null = null) {
     const shimUrl = await shim.listen();
     writeFileSync(
       join(dir, 'tenant-a.json'),
-      JSON.stringify({ kind: 'tenant', slug: 'tenant-a', appHostIp: '127.0.0.1', expiresAt: null })
+      JSON.stringify({
+        kind: 'tenant',
+        slug: 'tenant-a',
+        appHostIp: '127.0.0.1',
+        expiresAt: null,
+        mail: { identity: { kind: 'tenant', domain: 'tenant-a.example', dkimSelector: 'sel' } },
+      })
     );
     shim.enqueue({
       id: '4cfbf575-9efc-4508-bc4f-e0f9314e4844',
       domain: 'tenant-a.example',
-      emailId: null,
+      emailId,
       from: 'noreply@tenant-a.example',
       to: 'reader@example.com',
       subject: 'Hello',
@@ -116,6 +125,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     const received = await submitOneMessage({
       COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
       COLLECTOR_OUTCOMES_DSN_DIR: dir,
+      COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
     });
     expect(received.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
     expect(received.envelopeFrom).toBe('outcomes@collector.example');
@@ -123,5 +133,31 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
       targetId: 'tenant-a',
       id: '4cfbf575-9efc-4508-bc4f-e0f9314e4844',
     });
+  });
+
+  const LANES = {
+    COLLECTOR_MX1_TX_RETURN_PATH: 'bounce-tx@tx.example',
+    COLLECTOR_MX1_NL_RETURN_PATH: 'bounce-nl@nl.example',
+  };
+
+  it('with the lane paths set and outcomes off, a bulk message leaves from the newsletter path and requests no DSN', async () => {
+    const received = await submitOneMessage(LANES, 'email-1');
+    expect(received.envelopeFrom).toBe('bounce-nl@nl.example');
+    expect(received.dsnNotify).toBeUndefined();
+    expect(decodeOutcomeMessageId(received.parsed.messageId ?? '')).toBeNull();
+  });
+
+  it('with the lane paths set and outcomes off, a login message leaves from the transactional path', async () => {
+    const received = await submitOneMessage(LANES);
+    expect(received.envelopeFrom).toBe('bounce-tx@tx.example');
+  });
+
+  it('with the lane paths, the notification directory and the Message-ID key set, the lane path is the envelope sender and the DSN is requested', async () => {
+    const received = await submitOneMessage(
+      { ...LANES, COLLECTOR_OUTCOMES_DSN_DIR: dir, COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY },
+      'email-1'
+    );
+    expect(received.envelopeFrom).toBe('bounce-nl@nl.example');
+    expect(received.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
   });
 });

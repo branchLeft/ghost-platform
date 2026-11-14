@@ -11,6 +11,8 @@ const {
   buildVerdictPendingError,
   buildUncheckableError,
   buildVideoAudioRefusedError,
+  buildNamesFullError,
+  buildNameLapsedError,
 } = require('./refusal-error');
 const { detectVideoAudioFamily } = require('./media-kind');
 const { stampImageContentType } = require('./content-type');
@@ -107,17 +109,24 @@ function truncateToBytes(text, maxBytes) {
   return out;
 }
 
-// `<stem>-<random>.<ext>`, the stem cut so the whole name fits; a file with
-// no usable name is left alone for the wrapped adapter to reject or default
-// as it always did.
+// `<stem>-<component>.<ext>`, the stem cut so the whole name fits. An original
+// (`<stem>_o.<ext>`) is named from the same stem and component with `_o` after
+// them, which is the name Ghost looks for beside the processed image.
+function nameWithComponent(file, component, isOriginal) {
+  const { stem, ext } = splitName(file.name);
+  const base = isOriginal ? stem.slice(0, -ORIGINAL_SUFFIX.length) : stem;
+  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
+  const kept = truncateToBytes(base, Math.max(0, room)) || 'upload';
+  return `${kept}-${component}${isOriginal ? ORIGINAL_SUFFIX : ''}${ext}`;
+}
+
+// A file with no usable name is left alone for the wrapped adapter to reject
+// or default as it always did.
 function withRandomName(file) {
   if (!file || typeof file.name !== 'string' || file.name.length === 0) {
     return file;
   }
-  const { stem, ext } = splitName(file.name);
-  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
-  const kept = truncateToBytes(stem, Math.max(0, room)) || 'upload';
-  return { ...file, name: `${kept}-${randomNameComponent()}${ext}` };
+  return { ...file, name: nameWithComponent(file, randomNameComponent(), false) };
 }
 
 function pruneStoredNames(names, now) {
@@ -187,6 +196,74 @@ function liveReservation(reservations, key, now = Date.now(), lapsed = null) {
     }
   }
   return reservations.get(key)?.name;
+}
+
+// An imported processed image and its original arrive as two files,
+// `photo.png` and `photo_o.png`, and Ghost finds the original of a stored
+// `photo-<c>.png` at `photo-<c>_o.png`. Ghost's importer asks for every file's
+// name at once, so neither is promised before the other asks. They are paired
+// by what the two share: the directory they will be stored in, the temp
+// directory the zip was extracted to (one per import, so another import's
+// `photo.png` never matches), and the processed image's name. The first of the
+// pair to ask picks the component, the second takes it, and the record goes.
+// A record the second never claims is dropped after the same window as a
+// promise, and the table is bounded, so a full one only leaves files unpaired.
+const FAMILY_WINDOW_MS = RESERVATION_WINDOW_MS;
+
+function isOriginalName(name) {
+  const { stem } = splitName(name);
+  return stem.endsWith(ORIGINAL_SUFFIX) && stem.length > ORIGINAL_SUFFIX.length;
+}
+
+function familyKey(file, targetDir) {
+  const { stem, ext } = splitName(file.name);
+  const processed = isOriginalName(file.name)
+    ? `${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`
+    : file.name;
+  return `${targetDir || ''}\n${path.dirname(file.path)}\n${processed}`;
+}
+
+// The component this file should be named with, or null when it has none to
+// share: its role in the family was already taken (a file promised afresh) or
+// the table is full. `release` hands the role back when the ask fails.
+function claimFamily(families, file, targetDir, maxEntries, now = Date.now()) {
+  for (const [key, family] of families) {
+    if (family.expiresAt > now) {
+      break;
+    }
+    families.delete(key);
+  }
+  const role = isOriginalName(file.name) ? 'original' : 'processed';
+  const key = familyKey(file, targetDir);
+  let family = families.get(key);
+  if (!family) {
+    if (families.size >= maxEntries) {
+      return null;
+    }
+    family = {
+      component: randomNameComponent(),
+      expiresAt: now + FAMILY_WINDOW_MS,
+      taken: { original: false, processed: false },
+    };
+    families.set(key, family);
+  }
+  if (family.taken[role]) {
+    return null;
+  }
+  family.taken[role] = true;
+  if (family.taken.original && family.taken.processed) {
+    families.delete(key);
+  }
+  return {
+    component: family.component,
+    isOriginal: role === 'original',
+    release: () => {
+      family.taken[role] = false;
+      if (!families.has(key)) {
+        families.set(key, family);
+      }
+    },
+  };
 }
 
 // The reserved basename, spent, or undefined.
@@ -316,6 +393,11 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.storedNames = new Map();
       this.reservedNames = new Map();
       this.lapsedReservations = new Map();
+      // A promise being worked out, so a concurrent ask for the same file
+      // shares it instead of making a second one.
+      this.namesInFlight = new Map();
+      // Imported processed images awaiting their original, or the reverse.
+      this.nameFamilies = new Map();
       // Bounds reservations and lapses together; only a test sets it.
       this.reservationMaxEntries =
         Number(config.reservationMaxEntries) > 0
@@ -425,9 +507,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // would dangle them silently. Kept, so a retry is refused too, until
         // getUniqueFileName() promises this file a fresh name.
         if (this.lapsedReservations.has(key)) {
-          throw new Error(
-            `ScanningStorageAdapter: the name promised to "${file.name}" lapsed after an hour before it was saved, so nothing was stored under another name; run the import again`
-          );
+          throw buildNameLapsedError(GhostErrors, file.name);
         }
         if (takeOriginalOf(file, this.storedNames)) {
           return { fixed: file.name, remember: false };
@@ -471,7 +551,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           : path.join(targetDir || '', named.name);
       const usable = file && typeof file.name === 'string' && file.name.length > 0;
       // A refused upload will never be saved, so there is nothing to reserve.
-      if (!usable || this.refuseUploadsReason) {
+      // Nor is there for a file with no temp path (Ghost's media inliner and
+      // oEmbed thumbnails): they write with saveRaw() to the path returned, which
+      // never takes a reservation, so one would only be kept for an hour and
+      // hand a second file of that name a path that follows the first's.
+      const hasTempPath = usable && typeof file.path === 'string' && file.path.length > 0;
+      if (!hasTempPath || this.refuseUploadsReason) {
         return unique(usable ? withRandomName(file) : file);
       }
       const key = reservationKey(file, targetDir);
@@ -484,24 +569,51 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       if (reserved !== undefined) {
         return unique({ ...file, name: reserved });
       }
+      // Asked again before the first ask has finished: the same promise.
+      const inFlight = this.namesInFlight.get(key);
+      if (inFlight) {
+        return inFlight;
+      }
+      const promise = (async () => {
+        try {
+          return await this.#promiseName(file, targetDir, key, unique);
+        } finally {
+          this.namesInFlight.delete(key);
+        }
+      })();
+      this.namesInFlight.set(key, promise);
+      return promise;
+    }
+
+    async #promiseName(file, targetDir, key, unique) {
       // A file that already lapsed swaps its lapse for the new promise, so it
       // adds nothing to the count and is let through even when the bound is hit.
       if (
         !this.lapsedReservations.has(key) &&
         this.reservedNames.size + this.lapsedReservations.size >= this.reservationMaxEntries
       ) {
-        throw new Error(
-          'ScanningStorageAdapter: too many upload names are reserved and not yet saved; retry later'
-        );
+        throw buildNamesFullError(GhostErrors);
       }
-      const result = await unique(withRandomName(file));
-      this.reservedNames.set(key, {
-        name: path.basename(result),
-        expiresAt: Date.now() + RESERVATION_WINDOW_MS,
-      });
-      // A fresh promise replaces any earlier lapse of the same file.
-      this.lapsedReservations.delete(key);
-      return result;
+      const family = claimFamily(this.nameFamilies, file, targetDir, this.reservationMaxEntries);
+      try {
+        const result = await unique(
+          family
+            ? { ...file, name: nameWithComponent(file, family.component, family.isOriginal) }
+            : withRandomName(file)
+        );
+        this.reservedNames.set(key, {
+          name: path.basename(result),
+          expiresAt: Date.now() + RESERVATION_WINDOW_MS,
+        });
+        // A fresh promise replaces any earlier lapse of the same file.
+        this.lapsedReservations.delete(key);
+        return result;
+      } catch (error) {
+        if (family) {
+          family.release();
+        }
+        throw error;
+      }
     }
 
     // For bytes Ghost writes as a directory tree outside save()/saveRaw()

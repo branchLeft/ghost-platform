@@ -41,14 +41,16 @@ import { compareParsed } from './parsedDifference.js';
 import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
+  evidenceStatusOf,
   readSlotState,
+  releaseHeldEvidence,
   resetRefusal,
   writeSlotState,
   UnrotatedHashError,
   type Phase,
   type SlotState,
 } from './stateStore.js';
-import type { SlotWrapper } from './wrapper.js';
+import { isDetachReceipt, type DetachReceipt, type SlotWrapper } from './wrapper.js';
 import { writeArtefacts } from './writeArtefacts.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -141,6 +143,7 @@ function reply<Status extends number, const Body>(
 type ReconcileResult = Awaited<ReturnType<Handlers['reconcileSlot']>>;
 type StopResult = Awaited<ReturnType<Handlers['stopSlot']>>;
 type ResetResult = Awaited<ReturnType<Handlers['resetSlot']>>;
+type FreezeResult = Awaited<ReturnType<Handlers['freezeSlot']>>;
 type StatusResult = Awaited<ReturnType<Handlers['getSlotStatus']>>;
 type DrainResult = Awaited<ReturnType<Handlers['pollDrainQueue']>>;
 type PushResult = Awaited<ReturnType<Handlers['pushImage']>>;
@@ -632,16 +635,21 @@ async function handleReset(deps: BrokerDeps, body: SlotBody): Promise<ResetResul
   // Same lock as `/reconcile` (F1): a reset racing an in-flight reconcile
   // must not tear down a slot that reconcile still believes it owns.
   if (!deps.slotLock.claim(slot)) {
-    return reply(409, { error: `slot "${slot}" is locked by a concurrent request` });
+    return reply(409, {
+      error: `slot "${slot}" is locked by a concurrent request`,
+      reason: 'locked',
+    });
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
     // Held evidence is released only by a confirmed detach, never by a
-    // reset: refuse before any write, so the slot is left untouched.
+    // reset: refuse before any write, so the slot is left untouched. The
+    // machine-readable reason is what lets a caller tell this (never
+    // retry, page) from the lock above (retry later) without reading prose.
     const refusal = resetRefusal(state, slot);
     if (refusal !== undefined) {
       deps.log(`reset refused: ${refusal}`);
-      return reply(409, { error: refusal });
+      return reply(409, { error: refusal, reason: 'held-evidence' });
     }
     await writeSlotState(deps.stateDir, slot, {
       phase: 'resetting' satisfies Phase,
@@ -680,6 +688,117 @@ async function handleReset(deps: BrokerDeps, body: SlotBody): Promise<ResetResul
   }
 }
 
+/**
+ * Why a received receipt may not release the slot: it must be the exact
+ * shape and must name this slot. A receipt for another slot's entry is
+ * never taken as this slot's confirmation.
+ */
+function receiptRefusal(receipt: unknown, slot: SlotName): string | undefined {
+  if (!isDetachReceipt(receipt)) return 'the wrapper returned a receipt of the wrong shape';
+  if (!receipt.entry.startsWith(`${slot}-`))
+    return 'the wrapper returned a receipt for another slot';
+  return undefined;
+}
+
+/**
+ * `POST /freeze`: the one writer of the held-evidence marker, and the one
+ * caller of `releaseHeldEvidence`. T1 to T6 of the freeze-and-detach design:
+ * the intent is on disk before any side effect, access is revoked before
+ * the move, and `detached` is written only after a receipt that names this
+ * slot, in the same write that stores it and leaves `detaching`. Nothing
+ * here resets or deletes. Every failure leaves the slot `detaching` with
+ * evidence `frozen`, so `/reset` stays refused and a retry resumes.
+ * See app.md#freeze.
+ */
+async function handleFreeze(deps: BrokerDeps, body: SlotBody): Promise<FreezeResult> {
+  const slot: SlotName = validateSlotLiteral(body.slot, deps.slotLiterals);
+
+  // Same lock as every other mutating route: a reset or reconcile racing a
+  // freeze must see an occupied slot for the whole attempt.
+  if (!deps.slotLock.claim(slot)) {
+    return reply(409, {
+      error: `slot "${slot}" is locked by a concurrent request`,
+      reason: 'locked',
+    });
+  }
+  try {
+    const state = await readSlotState(deps.stateDir, slot);
+
+    // A confirmed freeze replays from its stored receipt and touches nothing.
+    if (state.evidence === 'detached') {
+      if (!isDetachReceipt(state.heldReceipt)) {
+        return reply(409, {
+          error: `slot "${slot}" is marked detached but holds no stored receipt -- refusing to answer`,
+          reason: 'occupied',
+        });
+      }
+      const { entry, sha256, bytes } = state.heldReceipt;
+      return reply(200, {
+        slot,
+        phase: 'error',
+        evidence: 'detached',
+        entry,
+        sha256,
+        bytes,
+      });
+    }
+    if (state.phase === 'free' && state.evidence === undefined) {
+      return reply(409, {
+        error: `slot "${slot}" is free and holds nothing to freeze`,
+        reason: 'nothing-to-freeze',
+      });
+    }
+    // A slot already carrying the marker resumes whatever its phase; a slot
+    // with none is frozen only from a phase nothing else is mid-way through.
+    const resuming = state.evidence !== undefined;
+    if (!resuming && state.phase !== 'running' && state.phase !== 'error') {
+      return reply(409, {
+        error: `slot "${slot}" is occupied (phase "${state.phase}")`,
+        reason: 'occupied',
+      });
+    }
+
+    const pending = { slot, phase: 'detaching', evidence: 'frozen' } as const;
+    try {
+      // T2: the intent, before any side effect. `lastHashId` rides along so
+      // the next tenancy's hash-rotation refusal is not silently dropped.
+      await writeSlotState(deps.stateDir, slot, {
+        phase: 'detaching' satisfies Phase,
+        lastHashId: state.lastHashId,
+        evidence: 'frozen',
+      });
+      // T3: cut access, revoking first as `/reset` does. Every step is idempotent.
+      await deps.drainFlags.set(slot, 'a');
+      await deps.drainFlags.set(slot, 'b');
+      await clearLeaseAndHash(deps.leaseStoreConfig, slot);
+      await deps.adminApi.forget?.(slot);
+      // T4: the privileged move, sealed, hashed and verified by the wrapper.
+      const receipt: DetachReceipt = await deps.wrapper.detach(slot);
+      const refusal = receiptRefusal(receipt, slot);
+      if (refusal !== undefined) throw new Error(refusal);
+      // T5: the single named release path, one write.
+      await releaseHeldEvidence(deps.stateDir, slot, {
+        phase: 'error' satisfies Phase,
+        lastHashId: state.lastHashId,
+        heldReceipt: { entry: receipt.entry, sha256: receipt.sha256, bytes: receipt.bytes },
+      });
+      return reply(200, {
+        slot,
+        phase: 'error',
+        evidence: 'detached',
+        entry: receipt.entry,
+        sha256: receipt.sha256,
+        bytes: receipt.bytes,
+      });
+    } catch (err) {
+      deps.log(`freeze did not complete for slot "${slot}": ${(err as Error).message}`);
+      return reply(503, pending);
+    }
+  } finally {
+    deps.slotLock.release(slot);
+  }
+}
+
 async function handleStatus(deps: BrokerDeps, slotParam: string): Promise<StatusResult> {
   let slot: SlotName;
   try {
@@ -698,6 +817,7 @@ async function handleStatus(deps: BrokerDeps, slotParam: string): Promise<Status
   return reply(200, {
     slot,
     phase: state.phase,
+    evidence: evidenceStatusOf(state),
     healthy,
     notReal: deps.seamReadiness.notReal.slice(),
     interim: deps.seamReadiness.interim.slice(),
@@ -750,6 +870,7 @@ function createHandlers(deps: BrokerDeps): Handlers {
     pushImage: (_request, { rawRequest }) => handlePush(deps, rawRequest),
     reconcileSlot: ({ body }) => handleReconcile(deps, body),
     resetSlot: ({ body }) => handleReset(deps, body),
+    freezeSlot: ({ body }) => handleFreeze(deps, body),
     getSlotStatus: ({ path }) => handleStatus(deps, path.slot),
     stopSlot: ({ body }) => handleStop(deps, body),
   };

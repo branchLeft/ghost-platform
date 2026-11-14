@@ -1,12 +1,7 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import {
-  dockerRemoveSync,
-  dockerRemoveUntilGoneSync,
-  processCleanup,
-  type CleanupRegistry,
-} from './cleanup.js';
+import { dockerRemoveUntilGoneSync, processCleanup, type CleanupRegistry } from './cleanup.js';
 import { NO_CONTAINER_LOGS, runDocker, type VolumeMount } from './containerRunner.js';
 import { withEnvFile } from './envFile.js';
 
@@ -358,11 +353,7 @@ export function createMysqlScratch(
     // streams the database; it goes first.
     dockerRemoveUntilGoneSync(dump, docker, registry);
     dockerRemoveUntilGoneSync(container, docker, registry, '-fv');
-    try {
-      dockerRemoveSync(['network', 'rm', network], docker);
-    } catch {
-      // Already gone, or never created.
-    }
+    removeScratchResourceSync(['network', 'rm', network], docker);
   };
   let unregister: (() => void) | undefined;
 
@@ -522,6 +513,29 @@ export function buildSqliteBackupArgs(spec: SqliteScratchSpec): readonly string[
   return args;
 }
 
+/**
+ * Removes one scratch resource. Only "already gone, or never created" is
+ * ignored: any other failure (the daemon refuses, permission, a resource
+ * still in use) is rethrown, so a live resource is never reported as cleaned
+ * up. stderr is captured so the two can be told apart.
+ */
+function removeScratchResourceSync(argv: readonly string[], docker: string): void {
+  try {
+    execFileSync(docker, [...argv], {
+      env: { PATH: process.env.PATH ?? '' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+  } catch (err) {
+    if (isNotFoundFailure(err)) return;
+    throw err;
+  }
+}
+
+function isNotFoundFailure(err: unknown): boolean {
+  const stderr = (err as { stderr?: Buffer | string } | undefined)?.stderr;
+  return stderr !== undefined && /\b(no such|not found)\b/i.test(String(stderr));
+}
+
 export function createSqliteScratch(
   spec: SqliteScratchSpec,
   options: { readonly dockerCommand?: string; readonly registry?: CleanupRegistry } = {}
@@ -531,15 +545,26 @@ export function createSqliteScratch(
   const volume = sqliteScratchVolume(spec.runId);
   const { network } = mysqlScratchNames(spec.runId);
   const removeSync = () => {
+    // Both removals are attempted: a volume that will not go must not leave
+    // the run network behind as well. Every failure is then reported.
+    const failures: unknown[] = [];
     for (const argv of [
       ['volume', 'rm', '-f', volume],
       ['network', 'rm', network],
     ]) {
       try {
-        dockerRemoveSync(argv, docker);
-      } catch {
-        // Already gone, or never created.
+        removeScratchResourceSync(argv, docker);
+      } catch (err) {
+        failures.push(err);
       }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `${failures.length} scratch removals failed: ` +
+          failures.map((f) => (f instanceof Error ? f.message : String(f))).join('; ')
+      );
     }
   };
   let unregister: (() => void) | undefined;

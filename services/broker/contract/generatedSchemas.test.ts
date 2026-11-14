@@ -23,6 +23,42 @@ describe('the generated request schema agrees with render-core on the fixture de
     }
   });
 
+  it('takes an absent mail route, mx1 and sweego, and refuses every other route', () => {
+    const base = demoDescriptor();
+    const accepts = (route: unknown): boolean =>
+      zReconcileRequest.safeParse({
+        slot: '0',
+        descriptor: { ...base, mail: { ...base.mail, route } },
+      }).success;
+    expect(
+      zReconcileRequest.safeParse({ slot: '0', descriptor: base }).success,
+      'no route at all'
+    ).toBe(true);
+    expect(accepts({ primary: 'mx1' })).toBe(true);
+    // The pairing of an allowance with the route is render-core's rule, not the wire shape's.
+    expect(accepts({ primary: 'sweego' })).toBe(true);
+    expect(accepts({ primary: 'sweego', sweegoAllowance: 1 })).toBe(true);
+    expect(accepts({ primary: 'sweego', sweegoAllowance: 100_000_000 })).toBe(true);
+    for (const bad of [
+      { primary: 'sweego', sweegoAllowance: 0 },
+      { primary: 'sweego', sweegoAllowance: -5 },
+      { primary: 'sweego', sweegoAllowance: 1.5 },
+      { primary: 'sweego', sweegoAllowance: '100' },
+      { primary: 'sweego', sweegoAllowance: null },
+      { primary: 'sweego', sweegoAllowance: 100_000_001 },
+      { primary: 'mailgun' },
+      { primary: 'MX1' },
+      { primary: '' },
+      { primary: null },
+      {},
+      'sweego',
+      null,
+      ['sweego'],
+    ]) {
+      expect(accepts(bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+
   it('refuses a descriptor of an unknown kind (the control case: the schema is not vacuous)', () => {
     const verdict = zReconcileRequest.safeParse({
       slot: '0',

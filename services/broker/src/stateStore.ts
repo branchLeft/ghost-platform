@@ -7,7 +7,7 @@ import { waitUntilReady, type GhostReadinessChecker } from './ghostReadiness.js'
 import { clearLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
 import { otherColour, type Colour } from './literals.js';
 import { slotPort } from './slotPorts.js';
-import type { SlotWrapper } from './wrapper.js';
+import type { DetachReceipt, SlotWrapper } from './wrapper.js';
 
 /**
  * The slot state machine. `preparing` is claimed-but-not-yet-running,
@@ -74,14 +74,22 @@ export interface SlotState {
    */
   readonly oldColourStopped?: boolean;
   /**
-   * The evidence copy's custody, set only by freeze-and-detach. `frozen`
-   * means the copy has been taken but not yet confirmed as sealed, hashed
-   * and moved to the held area; `detached` means that confirmation landed.
+   * The held evidence's custody, set only by freeze-and-detach (`POST
+   * /freeze`). `frozen` means the freeze has begun and the held set is not
+   * yet confirmed sealed, hashed and moved to the held area; `detached`
+   * means that confirmation landed. The held set is moved, never copied.
    * Absent means no evidence was ever taken. `/reset` refuses while this
    * is `frozen`, whatever the phase, and recovery paths carry it forward
    * rather than dropping it. See stateStore.md#resetrefusal.
    */
   readonly evidence?: 'frozen' | 'detached';
+  /**
+   * Set only together with `evidence: 'detached'`, by `releaseHeldEvidence`'s
+   * caller: the receipt the confirmed detach returned, so a replayed
+   * `/freeze` answers from it rather than detaching again. A reset drops it
+   * with the marker; the held area and ops1's custody row carry the memory.
+   */
+  readonly heldReceipt?: DetachReceipt;
 }
 
 /**
@@ -116,9 +124,27 @@ export function resetRefusal(state: SlotState, slot: SlotName): string | undefin
  * so a fail-closed recovery can never release a slot's held evidence.
  */
 export function errorStateOf(state: SlotState): SlotState {
-  return state.evidence === undefined
-    ? { phase: 'error', lastHashId: state.lastHashId }
-    : { phase: 'error', lastHashId: state.lastHashId, evidence: state.evidence };
+  if (state.evidence === undefined) return { phase: 'error', lastHashId: state.lastHashId };
+  return state.heldReceipt === undefined
+    ? { phase: 'error', lastHashId: state.lastHashId, evidence: state.evidence }
+    : {
+        phase: 'error',
+        lastHashId: state.lastHashId,
+        evidence: state.evidence,
+        heldReceipt: state.heldReceipt,
+      };
+}
+
+/**
+ * What `GET /status` says about the marker: a three-value enum and nothing
+ * else of it. A value this code does not recognise reads as `frozen`, the
+ * same fail-closed reading `resetRefusal` gives it.
+ */
+export type EvidenceStatus = 'absent' | 'frozen' | 'detached';
+
+export function evidenceStatusOf(state: SlotState): EvidenceStatus {
+  if (state.evidence === undefined) return 'absent';
+  return state.evidence === 'detached' ? 'detached' : 'frozen';
 }
 
 export class UnrotatedHashError extends Error {

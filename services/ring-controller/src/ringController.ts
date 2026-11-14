@@ -1,4 +1,11 @@
 import type { BumpState, BumpStateMachine } from './bumpStateMachine.js';
+import {
+  DeadlineExceededError,
+  resolveCallDeadlines,
+  withDeadline,
+  type CallDeadlines,
+} from './deadlines.js';
+import type { PromotionRecord } from './promotionChainLog.js';
 import { assertGatesGreen, type GateReport } from './gates.js';
 import { assertModelFreeEnvironment, type ModelFreeEnvironment } from './modelFreeEnvironment.js';
 import {
@@ -40,6 +47,7 @@ export type HoldReason =
   | 'unhealthy'
   | 'reported-error'
   | 'probe-failed'
+  | 'promotion-record-failed'
   | 'no-mysql-in-ring-0';
 
 /**
@@ -59,19 +67,75 @@ export interface Held {
 export type ReleaseOutcome = { status: 'completed' } | Held;
 
 export interface RingControllerDependencies {
-  /** Ring 0 is the bumpable canaries; slot 0 itself is the gates' host. */
+  /**
+   * Ring 0 is the bumpable canaries; slot 0 itself is the gates' host. A
+   * throw, or no answer by `listMembersMs`, holds as `probe-failed`.
+   */
   listMembers(ring: RingName): Promise<readonly RingMember[]>;
-  /** Run the gates once, on slot 0. */
+  /** Run the gates once, on slot 0. A throw, or no answer by `runGatesMs`, holds as `gate-red`. */
   runGates(digest: string): Promise<GateReport>;
-  /** Per-tenant wiring. Every machine it returns shares one `ApplyLock`. */
+  /**
+   * Per-tenant wiring. Every machine it returns shares one `ApplyLock`. A
+   * `run()` that has not finished by `bumpMs` is asked to abort, the
+   * controller waits up to `abortMs` for that request to be saved, and the
+   * member fails as `bump-not-done`. `closeBakeWindow()` is bounded by
+   * `closeBakeWindowMs` and `abortAfterDone()` by `revertMs`.
+   */
   newBump(member: RingMember, release: Release): BumpStateMachine;
-  /** A throw or a timeout means unhealthy. */
+  /** A throw, or no answer by `healthMs`, means blocked (`probe-failed`). */
   health(tenantId: string): Promise<Health>;
-  /** A throw means blocked. */
+  /** A throw, or no answer by `reportedErrorsMs`, means blocked (`probe-failed`). */
   reportedErrors(tenantId: string, sinceMs: number): Promise<readonly string[]>;
-  /** The operational alert and filed-work-item sink. Never a page, never an approval. */
+  /**
+   * Appends the signed promotion record for one member. Awaited before that
+   * member's old colour is stopped. A throw, or no answer by
+   * `recordPromotionMs`, means the promotion is not recorded, and the
+   * release stops there.
+   */
+  recordPromotion(record: PromotionRecord): Promise<void>;
+  /**
+   * The operational alert and filed-work-item sink. Never a page, never an
+   * approval. A throw, or no answer by `holdMs`, rejects `runRelease`: a
+   * hold nobody received is never reported as raised.
+   */
   hold(held: Held): Promise<void>;
+  /** A `sleep(ms)` still running `sleepOverrunMs` past `ms` holds as `probe-failed`. */
   clock: { now(): number; sleep(ms: number): Promise<void> };
+  /** Bounds on the calls above; any left out take `DEFAULT_CALL_DEADLINES`. */
+  deadlines?: Partial<CallDeadlines>;
+}
+
+/** The dependencies as the controller uses them: every outside call already bounded. */
+type BoundedDependencies = RingControllerDependencies & { deadlines: CallDeadlines };
+
+/**
+ * Wraps each awaited outside call in its deadline, once, so no call site can
+ * forget one. A miss rejects like a throw and takes the throw's path.
+ */
+function bounded(deps: RingControllerDependencies): BoundedDependencies {
+  const deadlines = resolveCallDeadlines(deps.deadlines);
+  return {
+    ...deps,
+    deadlines,
+    listMembers: (ring) =>
+      withDeadline(deps.listMembers(ring), deadlines.listMembersMs, 'listMembers()'),
+    recordPromotion: (record) =>
+      withDeadline(deps.recordPromotion(record), deadlines.recordPromotionMs, 'recordPromotion()'),
+    hold: (held) => withDeadline(deps.hold(held), deadlines.holdMs, 'hold()'),
+    clock: {
+      now: () => deps.clock.now(),
+      sleep: (ms) =>
+        withDeadline(deps.clock.sleep(ms), ms + deadlines.sleepOverrunMs, 'clock.sleep()'),
+    },
+    runGates: (digest) => withDeadline(deps.runGates(digest), deadlines.runGatesMs, 'runGates()'),
+    health: (tenantId) => withDeadline(deps.health(tenantId), deadlines.healthMs, 'health()'),
+    reportedErrors: (tenantId, sinceMs) =>
+      withDeadline(
+        deps.reportedErrors(tenantId, sinceMs),
+        deadlines.reportedErrorsMs,
+        'reportedErrors()'
+      ),
+  };
 }
 
 interface Bumped {
@@ -82,7 +146,7 @@ interface Bumped {
 interface BumpOutcome {
   member: RingMember;
   machine: BumpStateMachine | undefined;
-  state: BumpState | 'threw';
+  state: BumpState | 'threw' | 'timed-out';
   detail?: string;
 }
 
@@ -104,17 +168,20 @@ function messageOf(err: unknown): string {
  * one tenant at a time within a ring (LLD-4 §04/§06b). Deterministic code:
  * no model, no agent, no token budget (D37). `env` is passed in, never
  * read from the process, so a test can prove the controller promotes with
- * every key absent and refuses with one present. See README.md in this
- * directory for the narrative.
+ * every key absent and refuses with one present; `runReleaseFromProcess`
+ * is the entry that hands it the process's own. Every outside call is
+ * bounded by `deps.deadlines`. See README.md in this directory for the
+ * narrative.
  */
 export async function runRelease(
   release: Release,
-  deps: RingControllerDependencies,
+  given: RingControllerDependencies,
   config: RingBakeConfig,
   env: ModelFreeEnvironment
 ): Promise<ReleaseOutcome> {
   assertModelFreeEnvironment(env);
   validateBakeConfig(config);
+  const deps = bounded(given);
 
   if (release.route !== 'fast-path') {
     return hold(deps, release, 'preflight', 'consent-required');
@@ -174,7 +241,7 @@ async function hold(
 async function runRing(
   ring: RingName,
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   bake: RingBake
 ): Promise<RingResult> {
   const ringStartedAt = deps.clock.now();
@@ -209,9 +276,26 @@ async function runRing(
   }
 
   for (const { member, machine } of bumped) {
+    // The last reversible moment: once the old colour is stopped there is no flag change back.
+    try {
+      await deps.recordPromotion({
+        promotion: release.digest,
+        slot: member.tenantId,
+        digest: release.digest,
+      });
+    } catch (err) {
+      return heldAt(ring, release, 'promotion-record-failed', {
+        tenantId: member.tenantId,
+        detail: `the promotion record was not written: ${messageOf(err)}`,
+      });
+    }
     let state: BumpState;
     try {
-      state = await machine.closeBakeWindow();
+      state = await withDeadline(
+        machine.closeBakeWindow(),
+        deps.deadlines.closeBakeWindowMs,
+        'closeBakeWindow()'
+      );
     } catch (err) {
       return heldAt(ring, release, 'bump-not-done', {
         tenantId: member.tenantId,
@@ -254,7 +338,7 @@ function heldAt(
 async function bumpInOrder(
   members: readonly RingMember[],
   release: Release,
-  deps: RingControllerDependencies
+  deps: BoundedDependencies
 ): Promise<BumpOutcome[]> {
   const outcomes: BumpOutcome[] = [];
   for (const member of members) {
@@ -268,13 +352,31 @@ async function bumpInOrder(
 async function bumpOne(
   member: RingMember,
   release: Release,
-  deps: RingControllerDependencies
+  deps: BoundedDependencies
 ): Promise<BumpOutcome> {
+  let machine: BumpStateMachine | undefined;
   try {
-    const machine = deps.newBump(member, release);
-    const state = await machine.run();
+    machine = deps.newBump(member, release);
+    const state = await withDeadline(machine.run(), deps.deadlines.bumpMs, 'the bump');
     return { member, machine, state };
   } catch (err) {
+    if (err instanceof DeadlineExceededError && machine !== undefined) {
+      // The run cannot be cancelled from here, and the release is about to
+      // stop watching it. Abort lands at the machine's own safe point:
+      // cancel before apply, never interrupt apply, revert after it, so a
+      // late finish cannot leave this tenant on the new version unbaked.
+      // The request is saved before the release moves on, so a restart
+      // honours it too; a save that fails or hangs is named in the hold.
+      const detail = `${err.message}, still in '${machine.getState()}'`;
+      let saved: string;
+      try {
+        await withDeadline(machine.abort(), deps.deadlines.abortMs, 'saving the abort');
+        saved = 'abort requested and saved';
+      } catch (saveErr) {
+        saved = `abort requested but not saved: ${messageOf(saveErr)}`;
+      }
+      return { member, machine, state: 'timed-out', detail: `${detail}; ${saved}` };
+    }
     return {
       member,
       machine: undefined,
@@ -294,7 +396,7 @@ async function soak(
   ring: RingName,
   bumped: readonly Bumped[],
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   ringStartedAt: number,
   bakeStartedAt: number,
   bake: RingBake
@@ -304,13 +406,19 @@ async function soak(
   for (;;) {
     const problems = await probeRing(bumped, release, deps, ringStartedAt);
     if (problems.length > 0) {
-      return regress(ring, problems, release);
+      return regress(ring, problems, release, deps);
     }
     const now = deps.clock.now();
     if (now >= endAt) {
       return undefined;
     }
-    await deps.clock.sleep(Math.min(pollMs, endAt - now));
+    try {
+      await deps.clock.sleep(Math.min(pollMs, endAt - now));
+    } catch (err) {
+      return heldAt(ring, release, 'probe-failed', {
+        detail: `the bake clock did not answer: ${messageOf(err)}`,
+      }).held;
+    }
   }
 }
 
@@ -318,7 +426,7 @@ async function soak(
 async function probeRing(
   bumped: readonly Bumped[],
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   ringStartedAt: number
 ): Promise<Problem[]> {
   const problems: Problem[] = [];
@@ -335,7 +443,7 @@ async function probeMember(
   tenantId: string,
   machine: BumpStateMachine,
   release: Release,
-  deps: RingControllerDependencies,
+  deps: BoundedDependencies,
   ringStartedAt: number
 ): Promise<Problem | undefined> {
   try {
@@ -389,14 +497,19 @@ async function probeMember(
 async function regress(
   ring: RingName,
   problems: readonly Problem[],
-  release: Release
+  release: Release,
+  deps: BoundedDependencies
 ): Promise<Held> {
   const notes: string[] = [];
   for (const problem of problems) {
     notes.push(`${problem.tenantId}: ${problem.detail}`);
     if (problem.reason === 'probe-failed') continue;
     try {
-      const state = await problem.machine.abortAfterDone();
+      const state = await withDeadline(
+        problem.machine.abortAfterDone(),
+        deps.deadlines.revertMs,
+        'the revert'
+      );
       notes.push(`${problem.tenantId}: reverted, now '${state}'`);
     } catch (err) {
       notes.push(`${problem.tenantId}: revert failed: ${messageOf(err)}`);

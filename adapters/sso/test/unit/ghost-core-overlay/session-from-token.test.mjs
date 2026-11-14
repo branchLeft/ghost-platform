@@ -11,12 +11,19 @@ import { describe, expect, it, vi } from 'vitest';
 // applied, built once per run by test/unit/global-setup.mjs from the pinned
 // base image. No copy of Ghost's source is committed.
 const require = createRequire(import.meta.url);
-const SessionFromToken = require('../../../ghost-core-overlay/derived/session-from-token.js');
+const {
+  sessionFromToken: SessionFromToken,
+} = require('../../../ghost-core-overlay/derived/session-from-token.js');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OVERLAY_DIR = path.resolve(__dirname, '../../../ghost-core-overlay');
 const DERIVED_DIR = path.join(OVERLAY_DIR, 'derived');
-const APPLY_SCRIPT = path.join(OVERLAY_DIR, 'apply-session-from-token-patch.sh');
+const APPLY_SCRIPT = path.resolve(OVERLAY_DIR, '../../ghost-core-overlay/apply-patch.sh');
+const APPLY_ARGS = [
+  'session-from-token.js',
+  path.join(OVERLAY_DIR, 'session-from-token.patch'),
+  path.join(OVERLAY_DIR, 'session-from-token.patched.sha256'),
+];
 
 // A fake req.session.save() that never calls its callback until the test
 // releases it -- the shape needed to prove `next()` waits for the write,
@@ -199,7 +206,7 @@ describe('ghost-core-overlay/session-from-token.js', () => {
 // The same script the Dockerfile runs. Each case hands it a Ghost file in a
 // temp directory and reads back its verdict, so the build gate is shown to
 // pass for the pinned file and to fail, with its own reason, for a changed one.
-describe('ghost-core-overlay/apply-session-from-token-patch.sh (the build gate)', () => {
+describe('adapters/ghost-core-overlay/apply-patch.sh on this overlay (the build gate)', () => {
   const baseline = fs.readFileSync(
     path.join(DERIVED_DIR, 'baseline', 'session-from-token.js'),
     'utf8'
@@ -209,7 +216,7 @@ describe('ghost-core-overlay/apply-session-from-token-patch.sh (the build gate)'
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sso-overlay-gate-'));
     try {
       fs.writeFileSync(path.join(dir, 'session-from-token.js'), ghostFileText);
-      const result = spawnSync(APPLY_SCRIPT, [dir], { encoding: 'utf8' });
+      const result = spawnSync(APPLY_SCRIPT, [dir, ...APPLY_ARGS], { encoding: 'utf8' });
       return {
         status: result.status,
         stderr: result.stderr,

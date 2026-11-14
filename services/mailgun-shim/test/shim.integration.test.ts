@@ -86,7 +86,7 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
       'h:Sender': 'noreply@tenant1.example.com',
       'h:Auto-Submitted': 'auto-generated',
       'h:X-Auto-Response-Suppress': 'OOF, AutoReply',
-      'h:List-Unsubscribe': '<%recipient.list_unsubscribe%>',
+      'h:List-Unsubscribe': '<%recipient.list_unsubscribe%>, <%tag_unsubscribe_email%>',
       'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       'v:email-id': '64f1a2b3c4d5e6f7a8b9c0d1',
       'o:tag': ['bulk-email', 'ghost-email'],
@@ -116,9 +116,105 @@ describe('mailgun-shaped shim — the drain handover, end to end', () => {
     // Correlation: v:email-id survives to the delivery host as a header.
     expect(toA!.parsed.headers.get('x-ghost-email-id')).toBe('64f1a2b3c4d5e6f7a8b9c0d1');
 
+    // List-Unsubscribe as RECEIVED, read from the raw header lines (mailparser
+    // folds List-* headers into `list`, which hides an invalid entry): one
+    // valid URI per recipient, no leftover Mailgun-only token, and the
+    // one-click POST header intact.
+    const rawHeader = (message: (typeof received)[number], key: string): string[] =>
+      message.parsed.headerLines.filter((line) => line.key === key).map((line) => line.line);
+    expect(rawHeader(toA!, 'list-unsubscribe')).toEqual([
+      'List-Unsubscribe: <https://tenant1.example.com/unsubscribe/a>',
+    ]);
+    expect(rawHeader(toB!, 'list-unsubscribe')).toEqual([
+      'List-Unsubscribe: <https://tenant1.example.com/unsubscribe/b>',
+    ]);
+    expect(rawHeader(toA!, 'list-unsubscribe-post')).toEqual([
+      'List-Unsubscribe-Post: List-Unsubscribe=One-Click',
+    ]);
+
     // Acked — the queue is empty and the age gauge has gone quiet.
     expect(shim.store.countUndrainedRecipients()).toBe(0);
     expect(shim.store.oldestUndrainedAgeSeconds(Date.now() / 1000)).toBeNull();
+  });
+
+  describe('List-Unsubscribe as received, over the real sink', () => {
+    const rawHeader = (
+      message: Awaited<ReturnType<SmtpSink['waitForCount']>>[number],
+      key: string
+    ): string[] =>
+      message.parsed.headerLines
+        .filter((line) => line.key === key)
+        // The sender folds a long header onto a continuation line: unfold it.
+        .map((line) => line.line.replace(/\r?\n[ \t]+/g, ' '));
+
+    async function sendAndReceive(headerFields: Record<string, string>) {
+      await mailgunClient.messages.create(TENANT_DOMAIN, {
+        to: ['member-a@example.com'],
+        from: 'TENANT_1 <noreply@tenant1.example.com>',
+        subject: 'Hello',
+        html: '<p>Hi</p>',
+        text: 'Hi',
+        'recipient-variables': JSON.stringify({ 'member-a@example.com': { name: 'Member A' } }),
+        'v:email-id': '64f1a2b3c4d5e6f7a8b9c0d1',
+        ...headerFields,
+      });
+      await collector.drainOnce();
+      const [message] = await sink.waitForCount(1);
+      return message!;
+    }
+
+    it('removes List-Unsubscribe-Post when the https entry was the one dropped and only a mailto entry survives', async () => {
+      const message = await sendAndReceive({
+        'h:List-Unsubscribe': '<mailto:unsub@tenant1.example.com>, <%tag_unsubscribe_email%>',
+        'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      });
+      expect(rawHeader(message, 'list-unsubscribe')).toEqual([
+        'List-Unsubscribe: <mailto:unsub@tenant1.example.com>',
+      ]);
+      expect(rawHeader(message, 'list-unsubscribe-post')).toEqual([]);
+    });
+
+    it('removes List-Unsubscribe-Post when no entry survives, and emits no List-Unsubscribe either', async () => {
+      const message = await sendAndReceive({
+        'h:List-Unsubscribe': '<%tag_unsubscribe_email%>',
+        'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      });
+      expect(rawHeader(message, 'list-unsubscribe')).toEqual([]);
+      expect(rawHeader(message, 'list-unsubscribe-post')).toEqual([]);
+    });
+
+    it('drops an empty <> entry and a leftover %recipient.*% entry, and omits the header when nothing valid remains', async () => {
+      const message = await sendAndReceive({
+        'h:List-Unsubscribe': '<>, <https://tenant1.example.com/u/%recipient.missing%>',
+        'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      });
+      expect(rawHeader(message, 'list-unsubscribe')).toEqual([]);
+      expect(rawHeader(message, 'list-unsubscribe-post')).toEqual([]);
+    });
+
+    it('applies the filter to a lowercase list-unsubscribe field name', async () => {
+      const message = await sendAndReceive({
+        'h:list-unsubscribe': '<mailto:unsub@tenant1.example.com>, <%tag_unsubscribe_email%>',
+      });
+      const lines = rawHeader(message, 'list-unsubscribe');
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/<mailto:unsub@tenant1\.example\.com>$/);
+      expect(lines[0]).not.toContain('tag_unsubscribe_email');
+    });
+
+    it('leaves a healthy https plus mailto header and its Post header exactly as sent', async () => {
+      const message = await sendAndReceive({
+        'h:List-Unsubscribe':
+          '<https://tenant1.example.com/unsubscribe/a>, <mailto:unsub@tenant1.example.com>',
+        'h:List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      });
+      expect(rawHeader(message, 'list-unsubscribe')).toEqual([
+        'List-Unsubscribe: <https://tenant1.example.com/unsubscribe/a>, <mailto:unsub@tenant1.example.com>',
+      ]);
+      expect(rawHeader(message, 'list-unsubscribe-post')).toEqual([
+        'List-Unsubscribe-Post: List-Unsubscribe=One-Click',
+      ]);
+    });
   });
 
   it('a message enqueued while a GET /drain is already held open is handed over within the hold, not on the next poll', async () => {

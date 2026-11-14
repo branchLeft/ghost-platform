@@ -1,7 +1,12 @@
 import { readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createSlotWrapper, WrapperError, type SlotWrapper } from '../../src/wrapper.js';
+import {
+  createSlotWrapper,
+  DetachReceiptError,
+  WrapperError,
+  type SlotWrapper,
+} from '../../src/wrapper.js';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { join } from 'node:path';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
@@ -90,6 +95,51 @@ describe('createSlotWrapper', () => {
   it('refuses to run with no command and no prefix configured, rather than spawning an empty argv[0]', async () => {
     const empty = createSlotWrapper({ command: '', prefix: [], timeoutMs: 1000 });
     await expect(empty.reset('0' as SlotName)).rejects.toThrow(/wrapper command is empty/);
+  });
+
+  it('invokes detach with exactly two argv elements, the slot and the literal verb', async () => {
+    await wrapper.detach('2' as SlotName);
+    expect(await readLoggedInvocations(logPath)).toEqual([['2', 'detach']]);
+  });
+
+  it('resolves detach with the receipt the wrapper printed', async () => {
+    const receipt = await wrapper.detach('2' as SlotName);
+    expect(receipt).toEqual({ entry: '2-1', sha256: 'a'.repeat(64), bytes: 4096 });
+  });
+
+  it.each([
+    ['nothing', ''],
+    ['prose', 'detached ok\n'],
+    ['two lines', `${JSON.stringify({ entry: '2-1', sha256: 'a'.repeat(64), bytes: 1 })}\n{}\n`],
+    ['an extra field', JSON.stringify({ entry: '2-1', sha256: 'a'.repeat(64), bytes: 1, x: 1 })],
+    ['an upper-case digest', JSON.stringify({ entry: '2-1', sha256: 'A'.repeat(64), bytes: 1 })],
+    ['a partial entry', JSON.stringify({ entry: '2-1.partial', sha256: 'a'.repeat(64), bytes: 1 })],
+    ['a path as the entry', JSON.stringify({ entry: '../2-1', sha256: 'a'.repeat(64), bytes: 1 })],
+    ['a string byte count', JSON.stringify({ entry: '2-1', sha256: 'a'.repeat(64), bytes: '1' })],
+  ])('rejects a detach that printed %s as its receipt', async (_name, output) => {
+    process.env.FAKE_WRAPPER_DETACH_OUTPUT = output;
+    try {
+      await expect(wrapper.detach('2' as SlotName)).rejects.toBeInstanceOf(DetachReceiptError);
+    } finally {
+      delete process.env.FAKE_WRAPPER_DETACH_OUTPUT;
+    }
+  });
+
+  it('bounds detach by its own timeout, not the one the other verbs use', async () => {
+    const config = {
+      command: FAKE_WRAPPER,
+      prefix: [process.execPath],
+      timeoutMs: 100,
+      detachTimeoutMs: 5000,
+    };
+    process.env.FAKE_WRAPPER_SLEEP_MS = '600';
+    try {
+      const slow = createSlotWrapper(config);
+      await expect(slow.reset('0' as SlotName)).rejects.toBeInstanceOf(WrapperError);
+      await expect(slow.detach('0' as SlotName)).resolves.toMatchObject({ entry: '0-1' });
+    } finally {
+      delete process.env.FAKE_WRAPPER_SLEEP_MS;
+    }
   });
 
   // The argv-joining defect workspace#1188's review found against real

@@ -39,6 +39,8 @@ export type {
   GateSpec,
   HostnameSpec,
   LimitsSpec,
+  MailRoute,
+  MailRouteSpec,
   MailSpec,
   MediaSpec,
   PortTriple,
@@ -77,7 +79,7 @@ export {
   validateSlotName,
 } from './lease.js';
 
-export type { Artefact } from './render.js';
+export type { Artefact, RenderOptions } from './render.js';
 export {
   render,
   renderSecretsTemplate,
@@ -86,14 +88,27 @@ export {
   renderSettings,
   renderIdentity,
 } from './render.js';
-export type { EdgeGate, EdgeSiteBlock, ScriptHash, ThemeCsp } from './edge.js';
-export { validateScriptHash, THEME_CSP_UNAVAILABLE } from './edge.js';
+export type { EdgeGate, EdgeSiteBlock, PaymentsCsp, ScriptHash, ThemeCsp } from './edge.js';
+export {
+  validateScriptHash,
+  validatePaymentOrigin,
+  THEME_CSP_UNAVAILABLE,
+  PAYMENTS_CSP_NONE,
+} from './edge.js';
 export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
-export { credentialDomainOf, renderSendingAddress, sendingDomainOf } from './mail.js';
+export {
+  credentialDomainOf,
+  DEFAULT_MAIL_ROUTE,
+  MAIL_ROUTES,
+  MAX_SWEEGO_ALLOWANCE,
+  mailRouteOf,
+  renderSendingAddress,
+  sendingDomainOf,
+} from './mail.js';
 export { renderDrainList } from './drain.js';
 export {
   MAIL_SPOOL_BASE_URL,
@@ -103,6 +118,8 @@ export {
   MAIL_SPOOL_DRAIN_BRIDGE,
   MAIL_SPOOL_DRAIN_GATEWAY,
   MAIL_SPOOL_DRAIN_NETWORK,
+  MAIL_SPOOL_DRAIN_OUTCOMES_KEY,
+  MAIL_SPOOL_DRAIN_OUTCOMES_VALUE,
   MAIL_SPOOL_DRAIN_SUBNET,
   MAIL_SPOOL_DRAIN_TOKEN_KEY,
   MAIL_SPOOL_HTTP_PORT,
@@ -113,11 +130,13 @@ export {
   MAIL_SPOOL_UID,
   assertSpoolPosture,
   mailSpoolDocument,
+  mailSpoolNeedsDrainOutcomes,
   mailSpoolNetworkName,
   renderMailSpoolStack,
 } from './spool.js';
 export type { MailSpoolStackArgs } from './spool.js';
 export { renderComposeStack, assertRuntimePosture, GHOST_CONTAINER_PORT } from './compose.js';
+export type { Colour } from './compose.js';
 export type { ComposeStackArgs, DemoDataMount } from './compose.js';
 export {
   MAX_TENANT_SLUG_LENGTH,

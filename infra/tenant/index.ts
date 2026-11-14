@@ -132,7 +132,11 @@ export class GhostTenant extends pulumi.ComponentResource {
     // A registered tenant name is taken only from its own repository. Runs
     // first: a duplicate of tenant zero must not get as far as rendering.
     validateTenantNameClaim(args.descriptor.slug);
-    const descriptor = validateTenantStack(args.descriptor, args.zones);
+    // Render core 0.4.0 enforces the same register and needs the claimant: with
+    // none, even tenant zero's own repository is refused. Same source as above.
+    const descriptor = validateTenantStack(args.descriptor, args.zones, {
+      claimantRepo: process.env['GITHUB_REPOSITORY'],
+    });
     const artefacts = render(descriptor, args.zones);
     const slug = descriptor.slug;
 

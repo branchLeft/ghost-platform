@@ -226,6 +226,51 @@ save route must pass the changes in `COMMENT_CHECKS` order, the order the route
 uses. The tenant role holds `SELECT`, `INSERT` and `UPDATE` on it, nothing
 deletes a setting, and the owner role has no grant on it.
 
+## Custom domains
+
+A real tenant connects its own domain in three steps, each a `TenantDb` call:
+`requestCustomDomain` (the domain is normalised and refused unless it is a plain
+domain name outside every platform-owned domain, and only a `REAL` tenant may
+ask), `checkCustomDomain` (a lookup, below) and `connectCustomDomain`.
+`removeCustomDomain` disconnects it. Nothing here serves a domain: the edge
+serves only what is in `portal.connected_domain`, and wiring that to the edge
+is not part of this layer.
+
+Two tables, both isolated like every tenant table. `portal.custom_domain_request`
+holds the unproven asks, one row per tenant and domain with a one-time token
+(32 characters of base32, 160 bits, from the operating system's random source);
+it is not unique across tenants, so an unproven ask never blocks a domain's real
+owner. `portal.connected_domain` holds the connections, keyed by the domain, so
+a domain is connected to one tenant at a time and a second tenant's connection
+is refused by the table (`connected_domain_pkey`) even to a statement that skips
+the code. The portal maps that refusal to `CustomDomainTakenError`, which names
+neither the domain nor the tenant. Both tables check the stored name against the
+same pattern the code normalises to.
+
+**The check.** `checkCustomDomain(resolver, edgeTarget, { fqdn, token }, now)`
+passes only when every address the domain resolves to is one of the edge's (or
+the domain is a CNAME to the edge's name), and a TXT record at
+`_publicpress-verify.<domain>` holds `publicpress-verify=<token>`. A domain that
+also answers at an address the edge does not hold is not pointed at it. A lookup
+that fails for any reason other than "no such record" throws
+`DnsLookupFailedError`: the check never passes on a failed lookup. The resolver
+is a seam (`nodeDnsResolver(servers)` is the real one).
+
+**The proof.** A passing check returns a `DomainProof`, and
+`connectCustomDomain` accepts nothing else. A proof has no public constructor
+(`checkCustomDomain` is the only way to make one) and is looked up in a
+registry on use, so a look-alike object is refused. It is also refused when older
+than ten minutes or dated ahead, and when the domain was not requested by this
+tenant or the proof's token is not the one the request holds. This is a
+type-and-registry control inside trusted application code; the database cannot
+see DNS, so a tenant-role statement that skips the code can still insert a
+connection, which is why the edge's own admission (`ghost-platform` `services/odask`)
+must stay the second gate.
+
+**Grants.** This is the one place a tenant deletes its own rows: the tenant role
+holds `SELECT`, `INSERT` and `DELETE` on the two tables, never `UPDATE`, and the
+owner and provisioner roles hold nothing on them. A test pins that exact set.
+
 ## The demo lifecycle, its term and the hostname register
 
 A demo is the owner side's record of one prospect's tenancy; the lifecycle
@@ -288,7 +333,7 @@ of them: refused at the permission level, SQLSTATE `42501`, which the provisioni
 command's own check (M06) and smoke test both hold. The owner role may only
 `SELECT` them (`OwnerDb.listDemos`, `demoHistory`, `demoHostname`,
 `listHostnames`); the tenant role holds nothing on them. The internet-facing
-prospect path is a separate role, not made here.
+prospect path is a separate role, `portal_prospect`, below.
 
 Control cases (each is a test that fails if the mechanism is removed): the
 full 14 by 14 matrix of states, through the operation and straight at the
@@ -296,9 +341,61 @@ table; the term read back from the stored row; the extension's before and
 after record; a rebuild's end; the label's uniqueness, with two simultaneous
 allocations; and the provisioner's `UPDATE` and `DELETE` refused with `42501`.
 
+## The front door's request
+
+A prospect who has signed in through the identity service submits one request
+at the front door: the answers to the onboarding form, the address the identity
+service verified, the exact wording of the consent and of the sign-in
+limitation explainer as it was shown, and the database's own time. The
+lifecycle design (`ghost-platform-docs/19-try-it-now-design/12-demo-lifecycle.html`,
+sections 05 to 07) owns the design; this is the owner side's record of it.
+`portal.demo_request` holds it, one row per request, keyed on the opaque demo id
+the lifecycle will run under. It has no tenant column and no row policy; the
+protection is the grants, as for the lifecycle tables.
+
+**Who writes and reads it.** `portal_prospect`, a fourth role, used only by the
+internet-facing prospect application through the `./prospect` export
+(`ProspectDb`). It can `INSERT` a request and holds nothing else: it cannot
+read one back (an `INSERT ... RETURNING` is refused for want of `SELECT`),
+cannot update or delete one, and touches no other portal table. The process a
+stranger can reach therefore appends a request and can neither allocate a name,
+sign a descriptor nor read another prospect's answers. `portal_provisioner`
+(`ProvisionerDb.request`) and `portal_owner` (`OwnerDb.listRequests`,
+`OwnerDb.demoRequest`) read; no role updates or deletes a request. The
+prospect login is a member of the prospect role alone and is admitted to the
+portal database alone, like every login.
+
+**One request per verified address.** The verified address is unique over all
+time: a second submission for an address is refused by the table
+(`demo_request_verified_address_unique`, SQLSTATE `23505`) whichever process
+sends it, and `ProspectDb.submit` turns it into `DemoRequestExistsError`. This
+is stricter than "one open demo per address": an address whose demo FAILED may,
+by design, start another, and that supersession is not built here (it needs the
+lifecycle worker's say, since the front door cannot read a demo's state).
+
+**What the table checks.** The address is lower-case with one `@` and a dotted
+domain and at most 254 characters; the name, description, import source and
+wording have length bounds; the colour is lower-case `#rrggbb`; the theme,
+font and outlet type are slugs; the logo hash is 64 lower-case hexadecimal
+characters. `src/demoRequest.ts` holds each pattern once and parses a
+submission to a typed `InvalidDemoRequestError` that names the field and never
+the value. The lists the slugs belong to (the curated themes, the font subset,
+the outlet types) are the application's; the table fixes only their shape.
+The logo itself is not stored here: the hash is of an image the safety service
+has passed.
+
+Control cases (each a test that fails if the mechanism is removed): the
+request recorded with every answer and the database's time; a second request
+for one address refused at the table and, for two simultaneous submissions,
+exactly one winning; the front door's `SELECT`, `UPDATE`, `DELETE` and
+`TRUNCATE` refused with `42501` and shown to be the grant by granting it inside
+a rolled-back transaction; every check refusing a direct insert with `23514`;
+the provisioning command's own smoke test and closed-world fixtures refusing a
+widened or missing grant.
+
 ## The owner path
 
-`portal/data` exports `./tenant`, `./owner` and `./provisioner` separately.
+`portal/data` exports `./tenant`, `./owner`, `./provisioner` and `./prospect` separately.
 Tenant-facing code imports the first only; a test fails if anything under
 `src/tenant` imports the owner path, the provisioner path or the migrator. The owner pool connects as a login that is a member
 of `portal_owner` alone, so the tenant-facing connection cannot assume that role.
@@ -337,27 +434,29 @@ the variable itself is refused.
 | `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
 | `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
 | `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII) |
+| `PORTAL_PROSPECT_PASSWORD_FILE` | password for the prospect login (printable ASCII)   |
 | `PORTAL_MIGRATOR_PASSWORD_FILE` | password for the migrator login (printable ASCII) |
 | `PORTAL_MIGRATOR_URL_FILE`    | `--migrate-only` only: the migrator login's connection URL, password included |
 | `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
 | `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
 | `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
 | `PORTAL_PROVISIONER_LOGIN`    | optional, default `portal_provisioner_login`          |
+| `PORTAL_PROSPECT_LOGIN`       | optional, default `portal_prospect_login`             |
 | `PORTAL_MIGRATOR_LOGIN`       | optional, default `portal_migrator_login`             |
 
-The four logins must differ and their passwords come from four files. A full
-run needs all four password files: the manifest is closed, so a run without
-one is refused rather than provisioning three of four.
+The five logins must differ and their passwords come from five files. A full
+run needs all five password files: the manifest is closed, so a run without
+one is refused rather than provisioning four of five.
 
 The command creates what is absent, checks everything, and repairs nothing.
-`provision/manifest.ts` is the closed manifest: the three roles and four logins
+`provision/manifest.ts` is the closed manifest: the four roles and five logins
 with their exact attributes (all `NOINHERIT`; the apps always `SET LOCAL
 ROLE`), one membership per login but the migrator's, and every grant, each
 justified by a call site. No role may `DELETE`, the owner role may not
-`UPDATE` the tenant register, and the provisioner role may not `UPDATE`
-anything.
+`UPDATE` the tenant register, the provisioner role may not `UPDATE`
+anything, and the prospect role may do nothing but `INSERT` a request.
 
-**The migrator login** is the fourth login. It is no superuser and holds no
+**The migrator login** is the last login. It is no superuser and holds no
 `BYPASSRLS`, `CREATEROLE`, `CREATEDB` or `REPLICATION`, is a member of no role,
 and is admitted to the portal database alone. It owns the portal database,
 the `drizzle` and `portal` schemas, and every table, sequence and function the
@@ -406,7 +505,8 @@ in a long-lived runner, removed after the run.
    is a superuser or is not the migrator.
 5. A smoke test connects as each login (`42501` permission denied, `28000` no
    tenant bound; the provisioner login may read what it writes and may neither
-   update nor delete it; the migrator assumes no portal role and creates no
+   update nor delete it; the prospect login may insert a request, which is rolled
+   back, and may neither read, update nor delete one; the migrator assumes no portal role and creates no
    role).
 
 Concurrent runs are serialised by an advisory lock. PostgreSQL scopes advisory
@@ -434,8 +534,8 @@ the logins' stored verifiers are byte for byte unchanged. It refuses with
 `migrate refused: role ... is absent` or `migrate refused: database ... is
 created-empty, not provisioned` when the full provision has not run, and with
 `migrate refused: cannot connect ... as <migrator>` when the migrator or the
-database does not exist. A server last provisioned before `portal_provisioner`
-or the migrator existed is such a case: `--migrate-only` refuses, and the full
+database does not exist. A server last provisioned before `portal_provisioner`,
+`portal_prospect` or the migrator existed is such a case: `--migrate-only` refuses, and the full
 run (with every password file) comes first, then `--migrate-only` for later
 migrations. It skips step 5, which needs the other logins' passwords. Run again
 with nothing pending, it applies nothing and prints `no pending migrations`.

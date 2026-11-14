@@ -10,6 +10,7 @@ over SSH and Compose, the same boundary `infra/README.md` draws for `app1`.
 | ---------------------------------------- | ------------------------------------------------------------------------ |
 | `stack/`                                 | Copied to `/opt/branchleft/db`; MySQL 8 + mysqld-exporter, run by `branchleft-compose@db.service` |
 | `provision/`                             | Tenant DB/user provisioning, the nightly dump and binlog-shipping pipelines, the host-prerequisites installer, and their unit tests |
+| `percona/`                               | The Percona Server image for the tenant database host: fixed operating system packages, no telemetry agent or MySQL Shell, built, scanned and signed by `percona-image.yml` |
 | `RUNBOOK-db.md`                          | Deploy steps and the restore drill (both PITR and host-loss scenarios) |
 
 ## Why a top-level directory, not `infra/db`

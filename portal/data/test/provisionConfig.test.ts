@@ -21,6 +21,7 @@ import { scramVerifier } from '../provision/scram.js';
 const TENANT_PW = 'tenant-secret-9f2c41';
 const OWNER_PW = 'owner-secret-77ab03';
 const PROVISIONER_PW = 'provisioner-secret-5d19e8';
+const PROSPECT_PW = 'prospect-secret-c41a7d';
 const MIGRATOR_PW = 'migrator-secret-3b8e72';
 const ADMIN_PW = 'admin-secret-c0ffee';
 
@@ -40,11 +41,12 @@ const GOOD = {
   PORTAL_TENANT_PASSWORD_FILE: `${TENANT_PW}\n`,
   PORTAL_OWNER_PASSWORD_FILE: `${OWNER_PW}\n`,
   PORTAL_PROVISIONER_PASSWORD_FILE: `${PROVISIONER_PW}\n`,
+  PORTAL_PROSPECT_PASSWORD_FILE: `${PROSPECT_PW}\n`,
   PORTAL_MIGRATOR_PASSWORD_FILE: `${MIGRATOR_PW}\n`,
 };
 
 describe('loadConfig', () => {
-  it('reads the connection and the four passwords from files, trimming one newline', () => {
+  it('reads the connection and the five passwords from files, trimming one newline', () => {
     const { dir, env } = files(GOOD);
     const config = loadConfig(env, []);
     rmSync(dir, { recursive: true });
@@ -52,12 +54,14 @@ describe('loadConfig', () => {
     expect(config.tenantPassword).toBe(TENANT_PW);
     expect(config.ownerPassword).toBe(OWNER_PW);
     expect(config.provisionerPassword).toBe(PROVISIONER_PW);
+    expect(config.prospectPassword).toBe(PROSPECT_PW);
     expect(config.migratorPassword).toBe(MIGRATOR_PW);
     expect(config.migratorLogin).toBe('portal_migrator_login');
     expect(config.database).toBe('portal');
     expect(config.tenantLogin).toBe('portal_tenant_login');
     expect(config.ownerLogin).toBe('portal_owner_login');
     expect(config.provisionerLogin).toBe('portal_provisioner_login');
+    expect(config.prospectLogin).toBe('portal_prospect_login');
   });
 
   it('takes the database and login names from the environment when given', () => {
@@ -69,6 +73,7 @@ describe('loadConfig', () => {
         PORTAL_TENANT_LOGIN: 't2',
         PORTAL_OWNER_LOGIN: 'o2',
         PORTAL_PROVISIONER_LOGIN: 'p3',
+        PORTAL_PROSPECT_LOGIN: 'q5',
         PORTAL_MIGRATOR_LOGIN: 'm4',
       },
       []
@@ -79,8 +84,9 @@ describe('loadConfig', () => {
       config.tenantLogin,
       config.ownerLogin,
       config.provisionerLogin,
+      config.prospectLogin,
       config.migratorLogin,
-    ]).toEqual(['p2', 't2', 'o2', 'p3', 'm4']);
+    ]).toEqual(['p2', 't2', 'o2', 'p3', 'q5', 'm4']);
   });
 
   it.each([
@@ -88,6 +94,7 @@ describe('loadConfig', () => {
     'PORTAL_TENANT_PASSWORD_FILE',
     'PORTAL_OWNER_PASSWORD_FILE',
     'PORTAL_PROVISIONER_PASSWORD_FILE',
+    'PORTAL_PROSPECT_PASSWORD_FILE',
     'PORTAL_MIGRATOR_PASSWORD_FILE',
   ])('refuses with a clear error when %s is missing', (name) => {
     const { dir, env } = files(GOOD);
@@ -129,6 +136,7 @@ describe('loadConfig', () => {
     'PORTAL_TENANT_PASSWORD',
     'PORTAL_OWNER_PASSWORD',
     'PORTAL_PROVISIONER_PASSWORD',
+    'PORTAL_PROSPECT_PASSWORD',
     'PORTAL_MIGRATOR_PASSWORD',
     'PORTAL_MIGRATOR_URL',
   ])('refuses a secret placed in %s itself', (name) => {
@@ -157,10 +165,11 @@ describe('redact', () => {
     tenantPassword: 'tenant pw/1',
     ownerPassword: OWNER_PW,
     provisionerPassword: PROVISIONER_PW,
+    prospectPassword: PROSPECT_PW,
   };
 
   it('removes the URL, its password decoded and encoded, and every login password', () => {
-    const text = `a ${config.adminUrl} b p%40ss c p@ss d tenant pw/1 e tenant%20pw%2F1 f ${OWNER_PW} g ${PROVISIONER_PW}`;
+    const text = `a ${config.adminUrl} b p%40ss c p@ss d tenant pw/1 e tenant%20pw%2F1 f ${OWNER_PW} g ${PROVISIONER_PW} h ${PROSPECT_PW}`;
     const out = redact(text, config);
     for (const secret of [
       'p%40ss',
@@ -169,6 +178,7 @@ describe('redact', () => {
       'tenant%20pw%2F1',
       OWNER_PW,
       PROVISIONER_PW,
+      PROSPECT_PW,
       'admin:',
     ]) {
       expect(out).not.toContain(secret);
@@ -250,7 +260,7 @@ describe('login passwords never reach the SQL text', () => {
   it('sends a verifier, not the password, when it creates or rotates a login', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login', 'c_login', 'm_login');
+    const names = principalNames('a_login', 'b_login', 'c_login', 'd_login', 'm_login');
     await createPrincipal(fake, names, 'tenantLogin', nasty);
     await rotatePassword(fake, 'b_login', nasty);
     expect(seen.length).toBe(2);
@@ -262,17 +272,19 @@ describe('login passwords never reach the SQL text', () => {
     expect(seen[0]).toMatch(/^CREATE ROLE "a_login" LOGIN NOINHERIT NOSUPERUSER .* NOBYPASSRLS /);
   });
 
-  it('creates a role with no password, the owner role alone with BYPASSRLS, and the provisioner without', async () => {
+  it('creates a role with no password, the owner role alone with BYPASSRLS, the provisioner and the prospect without', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login', 'c_login', 'm_login');
+    const names = principalNames('a_login', 'b_login', 'c_login', 'd_login', 'm_login');
     await createPrincipal(fake, names, 'tenantRole');
     await createPrincipal(fake, names, 'ownerRole');
     await createPrincipal(fake, names, 'provisionerRole');
+    await createPrincipal(fake, names, 'prospectRole');
     expect(seen).toEqual([
       'CREATE ROLE "portal_tenant" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
       'CREATE ROLE "portal_owner" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS',
       'CREATE ROLE "portal_provisioner" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+      'CREATE ROLE "portal_prospect" NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
     ]);
   });
 
@@ -379,6 +391,7 @@ describe('loadConfig names', () => {
     ['PORTAL_TENANT_LOGIN', 'Upper'],
     ['PORTAL_OWNER_LOGIN', 'x; drop'],
     ['PORTAL_PROVISIONER_LOGIN', 'Mixed'],
+    ['PORTAL_PROSPECT_LOGIN', 'Mixed'],
     ['PORTAL_MIGRATOR_LOGIN', 'Mixed'],
   ])('refuses %s=%s before anything touches a server', (name, value) => {
     const { dir, env } = files(GOOD);
@@ -395,6 +408,10 @@ describe('loadConfig names', () => {
     ['PORTAL_TENANT_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
     ['PORTAL_OWNER_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
     ['PORTAL_PROVISIONER_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
+    ['PORTAL_PROSPECT_LOGIN', 'PORTAL_TENANT_LOGIN'],
+    ['PORTAL_PROSPECT_LOGIN', 'PORTAL_OWNER_LOGIN'],
+    ['PORTAL_PROSPECT_LOGIN', 'PORTAL_PROVISIONER_LOGIN'],
+    ['PORTAL_PROSPECT_LOGIN', 'PORTAL_MIGRATOR_LOGIN'],
   ])('refuses one login for two roles: %s and %s', (first, second) => {
     const { dir, env } = files(GOOD);
     expect(() => loadConfig({ ...env, [first]: 'same', [second]: 'same' }, [])).toThrow(
@@ -411,15 +428,16 @@ describe('loadConfig names', () => {
 });
 
 describe('the statements the command writes', () => {
-  const names = principalNames('t_login', 'o_login', 'v_login', 'm_login');
+  const names = principalNames('t_login', 'o_login', 'v_login', 'q_login', 'm_login');
 
-  it('revokes PUBLIC from a new database and grants CONNECT to the three logins', () => {
+  it('revokes PUBLIC from a new database and grants CONNECT to the four role logins', () => {
     const database = manifest(17, 'portal').find((o) => o.kind === 'database')!;
     expect(grantStatements(database, names, 17)).toEqual([
       'REVOKE ALL ON DATABASE "portal" FROM PUBLIC',
       'GRANT CONNECT ON DATABASE "portal" TO "t_login"',
       'GRANT CONNECT ON DATABASE "portal" TO "o_login"',
       'GRANT CONNECT ON DATABASE "portal" TO "v_login"',
+      'GRANT CONNECT ON DATABASE "portal" TO "q_login"',
     ]);
   });
 
@@ -443,9 +461,13 @@ describe('the statements the command writes', () => {
     ]);
   });
 
-  it('grants no DELETE anywhere and no UPDATE on the register', () => {
+  it('grants DELETE only on the two custom-domain tables and no UPDATE on the register', () => {
     const all = manifest(14, 'portal').flatMap((o) => grantStatements(o, names, 14));
-    expect(all.filter((s) => s.includes('DELETE'))).toEqual([]);
+    // A tenant disconnects a domain by deleting its own rows; nothing else is ever deleted.
+    expect(all.filter((s) => s.includes('DELETE'))).toEqual([
+      'GRANT DELETE, INSERT, SELECT ON TABLE portal.custom_domain_request TO "portal_tenant"',
+      'GRANT DELETE, INSERT, SELECT ON TABLE portal.connected_domain TO "portal_tenant"',
+    ]);
     expect(all.filter((s) => s.includes('UPDATE'))).toEqual([
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.health_reading TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.support_access_reading TO "portal_owner"',
@@ -484,11 +506,12 @@ describe('loadConfig for --migrate-only', () => {
     expect(config.migratorPassword).toBe(MIGRATOR_PW);
     expect(config.migratorLogin).toBe('portal_migrator_login');
     expect(config.adminUrl).toBe('');
-    expect([config.tenantPassword, config.ownerPassword, config.provisionerPassword]).toEqual([
-      '',
-      '',
-      '',
-    ]);
+    expect([
+      config.tenantPassword,
+      config.ownerPassword,
+      config.provisionerPassword,
+      config.prospectPassword,
+    ]).toEqual(['', '', '', '']);
   });
 
   it('never opens a file but the migrator URL', () => {
@@ -560,7 +583,7 @@ describe('the migrator login', () => {
   it('is created with the login attributes and no role to inherit', async () => {
     const seen: string[] = [];
     const fake = { query: (text: string) => Promise.resolve(void seen.push(text)) } as never;
-    const names = principalNames('a_login', 'b_login', 'c_login', 'm_login');
+    const names = principalNames('a_login', 'b_login', 'c_login', 'd_login', 'm_login');
     await createPrincipal(fake, names, 'migratorLogin', MIGRATOR_PW);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatch(
@@ -570,7 +593,7 @@ describe('the migrator login', () => {
   });
 
   it('is granted no role and no CONNECT: the database is its own', () => {
-    const names = principalNames('t_login', 'o_login', 'v_login', 'm_login');
+    const names = principalNames('t_login', 'o_login', 'v_login', 'q_login', 'm_login');
     const all = manifest(14, 'portal').flatMap((o) => grantStatements(o, names, 14));
     expect(all.filter((s) => s.includes('"m_login"'))).toEqual([]);
   });

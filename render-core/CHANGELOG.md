@@ -2,6 +2,76 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## Unreleased
+
+**The strict content policy can carry Stripe.**
+
+- **Additive:** `renderEdgeSiteBlock()` takes an optional fifth argument,
+  `payments: PaymentsCsp` (`{ kind: 'stripe' }` or `{ kind: 'none' }`), and
+  `render()` takes it as `options.payments`. Absent or `none`, the policy is
+  byte-identical to 0.4.0 (pinned in `test/edge.test.ts`). With `stripe`, the
+  origins in `src/payments-origins.json` are added to `script-src`, and to an
+  explicit `frame-src 'self' ...` (and `connect-src 'self' ...` if a
+  re-measurement ever finds one), because `default-src` no longer covers them.
+  Today that is `https://js.stripe.com` in `script-src` and `frame-src`.
+- The origins are **measured, not written**: `payments-origins.json` is produced
+  only by `csp/derive/derive-payment-origins.mjs` from a real browser's report
+  against the real Stripe.js, and checked by `csp-checkout-gate.py --derive`.
+  `render-core` validates every origin on use (`validatePaymentOrigin`): a bare
+  https origin on `stripe.com` or `stripe.network`, no wildcard, port or path.
+  New exports `PaymentsCsp`, `PAYMENTS_CSP_NONE` and `validatePaymentOrigin`.
+- **Rollout:** nothing passes `payments: stripe` yet, so no rendered tenant
+  artefact changes with this release. A consumer that wants the allowance needs
+  this release and a call that passes it; consumers lag a release by one day.
+  See src/edge.md#the-payments-allowance.
+
+**The mail spool can serve the outcomes route.**
+
+- **Additive:** `MailSpoolStackArgs` takes an optional `drainOutcomes`. When
+  `true`, `renderMailSpoolStack()` renders `SHIM_DRAIN_OUTCOMES: 'true'` in the
+  spool service's `environment:`, straight after `SHIM_DRAIN_HOST`, so the
+  shim registers `POST /drain/outcomes` and the collector's dropped-recipient
+  reports stop answering 404. Absent or `false`, every spool file is
+  byte-identical to 0.4.0 (pinned against the committed demo1 golden).
+  `mailSpoolNeedsDrainOutcomes(mails)` is true when any of the host's `mail`
+  specs has a `sweego` route. A non-boolean `drainOutcomes` is refused.
+- `assertSpoolPosture(document, drainPort, expectOutcomes?)` refuses
+  `SHIM_DRAIN_OUTCOMES` as anything but the string `true` (not `True`, `1`, a
+  YAML boolean or an empty string) and, when `expectOutcomes` is given, a file
+  that disagrees with it. New exports `MAIL_SPOOL_DRAIN_OUTCOMES_KEY`,
+  `MAIL_SPOOL_DRAIN_OUTCOMES_VALUE` and `mailSpoolNeedsDrainOutcomes`. See
+  src/spool.md#the-outcomes-route.
+- **Rollout:** a consumer on an earlier release renders no such key; a host with
+  a Sweego tenant needs this release and a call that passes
+  `mailSpoolNeedsDrainOutcomes`. No `render()` artefact changes.
+
+## 0.4.0
+
+**The descriptor can name a mail route.**
+
+- **Additive:** `mail.route` is an optional
+  `{ primary: "mx1" | "sweego", sweegoAllowance?: integer }`.
+  Absent means `mx1`, so every existing descriptor and every rendered
+  artefact is unchanged. Any other value, a missing `primary` or an extra key
+  is refused, and a demo whose route is `sweego` is refused as a tier
+  mismatch. `sweegoAllowance`, the tenant's messages per UTC month through
+  Sweego, is a positive integer required when `primary` is `sweego` and
+  refused when it is `mx1`. The new types `MailRoute` and `MailRouteSpec` and
+  the values `MAIL_ROUTES`, `MAX_SWEEGO_ALLOWANCE`, `DEFAULT_MAIL_ROUTE` and
+  `mailRouteOf` are exported. A consumer pinned to an earlier release refuses
+  a descriptor that carries one (an unknown key), so write the field only
+  once that consumer is upgraded. See src/mail.md#mail-route.
+
+**`render()` can render one running colour.**
+
+- **Additive:** `render(descriptor, zones, themeCsp, { activeColour })` and
+  `renderComposeStack({ ..., activeColour })` take an optional `'a'` or `'b'`.
+  When given, `compose.yml` carries only that colour's Ghost service and the
+  idle colour is omitted. When absent, every artefact is byte-identical to
+  0.3.0. A value other than `'a'` or `'b'` is refused. The new type `Colour`
+  and interface `RenderOptions` are exported. See
+  src/compose.md#one-running-colour.
+
 ## 0.3.0
 
 **Each Ghost container gets a 60 second stop grace period.**

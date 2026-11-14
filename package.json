@@ -13,7 +13,7 @@
     "format": "prettier --write . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore",
     "format:check": "prettier --check . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore",
     "test": "node --test *.test.js",
-    "prepare": "[ \"$CI\" = \"true\" ] || pre-commit install"
+    "prepare": "[ \"$CI\" = \"true\" ] || [ \"$(git rev-parse --path-format=absolute --git-common-dir)\" != \"$(git rev-parse --path-format=absolute --git-dir)\" ] || pre-commit install"
   },
   "devDependencies": {
     "@branchleft/prettier-config": "^0.3.1",
@@ -22,6 +22,7 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.13.0",
     "prettier": "^3.9.10",
-    "typescript-eslint": "^8.71.2"
+    "typescript-eslint": "^8.71.2",
+    "yaml": "^2.9.1"
   }
 }

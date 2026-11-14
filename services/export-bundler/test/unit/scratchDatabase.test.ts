@@ -273,6 +273,34 @@ async function writeFakeDocker(
   return { path, argvLog, importLog };
 }
 
+/**
+ * A docker stand-in that fails every network or volume removal with the given
+ * stderr. With `argvLog`, each call's first two arguments are appended to it.
+ * With `failOnly`, only that resource kind fails; the other removal succeeds.
+ */
+async function writeRemovalDocker(
+  dir: string,
+  stderr: string,
+  options: { argvLog?: string; failOnly?: 'network' | 'volume' } = {}
+): Promise<string> {
+  const path = join(dir, 'docker-removal');
+  const lines = [
+    '#!/bin/sh',
+    ...(options.argvLog ? [`echo "$1 $2" >> '${options.argvLog}'`] : []),
+    'case "$1" in',
+    `  ${options.failOnly ?? 'network|volume'})`,
+    '    if [ "$2" = rm ]; then',
+    `      printf '%s\\n' '${stderr}' >&2`,
+    '      exit 1',
+    '    fi ;;',
+    'esac',
+    'exit 0',
+  ];
+  await writeFile(path, lines.join('\n') + '\n');
+  await chmod(path, 0o755);
+  return path;
+}
+
 describe('createMysqlScratch', () => {
   let dir: string;
   beforeEach(async () => {
@@ -377,14 +405,116 @@ describe('createMysqlScratch', () => {
   });
 
   it('destroy() is safe when nothing was created', async () => {
-    const fake = await writeFakeDocker(dir, {});
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: network acme-export-42-net not found'
+    );
     const registry = new CleanupRegistry();
     const scratch = createMysqlScratch(mysqlSpec, {
-      dockerCommand: join(dir, 'no-such-docker'),
+      dockerCommand: docker,
       registry,
     });
     await expect(scratch.destroy()).resolves.toBeUndefined();
-    void fake;
+  });
+
+  it('destroy() rethrows when the docker binary is missing', async () => {
+    const scratch = createMysqlScratch(mysqlSpec, {
+      dockerCommand: join(dir, 'no-such-docker'),
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow();
+  });
+
+  it('destroy() rethrows a network removal that failed for another reason', async () => {
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: permission denied on the daemon socket'
+    );
+    const scratch = createMysqlScratch(mysqlSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow(/permission denied/);
+  });
+});
+
+describe('SQLite scratch removers', () => {
+  const sqliteSpec: SqliteScratchSpec = {
+    runId: 'demo-export-7',
+    image: 'ghost-platform@sha256:abc',
+    tenantVolumes: [{ volume: 'ghost-demo-content', mountPath: '/var/lib/ghost/content' }],
+    live: { kind: 'sqlite', filename: '/var/lib/ghost/content/data/ghost.db' },
+    owner: '1001:1001',
+  };
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'export-bundler-sqlite-remove-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('ignores a volume or network that is already gone', async () => {
+    const docker = await writeRemovalDocker(dir, 'Error: No such volume: ghost-demo-export-7');
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).resolves.toBeUndefined();
+  });
+
+  it('still removes the network when the volume removal fails, and reports the volume failure', async () => {
+    const argvLog = join(dir, 'argv.log');
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: volume is in use by a running container',
+      { argvLog, failOnly: 'volume' }
+    );
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow(/in use/);
+    const calls = (await readFile(argvLog, 'utf8')).trim().split('\n');
+    expect(calls).toEqual(['volume rm', 'network rm']);
+  });
+
+  it('reports both failures when the volume and the network removals both fail', async () => {
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: permission denied on the daemon socket'
+    );
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    const err = await scratch.destroy().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(AggregateError);
+    expect((err as AggregateError).errors).toHaveLength(2);
+    expect((err as Error).message).toMatch(/2 scratch removals failed/);
+  });
+
+  it('rethrows when the docker binary is missing', async () => {
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: join(dir, 'no-such-docker'),
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow();
+  });
+
+  it('rethrows a volume removal that failed for another reason', async () => {
+    const docker = await writeRemovalDocker(
+      dir,
+      'Error response from daemon: volume is in use by a running container'
+    );
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: docker,
+      registry: new CleanupRegistry(),
+    });
+    await expect(scratch.destroy()).rejects.toThrow(/in use/);
   });
 });
 
