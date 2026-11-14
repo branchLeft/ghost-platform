@@ -1,5 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, sweegoUsable } from '../../src/config.js';
+
+const KEY = randomBytes(32).toString('hex');
 
 const BASE_ENV = {
   COLLECTOR_DESCRIPTOR_DIR: '/tmp/descriptors',
@@ -62,21 +65,55 @@ describe('loadConfig', () => {
   });
 
   describe('outcomes', () => {
-    it('turns on only when both the return path and the notification directory are set', () => {
+    it('turns on only when the return path, the notification directory and the Message-ID key are all set', () => {
       expect(
         loadConfig({
           ...BASE_ENV,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
         }).outcomes
-      ).toEqual({ returnPath: 'outcomes@collector.example', dsnDir: '/var/dsn', pollMs: 30000 });
+      ).toEqual({
+        returnPath: 'outcomes@collector.example',
+        dsnDir: '/var/dsn',
+        messageIdKey: KEY,
+        pollMs: 30000,
+      });
     });
 
     it.each([
       ['COLLECTOR_OUTCOMES_RETURN_PATH', 'outcomes@collector.example'],
       ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
-    ])('refuses %s without its partner', (name, value) => {
+      ['COLLECTOR_OUTCOMES_MESSAGE_ID_KEY', KEY],
+    ])('refuses %s without its partners', (name, value) => {
       expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
+    });
+
+    it('refuses an outcome path with no Message-ID key, so a forged bounce can never be read', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+        })
+      ).toThrow(/COLLECTOR_OUTCOMES_MESSAGE_ID_KEY/);
+    });
+
+    it('refuses a key that is too short, without putting it in the error', () => {
+      const short = 'not-a-real-key-but-short';
+      let message = '';
+      try {
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: short,
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/at least 32 characters/);
+      expect(message).not.toContain(short);
     });
 
     it('refuses the replaced bulk return path whether or not the outcome path is on', () => {
@@ -85,6 +122,7 @@ describe('loadConfig', () => {
         {
           COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
         },
       ]) {
         expect(() =>
@@ -132,10 +170,33 @@ describe('loadConfig', () => {
       ).toThrow(/different domains/);
     });
 
-    it('turn the outcome path on with the notification directory alone', () => {
+    it('turn the outcome path on with the notification directory and the Message-ID key, and no return path', () => {
       expect(
-        loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn' }).outcomes
-      ).toEqual({ dsnDir: '/var/dsn', pollMs: 30000 });
+        loadConfig({
+          ...BASE_ENV,
+          ...LANES,
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
+        }).outcomes
+      ).toEqual({ dsnDir: '/var/dsn', messageIdKey: KEY, pollMs: 30000 });
+    });
+
+    it.each([
+      ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
+      ['COLLECTOR_OUTCOMES_MESSAGE_ID_KEY', KEY],
+    ])('refuse %s without its partner, so the outcome path is never on unsigned', (name, value) => {
+      expect(() => loadConfig({ ...BASE_ENV, ...LANES, [name]: value })).toThrow(/set together/);
+    });
+
+    it('refuse a Message-ID key that is too short', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          ...LANES,
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: 'too-short',
+        })
+      ).toThrow(/at least 32 characters/);
     });
 
     it('refuse the single outcome return path beside them: two settings would name the envelope sender', () => {
@@ -145,6 +206,7 @@ describe('loadConfig', () => {
           ...LANES,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
         })
       ).toThrow(/COLLECTOR_OUTCOMES_RETURN_PATH.*COLLECTOR_MX1_TX_RETURN_PATH/);
       expect(() =>

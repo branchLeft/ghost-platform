@@ -5,6 +5,7 @@ import {
   parseLaneReturnPaths,
   type Mx1LaneReturnPaths,
 } from './mx1Lane.js';
+import { MIN_MAC_KEY_LENGTH } from './outcomeId.js';
 import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
 export interface CollectorConfig {
@@ -167,10 +168,12 @@ export interface CollectorConfig {
    */
   mx1Lanes?: Mx1LaneReturnPaths;
   /**
-   * Opt-in outcome path; absent unless BOTH COLLECTOR_OUTCOMES_RETURN_PATH
-   * and COLLECTOR_OUTCOMES_DSN_DIR are set (one without the other throws).
-   * Absent, submissions and the drain loop are exactly as before. With
-   * `mx1Lanes` set, the notification directory alone turns it on.
+   * Opt-in outcome path; absent unless COLLECTOR_OUTCOMES_RETURN_PATH,
+   * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY are all
+   * set (a partial set throws). With `mx1Lanes` set, the return path is not
+   * set (the lane return paths are the envelope sender), so the notification
+   * directory and the Message-ID key together turn it on.
+   * Absent, submissions and the drain loop are exactly as before.
    */
   outcomes?: {
     /**
@@ -181,6 +184,8 @@ export interface CollectorConfig {
     returnPath?: string;
     /** Directory the notifications arrive in, one .eml file each. */
     dsnDir: string;
+    /** Signs each outgoing Message-ID (HMAC); a bounce is read only if its quoted id verifies. A secret: never logged. */
+    messageIdKey: string;
     pollMs: number;
   };
 }
@@ -240,12 +245,22 @@ function pinTtlEnv(env: CollectorEnv): number {
   return ttl;
 }
 
+function requireMessageIdKeyLength(messageIdKey: string): void {
+  if (messageIdKey.length < MIN_MAC_KEY_LENGTH) {
+    // The value is never put in the message.
+    throw new Error(
+      `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be at least ${MIN_MAC_KEY_LENGTH} characters`
+    );
+  }
+}
+
 function outcomesEnv(
   env: CollectorEnv,
   mx1Lanes: Mx1LaneReturnPaths | undefined
 ): CollectorConfig['outcomes'] {
   const returnPath = env.COLLECTOR_OUTCOMES_RETURN_PATH;
   const dsnDir = env.COLLECTOR_OUTCOMES_DSN_DIR;
+  const messageIdKey = env.COLLECTOR_OUTCOMES_MESSAGE_ID_KEY;
   if (env.COLLECTOR_OUTCOMES_BULK_RETURN_PATH) {
     throw new Error(
       `COLLECTOR_OUTCOMES_BULK_RETURN_PATH was replaced by ${MX1_NL_RETURN_PATH_ENV} and ${MX1_TX_RETURN_PATH_ENV}: unset it`
@@ -259,24 +274,34 @@ function outcomesEnv(
         `COLLECTOR_OUTCOMES_RETURN_PATH cannot be set with ${MX1_TX_RETURN_PATH_ENV} and ${MX1_NL_RETURN_PATH_ENV}: the lane return paths are the envelope sender`
       );
     }
-    return dsnDir
-      ? {
-          dsnDir,
-          pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
-        }
-      : undefined;
+    if (!dsnDir && !messageIdKey) {
+      return undefined;
+    }
+    if (!dsnDir || !messageIdKey) {
+      throw new Error(
+        'COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be set together'
+      );
+    }
+    requireMessageIdKeyLength(messageIdKey);
+    return {
+      dsnDir,
+      messageIdKey,
+      pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
+    };
   }
-  if (!returnPath && !dsnDir) {
+  if (!returnPath && !dsnDir && !messageIdKey) {
     return undefined;
   }
-  if (!returnPath || !dsnDir) {
+  if (!returnPath || !dsnDir || !messageIdKey) {
     throw new Error(
-      'COLLECTOR_OUTCOMES_RETURN_PATH and COLLECTOR_OUTCOMES_DSN_DIR must be set together'
+      'COLLECTOR_OUTCOMES_RETURN_PATH, COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY must be set together'
     );
   }
+  requireMessageIdKeyLength(messageIdKey);
   return {
     returnPath,
     dsnDir,
+    messageIdKey,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
 }

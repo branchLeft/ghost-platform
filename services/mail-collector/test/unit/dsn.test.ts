@@ -46,10 +46,28 @@ describe('parseDsn', () => {
     );
     expect(parsed).toEqual({
       originalMessageId: MESSAGE_ID,
+      recipients: ['gone@example.com'],
       action: 'failed',
       status: '5.1.1',
       diagnostic: 'smtp; 550 5.1.1 no such user',
     });
+  });
+
+  it('reads Original-Recipient and Final-Recipient, lower-cased, and ignores a non-rfc822 address type', () => {
+    const parsed = parseDsn(
+      dsn(
+        [
+          'Original-Recipient: rfc822; Reader@Example.com',
+          'Final-Recipient: rfc822; reader+tag@example.com',
+          'Action: failed',
+          'Status: 5.1.1',
+        ].join('\r\n')
+      )
+    );
+    expect(parsed?.recipients).toEqual(['reader@example.com', 'reader+tag@example.com']);
+    expect(
+      parseDsn(dsn('Final-Recipient: x400; /C=US/\r\nAction: failed\r\nStatus: 5.1.1'))?.recipients
+    ).toEqual([]);
   });
 
   it('unfolds a folded Diagnostic-Code', () => {
@@ -73,7 +91,7 @@ describe('parseDsn', () => {
 });
 
 describe('toOutcome', () => {
-  const base = { originalMessageId: MESSAGE_ID, diagnostic: null };
+  const base = { originalMessageId: MESSAGE_ID, recipients: [], diagnostic: null };
 
   it('delivered with a 2.x.x status is delivered', () => {
     expect(toOutcome({ ...base, action: 'delivered', status: '2.0.0' })).toEqual({

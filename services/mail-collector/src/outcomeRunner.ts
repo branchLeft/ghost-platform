@@ -1,4 +1,4 @@
-import { decodeOutcomeMessageId } from './outcomeId.js';
+import { decodeOutcomeMessageId, MIN_MAC_KEY_LENGTH, verifyOutcomeMessageId } from './outcomeId.js';
 import { parseDsn, toOutcome } from './dsn.js';
 import type { DsnMailbox } from './dsnMailbox.js';
 import type { ComplainedReport, OutcomeClient, OutcomeReport } from './drainClient.js';
@@ -16,6 +16,14 @@ export interface OutcomeRunnerDeps {
   store: TargetStore;
   drainClient: OutcomeClient;
   log: Logger;
+  /**
+   * The key the collector signs each outgoing Message-ID with. A notification
+   * is acted on only when the original Message-ID it quotes carries a MAC that
+   * verifies for the recipient it names, so a bounce a stranger mailed to the
+   * return path is retired unread (`unauthenticated`), never reported.
+   * Required: there is no unauthenticated mode. Never logged.
+   */
+  messageIdKey: string;
   /**
    * How long a notice the spool calls `unknown` is kept and retried before
    * it is retired as unplaceable. `unknown` is usually a race (the notice
@@ -46,6 +54,10 @@ const DEFAULT_UNKNOWN_GRACE_MS = 60 * 60 * 1000;
  * See ../README.md#outcomes-carried-back-to-the-spool.
  */
 export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
+  const { messageIdKey } = deps;
+  if (messageIdKey.length < MIN_MAC_KEY_LENGTH) {
+    throw new TypeError(`messageIdKey must be at least ${MIN_MAC_KEY_LENGTH} characters`);
+  }
   const unknownGraceMs = deps.unknownGraceMs ?? DEFAULT_UNKNOWN_GRACE_MS;
   const now = deps.now ?? Date.now;
   async function runOnce(): Promise<{ reported: number; retired: number; left: number }> {
@@ -97,12 +109,22 @@ export function createOutcomeRunner(deps: OutcomeRunnerDeps): OutcomeRunner {
         }
       }
       const dsn = parseDsn(item.raw);
-      const key = dsn ? decodeOutcomeMessageId(dsn.originalMessageId) : null;
-      const outcome = dsn ? toOutcome(dsn) : null;
+      const ours = dsn ? decodeOutcomeMessageId(dsn.originalMessageId) : null;
+      // Only an id we signed for this recipient counts: the shape alone is public.
+      const key = dsn
+        ? verifyOutcomeMessageId(dsn.originalMessageId, dsn.recipients, messageIdKey)
+        : null;
+      const outcome = dsn && key ? toOutcome(dsn) : null;
       if (!dsn || !key || !outcome) {
         deps.log.info('outcome_ignored', {
           ref: item.ref,
-          reason: !dsn ? 'not_a_dsn' : !key ? 'not_ours' : 'no_final_outcome',
+          reason: !dsn
+            ? 'not_a_dsn'
+            : !ours
+              ? 'not_ours'
+              : !key
+                ? 'unauthenticated'
+                : 'no_final_outcome',
         });
         await retire(item.ref);
         continue;

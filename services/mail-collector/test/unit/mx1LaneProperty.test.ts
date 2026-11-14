@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { Transporter } from 'nodemailer';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createCollectorRuntime } from '../../src/collectorLoop.js';
@@ -31,6 +32,7 @@ import {
  * ../../README.md#lane-return-paths.
  */
 
+const MESSAGE_ID_KEY = randomBytes(32).toString('hex');
 const NL = 'bounce-nl@bounces-nl.example';
 const TX = 'bounce-tx@bounces-tx.example';
 
@@ -83,7 +85,13 @@ describe('lane return paths: every mx1 submission, by class and demo', () => {
       user: 'collector',
       pass: 'unused',
       ...(options.lanes ? { lanes: { tx: TX, nl: NL } } : {}),
-      ...(options.outcomes ? { outcomes: options.lanes ? {} : { returnPath: TX } } : {}),
+      ...(options.outcomes
+        ? {
+            outcomes: options.lanes
+              ? { messageIdKey: MESSAGE_ID_KEY }
+              : { returnPath: TX, messageIdKey: MESSAGE_ID_KEY },
+          }
+        : {}),
       transporterFactory: () =>
         ({
           sendMail: async (mail: Sent) => {

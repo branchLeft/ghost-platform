@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -37,6 +38,8 @@ function findFreePort(): Promise<number> {
     srv.on('error', reject);
   });
 }
+
+const KEY = randomBytes(32).toString('hex');
 
 describe('dist/server.js — outcomes are opt-in from the environment', () => {
   let dir: string;
@@ -122,6 +125,7 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     const received = await submitOneMessage({
       COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
       COLLECTOR_OUTCOMES_DSN_DIR: dir,
+      COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
     });
     expect(received.dsnNotify).toEqual(expect.arrayContaining(['SUCCESS', 'FAILURE', 'DELAY']));
     expect(received.envelopeFrom).toBe('outcomes@collector.example');
@@ -148,9 +152,9 @@ describe('dist/server.js — outcomes are opt-in from the environment', () => {
     expect(received.envelopeFrom).toBe('bounce-tx@tx.example');
   });
 
-  it('with the lane paths and the notification directory set, the lane path is the envelope sender and the DSN is requested', async () => {
+  it('with the lane paths, the notification directory and the Message-ID key set, the lane path is the envelope sender and the DSN is requested', async () => {
     const received = await submitOneMessage(
-      { ...LANES, COLLECTOR_OUTCOMES_DSN_DIR: dir },
+      { ...LANES, COLLECTOR_OUTCOMES_DSN_DIR: dir, COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY },
       'email-1'
     );
     expect(received.envelopeFrom).toBe('bounce-nl@nl.example');

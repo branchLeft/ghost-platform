@@ -1,7 +1,7 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { WireMessage } from './drainClient.js';
 import { laneReturnPath, type Mx1LaneReturnPaths } from './mx1Lane.js';
-import { encodeOutcomeMessageId } from './outcomeId.js';
+import { signOutcomeMessageId } from './outcomeId.js';
 import { mailClassOf } from './sendingTarget.js';
 
 export interface DeliveryClientOptions {
@@ -22,9 +22,11 @@ export interface DeliveryClientOptions {
    * success, failure and delay. `returnPath` is the envelope sender (where mx1
    * sends delivery status notifications), required without `lanes` and refused
    * beside it: two settings must not name the one envelope sender. Unset, a
-   * submission is exactly what it was before this option existed.
+   * submission is exactly what it was before this option existed. The
+   * Message-ID is signed with `messageIdKey` (HMAC, bound to the recipient), so
+   * a bounce that quotes it can be told from a forgery.
    */
-  outcomes?: { returnPath?: string };
+  outcomes?: { returnPath?: string; messageIdKey: string };
   transporterFactory?: (opts: DeliveryClientOptions) => Transporter;
 }
 
@@ -76,11 +78,11 @@ export function createDeliveryClient(opts: DeliveryClientOptions): DeliveryClien
     const outcomeFields =
       opts.outcomes && targetId !== undefined
         ? {
-            messageId: encodeOutcomeMessageId({
-              targetId,
-              id: message.id,
-              drainCount: message.drainCount,
-            }),
+            messageId: signOutcomeMessageId(
+              { targetId, id: message.id, drainCount: message.drainCount },
+              message.to,
+              opts.outcomes.messageIdKey
+            ),
             dsn: {
               id: message.id,
               return: 'headers' as const,

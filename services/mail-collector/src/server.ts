@@ -65,7 +65,10 @@ const deliveryClient = createDeliveryClient({
   ...(config.mx1Lanes ? { lanes: config.mx1Lanes } : {}),
   ...(config.outcomes
     ? {
-        outcomes: config.outcomes.returnPath ? { returnPath: config.outcomes.returnPath } : {},
+        outcomes: {
+          ...(config.outcomes.returnPath ? { returnPath: config.outcomes.returnPath } : {}),
+          messageIdKey: config.outcomes.messageIdKey,
+        },
       }
     : {}),
 });
@@ -193,6 +196,7 @@ const outcomes = config.outcomes
         store,
         drainClient,
         log,
+        messageIdKey: config.outcomes.messageIdKey,
       }),
       intervalMs: config.outcomes.pollMs,
     }
