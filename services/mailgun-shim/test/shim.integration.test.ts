@@ -5,6 +5,7 @@ import { createCollector, type Collector, type DrainedWireMessage } from './help
 import { createMailgunClient } from './helpers/mailgunClient.js';
 import { startSmtpSink, type SmtpSink } from './helpers/smtpSink.js';
 import { startTestShim, type TestShim } from './helpers/testServer.js';
+import { TenantRegistrationRefused } from '../src/store.js';
 import { createThrottle } from '../src/throttle.js';
 
 /**
@@ -1287,8 +1288,8 @@ describe('per-slot credential domains: one slot key cannot submit as another slo
   });
 
   it("with a row per slot, A's key is refused on B's credential domain on both front doors, and each slot's own key sends", async () => {
-    shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN);
-    shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN);
+    shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN, 'demo-1');
+    shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN, 'demo-2');
 
     await expect(sendMailgun(KEY_A, SLOT_B, 'demo-2')).rejects.toMatchObject({ status: 401 });
     await expect(sendSmtp(KEY_A, SLOT_B, 'demo-2')).rejects.toMatchObject({ code: 'EAUTH' });
@@ -1302,15 +1303,91 @@ describe('per-slot credential domains: one slot key cannot submit as another slo
   });
 
   it("rotating slot A's row leaves slot B's key valid and retires A's old key", async () => {
-    shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN);
-    shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN);
+    shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN, 'demo-1');
+    shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN, 'demo-2');
 
-    shim.store.registerTenant(SLOT_A, 'test-slot-a-rotated-key', SENDER_DOMAIN);
+    shim.store.registerTenant(SLOT_A, 'test-slot-a-rotated-key', SENDER_DOMAIN, 'demo-1');
 
     await expect(sendMailgun(KEY_A, SLOT_A, 'demo-1')).rejects.toMatchObject({ status: 401 });
     await expect(sendSmtp(KEY_A, SLOT_A, 'demo-1')).rejects.toMatchObject({ code: 'EAUTH' });
     expect((await sendMailgun(KEY_B, SLOT_B, 'demo-2')).id).toBeTruthy();
     expect((await sendSmtp(KEY_B, SLOT_B, 'demo-2')).accepted).toHaveLength(1);
     expect((await sendMailgun('test-slot-a-rotated-key', SLOT_A, 'demo-1')).id).toBeTruthy();
+  });
+
+  // The From local part is bound to the slot's own credential. See
+  // shim.integration.test.md#per-slot-credential-domains.
+  describe('the From local part is bound to the slot', () => {
+    beforeEach(() => {
+      shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN, 'demo-1');
+      shim.store.registerTenant(SLOT_B, KEY_B, SENDER_DOMAIN, 'demo-2');
+    });
+
+    it("refuses slot A's own credential sending as slot B's address on the Mailgun route, queueing nothing", async () => {
+      await expect(sendMailgun(KEY_A, SLOT_A, 'demo-2')).rejects.toMatchObject({ status: 400 });
+      expect(shim.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it("refuses slot A's own credential sending as slot B's address over SMTP, at MAIL FROM", async () => {
+      await expect(sendSmtp(KEY_A, SLOT_A, 'demo-2')).rejects.toMatchObject({
+        responseCode: 553,
+      });
+      expect(shim.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it("refuses slot B's address in the header From even when the envelope sender is slot A's own", async () => {
+      const transport = nodemailer.createTransport({
+        host: '127.0.0.1',
+        port: shim.smtpPort,
+        secure: false,
+        ignoreTLS: true,
+        auth: { user: SLOT_A, pass: KEY_A },
+      });
+      try {
+        await expect(
+          transport.sendMail({
+            envelope: { from: `demo-1@${SENDER_DOMAIN}`, to: 'member@example.com' },
+            from: `demo-2@${SENDER_DOMAIN}`,
+            to: 'member@example.com',
+            subject: 'Slot mail',
+            text: 'hi',
+          })
+        ).rejects.toMatchObject({ responseCode: 550 });
+      } finally {
+        transport.close();
+      }
+      expect(shim.store.countUndrainedRecipients()).toBe(0);
+    });
+
+    it('refuses an address that only extends or case-varies the slot address, except the case variant of its own', async () => {
+      await expect(sendMailgun(KEY_A, SLOT_A, 'demo-10')).rejects.toMatchObject({ status: 400 });
+      await expect(sendMailgun(KEY_A, SLOT_A, 'demo-1.x')).rejects.toMatchObject({ status: 400 });
+      await expect(sendMailgun(KEY_A, SLOT_A, 'x-demo-1')).rejects.toMatchObject({ status: 400 });
+      expect((await sendMailgun(KEY_A, SLOT_A, 'DEMO-1')).id).toBeTruthy();
+      expect(shim.store.countUndrainedRecipients()).toBe(1);
+    });
+
+    it("sends each slot's own address on both front doors", async () => {
+      expect((await sendMailgun(KEY_A, SLOT_A, 'demo-1')).id).toBeTruthy();
+      expect((await sendMailgun(KEY_B, SLOT_B, 'demo-2')).id).toBeTruthy();
+      expect((await sendSmtp(KEY_A, SLOT_A, 'demo-1')).accepted).toHaveLength(1);
+      expect((await sendSmtp(KEY_B, SLOT_B, 'demo-2')).accepted).toHaveLength(1);
+      expect(shim.store.countUndrainedRecipients()).toBe(4);
+    });
+  });
+
+  describe('two slots cannot hold one key', () => {
+    it("refuses registering slot B with the key slot A holds, so A's key never reaches B's row", async () => {
+      shim.store.registerTenant(SLOT_A, KEY_A, SENDER_DOMAIN, 'demo-1');
+
+      expect(() => shim.store.registerTenant(SLOT_B, KEY_A, SENDER_DOMAIN, 'demo-2')).toThrow(
+        TenantRegistrationRefused
+      );
+
+      expect(shim.store.tenantExists(SLOT_B)).toBe(false);
+      await expect(sendMailgun(KEY_A, SLOT_B, 'demo-2')).rejects.toMatchObject({ status: 401 });
+      await expect(sendSmtp(KEY_A, SLOT_B, 'demo-2')).rejects.toMatchObject({ code: 'EAUTH' });
+      expect((await sendMailgun(KEY_A, SLOT_A, 'demo-1')).id).toBeTruthy();
+    });
   });
 });

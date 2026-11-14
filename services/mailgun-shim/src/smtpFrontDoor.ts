@@ -418,6 +418,12 @@ declare module 'smtp-server' {
      * violation, not a normal case.
      */
     tenantSenderDomain?: string | null;
+    /**
+     * The one From local part the credential is bound to (`Tenant.senderLocalPart`),
+     * set by onAuth beside `tenantSenderDomain`. `null` is any local part at the
+     * sender domain. See store.md#sender-local-part.
+     */
+    tenantSenderLocalPart?: string | null;
   }
 }
 
@@ -603,6 +609,7 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // change by an operator rotating this credential, which ends the
       // connection anyway (a fresh AUTH is required either way).
       session.tenantSenderDomain = tenant.senderDomain;
+      session.tenantSenderLocalPart = tenant.senderLocalPart;
       callback(null, { user: tenant.domain });
     },
 
@@ -647,7 +654,10 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
       // once mail leaves this process, never to which tenant credential
       // submitted it — this is the only hop that still knows that. A
       // credential may only submit as its own registered sender domain.
-      if (boundSender(address.address, senderDomain) === null) {
+      if (
+        boundSender(address.address, senderDomain, undefined, session.tenantSenderLocalPart) ===
+        null
+      ) {
         log.warn('smtp_mail_from_domain_mismatch', {
           submitter: submitterId,
           remoteAddress: session.remoteAddress,
@@ -851,7 +861,12 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // The gate also reads the header as written: `from.text` is already decoded.
             const boundHeaderFrom =
               headerFrom !== undefined
-                ? boundSender(headerFrom, senderDomain, rawFromHeaderValue(parsed.headerLines))
+                ? boundSender(
+                    headerFrom,
+                    senderDomain,
+                    rawFromHeaderValue(parsed.headerLines),
+                    session.tenantSenderLocalPart
+                  )
                 : undefined;
             if (headerFrom !== undefined && boundHeaderFrom === null) {
               log.warn('smtp_header_from_domain_mismatch', { submitter: submitterId });
@@ -879,7 +894,12 @@ export function createSmtpFrontDoor(opts: SmtpFrontDoorOptions): SmtpFrontDoor {
             // No header From: the envelope sender, in the same bound normal form the header
             // would have been queued in (it was gated at MAIL FROM by the same function).
             const envelopeBound = session.envelope.mailFrom
-              ? boundSender(session.envelope.mailFrom.address, senderDomain)
+              ? boundSender(
+                  session.envelope.mailFrom.address,
+                  senderDomain,
+                  undefined,
+                  session.tenantSenderLocalPart
+                )
               : null;
             const from = boundHeaderFrom ?? envelopeBound ?? '';
             if (from === '') {

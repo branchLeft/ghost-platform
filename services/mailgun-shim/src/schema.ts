@@ -11,12 +11,23 @@ import {
 // The store's schema. drizzle-kit diffs this file against drizzle/'s last
 // snapshot to write each new migration; see store.md#schema-and-migrations.
 
-export const tenants = sqliteTable('tenants', {
-  domain: text('domain').primaryKey(),
-  apiKeySalt: text('api_key_salt').notNull(),
-  apiKeyHash: text('api_key_hash').notNull(),
-  senderDomain: text('sender_domain'),
-});
+export const tenants = sqliteTable(
+  'tenants',
+  {
+    domain: text('domain').primaryKey(),
+    apiKeySalt: text('api_key_salt').notNull(),
+    apiKeyHash: text('api_key_hash').notNull(),
+    senderDomain: text('sender_domain'),
+    // The one From local part this credential may send as, lower-cased; null
+    // means any local part at the sender domain. See store.md#sender-local-part.
+    senderLocalPart: text('sender_local_part'),
+  },
+  (table) => [
+    // Backstop for the store's own check: one address, one credential. SQLite
+    // treats NULLs as distinct, so an unrestricted row never collides here.
+    uniqueIndex('idx_tenants_sender_address').on(table.senderDomain, table.senderLocalPart),
+  ]
+);
 
 export const events = sqliteTable(
   'events',

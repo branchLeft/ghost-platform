@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateApiKey, runCli, type CliIO } from '../../src/cli.js';
+import { createSqliteStore, type ShimStore } from '../../src/store.js';
 import { createFakeStore } from './helpers/fakeStore.js';
 
 const KEY_SHAPE = /^[A-Za-z0-9_-]{40,}$/;
@@ -61,6 +65,7 @@ describe('runCli register', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', apiKey!)).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -93,6 +98,7 @@ describe('runCli register', () => {
     await expect(store.verifyTenant('tenant.example.com', 'existing-key')).resolves.toEqual({
       domain: 'tenant.example.com',
       senderDomain: 'tenant.example.com',
+      senderLocalPart: null,
     });
   });
 
@@ -114,6 +120,7 @@ describe('runCli register', () => {
     await expect(store.verifyTenant('tenant.example.com', keyLine!)).resolves.toEqual({
       domain: 'tenant.example.com',
       senderDomain: 'tenant.example.com',
+      senderLocalPart: null,
     });
   });
 
@@ -230,6 +237,7 @@ describe('runCli set-sender-domain', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -274,6 +282,7 @@ describe('runCli set-sender-domain', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: 'blog.branchleft.co.uk',
+      senderLocalPart: null,
     });
   });
 
@@ -294,6 +303,7 @@ describe('runCli set-sender-domain', () => {
     await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
       domain: 'blog.branchleft.co.uk',
       senderDomain: null,
+      senderLocalPart: null,
     });
   });
 
@@ -315,6 +325,158 @@ describe('runCli set-sender-domain', () => {
   });
 });
 
+describe('runCli remove', () => {
+  const SLOT = 'slot-30001.demo.example.com';
+
+  async function registered(): Promise<{ store: ReturnType<typeof createFakeStore>; key: string }> {
+    const store = createFakeStore();
+    const { io, stdout } = captureIo();
+    await runCli(['register', SLOT, '--sender-domain', 'demo.example.com'], () => store, io);
+    return { store, key: stdout.find((line) => KEY_SHAPE.test(line))! };
+  }
+
+  it('removes the named row when --confirm repeats the domain, and its key stops authenticating', async () => {
+    const { store, key } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(stdout).toEqual([
+      `Removed ${SLOT} (sender domain: demo.example.com). Its key no longer authenticates.`,
+    ]);
+    expect(store.tenantExists(SLOT)).toBe(false);
+    await expect(store.verifyTenant(SLOT, key)).resolves.toBeNull();
+  });
+
+  it('leaves every other row, including its key, untouched', async () => {
+    const { store } = await registered();
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
+    const { io } = captureIo();
+
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
+    });
+  });
+
+  it('never prints a key', async () => {
+    const { store } = await registered();
+    const { io, stdout, stderr } = captureIo();
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+    expect([...stdout, ...stderr].filter((line) => KEY_SHAPE.test(line))).toEqual([]);
+  });
+
+  it('refuses without --confirm, and removes nothing', async () => {
+    const { store, key } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.includes('--confirm'))).toBe(true);
+    await expect(store.verifyTenant(SLOT, key)).resolves.not.toBeNull();
+  });
+
+  it('refuses a --confirm that names a different domain, and removes nothing', async () => {
+    const { store, key } = await registered();
+    store.registerTenant('slot-30002.demo.example.com', 'other', 'demo.example.com');
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['remove', SLOT, '--confirm', 'slot-30002.demo.example.com'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.includes('Nothing was removed'))).toBe(true);
+    expect(store.tenantExists('slot-30002.demo.example.com')).toBe(true);
+    await expect(store.verifyTenant(SLOT, key)).resolves.not.toBeNull();
+  });
+
+  it('refuses a --confirm with no value, and removes nothing', async () => {
+    const { store } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT, '--confirm'], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(store.tenantExists(SLOT)).toBe(true);
+  });
+
+  it.each([
+    ['no arguments', ['remove']],
+    ['a flag in the domain slot', ['remove', '--confirm', '--confirm', '--confirm']],
+    [
+      'a domain with an uppercase letter',
+      ['remove', 'Slot-30001.demo.example.com', '--confirm', 'Slot-30001.demo.example.com'],
+    ],
+    ['a bare TLD', ['remove', 'localhost', '--confirm', 'localhost']],
+    ['a scheme', ['remove', 'https://x.example.com', '--confirm', 'https://x.example.com']],
+    ['--confirm first', ['remove', '--confirm', SLOT, SLOT]],
+    ['a trailing extra argument', ['remove', SLOT, '--confirm', SLOT, '--rotate']],
+  ])('refuses %s with the usage line, and removes nothing', async (_name, argv) => {
+    const { store } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(argv, () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.startsWith('Usage: remove'))).toBe(true);
+    expect(store.tenantExists(SLOT)).toBe(true);
+  });
+
+  it('refuses a domain that is not registered, and says so', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.includes('is not registered'))).toBe(true);
+  });
+
+  it('reports a row with no sender domain as NOT SET', async () => {
+    const store = createFakeStore();
+    store.registerTenant(SLOT, 'k', null);
+    const { io, stdout } = captureIo();
+
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    expect(stdout[0]).toContain('sender domain: NOT SET');
+  });
+
+  it('lets the same domain be registered afresh without --rotate once removed', async () => {
+    const { store, key } = await registered();
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, captureIo().io);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['register', SLOT, '--sender-domain', 'demo.example.com'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const newKey = stdout.find((line) => KEY_SHAPE.test(line))!;
+    expect(newKey).not.toBe(key);
+    await expect(store.verifyTenant(SLOT, key)).resolves.toBeNull();
+    await expect(store.verifyTenant(SLOT, newKey)).resolves.not.toBeNull();
+  });
+});
+
 describe('runCli list', () => {
   it('lists registered domains only, sorted, with nothing key-like in the output', async () => {
     const store = createFakeStore();
@@ -326,8 +488,8 @@ describe('runCli list', () => {
 
     expect(code).toBe(0);
     expect(stdout).toEqual([
-      'a.example.com (sender domain: a.example.com)',
-      'b.example.com (sender domain: b.example.com)',
+      'a.example.com (sender domain: a.example.com, local part: ANY)',
+      'b.example.com (sender domain: b.example.com, local part: ANY)',
     ]);
     expect(stdout.some((line) => KEY_SHAPE.test(line))).toBe(false);
   });
@@ -344,8 +506,8 @@ describe('runCli list', () => {
 
     expect(code).toBe(0);
     expect(stdout).toEqual([
-      'configured.example.com (sender domain: configured.example.com)',
-      'legacy.example.com (sender domain: NOT SET)',
+      'configured.example.com (sender domain: configured.example.com, local part: ANY)',
+      'legacy.example.com (sender domain: NOT SET, local part: ANY)',
     ]);
   });
 });
@@ -435,11 +597,148 @@ describe('runCli unknown command', () => {
     expect(stderr.length).toBeGreaterThan(0);
   });
 
+  it('lists remove in the usage line', async () => {
+    const store = createFakeStore();
+    const { io, stderr } = captureIo();
+    await runCli(['bogus'], () => store, io);
+    expect(stderr.some((line) => line.includes('remove'))).toBe(true);
+  });
+
   it('rejects no command at all', async () => {
     const store = createFakeStore();
     const { io, stderr } = captureIo();
     const code = await runCli([], () => store, io);
     expect(code).toBe(1);
     expect(stderr.length).toBeGreaterThan(0);
+  });
+});
+
+// Against the real store: the refusals live in SQLite-backed registration, which the fake does not model.
+describe('runCli — one credential per key and per sender address', () => {
+  const SENDER = 'demo-mail.example.test';
+  let dir: string;
+  let open: () => ShimStore;
+
+  // runCli closes the store it opens, so each command gets a fresh handle on one file.
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'shim-cli-'));
+    const dbPath = join(dir, 'shim.db');
+    open = () => createSqliteStore(dbPath);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function tenants() {
+    const store = open();
+    try {
+      return store.listTenants();
+    } finally {
+      store.close();
+    }
+  }
+
+  function registerArgs(slot: string, localPart: string | null): string[] {
+    return [
+      'register',
+      `slot-${slot}.${SENDER}`,
+      '--sender-domain',
+      SENDER,
+      ...(localPart === null ? [] : ['--sender-local-part', localPart]),
+    ];
+  }
+
+  it('registers a credential bound to a local part and says so, printing the key once', async () => {
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(registerArgs('30001', 'demo-1'), open, io);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(stdout[0]).toBe(`Registered slot-30001.${SENDER} (sender: demo-1@${SENDER}).`);
+    expect(stdout.filter((line) => KEY_SHAPE.test(line))).toHaveLength(1);
+    expect(tenants()).toEqual([
+      { domain: `slot-30001.${SENDER}`, senderDomain: SENDER, senderLocalPart: 'demo-1' },
+    ]);
+  });
+
+  it('refuses a second credential for the same address, printing no key and registering nothing', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(registerArgs('30002', 'demo-1'), open, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual([expect.stringContaining(`already claimed by slot-30001.${SENDER}`)]);
+    expect(tenants().map((t) => t.domain)).toEqual([`slot-30001.${SENDER}`]);
+  });
+
+  it('refuses an unrestricted second credential on a domain another one restricts', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(registerArgs('30002', null), open, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
+  });
+
+  it('refuses a --sender-local-part that is missing, a flag, or not a local part', async () => {
+    for (const bad of [undefined, '--rotate', 'a b', 'a@b', '.a', 'a.', '']) {
+      const { io, stdout, stderr } = captureIo();
+      const args = ['register', `slot-30001.${SENDER}`, '--sender-domain', SENDER];
+      args.push('--sender-local-part');
+      if (bad !== undefined) args.push(bad);
+
+      const code = await runCli(args, open, io);
+
+      expect(code, String(bad)).toBe(1);
+      expect(stdout).toEqual([]);
+      expect(stderr.length).toBeGreaterThan(0);
+      expect(tenants()).toEqual([]);
+    }
+  });
+
+  it('set-sender-local-part binds an existing credential, refuses a claimed address, and reports an unknown one', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    await runCli(registerArgs('30002', 'demo-2'), open, captureIo().io);
+
+    const bound = captureIo();
+    expect(
+      await runCli(['set-sender-local-part', `slot-30002.${SENDER}`, 'demo-3'], open, bound.io)
+    ).toBe(0);
+    expect(bound.stdout).toEqual([`Bound slot-30002.${SENDER} to the From local part demo-3.`]);
+
+    const claimed = captureIo();
+    expect(
+      await runCli(['set-sender-local-part', `slot-30002.${SENDER}`, 'DEMO-1'], open, claimed.io)
+    ).toBe(1);
+    expect(claimed.stderr[0]).toContain('already claimed');
+
+    const unknown = captureIo();
+    expect(
+      await runCli(['set-sender-local-part', `slot-39999.${SENDER}`, 'demo-9'], open, unknown.io)
+    ).toBe(1);
+    expect(unknown.stderr[0]).toContain('is not registered');
+  });
+
+  it('list shows the bound local part, or ANY for an unrestricted credential', async () => {
+    await runCli(registerArgs('30001', 'demo-1'), open, captureIo().io);
+    await runCli(
+      ['register', 'blog.example.com', '--sender-domain', 'example.com'],
+      open,
+      captureIo().io
+    );
+    const { io, stdout } = captureIo();
+
+    await runCli(['list'], open, io);
+
+    expect(stdout).toEqual([
+      'blog.example.com (sender domain: example.com, local part: ANY)',
+      `slot-30001.${SENDER} (sender domain: ${SENDER}, local part: demo-1)`,
+    ]);
   });
 });

@@ -174,6 +174,14 @@ for (MAIL FROM always precedes DATA in the SMTP state machine, and
 `onMailFrom` refuses the whole message before RCPT/DATA can run if that gate
 fails) — never re-derived or re-checked, just trusted.
 
+`session.tenantSenderLocalPart` is the same kind of cached fact, set by `onAuth`
+beside it. When it is set, the envelope sender at MAIL FROM, the header From
+here and the envelope sender queued for a message with no header From must each
+name exactly that local part
+(see `src/senderAuthorization.md#the-local-part-binding`). A header From for
+another local part at the sender domain is the same 550 as any other header From
+that does not belong, even when the envelope sender is the credential's own.
+
 The gate is handed the header twice: `parsed.from.text`, which `mailparser` has
 already decoded, and the From line as written (`rawFromHeaderValue`). Encoded
 words are refused in an address or a group name
