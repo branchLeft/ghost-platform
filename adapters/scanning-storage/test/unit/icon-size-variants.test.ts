@@ -76,7 +76,7 @@ function makeImageTransform(calls: ResizeOptions[]) {
     canTransformFileExtension: (ext: string) => TRANSFORMABLE.has(ext),
     shouldResizeFileExtension: (ext: string) => RESIZABLE.has(ext),
     canTransformToFormat: (format: string) => FORMATS.has(format),
-    async resizeFromBuffer(buffer: Buffer, options: ResizeOptions) {
+    async resizeFromBuffer(_buffer: Buffer, options: ResizeOptions) {
       calls.push(options);
       return Buffer.from(`resized:${options.width}x${options.height}:${options.format}`);
     },

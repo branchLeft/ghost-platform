@@ -1,0 +1,26 @@
+{
+  // The strict floor written inline (TS-1 allows it): this package has no
+  // access to the private @branchleft/tsconfig preset, and its only TypeScript
+  // is the unit tests. The decorator itself is plain JavaScript because Ghost
+  // loads it from its own adapters directory with no build step.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  // Recursive rather than a flat glob, which matches root-level files only.
+  "include": ["test/**/*.ts"],
+  "exclude": ["node_modules"]
+}
