@@ -6,8 +6,8 @@ import { createSqliteStore, TenantRegistrationRefused, type ShimStore } from '..
 import { withFixture } from '../helpers/sqliteFixtures.js';
 
 // Registration refuses two credentials that could act as one: a shared key
-// (workspace#2785) and an overlapping sender address (workspace#2786). All
-// keys are test values. See store.md#registration-refusals.
+// and an overlapping sender address. All keys are test values.
+// See store.md#registration-refusals.
 
 const SENDER = 'demo-mail.example.test';
 const SLOT_A = `slot-30001.${SENDER}`;
