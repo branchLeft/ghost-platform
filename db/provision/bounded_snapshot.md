@@ -14,8 +14,8 @@ It is the one implementation of the snapshot. Both nightly paths run it:
 - the per-tenant path on the control host
   (`branchleft-backup-worker.timer` → `nightly_dump_loop.py` →
   `RemoteMysqldumpTransport`), which locks one tenant's tables;
-- db1's own all-databases dump (`branchleft-db-dump.timer` →
-  `dump_nightly.py`), which locks every user schema's tables.
+- db1's own dump (`branchleft-db-dump.timer` → `dump_nightly.py`), which
+  runs it once per user schema, so no lock names two schemas.
 
 ## Why not FLUSH TABLES WITH READ LOCK, even with a timeout
 
@@ -39,8 +39,9 @@ stdin) and one dump session (`mysqldump`), both as the backup account.
 1. Coordinator: `SET SESSION lock_wait_timeout = 1` and
    `SET SESSION wait_timeout = 2`, then `SELECT CONNECTION_ID()`.
 2. Coordinator: list the base tables to lock from
-   `information_schema.TABLES`: one tenant's schema, or every schema except
-   `mysql`, `sys`, `performance_schema` and `information_schema`.
+   `information_schema.TABLES`: one tenant's schema, or (no caller passes it
+   now) every schema except `mysql`, `sys`, `performance_schema` and
+   `information_schema`.
 3. Coordinator: `LOCK TABLES … READ` on exactly those tables. This takes
    no flush. A long-running read does not block it, because a read lock
    and a running read are compatible. It waits only for write

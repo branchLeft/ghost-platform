@@ -2,6 +2,8 @@
 overrides:
   nodemailer: ^10.1.0
   deepmerge-ts: ^8.0.2
+  # body-parser 2.3.0 (via express) has GHSA-27r3-jxmh-p828, fixed in 2.4.0.
+  body-parser: ^2.4.0
 
 # pnpm 11 blocks dependency build scripts unless named here. esbuild runs
 # from its platform binary package without its postinstall.

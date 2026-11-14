@@ -13,6 +13,11 @@ DIND_IMAGE="docker:27-dind"
 PROBE_IMAGE="python:3.12-alpine"
 # ghcr.io/branchleft/mailgun-shim:latest at the time of writing (df3092c).
 SPOOL_IMAGE="${SPOOL_IMAGE:-ghcr.io/branchleft/mailgun-shim@sha256:c32a32e93025aeb2b397b5dbf8e8b17e59256f56e3e881ffc49c71f6b8965571}"
+# The spool image is a private GHCR package. The workflow hands in the run's own
+# read token; it goes to the stand-in host's docker login on stdin and nowhere
+# else (no argument, no file here, no echo).
+GHCR_USER="${GHCR_USER:-}"
+GHCR_TOKEN="${GHCR_TOKEN:-}"
 DRAIN_PORT=8095
 # Compose names the container <project>-<service>-1.
 SPOOL_C="mail-spool-mail-spool-1"
@@ -95,6 +100,13 @@ on_slot_network() {
     on_host "docker run --rm --network $net -v /work:/work:ro $PROBE_IMAGE $*"
 }
 
+case "$SPOOL_IMAGE" in
+    ghcr.io/*)
+        [ -n "$GHCR_USER" ] && [ -n "$GHCR_TOKEN" ] ||
+            { echo "FAIL: $SPOOL_IMAGE is a private package: set GHCR_USER and GHCR_TOKEN (a token with packages: read) so the stand-in host can pull it"; exit 1; }
+        ;;
+esac
+
 [ -f "$HERE/render-core/dist/index.js" ] || { echo "run 'pnpm install --frozen-lockfile && pnpm run build' in render-core first"; exit 1; }
 
 cp "$HERE/scripts/mail-spool-proof/"* "$WORK/"
@@ -127,7 +139,23 @@ on_host "apk add --no-cache python3 >/dev/null"
 # The host pulls the spool image itself (the host keeps its egress); the probe
 # image comes from the outer daemon.
 docker save "$PROBE_IMAGE" | docker exec -i "$HOST" docker load >/dev/null
-on_host "docker pull -q $SPOOL_IMAGE" >/dev/null
+case "$SPOOL_IMAGE" in
+    ghcr.io/*)
+        if ! printf '%s' "$GHCR_TOKEN" |
+            docker exec -i -e PATH="$DOCKERD_PATH" "$HOST" docker login ghcr.io -u "$GHCR_USER" --password-stdin >/dev/null 2>"$WORK/login.err"; then
+            echo "FAIL: the stand-in host could not log in to ghcr.io: the credential was refused or the registry was unreachable"
+            sed 's/^/    /' "$WORK/login.err"
+            exit 1
+        fi
+        ;;
+esac
+if ! on_host "docker pull -q $SPOOL_IMAGE" >/dev/null 2>"$WORK/pull.err"; then
+    echo "FAIL: the stand-in host could not pull $SPOOL_IMAGE: the package is private, so the token needs packages: read on it"
+    sed 's/^/    /' "$WORK/pull.err"
+    exit 1
+fi
+# The credential has done its one job; the rest of the proof runs without it.
+on_host "docker logout ghcr.io" >/dev/null 2>&1 || true
 
 echo "== control, before the fence: the same probe sees a route when there is one"
 on_host "docker run -d --name control $SPOOL_IMAGE sleep 600" >/dev/null

@@ -1,6 +1,6 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { inspect } from 'node:util';
+import { readOwnerOnlyFile } from '../secretFile.js';
 
 /** The environment variable naming the file that holds the master secret. */
 export const MASTER_SECRET_FILE_ENV = 'STORAGE_GATEWAY_MASTER_SECRET_FILE';
@@ -77,46 +77,6 @@ export interface MasterSecretSourceDeps {
 }
 
 /**
- * Opens the file once, refusing a symlink, then checks and reads through
- * that one descriptor, so what is checked is what is read.
- */
-function readOwnerOnlyFile(path: string, expectedUid: number): Buffer {
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  } catch {
-    throw new MasterSecretError('master secret file cannot be opened (missing, or a symlink)');
-  }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw new MasterSecretError('master secret path is not a regular file');
-    if (stat.uid !== expectedUid) {
-      throw new MasterSecretError('master secret file is not owned by the gateway user');
-    }
-    if ((stat.mode & 0o077) !== 0) {
-      throw new MasterSecretError(
-        'master secret file is readable by group or others; it must be mode 0600 or 0400'
-      );
-    }
-    const buffer = Buffer.alloc(MASTER_SECRET_MAX_FILE_BYTES + 1);
-    let length = 0;
-    for (;;) {
-      const read = readSync(fd, buffer, length, buffer.length - length, null);
-      if (read === 0) break;
-      length += read;
-      if (length > MASTER_SECRET_MAX_FILE_BYTES) {
-        throw new MasterSecretError('master secret file is larger than any secret we write');
-      }
-    }
-    const contents = Buffer.from(buffer.subarray(0, length));
-    buffer.fill(0);
-    return contents;
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/**
  * Loads the master secret from the file named by
  * {@link MASTER_SECRET_FILE_ENV}: standard base64 text, at least
  * {@link MASTER_SECRET_MIN_BYTES} bytes decoded, in a regular owner-only
@@ -132,7 +92,12 @@ export function loadMasterSecret(deps: MasterSecretSourceDeps): MasterSecret {
   if (!isAbsolute(path)) {
     throw new MasterSecretError(`${MASTER_SECRET_FILE_ENV} must be an absolute path`);
   }
-  const raw = readOwnerOnlyFile(path, deps.expectedUid ?? process.getuid?.() ?? -1);
+  const raw = readOwnerOnlyFile(path, {
+    label: 'master secret',
+    expectedUid: deps.expectedUid ?? process.getuid?.() ?? -1,
+    maxBytes: MASTER_SECRET_MAX_FILE_BYTES,
+    fail: (message) => new MasterSecretError(message),
+  });
 
   const text = raw.toString('utf8').trim();
   raw.fill(0);

@@ -1,0 +1,48 @@
+name: Mail spool drain network CI
+
+# Proves, against a real Docker daemon, that docker compose accepts the rendered
+# mail spool file (its static ipam and the drain service's fixed ipv4_address),
+# and that a drain network which exists without a fixed pool is recreated cleanly
+# with the fixed pool. Runs on every pull request that touches the renderer, its
+# golden or this proof. Credential-free: no registry, no host.
+# The proof itself is scripts/mail-spool-drain-network-proof.py.
+
+on:
+  pull_request:
+    paths:
+      - 'render-core/src/spool.ts'
+      - 'render-core/test/golden/mail-spool-compose.demo1.yml'
+      - 'scripts/mail-spool-drain-network-proof.py'
+      - '.github/workflows/mail-spool-drain-network-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'render-core/src/spool.ts'
+      - 'render-core/test/golden/mail-spool-compose.demo1.yml'
+      - 'scripts/mail-spool-drain-network-proof.py'
+      - '.github/workflows/mail-spool-drain-network-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  drain-network:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Docker and Compose versions
+        run: |
+          docker version --format '{{.Server.Version}}'
+          docker compose version
+
+      - name: Compose accepts the fixed pool and address, and the drain network is recreated
+        run: python3 scripts/mail-spool-drain-network-proof.py render-core/test/golden/mail-spool-compose.demo1.yml branchleft-mail-spool-drain 10.231.200.0/29 10.231.200.1 br-mailspool

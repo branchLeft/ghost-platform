@@ -135,5 +135,5 @@ loosening any of them fails a test.
 
 The timer fires at 01:40 UTC, with up to five minutes of random delay.
 `Persistent=true` catches up on a night the host was down. The time sits
-well clear of db1's own 03:10 UTC all-databases dump, so the two never wait
+well clear of db1's own 03:00 UTC all-databases dump, so the two never wait
 on each other's read lock.
