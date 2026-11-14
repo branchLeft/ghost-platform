@@ -34,6 +34,16 @@ another that neither entry point has a default for the key, so skipping the
 signature is a `TypeError`. The signer is a fake that models an asymmetric
 pair; the next class uses the real one.
 
+## SabotageProofTests
+
+Red and green for the authenticity control, run in CI. Each case removes one
+mechanism (the signature check, the refusal of an unsigned manifest, the
+`run_id` binding) from a copy of the module's source, then runs the same attack
+against the copy and against the real module. The attack lands on the copy and
+is refused by the real one, so each mechanism is shown to be what stops it. A
+removal whose text no longer matches the source fails the case, so the proof
+cannot drift into proving nothing.
+
 ## RealSshKeygenSignatureTests
 
 The same property against the real `ssh-keygen -Y` binary: a signature verifies
