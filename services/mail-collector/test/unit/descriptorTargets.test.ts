@@ -12,6 +12,8 @@ function silentLogger() {
   return createLogger(() => {});
 }
 
+const TENANT_IDENTITY = { kind: 'tenant', domain: 'tenant-a.example', dkimSelector: 'sel' };
+
 function descriptor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     kind: 'tenant',
@@ -19,6 +21,12 @@ function descriptor(overrides: Record<string, unknown> = {}): Record<string, unk
     appHostIp: '127.0.0.1',
     expiresAt: null,
     ...overrides,
+    // A tenant is drained only with a sendable identity (sendingDomain.test.ts), so a
+    // `mail` override that is a section keeps it; any other value is passed through.
+    mail:
+      typeof overrides.mail === 'object' && overrides.mail !== null
+        ? { identity: TENANT_IDENTITY, ...overrides.mail }
+        : (overrides.mail ?? { identity: TENANT_IDENTITY }),
   };
 }
 
@@ -70,8 +78,18 @@ describe('DescriptorTargetStore', () => {
     await s.refresh();
     expect(s.targets).toEqual(
       expect.arrayContaining([
-        { id: 'a', baseUrl: 'http://10.0.0.11:9090', route: 'mx1' },
-        { id: 'b', baseUrl: 'http://10.0.0.12:9090', route: 'mx1' },
+        {
+          id: 'a',
+          baseUrl: 'http://10.0.0.11:9090',
+          route: 'mx1',
+          sendingDomain: 'tenant-a.example',
+        },
+        {
+          id: 'b',
+          baseUrl: 'http://10.0.0.12:9090',
+          route: 'mx1',
+          sendingDomain: 'tenant-a.example',
+        },
       ])
     );
     expect(s.targets).toHaveLength(2);
@@ -85,7 +103,12 @@ describe('DescriptorTargetStore', () => {
     const s = store({ shimScheme: 'https', shimPort: 8443 });
     await s.refresh();
     expect(s.targets).toEqual([
-      { id: 'a', baseUrl: 'https://mx1.branchleft.co.uk:8443', route: 'mx1' },
+      {
+        id: 'a',
+        baseUrl: 'https://mx1.branchleft.co.uk:8443',
+        route: 'mx1',
+        sendingDomain: 'tenant-a.example',
+      },
     ]);
   });
 

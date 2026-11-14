@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { normalizeDomain } from './headerFromScope.js';
 import type { Logger } from './log.js';
 
 /** One host this collector may drain. `id` is the descriptor's own slug -- stable across refreshes, unlike the array position. */
@@ -15,8 +16,10 @@ export interface DrainTarget {
   /**
    * The one domain this host's mail may be sent from: a tenant's own sending
    * domain from the descriptor's `mail.identity`, or the shared demo mail
-   * domain for a demo. Absent when the descriptor names none (or a demo has no
-   * domain configured); the header From check then holds the host's mail.
+   * domain for a demo. Always present for a tenant, because a tenant whose
+   * descriptor names none is not a target (see `doRefresh`). Absent for a demo
+   * when no demo mail domain is configured; the header From check then holds
+   * that host's mail.
    */
   readonly sendingDomain?: string;
 }
@@ -174,7 +177,9 @@ function readMailRoute(kind: 'demo' | 'tenant', raw: object): ReadRoute | undefi
  * The sending domain a descriptor's `mail.identity` names for a tenant. A demo
  * descriptor carries only a local part (the domain is the platform's shared
  * demo mail domain, which the collector is configured with), and a tenant
- * descriptor whose identity is a demo's or is unreadable names no domain.
+ * descriptor whose identity is a demo's, is unreadable, or names a domain that
+ * is not a plain hostname (the header From check could never match it) names
+ * no domain.
  */
 function readSendingDomain(
   kind: 'demo' | 'tenant',
@@ -193,7 +198,7 @@ function readSendingDomain(
   if (kind === 'demo') {
     return identityKind === 'demo' ? demoMailDomain : undefined;
   }
-  return identityKind === 'tenant' && typeof domain === 'string' && domain !== ''
+  return identityKind === 'tenant' && typeof domain === 'string' && normalizeDomain(domain) !== null
     ? domain
     : undefined;
 }
@@ -297,6 +302,17 @@ export class DescriptorTargetStore implements TargetStore {
       if (!isLive(raw.expiresAt, nowMs)) {
         continue;
       }
+      const sendingDomain = readSendingDomain(raw.kind, raw, this.demoMailDomain);
+      if (raw.kind === 'tenant' && sendingDomain === undefined) {
+        // A tenant with no sending domain can send nothing: every message would
+        // be held at the header From check (`from-scope-unknown`), one quiet
+        // warning per message. Refused here instead, at the one place the
+        // descriptor is read, with an error naming the file and slug; the host
+        // is not drained and its mail waits at its spool until the descriptor
+        // carries `mail.identity`. See ../README.md#header-from-scope.
+        this.log.error('descriptor_tenant_identity_missing', { file, slug: raw.slug });
+        continue;
+      }
       const firstFile = seenSlugs.get(raw.slug);
       if (firstFile !== undefined) {
         // Refuses the WHOLE batch rather than pick a winner, and throws
@@ -312,7 +328,6 @@ export class DescriptorTargetStore implements TargetStore {
         throw err;
       }
       seenSlugs.set(raw.slug, file);
-      const sendingDomain = readSendingDomain(raw.kind, raw, this.demoMailDomain);
       next.push({
         id: raw.slug,
         baseUrl: `${this.shimScheme}://${raw.appHostIp}:${this.shimPort}`,
