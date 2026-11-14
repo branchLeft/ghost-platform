@@ -132,6 +132,6 @@ rules; change them together.
 
 The unit that runs the process and denies it the network; the descriptor entry
 that gives each host its inbound address and key; the route that lets the safety
-service reach a host from outside; the entry file passing the socket transport
-to the decorator; a shared home for the signed-request check and the verdicts
-reader.
+service reach a host from outside; a shared home for the signed-request check
+and the verdicts reader. The entry file passes the socket transport to the
+decorator at `verdictSocketPath` (`../src/verdict-source.md`).
