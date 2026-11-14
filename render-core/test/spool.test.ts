@@ -315,6 +315,15 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
     expect(postureOf(mailSpoolDocument(appHostArgs()))).not.toThrow();
   });
 
+  it('GREEN: an explicit `enable_ipv6: false` is accepted, and the real render sets none', () => {
+    const document = okDocument();
+    (networksOf(document)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).enable_ipv6 = false;
+    for (const name of Object.keys(networksOf(document))) {
+      expect(networksOf(okDocument())[name]).not.toHaveProperty('enable_ipv6');
+    }
+    expect(postureOf(document)).not.toThrow();
+  });
+
   const sabotages: ReadonlyArray<readonly [string, (d: Doc) => void, RegExp]> = [
     [
       'a published public port',
@@ -549,6 +558,28 @@ describe('assertSpoolPosture() -- every refusal is red on its sabotage and green
       /plain bridge this file owns/,
     ],
     [
+      'IPv6 enabled on the drain network',
+      (d) => {
+        (networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).enable_ipv6 = true;
+      },
+      /must not set `enable_ipv6`/,
+    ],
+    [
+      'IPv6 enabled on a tenant network',
+      (d) => {
+        const tenant = Object.keys(networksOf(d)).find((n) => n !== MAIL_SPOOL_DRAIN_NETWORK) ?? '';
+        (networksOf(d)[tenant] as Rec).enable_ipv6 = true;
+      },
+      /must not set `enable_ipv6`/,
+    ],
+    [
+      'IPv6 enabled as the string "true", which Compose reads as true',
+      (d) => {
+        (networksOf(d)[MAIL_SPOOL_DRAIN_NETWORK] as Rec).enable_ipv6 = 'true';
+      },
+      /must not set `enable_ipv6`/,
+    ],
+    [
       'network_mode: host',
       (d) => {
         spoolService(d).network_mode = 'host';
@@ -693,6 +724,18 @@ describe('the posture check guards the renderer itself -- source-mutation sabota
     );
     expect(() => broken(demoHostArgs())).toThrow(/not `internal: true`/);
     expect(() => renderMailSpoolStack(demoHostArgs())).not.toThrow();
+  });
+
+  it('RED: a renderer that turns IPv6 on for a tenant network is refused at render time; GREEN: the real one is not', async () => {
+    const broken = await sabotagedRender((s) =>
+      replaceOrFail(
+        s,
+        'networks[name] = { name, internal: true };',
+        'networks[name] = { name, internal: true, enable_ipv6: true };'
+      )
+    );
+    expect(() => broken(demoHostArgs())).toThrow(/must not set `enable_ipv6`/);
+    expect(renderMailSpoolStack(demoHostArgs())).not.toContain('enable_ipv6');
   });
 
   it('RED: a renderer that drops SHIM_DRAIN_HOST is refused at render time; GREEN: the real one renders it', async () => {

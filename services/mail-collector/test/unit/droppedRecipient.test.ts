@@ -104,6 +104,7 @@ describe('a dropped recipient reported back to the spool', () => {
     shim.enqueue(NEWSLETTER('good-1'));
     start();
     await until(() => reported().length === 1, 'the failure reported');
+    await until(() => reporter.pending === 0, 'the answer read and the report dropped');
     await settle();
     expect(acked().sort()).toEqual(['bad-1', 'good-1']);
     expect(reported()).toEqual([
@@ -161,6 +162,9 @@ describe('a dropped recipient reported back to the spool', () => {
     expect(reporter.pending).toBe(1);
     shim.outcomesEnabled = true;
     await until(() => reported().length === 1, 'reported once enabled');
+    // The spool has recorded the request, but the report is dropped only once
+    // the collector has read the answer: wait for that, not for the request.
+    await until(() => reporter.pending === 0, 'the answer read and the report dropped');
     expect(reporter.pending).toBe(0);
   });
 
