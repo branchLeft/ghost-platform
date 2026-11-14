@@ -239,6 +239,8 @@ class RemoteMysqldumpTransportArgvTests(_RemoteTransportFixture):
 
     def test_a_hyphenated_tenant_becomes_the_underscored_database_name(self) -> None:
         command = ["python3", "/x/dump_tenant.py", "my-shop", "--socket", "/x.sock"]
+        # The fake's table listing follows the TABLE_SCHEMA scope, so give it this tenant's schema.
+        self.fakes.configure(tables=[["ghost_my_shop", "users"]])
         self.run_transport(command=command)
         self.assertIn("ghost_my_shop", self.fakes.starts("mysqldump")[0]["argv"])
 

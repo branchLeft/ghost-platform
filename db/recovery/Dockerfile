@@ -11,7 +11,7 @@
 # tag) so a rebuild is reproducible and a base-image swap is always a
 # visible, reviewed diff -- same convention as the tenant Ghost image
 # (../../Dockerfile). Verified locally: `docker pull debian:trixie-slim`
-# resolved to this digest on 2026-09-23. trixie, not bookworm: db1 itself
+# resolved to this digest on 2026-11-10. trixie, not bookworm: db1 itself
 # runs Debian 13 (shared-infra/hetzner/estate/Pulumi.production.yaml), and
 # install_host_prereqs.py below is written and tested against trixie
 # specifically -- it pulls the MySQL client packages from the apt.mysql.com
@@ -28,16 +28,32 @@
 # `libaio1` would instead produce a recovery image that boots and passes
 # every version check on the build machine while being unusable on the
 # amd64 host it exists to recover.
-FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+# age is built from pinned source, not taken from Debian: Debian's age was
+# built with a Go toolchain that carries stdlib findings with fixed versions.
+# The upstream release binary embeds go1.27.0, which is below those fixes, so
+# it is built here with the Go 1.27.3 builder, pinned by digest, from the
+# v1.3.2 tag commit. x/crypto is bumped to the fixed v0.56.0 for the build.
+FROM golang:1.27.3-trixie@sha256:af1bfc2614ebb1dbd31af514b78740fd678850e76498762b425ecee4c5c6ea80 AS age-build
+ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+RUN git clone --depth 1 --branch v1.3.2 https://github.com/FiloSottile/age.git /src/age \
+    && test "$(git -C /src/age rev-parse HEAD)" = "b74dce4cdbe35b5e5f66c06d9612b72f89028758"
+WORKDIR /src/age
+RUN go get golang.org/x/crypto@v0.56.0 && go mod tidy \
+    && go build -trimpath -ldflags='-s -w' -o /out/age ./cmd/age \
+    && go build -trimpath -ldflags='-s -w' -o /out/age-keygen ./cmd/age-keygen
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # python3, gnupg and ca-certificates are what install_host_prereqs.py needs
 # to run at all (it shells out to gpg, apt-get and dpkg, and fetches over
 # https via the standard library) -- nothing here is part of the toolchain
-# the image exists to carry.
+# the image exists to carry. zlib1g is pinned to the fixed version the base
+# digest's zlib finding needs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     gnupg \
     ca-certificates \
+    zlib1g=1:1.3.dfsg+really1.3.1-1+deb13u1 \
     && rm -rf /var/lib/apt/lists/*
 
 # The exact script db1 itself runs (db/RUNBOOK-db.md §1) to converge onto
@@ -46,10 +62,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # toolchain two different ways. Its own `verify()` step runs as part of this
 # RUN, so a base-image or upstream-package change that breaks the version
 # match fails the build here rather than shipping an unmatched image.
+# The script installs Debian's `age` as part of that; this RUN then purges it,
+# so the image carries only the pinned build below.
 COPY db/provision/install_host_prereqs.py /opt/branchleft/install_host_prereqs.py
 RUN python3 /opt/branchleft/install_host_prereqs.py \
+    && apt-get purge -y age \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+COPY --from=age-build /out/age /out/age-keygen /usr/local/bin/
 
 # A toolbox image: nothing to serve, no default command that does anything
 # on its own. The runbook and the drill both invoke `mysql`/`mysqldump`/

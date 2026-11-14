@@ -10,6 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/main.js",
     "test:unit": "vitest run",
     "coverage": "vitest run --coverage",
     "vectors:generate": "REGENERATE_REFERENCE_VECTORS=1 vitest run test/generate-reference-vectors.test.ts"

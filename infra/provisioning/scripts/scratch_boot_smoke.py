@@ -1,9 +1,10 @@
 #!/usr/bin/python3 -I
-"""The pre-swap scratch-copy gate, part 2. Runs part 1 (a tenant's verified
-backup restored into a throwaway MySQL), then boots the green colour against
-that copy with no public traffic and refuses, with a nonzero exit, unless every
-smoke check passes. It holds no address for the tenant's database host and
-publishes no port. See scratch_boot_smoke.md.
+"""The pre-swap scratch-copy gate, part 2 (and, through scratch_migrate, part 3).
+Runs part 1 (a tenant's verified backup restored into a throwaway MySQL), then
+boots the green colour against that copy with no public traffic and refuses,
+with a nonzero exit, unless every smoke check passes, the colour's migrations
+included. It holds no address for the tenant's database host and publishes no
+port. See scratch_boot_smoke.md.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ if _HERE not in sys.path:
 
 import backup_worker as bw  # noqa: E402
 import restore_drill as rd  # noqa: E402
+import scratch_migrate as sm  # noqa: E402
 import scratch_preflight as sp  # noqa: E402
 
 restore_drained = rd.restore_drained
@@ -134,9 +136,9 @@ class GreenColour:
     def remove(self) -> None:
         """Safe whether or not `start` got as far as creating anything. The
         network cannot go while a colour container is attached to it, so the
-        scratch server's `discard` runs after this."""
-        for name in (self.sidecar, self.ghost):
-            self.runner(["docker", "rm", "-f", "-v", name], capture_output=True, check=False, env=rd._child_env())
+        scratch server's `discard` runs after this. Both are tried, and one that
+        failed is raised after."""
+        sp.run_removals(self.runner, [["docker", "rm", "-f", "-v", name] for name in (self.sidecar, self.ghost)])
 
 
 @dataclasses.dataclass
@@ -147,13 +149,17 @@ class BootReport:
     interrupted: bool = False
     checks: list[str] = dataclasses.field(default_factory=list)
     boot_s: float | None = None
+    # What the colour's migrations did to the copy; None until they were read.
+    migrations: sm.MigrationOutcome | None = None
 
 
 def run_smoke_checks(
     *, report: BootReport, get: Getter, flag_path: pathlib.Path, hooks: rd.Hooks,
+    migrations: Callable[[], sm.MigrationOutcome],
 ) -> None:
-    """The four checks, in order; the first to fail raises and the rest do not
-    run. Each is recorded on the report as it passes."""
+    """The five checks, in order; the first to fail raises and the rest do not
+    run. Each is recorded on the report as it passes. `migrations` reads what the
+    colour's boot migrations did to the copy, once the colour answers."""
     manifest = report.gate.manifest
     expected = rd.expected_from_manifest(manifest) if manifest else ()
     if not expected:
@@ -174,6 +180,11 @@ def run_smoke_checks(
     step("serves", lambda: rd.wait_for_status(
         get=get, url=ghost_url, want=200, timeout_s=hooks.content_timeout_s, sleep=hooks.sleep, now=hooks.clock))
 
+    def migrated() -> None:
+        report.migrations = migrations()
+
+    step("migrations", migrated)
+
     def content() -> None:
         for text in expected:
             restore_drained.verify_tenant_content(
@@ -191,25 +202,54 @@ def run_smoke_checks(
     step("ready once undrained", undrain)
 
 
+def discard_everything(colour: GreenColour, scratch: sp.ScratchMysql, flag_dir: pathlib.Path) -> str | None:
+    """Removes the colour, the scratch server and the drain flag. Each is tried
+    whatever an earlier one did, so one failing never leaves another behind.
+    Returns what could not be removed, or None. An interrupt that lands in the
+    middle is held until all three have been tried, then raised."""
+    failures: list[str] = []
+    held: BaseException | None = None
+    for what, action in (
+        ("colour", colour.remove),
+        ("scratch server", scratch.discard),
+        ("drain flag", lambda: shutil.rmtree(flag_dir, ignore_errors=True)),
+    ):
+        try:
+            action()
+        except BaseException as exc:  # noqa: BLE001 -- the removals after this one must still run
+            if not isinstance(exc, Exception) and held is None:
+                held = exc
+            failures.append(f"{what}: {type(exc).__name__}: {exc}")
+    if held is not None:
+        raise held
+    return "; ".join(failures) or None
+
+
 def run_boot_gate(
     *, config: rd.DrillConfig, tenant: str, hooks: rd.Hooks, copy_name: str | None = None,
     make_get: Callable[[str], Getter] | None = None,
 ) -> BootReport:
-    """Part 1, then the green colour on its restored copy. Never raises: every
-    failure is recorded on the report with `ok` false, and the colour, the
-    scratch server, the plaintext and the drain flag are removed whatever
-    happened. `config.images.ghost` is the colour under test."""
+    """Part 1, then the green colour on its restored copy, then the colour's
+    migrations read back from that copy (part 3). Never raises: every failure,
+    one nobody foresaw included, is recorded on the report with `ok` false, and
+    the colour, the scratch server, the plaintext and the drain flag are removed
+    whatever happened. A copy that could not be removed is a failure too.
+    `config.images.ghost` is the colour under test."""
     started = hooks.clock()
     make_get = make_get or (lambda container: exec_get(hooks.runner, container))
+
+    def early(error: str, *, interrupted: bool = False) -> BootReport:
+        gate = sp.GateReport(tenant=tenant, copy=copy_name or "", error=error, interrupted=interrupted)
+        return BootReport(gate=gate, error=error, interrupted=interrupted)
+
     try:
         rd.ensure_images(hooks.runner, (config.images.ghost, config.images.sidecar))
     except (rd.DrillError, OSError) as exc:
-        error = f"{type(exc).__name__}: {exc}"
-        return BootReport(gate=sp.GateReport(tenant=tenant, copy=copy_name or "", error=error), error=error)
+        return early(f"{type(exc).__name__}: {exc}")
     except rd.DrillInterrupted:
-        error = "DrillInterrupted: stopped by SIGTERM before the gate finished"
-        return BootReport(gate=sp.GateReport(tenant=tenant, copy=copy_name or "", error=error, interrupted=True),
-                          error=error, interrupted=True)
+        return early("DrillInterrupted: stopped by SIGTERM before the gate finished", interrupted=True)
+    except Exception as exc:  # noqa: BLE001 -- a failure nobody foresaw refuses the swap like any other
+        return early(f"UnexpectedError: {type(exc).__name__}: {exc}")
     gate = sp.run_gate(config=config, tenant=tenant, hooks=hooks, copy_name=copy_name, keep=True)
     report = BootReport(gate=gate, interrupted=gate.interrupted)
     scratch = gate.scratch
@@ -227,8 +267,24 @@ def run_boot_gate(
         flag_path = flag_dir / rd.FLAG_NAME
         flag_path.touch(mode=0o644)
         database = bw._naming.database_and_user_name(bw._naming.sql_identifier(tenant))
+        mysql_run = scratch.mysql_runner(config.images.recovery)
+
+        def read_migrations() -> sm.MigrationState:
+            return sm.read_state(run=mysql_run, host=scratch.container, password=scratch.password, database=database)
+
+        # Read before the colour exists: what it migrates is the difference.
+        before = read_migrations()
         colour.start(database)
-        run_smoke_checks(report=report, get=make_get(colour.ghost), flag_path=flag_path, hooks=hooks)
+
+        def migrations() -> sm.MigrationOutcome:
+            return sm.wait_for_migrations(
+                read=read_migrations, before=before, timeout_s=hooks.sidecar_timeout_s, sleep=hooks.sleep,
+                now=hooks.clock,
+            )
+
+        run_smoke_checks(
+            report=report, get=make_get(colour.ghost), flag_path=flag_path, hooks=hooks, migrations=migrations,
+        )
         report.boot_s = hooks.clock() - started
         report.ok = True
     except (rd.DrillError, restore_drained.RestoreError, OSError) as exc:
@@ -236,10 +292,14 @@ def run_boot_gate(
     except rd.DrillInterrupted:
         report.interrupted = True
         report.error = "DrillInterrupted: stopped by SIGTERM before the gate finished"
+    except Exception as exc:  # noqa: BLE001 -- a failure nobody foresaw refuses the swap like any other
+        report.error = f"UnexpectedError: {type(exc).__name__}: {exc}"
     finally:
-        colour.remove()
-        scratch.discard()
-        shutil.rmtree(flag_dir, ignore_errors=True)
+        discard_error = discard_everything(colour, scratch, flag_dir)
+        if discard_error is not None:
+            # A copy that could not be removed refuses the swap, whatever else passed.
+            report.ok = False
+            report.error = discard_error if report.error is None else f"{report.error}; {discard_error}"
     return report
 
 
@@ -251,6 +311,8 @@ def format_report(report: BootReport) -> list[str]:
     # Part 1's own PASS is not the gate's verdict: only the last line is.
     lines[-1] = lines[-1].replace("scratch_preflight: PASS", "scratch_preflight: restore ok")
     lines += [f"scratch_boot_smoke: check passed: {name}" for name in report.checks]
+    if report.migrations is not None:
+        lines.append(f"scratch_boot_smoke: {report.migrations.summary()}")
     if report.ok:
         lines.append(f"scratch_boot_smoke: PASS checks={len(report.checks)} boot={report.boot_s:.1f}s")
     else:

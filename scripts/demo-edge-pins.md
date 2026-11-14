@@ -40,7 +40,7 @@ each pin in a copy of the real text and require a named problem.
 `.github/workflows/demo-edge-image.yml` runs it against the built image, runs it
 again against a copy of the Dockerfile with the module version bumped (which must
 fail, for the module version), and runs it a third time against the image pulled
-anonymously by digest after publication.
+by digest, with the run's token, after publication.
 
 Node built-ins only; no install. It shells out to `docker` with `execFileSync`
 and no shell.

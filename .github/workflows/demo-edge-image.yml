@@ -16,10 +16,12 @@ name: Demo edge image
 # attestation), so the digest survives `docker save | docker load` unchanged.
 # GHCR authenticates with the workflow's own GITHUB_TOKEN.
 #
-# GHCR creates a package private on its first push and no workflow can change
-# that. `anonymous-pull` pulls the pushed digest with no credential and fails
-# red while the package is still private, so "publicly pullable" is never
-# reported on an unchecked claim.
+# The package is private and stays private: build artifacts are published only
+# where they help the open-source community. `registry-pull` logs in with the
+# run's own token (`packages: read`), pulls the pushed digest back and checks
+# that the registry serves the digest the push job read and the attest job
+# signed, so a digest that cannot be fetched back is never reported as
+# published.
 
 on:
   push:
@@ -221,7 +223,7 @@ jobs:
             echo "Commit: \`$IMAGE_TAG\`"
             echo "Pin this: \`${PINNED_IMAGE:-NO DIGEST: push did not complete}\`"
             echo
-            echo 'Set demo1_build_caddy_image to the value above, in its own change, once the scan, attest and anonymous-pull jobs are all green.'
+            echo 'Set demo1_build_caddy_image to the value above, in its own change, once the scan, attest and registry-pull jobs are all green.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The pushed digest, scanned by the shared image-scan workflow before anything
@@ -276,8 +278,8 @@ jobs:
           signer-workflow: branchLeft/ghost-platform/.github/workflows/demo-edge-image.yml
           repo: branchLeft/ghost-platform
 
-  anonymous-pull:
-    name: Pull the published demo-edge image with no credential
+  registry-pull:
+    name: Pull the published demo-edge image back by digest
     runs-on: ubuntu-latest
     needs: [push, attest]
     # Same main-only guard as the push job it follows.
@@ -286,9 +288,11 @@ jobs:
       (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     timeout-minutes: 10
 
-    # Read-only and no login: the pull below must succeed as a stranger would.
+    # Read-only: this job may read the private package and nothing more. The
+    # write and signing grants stay on the push and attest jobs.
     permissions:
       contents: read
+      packages: read
 
     env:
       PINNED_IMAGE: ${{ needs.push.outputs.image }}
@@ -299,12 +303,22 @@ jobs:
         with:
           persist-credentials: false
 
-      # GHCR creates the package private. Until its owner sets it to Public the
-      # pull is denied and this job is red by design.
-      - name: Pull the digest anonymously
+      # The run's own token, expiring with the run. The package is private, so
+      # a pull without this login is refused.
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pulling by digest makes the daemon check the manifest against that
+      # digest, and the repo-digest check below reads it back, so the bytes
+      # pulled are the bytes the push job read and the attest job signed.
+      - name: Pull the digest and check it is the pushed one
         run: |
           if ! docker pull --platform linux/amd64 "$PINNED_IMAGE"; then
-            echo "::error::anonymous pull of $PINNED_IMAGE was refused: the demo-edge package is still private. The owner sets it to Public in the package settings on GitHub; no workflow can."
+            echo "::error::pull of $PINNED_IMAGE was refused or failed: the pushed digest cannot be read back from the registry with this run's token."
             exit 1
           fi
           platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$PINNED_IMAGE")"
@@ -312,8 +326,12 @@ jobs:
             echo "::error::pulled image is '$platform', not linux/amd64"
             exit 1
           fi
+          if ! docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$PINNED_IMAGE" | grep -Fxq "$PINNED_IMAGE"; then
+            echo "::error::the pulled image does not report $PINNED_IMAGE as its repo digest"
+            exit 1
+          fi
 
-      # The same check as the build job, now against the bytes a stranger gets.
+      # The same check as the build job, now against the bytes the registry serves.
       - name: Hold the pulled binary to the Dockerfile pins
         run: node scripts/demo-edge-pins.mjs "$PINNED_IMAGE"
 
@@ -323,7 +341,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
         run: |
           {
-            echo '## demo-edge anonymous pull'
+            echo '## demo-edge registry pull'
             echo
-            echo "Pulled \`${PINNED_IMAGE:-NO DIGEST}\` with no credential: $JOB_STATUS"
+            echo "Pulled \`${PINNED_IMAGE:-NO DIGEST}\` back with the run token: $JOB_STATUS"
           } >> "$GITHUB_STEP_SUMMARY"
