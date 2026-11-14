@@ -47,8 +47,8 @@ export function clearMutants(): void {
  * something else, throws instead of passing quietly. `where` is the module:
  * a `Target`, or its path under `src/` (e.g. `shell/clientLimit.ts`); the SMTP
  * mailer when omitted. The copy's relative imports are pointed back at the
- * module's own directory under `src/` before the target is looked for, so a
- * target or a replacement may name one of them: `../../src/<directory>/<file>`
+ * module's own directory under `src/`, and `../` ones at `src/`, before the target is looked
+ * for, so a target or a replacement may name one of them: `../../src/<directory>/<file>`
  * for a real module, or `./<name>.js` for another mutant written by an earlier
  * call.
  */
@@ -61,9 +61,7 @@ export async function importSabotaged<T>(
   const source: Target =
     typeof where === 'string' ? { file: `${SOURCE_ROOT}${where}`, folder: dirname(where) } : where;
   const original = readFileSync(source.file, 'utf8');
-  // `../x` is in another folder under `src`, `./x` a sibling in the module's
-  // own. Both are pointed back at the real tree; the parent form goes first so
-  // its result is not read as a sibling.
+  // A sibling folder (`../shell/html.js`) points back into `src/` the same way.
   const pointed = original
     .replace(/from '\.\.\/([^']+)'/g, (_match, file: string) => `from '../../src/${file}'`)
     .replace(
