@@ -96,5 +96,10 @@ jobs:
           sudo install -m 0755 age/age age/age-keygen /usr/local/bin/
           age --version
 
+      # The unit tests written in TypeScript (TS-5 wants every .ts file under a
+      # tsconfig); the decorator itself is plain JavaScript Ghost loads as is.
+      - name: Typecheck
+        run: pnpm run typecheck
+
       - name: Test with coverage
         run: pnpm run coverage

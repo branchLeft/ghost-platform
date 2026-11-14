@@ -560,6 +560,53 @@ file`, then the name and the age. A temp file holds no verdict and is never
 served, so nothing else is checked. Every other dotfile, and every byte,
 sidecar, refusal record and aside copy, is untouched by this rule.
 
+## Icon size variants (size-variants)
+
+On object storage Ghost core rewrites a stored image's absolute bucket URL
+to `<bucket>/content/images/size/w256h256/<file>` in two places: the settings
+output serializer (Ghost admin and the Content API, for the Publication Icon)
+and `blog-icon.js` (the site's favicon link, with `/format/<type>/` added when
+the icon's own type is not served as it is). The browser fetches that URL from
+the bucket, so Ghost's resize middleware, the only thing that writes a
+variant, never runs, and the bucket answers 403 for the key nobody wrote.
+Saving the Publication Icon in Ghost admin fails on it.
+
+The decorator writes those variants itself, when it stores an image
+(`#writeIconVariants` in `src/scanning-storage.js`): after `save()`, after a
+same-name overwrite, and after a held upload is promoted. Why this and not the
+other two ways out:
+
+- **Size URLs through Ghost** needs Ghost core patched in both places (the
+  serializer and `blog-icon.js`), each pinned by hash like the other overlays,
+  and re-derived on every Ghost bump. The adapter API is the stable seam.
+- **Resize hooks** do not exist: `handle-image-sizes.js` calls `exists`,
+  `read` and `saveRaw` on the adapter and nothing else, and it only runs for
+  requests that reach Ghost.
+
+Rules, each mirroring `handle-image-sizes.js` so a variant is made only where
+the middleware would make one:
+
+- Only the images feature on a bucket config. The local adapters serve the
+  size path through Ghost itself.
+- The size is 256x256 (Ghost's `icon` internal size). A plain variant is
+  written when `shouldResizeFileExtension` says so (png, jpg, jpeg, webp); a
+  format variant when `blog-icon.js` would ask for one (jpg as jpeg; webp and
+  svg as png). A type Ghost cannot transform, an `.ico` for one, gets none.
+- Never for a `size/` key (a variant is not resized again) and never for a
+  `_o` original.
+- The variants go through this decorator's own `saveRaw`, so they are scanned,
+  held and typed like every other byte served from the bucket. A held upload
+  gets its variants when it is promoted, never before.
+- Best effort. A failed resize or refused variant is logged
+  (`ICON_VARIANT_FAILED`) and the upload still succeeds. Without
+  `@tryghost/image-transform` the object-storage images tier logs
+  `ICON_VARIANTS_UNAVAILABLE` at boot.
+
+Not covered: a plain `size/w256h256/` URL for an `.svg` or `.ico` icon, which
+Ghost's middleware answers with a redirect to the original and the bucket has
+no object for. Images uploaded before this shipped have no variants either,
+until they are asked for through Ghost or re-uploaded.
+
 ## What Ghost's extension point does, and the traps in it
 
 Ghost 6.55.0's `handle-image-sizes.js` (`frontend/web/middleware`) reads,
