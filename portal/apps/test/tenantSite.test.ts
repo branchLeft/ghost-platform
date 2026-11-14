@@ -79,7 +79,7 @@ describe('the Essentials site screen', () => {
     expect(page.body).toContain(tenant.invoice_ref ?? '');
     expect(tenant.hostnames.length).toBeGreaterThan(0);
     for (const hostname of tenant.hostnames) expect(page.body).toContain(hostname);
-    expect(page.body).toContain('NAV_SITE');
+    expect(page.body).toContain('>NAV_SITE</a>');
   });
 
   it('shows every hostname the API returns when there are several', async () => {
@@ -181,8 +181,10 @@ describe('the Essentials site screen', () => {
     expect((await browser.request(SITE_PATH)).status).toBe(404);
     const other = await browser.request('/documents');
     expect(other.status).toBe(200);
-    expect(other.body).not.toContain('NAV_SITE');
-    expect(other.body).not.toContain(SITE_PATH);
+    // Exact anchors: the portal's own NAV_SITE_ACCESS entry and its
+    // /site-access path both contain these as prefixes.
+    expect(other.body).not.toContain('>NAV_SITE</a>');
+    expect(other.body).not.toContain(`href="${SITE_PATH}"`);
   });
 
   it('shows the same placeholder when the portal holds no credential for the tenant', async () => {
