@@ -11,6 +11,13 @@ import { createSigningSecretSource } from './credentials/secretSource.js';
 import { MIGRATIONS_FOLDER, SqliteCredentialStore } from './credentials/store.js';
 import { sweepSpoolDir } from './body.js';
 import { createManagedListener, type ManagedListener } from './listener.js';
+import {
+  createTenantLimits,
+  createTenantRateLimiter,
+  createWriteKillSwitches,
+  type TenantLimits,
+  type WriteKillSwitches,
+} from './limits/index.js';
 import { createLog, type LogSink } from './logging.js';
 import { readOwnerOnlyFile } from './secretFile.js';
 import { createGatewayListener } from './server.js';
@@ -47,6 +54,8 @@ export interface StartOptions {
   readonly trustedUid?: number;
   /** Test seam: the admin interface's clock, in milliseconds. */
   readonly adminClock?: () => number;
+  /** Test seam: a gate to use in place of the one built from the settings. */
+  readonly limits?: TenantLimits;
   /** Test seam: how many accepted signatures the replay guard remembers. */
   readonly replayLimit?: number;
 }
@@ -55,6 +64,8 @@ export interface RunningGateway {
   /** The tenant-facing server, exposed so a test can read the limits it was started with. */
   readonly tenantServer: Server;
   readonly address: AddressInfo;
+  /** The write kill switches in force: the one place an operator's change reaches the running service. */
+  readonly switches: WriteKillSwitches;
   readonly adminAddress?: AddressInfo;
   /** Drains both listeners within the configured grace, closes the store, and reports whether it had to cut connections. */
   stop(): Promise<{ readonly forced: boolean }>;
@@ -122,6 +133,16 @@ export async function startGateway(
       windowMs: verifier.clockWindowMs,
       ...(options.replayLimit === undefined ? {} : { limit: options.replayLimit }),
     });
+    // A damaged switch file throws here and stops the start: opening writes an operator closed is the failure to avoid.
+    const switches = createWriteKillSwitches(
+      config.writeSwitchesFile === undefined ? {} : { path: config.writeSwitchesFile }
+    );
+    const limits =
+      options.limits ??
+      createTenantLimits({
+        rate: createTenantRateLimiter({ default: config.tenantRate }),
+        switches,
+      });
     const upstream = createUpstream({
       endpoint: config.upstream.endpoint,
       region: config.upstream.region,
@@ -159,6 +180,7 @@ export async function startGateway(
         maxConcurrentUploads: config.maxConcurrentUploads,
         maxConcurrentUploadsPerTenant: config.maxConcurrentUploadsPerTenant,
         replay,
+        limits,
         readiness,
       },
       {
@@ -206,6 +228,7 @@ export async function startGateway(
     let stopping: Promise<{ forced: boolean }> | undefined;
     return {
       tenantServer: gateway.server,
+      switches,
       address,
       ...(adminAddress === undefined ? {} : { adminAddress }),
       stop() {

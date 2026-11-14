@@ -10,6 +10,7 @@ import type {
   RefusalCode,
   SignatureVerifier,
 } from './contracts.js';
+import type { TenantLimits } from './limits/index.js';
 import { createManagedListener, type ListenerOptions, type ManagedListener } from './listener.js';
 import { requestContext, type GatewayLog } from './logging.js';
 import { refusal, refusalBody } from './refusal.js';
@@ -45,6 +46,13 @@ export interface GatewayServerDeps {
    * the clock window is refused. Required, so a caller that forgets it fails typecheck.
    */
   readonly replay: ReplayGuard;
+  /**
+   * The tenant's write switches and request rate, asked after the signature has
+   * verified and the replay guard has taken the signature, so a replayed or
+   * forged request never spends the tenant's allowance. Required, so a caller
+   * that forgets it fails typecheck instead of serving without limits.
+   */
+  readonly limits: TenantLimits;
   /** The name of a failing check, or undefined when the service can take traffic. */
   readonly readiness: () => Promise<string | undefined>;
   readonly now?: () => number;
@@ -223,6 +231,25 @@ export function createGatewayHandler(
         return refuse(code, { ...known, closeAfter: expectsBody });
       }
       hold.signature = identity.signature;
+
+      let decision: ReturnType<TenantLimits['check']>;
+      try {
+        decision = deps.limits.check({ keyId: tenant.keyId, operation: route.operation });
+      } catch {
+        decision = { ok: false, refusal: refusal('internal-error') };
+      }
+      if (!decision.ok) {
+        deps.log.refusal({
+          event: 'request-refused',
+          code: decision.refusal.code,
+          status: decision.refusal.status,
+          method,
+          keyId: tenant.keyId,
+          folder: tenant.folder,
+          operation: route.operation,
+        });
+        return refuse(decision.refusal.code, { ...known, closeAfter: expectsBody });
+      }
 
       let forwarded = request;
       let sized: { bytesIn?: number } = {};
