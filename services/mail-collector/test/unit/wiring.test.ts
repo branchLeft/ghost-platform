@@ -57,6 +57,7 @@ describe('end-to-end wiring: a real DescriptorTargetStore feeding the real colle
         slug: 'tenant-a',
         appHostIp: '127.0.0.1',
         expiresAt: null,
+        mail: { identity: { kind: 'tenant', domain: 'tenant-a.example', dkimSelector: 'sel' } },
       })
     );
 

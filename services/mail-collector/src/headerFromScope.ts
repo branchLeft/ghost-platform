@@ -47,7 +47,7 @@ const COMPETING_IDENTITY_HEADERS: ReadonlySet<string> = new Set([
  * not a plain hostname once converted. Trailing dots are cut by one scan and
  * one slice (no trailing-anchored quantifier on attacker-controlled text).
  */
-function normalizeDomain(raw: string): string | null {
+export function normalizeDomain(raw: string): string | null {
   let end = raw.length;
   while (end > 0 && raw.charCodeAt(end - 1) === 46 /* '.' */) {
     end--;
