@@ -8,7 +8,7 @@ tool (
 )
 
 require (
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/letsencrypt/challtestsrv v1.4.2 // indirect
 	github.com/letsencrypt/pebble/v2 v2.10.1 // indirect
 	github.com/miekg/dns v1.1.62 // indirect
