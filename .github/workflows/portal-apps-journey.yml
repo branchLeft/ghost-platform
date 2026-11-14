@@ -7,6 +7,9 @@ name: Portal journey
 # it. The walk is the list in portal/apps/test/journey/steps/index.ts; each
 # screen added to the portal adds one step there.
 #
+# The portal imports the provisioning controller's generated client, so that
+# package is installed and built before the portal's own install.
+#
 # This job runs the portal from source. Running the journey against the
 # attested image is a later step of the same work.
 
@@ -17,6 +20,7 @@ on:
       - 'portal/**'
       - 'services/identity/**'
       - 'services/request-guard/**'
+      - 'services/provisioning-controller/**'
       - '.github/workflows/portal-apps-journey.yml'
   pull_request:
     branches: [main]
@@ -24,6 +28,7 @@ on:
       - 'portal/**'
       - 'services/identity/**'
       - 'services/request-guard/**'
+      - 'services/provisioning-controller/**'
       - '.github/workflows/portal-apps-journey.yml'
 
 # `packages: read` for `@branchleft/tsconfig`, hosted on GitHub Packages.
@@ -83,6 +88,7 @@ jobs:
             portal/data/pnpm-lock.yaml
             services/identity/pnpm-lock.yaml
             services/request-guard/pnpm-lock.yaml
+            services/provisioning-controller/pnpm-lock.yaml
 
       # The registry token is on the install steps alone; a build or test step
       # runs code from the repository and from what was just installed.
@@ -114,6 +120,16 @@ jobs:
 
       - name: Build the request guard
         working-directory: services/request-guard
+        run: pnpm run build
+
+      - name: Install the provisioning controller's dependencies
+        working-directory: services/provisioning-controller
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the provisioning controller
+        working-directory: services/provisioning-controller
         run: pnpm run build
 
       - name: Install dependencies

@@ -17,8 +17,11 @@ import {
   renderExplainerPage,
   renderFaqPage,
 } from './explainerPages.js';
+import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
+import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
+import { createSiteRoutes } from './site.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
 export interface TenantPortalOptions {
@@ -44,6 +47,11 @@ export interface TenantPortalOptions {
   readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
+  /**
+   * How to reach the provisioning API. Absent, no screen that calls it is
+   * served: no page, no action and no navigation entry.
+   */
+  readonly provisioning?: ProvisioningSettings;
 }
 
 /**
@@ -70,6 +78,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
+  const site = createSiteRoutes(options.provisioning, { onError: options.onError });
+  const demo = createDemoRoutes(options.provisioning);
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -85,6 +95,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
       { label: 'NAV_SITE_ACCESS', href: '/site-access' },
+      ...demo.nav,
+      ...site.nav,
       ...support.nav,
     ],
     signOutLabel: 'SIGN_OUT',
@@ -116,6 +128,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
           (bound) => options.db.ownKind(bound),
           () => renderFaqPage(options.support !== undefined)
         ),
+      ...site.pages,
+      ...demo.pages,
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
