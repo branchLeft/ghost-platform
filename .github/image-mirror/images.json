@@ -143,6 +143,7 @@
       "name": "percona-server",
       "source": "docker.io/percona/percona-server",
       "digest": "sha256:2fb8f1c992bc86f0bf4fa0aa174bbb1946f8867a7518278beec801a0bd2bf9e3",
+      "platform": "linux/amd64",
       "upstreamTags": ["8.0"],
       "licence": "GPL-2.0-only",
       "redistribution": "conditioned",
