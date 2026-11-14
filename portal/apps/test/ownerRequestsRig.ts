@@ -105,7 +105,10 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       projectId: PROJECT_ID,
       publicOrigin: origin,
       ownerOrgId: OWNER_ORG,
-      db: { listHealth: () => Promise.resolve([]) } as unknown as OwnerDb,
+      db: {
+        listHealth: () => Promise.resolve([]),
+        listSupportRequests: () => Promise.resolve([]),
+      } as unknown as OwnerDb,
       secureCookies: false,
       clock: () => NOW,
       fetch: issuer.fetch,
