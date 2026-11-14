@@ -18,19 +18,17 @@ on:
     branches: [main]
     paths:
       - 'services/broker/**'
-      - 'render-core/**'
       - 'registers/**'
       - 'demo-host/provision/**'
       - '.github/workflows/broker-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the service, render-core (linked by `link:` and built first) and the
-  # demo-host golden files and wrapper the unit tests compare against. A push to
-  # main starts it on the same paths.
+  # reads: the service (render-core arrives from the registry at the version
+  # its package.json pins) and the demo-host golden files and wrapper the unit
+  # tests compare against. A push to main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:
       - 'services/broker/**'
-      - 'render-core/**'
       - 'registers/**'
       - 'demo-host/provision/**'
       - '.github/workflows/broker-ci.yml'
@@ -72,14 +70,6 @@ jobs:
           scope: '@branchleft'
           cache: pnpm
           cache-dependency-path: services/broker/pnpm-lock.yaml
-
-      # The service links render-core by a relative link: dependency and
-      # needs its compiled types.
-      - name: Build render-core
-        working-directory: render-core
-        run: pnpm install --frozen-lockfile && pnpm run build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

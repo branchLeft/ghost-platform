@@ -10,17 +10,16 @@ on:
     paths:
       - 'services/demo-gate/**'
       - 'services/request-guard/**'
-      - 'render-core/**'
       - '.github/workflows/demo-gate-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the service, render-core and the request guard (both linked by
-  # `link:` and built first). A push to main starts it on the same paths.
+  # reads: the service and the request guard (linked by `link:` and built
+  # first); render-core arrives from the registry at the version the service
+  # pins. A push to main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:
       - 'services/demo-gate/**'
       - 'services/request-guard/**'
-      - 'render-core/**'
       - '.github/workflows/demo-gate-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on
@@ -66,15 +65,8 @@ jobs:
             services/demo-gate/pnpm-lock.yaml
             services/request-guard/pnpm-lock.yaml
 
-      # The service links render-core by a relative link: dependency and
-      # needs its compiled types.
-      - name: Build render-core
-        working-directory: render-core
-        run: pnpm install --frozen-lockfile && pnpm run build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Likewise the request guard: the gate imports its built output.
+      # The gate links the request guard by a relative link: dependency and
+      # imports its built output.
       - name: Build request-guard
         working-directory: services/request-guard
         run: pnpm install --frozen-lockfile && pnpm run build
