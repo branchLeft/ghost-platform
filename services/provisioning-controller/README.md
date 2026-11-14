@@ -84,3 +84,60 @@ a run reaches no step until the next call, where the digest check refuses any
 step already complete under different inputs; the approval check and the host
 call are never atomic, so a revocation that lands between them is seen at the
 next check.
+
+## Part 3: the provisioning API contract and its mock
+
+`openapi.yaml` is the contract the customer portal and the owner console are
+built against: read a demo, ask for the Essentials tier or open the Professional
+enquiry, list the requests waiting on the owner, approve one, and read a
+tenant. It is registered in `speckify.yaml` as `provisioning-api`. Nothing serves
+it for real yet; the executor above is not wired to HTTP, and the real service is
+a later waypoint's. The spec itself settles how a demo is named, the two
+credentials, and what Approve records.
+
+- **Generated client and server.** `src/generated/` is Speckify's output,
+  committed as generated and never edited by hand. `scripts/assert-contracts-generated.py`
+  fails a pull request whose tree is not what Speckify generates from the spec.
+  To regenerate: `speckify build`, then
+  `python3 scripts/assert-contracts-generated.py --write --contract provisioning-api .speckify/out`.
+- **Importing it.** The built package exports the client and types as
+  `ghost-platform-provisioning-controller/provisioning-api` and the typed
+  `Handlers` interface with `createServer` as
+  `ghost-platform-provisioning-controller/provisioning-api/server`. The portal
+  links this package, and its image builds it.
+- **The mock.** `mock/` is a hand-written, in-memory implementation of
+  `Handlers`, served through the generated `createServer`, which checks every
+  request and every success response against the spec. Its state is lost at exit.
+  Start it from this directory, with test values of your own:
+
+  ```sh
+  pnpm install --frozen-lockfile
+  pnpm run build
+  MOCK_OWNER_CREDENTIAL=TEST_OWNER_CREDENTIAL \
+  MOCK_TENANT_CREDENTIALS=11111111-1111-4111-8111-111111111111=TEST_TENANT_CREDENTIAL \
+  pnpm run mock
+  ```
+
+  It listens on `127.0.0.1:8095` (`PORT`, `LISTEN_HOST`) and refuses to start
+  without both credential variables. `MOCK_TENANT_CREDENTIALS` is a
+  comma-separated list of `<tenant id>=<credential>`; each tenant starts with a
+  `LIVE` demo. Presenting the tenant credential on the tenant's own paths,
+  for example `GET /tenants/<tenant id>/demo` with `X-Tenant-Credential`, and the
+  owner credential on `/promotion-requests` with `X-Owner-Credential`, walks the
+  five operations. `mock/smoke.py` does exactly that against a running mock.
+  Approving a request finishes provisioning at once (the tenant is `live`, with
+  a placeholder invoice reference and hostname); `createMock({ settleOnApprove: false })`
+  holds it at `provisioning` until `store.settle` is called.
+- **What the generated server does not do.** It validates the path, query and
+  body before any handler runs, so a request that is both invalid and
+  unauthenticated is answered 400, not 401. It does not enforce
+  `additionalProperties: false`: an unknown body field is dropped, never acted
+  on. Only the success response is checked against the spec on the way out.
+  Speckify 0.1.1 lets `beforeHandle` refuse a request with a declared status,
+  which would move the credential check ahead of validation; this repository
+  still runs 0.1.0.
+- **Tests.** `contract/specAgreement.test.ts` compares the spec, the generated
+  route table and the mock's handlers, and sweeps every operation with the
+  right, the wrong and no credential, so a renamed route or an operation the mock
+  lacks fails. `test/unit/provisioningMock.test.ts` runs the journey through the
+  generated client.

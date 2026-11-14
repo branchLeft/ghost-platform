@@ -1,0 +1,490 @@
+# The published version is computed from this spec's diff against the last
+# published version (standards CTR-7) -- info.version below is a fixed
+# placeholder Speckify ignores, not a version anyone bumps by hand.
+openapi: 3.1.0
+info:
+  title: branchLeft provisioning API
+  version: '0.0.0'
+  description: >-
+    What the customer portal and the owner console ask of tenant
+    provisioning, and nothing else: read a demo, ask for the Essentials tier
+    or open the Professional enquiry, list the requests waiting on the owner,
+    approve one, and read a tenant's tier, state, invoice reference and
+    hostnames. Approve is the platform's one human gate.
+
+    This is the contract the screens are built against. It has two
+    implementations that must stay interchangeable behind it: an in-memory
+    mock (services/provisioning-controller/mock), which the portal's browser
+    test runs against, and, in a later waypoint, the real service. Nothing in
+    this repository serves it over HTTP for real yet; the controller's
+    executor is not wired to this surface.
+
+    **Naming a tenant and a demo.** `{tenant}` is the platform tenant id
+    (a lower-case UUID) of the customer's organisation. The portal takes it
+    from the scope bound at sign-in (the session's organisation) and never
+    from a request field, so a caller cannot name another tenant by
+    editing a form. A demo is keyed by `demo_id` and tied to its prospect by
+    the verified address on the demo request; the controller resolves the one
+    demo that belongs to `{tenant}`, so no `demo_id` is ever sent in. It is
+    returned, for display and as the reference a request is recorded against.
+
+    **Two credentials, never interchangeable.** Tenant calls (read the demo,
+    create a request, read the tenant) carry `tenantCredential`, which is
+    issued for exactly one tenant: it is refused (403) on any other tenant's
+    path. Owner calls (list requests, approve) carry `ownerCredential`. A
+    tenant credential on an owner call is refused (403), and an owner
+    credential on a tenant call is refused the same way. A request with no
+    credential, or one nobody issued, is refused (401).
+
+    **Approve and the approval record.** Approving a request records exactly
+    one approval (an approval id, the tenant, the time, and the three scopes
+    `setup`, `web-address` and `first-deploy` that the controller's
+    onboarding plan requires). Approving the same request again changes
+    nothing and returns the identical body, status included.
+
+    All errors the service itself chooses carry only a `code`; nothing
+    here is prose for a person to read.
+  license:
+    name: PolyForm-Shield-1.0.0
+    url: https://polyformproject.org/licenses/shield/1.0.0
+servers:
+  - url: http://127.0.0.1:8095
+    description: >-
+      The in-memory mock's own default loopback bind (PORT, LISTEN_HOST). The
+      real service's address is not known to this spec.
+paths:
+  /tenants/{tenant}/demo:
+    get:
+      operationId: getDemo
+      summary: Read the tenant's demo
+      description: >-
+        The one demo that belongs to `{tenant}`: its address, its state and the
+        time it expires. `address` and `expires_at` are null until the demo has
+        a hostname and a term.
+      security:
+        - tenantCredential: []
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: >-
+            The platform tenant id, taken from the scope bound at sign-in,
+            never from a request field.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: The tenant's demo.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Demo'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No demo belongs to this tenant (`demo-not-found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /tenants/{tenant}/promotion-requests:
+    post:
+      operationId: createPromotionRequest
+      summary: Ask for the Essentials tier, or open the Professional enquiry
+      description: >-
+        Records one promotion request against the tenant's demo. `tier` is
+        `essentials` (a request the owner can approve) or
+        `professional-enquiry` (opens the dialogue about the Professional
+        tier; it is recorded and listed for the owner but cannot be approved
+        here). The tenant may have one open request at a time. Asking again for
+        the tier already requested is a replay: it creates nothing and returns
+        the existing request, with the same status as the first ask (201). Asking for the other tier while one is open
+        is refused (409 `request-already-open`). The demo must be in a state it
+        can be promoted from, `LIVE`, `EXTENDED` or `EXPIRING`; otherwise 409
+        `demo-not-promotable`.
+      security:
+        - tenantCredential: []
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: >-
+            The platform tenant id, taken from the scope bound at sign-in,
+            never from a request field.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePromotionRequest'
+      responses:
+        '201':
+          description: >-
+            The request, in state `pending`. Also the answer to a replay (the
+            tenant already had this exact request open): nothing new is
+            created and the body is the existing request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromotionRequest'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No demo belongs to this tenant (`demo-not-found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: >-
+            `demo-not-promotable`: the demo is not in a state it can be
+            promoted from. `request-already-open`: the tenant has an open
+            request for the other tier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /tenants/{tenant}:
+    get:
+      operationId: getTenant
+      summary: Read a tenant
+      description: >-
+        The tenant's tier, state, invoice reference and hostnames. A demo
+        tenant is tier `demo` with no invoice reference. After the owner
+        approves an Essentials request the tenant is tier `essentials`, in
+        state `provisioning` until the provisioning chain finishes and
+        `live` after. `invoice_ref` is the reference of the manual invoice
+        raised at launch, and is null until one exists.
+      security:
+        - tenantCredential: []
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: >-
+            The platform tenant id, taken from the scope bound at sign-in,
+            never from a request field.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: The tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tenant'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No such tenant (`tenant-not-found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /promotion-requests:
+    get:
+      operationId: listPromotionRequests
+      summary: List promotion requests, oldest first
+      description: >-
+        The owner console's queue. With `state=pending`, the requests waiting
+        on the owner; with no `state`, every request. Oldest `requested_at`
+        first.
+      security:
+        - ownerCredential: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Only requests in this state.
+          schema:
+            $ref: '#/components/schemas/PromotionRequestState'
+      responses:
+        '200':
+          description: The matching requests.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromotionRequestList'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /promotion-requests/{id}/approve:
+    post:
+      operationId: approvePromotionRequest
+      summary: Approve a promotion request
+      description: >-
+        The owner's one hand step. Records one approval for the request,
+        moves the request to `approved` and starts the tenant's move to the
+        Essentials tier. Idempotent: approving an already approved request
+        changes nothing and returns the identical body and status, with the
+        original approval. Only an `essentials` request can be approved; a
+        `professional-enquiry` is refused (409 `not-approvable`).
+      security:
+        - ownerCredential: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The request's `request_id`.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      responses:
+        '200':
+          description: >-
+            The request, `approved`, with its approval. The same body on every
+            call for the same request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromotionRequest'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No such request (`request-not-found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: >-
+            `not-approvable`: the request is a `professional-enquiry`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+components:
+  securitySchemes:
+    tenantCredential:
+      type: apiKey
+      in: header
+      name: X-Tenant-Credential
+      description: >-
+        Identifies one tenant's portal to the service. Issued for exactly one
+        tenant and good only on that tenant's own paths. Never accepted on an
+        owner call.
+    ownerCredential:
+      type: apiKey
+      in: header
+      name: X-Owner-Credential
+      description: >-
+        Identifies the owner console to the service. Never accepted on a
+        tenant call, and never held by a tenant's portal.
+  responses:
+    Rejected:
+      description: >-
+        The request does not match this spec (a path, query or body the spec
+        forbids). Answered by the generated server before any handler runs.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemBody'
+    Unauthenticated:
+      description: >-
+        No credential, or one nobody issued (`unauthenticated`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+    Forbidden:
+      description: >-
+        A real credential of the wrong kind for this call, or a tenant
+        credential on another tenant's path (`forbidden`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+  schemas:
+    Uuid:
+      type: string
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      description: A canonical lower-case UUID.
+    ErrorCode:
+      type: string
+      enum:
+        - unauthenticated
+        - forbidden
+        - tenant-not-found
+        - demo-not-found
+        - request-not-found
+        - demo-not-promotable
+        - request-already-open
+        - not-approvable
+      description: >-
+        A machine-readable reason. A caller branches on this and never on
+        wording; the service sends no prose.
+    ErrorBody:
+      type: object
+      required: [code]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+      additionalProperties: false
+    ProblemBody:
+      type: object
+      required: [title, status]
+      description: >-
+        The generated server's own `application/problem+json` answer to a
+        request the spec forbids.
+      properties:
+        title:
+          type: string
+        status:
+          type: integer
+        errors:
+          type: array
+          items: {}
+    DemoState:
+      type: string
+      description: >-
+        The demo lifecycle state (portal/data demoStates.ts), by name.
+      enum:
+        - VERIFIED
+        - WAITING
+        - CLAIMED
+        - PROVISIONING
+        - LIVE
+        - EXTENDED
+        - EXPIRING
+        - REBUILDING
+        - PROMOTING
+        - PROMOTED
+        - FAILED
+        - KILLED
+        - FROZEN
+        - PURGED
+    Demo:
+      type: object
+      required: [demo_id, address, state, expires_at]
+      properties:
+        demo_id:
+          $ref: '#/components/schemas/Uuid'
+        address:
+          type: [string, 'null']
+          description: The demo's hostname, or null before one is allocated.
+        state:
+          $ref: '#/components/schemas/DemoState'
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the demo's current term ends, or null before it has one.
+      additionalProperties: false
+    PromotionTier:
+      type: string
+      enum: [essentials, professional-enquiry]
+      description: >-
+        `essentials` asks for the Essentials tier. `professional-enquiry`
+        opens the dialogue about the Professional tier and promotes nothing.
+    PromotionRequestState:
+      type: string
+      enum: [pending, approved]
+    ApprovalScope:
+      type: string
+      enum: [setup, web-address, first-deploy]
+      description: >-
+        What one approval covers, as `ApprovalScope` in the controller's
+        ports: setup, the web address and the first deploy.
+    Approval:
+      type: object
+      description: One recorded owner approval (the controller's `RecordedApproval`).
+      required: [approval_id, tenant_id, approved_at, scopes]
+      properties:
+        approval_id:
+          $ref: '#/components/schemas/Uuid'
+        tenant_id:
+          $ref: '#/components/schemas/Uuid'
+        approved_at:
+          type: string
+          format: date-time
+        scopes:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/ApprovalScope'
+      additionalProperties: false
+    CreatePromotionRequest:
+      type: object
+      required: [tier]
+      properties:
+        tier:
+          $ref: '#/components/schemas/PromotionTier'
+      additionalProperties: false
+    PromotionRequest:
+      type: object
+      required: [request_id, tenant_id, demo_id, tier, state, requested_at, approval]
+      properties:
+        request_id:
+          $ref: '#/components/schemas/Uuid'
+        tenant_id:
+          $ref: '#/components/schemas/Uuid'
+        demo_id:
+          $ref: '#/components/schemas/Uuid'
+        tier:
+          $ref: '#/components/schemas/PromotionTier'
+        state:
+          $ref: '#/components/schemas/PromotionRequestState'
+        requested_at:
+          type: string
+          format: date-time
+        approval:
+          description: The approval, once there is one; null while `pending`.
+          oneOf:
+            - $ref: '#/components/schemas/Approval'
+            - type: 'null'
+      additionalProperties: false
+    PromotionRequestList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PromotionRequest'
+      additionalProperties: false
+    TenantTier:
+      type: string
+      enum: [demo, essentials]
+    TenantState:
+      type: string
+      enum: [provisioning, live]
+    Tenant:
+      type: object
+      required: [tenant_id, tier, state, invoice_ref, hostnames]
+      properties:
+        tenant_id:
+          $ref: '#/components/schemas/Uuid'
+        tier:
+          $ref: '#/components/schemas/TenantTier'
+        state:
+          $ref: '#/components/schemas/TenantState'
+        invoice_ref:
+          type: [string, 'null']
+          description: >-
+            The reference of the manual invoice raised at launch, or null
+            until one exists.
+        hostnames:
+          type: array
+          items:
+            type: string
+      additionalProperties: false

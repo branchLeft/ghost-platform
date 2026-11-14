@@ -110,10 +110,10 @@ test('no type check, build or test step can read the registry token', () => {
   }
 });
 
-test('four installs carry the token: the three built packages and the applications', () => {
+test('five installs carry the token: the four built packages and the applications', () => {
   const steps = allSteps(real).filter(({ step }) => installs(step));
-  assert.equal(steps.length, 4, 'the workflow has four install steps');
-  assert.equal(steps.filter(({ step }) => mentions(step)).length, 4);
+  assert.equal(steps.length, 5, 'the workflow has five install steps');
+  assert.equal(steps.filter(({ step }) => mentions(step)).length, 5);
 });
 
 test('every checkout does not keep its credential in the repository config', () => {
