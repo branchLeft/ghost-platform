@@ -1,11 +1,11 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
+import { withFreePorts } from './helpers/freePorts.js';
 
 /**
  * Runs the real entrypoint and checks express-rate-limit's IPv6 key
@@ -16,22 +16,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 const serverJsPath = join(projectRoot, 'dist', 'server.js');
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const address = srv.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('could not determine a free port'));
-        return;
-      }
-      const { port } = address;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 async function runServerAndCollectOutput(
   dbPath: string,
@@ -120,9 +104,9 @@ describe('src/server.ts — no ERR_ERL_KEY_GEN_IPV6 warning at startup', () => {
     dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-ipv6-warning-startup-test-'));
     const dbPath = join(dir, 'shim.sqlite');
 
-    const port = await findFreePort();
-    const smtpPort = await findFreePort();
-    const { stdout, stderr } = await runServerAndCollectOutput(dbPath, port, smtpPort);
+    const { stdout, stderr } = await withFreePorts(2, ([port, smtpPort]) =>
+      runServerAndCollectOutput(dbPath, port, smtpPort)
+    );
 
     expect(stderr).not.toContain('ValidationError');
     expect(stderr).not.toContain('ERR_ERL_KEY_GEN_IPV6');

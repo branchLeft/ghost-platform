@@ -55,7 +55,10 @@ const smtpFrontDoor = createSmtpFrontDoor({
   allowedSourceCidrs: config.smtpFrontDoor.allowedSourceCidrs,
   submitterMessagesPerMinute: config.smtpFrontDoor.submitterMessagesPerMinute,
 });
-void smtpFrontDoor.listen(config.smtpFrontDoor.port, config.smtpFrontDoor.host);
+// Awaited, so a taken SMTP port ends the process before the HTTP listener
+// announces itself: an entrypoint that logs "listening" and then dies, or one
+// that stays up with a listener missing, is not one a supervisor can trust.
+await smtpFrontDoor.listen(config.smtpFrontDoor.port, config.smtpFrontDoor.host);
 
 // loadConfig already refuses a drain port with no SHIM_DRAIN_HOST; this repeats
 // it so the listen call below can never fall back to every interface.
@@ -64,7 +67,11 @@ if (config.drainPort !== undefined && config.drainHost === undefined) {
 }
 const drainServer =
   drainApp && config.drainPort !== undefined && config.drainHost !== undefined
-    ? drainApp.listen(config.drainPort, config.drainHost, () => {
+    ? drainApp.listen(config.drainPort, config.drainHost, (err?: Error) => {
+        // Express hands a failed bind (EADDRINUSE, EACCES) to this callback
+        // rather than throwing it; ignored, the process logs success with no
+        // listener behind it.
+        if (err) throw err;
         log.info('worker_lifecycle', {
           event: 'drain_listening',
           host: config.drainHost,
@@ -73,7 +80,9 @@ const drainServer =
       })
     : undefined;
 
-const server = app.listen(config.port, () => {
+const server = app.listen(config.port, (err?: Error) => {
+  // Same as the drain listener above: a failed bind arrives here as `err`.
+  if (err) throw err;
   log.info('worker_lifecycle', { event: 'listening', port: config.port });
 });
 

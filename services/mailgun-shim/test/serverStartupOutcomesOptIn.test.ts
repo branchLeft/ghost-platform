@@ -1,11 +1,11 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
+import { withFreePorts } from './helpers/freePorts.js';
 
 /**
  * Runs the real compiled entrypoint and checks the outcome route's opt-in is
@@ -18,22 +18,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 const serverJsPath = join(projectRoot, 'dist', 'server.js');
 const TOKEN = 'outcomes-opt-in-startup-proof-token';
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const address = srv.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('could not determine a free port'));
-        return;
-      }
-      const { port } = address;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 /**
  * The child prints "listening" before its HTTP stack accepts connections, so
@@ -65,9 +49,16 @@ async function withServer(
   extraEnv: Record<string, string>,
   run: (baseUrl: string) => Promise<void>
 ): Promise<void> {
+  await withFreePorts(2, ([port, smtpPort]) => runWithServer(port, smtpPort, extraEnv, run));
+}
+
+async function runWithServer(
+  port: number,
+  smtpPort: number,
+  extraEnv: Record<string, string>,
+  run: (baseUrl: string) => Promise<void>
+): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-outcomes-optin-'));
-  const port = await findFreePort();
-  const smtpPort = await findFreePort();
   const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
     process.execPath,
     [serverJsPath],

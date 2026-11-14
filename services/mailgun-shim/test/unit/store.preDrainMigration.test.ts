@@ -1,13 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eq } from 'drizzle-orm';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { integer, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MIGRATIONS_FOLDER, migrationsLedger } from '../../src/migrate.js';
 import { createDrainRouter } from '../../src/routes/drain.js';
 import { createDrainWake } from '../../src/drainWake.js';
@@ -23,6 +22,7 @@ import {
   tableNames,
   withFixture,
 } from '../helpers/sqliteFixtures.js';
+import { withFreePorts } from '../helpers/freePorts.js';
 import { createTestLogger, type TestLogger } from '../helpers/testLogger.js';
 import { createUnlimitedThrottle } from '../helpers/testThrottle.js';
 import { startRouter, type StartedRouter } from './helpers/startRouter.js';
@@ -31,6 +31,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..', '..');
 const serverJsPath = join(projectRoot, 'dist', 'server.js');
 const storeJsPath = join(projectRoot, 'dist', 'store.js');
+// dist/ is built once by test/globalSetup.ts; a test never builds it (see
+// test/noPerFileBuild.test.ts).
 const holdMigrationOpenPath = join(__dirname, '..', 'helpers', 'holdMigrationOpen.mjs');
 
 const DOMAIN = 'tenant1.example.com';
@@ -441,7 +443,6 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
   }, 20_000);
 
   it('a second opener caught mid-migration waits for it, then finds nothing left to do', async () => {
-    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
     const child = spawn(process.execPath, [holdMigrationOpenPath, dbPath, '1500'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -468,8 +469,6 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
   }, 20_000);
 
   it('concurrency: two real processes opening the same pre-drain database at once both succeed, and the result is a single, correctly migrated table', async () => {
-    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
-
     const openScript = `
       import { createSqliteStore } from ${JSON.stringify(storeJsPath)};
       const store = createSqliteStore(${JSON.stringify(dbPath)});
@@ -513,101 +512,80 @@ describe('createSqliteStore — migrating a pre-drain database', () => {
 describe('src/server.ts — starts against a pre-drain database and serves /metrics', () => {
   let dir: string;
 
-  beforeAll(() => {
-    execFileSync('pnpm', ['run', 'build'], { cwd: projectRoot, stdio: 'pipe' });
-  });
-
   afterEach(() => {
     if (dir) {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  function findFreePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const srv = createServer();
-      srv.listen(0, '127.0.0.1', () => {
-        const address = srv.address();
-        if (!address || typeof address === 'string') {
-          reject(new Error('could not determine a free port'));
-          return;
-        }
-        const { port } = address;
-        srv.close(() => resolve(port));
-      });
-      srv.on('error', reject);
-    });
-  }
-
   it('boots against a pre-drain database and serves /metrics', async () => {
     dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-pre-drain-server-'));
     const dbPath = join(dir, 'shim.sqlite');
     await seedPreDrainDatabase(dbPath);
 
-    const port = await findFreePort();
-    const smtpPort = await findFreePort();
-
-    const child = spawn(process.execPath, [serverJsPath], {
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        SHIM_DB_PATH: dbPath,
-        SHIM_DRAIN_TOKEN: 'pre-drain-server-startup-token',
-        PORT: String(port),
-        SMTP_LISTEN_PORT: String(smtpPort),
-        SMTP_LISTEN_HOST: '127.0.0.1',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const deadline = Date.now() + 10_000;
-        const check = (): void => {
-          if (stdout.includes('"event":"listening"')) {
-            resolve();
-            return;
-          }
-          if (child.exitCode !== null) {
-            reject(new Error(`server exited early (code ${child.exitCode}). stderr:\n${stderr}`));
-            return;
-          }
-          if (Date.now() > deadline) {
-            reject(
-              new Error(`server never logged "listening". stdout:\n${stdout}\nstderr:\n${stderr}`)
-            );
-            return;
-          }
-          setTimeout(check, 50);
-        };
-        check();
+    await withFreePorts(2, async ([port, smtpPort]) => {
+      const child = spawn(process.execPath, [serverJsPath], {
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          SHIM_DB_PATH: dbPath,
+          SHIM_DRAIN_TOKEN: 'pre-drain-server-startup-token',
+          PORT: String(port),
+          SMTP_LISTEN_PORT: String(smtpPort),
+          SMTP_LISTEN_HOST: '127.0.0.1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics`);
-      expect(metricsResponse.status).toBe(200);
-    } finally {
-      const exitPromise = new Promise<void>((resolve) => {
-        child.on('exit', () => resolve());
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf8');
       });
-      child.kill('SIGTERM');
-      await Promise.race([
-        exitPromise,
-        new Promise<void>((resolve) =>
-          setTimeout(() => {
-            child.kill('SIGKILL');
-            resolve();
-          }, 5000)
-        ),
-      ]);
-    }
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+      });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const deadline = Date.now() + 10_000;
+          const check = (): void => {
+            if (stdout.includes('"event":"listening"')) {
+              resolve();
+              return;
+            }
+            if (child.exitCode !== null) {
+              reject(new Error(`server exited early (code ${child.exitCode}). stderr:\n${stderr}`));
+              return;
+            }
+            if (Date.now() > deadline) {
+              reject(
+                new Error(`server never logged "listening". stdout:\n${stdout}\nstderr:\n${stderr}`)
+              );
+              return;
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+
+        const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics`);
+        expect(metricsResponse.status).toBe(200);
+      } finally {
+        const exitPromise = new Promise<void>((resolve) => {
+          child.on('exit', () => resolve());
+        });
+        child.kill('SIGTERM');
+        await Promise.race([
+          exitPromise,
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              child.kill('SIGKILL');
+              resolve();
+            }, 5000)
+          ),
+        ]);
+      }
+    });
   }, 20_000);
 });
