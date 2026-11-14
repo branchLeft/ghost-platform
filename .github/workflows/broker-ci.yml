@@ -27,6 +27,9 @@ on:
       - 'render-core/**'
       - 'registers/**'
       - 'demo-host/provision/**'
+      # signedRequestScheme.test.ts scans the verdict host for a restated copy
+      # of the signed-request scheme.
+      - 'adapters/scanning-storage/verdict-host/**'
       - '.github/workflows/broker-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on

@@ -32,35 +32,62 @@ export function nonceLifetimeMs(replayWindowSeconds: number): number {
 }
 
 /**
+ * Why a request was refused, as a fixed code. A process other than the broker
+ * (the verdict host) takes these as its metric labels, so a code is a
+ * contract: add one only together with its consumers.
+ */
+export type AuthRefusal =
+  'timestamp' | 'nonce' | 'signature-missing' | 'window' | 'before-start' | 'signature' | 'replay';
+
+export type AuthCheck = { readonly ok: true } | { readonly ok: false; readonly code: AuthRefusal };
+
+const REFUSAL_REASONS: Readonly<Record<AuthRefusal, string>> = {
+  timestamp: 'missing or malformed timestamp',
+  nonce: 'missing or malformed nonce',
+  'signature-missing': 'missing signature',
+  window: 'timestamp outside the replay window',
+  'before-start': 'timestamp predates this process (replayed after a restart)',
+  signature: 'signature does not verify',
+  replay: 'nonce already used',
+};
+
+/**
  * Checks run in this order deliberately: format, then the replay window
  * (cheapest, and rejects a stale/replayed-after-restart request early),
  * then the signature, and only last, once verified, the nonce claim --
  * claiming first would let an unsigned request burn the legitimate
  * signer's nonce. See auth.md#verifyrequest-check-order.
+ *
+ * This is the one place the order lives. The broker answers with
+ * `verifyRequest` below; the verdict host builds this same function into
+ * its bundle (`signedRequestScheme.ts`) and answers with the code.
  */
-export function verifyRequest(
+export function checkRequest(
   deps: AuthDeps,
   method: string,
   path: string,
   headers: { readonly timestamp?: string; readonly nonce?: string; readonly signature?: string },
   rawBody: Buffer
-): AuthResult {
+): AuthCheck {
   const { timestamp, nonce, signature } = headers;
   if (!timestamp || !TIMESTAMP_PATTERN.test(timestamp)) {
-    return { ok: false, reason: 'missing or malformed timestamp' };
+    return { ok: false, code: 'timestamp' };
   }
   if (!nonce || !NONCE_PATTERN.test(nonce)) {
-    return { ok: false, reason: 'missing or malformed nonce' };
+    return { ok: false, code: 'nonce' };
   }
   if (!signature) {
-    return { ok: false, reason: 'missing signature' };
+    return { ok: false, code: 'signature-missing' };
   }
 
-  const nowSeconds = Math.floor(deps.nowMs() / 1000);
+  // One reading of the clock per request: the window and the nonce's expiry
+  // are measured from the same instant.
+  const nowMs = deps.nowMs();
+  const nowSeconds = Math.floor(nowMs / 1000);
   const requestSeconds = Number(timestamp);
   const ageSeconds = nowSeconds - requestSeconds;
   if (ageSeconds > deps.replayWindowSeconds || ageSeconds < -FORWARD_SKEW_SECONDS) {
-    return { ok: false, reason: 'timestamp outside the replay window' };
+    return { ok: false, code: 'window' };
   }
   // `<=`, not `<`: a request captured, then replayed after a crash and
   // restart that both land inside the same wall-clock second, has a
@@ -68,7 +95,7 @@ export function verifyRequest(
   // costs a legitimate caller only the process's first second -- a replay
   // window that would otherwise still admit it.
   if (requestSeconds <= deps.processStartSeconds) {
-    return { ok: false, reason: 'timestamp predates this process (replayed after a restart)' };
+    return { ok: false, code: 'before-start' };
   }
 
   const verified = verifySignature(
@@ -81,11 +108,23 @@ export function verifyRequest(
     signature
   );
   if (!verified) {
-    return { ok: false, reason: 'signature does not verify' };
+    return { ok: false, code: 'signature' };
   }
 
-  if (!deps.nonces.claim(nonce, deps.nowMs())) {
-    return { ok: false, reason: 'nonce already used' };
+  if (!deps.nonces.claim(nonce, nowMs)) {
+    return { ok: false, code: 'replay' };
   }
   return { ok: true };
+}
+
+/** `checkRequest`, with the broker's own words for the refusal. */
+export function verifyRequest(
+  deps: AuthDeps,
+  method: string,
+  path: string,
+  headers: { readonly timestamp?: string; readonly nonce?: string; readonly signature?: string },
+  rawBody: Buffer
+): AuthResult {
+  const checked = checkRequest(deps, method, path, headers, rawBody);
+  return checked.ok ? checked : { ok: false, reason: REFUSAL_REASONS[checked.code] };
 }
