@@ -12,6 +12,8 @@ import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
 import type { SupportSettings } from './supportMailer.js';
+import { createSiteRoutes } from './site.js';
+import type { ProvisioningSettings } from './siteConfig.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
 export interface TenantPortalOptions {
@@ -37,6 +39,8 @@ export interface TenantPortalOptions {
   readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
+  /** Absent, there is no Essentials site page and no navigation entry for it. */
+  readonly provisioning?: ProvisioningSettings;
 }
 
 /**
@@ -63,6 +67,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
+  const site = createSiteRoutes(options.provisioning, { onError: options.onError });
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -77,6 +82,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      ...site.nav,
       ...support.nav,
     ],
     signOutLabel: 'SIGN_OUT',
@@ -99,6 +105,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     },
     pages: {
       ...support.pages,
+      ...site.pages,
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
