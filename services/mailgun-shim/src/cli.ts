@@ -123,6 +123,48 @@ export async function runCli(
       }
     }
 
+    case 'remove': {
+      // Guarded like `register --rotate`: deleting the row is what locks a
+      // live sender out (every send from it gets the same 401), so the
+      // operator must type the domain a second time. See cli.md#remove.
+      const domain = rest[0];
+      const confirmIndex = rest.indexOf('--confirm');
+      const confirmed = confirmIndex !== -1 ? rest[confirmIndex + 1] : undefined;
+      if (
+        !domain ||
+        looksLikeFlag(domain) ||
+        !isPlainLowercaseHostname(domain) ||
+        rest.length !== 3 ||
+        confirmIndex !== 1
+      ) {
+        io.stderr('Usage: remove <credential-domain> --confirm <credential-domain>');
+        io.stderr(
+          '<credential-domain> must be a plain lowercase hostname (e.g. blog.branchleft.co.uk), repeated after --confirm.'
+        );
+        return 1;
+      }
+      if (confirmed !== domain) {
+        io.stderr(
+          `--confirm must repeat the domain exactly (got ${confirmed ?? '(nothing)'}). Nothing was removed.`
+        );
+        return 1;
+      }
+      const store = openStore();
+      try {
+        const existing = store.listTenants().find((tenant) => tenant.domain === domain);
+        if (!existing || !store.removeTenant(domain)) {
+          io.stderr(`Tenant ${domain} is not registered. Nothing was removed.`);
+          return 1;
+        }
+        io.stdout(
+          `Removed ${domain} (sender domain: ${existing.senderDomain ?? 'NOT SET'}). Its key no longer authenticates.`
+        );
+        return 0;
+      } finally {
+        store.close();
+      }
+    }
+
     case 'list': {
       const store = openStore();
       try {
@@ -162,7 +204,7 @@ export async function runCli(
 
     default:
       io.stderr(`Unknown command: ${command ?? '(none)'}`);
-      io.stderr('Usage: cli.js <register|set-sender-domain|list|events> ...');
+      io.stderr('Usage: cli.js <register|set-sender-domain|remove|list|events> ...');
       return 1;
   }
 }

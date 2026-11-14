@@ -160,6 +160,12 @@ export interface ShimStore {
   listTenants(): Array<{ domain: string; senderDomain: string | null }>;
   /** Sets a tenant's sender domain without rotating its key; false if the domain is unregistered. */
   setSenderDomain(domain: string, senderDomain: string): boolean;
+  /**
+   * Deletes exactly the one credential row and nothing else: its events,
+   * suppressions and queued mail stay. False if the domain is unregistered.
+   * See store.md#removing-a-credential.
+   */
+  removeTenant(domain: string): boolean;
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
   listEvents(domain: string, options: ListEventsOptions): ListEventsResult;
@@ -344,6 +350,11 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
         .set({ senderDomain })
         .where(eq(tenants.domain, domain))
         .run();
+      return result.changes > 0;
+    },
+
+    removeTenant(domain) {
+      const result = db.delete(tenants).where(eq(tenants.domain, domain)).run();
       return result.changes > 0;
     },
 
