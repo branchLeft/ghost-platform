@@ -3,7 +3,7 @@
 ## Overview
 
 The one command an operator runs on an app host to open, close or list
-break-glass grants, installed as `/usr/local/sbin/branchleft-break-glass`
+break-glass grants, or to create a tenant's suspended support account, installed as `/usr/local/sbin/branchleft-break-glass`
 (root-owned, mode `0700`). The installed file is this program's source, run
 through its shebang `#!/usr/bin/python3 -I`: the host has no Node and needs
 Python 3 at `/usr/bin/python3`. The program asks systemd one question,
@@ -14,6 +14,7 @@ through to it:
 branchleft-break-glass grant --lane consented|incident --tenant <slug> \
   --reason <one line> --reference <one line> [--identity <support email>]
 branchleft-break-glass revoke --tenant <slug> --reason <one line>
+branchleft-break-glass provision --tenant <slug> [--identity <support email>]
 branchleft-break-glass status
 ```
 
