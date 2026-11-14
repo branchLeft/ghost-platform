@@ -151,13 +151,13 @@ the one issued for that tenant (the API refuses a tenant credential on any other
 tenant's path), looked up by the scope's tenant id.
 
 ```text
-PORTAL_PROVISIONING_API_URL           the provisioning API's base URL (https; http only for loopback)
+PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback)
 PORTAL_PROVISIONING_CREDENTIALS_FILE  a file of lines <tenant uuid>=<credential>, one per tenant
 ```
 
 `createTenantPortal` takes them as the optional `provisioning` option
 (`{ baseUrl, credentialFor }`), so tests point it at the mock. **Without
-`PORTAL_PROVISIONING_API_URL` there is no `/demo` (404) and no navigation entry.**
+`PORTAL_PROVISIONING_URL` there is no `/demo` (404) and no navigation entry.**
 When the URL is set, the credentials file must be readable and well formed, or
 the process stops at start with a `ConfigError` that never holds a credential.
 

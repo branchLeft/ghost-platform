@@ -21,7 +21,7 @@ export interface TenantPortalConfig {
   readonly port: number;
   /** Set by `PORTAL_TRUSTED_PROXIES`; absent, sign-in is not rate limited. */
   readonly trustedProxies?: BlockList;
-  /** Set by `PORTAL_PROVISIONING_API_URL`; absent, there is no demo screen. */
+  /** Set by `PORTAL_PROVISIONING_URL`; absent, there is no demo screen. */
   readonly provisioning?: ProvisioningSettings;
 }
 

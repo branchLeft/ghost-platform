@@ -14,7 +14,7 @@ export interface ProvisioningSettings {
 }
 
 export const PROVISIONING_VARIABLES = {
-  url: 'PORTAL_PROVISIONING_API_URL',
+  url: 'PORTAL_PROVISIONING_URL',
   credentialsFile: 'PORTAL_PROVISIONING_CREDENTIALS_FILE',
 } as const;
 
