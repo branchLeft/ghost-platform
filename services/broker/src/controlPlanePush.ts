@@ -92,16 +92,19 @@ export async function pushImage(args: PushImageArgs): Promise<PushImageResult> {
     },
     body: body as unknown as string,
   });
+  // The deadline's own abort is reworded wherever it landed. The generated
+  // client catches an abort during the body read too, and then returns the
+  // error beside a `response` that did arrive (headers only): that answer was
+  // never fully received, so it is not a status to report, ok or otherwise.
+  if (isAbortError(result.error)) {
+    throw new Error(`image push did not finish within ${timeoutMs} ms`, {
+      cause: result.error,
+    });
+  }
   // No response at all means the request itself failed (refused, reset):
   // rethrown, as a rejected `fetch` always was, rather than reported as a
-  // status this module never received. Only the deadline's own abort is
-  // reworded.
+  // status this module never received.
   if (result.response === undefined) {
-    if (isAbortError(result.error)) {
-      throw new Error(`image push did not finish within ${timeoutMs} ms`, {
-        cause: result.error,
-      });
-    }
     throw result.error;
   }
   const { ok, status } = result.response;
