@@ -133,6 +133,48 @@ fetches the scrapes is separate work. The grants on `portal.health_reading`
 (tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
 `provision/manifest.ts`.
 
+## Support access
+
+`portal.support_access_reading` holds one row per tenant: whether the support
+account on the tenant's own host is `open`, `closed` or `unknown`, with the
+grant's lane, start and deadline while it is open, and when the host last
+reported. It carries no reason, no reference and no identity. The fields are the
+ones the grant tool's read-only `report` command prints
+(`adapters/sso/scripts/break-glass-grant.md`). The tenant role holds `SELECT`
+alone, so nothing a tenant does can write what the page shows; the owner role
+holds `SELECT, INSERT, UPDATE`. `OwnerDb.recordSupportAccess(tenantId, reading,
+observedAt)` is the write the host-side collector will make; the collector
+itself is separate work.
+
+`TenantDb.ownSupportAccess(scope, now)` is what the page shows. A reading is
+believed for `SUPPORT_READING_FRESH_SECONDS` (900) either side of `now`: no
+row, an older or future-dated one, and a state outside the closed list all come
+back `unknown` with no deadline. `closed` is returned only for a fresh reading
+that says `closed`, so a host that has stopped reporting never reads as closed.
+
+`portal.support_access_request` holds a tenant's requests: each row has its own
+id, the tenant id, the database-clock time and a `status` (`open` or
+`dealt_with`, default `open`, held by a CHECK), and no column that holds text.
+A partial unique index (`support_access_request_one_open`, on the tenant where
+the status is `open`) allows one open request per tenant and any number dealt
+with, kept as history. The tenant role may `INSERT` its own row
+(`TenantDb.requestSupportAccess`, which takes the tenant from the scope and
+ignores a repeat while one is open) and `SELECT` it; a restrictive insert
+policy makes the row it files `open`, and `TenantDb.ownSupportRequest` returns
+the latest. The tenant role holds no `UPDATE`, so it cannot change a status.
+The owner role may `SELECT` (`OwnerDb.listSupportRequests`, open requests first
+and oldest first, no paging) and `UPDATE`: `OwnerDb.markSupportRequestDealtWith`
+sets `dealt_with` on a tenant's open request and nothing else. No role deletes
+a request, so a request is never withdrawn and a dealt-with row stays. The
+provisioning manifest names the index (`NAMED_INDEXES`) and pins its definition.
+A request
+opens nothing: access
+is opened and closed on the tenant's host by the owner, and the portal holds no
+way to do either. Both tables are isolated like every tenant table; the
+manifest's grants, policies and shapes (`provision/manifest.ts`) pin them, and
+`test/supportAccess.test.ts` loosens each control in turn to show its probe
+goes red.
+
 ## Versioned documents and acceptance
 
 `document_version` has no row-level policy: it holds no tenant's data, and a

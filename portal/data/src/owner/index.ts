@@ -1,4 +1,4 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
@@ -21,13 +21,32 @@ import {
 } from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
 import type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
-import { documentVersion, healthReading, tenantRegister } from '../schema.js';
+import {
+  documentVersion,
+  healthReading,
+  supportAccessReading,
+  supportAccessRequest,
+  tenantRegister,
+} from '../schema.js';
+import {
+  assertSupportReading,
+  type SupportAccessReading,
+  type SupportRequestStatus,
+  type SupportRequestView,
+} from '../supportAccess.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
 export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 export type { DemoRequestView } from '../demoRequest.js';
+export {
+  InvalidSupportReadingError,
+  SUPPORT_REQUEST_STATUSES,
+  type SupportAccessReading,
+  type SupportRequestStatus,
+  type SupportRequestView,
+} from '../supportAccess.js';
 import { parseTenantId } from '../tenantId.js';
 import { parseTenantKind } from '../tenantKind.js';
 import { normaliseTenantName, TenantNameTakenError } from '../tenantName.js';
@@ -165,6 +184,72 @@ export class OwnerDb {
         health: row.reading ? deriveHealthView(row.reading) : null,
       }));
     });
+  }
+
+  /**
+   * Replaces a tenant's support-access reading with what the host's read-only
+   * report said at `observedAt`. A state or lane outside the closed lists is
+   * refused before a statement runs, and the table refuses it again.
+   */
+  async recordSupportAccess(
+    tenantId: string,
+    reading: SupportAccessReading,
+    observedAt: Date
+  ): Promise<void> {
+    const id = parseTenantId(tenantId);
+    assertSupportReading(reading);
+    const values = {
+      state: reading.state,
+      lane: reading.lane,
+      grantedAt: reading.grantedAt,
+      deadlineAt: reading.deadline,
+      observedAt,
+    };
+    await this.run(async (tx) => {
+      await tx
+        .insert(supportAccessReading)
+        .values({ tenantId: id, ...values })
+        .onConflictDoUpdate({ target: supportAccessReading.tenantId, set: values });
+    });
+  }
+
+  /**
+   * Every support-access request: open ones first, then dealt-with ones, each
+   * group oldest first. The console's queue; it has no paging.
+   */
+  async listSupportRequests(): Promise<SupportRequestView[]> {
+    return this.run(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(supportAccessRequest)
+        .orderBy(
+          desc(sql`${supportAccessRequest.status} = 'open'`),
+          asc(supportAccessRequest.requestedAt),
+          asc(supportAccessRequest.tenantId)
+        );
+      return rows.map((row) => ({
+        tenantId: row.tenantId,
+        requestedAt: row.requestedAt,
+        status: row.status as SupportRequestStatus,
+      }));
+    });
+  }
+
+  /**
+   * Marks a tenant's open request dealt with. It returns whether one was open:
+   * a second call, or a tenant that never asked, changes nothing and returns
+   * false. The row stays; nothing deletes a request.
+   */
+  async markSupportRequestDealtWith(tenantId: string): Promise<boolean> {
+    const id = parseTenantId(tenantId);
+    const changed = await this.run((tx) =>
+      tx
+        .update(supportAccessRequest)
+        .set({ status: 'dealt_with' })
+        .where(and(eq(supportAccessRequest.tenantId, id), eq(supportAccessRequest.status, 'open')))
+        .returning({ tenantId: supportAccessRequest.tenantId })
+    );
+    return changed.length > 0;
   }
 
   /** Every demo with its current state, term and hostname: the console's read. It writes nothing. */

@@ -7,10 +7,15 @@ name: SSO adapter CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'adapters/sso/**'
+      - 'adapters/ghost-core-overlay/**'
+      - 'services/drain-sidecar/Dockerfile'
+      - '.github/workflows/sso-adapter-ci.yml'
   # A pull request starts this only when its diff touches something the job
   # reads: the adapter, the generic Ghost-core patch script its overlay tests
-  # run, and the drain sidecar's Dockerfile (a unit test reads it). Push to
-  # main stays unfiltered as the backstop.
+  # run, and the drain sidecar's Dockerfile (a unit test reads it). A push to
+  # main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:

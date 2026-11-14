@@ -1,0 +1,144 @@
+name: Portal journey
+
+# Walks the portal in a real browser (Chromium through Playwright, a pinned
+# version) against the HTTP test identity provider in portal/apps/test/, and
+# uploads one screenshot per screen as a workflow artifact. The portal runs on
+# its real data layer, a PostgreSQL started the way portal-apps-ci.yml starts
+# it. The walk is the list in portal/apps/test/journey/steps/index.ts; each
+# screen added to the portal adds one step there.
+#
+# This job runs the portal from source. Running the journey against the
+# attested image is a later step of the same work.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - 'services/identity/**'
+      - 'services/request-guard/**'
+      - '.github/workflows/portal-apps-journey.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'portal/**'
+      - 'services/identity/**'
+      - 'services/request-guard/**'
+      - '.github/workflows/portal-apps-journey.yml'
+
+# `packages: read` for `@branchleft/tsconfig`, hosted on GitHub Packages.
+permissions:
+  contents: read
+  packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  journey:
+    name: Portal journey in a browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PORTAL_TEST_DATABASE_URL: postgres://postgres:ci-only-throwaway@127.0.0.1:5432/postgres
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start PostgreSQL with the data layer's test pg_hba.conf
+        env:
+          IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+        run: |
+          install -m 0666 portal/data/test/pg_hba.ci.conf "$RUNNER_TEMP/pg_hba.conf"
+          sleep 1
+          docker run -d --rm --name portal-journey-pg -p 5432:5432 \
+            -e POSTGRES_PASSWORD=ci-only-throwaway \
+            -v "$RUNNER_TEMP/pg_hba.conf:/etc/postgresql/pg_hba.conf" \
+            "$IMAGE" -c hba_file=/etc/postgresql/pg_hba.conf
+          for attempt in $(seq 1 60); do
+            if docker exec portal-journey-pg pg_isready -U postgres -h 127.0.0.1 >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs portal-journey-pg
+          exit 1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: portal/apps/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: pnpm
+          cache-dependency-path: |
+            portal/apps/pnpm-lock.yaml
+            portal/data/pnpm-lock.yaml
+            services/identity/pnpm-lock.yaml
+            services/request-guard/pnpm-lock.yaml
+
+      # The registry token is on the install steps alone; a build or test step
+      # runs code from the repository and from what was just installed.
+      - name: Install the data layer's dependencies
+        working-directory: portal/data
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the data layer
+        working-directory: portal/data
+        run: pnpm run build
+
+      - name: Install the identity verifier's dependencies
+        working-directory: services/identity
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the identity verifier
+        working-directory: services/identity
+        run: pnpm run build
+
+      - name: Install the request guard's dependencies
+        working-directory: services/request-guard
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the request guard
+        working-directory: services/request-guard
+        run: pnpm run build
+
+      - name: Install dependencies
+        working-directory: portal/apps
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The browser build is the one the pinned Playwright version names.
+      - name: Install Chromium
+        working-directory: portal/apps
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Walk the journey
+        working-directory: portal/apps
+        env:
+          JOURNEY_SCREENSHOT_DIR: ${{ github.workspace }}/journey-screenshots
+        run: pnpm run journey
+
+      # Also on failure: a failed step's screenshot is the first thing to read.
+      - name: Upload the screenshots
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portal-journey-screenshots
+          path: journey-screenshots/journey/*.png
+          if-no-files-found: error
+          retention-days: 14

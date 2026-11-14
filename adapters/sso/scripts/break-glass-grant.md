@@ -19,6 +19,7 @@ branchleft-break-glass grant --lane consented|incident --tenant <slug> \
   --reason <one line> --reference <one line> [--identity <support email>]
 branchleft-break-glass revoke --tenant <slug> --reason <one line>
 branchleft-break-glass status
+branchleft-break-glass report --tenant <slug>
 ```
 
 `branchleft-break-glass` is the host wrapper (`host/branchleft-break-glass.py`,
@@ -180,6 +181,31 @@ re-suspended from the Staff screen during the window still leaves the session
 row behind. That row would wake on their next un-suspend, up to 180 days
 later. The purge removes it. It refuses to touch an account that holds the
 Owner role.
+
+## The read-only report
+
+`report --tenant <slug>` prints one line of JSON saying whether the tenant's
+support account is open, closed or unknown, for the portal to show the tenant.
+It is the only command the portal's collector may run, and it writes nothing:
+no state file, no record, no claim, no purge, and no change to the account. It
+reads the account's status and roles through Ghost's knex, in plain selects
+with no transaction and no row lock, and it reads the clock file. It needs no
+running expire timer, which only a grant needs.
+
+| Field | Meaning |
+|---|---|
+| `tenant` | The slug asked for. |
+| `state` | `open` for an active or warning status, `closed` for `inactive`, `locked` or an account the tenant deleted, `unknown` for any other status or an account that is not exactly the Administrator. |
+| `lane`, `grantedAt`, `deadline` | The open grant's clock, from its state file; `null` when closed, or when the clock is absent or unreadable. An unreadable clock never changes `state`. |
+| `observedAt` | The host's time when the report ran. |
+
+It never prints the reason, the reference, the grant id or the identity. A
+tenant with no running container is refused, and the run exits non-zero: the
+reader treats a missing or old report as `unknown`, never as `closed`. A test
+runs the script that executes inside the container against a stand-in for
+Ghost's knex that refuses every write and every row lock, and another compares
+the state directory and the record log byte for byte before and after, so a
+write path added to `report` turns them red.
 
 ## Records
 

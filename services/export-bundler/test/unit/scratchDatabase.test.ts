@@ -11,6 +11,7 @@ import {
   mysqlErrorSummary,
   buildScratchMysqlRunArgs,
   buildSqliteBackupArgs,
+  sqliteBackupName,
   createFloorWatcher,
   createMysqlScratch,
   createSqliteScratch,
@@ -476,7 +477,7 @@ describe('SQLite scratch removers', () => {
     });
     await expect(scratch.destroy()).rejects.toThrow(/in use/);
     const calls = (await readFile(argvLog, 'utf8')).trim().split('\n');
-    expect(calls).toEqual(['volume rm', 'network rm']);
+    expect(calls).toEqual(['rm -f', 'volume rm', 'network rm']);
   });
 
   it('reports both failures when the volume and the network removals both fail', async () => {
@@ -544,6 +545,14 @@ describe('SQLite scratch', () => {
     expect(SQLITE_BACKUP_SCRIPT).toContain('readonly: true');
   });
 
+  it('names the backup container after the run, so an already-sent create can be removed', () => {
+    const args = buildSqliteBackupArgs(sqliteSpec);
+    expect(args[args.indexOf('--name') + 1]).toBe('demo-export-7-backup');
+    expect(sqliteBackupName('demo-export-7')).toBe('demo-export-7-backup');
+    // The name flag sits before the image, so docker reads it as a run option.
+    expect(args.indexOf('--name')).toBeLessThan(args.indexOf(sqliteSpec.image));
+  });
+
   let dir: string;
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'export-bundler-sqlite-scratch-'));
@@ -588,6 +597,25 @@ describe('SQLite scratch', () => {
     expect(log).toContain('network create --internal demo-export-7-net');
     expect(log).toContain('volume rm -f demo-export-7-data');
     expect(log).toContain('network rm demo-export-7-net');
+  });
+
+  it('removes the named backup container on destroy, before the volume it writes to', async () => {
+    const f = await fake(true);
+    const scratch = createSqliteScratch(sqliteSpec, {
+      dockerCommand: f.path,
+      registry: new CleanupRegistry(),
+    });
+    await scratch.prepare();
+    await scratch.destroy();
+    // The backup script is a multi-line argv, so keep only the removal calls.
+    const removals = (await readFile(f.log, 'utf8'))
+      .split('\n')
+      .filter((l) => /^(rm|volume rm|network rm) /.test(l));
+    expect(removals).toEqual([
+      'rm -f demo-export-7-backup',
+      'volume rm -f demo-export-7-data',
+      'network rm demo-export-7-net',
+    ]);
   });
 
   it('refuses when the backup does not report completion', async () => {

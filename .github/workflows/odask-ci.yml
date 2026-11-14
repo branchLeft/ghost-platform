@@ -7,9 +7,13 @@ name: odask CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/odask/**'
+      - 'render-core/**'
+      - '.github/workflows/odask-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the service and render-core (linked by `link:` and built first).
-  # Push to main stays unfiltered as the backstop.
+  # reads: the service and render-core (linked by `link:` and built first). A
+  # push to main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:

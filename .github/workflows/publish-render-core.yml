@@ -9,10 +9,11 @@ name: Publish render-core package
 # `vX.Y.Z` tags, so this package takes `render-core-vX.Y.Z`; neither tag
 # pattern matches the other's ref, so one push never starts both workflows.
 #
-# render-core-ci.yml type-checks and tests every push and pull request and
-# never publishes; this workflow only runs on a release tag. The type check
-# and tests are repeated here, before the publish, because a tag can be cut
-# from a commit whose own CI run was skipped or has not finished.
+# render-core-ci.yml type-checks and tests every pull request and push to main
+# that touches its inputs and never publishes; this workflow only runs on a
+# release tag. The type check and tests are repeated here, before the publish,
+# because a tag can be cut from a commit whose own CI run was skipped or has not
+# finished.
 
 # `workflow_dispatch` is the escape hatch for a tag push that produced no run
 # at all. GitHub honours `[skip ci]` in the head commit's message for tag

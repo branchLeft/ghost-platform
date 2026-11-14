@@ -150,7 +150,13 @@ jobs:
       # first so a pull failure shows here. The red cases come before the
       # green run: the first two run on db1's stock Oracle MySQL, the two GTID
       # cases on the Percona candidate; each must exit 1, and exit 2 means the
-      # control stayed green so could not have failed.
+      # control stayed green so could not have failed. Exit 1 is also what the
+      # wrapper gives a setup failure and the probe gives a crashed control, so
+      # each of the four then runs `percona_snapshot_probe.py check-red` on its
+      # log: the probe must have reached its own RED verdict, the targeted
+      # controls must be the ones red, and the RED line must carry the reason
+      # the probe states for that sabotage (RED_REASONS). The log is printed
+      # before it is judged.
       - name: Pull the pinned Percona digest
         run: |
           pins="percona/percona-server@$(python3 db/provision/percona_pin.py index)"
@@ -165,6 +171,7 @@ jobs:
           cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
+          python3 db/provision/percona_snapshot_probe.py check-red --sabotage commit-before-coordinates --log "$log"
 
       - name: Red case, the retired global-lock dump under a long reader
         if: ${{ !cancelled() }}
@@ -175,6 +182,7 @@ jobs:
           cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
+          python3 db/provision/percona_snapshot_probe.py check-red --sabotage global-lock --log "$log"
 
       # The seeding set changed by exactly one transaction of one tenant: the
       # oracle that reads the source's binary log must see it, as a duplicated
@@ -188,6 +196,7 @@ jobs:
           cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
+          python3 db/provision/percona_snapshot_probe.py check-red --sabotage gtid-drop-one --log "$log"
 
       - name: Red case, one transaction added to the GTID set the replica is seeded with
         if: ${{ !cancelled() }}
@@ -198,12 +207,14 @@ jobs:
           cat "$log"
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
+          python3 db/provision/percona_snapshot_probe.py check-red --sabotage gtid-extra-one --log "$log"
 
       # Exits 0 only when controls 1 to 5 pass and control 6 is recorded; exit
       # 3 means the candidate is inadequate. The log has each control's
       # measured values and the oracle's count of committed rows lost or
       # duplicated, read from the source's own binary log.
       - name: Run the Percona proof, un-sabotaged
+        if: ${{ !cancelled() }}
         run: db/provision/prove-percona-snapshot.sh
 
       # Control 2, the retired path: its FLUSH TABLES waits for the long reader

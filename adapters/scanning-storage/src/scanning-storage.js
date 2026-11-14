@@ -282,6 +282,53 @@ function storedBasename(url, fallback) {
   return url.split(/[?#]/)[0].split('/').pop() || fallback;
 }
 
+// Icon variants. Ghost core rewrites a stored image's URL to its 256x256
+// variant (`/content/images/size/w256h256/...`) for the settings API (Ghost
+// admin and the Content API) and for the site's favicon link. On object
+// storage the stored URL is absolute, so the rewrite stays on the bucket and
+// the browser asks the bucket for the variant directly. Ghost's resize
+// middleware, the only thing that writes a variant, never sees the request,
+// and the bucket answers 403 for a key that was never written. So the
+// decorator writes the variants when it stores an image (size-variants in
+// README.md says why this, and not a Ghost patch or a URL change).
+const ICON_SIZE_DIR = 'w256h256';
+const ICON_SIZE = { width: 256, height: 256 };
+// The resize bound Ghost's middleware uses.
+const ICON_RESIZE_TIMEOUT_SECONDS = 10;
+const ICON_VARIANT_FAILED_LOG_PREFIX = 'ScanningStorageAdapter: ICON_VARIANT_FAILED';
+const ICON_VARIANTS_UNAVAILABLE_LOG_PREFIX = 'ScanningStorageAdapter: ICON_VARIANTS_UNAVAILABLE';
+// A stored original Ghost keeps beside its processed upload (`name_o.png`).
+const ORIGINAL_NAME_PATTERN = /_o\.[^./]+$/;
+
+// The format blog-icon.js asks for when the icon's own type is not served
+// as it is: a .jpg as jpeg, anything else that is not png or jpeg as png.
+// null: the plain variant is the one it asks for.
+function iconFormatFor(ext) {
+  if (ext === '.png' || ext === '.jpeg') {
+    return null;
+  }
+  return ext === '.jpg' ? 'jpeg' : 'png';
+}
+
+// The variants of one stored image that Ghost core asks the bucket for, as
+// [format-or-null, ...]. Mirrors handle-image-sizes.js: a variant is only
+// ever made where the middleware would make it, so a type it redirects to
+// the original (an .ico, a plain .svg) gets none.
+function iconVariantFormats(ext, imageTransform) {
+  if (!imageTransform.canTransformFileExtension(ext)) {
+    return [];
+  }
+  const formats = [];
+  if (imageTransform.shouldResizeFileExtension(ext)) {
+    formats.push(null);
+  }
+  const format = iconFormatFor(ext);
+  if (format !== null && imageTransform.canTransformToFormat(format)) {
+    formats.push(format);
+  }
+  return formats;
+}
+
 // Builds the decorator over an injected StorageBase, composing with the
 // wrapped adapter rather than subclassing one: README traps 3 and 4 say why.
 function defineScanningStorageAdapter(StorageBase, deps) {
@@ -363,11 +410,18 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         );
       }
       this.storagePath = this.wrapped.storagePath;
+      this.imageTransform = config.imageTransform || null;
       // Ghost's content importer reads this to name imported files, so it must
       // match the wrapped adapter.
       this.staticFileURLPrefix = this.wrapped.staticFileURLPrefix;
       this.quarantinePath = config.quarantinePath;
       this.wrappedConfig = wrappedConfig || {};
+      if (this.#isBucketImages() && !this.imageTransform) {
+        // Silent otherwise: the upload works and only the next icon save fails.
+        this.logger.error(
+          `${ICON_VARIANTS_UNAVAILABLE_LOG_PREFIX} wraps=${wraps}: no image transform is available, so the size variants Ghost asks the bucket for (the Publication Icon's) are never written`
+        );
+      }
       // Only the checks that may refuse ever run here: an advisory check
       // ships with blocking=false and is filtered out before it is ever
       // invoked by this adapter.
@@ -481,7 +535,11 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // go to the same key as an ordinary, scanned, overwriting write.
         const targetPath = this.#overwriteKey(file.name, targetDir);
         return this.#scanAndProceed(buffer, {
-          proceed: () => this.wrapped.saveRaw(buffer, targetPath),
+          proceed: async () => {
+            const url = await this.wrapped.saveRaw(buffer, targetPath);
+            await this.#writeIconVariants(buffer, targetPath);
+            return url;
+          },
           onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
         });
       }
@@ -523,6 +581,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
             if (remember) {
               rememberStoredName(this.storedNames, storedBasename(url, name));
             }
+            await this.#writeIconVariants(buffer, this.#pathOfStoredUrl(url));
             return url;
           },
           onHold: (digest) => {
@@ -801,6 +860,73 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       throw new Error(HOLD_OR_FLAG_NOT_IMPLEMENTED.replace('%s', decision));
     }
 
+    // True where Ghost core builds absolute bucket URLs for images: an
+    // object-storage adapter serving the images feature. The local adapters
+    // serve /content/images/size/... through Ghost's own middleware, and the
+    // other features are never resized.
+    #isBucketImages() {
+      return (
+        Boolean(this.wrappedConfig && this.wrappedConfig.bucket) &&
+        typeof this.storagePath === 'string' &&
+        path.posix.basename(this.storagePath) === 'images'
+      );
+    }
+
+    #writesIconVariants() {
+      return this.#isBucketImages() && Boolean(this.imageTransform);
+    }
+
+    // The path under the adapter's storage root that the wrapped adapter
+    // stored a URL at, or null when it cannot say.
+    #pathOfStoredUrl(url) {
+      if (typeof this.wrapped.urlToPath !== 'function') {
+        return null;
+      }
+      try {
+        return this.wrapped.urlToPath(url);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    // Writes the size variants Ghost core asks the bucket for, after the
+    // image itself is stored. The variants go through this decorator's own
+    // saveRaw, so they are scanned like every other byte served from the
+    // bucket. Best effort: the upload has already succeeded, and the same
+    // variant is still made on demand when the request does reach Ghost.
+    async #writeIconVariants(buffer, storedPath) {
+      if (!this.#writesIconVariants() || typeof storedPath !== 'string') {
+        return;
+      }
+      const storageRoot = `${this.storagePath.replace(/^\/+|\/+$/g, '')}/`;
+      let relative = storedPath.replace(/^\/+/, '');
+      if (relative.startsWith(storageRoot)) {
+        relative = relative.slice(storageRoot.length);
+      }
+      // A variant is never itself resized, and the _o original is never
+      // asked for at a size.
+      if (relative === '' || relative.startsWith('size/') || ORIGINAL_NAME_PATTERN.test(relative)) {
+        return;
+      }
+      const ext = path.posix.extname(relative).toLowerCase();
+      try {
+        for (const format of iconVariantFormats(ext, this.imageTransform)) {
+          const resized = await this.imageTransform.resizeFromBuffer(buffer, {
+            withoutEnlargement: ext !== '.svg',
+            ...ICON_SIZE,
+            format,
+            timeout: ICON_RESIZE_TIMEOUT_SECONDS,
+          });
+          const variantDir = format
+            ? `size/${ICON_SIZE_DIR}/format/${format}`
+            : `size/${ICON_SIZE_DIR}`;
+          await this.saveRaw(resized, `${variantDir}/${relative}`);
+        }
+      } catch (error) {
+        this.logger.error(`${ICON_VARIANT_FAILED_LOG_PREFIX} path=${relative}`, error);
+      }
+    }
+
     // Never writes to the wrapped adapter until a clean verdict promotes
     // it -- identical on both backends now. On object storage that is the
     // only way "unserved" can mean anything (the CDN reads the bucket
@@ -822,6 +948,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       return {
         onAllow: async (heldBuffer) => {
           await this.wrapped.saveRaw(heldBuffer, targetPath);
+          await this.#writeIconVariants(heldBuffer, targetPath);
         },
         onRefuse: async () => {},
       };

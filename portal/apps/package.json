@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
+    "journey": "vitest run --config vitest.journey.config.ts",
     "coverage": "vitest run --coverage",
     "start:tenant": "node dist/tenant/main.js",
     "start:console": "node dist/console/main.js"
@@ -29,6 +30,7 @@
     "@types/pg": "^8.11.0",
     "@types/smtp-server": "^3.5.13",
     "@vitest/coverage-v8": "4.1.11",
+    "playwright": "1.63.0",
     "smtp-server": "^3.13.5",
     "typescript": "^5.9.0",
     "vitest": "^4.1.11"
