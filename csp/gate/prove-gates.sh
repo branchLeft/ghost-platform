@@ -108,5 +108,33 @@ prove "derive/unmapped-directive-ignored" "$DERIVE" \
 prove "derive/check-never-compares" "$DERIVE" \
     "if (committed !== text) {" "if (false) {"
 
+# The checkout gate's real Stripe test-mode rules (the owner's opt-in run).
+TESTS="$HERE/checkout-gate.test.mjs"
+prove "checkout-real/fake-capture-accepted-as-real" checkout-gate.mjs \
+    "if (realMode && !capturedReal) {" "if (false) {"
+prove "checkout-real/real-capture-accepted-as-fake" checkout-gate.mjs \
+    "} else if (!realMode && capturedReal) {" "} else if (false) {"
+prove "checkout-real/stub-stripe-js-accepted" checkout-gate.mjs \
+    "if (run.realStripeJs !== true) {" "if (false) {"
+prove "checkout-real/non-stripe-host-accepted" checkout-gate.mjs \
+    "if (run.checkoutHost !== 'checkout.stripe.com') {" "if (false) {"
+prove "checkout-real/live-session-accepted" checkout-gate.mjs \
+    "if (run.checkoutSessionIsTest !== true) {" "if (false) {"
+prove "checkout-real/other-card-accepted" checkout-gate.mjs \
+    "if (run.cardTyped !== PUBLISHED_TEST_CARD) {" "if (false) {"
+prove "checkout-real/paid-source-unchecked" checkout-gate.mjs \
+    "run.paidSource !== 'tenant-member-state' || " ""
+prove "checkout-real/tenant-member-status-unchecked" checkout-gate.mjs \
+    " || run.tenantMemberStatus !== 'paid'" ""
+prove "checkout-real/steps-unchecked" checkout-gate.mjs \
+    "if (!Array.isArray(run.steps) || run.steps.join(',') !== STEPS.join(',')) {" "if (false) {"
+prove "checkout-real/switch-not-read" checkout-gate.mjs \
+    "process.env.CSP_STRIPE_REAL_TEST_MODE === '1'" "false"
+
+# The real test-mode switch (real_test_mode.py: each key rule, the tenant and card
+# refusals, the redaction) and the runner's own real-mode wiring (the refusals, the
+# keys by environment only, cleanup with -v) are proved in test_real_test_mode.py and
+# test_csp_checkout_gate.py, whose last classes mutate the Python source and require red.
+
 [ "$FAIL" -eq 0 ] && echo "ALL SABOTAGES DETECTED" || echo "SABOTAGE PROOF FAILED"
 exit "$FAIL"

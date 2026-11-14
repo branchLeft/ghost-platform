@@ -113,13 +113,128 @@ test('red when the run is malformed (missing fields)', () => {
   assert.ok(judgeCheckout({}).length >= 4);
 });
 
+// Real Stripe TEST-mode (the owner's run): the same flow, but the hosted page is
+// Stripe's own, the real Stripe.js loaded, only the published test card was
+// typed, and paid is the tenant's own member state. Violations are the tenant's
+// (Stripe's page answers to Stripe's policy).
+const realGreen = {
+  ...green,
+  mode: 'real-test-mode',
+  realStripeJs: true,
+  checkoutHost: 'checkout.stripe.com',
+  checkoutSessionIsTest: true,
+  cardTyped: '4242 4242 4242 4242',
+  paidSource: 'tenant-member-state',
+  tenantMemberStatus: 'paid',
+  foreignViolations: 3,
+};
+const REAL = { realMode: true };
+
+test("real mode: a complete paid flow on Stripe's own page with zero tenant violations passes", () => {
+  assert.deepEqual(judgeCheckout(realGreen, REAL), []);
+});
+
+test('real mode: a capture that is not a real-mode capture is red, and so is the reverse', () => {
+  assert.match(judgeCheckout(green, REAL).join('\n'), /not a real test-mode capture/);
+  assert.match(judgeCheckout(realGreen).join('\n'), /real test-mode capture judged without/);
+});
+
+test('real mode: the stub Stripe.js is red', () => {
+  assert.match(
+    judgeCheckout({ ...realGreen, realStripeJs: false }, REAL).join('\n'),
+    /real Stripe\.js/
+  );
+});
+
+test("real mode: a checkout page that is not Stripe's own host is red", () => {
+  for (const checkoutHost of [
+    'localhost',
+    'checkout.stripe.com.example.test',
+    'stripe.com',
+    undefined,
+  ]) {
+    assert.match(
+      judgeCheckout({ ...realGreen, checkoutHost }, REAL).join('\n'),
+      /Stripe's own hosted page/,
+      String(checkoutHost)
+    );
+  }
+});
+
+test('real mode: a checkout session that is not a test-mode session is red', () => {
+  assert.match(
+    judgeCheckout({ ...realGreen, checkoutSessionIsTest: false }, REAL).join('\n'),
+    /test-mode session/
+  );
+});
+
+test('real mode: any card but the published test card is red', () => {
+  for (const cardTyped of ['4000 0000 0000 0002', undefined, '']) {
+    assert.match(
+      judgeCheckout({ ...realGreen, cardTyped }, REAL).join('\n'),
+      /published test card/,
+      String(cardTyped)
+    );
+  }
+});
+
+test("real mode: paid must come from the tenant's own member state", () => {
+  assert.match(
+    judgeCheckout({ ...realGreen, paidSource: 'fake-state' }, REAL).join('\n'),
+    /tenant's own member state/
+  );
+  assert.match(
+    judgeCheckout({ ...realGreen, tenantMemberStatus: 'free' }, REAL).join('\n'),
+    /tenant's own member state/
+  );
+});
+
+test('real mode: the steps must end in paid, all six, in order', () => {
+  assert.match(judgeCheckout({ ...realGreen, steps: STEPS.slice(0, 5) }, REAL).join('\n'), /steps/);
+  assert.match(
+    judgeCheckout({ ...realGreen, steps: [...STEPS].reverse() }, REAL).join('\n'),
+    /steps/
+  );
+});
+
+test("real mode: one tenant-side violation is red even with Stripe's page and a paid member", () => {
+  const f = judgeCheckout({ ...realGreen, violations: [STRIPE_BLOCKED] }, REAL);
+  assert.equal(f.length, 1);
+  assert.match(f[0], /1 violation\(s\) across all frames/);
+});
+
 // The CLI is only a verdict if its main block runs: each case sees the
 // verdict's own output, not just an exit code.
 const CLI = fileURLToPath(new URL('./checkout-gate.mjs', import.meta.url));
 
-function runCli(capture) {
-  return spawnSync(process.execPath, [CLI], { input: JSON.stringify(capture), encoding: 'utf8' });
+function runCli(capture, env = {}) {
+  return spawnSync(process.execPath, [CLI], {
+    input: JSON.stringify(capture),
+    encoding: 'utf8',
+    env: { ...process.env, CSP_STRIPE_REAL_TEST_MODE: '', ...env },
+  });
 }
+
+test('CLI: with the switch set, a real-mode capture exits 0 and says it was real test mode', () => {
+  const r = runCli(realGreen, { CSP_STRIPE_REAL_TEST_MODE: '1' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(
+    r.stdout,
+    /CSP CHECKOUT GATE GREEN \(real Stripe test mode\).*steps=.*,paid violations=0/
+  );
+});
+
+test('CLI: with the switch set, a fake-Stripe capture is red (the fake is not the real thing)', () => {
+  const r = runCli(green, { CSP_STRIPE_REAL_TEST_MODE: '1' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /CSP CHECKOUT GATE RED/);
+});
+
+test('CLI: without the switch, a real-mode capture is red', () => {
+  const r = runCli(realGreen);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /CSP CHECKOUT GATE RED/);
+});
 
 test('CLI: a green capture exits 0 and says so', () => {
   const r = runCli(green);

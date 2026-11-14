@@ -9,7 +9,8 @@ const ORIGIN = process.env.PROOF_ORIGIN || 'http://localhost:4321';
 const STRIPE = process.env.PROOF_STRIPE_URL || 'http://localhost:4322';
 const COOKIE = process.env.PROOF_SESSION_COOKIE || '';
 const LABEL = process.env.PROOF_LABEL || 'checkout';
-const REAL_STRIPE_JS = process.env.CSP_STRIPE_REAL_JS === '1';
+const REAL_MODE = process.env.PROOF_REAL_TEST_MODE === '1';
+const REAL_STRIPE_JS = process.env.CSP_STRIPE_REAL_JS === '1' || REAL_MODE;
 const EMAIL = process.env.PROOF_MEMBER_EMAIL || 'checkout-member@example.test';
 // Stripe's published success test card. Nothing else is ever typed.
 const TEST_CARD = '4242 4242 4242 4242';
@@ -39,6 +40,36 @@ async function admin(path, method, body) {
   return res.json();
 }
 
+// Stripe's hosted Checkout page. UNVERIFIED against the live page: these
+// locators are the ones Stripe's public docs and test fixtures use, with a
+// label fallback for each; the owner's first run is what verifies them.
+async function payOnStripe(page, card, result) {
+  const expiryYear = String((new Date().getFullYear() + 3) % 100).padStart(2, '0');
+  await page
+    .getByPlaceholder('1234 1234 1234 1234')
+    .or(page.getByLabel('Card number'))
+    .first()
+    .fill(card);
+  result.cardTyped = card;
+  await page
+    .getByPlaceholder('MM / YY')
+    .or(page.getByLabel(/expir/i))
+    .first()
+    .fill(`12 / ${expiryYear}`);
+  await page.getByPlaceholder('CVC').or(page.getByLabel('CVC')).first().fill('123');
+  const name = page
+    .getByPlaceholder('Full name on card')
+    .or(page.getByLabel(/name on card|cardholder/i));
+  if (await name.count()) await name.first().fill('Checkout Member');
+  const postcode = page.getByLabel(/zip|postal code|postcode/i);
+  if (await postcode.count()) await postcode.first().fill('12345');
+  await page
+    .getByTestId('hosted-payment-submit-button')
+    .or(page.getByRole('button', { name: /^(pay|subscribe)/i }))
+    .first()
+    .click();
+}
+
 async function main() {
   const result = {
     label: LABEL,
@@ -53,6 +84,9 @@ async function main() {
     failedAt: null,
     error: null,
   };
+  if (REAL_MODE) {
+    result.mode = 'real-test-mode';
+  }
   if (!COOKIE) {
     console.error(
       'capture-checkout: PROOF_SESSION_COOKIE is required (setup-content.mjs prints it)'
@@ -120,19 +154,45 @@ async function main() {
     const choosePlan = plans.getByRole('button', { name: 'Continue' });
     await choosePlan.waitFor({ timeout: 15000 });
     await Promise.all([
-      page.waitForURL(`${STRIPE}/c/pay/**`, { timeout: 30000 }),
+      page.waitForURL(REAL_MODE ? /^https:\/\/checkout\.stripe\.com\// : `${STRIPE}/c/pay/**`, {
+        timeout: 30000,
+      }),
       choosePlan.click(),
     ]);
-    await page.locator('#fake-checkout').waitFor({ timeout: 10000 });
+    if (REAL_MODE) {
+      const hosted = new URL(page.url());
+      result.checkoutHost = hosted.hostname;
+      result.checkoutSessionIsTest = hosted.pathname.includes('/cs_test_');
+      if (!result.checkoutSessionIsTest) {
+        throw new Error(
+          'refusing to type a card: the checkout session is not a Stripe test-mode session'
+        );
+      }
+      await page
+        .getByPlaceholder('1234 1234 1234 1234')
+        .or(page.getByLabel('Card number'))
+        .first()
+        .waitFor({ timeout: 30000 });
+    } else {
+      await page.locator('#fake-checkout').waitFor({ timeout: 10000 });
+    }
     result.checkoutOpened = true;
     step('checkout-opened');
 
-    // 4. Pay with the published test card; the fake redirects to success_url.
-    await page.locator('#cardnumber').fill(TEST_CARD);
-    await Promise.all([
-      page.waitForURL(/[?&]stripe=success/, { timeout: 30000 }),
-      page.locator('#pay').click(),
-    ]);
+    // 4. Pay with the published test card; the fake (or, in real test mode,
+    // Stripe's own page) redirects to success_url.
+    if (REAL_MODE) {
+      await Promise.all([
+        page.waitForURL(/[?&]stripe=success/, { timeout: 60000 }),
+        payOnStripe(page, TEST_CARD, result),
+      ]);
+    } else {
+      await page.locator('#cardnumber').fill(TEST_CARD);
+      await Promise.all([
+        page.waitForURL(/[?&]stripe=success/, { timeout: 30000 }),
+        page.locator('#pay').click(),
+      ]);
+    }
     await page.waitForLoadState('networkidle');
     result.returnedFromCheckout = true;
     step('returned-from-checkout');
@@ -145,9 +205,14 @@ async function main() {
         const m = body.members?.[0];
         return m && m.status === 'paid' ? m : null;
       },
-      { timeoutMs: 30000 }
+      { timeoutMs: REAL_MODE ? 60000 : 30000 }
     ).catch(() => null);
     result.paid = Boolean(member);
+    if (REAL_MODE) {
+      // The tenant's own member state, never anything the checkout page says.
+      result.paidSource = 'tenant-member-state';
+      result.tenantMemberStatus = member ? member.status : 'not-paid';
+    }
     if (member) step('paid');
     await page.waitForTimeout(1500); // let any deferred reports land
   } catch (err) {

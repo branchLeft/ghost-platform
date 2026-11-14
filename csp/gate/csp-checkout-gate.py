@@ -2,13 +2,17 @@
 """The checkout half of the content-policy gate, live.
 
 Usage:
-    csp-checkout-gate.py [--sabotage=no-stripe-origin] [--derive] [IMAGE]
+    csp-checkout-gate.py [--sabotage=no-stripe-origin] [--derive] [--help] [IMAGE]
 
 A real headless Chromium takes a member through the paid upgrade and the return
 from checkout on a real Ghost behind the edge policy, with a fake Stripe API
 standing in for the service. The exit code is the verdict of the step that
 judged the run (0 green, 1 red); 2 is a refusal before or during setup, and a
 setup command that fails ends the run with its own exit code.
+With CSP_STRIPE_REAL_TEST_MODE=1 the owner's own Stripe TEST-mode keys replace the
+fake Stripe (see the .md). Those keys live only in this process's environment:
+they reach a child through its environment, never through an argument or a line
+printed here, and the run never writes them anywhere.
 See csp/gate/csp-checkout-gate.md for the modes and what it does NOT prove.
 """
 
@@ -27,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, TextIO
 
+import real_test_mode
+
 EXIT_REFUSED = 2
 EXIT_NOT_FOUND = 127
 EXIT_INTERRUPTED = 130
@@ -34,6 +40,12 @@ EXIT_TERMINATED = 143
 
 SABOTAGE_NO_STRIPE_ORIGIN = "no-stripe-origin"
 REAL_JS_ENV = "CSP_STRIPE_REAL_JS"
+REAL_MODE_ENV = real_test_mode.SWITCH
+REAL_MODE_PROOF_FLAG = "PROOF_REAL_TEST_MODE"
+REAL_SECRET_KEY_ENV = "STRIPE_TEST_SECRET_KEY"
+REAL_PUBLISHABLE_KEY_ENV = "STRIPE_TEST_PUBLISHABLE_KEY"
+REAL_WEBHOOK_SECRET_ENV = "STRIPE_TEST_WEBHOOK_SECRET"
+WEBHOOK_SECRET_ENV = "WEBHOOK_SECRET"
 DEFAULT_GHOST_IMAGE = "csp-gate-ghost:local"
 ORIGIN_IMAGE = "csp-gate-origin:local"
 GATE_MARKER_HEADER = "X-Csp-Gate-Marker"
@@ -47,7 +59,7 @@ KEY_ALPHABET = string.ascii_letters + string.digits
 KEY_LENGTH = 24
 
 Stdout = Literal["inherit", "capture", "discard"]
-Stderr = Literal["inherit", "discard"]
+Stderr = Literal["inherit", "capture", "discard"]
 
 
 @dataclass(frozen=True)
@@ -55,7 +67,7 @@ class Command:
     """One program to run: argv (never a shell string), extra env, streams."""
 
     argv: tuple[str, ...]
-    env: Mapping[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)  # may carry keys
     stdin: str | None = None
     stdout: Stdout = "inherit"
     stderr: Stderr = "inherit"
@@ -65,6 +77,7 @@ class Command:
 class Result:
     returncode: int
     stdout: str = ""
+    stderr: str = ""
 
 
 Runner = Callable[[Command], Result]
@@ -84,6 +97,7 @@ class Options:
     sabotage: str
     derive: bool
     image: str
+    help: bool = False
 
 
 @dataclass
@@ -108,6 +122,11 @@ def run_subprocess(repo_root: Path) -> Runner:
         "capture": subprocess.PIPE,
         "discard": subprocess.DEVNULL,
     }
+    errors: dict[Stderr, int | None] = {
+        "inherit": None,
+        "capture": subprocess.PIPE,
+        "discard": subprocess.DEVNULL,
+    }
 
     def run(command: Command) -> Result:
         try:
@@ -117,15 +136,16 @@ def run_subprocess(repo_root: Path) -> Runner:
                 env={**os.environ, **command.env},
                 input=command.stdin,
                 stdout=streams[command.stdout],
-                stderr=subprocess.DEVNULL if command.stderr == "discard" else None,
+                stderr=errors[command.stderr],
                 encoding="utf-8",
                 check=False,
             )
         except FileNotFoundError:
+            message = f"{command.argv[0]}: command not found"
             if command.stderr == "inherit":
-                print(f"{command.argv[0]}: command not found", file=sys.stderr)
-            return Result(EXIT_NOT_FOUND)
-        return Result(done.returncode, done.stdout or "")
+                print(message, file=sys.stderr)
+            return Result(EXIT_NOT_FOUND, stderr=message + "\n" if command.stderr == "capture" else "")
+        return Result(done.returncode, done.stdout or "", done.stderr or "")
 
     return run
 
@@ -138,6 +158,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     """
     sabotage = ""
     derive = False
+    help_requested = False
     image = ""
     for arg in argv:
         if arg == f"--sabotage={SABOTAGE_NO_STRIPE_ORIGIN}":
@@ -146,9 +167,11 @@ def parse_args(argv: Sequence[str]) -> Options:
             raise GateError(EXIT_REFUSED, f"unknown sabotage: {arg}")
         elif arg == "--derive":
             derive = True
+        elif arg in ("--help", "-h"):
+            help_requested = True
         else:
             image = arg
-    return Options(sabotage=sabotage, derive=derive, image=image)
+    return Options(sabotage=sabotage, derive=derive, image=image, help=help_requested)
 
 
 def cut_field(text: str, number: int) -> str:
@@ -234,6 +257,7 @@ class Gate:
         )
         self.origin = f"http://localhost:{self.host_port}"
         self.stripe_url = f"http://localhost:{self.stripe_port}"
+        self.real = False
 
     def run(self) -> int:
         """Refuse what cannot run, then run the gate and always clean up.
@@ -241,6 +265,29 @@ class Gate:
         Raises:
             GateError: a refusal (exit 2) or a failed setup step (its exit code).
         """
+        # The opt-in real Stripe TEST-mode switch (csp-checkout-gate.md). Every refusal
+        # about the keys lives in real_test_mode.py; with the switch unset nothing
+        # below is read and the fake Stripe runs exactly as before.
+        switch = self.deps.environ.get(REAL_MODE_ENV, "")
+        if switch not in ("", "1"):
+            raise GateError(EXIT_REFUSED, f"{REAL_MODE_ENV} must be 1 (or unset for the fake Stripe)")
+        self.real = switch == "1"
+        if self.options.help:
+            self.say(real_test_mode.usage())
+            return 0
+        if self.real and self.options.derive:
+            raise GateError(
+                EXIT_REFUSED,
+                "--derive needs no keys and measures the real Stripe.js: "
+                f"run it without {REAL_MODE_ENV}",
+            )
+        if self.real:
+            # Before anything starts: the keys' shapes, a local tenant, the test card.
+            checked = real_test_mode.preflight(self.deps.environ, self.origin)
+            if not checked.ok:
+                raise GateError(EXIT_REFUSED, "\n".join(checked.lines))
+            for line in checked.lines:
+                self.say(line)
         if self.options.derive and self.deps.environ.get(REAL_JS_ENV, "") != "1":
             raise GateError(
                 EXIT_REFUSED,
@@ -260,7 +307,9 @@ class Gate:
 
     def cleanup(self) -> None:
         containers = (self.ghost_name, self.origin_name, self.fake_name)
-        self.silently("docker", "rm", "-f", *containers)
+        # -v also removes each container's anonymous volumes: Ghost's image declares a
+        # content volume, and in real mode it holds the owner's test keys.
+        self.silently("docker", "rm", "-fv", *containers)
         self.silently("docker", "network", "rm", self.net)
 
     def silently(self, *argv: str) -> None:
@@ -273,14 +322,14 @@ class Gate:
         Raises:
             GateError: the step exited non-zero, carrying its exit code.
         """
-        result = self.deps.run(command)
+        result = self.execute(command)
         if result.returncode != 0:
             raise GateError(result.returncode)
         return result
 
-    def docker(self, *argv: str) -> None:
+    def docker(self, *argv: str, env: Mapping[str, str] | None = None) -> None:
         """A docker step with its stdout discarded, which must succeed."""
-        self.check(Command(("docker", *argv), stdout="discard"))
+        self.check(Command(("docker", *argv), env=env or {}, stdout="discard"))
 
     def node(
         self,
@@ -289,8 +338,30 @@ class Gate:
         *,
         stdin: str | None = None,
         stdout: Stdout = "capture",
+        args: Sequence[str] = (),
     ) -> Command:
-        return Command(("node", f"csp/{script}"), env=env, stdin=stdin, stdout=stdout)
+        # Real mode tells every node step so (the capture and the setup read it), and
+        # takes its stderr in, to print it with every secret redacted.
+        marked = {**env, REAL_MODE_PROOF_FLAG: "1"} if self.real else env
+        errors: Stderr = "capture" if self.real else "inherit"
+        return Command(
+            ("node", f"csp/{script}", *args),
+            env=marked,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=errors,
+        )
+
+    def secrets(self) -> list[str]:
+        return real_test_mode.secret_values(self.deps.environ)
+
+    def execute(self, command: Command) -> Result:
+        """Run a step; what a captured stderr said is printed here, redacted."""
+        result = self.deps.run(command)
+        if command.stderr == "capture" and result.stderr:
+            shown = real_test_mode.redact_secrets(result.stderr, self.secrets())
+            print(shown, end="", file=self.deps.err, flush=True)
+        return result
 
     def say(self, line: str) -> None:
         print(line, file=self.deps.out, flush=True)
@@ -308,7 +379,7 @@ class Gate:
             self.deps.sleep(1)
 
     def start_origin(self, header_name: str, header_value: str) -> None:
-        self.silently("docker", "rm", "-f", self.origin_name)
+        self.silently("docker", "rm", "-fv", self.origin_name)
         settings = [
             f"GHOST_UPSTREAM={self.ghost_name}:{GHOST_PORT}",
             f"CSP_HEADER_NAME={header_name}",
@@ -338,6 +409,9 @@ class Gate:
         )
 
     def start_ghost(self, image: str, webhook_secret: str) -> None:
+        if self.real:
+            self.start_real_ghost(image, webhook_secret)
+            return
         # stripeDirect makes Ghost use the keys set through its settings; STRIPE_API_*
         # point its Stripe client at the fake; WEBHOOK_SECRET puts the webhook manager
         # in its "local" mode, verifying the fake's signatures with a secret we hold.
@@ -352,12 +426,24 @@ class Gate:
         )
         args = ghost_run_args(self.ghost_name, self.net, self.origin, image, extra)
         self.docker(*args[1:])
+        self.wait_for_ghost()
+
+    def start_real_ghost(self, image: str, webhook_secret: str) -> None:
+        """Ghost against Stripe's own API: no fake, so no STRIPE_API_* settings. The
+        webhook secret is passed by name (`-e WEBHOOK_SECRET`), its value carried only
+        in the child's environment, so it is in no argument list."""
+        extra = (*env_flags(["stripeDirect=true"]), "-e", WEBHOOK_SECRET_ENV)
+        args = ghost_run_args(self.ghost_name, self.net, self.origin, image, extra)
+        self.docker(*args[1:], env={WEBHOOK_SECRET_ENV: webhook_secret})
+        self.wait_for_ghost()
+
+    def wait_for_ghost(self) -> None:
         ready = ("docker", "exec", self.ghost_name, "wget", "-q", "-O", "/dev/null")
         self.wait_for("Ghost", 90, (*ready, f"http://127.0.0.1:{GHOST_PORT}/"))
 
     def render_policy(self, payments: str, hashes_json: str) -> Result:
         env = {"CSP_PAYMENTS": payments}
-        return self.deps.run(self.node("proof/render-header.mjs", env, stdin=hashes_json))
+        return self.execute(self.node("proof/render-header.mjs", env, stdin=hashes_json))
 
     def capture(self, label: str, session_cookie: str) -> str:
         env = {
@@ -366,31 +452,55 @@ class Gate:
             "PROOF_SESSION_COOKIE": session_cookie,
             "PROOF_STRIPE_URL": self.stripe_url,
         }
-        return self.check(self.node("proof/capture-checkout.mjs", env)).stdout.rstrip("\n")
+        run_json = self.check(self.node("proof/capture-checkout.mjs", env)).stdout.rstrip("\n")
+        if self.real:
+            # Redacted, and Stripe's own pages' violations split off (their policy, not ours).
+            return real_test_mode.scrub_capture(run_json, self.origin, self.secrets())
+        return run_json
+
+    def required_env(self, name: str) -> str:
+        """An owner-supplied value, which preflight has already checked.
+
+        Raises:
+            GateError: the variable is unset (exit 2); the message never carries a value.
+        """
+        value = self.deps.environ.get(name, "")
+        if not value:
+            raise GateError(EXIT_REFUSED, f"{name} is not set")
+        return value
 
     def gate(self) -> int:
         image = self.options.image
-        # TEST MODE ONLY, synthetic and per run: Ghost checks only the shape, and
-        # the Stripe it reaches is the fake, which refuses any key that is not sk_test_.
-        stripe_secret = f"sk_test_{self.deps.token()}"
-        stripe_publishable = f"pk_test_{self.deps.token()}"
-        webhook_secret = f"whsec_{self.deps.token()}"
+        if self.real:
+            # TEST MODE ONLY, the owner's own: read here, passed on only in a child's
+            # environment, never an argument, never printed.
+            stripe_secret = self.required_env(REAL_SECRET_KEY_ENV)
+            stripe_publishable = self.required_env(REAL_PUBLISHABLE_KEY_ENV)
+            webhook_secret = self.required_env(REAL_WEBHOOK_SECRET_ENV)
+        else:
+            # TEST MODE ONLY, synthetic and per run: Ghost checks only the shape, and
+            # the Stripe it reaches is the fake, which refuses any key that is not sk_test_.
+            stripe_secret = f"sk_test_{self.deps.token()}"
+            stripe_publishable = f"pk_test_{self.deps.token()}"
+            webhook_secret = f"whsec_{self.deps.token()}"
 
         if not image:
             image = DEFAULT_GHOST_IMAGE
             self.docker("build", "-q", "-t", image, ".")
         self.docker("build", "-q", "-f", "csp/proof/Dockerfile", "-t", ORIGIN_IMAGE, ".")
         self.docker("network", "create", self.net)
-        self.start_fake_stripe(image, webhook_secret)
+        if not self.real:
+            self.start_fake_stripe(image, webhook_secret)
         self.start_ghost(image, webhook_secret)
         self.start_origin(GATE_MARKER_HEADER, "none")
-        self.wait_for(
-            "fake Stripe", 30, ("curl", "-sf", "-o", "/dev/null", f"{self.stripe_url}/__state")
-        )
+        if not self.real:
+            self.wait_for(
+                "fake Stripe", 30, ("curl", "-sf", "-o", "/dev/null", f"{self.stripe_url}/__state")
+            )
 
         # setup-content's own exit status is not checked: the shell `eval "$(...)"`
         # never saw it, and a failure here shows as the next step failing.
-        content_run = self.deps.run(
+        content_run = self.execute(
             self.node("proof/setup-content.mjs", {"PROOF_ORIGIN": self.origin})
         )
         content = parse_assignments(content_run.stdout)
@@ -430,10 +540,14 @@ class Gate:
         self.start_origin(REPORT_ONLY_HEADER, none_value)
         run_json = self.capture("derive", session_cookie)
         self.say(run_json)
-        check = Command(
-            ("node", "csp/derive/derive-payment-origins.mjs", "--check"), stdin=run_json
+        check = self.node(
+            "derive/derive-payment-origins.mjs",
+            {},
+            stdin=run_json,
+            stdout="inherit",
+            args=("--check",),
         )
-        return self.deps.run(check).returncode
+        return self.execute(check).returncode
 
     def enforce(self, hashes_json: str, session_cookie: str) -> int:
         """Gate: the ENFORCING policy under test. The sabotage serves the same Ghost
@@ -460,8 +574,8 @@ class Gate:
         self.start_origin(ENFORCING_HEADER, policy_value)
         run_json = self.capture(f"checkout-{sabotage}" if sabotage else "checkout", session_cookie)
         self.say(run_json)
-        judge = Command(("node", "csp/gate/checkout-gate.mjs"), stdin=run_json)
-        status = self.deps.run(judge).returncode
+        judge = self.node("gate/checkout-gate.mjs", {}, stdin=run_json, stdout="inherit")
+        status = self.execute(judge).returncode
         elapsed = self.deps.now() - started
         self.say(f"GATE_TIMING seconds={elapsed} sabotage={sabotage or 'none'} exit={status}")
         return status
