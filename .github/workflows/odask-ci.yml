@@ -9,17 +9,19 @@ on:
     branches: [main]
     paths:
       - 'services/odask/**'
-      - 'render-core/**'
       - '.github/workflows/odask-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the service and render-core (linked by `link:` and built first). A
-  # push to main starts it on the same paths.
+  # reads: the service (render-core arrives from the registry at the version
+  # its package.json pins). A push to main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:
       - 'services/odask/**'
-      - 'render-core/**'
       - '.github/workflows/odask-ci.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
+  schedule:
+    - cron: '33 4 * * 1'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401
@@ -61,14 +63,6 @@ jobs:
           scope: '@branchleft'
           cache: pnpm
           cache-dependency-path: services/odask/pnpm-lock.yaml
-
-      # The service links render-core by a relative link: dependency and
-      # needs its compiled types.
-      - name: Build render-core
-        working-directory: render-core
-        run: pnpm install --frozen-lockfile && pnpm run build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

@@ -41,6 +41,8 @@ export interface Health {
 
 export type HoldReason =
   | 'consent-required'
+  | 'restore-drill-unmet'
+  | 'version-not-eligible'
   | 'gate-red'
   | 'gate-digest-mismatch'
   | 'bump-not-done'

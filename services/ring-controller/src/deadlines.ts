@@ -113,3 +113,49 @@ export function withDeadline<T>(promise: Promise<T>, ms: number, call: string): 
     );
   });
 }
+
+/**
+ * Bounds on the calls the start-up recovery sweep makes through a record's
+ * machine, one set per record. Separate from `CallDeadlines`: those bound
+ * what `runRelease` awaits, these bound `recoverPersistedTenants`.
+ */
+export interface RecoveryDeadlines {
+  /** One `revertTraffic()` call. */
+  readonly revertTrafficMs: number;
+  /** One `stopColour()` call. */
+  readonly stopColourMs: number;
+  /** One `verify()` call, reached from a recovered `applying` record. */
+  readonly verifyMs: number;
+  /** One `page()` call. */
+  readonly pageMs: number;
+}
+
+export const DEFAULT_RECOVERY_DEADLINES: RecoveryDeadlines = Object.freeze({
+  revertTrafficMs: 10 * 60 * 1000,
+  stopColourMs: 10 * 60 * 1000,
+  verifyMs: 5 * 60 * 1000,
+  pageMs: 60 * 1000,
+});
+
+const RECOVERY_DEADLINE_KEYS = Object.freeze([
+  'revertTrafficMs',
+  'stopColourMs',
+  'verifyMs',
+  'pageMs',
+] as const satisfies readonly (keyof RecoveryDeadlines)[]);
+
+/** As `resolveCallDeadlines`, for the recovery sweep: defaults filled in, and a bound that could never fire refused. */
+export function resolveRecoveryDeadlines(
+  overrides: Partial<RecoveryDeadlines> = {}
+): RecoveryDeadlines {
+  const resolved: RecoveryDeadlines = { ...DEFAULT_RECOVERY_DEADLINES, ...overrides };
+  for (const key of RECOVERY_DEADLINE_KEYS) {
+    const ms = resolved[key];
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) {
+      throw new RangeError(
+        `recovery deadline '${key}' needs a finite number of milliseconds above zero`
+      );
+    }
+  }
+  return Object.freeze(resolved);
+}

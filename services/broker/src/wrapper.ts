@@ -83,6 +83,38 @@ function parseDetachReceipt(stdout: string): DetachReceipt {
   return { entry: parsed.entry, sha256: parsed.sha256, bytes: parsed.bytes };
 }
 
+const LINE_BREAKS = /\r\n|[\n\r\u0085\u2028\u2029]/;
+// Every C0 control character, DEL, and the Unicode line separators that a
+// line-based reader may treat as a line break.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/g;
+
+function escapeControlChar(char: string): string {
+  if (char === '\r') return '\\r';
+  if (char === '\n') return '\\n';
+  if (char === '\t') return '\\t';
+  return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+}
+
+/**
+ * Text as one log-safe line: every C0 control character, DEL, U+0085, U+2028
+ * and U+2029 written as a visible escape (`\r`, `\n`, `\t`, else `\uXXXX`).
+ * See wrapper.md#stderr-on-one-line.
+ */
+export function escapeControls(text: string): string {
+  return text.replace(CONTROL_CHARS, escapeControlChar);
+}
+
+/** A child's stderr as one log-safe line: trimmed, then control-escaped. */
+export function stderrOneLine(stderr: string): string {
+  return escapeControls(stderr.trim());
+}
+
+/**
+ * `message` is the client-safe head line only: it can reach an HTTP body.
+ * The child's stderr rides on `stderr` and is printed into the log by
+ * `errorLogText`, never into a reply. See wrapper.md#stderr-on-one-line.
+ */
 export class WrapperError extends Error {
   constructor(
     message: string,
@@ -92,6 +124,18 @@ export class WrapperError extends Error {
     super(message);
     this.name = 'WrapperError';
   }
+
+  /** The message and, when there is any, the child's stderr on the same line. For the log only. */
+  get logMessage(): string {
+    const reason = stderrOneLine(this.stderr);
+    return reason === '' ? this.message : `${this.message} stderr: ${reason}`;
+  }
+}
+
+/** What a logger prints for a caught error: a WrapperError's `logMessage`, else its `message`. */
+export function errorLogText(err: unknown): string {
+  if (err instanceof WrapperError) return err.logMessage;
+  return (err as Error).message;
 }
 
 export interface WrapperConfig {
@@ -119,7 +163,11 @@ export function createSlotWrapper(config: WrapperConfig): SlotWrapper {
     return new Promise((resolve, reject) => {
       execFile(file, rest, { timeout: timeoutMs }, (err, stdout, stderr) => {
         if (err) {
-          reject(new WrapperError(`slot wrapper failed: ${err.message}`, stdout, stderr));
+          // Node puts the child's stderr after the first line of err.message.
+          // Only that first line is the message (it can reach an HTTP body);
+          // the stderr stays on the error for the log line.
+          const [head = ''] = err.message.split(LINE_BREAKS);
+          reject(new WrapperError(`slot wrapper failed: ${escapeControls(head)}`, stdout, stderr));
           return;
         }
         resolve(stdout);

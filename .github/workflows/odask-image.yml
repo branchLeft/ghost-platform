@@ -14,14 +14,12 @@ on:
     branches: [main]
     paths:
       - services/odask/**
-      - render-core/**
       - scripts/test-odask.sh
       - .github/workflows/odask-image.yml
   pull_request:
     branches: [main]
     paths:
       - services/odask/**
-      - render-core/**
       - scripts/test-odask.sh
       - .github/workflows/odask-image.yml
 
@@ -42,8 +40,8 @@ jobs:
   build:
     name: docker build + real-Caddy-and-Pebble proof (odask)
     runs-on: ubuntu-latest
-    # Generous bound: it builds one image (render-core plus the service,
-    # multi-stage in one Dockerfile), pulls Caddy, Pebble and
+    # Generous bound: it builds one image (the service, with render-core
+    # installed from the registry), pulls Caddy, Pebble and
     # pebble-challtestsrv, and boots four containers for the live proof's
     # checks, including a real ACME v2 round trip.
     timeout-minutes: 15
@@ -52,11 +50,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Built from the repository root: the service depends on render-core
-      # through a relative `link:` dependency, so the build context must contain
-      # both (see services/odask/Dockerfile). The secret is consumed by a
-      # `RUN --mount` there, so it reaches `pnpm install` without entering a
-      # layer or the build history.
+      # Built from the repository root, with the context narrowed to the
+      # service by its Dockerfile.dockerignore (see services/odask/Dockerfile).
+      # The secret is consumed by a `RUN --mount` there, so it reaches
+      # `pnpm install` (which fetches render-core from GitHub Packages)
+      # without entering a layer or the build history.
       - name: Build odask image
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

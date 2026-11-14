@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 # Built from the repository root, not this directory, because the service
-# depends on render-core and services/request-guard through relative `link:`
-# dependencies and the build context must contain all three:
+# depends on services/request-guard through a relative `link:` dependency and
+# the build context must contain both:
 #   docker build -f services/demo-gate/Dockerfile --secret id=node_auth_token,env=NODE_AUTH_TOKEN .
-# Dockerfile.dockerignore beside this file narrows that context to the three
-# packages.
+# Dockerfile.dockerignore beside this file narrows that context to the two
+# packages. render-core is not in the context: the gate installs the version
+# its package.json pins from GitHub Packages.
 #
 # Alpine (musl), not Debian, on the same base as portal/Dockerfile: its image
 # scan found the Debian base carried findings with no published fix, and every
@@ -22,7 +23,6 @@ WORKDIR /app
 
 # Both packages keep their repository-relative layout, so each lockfile's
 # `link:` paths resolve inside the image exactly as they do in a checkout.
-COPY render-core/ render-core/
 COPY services/request-guard/ services/request-guard/
 COPY services/demo-gate/ services/demo-gate/
 
@@ -33,23 +33,23 @@ COPY services/demo-gate/ services/demo-gate/
 # pnpm store (it holds every platform's binaries of each package), and the
 # token userconfig.
 #
-# `@branchleft/tsconfig` is a build-time dependency hosted on GitHub Packages,
-# which rejects anonymous reads. The token arrives as a BuildKit secret and is
-# written to a userconfig that lives and dies inside this one RUN, so it never
-# becomes part of a layer. `pnpm install` fails closed if the secret is absent.
+# `@branchleft/tsconfig` and `@branchleft/ghost-platform-render-core` are
+# dependencies hosted on GitHub Packages, which rejects anonymous reads. The
+# token arrives as a BuildKit secret and is written to a userconfig that lives
+# and dies inside this one RUN, so it never becomes part of a layer. `pnpm install` fails closed if the secret
+# is absent.
 # The order matters: each package imports its siblings' built output.
 RUN --mount=type=secret,id=node_auth_token \
     sh -eu -c 'npm install --global pnpm@11.17.0; \
       printf "//npm.pkg.github.com/:_authToken=%s\n" "$(cat /run/secrets/node_auth_token)" > /tmp/npmrc; \
       export NPM_CONFIG_USERCONFIG=/tmp/npmrc; \
-      for dir in render-core services/request-guard services/demo-gate; do \
+      for dir in services/request-guard services/demo-gate; do \
         (cd "/app/$dir" && pnpm install --frozen-lockfile && pnpm run build); \
       done; \
-      for dir in render-core services/request-guard services/demo-gate; do \
+      for dir in services/request-guard services/demo-gate; do \
         (cd "/app/$dir" && pnpm prune --prod); \
       done; \
-      rm -rf /app/render-core/src /app/render-core/node_modules \
-        /app/services/request-guard/src /app/services/request-guard/node_modules \
+      rm -rf /app/services/request-guard/src /app/services/request-guard/node_modules \
         /app/services/demo-gate/src; \
       rm -f /tmp/npmrc; \
       store="$(pnpm store path)"; \

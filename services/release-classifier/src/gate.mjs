@@ -6,6 +6,10 @@
 import { parseRelease } from './classify.mjs';
 import { CLASS, SCHEMA } from './steps.mjs';
 
+// A plain tag is exactly v?MAJOR.MINOR.PATCH. parseRelease alone trims, so a padded
+// tag would pass it; the gate reads the string as written.
+const PLAIN_TAG = /^v?\d+\.\d+\.\d+$/;
+
 export const REFUSAL = Object.freeze({
   RECORD_UNREADABLE: 'record-unreadable',
   RELEASE_MISMATCH: 'release-mismatch',
@@ -20,30 +24,33 @@ class Unreadable extends Error {}
 
 const refuse = (reason, detail) => ({ ok: false, reason, detail });
 const isObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+const compare = (a, b) => a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 
 function plainTag(tag) {
-  try {
-    parseRelease(tag);
-    return typeof tag === 'string';
-  } catch {
-    return false;
-  }
+  return typeof tag === 'string' && PLAIN_TAG.test(tag);
 }
 
 function need(cond, what) {
   if (!cond) throw new Unreadable(what);
 }
 
+// The step's own tags decide whether it moves forward and whether it is a major bump.
+// The record's majorBump is checked against them: a record may not call a major bump
+// minor, and it may call a minor bump major (that is refused as forward-only below).
 function readStep(step, i) {
   need(isObject(step), `step ${i} is not an object`);
   need(plainTag(step.from) && plainTag(step.to), `step ${i} has no plain from and to tags`);
+  const f = parseRelease(step.from);
+  const t = parseRelease(step.to);
+  need(compare(t, f) > 0, `step ${i} does not move forward from ${step.from} to ${step.to}`);
   need(CLASSES.includes(step.class), `step ${i} has an unknown class`);
   need(typeof step.majorBump === 'boolean', `step ${i} has no majorBump flag`);
+  need(!(t.major > f.major) || step.majorBump, `step ${i} is a major bump its record calls minor`);
   need(Array.isArray(step.forwardOnly), `step ${i} has no forwardOnly list`);
   need(Array.isArray(step.unclassified), `step ${i} has no unclassified list`);
   need(step.forwardOnly.every(isObject), `step ${i} has a malformed forwardOnly hit`);
   need(step.unclassified.every(isObject), `step ${i} has a malformed unclassified hit`);
-  return step;
+  return { ...step, majorBump: t.major > f.major || step.majorBump };
 }
 
 const hit = (h) => `${h.path || '(release)'} ${h.rule}`;
@@ -51,23 +58,38 @@ const hit = (h) => `${h.path || '(release)'} ${h.rule}`;
 // record: a release-reversibility/v1 record. release: { pinned, target } plain tags of
 // the upgrade about to be applied. The record's own `class` is never trusted alone:
 // each step's lists are read, and the record is accepted only when both agree.
+// Never throws: any failure to read the record or the release, including a getter
+// that throws or a value that cannot be printed, is a refusal.
 export function assertReleaseReversible(record, release) {
-  let steps;
   try {
-    need(isObject(record), 'the record is not an object');
-    need(record.schema === SCHEMA, `the record schema is not ${SCHEMA}`);
-    need(plainTag(record.pinned), 'the record has no plain pinned tag');
-    need(CLASSES.includes(record.class), 'the record has an unknown class');
-    need(
-      Number.isInteger(record.unclassifiedFiles) && record.unclassifiedFiles >= 0,
-      'the record has no unclassified file count'
-    );
-    need(Array.isArray(record.steps), 'the record has no steps list');
-    steps = record.steps.map(readStep);
+    return decide(record, release);
   } catch (err) {
-    if (err instanceof Unreadable) return refuse(REFUSAL.RECORD_UNREADABLE, err.message);
-    throw err;
+    return refuse(REFUSAL.RECORD_UNREADABLE, detailOf(err));
   }
+}
+
+// The detail of a failure. Reading it can itself throw when the thrown value is hostile
+// (a Proxy whose prototype trap throws), so every read of it is guarded.
+const GENERIC_DETAIL = 'the record could not be read';
+function detailOf(err) {
+  try {
+    return err instanceof Unreadable ? err.message : GENERIC_DETAIL;
+  } catch {
+    return GENERIC_DETAIL;
+  }
+}
+
+function decide(record, release) {
+  need(isObject(record), 'the record is not an object');
+  need(record.schema === SCHEMA, `the record schema is not ${SCHEMA}`);
+  need(plainTag(record.pinned), 'the record has no plain pinned tag');
+  need(CLASSES.includes(record.class), 'the record has an unknown class');
+  need(
+    Number.isInteger(record.unclassifiedFiles) && record.unclassifiedFiles >= 0,
+    'the record has no unclassified file count'
+  );
+  need(Array.isArray(record.steps), 'the record has no steps list');
+  const steps = record.steps.map(readStep);
 
   if (!isObject(release) || !plainTag(release.pinned) || !plainTag(release.target)) {
     return refuse(REFUSAL.RELEASE_MISMATCH, 'the release to apply has no plain pinned and target');

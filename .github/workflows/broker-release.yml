@@ -35,7 +35,6 @@ on:
     branches: [main]
     paths:
       - 'services/broker/**'
-      - 'render-core/**'
       - '.github/workflows/broker-release.yml'
 
 # `packages: read` because the broker takes a dev dependency on
@@ -83,14 +82,6 @@ jobs:
           # name is the right-hand side of the `&&`, not the left.
           cache: ${{ github.ref_type != 'tag' && 'pnpm' || '' }}
           cache-dependency-path: services/broker/pnpm-lock.yaml
-
-      # The service links render-core by a relative link: dependency and
-      # needs its compiled types.
-      - name: Build render-core
-        working-directory: render-core
-        run: pnpm install --frozen-lockfile && pnpm run build
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
