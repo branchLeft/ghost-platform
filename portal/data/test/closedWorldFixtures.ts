@@ -356,6 +356,123 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     expect: /extra M06: SELECT on table portal.hostname_register to portal_tenant/,
   },
   {
+    id: 'M06',
+    title: 'UPDATE on the support-access reading given to the tenant role',
+    apply: [[P, 'GRANT UPDATE ON portal.support_access_reading TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE ON portal.support_access_reading FROM portal_tenant']],
+    expect: /extra M06: UPDATE on table portal.support_access_reading to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the support-access requests given to the tenant role',
+    apply: [[P, 'GRANT DELETE ON portal.support_access_request TO portal_tenant']],
+    undo: [[P, 'REVOKE DELETE ON portal.support_access_request FROM portal_tenant']],
+    expect: /extra M06: DELETE on table portal.support_access_request to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE on the support-access requests given to the tenant role',
+    apply: [[P, 'GRANT UPDATE ON portal.support_access_request TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE ON portal.support_access_request FROM portal_tenant']],
+    expect: /extra M06: UPDATE on table portal.support_access_request to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE of the status column alone given to the tenant role',
+    apply: [[P, 'GRANT UPDATE (status) ON portal.support_access_request TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE (status) ON portal.support_access_request FROM portal_tenant']],
+    expect: /extra M07: UPDATE on column portal.support_access_request.status to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the support-access requests given to the owner role',
+    apply: [[P, 'GRANT DELETE ON portal.support_access_request TO portal_owner']],
+    undo: [[P, 'REVOKE DELETE ON portal.support_access_request FROM portal_owner']],
+    expect: /extra M06: DELETE on table portal.support_access_request to portal_owner/,
+  },
+  {
+    id: 'M20',
+    title: 'the insert restriction on the support-access requests dropped',
+    apply: [[P, 'DROP POLICY tenant_insert_open ON portal.support_access_request']],
+    undo: [
+      [
+        P,
+        "CREATE POLICY tenant_insert_open ON portal.support_access_request AS RESTRICTIVE FOR INSERT TO portal_tenant WITH CHECK (status = 'open')",
+      ],
+    ],
+    expect: /missing M20: policy tenant_insert_open on portal.support_access_request/,
+  },
+  {
+    id: 'M21',
+    title: 'the one-open-request index dropped from the support-access requests',
+    apply: [[P, 'DROP INDEX portal.support_access_request_one_open']],
+    undo: [
+      [
+        P,
+        "CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id) WHERE status = 'open'",
+      ],
+    ],
+    expect:
+      /missing M21: portal.support_access_request index portal.support_access_request_one_open/,
+  },
+  {
+    id: 'M21',
+    title: 'the one-open-request index made plain unique on the support-access requests',
+    apply: [
+      [P, 'DROP INDEX portal.support_access_request_one_open'],
+      [
+        P,
+        'CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id)',
+      ],
+    ],
+    undo: [
+      [P, 'DROP INDEX portal.support_access_request_one_open'],
+      [
+        P,
+        "CREATE UNIQUE INDEX support_access_request_one_open ON portal.support_access_request (tenant_id) WHERE status = 'open'",
+      ],
+    ],
+    expect:
+      /missing M21: portal.support_access_request index portal.support_access_request_one_open/,
+  },
+  {
+    id: 'M21',
+    title: 'an extra index on the support-access requests',
+    apply: [[P, 'CREATE INDEX zz_extra ON portal.support_access_request (requested_at)']],
+    undo: [[P, 'DROP INDEX portal.zz_extra']],
+    expect: /extra M21: portal.support_access_request index portal.zz_extra/,
+  },
+  {
+    id: 'M21',
+    title: 'the status check dropped from the support-access requests',
+    apply: [
+      [
+        P,
+        'ALTER TABLE portal.support_access_request DROP CONSTRAINT support_access_request_status_known',
+      ],
+    ],
+    undo: [
+      [
+        P,
+        "ALTER TABLE portal.support_access_request ADD CONSTRAINT support_access_request_status_known CHECK (status IN ('open', 'dealt_with'))",
+      ],
+    ],
+    expect:
+      /missing M21: portal.support_access_request constraint support_access_request_status_known/,
+  },
+  {
+    id: 'M20',
+    title: 'an extra policy on the support-access reading',
+    apply: [
+      [
+        P,
+        'CREATE POLICY open_all ON portal.support_access_reading FOR SELECT TO portal_tenant USING (true)',
+      ],
+    ],
+    undo: [[P, 'DROP POLICY open_all ON portal.support_access_reading']],
+    expect: /extra M20: policy open_all on portal.support_access_reading: cmd=r/,
+  },
+  {
     id: 'M01',
     title: 'the provisioner role allowed to bypass row security',
     apply: [[PG, 'ALTER ROLE portal_provisioner BYPASSRLS']],

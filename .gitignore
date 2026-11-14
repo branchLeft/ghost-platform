@@ -29,3 +29,6 @@ portal/apps/test/.mutants/
 
 # Speckify build output (speckify build writes here by default)
 .speckify/
+
+# Screenshots of the portal journey (portal/apps `pnpm run journey`)
+portal/apps/journey-screenshots/

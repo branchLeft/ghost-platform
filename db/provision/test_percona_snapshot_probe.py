@@ -15,8 +15,10 @@ import re
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 import extract_tenant_binlog
+import gtid_snapshot
 import percona_pin
 import percona_snapshot_probe as psp
 import snapshot_probe as sp
@@ -531,6 +533,10 @@ class PlanTests(unittest.TestCase):
         )
         return psp.Run(ctx, "p")
 
+    @staticmethod
+    def dump_argv(sabotage: str | None, *, coordinates: bool = False) -> list[str]:
+        return psp.dump_argv(PlanTests._run(sabotage), "t1", coordinates=coordinates)
+
     def test_a_passing_dump_asks_for_the_gtid_set_and_never_for_file_and_position(self) -> None:
         for name in (None, *psp.GTID_MUTATIONS):
             argv = psp.dump_argv(self._run(name), "t1")
@@ -553,6 +559,41 @@ class PlanTests(unittest.TestCase):
             self.assertNotIn("SOURCE_LOG", source, function.__name__)
             self.assertNotIn("read_log_status", source, function.__name__)
         self.assertIn("SOURCE_AUTO_POSITION=1", inspect.getsource(psp.start_replication_by_gtid))
+
+
+class ProductionFlagsTests(unittest.TestCase):
+    """The proof dumps with the production command, called and not copied."""
+
+    @staticmethod
+    def _argv(sabotage: str | None, *, coordinates: bool = False) -> list[str]:
+        return PlanTests.dump_argv(sabotage, coordinates=coordinates)
+
+    def test_the_percona_dump_is_the_production_command_with_the_account(self) -> None:
+        for name in (None, *psp.GTID_MUTATIONS):
+            self.assertEqual(self._argv(name), ["mysqldump", "--user=dump_t1", *gtid_snapshot.dump_args("t1")], name)
+
+    def test_a_change_to_the_production_flags_changes_what_the_proof_dumps_with(self) -> None:
+        changed = [*gtid_snapshot.dump_args("t1")[:-2], "--hex-blob", "--databases", "t1"]
+        with mock.patch.object(gtid_snapshot, "dump_args", return_value=changed):
+            self.assertIn("--hex-blob", self._argv(None))
+            self.assertIn("--hex-blob", self._argv("global-lock"))
+            self.assertIn("--hex-blob", self._argv("commit-before-coordinates"))
+
+    def test_the_stock_cases_differ_from_production_only_where_they_must(self) -> None:
+        production = gtid_snapshot.dump_args("t1")
+        no_lock = self._argv("commit-before-coordinates")[2:]
+        self.assertEqual(no_lock, [("--set-gtid-purged=OFF" if arg == gtid_snapshot.GTID_OPTION else arg) for arg in production])
+        retired = self._argv("global-lock")[2:]
+        self.assertEqual([arg for arg in retired if arg != "--source-data=2"], no_lock)
+        self.assertEqual(retired[-3:], ["--source-data=2", "--databases", "t1"])
+
+    def test_a_production_command_that_lost_its_database_tail_is_refused(self) -> None:
+        with mock.patch.object(gtid_snapshot, "dump_args", return_value=["--single-transaction"]):
+            with self.assertRaises(sp.ProofError):
+                self._argv(None)
+
+    def test_the_workflow_reruns_the_proof_when_the_production_flags_change(self) -> None:
+        self.assertEqual(_CI.count("'db/provision/gtid_snapshot.py'"), 2)
 
 
 class LockSamplerTests(unittest.TestCase):
@@ -640,6 +681,194 @@ class WrapperTests(unittest.TestCase):
         self.assertIn("prod-db", reason)
 
 
+def _log(sabotage: str, *red: tuple[int, str, str], outcome: bool = True) -> str:
+    """A probe log shaped as run_probe prints it: setup lines, then for each
+    red control its numbers and its RED line, then the outcome line."""
+    lines = ["== setup: source stock, replica percona, on linux/amd64", "  source image:         x"]
+    for number, title, reason in red:
+        lines += [f"== control {number} (sabotage: {sabotage})", "  a measured number", f"RED control {number}, {title}: {reason}"]
+    if outcome:
+        lines.append(f"RED as expected under sabotage {sabotage}: the control sees the failure")
+    return "\n".join(lines) + "\n"
+
+
+_LIMIT = f"exceeds the {sp._ms(psp.LATENCY_LIMIT_SECONDS)} limit"
+GOOD_LOGS = {
+    "commit-before-coordinates": _log(
+        "commit-before-coordinates",
+        (1, "variables and a GTID set consistent with the snapshot", "1 of 1 rounds failed; first, round 1: replica: t1: 14 tables differ | oracle: 122 committed rows LOST (in the seeding set, not in the snapshot)"),
+    ),
+    "global-lock": _log(
+        "global-lock",
+        (2, "no tenant's writes stall", f"round 1: t1: control 2: worst statement 59677.7 ms {_LIMIT} over 800 statements"),
+        (3, "no dump lock", "the dump accounts held COMMIT/SHARED/GRANTED, GLOBAL/SHARED/GRANTED"),
+    ),
+    "gtid-drop-one": _log(
+        "gtid-drop-one",
+        (1, "variables and a GTID set consistent with the snapshot", "2 of 2 rounds failed; first, round 1: replica: t1: error 1062 | oracle: 3 rows DUPLICATED (in the snapshot, not in the seeding set)"),
+    ),
+    "gtid-extra-one": _log(
+        "gtid-extra-one",
+        (1, "variables and a GTID set consistent with the snapshot", "2 of 2 rounds failed; first, round 1: replica: t1: short | oracle: 3 committed rows LOST (in the seeding set, not in the snapshot)"),
+    ),
+}
+
+
+class RedReasonTests(unittest.TestCase):
+    """Exit 1 is not the stated reason: the wrapper exits 1 on a setup failure
+    and a crashed control prints a RED line too."""
+
+    def test_every_sabotage_states_a_reason_on_exactly_its_targeted_controls(self) -> None:
+        self.assertEqual(set(psp.RED_REASONS), set(psp.SABOTAGE_TARGETS))
+        for name, reasons in psp.RED_REASONS.items():
+            self.assertEqual(tuple(reason.control for reason in reasons), psp.SABOTAGE_TARGETS[name], name)
+
+    def test_a_log_with_the_stated_reason_is_accepted(self) -> None:
+        for name, log in GOOD_LOGS.items():
+            self.assertEqual(psp.red_log_problems(name, log), [], name)
+
+    def test_the_reason_may_follow_on_a_line_after_the_red_line(self) -> None:
+        log = GOOD_LOGS["gtid-drop-one"].replace("| oracle:", "\n| oracle:")
+        self.assertEqual(psp.red_log_problems("gtid-drop-one", log), [])
+
+    def test_a_setup_failure_that_exits_one_is_not_red(self) -> None:
+        log = "== setup: source stock, replica percona, on linux/amd64\nFAILED: snapshot-proof-source-1 never answered a real query\n"
+        for name in psp.RED_REASONS:
+            problems = psp.red_log_problems(name, log)
+            self.assertTrue(any("never reached its verdict" in problem for problem in problems), name)
+            self.assertTrue(any("did not go red" in problem for problem in problems), name)
+
+    def test_a_crashed_control_is_not_red_for_the_stated_reason(self) -> None:
+        for name, reasons in psp.RED_REASONS.items():
+            crashed = _log(name, *((reason.control, "did not complete", "ProofError: replica never started") for reason in reasons))
+            problems = psp.red_log_problems(name, crashed)
+            self.assertTrue(any("a crash, not the stated reason" in problem for problem in problems), name)
+            self.assertTrue(any("without the stated reason" in problem for problem in problems), name)
+
+    def test_the_other_gtid_cases_reason_does_not_stand_in(self) -> None:
+        self.assertNotEqual(psp.red_log_problems("gtid-drop-one", GOOD_LOGS["gtid-extra-one"]), [])
+        self.assertNotEqual(psp.red_log_problems("gtid-extra-one", GOOD_LOGS["gtid-drop-one"]), [])
+        self.assertNotEqual(psp.red_log_problems("commit-before-coordinates", GOOD_LOGS["gtid-drop-one"]), [])
+
+    def test_the_global_lock_case_needs_both_its_controls_red_for_their_reasons(self) -> None:
+        only_latency = _log("global-lock", (2, "no tenant's writes stall", f"round 1: t1: control 2: worst statement 59677.7 ms {_LIMIT} over 800 statements"))
+        self.assertIn("control 3 did not go red", psp.red_log_problems("global-lock", only_latency))
+        no_limit = _log(
+            "global-lock",
+            (2, "no tenant's writes stall", "no round was measured"),
+            (3, "no dump lock", "the dump accounts held COMMIT/SHARED/GRANTED, GLOBAL/SHARED/GRANTED"),
+        )
+        self.assertTrue(any(f"without the stated reason '{_LIMIT}'" in problem for problem in psp.red_log_problems("global-lock", no_limit)))
+        no_global = _log(
+            "global-lock",
+            (2, "no tenant's writes stall", f"round 1: t1: control 2: worst statement 59677.7 ms {_LIMIT} over 800 statements"),
+            (3, "no dump lock", "the sampler never saw a dump account hold a shared-read table lock, so it could not have seen a blocking one"),
+        )
+        self.assertNotEqual(psp.red_log_problems("global-lock", no_global), [])
+
+    def test_a_control_the_sabotage_does_not_target_going_red_is_named(self) -> None:
+        log = _log("gtid-extra-one", *(
+            (number, "x", "committed rows LOST (in the seeding set, not in the snapshot)") for number in (1, 4)
+        ))
+        self.assertIn("control 4 went red but sabotage gtid-extra-one does not target it", psp.red_log_problems("gtid-extra-one", log))
+
+    def test_a_log_without_the_probes_verdict_line_is_refused_even_with_the_reason(self) -> None:
+        log = _log("gtid-extra-one", (1, "t", "committed rows LOST (in the seeding set, not in the snapshot)"), outcome=False)
+        self.assertTrue(any("never reached its verdict" in problem for problem in psp.red_log_problems("gtid-extra-one", log)))
+
+    def test_an_unknown_sabotage_has_no_stated_reason(self) -> None:
+        self.assertEqual(len(psp.red_log_problems("nothing", "")), 1)
+
+    def test_the_command_exits_one_with_the_problem_on_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "log"
+            path.write_text("FAILED: setup\n", encoding="utf-8")
+            result = subprocess.run(
+                ["python3", str(_PROVISION / "percona_snapshot_probe.py"), "check-red", "--sabotage", "gtid-drop-one", "--log", str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("RED FOR THE WRONG REASON (gtid-drop-one)", result.stderr)
+            path.write_text(GOOD_LOGS["gtid-drop-one"], encoding="utf-8")
+            result = subprocess.run(
+                ["python3", str(_PROVISION / "percona_snapshot_probe.py"), "check-red", "--sabotage", "gtid-drop-one", "--log", str(path)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_reason_strings_are_the_ones_the_probe_prints(self) -> None:
+        source = inspect.getsource(psp)
+        for needle in ("committed rows LOST (in the seeding set, not in the snapshot)", "rows DUPLICATED (in the snapshot, not in the seeding set)", "the dump accounts held"):
+            self.assertIn(f'f"{{count.lost}} {needle}"' if needle.startswith("committed") else needle, source)
+        self.assertIn("exceeds the", inspect.getsource(sp.writer_stall_verdict))
+
+
+class MutationDetectionTests(unittest.TestCase):
+    """A GTID red counts only when the oracle, reading the source's binary log,
+    saw the change. Disabling that check left every other test green."""
+
+    def test_a_drop_the_oracle_did_not_see_as_duplicated_is_not_red(self) -> None:
+        for count in (psp.OracleCount(), psp.OracleCount(1, 5, 2, 3, lost=4, duplicated=0)):
+            verdict = psp.undetected_mutation("drop", count)
+            assert verdict is not None
+            self.assertTrue(verdict.passed)
+            self.assertIn("did not see the drop", verdict.reason)
+
+    def test_an_extra_the_oracle_did_not_see_as_lost_is_not_red(self) -> None:
+        for count in (psp.OracleCount(), psp.OracleCount(1, 5, 2, 3, lost=0, duplicated=4)):
+            verdict = psp.undetected_mutation("extra", count)
+            assert verdict is not None
+            self.assertTrue(verdict.passed)
+
+    def test_a_change_the_oracle_saw_is_left_to_the_rounds_verdict(self) -> None:
+        self.assertIsNone(psp.undetected_mutation("drop", psp.OracleCount(1, 5, 2, 3, duplicated=3)))
+        self.assertIsNone(psp.undetected_mutation("extra", psp.OracleCount(1, 5, 2, 3, lost=3)))
+
+    def test_an_unknown_mutation_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            psp.undetected_mutation("swap", psp.OracleCount())
+
+    class _Source:
+        """Answers control 1's two reads; the server itself is not under test."""
+
+        def query(self, sql: str) -> list[list[str]]:
+            if sql.startswith("SHOW STATUS"):
+                return []
+            if "@@version" in sql:
+                return [["8.0.46-37", "Percona"]]
+            return [["1", "ROW", "1", "ON", "ON"]]
+
+    def _control_1(self, sabotage: str, oracle: psp.OracleCount, replica_red: bool) -> sp.ControlResult:
+        ctx = sp.Ctx(
+            source=self._Source(),  # type: ignore[arg-type]
+            replica=sp.Server("snapshot-proof-r", "x"),
+            workdir=pathlib.Path("."),
+            passwords=sp.Passwords("a", "b", "c", "d"),
+            sabotage=sabotage,
+        )
+        run = psp.Run(ctx, "p", scenario=psp.Scenario(rounds=[psp.Verdict(not replica_red, "replica: t1 differs")], oracle=oracle))
+        return psp.control_1(run)
+
+    def test_control_1_is_green_under_a_sabotage_when_the_replica_diverged_and_the_oracle_stayed_quiet(self) -> None:
+        for sabotage in psp.GTID_MUTATIONS:
+            result = self._control_1(sabotage, psp.OracleCount(1, 5, 2, 3), replica_red=True)
+            self.assertTrue(result.verdict.passed, sabotage)
+            self.assertIn("did not see", result.verdict.reason)
+
+    def test_control_1_is_red_under_a_sabotage_only_when_the_oracle_saw_the_change(self) -> None:
+        seen = {"gtid-drop-one": psp.OracleCount(1, 5, 2, 3, duplicated=3), "gtid-extra-one": psp.OracleCount(1, 5, 2, 3, lost=3)}
+        for sabotage, oracle in seen.items():
+            result = self._control_1(sabotage, oracle, replica_red=True)
+            self.assertFalse(result.verdict.passed, sabotage)
+
+    def test_the_two_mutations_map_to_the_two_sabotages(self) -> None:
+        self.assertEqual(psp.GTID_MUTATIONS, {"gtid-drop-one": "drop", "gtid-extra-one": "extra"})
+
+
 class CiTests(unittest.TestCase):
     def test_the_native_job_pulls_the_percona_pin_from_the_mirror_list(self) -> None:
         self.assertIn("percona_pin.py index", _CI)
@@ -652,6 +881,19 @@ class CiTests(unittest.TestCase):
         for name, source in psp.SABOTAGE_SOURCES.items():
             self.assertIn(f"PROOF_SOURCE={source} SABOTAGE={name} db/provision/prove-percona-snapshot.sh", _CI, name)
         self.assertGreaterEqual(len(re.findall(r'test "\$rc" = 1', _CI)), 3 + len(psp.SABOTAGE_TARGETS))
+
+    def test_each_percona_red_step_checks_the_stated_reason_after_the_exit_code(self) -> None:
+        for name in psp.SABOTAGE_TARGETS:
+            step = re.search(rf'SABOTAGE={name} db/provision/prove-percona-snapshot\.sh.*?(?=\n      - name:|\Z)', _CI, re.DOTALL)
+            assert step is not None, name
+            lines = [line.strip() for line in step.group(0).splitlines()]
+            self.assertIn('test "$rc" = 1', lines, name)
+            check = f'python3 db/provision/percona_snapshot_probe.py check-red --sabotage {name} --log "$log"'
+            self.assertIn(check, lines, name)
+            self.assertLess(lines.index('test "$rc" = 1'), lines.index(check), name)
+
+    def test_the_percona_proof_runs_after_a_failed_red_step(self) -> None:
+        self.assertRegex(_CI, r"- name: Run the Percona proof, un-sabotaged\n\s+if: \$\{\{ !cancelled\(\) \}\}\n")
 
     def test_the_proof_triggers_the_workflow(self) -> None:
         self.assertEqual(_CI.count("'db/provision/percona_snapshot_probe*'"), 2)

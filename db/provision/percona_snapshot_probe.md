@@ -30,18 +30,20 @@ this server version, not the wrong session and not emulation. With
 `gtid_mode=ON`, `enforce_gtid_consistency=ON` and the replica seeded from the
 dump's GTID set (`mysqldump --set-gtid-purged=ON`), the same harness lost
 nothing: 0 rows in 8 rounds (144 consistent-snapshot reads) and 0 in 6 rounds of
-the real unprivileged `mysqldump` (108 dumps). A GTID set, unlike a position,
-names every transaction by identity, so a transaction that is in the log but
-not yet visible to the snapshot is simply not in the set and the replica fetches
-it. **The replica must be seeded by GTID set with `SOURCE_AUTO_POSITION=1`.**
-`extract_tenant_binlog.py` reads file and position; its GTID support is later
-build work and is not part of this proof.
+the real unprivileged `mysqldump` (108 dumps). **The replica must be seeded by GTID
+set with `SOURCE_AUTO_POSITION=1`.** Why a GTID set holds where a position does
+not is a likely reading and not an established one; see the Results.
+`extract_tenant_binlog.py`'s per-tenant restore replay has since gained GTID
+support (`gtid_snapshot.py`, `gtid_snapshot.md`), and this proof dumps with that
+module's own command, called and not copied. Whether a host is switched to the
+GTID snapshot mode is the owner's decision. This proof is evidence for it and
+makes no change to any host.
 
 It runs on **throwaway local containers**: the Percona candidate (the source and
 the replica, as the tenant host's replica is Percona), and for its two red cases
 db1's pinned stock Oracle MySQL as the source. The stock digest is read from
-`db/RUNBOOK-db.md`, never copied; the Percona digest is pinned in
-`prove-percona-snapshot.sh` and a test ties it to `.github/image-mirror/images.json`.
+`db/RUNBOOK-db.md`, never copied; the Percona digest is read from
+`.github/image-mirror/images.json` by `percona_pin.py`.
 The config is `db/stack/conf.d/branchleft.cnf` unchanged (binary log ROW,
 `sync_binlog=1`), mounted into every container. Nothing here reaches db1,
 the tenant host or any host: no ssh, no ansible, no Docker or mysql against
@@ -195,7 +197,16 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
 
 ## Red cases
 
-Each goes red and exits 1. The first two run on db1's stock Oracle MySQL
+Each goes red and exits 1, and the log says why. Exit 1 alone is not the stated
+reason: the wrapper also exits 1 on a setup failure, and a control that crashes
+is printed as a red control titled `did not complete`. So the workflow runs
+`percona_snapshot_probe.py check-red --sabotage <name> --log <log>` on each log
+after it checks the exit code. It passes only when the probe printed its own
+`RED as expected` line, exactly the controls the sabotage targets went red, none
+of them by a crash, and each RED entry carries the reason in `RED_REASONS`
+(the lost-row text for `commit-before-coordinates` and `gtid-extra-one`, the
+duplicated-row text for `gtid-drop-one`, the limit text on control 2 and a
+`GLOBAL` lock on control 3 for `global-lock`). The first two run on db1's stock Oracle MySQL
 (`PROOF_SOURCE=stock`), the two `gtid-*` cases on the Percona candidate
 (`PROOF_SOURCE=percona`, the default).
 
@@ -323,9 +334,9 @@ control 2, now under nine writers. The second green run excluded control 2
   load the dump, then `CHANGE REPLICATION SOURCE TO ..., SOURCE_AUTO_POSITION=1`.
   File and position lost committed rows in this proof's isolation runs (see the
   overview) and must not be used on this server version.
-- **`extract_tenant_binlog.py` reads file and position.** Its GTID support, so
-  that the per-tenant replay starts from the dump's GTID set, is later build
-  work. It is not done here.
+- **`extract_tenant_binlog.py` now replays from the dump's GTID set** (see
+  `gtid_snapshot.md`). Its file-and-position path is the older one; the proof's
+  seeding never uses it.
 - **Percona's `mysqldump` needs no `RELOAD`, `LOCK TABLES` or `REPLICATION
   CLIENT`.** The dump account that holds only `SELECT, SHOW VIEW, TRIGGER` on
   its schema dumped every tenant with `--single-transaction
@@ -345,7 +356,7 @@ control 2, now under nine writers. The second green run excluded control 2
 ## Not in scope
 
 The amendment to the backup design document (the chosen mechanism and the
-dump/upgrade mutual exclusion), GTID support in `extract_tenant_binlog.py`, the
-build stories for the tenant database host's dump path, converging the three places that pin the Percona digest, and
-any change to the real dump path are separate work. This proof changes none of
+dump/upgrade mutual exclusion), the build stories for the tenant database
+host's dump path, the owner's decision to switch a host to the GTID snapshot
+mode, and any change to the real dump path are separate work. This proof changes none of
 them and takes no decision on whether the mechanism is adequate.
