@@ -13,7 +13,7 @@ import {
 } from '../../../services/provisioning-controller/dist/mock/server.js';
 import { createTenantPortal } from '../src/tenant/app.js';
 import { createSiteRoutes, SITE_PATH } from '../src/tenant/site.js';
-import type { ProvisioningSettings } from '../src/tenant/siteConfig.js';
+import type { ProvisioningSettings } from '../src/tenant/provisioningSettings.js';
 import { Browser } from './browser.js';
 import { CLIENT_PORTAL, FakeIssuer, ISSUER, jwks, mint, NOW, PROJECT_ID } from './idp.js';
 

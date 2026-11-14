@@ -133,45 +133,44 @@ portal's clock: five tickets an hour (`MAX_TICKETS_PER_WINDOW`,
 forgets the counts. Origin and session checks are the shell's: a foreign origin
 is a 403 and no session is a redirect to sign-in, and neither sends anything.
 
-## See the Essentials site
+## See my demo
 
-`/site` shows a promoted tenant its site: the state (`provisioning` or `live`),
-the tier, the invoice reference (a manual invoice at launch, shown as text and
-nothing else about billing) and every hostname the provisioning API returns. It
-reads `GET /tenants/{tenant}` through the generated client
-(`ghost-platform-provisioning-controller/provisioning-api`), never a hand-written
-request. The tenant is the bound scope's (`scope.tenantId`): the shell gives a
-page its session value and never the request, so a query string, a form field or
-a path segment cannot name another tenant, and the credential presented is the
-one issued for the bound tenant alone (the contract issues one per tenant, so
-the portal holds one per tenant). An answer that names a different tenant is
-discarded. Hostnames and the invoice reference are escaped with `escapeHtml`; the
-page reads nothing from `portal.connected_domain`.
+A signed-in tenant admin can see its demo's address, its state and when it
+expires at `/demo`, with a `NAV_DEMO` entry beside the others. The screen holds
+no demo data of its own and does no lifecycle logic: it asks the provisioning
+API for the bound tenant's demo, through the generated client
+(`ghost-platform-provisioning-controller/provisioning-api`, `getDemo`), and shows
+what the API answers. The API's contract is
+`services/provisioning-controller/openapi.yaml`; the screen never calls it by
+hand and never imports the contract's mock (the tests do).
 
-- A tenant that is still a demo (the API answers tier `demo`) sees
-  `SITE_NOT_PROMOTED` with a link to the Essentials request at `/essentials`.
-- No credential for the tenant, a refusal, an unknown tenant, an unreachable API
-  or a read that throws all show `SITE_UNAVAILABLE` with status 200. The API's
-  body, its address and the credential are never shown. A read that throws is
-  logged as `portal.error` with step `handler` and the error name only.
-- The custom-domain screen has a place on the page: `createSiteRoutes` takes a
-  `customDomainPath`, and with it the page links there (`data-slot="custom-domain"`).
-  Without it nothing is rendered, so no link is made up for a route that is not
-  there. The form itself is not part of this page.
-
-Two variables switch the page on. Both must be valid, or the portal starts
-without the page and without its navigation entry (`/site` answers 404), and
-logs one `provisioning_disabled` line naming the variables:
+The demo is named from the bound `TenantScope` and nothing else: the page
+function is given the scope, not the request, so a path, query, form field,
+header or cookie cannot name another tenant's demo. The credential presented is
+the one issued for that tenant (the API refuses a tenant credential on any other
+tenant's path), looked up by the scope's tenant id.
 
 ```text
-PORTAL_PROVISIONING_URL               the API's origin, http or https, no credentials or query in it
-PORTAL_PROVISIONING_CREDENTIALS_FILE  a file of `<tenant uuid>=<credential>` lines, one per tenant
+PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback)
+PORTAL_PROVISIONING_CREDENTIALS_FILE  a file of lines <tenant uuid>=<credential>, one per tenant
 ```
 
-`test/tenantSite.test.ts` runs the page against the provisioning-controller's
-in-memory mock, served through its generated server, with the tenant approved
-through the same client. `test/tenantSiteSabotage.test.ts` breaks the page so it
-takes the tenant from the query string and shows the isolation check fail.
+`createTenantPortal` takes them as the optional `provisioning` option
+(`{ baseUrl, credentialFor }`), so tests point it at the mock. **Without
+`PORTAL_PROVISIONING_URL` there is no `/demo` (404) and no navigation entry.**
+When the URL is set, the credentials file must be readable and well formed, or
+the process stops at start with a `ConfigError` that never holds a credential.
+
+Each state in the contract's `DemoState` has its own placeholder
+(`DEMO_STATE_LIVE`, `DEMO_STATE_EXPIRING` and so on, one per state in
+`portal/data/src/demoStates.ts`); a state the screen does not know renders
+`DEMO_STATE_UNKNOWN`, never a blank page. An address or expiry the API has not
+set yet renders `NO_ADDRESS_YET` or `NO_EXPIRY_YET`; a tenant the API says has
+no demo renders `NO_DEMO_FOUND`. When the API is unreachable, refuses the call,
+redirects, times out (5 seconds) or answers something that is not a demo, the
+page answers 500 `FAILED` and logs one line with the step and the error name
+(`DemoReadError`) and nothing the API or the network said. The read never
+follows a redirect, so the credential goes to the configured host alone.
 
 ## Why two applications
 
@@ -189,7 +188,6 @@ Each application reads its own variables; secrets are read from files.
 PORTAL_ISSUER_URL, PORTAL_PUBLIC_ORIGIN, PORTAL_OUTPUTS_FILE, PORTAL_DATABASE_URL_FILE
 CONSOLE_ISSUER_URL, CONSOLE_PUBLIC_ORIGIN, CONSOLE_OUTPUTS_FILE, CONSOLE_DATABASE_URL_FILE
 PORTAL_TRUSTED_PROXIES, CONSOLE_TRUSTED_PROXIES   optional: switch on the sign-in limit (below)
-PORTAL_PROVISIONING_URL, PORTAL_PROVISIONING_CREDENTIALS_FILE   optional: switch on the site page
 ```
 
 `*_OUTPUTS_FILE` is the identity reconciler's `outputs.json`. The portal's
@@ -218,6 +216,42 @@ there is one instance per application. Build the data layer and the identity
 verifier first (`pnpm install --frozen-lockfile && pnpm run build` in `portal/data` and
 `services/identity`, `services/request-guard` and `services/provisioning-controller`): this package imports their
 built output.
+
+## See the Essentials site
+
+`/site` shows a promoted tenant its site: the state (`provisioning` or `live`),
+the tier, the invoice reference (a manual invoice at launch, shown as text and
+nothing else about billing) and every hostname the provisioning API returns. It
+reads `GET /tenants/{tenant}` through the generated client
+(`ghost-platform-provisioning-controller/provisioning-api`), never a hand-written
+request. The tenant is the bound scope's (`scope.tenantId`): the shell gives a
+page its session value and never the request, so a query string, a form field or
+a path segment cannot name another tenant, and the credential presented is the
+one issued for the bound tenant alone (the contract issues one per tenant, so
+the portal holds one per tenant). An answer that names a different tenant is
+discarded. Hostnames and the invoice reference are escaped with `escapeHtml`; the
+page reads nothing from `portal.connected_domain`.
+
+- A tenant that is still a demo (the API answers tier `demo`) sees
+  `SITE_NOT_PROMOTED` with a link to the Essentials request at `/essentials`.
+- No credential for the tenant, a refusal, an unknown tenant, an unreachable API
+  or a read that throws all show `SITE_UNAVAILABLE` with status 200. The API's
+  body, its address and the credential are never shown. A read that throws is
+  logged as `portal.error` with step `handler` and the error name only.
+- The custom-domain screen has a place on the page: `createSiteRoutes` takes a
+  `customDomainPath`, and with it the page links there (`data-slot="custom-domain"`).
+  Without it nothing is rendered, so no link is made up for a route that is not
+  there. The form itself is not part of this page.
+
+The page uses the portal's one `provisioning` option, loaded from
+`PORTAL_PROVISIONING_URL` and `PORTAL_PROVISIONING_CREDENTIALS_FILE` (see
+"See my demo" above). Without them the portal has no `/site` (404) and no
+navigation entry.
+
+`test/tenantSite.test.ts` runs the page against the provisioning-controller's
+in-memory mock, served through its generated server, with the tenant approved
+through the same client. `test/tenantSiteSabotage.test.ts` breaks the page so it
+takes the tenant from the query string and shows the isolation check fail.
 
 ## Limiting sign-in per client
 

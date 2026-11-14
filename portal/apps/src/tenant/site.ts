@@ -2,7 +2,7 @@ import { getTenant, type Tenant } from 'ghost-platform-provisioning-controller/p
 import type { TenantScope } from 'ghost-platform-portal-data/tenant';
 import { portalErrorLine } from '../shell/errorLine.js';
 import { escapeHtml, type NavItem } from '../shell/html.js';
-import type { ProvisioningSettings } from './siteConfig.js';
+import type { ProvisioningSettings } from './provisioningSettings.js';
 
 /** The page this screen is served at. */
 export const SITE_PATH = '/site';

@@ -10,10 +10,11 @@ import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
+import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
+import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import { createSiteRoutes } from './site.js';
-import type { ProvisioningSettings } from './siteConfig.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
 export interface TenantPortalOptions {
@@ -39,7 +40,10 @@ export interface TenantPortalOptions {
   readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
-  /** Absent, there is no Essentials site page and no navigation entry for it. */
+  /**
+   * How to reach the provisioning API. Absent, no screen that calls it is
+   * served: no page, no action and no navigation entry.
+   */
   readonly provisioning?: ProvisioningSettings;
 }
 
@@ -68,6 +72,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     Math.floor(now().getTime() / 1000)
   );
   const site = createSiteRoutes(options.provisioning, { onError: options.onError });
+  const demo = createDemoRoutes(options.provisioning);
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -82,6 +87,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      ...demo.nav,
       ...site.nav,
       ...support.nav,
     ],
@@ -106,6 +112,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     pages: {
       ...support.pages,
       ...site.pages,
+      ...demo.pages,
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
