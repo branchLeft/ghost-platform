@@ -4,6 +4,8 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+## 0.5.0
+
 **The strict content policy can carry Stripe.**
 
 - **Additive:** `renderEdgeSiteBlock()` takes an optional fifth argument,
