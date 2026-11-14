@@ -22,3 +22,13 @@ Checked in this order deliberately:
    signer the one nonce they meant to use. This ordering is a control in
    its own right: `auth.test.ts` proves it by sabotage — moving the claim
    above the signature check turns that regression test red.
+
+## One check, two answers
+
+`checkRequest` is the one place the order above lives. It returns a fixed
+code (`timestamp`, `nonce`, `signature-missing`, `window`, `before-start`,
+`signature`, `replay`) and `verifyRequest` puts the broker's own words to it.
+The verdict host answers with the code itself, because its refusal codes are
+the labels of `verdict_host_refused_total`; see `signedRequestScheme.md`. A
+new code is a change to that metric too, so it is added together with its
+consumers, never alone.

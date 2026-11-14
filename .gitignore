@@ -10,6 +10,8 @@ deadmans-switch/coverage
 adapters/sso/coverage
 adapters/sso/ghost-core-overlay/derived
 adapters/scanning-storage/coverage
+# The verdict host's build of the broker's signed-request scheme (never a second copy).
+adapters/scanning-storage/verdict-host/generated
 render-core/dist
 render-core/coverage
 render-core/*.tgz

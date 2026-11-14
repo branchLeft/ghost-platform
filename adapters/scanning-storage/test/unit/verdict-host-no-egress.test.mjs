@@ -73,7 +73,7 @@ function reachableFrom(entry) {
     const source = fs.readFileSync(file, 'utf8');
     for (const match of stripComments(source).matchAll(/require\(\s*['"](\.[^'"]+)['"]\s*\)/g)) {
       const resolved = path.resolve(path.dirname(file), match[1]);
-      queue.push(resolved.endsWith('.js') ? resolved : `${resolved}.js`);
+      queue.push(/\.c?js$/.test(resolved) ? resolved : `${resolved}.js`);
     }
   }
   return [...seen];
