@@ -29,80 +29,96 @@
       "visibility": "public"
     },
     {
-      "name": "mirror-private/alpine",
-      "visibility": "public"
+      "name": "mirror-private2/alpine",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/caddy",
-      "visibility": "public"
+      "name": "mirror-private2/caddy",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/curl",
-      "visibility": "public"
+      "name": "mirror-private2/curl",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/debian",
-      "visibility": "public"
+      "name": "mirror-private2/debian",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/docker",
-      "visibility": "public"
+      "name": "mirror-private2/docker",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/dockerfile",
-      "visibility": "public"
+      "name": "mirror-private2/dockerfile",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/ghost",
-      "visibility": "public"
+      "name": "mirror-private2/ghost",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/healthchecks",
-      "visibility": "public"
+      "name": "mirror-private2/healthchecks",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/mysql",
-      "visibility": "public"
+      "name": "mirror-private2/mysql",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/mysqld-exporter",
-      "visibility": "public"
+      "name": "mirror-private2/mysqld-exporter",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/node",
-      "visibility": "public"
+      "name": "mirror-private2/node",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/pebble",
-      "visibility": "public"
+      "name": "mirror-private2/pebble",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/pebble-challtestsrv",
-      "visibility": "public"
+      "name": "mirror-private2/pebble-challtestsrv",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/percona-server",
-      "visibility": "public"
+      "name": "mirror-private2/percona-server",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/postgres",
-      "visibility": "public"
+      "name": "mirror-private2/postgres",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/python",
-      "visibility": "public"
+      "name": "mirror-private2/python",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/s3mock",
-      "visibility": "public"
+      "name": "mirror-private2/s3mock",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/versitygw",
-      "visibility": "public"
+      "name": "mirror-private2/versitygw",
+      "visibility": "private"
     },
     {
-      "name": "mirror-private/zitadel",
-      "visibility": "public"
+      "name": "mirror-private2/zitadel",
+      "visibility": "private"
+    },
+    {
+      "name": "demo-gate",
+      "visibility": "private"
+    },
+    {
+      "name": "percona-server",
+      "visibility": "private"
+    },
+    {
+      "name": "mysqld-exporter",
+      "visibility": "private"
+    },
+    {
+      "name": "priv/storage-gateway",
+      "visibility": "private"
     }
   ]
 }

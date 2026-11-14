@@ -35,7 +35,7 @@ def tree(
         ".github/image-mirror/images.json",
         json.dumps(
             {
-                "registry": "ghcr.io/branchleft/mirror-private",
+                "registry": "ghcr.io/branchleft/mirror-private2",
                 "images": [{"name": n} for n in images],
             }
         ),
@@ -71,7 +71,7 @@ class PackageRegisterTests(unittest.TestCase):
     def test_dynamic_mirror_target_is_not_read_as_a_name(self) -> None:
         root = tree(
             {
-                "x.yml": "run: crane copy src ghcr.io/branchleft/mirror-private/${name}\n"
+                "x.yml": "run: crane copy src ghcr.io/branchleft/mirror-private2/${name}\n"
             },
             [],
             [],
@@ -84,7 +84,7 @@ class PackageRegisterTests(unittest.TestCase):
         register = package_register.load_register(root / "registers" / "packages.json")
         found = package_register.problems(root, register)
         self.assertEqual(
-            found, ["mirror-private/newimage: in images.json but not on the register"]
+            found, ["mirror-private2/newimage: in images.json but not on the register"]
         )
 
     def test_duplicate_register_entry_is_refused(self) -> None:

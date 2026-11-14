@@ -16,12 +16,13 @@ import re
 import sys
 from pathlib import Path
 
-# A literal package path. A name followed by a variable (mirror-private/${name}) or a
+# A literal package path. A name followed by a variable (mirror-private2/${name}) or a
 # continuing path character does not match, so only fixed names are read.
 NAME_RE = re.compile(
     r"ghcr\.io/branchleft/([A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*)(?![A-Za-z0-9_/${-])"
 )
-MIRROR_PREFIX = "mirror-private/"
+MIRROR_NAMESPACE = "mirror-private2"
+MIRROR_PREFIX = MIRROR_NAMESPACE + "/"
 VISIBILITIES = frozenset({"public", "private"})
 
 
@@ -45,6 +46,8 @@ def workflow_names(root: Path) -> dict[str, set[str]]:
     for workflow in sorted((root / ".github" / "workflows").glob("*.yml")):
         for match in NAME_RE.finditer(workflow.read_text(encoding="utf-8")):
             name = match.group(1).rstrip(".")
+            if name == MIRROR_NAMESPACE:
+                continue  # the namespace itself (a registry prefix), not a package
             found.setdefault(name, set()).add(workflow.name)
     return found
 
