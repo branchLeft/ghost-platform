@@ -60,7 +60,13 @@ the ones that failed, so a crash cannot pass for a red.
 ## Limits
 
 - The spool image is pulled by digest from GHCR by the stand-in host, as the
-  real host will. `SPOOL_IMAGE` overrides the pin.
+  real host will. `SPOOL_IMAGE` overrides the pin. The package is private, so
+  the script needs `GHCR_USER` and `GHCR_TOKEN` (a token with `packages: read`)
+  in its environment and refuses to start without them. It sends the token to
+  the stand-in host's `docker login` on stdin, pulls, then logs out; the
+  token is never an argument, never echoed and never written to a file in the
+  repository. A refused login or pull stops the run with a `FAIL:` line.
+  The workflow passes the run's own `GITHUB_TOKEN`.
 - Docker-in-Docker is not demo1: its kernel, its systemd units and its
   Hetzner firewall are not exercised. The runbook's read-backs on the real host
   are the proof that it holds there.
