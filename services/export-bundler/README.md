@@ -295,9 +295,10 @@ billing-portal configuration as it boots whenever Stripe keys are present, but
 the run network is `--internal`, so that call has no route off the host and
 fails: Ghost logs `An error occurred with our connection to Stripe.`, carries
 on, and was serving about seven seconds after it started (observed with a
-fake `sk_test_` key in the copy, on both the SQLite and the MySQL tier;
-`scripts/test-export-bundler.sh` seeds the key and keeps the assertion that the
-colour boots on it and cannot reach `api.stripe.com`). The colour's site URL
+fake `sk_test_` key in the copy, on the MySQL tier; `scripts/test-export-bundler.sh`
+reproduces that run, seeds the key and keeps the assertion that the colour
+boots on it and cannot reach `api.stripe.com`. No committed script reproduces
+the SQLite tier). The colour's site URL
 must be `https://`, as every tenant's rendered one is: Ghost refuses to run
 Stripe on a plain `http://` URL. The rows
 those boot paths change on the copy (`emails`, `email_batches`,
