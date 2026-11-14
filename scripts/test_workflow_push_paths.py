@@ -17,13 +17,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 # Workflows whose push to main is deliberately unfiltered although their pull
 # request run is filtered. Each needs a reason that names the thing relying on
 # the unfiltered push. A stale entry (no longer a violation) fails the test.
-EXCEPTIONS: Dict[str, str] = {
-    "infra-provisioning-scripts-ci.yml": (
-        "its pull request filter cannot list every file a secret-bearing job "
-        "imports from elsewhere, and test_codeowners_ownership.py relies on "
-        "the unfiltered push to main to catch one that CODEOWNERS does not own"
-    ),
-}
+EXCEPTIONS: Dict[str, str] = {}
 
 
 def strip_comments(text: str) -> List[str]:
