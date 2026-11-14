@@ -6,12 +6,9 @@ CSP hashes"; `05-gate-and-edge.html` §04). Marks: the CSP regression is a
 standing check, and a theme whose hashes cannot be computed fails to
 report-only rather than failing the tenant (both load-bearing).
 
-**What is stubbed.** The slot 0 gate-set runner
-has no code, and LLD-3 specifies no runner interface, only assertion plus
-control case. So each gate follows the sibling pattern
-(`scripts/test-node-env-gate.sh`): a standalone check whose exit status is the
-verdict. Nothing here registers with a runner, runs on the demo host, or is
-ordered in the gate sequence; that wiring waits on that runner.
+Each gate follows the sibling pattern (`scripts/test-node-env-gate.sh`): a
+standalone check whose exit status is the verdict. `gate-set/gates.mjs` runs
+`csp-regression-gate.sh`.
 
 ## theme-hash-gate.mjs
 

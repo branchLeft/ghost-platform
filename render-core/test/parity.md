@@ -12,7 +12,7 @@ literal, recorded output of `infra/tenant/environment.ts`'s own
 as `@branchleft/ghost-platform-tenant` — called directly with
 `ghost-tenant-blog`'s real `Pulumi.blog.yaml` config values (secrets
 excluded; neither renderer receives one, both emit only a reference),
-`render-core/test/runtime.js#uploadLimits()`'s defaults, and
+`render-core/src/runtime.ts#uploadLimits()`'s defaults, and
 `/etc/branchleft/blog.env` as the secrets path. Recorded rather than called
 live at test time because `render-core-ci.yml` runs `pnpm install --frozen-lockfile` inside
 `render-core/` only (`working-directory: render-core`); a live cross-package
@@ -23,11 +23,9 @@ installed.
 
 ## Known gap keys
 
-The eleven `storage__*` keys are the one remaining gap: `infra/tenant/environment.ts`
-still renders bare `storage__active`/`storage__S3Storage__*` (recorded,
-frozen, in `INFRA_TENANT_BLOG_ENV` above), because `blog` (tenant-zero) has
-not been migrated onto the scanning decorator — that migration is separate
-work from shipping the decorator in render-core. `EXTRA_IN_CORE_KEYS` below
+The eleven `storage__*` keys are the one remaining gap: the recorded, frozen
+`INFRA_TENANT_BLOG_ENV` above holds bare `storage__active`/`storage__S3Storage__*`,
+where render-core renders the scanning decorator's keys. `EXTRA_IN_CORE_KEYS` below
 names what render-core renders instead, which includes the six scanner
 metrics export keys (`storage__<feature>__metricsTextfilePath` and
 `__metricsTenant`): they are new in render-core and the frozen snapshot
@@ -56,5 +54,4 @@ reintroducing the violation. `mail__from` diverges too, for a smaller
 reason: the snapshot carries a human display name ("branchLeft blog <…>"),
 which is prose for the platform owner to write, not a value this package
 can synthesise — render-core emits the bare address the sending identity
-actually names. `infra/tenant`'s own migration to the spool is separate,
-un-scoped work; this test does not assume it has happened.
+actually names.

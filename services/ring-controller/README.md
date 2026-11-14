@@ -32,10 +32,6 @@ reimplementing:
   design keeps unreachable for the whole bake window, and this component
   does not open it.
 
-Wiring these dependencies to the real broker `/reconcile` call, the
-backup worker, and the drain flag is integration work for whatever
-constructs a `BumpStateMachine` for a real tenant -- not built here.
-
 ## Rings
 
 `runRelease` (`src/ringController.ts`) takes one already-published image
@@ -118,7 +114,7 @@ while production always uses the default abstract path. A second,
 coarser layer lives outside this code: deploy as a plain
 `ring-controller.service` systemd unit (never a templated
 `ring-controller@.service`), so systemd itself only ever manages one
-instance -- see the PR body's runbook for the unit file.
+instance.
 
 ## Crash recovery
 
@@ -182,18 +178,14 @@ Four things are load-bearing, all proven by test
    process, on a kernel primitive (a bound Unix domain socket) rather
    than a lock file and a reclaim protocol: a second process's bind fails
    with `EADDRINUSE`. Proven against a real, separate process, killed
-   with `SIGKILL`, twice: on this dev machine, against the portable
-   filesystem-backed seam (`test/unit/processLock.test.ts`); and on real
-   Linux, against the actual abstract-namespace path production uses,
-   confirmed via `/proc/net/unix` -- via a standalone harness run in a
-   `node:26` container against the compiled module (the PR body has the
-   command and its output), because the borrowed `node_modules` this
-   session runs `vitest` from is built for macOS and its native
-   dependencies (`esbuild`) cannot load inside a Linux container. The
-   equivalent `it.skipIf(process.platform !== 'linux')` test in the
-   suite itself passes when run directly on a Linux host or container
-   with its own `pnpm install`; it is not run by `vitest` inside the
-   harness above. `recoverFromApplying` holds the same lock for its
+   with `SIGKILL`, twice: against the portable filesystem-backed seam
+   (`test/unit/processLock.test.ts`); and on real Linux, against the
+   actual abstract-namespace path production uses, confirmed via
+   `/proc/net/unix` -- via a standalone harness run in a `node:26`
+   container against the compiled module. The equivalent
+   `it.skipIf(process.platform !== 'linux')` test in the suite itself
+   passes when run directly on a Linux host or container with its own
+   `pnpm install`; it is not run by `vitest` inside the harness above. `recoverFromApplying` holds the same lock for its
    whole settle-and-verify tail, so the invariant holds structurally
    during recovery too, not by convention.
 4. `failed-unsafe` pages **at least once**, ever, per bump -- not exactly

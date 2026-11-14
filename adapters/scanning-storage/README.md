@@ -81,7 +81,8 @@ fact about the tier decides the rest: `storage__<feature>__tier`.
   design document's amendment of that date), not anything in this code.
 - **The tier key.** Only the exact string `professional` accepts video and
   audio (`src/tier-policy.md`). Unset, empty, a different case, a stray
-  space, a boolean, `entry`, `demo`, `hobbyist` or a typo all refuse, so a
+  space, a boolean, `entry`, `demo`, `essentials`, `hobbyist` or a typo all
+  refuse, so a
   mistake can only fail closed. `hobbyist` is the retired name for the entry
   tier, kept in this list so an old value still fails closed. It is read from
   boot config only.

@@ -124,8 +124,7 @@ mail, such as a sign-in link, inside the reader's own web request, so a frozen
 spool must fail that request within seconds rather than the library's defaults
 of minutes. A spool that trickles bytes keeps resetting the idle timer, so
 these keys do not bound the total wait. The `smtp` transport is unchanged and
-keeps the library defaults. A live proof against a paused spool is a follow-up
-and is not yet done.
+keeps the library defaults.
 
 Member mail is addressed through a Ghost *setting*
 (`members_support_address`, `settings.ts`), not through these keys.

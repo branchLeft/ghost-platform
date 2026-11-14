@@ -11,8 +11,7 @@ owns starting the tenant's image drained, calling Ghost's exports, and
 stopping the image again. Beyond Ghost's two exports it closes three of the
 four gaps §08b names (media, members and subscriptions, comments with their
 moderation state), and names everything it cannot hold. See "Export
-completeness". Analytics beyond the per-post CSV stays out until the
-analytics backend is chosen.
+completeness". Analytics beyond the per-post CSV is not bundled.
 
 ## An export is a support grant
 
@@ -106,7 +105,7 @@ and the audit record carries the same `complete` flag.
   the date after which those addresses stop working. The archive carries
   `media_addresses.json`: one public address per object the content export
   references, plus the tenant's erasure date (`--erasure-date`, a future
-  `YYYY-MM-DD`; no system records it yet, so the operator states it). The
+  `YYYY-MM-DD`, stated by the operator). The
   tenant's scope is the media address plus Ghost's `tenantPrefix` from its own
   rendered environment, never a flag; a bare address with no prefix fails
   closed. A reference under another prefix on the same shard is another

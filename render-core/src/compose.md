@@ -3,8 +3,8 @@
 ## Two services, not one
 
 `TenantDescriptor.ports` is a `PortTriple` rather than a single port because
-two Ghosts run over one SQLite file with no contention, so blue/green applies
-everywhere, demos included. Every kind gets a colour pair (`ports.a`,
+two Ghosts run over one database, so blue/green applies everywhere, demos
+included. Every kind gets a colour pair (`ports.a`,
 `ports.b`) so a reconciler can start the new colour, verify it and only then
 retire the old one — this module renders both services from one descriptor
 rather than one service per render call, so a single `render()` output is a
@@ -26,11 +26,6 @@ sufficient and the thing that keeps every demo's Ghost from being reachable
 at all except through the gate (and the broker's own `adminApi.configure`
 call, `services/broker/src/app.ts`, which is itself a loopback call for
 exactly this reason).
-
-This makes render's output for a "tenant zero"-equivalent descriptor
-structurally different from what `infra/tenant/compose.ts` renders today
-(one service, one port). See `render.ts`'s own note on that conflict, which
-is called out there rather than silently resolved here.
 
 ## The mail network
 
