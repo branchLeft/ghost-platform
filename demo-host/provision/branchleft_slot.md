@@ -44,6 +44,31 @@ exists to avoid. It never accepts a path as an argument, never writes
 unprivileged, before ever asking for a start), and never reads or touches
 anything outside the one slot its argv names.
 
+## Reset and the slot's mail credential
+
+`reset` removes both `demo-<slot>-<colour>.env` files, and with them the
+slot's `GHOST_BULK_EMAIL_API_KEY`. It does not touch the mail spool, and it
+cannot: the spool keeps only a salted hash of each key, so there is no
+plaintext to write back; this wrapper holds no key, never reaches the spool's
+SQLite file and never touches the Docker socket. So after a reset the slot's
+`slot-<uid>.<demoMailDomain>` row in the spool is stale (nothing holds its key)
+and the slot cannot send until a new key is provisioned.
+
+The shim CLI is the other half, run by the operator who writes the new env
+file (the file is operator-written, see above):
+
+- retire the stale row with `remove slot-<uid>.<demoMailDomain> --confirm
+  slot-<uid>.<demoMailDomain>` ([`cli.md#remove`](../../services/mailgun-shim/src/cli.md#remove)),
+  then `register` it again for the next lease and write the printed key into
+  both new env files; or
+- skip the `remove` and run `register slot-<uid>.<demoMailDomain>
+  --sender-domain <demoMailDomain> --rotate`, which replaces the key in one
+  step.
+
+Writing the key back automatically from the reset path would need a privileged
+path from this wrapper into the spool and a place for the wrapper to put a
+plaintext key; neither exists, and neither is added here.
+
 ## The email-batches verb
 
 `email-batches` is read-only rather than privileged: it takes no lock and

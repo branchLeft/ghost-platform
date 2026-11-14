@@ -41,12 +41,12 @@ store.
 the versioned migrations drizzle-kit writes from it, with a snapshot per
 migration in `drizzle/meta/`:
 
-| # | Migration | What it does |
-|---|---|---|
-| 0 | `0000_pre_drain_baseline` | The schema as a host running the pre-drain release has it: the baseline. Generated. |
-| 1 | `0001_drain_handover` | Converts the queue to the drain shape in place. Hand-written; see [the drain-handover migration](#the-drain-handover-migration). |
-| 2 | `0002_sender_domain` | Adds `tenants.sender_domain`. Generated. |
-| 3 | `0003_sender_local_part` | Adds `tenants.sender_local_part` (NULL on every existing row) and the unique index `idx_tenants_sender_address`. Generated. |
+| #   | Migration                 | What it does                                                                                                                     |
+| --- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | `0000_pre_drain_baseline` | The schema as a host running the pre-drain release has it: the baseline. Generated.                                              |
+| 1   | `0001_drain_handover`     | Converts the queue to the drain shape in place. Hand-written; see [the drain-handover migration](#the-drain-handover-migration). |
+| 2   | `0002_sender_domain`      | Adds `tenants.sender_domain`. Generated.                                                                                         |
+| 3   | `0003_sender_local_part`  | Adds `tenants.sender_local_part` (NULL on every existing row) and the unique index `idx_tenants_sender_address`. Generated.      |
 
 To change the schema: edit `schema.ts`, run
 `pnpm exec drizzle-kit generate --name <what-it-does>` in this package, and commit
@@ -78,12 +78,12 @@ A file written before this release has no `__drizzle_migrations` table. When the
 ledger is empty but a `tenants` table exists, the runner records every migration
 the file's shape already reflects, then applies the rest as usual:
 
-| `queue_recipients` columns | `tenants` has `sender_domain` | Recorded as applied |
-|---|---|---|
-| pre-drain (`attempts`, `next_attempt_at`) or no table at all | no | 0 |
-| drain-shaped (`id`, `drain_count`, `available_at`, `held_until`) | no | 0, 1 |
-| drain-shaped | yes | 0, 1, 2 |
-| drain-shaped | yes, and `sender_local_part` | 0, 1, 2, 3 |
+| `queue_recipients` columns                                       | `tenants` has `sender_domain` | Recorded as applied |
+| ---------------------------------------------------------------- | ----------------------------- | ------------------- |
+| pre-drain (`attempts`, `next_attempt_at`) or no table at all     | no                            | 0                   |
+| drain-shaped (`id`, `drain_count`, `available_at`, `held_until`) | no                            | 0, 1                |
+| drain-shaped                                                     | yes                           | 0, 1, 2             |
+| drain-shaped                                                     | yes, and `sender_local_part`  | 0, 1, 2, 3          |
 
 For the first row it also creates any baseline table or index the file lacks,
 which is what the pre-drain release's own `CREATE TABLE IF NOT EXISTS` did on
@@ -166,6 +166,12 @@ zero's credential key is its Mailgun `bulkEmailDomain`
   tenant's credential out from under it. It returns `false` when the domain is
   not a registered tenant, and `true` for a registered one even when the value
   is unchanged.
+- `removeTenant` deletes the one `tenants` row for a domain and returns
+  `false` when there is none. It is the store half of the CLI's `remove`
+  verb ([`cli.md#remove`](cli.md#remove)). It touches no other table: events,
+  suppressions and queued batches for the domain stay, because the drain does
+  not look a tenant up, so queued mail still goes out after the credential is
+  retired. Only the credential stops authenticating.
 - `listTenants` returns each domain with its sender domain, because an operator
   checking whether the sender-domain control is live for a tenant (the
   shim-upgrade runbook's post-redeploy check) needs both: a bare list of

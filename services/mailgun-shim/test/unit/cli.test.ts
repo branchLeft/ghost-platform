@@ -325,6 +325,158 @@ describe('runCli set-sender-domain', () => {
   });
 });
 
+describe('runCli remove', () => {
+  const SLOT = 'slot-30001.demo.example.com';
+
+  async function registered(): Promise<{ store: ReturnType<typeof createFakeStore>; key: string }> {
+    const store = createFakeStore();
+    const { io, stdout } = captureIo();
+    await runCli(['register', SLOT, '--sender-domain', 'demo.example.com'], () => store, io);
+    return { store, key: stdout.find((line) => KEY_SHAPE.test(line))! };
+  }
+
+  it('removes the named row when --confirm repeats the domain, and its key stops authenticating', async () => {
+    const { store, key } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    expect(stdout).toEqual([
+      `Removed ${SLOT} (sender domain: demo.example.com). Its key no longer authenticates.`,
+    ]);
+    expect(store.tenantExists(SLOT)).toBe(false);
+    await expect(store.verifyTenant(SLOT, key)).resolves.toBeNull();
+  });
+
+  it('leaves every other row, including its key, untouched', async () => {
+    const { store } = await registered();
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
+    const { io } = captureIo();
+
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+      senderLocalPart: null,
+    });
+  });
+
+  it('never prints a key', async () => {
+    const { store } = await registered();
+    const { io, stdout, stderr } = captureIo();
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+    expect([...stdout, ...stderr].filter((line) => KEY_SHAPE.test(line))).toEqual([]);
+  });
+
+  it('refuses without --confirm, and removes nothing', async () => {
+    const { store, key } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.includes('--confirm'))).toBe(true);
+    await expect(store.verifyTenant(SLOT, key)).resolves.not.toBeNull();
+  });
+
+  it('refuses a --confirm that names a different domain, and removes nothing', async () => {
+    const { store, key } = await registered();
+    store.registerTenant('slot-30002.demo.example.com', 'other', 'demo.example.com');
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['remove', SLOT, '--confirm', 'slot-30002.demo.example.com'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.includes('Nothing was removed'))).toBe(true);
+    expect(store.tenantExists('slot-30002.demo.example.com')).toBe(true);
+    await expect(store.verifyTenant(SLOT, key)).resolves.not.toBeNull();
+  });
+
+  it('refuses a --confirm with no value, and removes nothing', async () => {
+    const { store } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT, '--confirm'], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(store.tenantExists(SLOT)).toBe(true);
+  });
+
+  it.each([
+    ['no arguments', ['remove']],
+    ['a flag in the domain slot', ['remove', '--confirm', '--confirm', '--confirm']],
+    [
+      'a domain with an uppercase letter',
+      ['remove', 'Slot-30001.demo.example.com', '--confirm', 'Slot-30001.demo.example.com'],
+    ],
+    ['a bare TLD', ['remove', 'localhost', '--confirm', 'localhost']],
+    ['a scheme', ['remove', 'https://x.example.com', '--confirm', 'https://x.example.com']],
+    ['--confirm first', ['remove', '--confirm', SLOT, SLOT]],
+    ['a trailing extra argument', ['remove', SLOT, '--confirm', SLOT, '--rotate']],
+  ])('refuses %s with the usage line, and removes nothing', async (_name, argv) => {
+    const { store } = await registered();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(argv, () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.startsWith('Usage: remove'))).toBe(true);
+    expect(store.tenantExists(SLOT)).toBe(true);
+  });
+
+  it('refuses a domain that is not registered, and says so', async () => {
+    const store = createFakeStore();
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    expect(code).toBe(1);
+    expect(stdout).toEqual([]);
+    expect(stderr.some((line) => line.includes('is not registered'))).toBe(true);
+  });
+
+  it('reports a row with no sender domain as NOT SET', async () => {
+    const store = createFakeStore();
+    store.registerTenant(SLOT, 'k', null);
+    const { io, stdout } = captureIo();
+
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, io);
+
+    expect(stdout[0]).toContain('sender domain: NOT SET');
+  });
+
+  it('lets the same domain be registered afresh without --rotate once removed', async () => {
+    const { store, key } = await registered();
+    await runCli(['remove', SLOT, '--confirm', SLOT], () => store, captureIo().io);
+    const { io, stdout, stderr } = captureIo();
+
+    const code = await runCli(
+      ['register', SLOT, '--sender-domain', 'demo.example.com'],
+      () => store,
+      io
+    );
+
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const newKey = stdout.find((line) => KEY_SHAPE.test(line))!;
+    expect(newKey).not.toBe(key);
+    await expect(store.verifyTenant(SLOT, key)).resolves.toBeNull();
+    await expect(store.verifyTenant(SLOT, newKey)).resolves.not.toBeNull();
+  });
+});
+
 describe('runCli list', () => {
   it('lists registered domains only, sorted, with nothing key-like in the output', async () => {
     const store = createFakeStore();
@@ -443,6 +595,13 @@ describe('runCli unknown command', () => {
     const code = await runCli(['bogus'], () => store, io);
     expect(code).toBe(1);
     expect(stderr.length).toBeGreaterThan(0);
+  });
+
+  it('lists remove in the usage line', async () => {
+    const store = createFakeStore();
+    const { io, stderr } = captureIo();
+    await runCli(['bogus'], () => store, io);
+    expect(stderr.some((line) => line.includes('remove'))).toBe(true);
   });
 
   it('rejects no command at all', async () => {

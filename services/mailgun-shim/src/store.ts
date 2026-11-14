@@ -210,6 +210,12 @@ export interface ShimStore {
    * another credential already claims that address.
    */
   setSenderLocalPart(domain: string, senderLocalPart: string): boolean;
+  /**
+   * Deletes exactly the one credential row and nothing else: its events,
+   * suppressions and queued mail stay. False if the domain is unregistered.
+   * See store.md#removing-a-credential.
+   */
+  removeTenant(domain: string): boolean;
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
   listEvents(domain: string, options: ListEventsOptions): ListEventsResult;
@@ -531,6 +537,11 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
         },
         { behavior: 'immediate' }
       );
+    },
+
+    removeTenant(domain) {
+      const result = db.delete(tenants).where(eq(tenants.domain, domain)).run();
+      return result.changes > 0;
     },
 
     recordEvent(event) {
