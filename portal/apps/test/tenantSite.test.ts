@@ -270,3 +270,21 @@ describe('the place for the custom-domain screen', () => {
     expect(await page?.(bindTenant(TENANT_A))).toContain('href="/domain"');
   });
 });
+
+describe('a state or tier this build does not know', () => {
+  it('shows a placeholder and never the value the API sent', () => {
+    const body = renderSite({
+      kind: 'site',
+      tenant: {
+        tenant_id: TENANT_A,
+        tier: '<b>TIER</b>' as 'essentials',
+        state: '<b>STATE</b>' as 'live',
+        invoice_ref: null,
+        hostnames: [],
+      },
+    });
+    expect(body).toContain('SITE_STATE_UNKNOWN');
+    expect(body).toContain('SITE_TIER_UNKNOWN');
+    expect(body).not.toContain('<b>');
+  });
+});

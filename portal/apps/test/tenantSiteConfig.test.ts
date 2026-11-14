@@ -54,7 +54,9 @@ describe('loading the provisioning API settings', () => {
     ['an address that is not an address', { [URL_VARIABLE]: 'not a url' }, LINES, [URL_VARIABLE]],
     ['no credentials file', { [URL_VARIABLE]: 'https://x.example.test' }, LINES, [FILE_VARIABLE]],
   ])('is off with %s', (_name, env, text, variables) => {
-    const withFile = variables.includes(FILE_VARIABLE) ? env : { ...env, [FILE_VARIABLE]: FILE };
+    const withFile = variables.some((name) => name === FILE_VARIABLE)
+      ? env
+      : { ...env, [FILE_VARIABLE]: FILE };
     const load = loadProvisioningSettings(withFile, reading(text));
     expect(load.provisioning).toBeUndefined();
     expect(load.disabledBecause).toEqual(variables);
