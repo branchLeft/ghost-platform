@@ -25,6 +25,10 @@ LEGACY_GHOST = "branchleft/mirror/ghost"
 # mistake, informational only, never a failure.
 RETIRED_PRIVATE_GHOST = "branchleft/mirror-private/ghost"
 DERIVED_RECOVERY = "branchleft/db-recovery"
+# Published by storage-gateway-image.yml under the owner's priv/ namespace, not
+# under the mirror: private, and not a name the mirror list or the derived list holds.
+STORAGE_GATEWAY = "branchleft/priv/storage-gateway"
+REAL_REGISTER = REPO_ROOT / "registers" / "packages.json"
 
 
 def real_private_repos() -> set[str]:
@@ -34,6 +38,7 @@ def real_private_repos() -> set[str]:
     prefix = images["registry"].split("/", 1)[1]
     repos = {f"{prefix}/{name}" for name in private["mirror"]}
     repos |= {f"branchleft/{name}" for name in private["derived"]}
+    repos |= {f"branchleft/{path}" for path in private["owner_private"]}
     return repos
 
 
@@ -120,6 +125,50 @@ class RealFilesTest(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn(f"served {MIRROR_GHOST}", out)
         self.assertIn("PRIVATE PROBE FAILED", out)
+
+    def test_red_when_the_storage_gateway_package_is_served(self) -> None:
+        # Sabotage: the storage gateway image is made readable to anyone.
+        registry = FakeRegistry(served={CONTROL, STORAGE_GATEWAY})
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"served {STORAGE_GATEWAY}", out)
+        self.assertIn(f"[{STORAGE_GATEWAY!r}]", out)
+        self.assertIn("PRIVATE PROBE FAILED", out)
+
+    def test_red_when_the_storage_gateway_package_is_missing(self) -> None:
+        # 403 from a namespace that holds nothing is not a refusal.
+        existing = real_private_repos() - {STORAGE_GATEWAY}
+        registry = FakeRegistry(served={CONTROL}, existing=existing)
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 1, out)
+        self.assertIn(f"missing {STORAGE_GATEWAY}", out)
+
+    def test_green_when_the_storage_gateway_package_is_refused(self) -> None:
+        registry = FakeRegistry(served={CONTROL})
+        code, out = run_probe(REAL_IMAGES, REAL_LIST, registry)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"refused {STORAGE_GATEWAY}", out)
+        self.assertIn(
+            STORAGE_GATEWAY,
+            {scope_repo(path) for path, _ in registry.calls if path.startswith("/token?")},
+        )
+
+    def test_the_real_list_names_the_storage_gateway_package(self) -> None:
+        private = json.loads(REAL_LIST.read_text())
+        self.assertIn("priv/storage-gateway", private["owner_private"])
+
+    def test_every_private_priv_package_on_the_register_is_probed(self) -> None:
+        # A new image under the priv/ namespace cannot be registered private and
+        # then left out of the probe: the register and the list must agree.
+        register = json.loads(REAL_REGISTER.read_text())
+        registered = {
+            entry["name"]
+            for entry in register["packages"]
+            if entry["name"].startswith("priv/") and entry["visibility"] == "private"
+        }
+        listed = set(json.loads(REAL_LIST.read_text())["owner_private"])
+        self.assertTrue(registered)
+        self.assertEqual(registered - listed, set())
 
     def test_derived_image_served_is_inventory_and_does_not_fail(self) -> None:
         # The derived images are public today; serving them must not fail the run.
@@ -478,6 +527,71 @@ class ListValidationTest(unittest.TestCase):
             code, out = run_probe(images, listing, registry)
         self.assertEqual(code, 0, out)
         self.assertIn(f"LEGACY-PUBLIC missing {RETIRED_PRIVATE_GHOST}", out)
+
+    def owner_listing(self, tmp: Path, owner_private: object) -> Path:
+        return self.write(
+            tmp,
+            "private.json",
+            {
+                "mirror": ["ghost"],
+                "derived": ["db-recovery"],
+                "control": "ghost-tenant",
+                "owner_private": owner_private,
+            },
+        )
+
+    def test_owner_private_list_unreadable_is_a_list_error(self) -> None:
+        bad = (
+            [],
+            "priv/storage-gateway",
+            ["Bad Name"],
+            ["priv//x"],
+            ["/priv/x"],
+            ["priv/x/"],
+            ["priv/../x"],
+            ["priv/x", "priv/x"],
+            ["db-recovery"],
+            ["ghost-tenant"],
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            for value in bad:
+                listing = self.owner_listing(tmp, value)
+                code, _ = run_probe(images, listing, FakeRegistry(served={CONTROL}))
+                self.assertEqual(code, 2, repr(value))
+
+    def test_owner_private_package_is_probed_and_must_be_refused(self) -> None:
+        sg = "branchleft/priv/storage-gateway"
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            listing = self.owner_listing(tmp, ["priv/storage-gateway"])
+            base = {"branchleft/mirror-private2/ghost", sg}
+            cases = {
+                "refused": (FakeRegistry(served={CONTROL}, existing=base), 0),
+                "served": (FakeRegistry(served={CONTROL, sg}, existing=base), 1),
+                "missing": (FakeRegistry(served={CONTROL}, existing=base - {sg}), 1),
+                "unknown": (
+                    FakeRegistry(served={CONTROL}, existing=base, token_500={sg}),
+                    1,
+                ),
+            }
+            for verdict, (registry, want) in cases.items():
+                code, out = run_probe(images, listing, registry)
+                self.assertEqual(code, want, f"{verdict}: {out}")
+                self.assertIn(f"{verdict} {sg}", out)
+
+    def test_owner_private_list_may_be_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            images = self.images(tmp)
+            listing = self.listing(tmp, mirror=["ghost"])
+            registry = FakeRegistry(
+                served={CONTROL}, existing={"branchleft/mirror-private2/ghost"}
+            )
+            code, out = run_probe(images, listing, registry)
+        self.assertEqual(code, 0, out)
 
     def test_token_without_a_token_field_is_unknown(self) -> None:
         self.assertIsNone(probe.read_token(b"not json"))
