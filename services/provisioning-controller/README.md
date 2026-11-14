@@ -1,7 +1,11 @@
 # provisioning-controller
 
-The tenant provisioning controller's core, in two halves. Real host adapters
-are not here: every side effect is a port, and only test doubles exist today.
+The tenant provisioning controller's core, in two halves, and the command that
+runs it (see "Running it"). Every side effect is a port. The programs that
+serve the host entry points, the console adapter and the portal register
+adapter are not here: today the command starts whatever programs a deployment
+names, reads approvals and the register from files, and writes progress to
+standard error.
 
 ## Part 1: planning
 
@@ -141,3 +145,34 @@ credentials, and what Approve records.
   right, the wrong and no credential, so a renamed route or an operation the mock
   lacks fails. `test/unit/provisioningMock.test.ts` runs the journey through the
   generated client.
+
+## Running it
+
+`node dist/bin.js --config <file> --approval-id <id>` runs one approval to done
+or to the step that stopped it. The approval id is the only per-run input.
+
+- **Configuration** (`src/runConfig.ts`): absolute `stateFile`, `approvalsFile`
+  and `registerFile`; `hosts`, a map from entry point to `{ argv, timeoutMs? }`;
+  optional `retry` and `reportTimeoutMs`. A key it does not know is refused.
+  `argv[0]` must be an absolute path: the program is started directly, never
+  through a shell and never found on the path.
+- **Trusted files** (`src/trustedFile.ts`): the configuration, the approvals
+  file (`{ "approvals": [...] }`) and the register file (`{ "entries": [...] }`)
+  are refused unless they are regular files, not links, owned by the user the
+  controller runs as, and not writable by group or others. Whoever can write the
+  approvals file can approve onboarding. Approvals and the register are read
+  again on every check, so a withdrawal is seen at the next one.
+- **Host programs** (`src/commandHost.ts`): each is started with the step as
+  one JSON object on standard input (`key`, `id`, `idempotencyKey`, `inputs`),
+  and only `PATH`, `HOME` and `LANG` from the controller's environment. Its
+  output is discarded unread. Exit 0 is success, exit 3 is permanent, anything
+  else, a signal or a timeout is retried. An entry point with no program fails
+  its step at once and acts on nothing.
+- **Result**: one JSON line on standard output; one JSON line per progress
+  event on standard error. Exit status: 0 complete, 1 stopped at a step, 2 the
+  approval refused the run, 3 bad arguments or configuration, 4 anything else
+  (an untrusted or unreadable file, an unreadable state file, a bad retry
+  policy).
+- **Not here**: the host programs themselves, the console and register
+  adapters, and how the command is started and kept on a host. One run per
+  state file at a time is still assumed.
