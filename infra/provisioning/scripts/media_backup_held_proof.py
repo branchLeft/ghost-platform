@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fixture-directory driver for the held-media backup proof: runs the real
 `media_backup_restore` backup and restore over local directories standing in
-for the live bucket, the backup bucket and a restore target, with real `age`.
+for the live bucket, the backup bucket and a restore target, with real `age` and real `ssh-keygen` manifest signatures.
 It never reaches a network, a bucket or a host.
 See media_backup_held_proof.md#module-overview.
 """
@@ -22,6 +22,7 @@ from shared_objectstorage import ObjectStorageError  # noqa: E402
 
 IDENTITY_FILENAME = "tenant.identity"
 RECIPIENT_FILENAME = "tenant.recipient"
+SIGNING_KEY_FILENAME = "manifest-signing.key"
 
 
 class DirectoryObjectStore:
@@ -84,6 +85,22 @@ def _ensure_identity(key_dir: pathlib.Path) -> tuple[pathlib.Path, str]:
     return identity, recipient_file.read_text().strip()
 
 
+def _ensure_signing_key(key_dir: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """A throwaway ed25519 manifest-signing key pair for the fixture, made on
+    first use: the private key signs at backup, the public key verifies at
+    restore, as the real two custodians would."""
+    private = key_dir / SIGNING_KEY_FILENAME
+    public = key_dir / f"{SIGNING_KEY_FILENAME}.pub"
+    if not private.is_file():
+        key_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", str(private)],
+            check=True,
+            capture_output=True,
+        )
+    return private, public
+
+
 def _store(**dirs: pathlib.Path) -> DirectoryObjectStore:
     return DirectoryObjectStore(dict(dirs))
 
@@ -94,6 +111,7 @@ KEYS = dict(access_key="fixture", secret_key="fixture")
 
 def cmd_backup(args: argparse.Namespace) -> dict:
     _, recipient = _ensure_identity(pathlib.Path(args.key_dir))
+    signing_key, _ = _ensure_signing_key(pathlib.Path(args.key_dir))
     store = _store(live=pathlib.Path(args.live_dir), backup=pathlib.Path(args.backup_dir))
     report = media_backup_restore.backup_tenant_media(
         tenant=args.tenant,
@@ -104,6 +122,7 @@ def cmd_backup(args: argparse.Namespace) -> dict:
         backup_access_key="fixture",
         backup_secret_key="fixture",
         recipient=recipient,
+        manifest_signing_key_path=str(signing_key),
         list_objects=store.list_objects,
         get_object_with_content_type=store.get_object_with_content_type,
         put_object=store.put_object,
@@ -118,6 +137,7 @@ def cmd_restore(args: argparse.Namespace) -> dict:
         raise SystemExit(f"restore target {restore_dir} is not empty")
     restore_dir.mkdir(parents=True, exist_ok=True)
     identity, _ = _ensure_identity(pathlib.Path(args.key_dir))
+    _, signing_public_key = _ensure_signing_key(pathlib.Path(args.key_dir))
     store = _store(backup=pathlib.Path(args.backup_dir), restore=restore_dir)
     report = media_backup_restore.restore_tenant_media(
         tenant=args.tenant,
@@ -125,6 +145,7 @@ def cmd_restore(args: argparse.Namespace) -> dict:
         backup_access_key="fixture",
         backup_secret_key="fixture",
         identity_path=str(identity),
+        manifest_public_key_path=str(signing_public_key),
         run_id=args.run_id,
         target_bucket="restore",
         target_access_key="fixture",

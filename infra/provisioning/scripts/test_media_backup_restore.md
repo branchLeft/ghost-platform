@@ -2,7 +2,9 @@
 
 ## Module overview
 
-Unit tests for media_backup_restore.py.
+Unit tests for media_backup_restore.py. The module-level `backup_tenant_media`
+and `restore_tenant_media` here wrap the real ones with a fake manifest signer,
+so the older cases keep testing what they were written for.
 
 No real network here -- `list_objects` / `get_object_with_content_type` /
 `get_object` / `put_object` / `delete_object` are injected as fakes, so
@@ -16,6 +18,39 @@ value this file invents -- and in `EncryptWithAgeArgvTests`, which captures
 the real argv a fake `run` receives. The full chain -- real MinIO, real
 Ghost, the CLI's own exit code, and a live reproduction of a
 second-recipient ciphertext -- is proven by `media-backup-restore-proof.sh`.
+
+## ManifestAuthenticityTests
+
+The control for branchLeft/workspace#1346. A generation is forged the way a
+holder of only the bucket put credential can: the attacker's own bytes encrypted
+to the tenant's recipient, and a manifest with the right tenant, a fresh run id
+and a digest that agrees with them. Restore must refuse it, and write nothing to
+the serving bucket, when the manifest is unsigned and when it is signed with
+another key; it must also refuse a genuine manifest edited after signing, one
+with its signature stripped, one that is not a string, and an authentic older
+manifest replayed under a newer generation. A separate test shows the
+signature is checked before any other field of the manifest is acted on, and
+another that neither entry point has a default for the key, so skipping the
+signature is a `TypeError`. The signer is a fake that models an asymmetric
+pair; the next class uses the real one.
+
+## SabotageProofTests
+
+Red and green for the authenticity control, run in CI. Each case removes one
+mechanism (the signature check, the refusal of an unsigned manifest, the
+`run_id` binding) from a copy of the module's source, then runs the same attack
+against the copy and against the real module. The attack lands on the copy and
+is refused by the real one, so each mechanism is shown to be what stops it. A
+removal whose text no longer matches the source fails the case, so the proof
+cannot drift into proving nothing.
+
+## RealSshKeygenSignatureTests
+
+The same property against the real `ssh-keygen -Y` binary: a signature verifies
+only for its own public key, over its exact bytes, in this module's namespace,
+and the public key file is refused unless it is one plain ed25519 key. One
+end-to-end test runs real `age` and real signatures together. Skipped only when
+`ssh-keygen` is absent.
 
 ## PutOnlyBackupTests
 

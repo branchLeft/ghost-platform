@@ -21,6 +21,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from shared_objectstorage import (  # noqa: E402
@@ -72,6 +73,20 @@ _TENANT_SLUG_RE = re.compile(r"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 # stanzas, never parsing or trusting their contents.
 _AGE_STANZA_LINE = re.compile(rb"\A-> ")
 _AGE_HEADER_END = b"---"
+
+# The manifest is signed, because `age` is not: its recipient is public by
+# design, so anyone holding the backup bucket's put credential can encrypt a
+# forged object and a matching manifest to a tenant's own recipient, and every
+# digest check then agrees with the forgery. The signature is an OpenSSH
+# ed25519 signature (`ssh-keygen -Y sign`) made with a key that is NOT the
+# bucket put credential, stored in the manifest's own `signature` field, over
+# the manifest's canonical JSON with that field removed. The namespace stops a
+# signature made for anything else with the same key from being replayed here.
+MANIFEST_SIGNATURE_FIELD = "signature"
+MANIFEST_SIGNATURE_NAMESPACE = "branchleft-media-backup-manifest-v1"
+_MANIFEST_SIGNER_PRINCIPAL = "media-backup-writer"
+_SSH_ED25519_KEY_BODY = re.compile(r"\A[A-Za-z0-9+/]+={0,2}\Z")
+_SSH_KEYGEN_TIMEOUT_SECONDS = 30
 
 
 class MediaBackupError(Exception):
@@ -309,6 +324,106 @@ def decrypt_with_age(*, data: bytes, identity_path: str, run=subprocess.run) -> 
     return result.stdout
 
 
+def manifest_signing_bytes(manifest: dict) -> bytes:
+    """The exact bytes a manifest's signature covers: the manifest with its
+    own `signature` field removed, as canonical JSON (sorted keys, no
+    whitespace, ASCII only). Computed from the parsed manifest on both the
+    signing and the verifying side, so it does not depend on how the stored
+    text happened to be laid out. See media_backup_restore.md#manifest_signing_bytes."""
+    body = {key: value for key, value in manifest.items() if key != MANIFEST_SIGNATURE_FIELD}
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+
+
+def sign_manifest_with_ssh_keygen(*, data: bytes, key_path: str, run=subprocess.run) -> str:
+    """Signs `data` with the ed25519 private key at `key_path` and returns the
+    armoured OpenSSH signature. The key must have no passphrase: the process
+    is detached from any terminal, so a prompt fails the backup rather than
+    hanging it. See media_backup_restore.md#sign_manifest_with_ssh_keygen."""
+    argv = ["ssh-keygen", "-Y", "sign", "-q", "-f", key_path, "-n", MANIFEST_SIGNATURE_NAMESPACE]
+    try:
+        result = run(
+            argv,
+            input=data,
+            capture_output=True,
+            check=False,
+            timeout=_SSH_KEYGEN_TIMEOUT_SECONDS,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise MediaBackupError(f"could not run ssh-keygen to sign the manifest: {error}") from error
+    if result.returncode != 0:
+        raise MediaBackupError(
+            f"ssh-keygen -Y sign exited {result.returncode}: {result.stderr.decode(errors='replace')}"
+        )
+    signature = result.stdout.decode(errors="replace")
+    if "BEGIN SSH SIGNATURE" not in signature:
+        raise MediaBackupError("ssh-keygen -Y sign returned no signature -- refusing to write an unsigned manifest")
+    return signature
+
+
+def _read_ed25519_public_key(public_key_path: str) -> str:
+    """The `ssh-ed25519 <base64>` pair from a one-line public key file, with
+    any comment dropped. Anything else -- another key type, several keys, a
+    line carrying `allowed_signers` options -- is refused, so the file can
+    only ever name one plain ed25519 key."""
+    try:
+        text = pathlib.Path(public_key_path).read_text()
+    except OSError as error:
+        raise MediaRestoreVerificationError(
+            f"cannot read the manifest public key at {public_key_path!r}: {error}"
+        ) from error
+    lines = [line for line in text.splitlines() if line.strip()]
+    parts = lines[0].split() if len(lines) == 1 else []
+    if len(parts) < 2 or parts[0] != "ssh-ed25519" or not _SSH_ED25519_KEY_BODY.match(parts[1]):
+        raise MediaRestoreVerificationError(
+            f"the manifest public key file {public_key_path!r} must hold exactly one line of "
+            f"the form 'ssh-ed25519 <base64> [comment]'"
+        )
+    return f"{parts[0]} {parts[1]}"
+
+
+def verify_manifest_with_ssh_keygen(
+    *, data: bytes, signature: str, public_key_path: str, run=subprocess.run
+) -> None:
+    """Returns only if `signature` is a valid ed25519 signature over `data`
+    made by the key in `public_key_path`, in this module's namespace; raises
+    `MediaRestoreVerificationError` otherwise. No other key is trusted.
+    See media_backup_restore.md#verify_manifest_with_ssh_keygen."""
+    public_key = _read_ed25519_public_key(public_key_path)
+    with tempfile.TemporaryDirectory(prefix="media-manifest-verify-") as workdir:
+        signers = pathlib.Path(workdir) / "allowed_signers"
+        signature_file = pathlib.Path(workdir) / "manifest.sig"
+        signers.write_text(
+            f'{_MANIFEST_SIGNER_PRINCIPAL} namespaces="{MANIFEST_SIGNATURE_NAMESPACE}" {public_key}\n'
+        )
+        signature_file.write_text(signature)
+        argv = [
+            "ssh-keygen", "-Y", "verify",
+            "-f", str(signers),
+            "-I", _MANIFEST_SIGNER_PRINCIPAL,
+            "-n", MANIFEST_SIGNATURE_NAMESPACE,
+            "-s", str(signature_file),
+        ]
+        try:
+            result = run(
+                argv,
+                input=data,
+                capture_output=True,
+                check=False,
+                timeout=_SSH_KEYGEN_TIMEOUT_SECONDS,
+                start_new_session=True,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise MediaRestoreVerificationError(
+                f"could not run ssh-keygen to verify the manifest signature: {error}"
+            ) from error
+    if result.returncode != 0:
+        raise MediaRestoreVerificationError(
+            f"the manifest's signature did not verify against {public_key_path!r}: "
+            f"{(result.stderr or result.stdout).decode(errors='replace').strip()}"
+        )
+
+
 def _encrypt_to_exactly_one_recipient(
     *, data: bytes, recipient: str, encrypt, what: str
 ) -> bytes:
@@ -352,11 +467,13 @@ def backup_tenant_media(
     backup_access_key: str,
     backup_secret_key: str,
     recipient: str,
+    manifest_signing_key_path: str,
     confirm_tenant_has_no_media: bool = False,
     list_objects=_default_list_objects,
     get_object_with_content_type=_default_get_object_with_content_type,
     put_object=_default_put_object,
     encrypt=encrypt_with_age,
+    sign_manifest=sign_manifest_with_ssh_keygen,
     generate_backup_id=generate_backup_object_id,
     make_run_id=generate_run_id,
 ) -> BackupReport:
@@ -366,7 +483,9 @@ def backup_tenant_media(
     completion marker. The only calls made against `backup_bucket` are
     PUTs: the backup key is put-only, so nothing here lists, reads back or
     deletes there, and old generations leave by the bucket's lifecycle rule.
-    Refuses an empty live bucket unless `confirm_tenant_has_no_media=True`.
+    Signs the manifest with the key at `manifest_signing_key_path` before it is
+    encrypted, which is required: there is no way to write an unsigned
+    manifest. Refuses an empty live bucket unless `confirm_tenant_has_no_media=True`.
     May raise `MediaBackupFloorError`. See media_backup_restore.md#backup_tenant_media."""
     _assert_valid_tenant_slug(tenant, MediaBackupError)
 
@@ -429,6 +548,13 @@ def backup_tenant_media(
         "object_count": len(manifest_objects),
         "deliberately_empty": deliberately_empty,
     }
+    # Signed last, over everything else in the manifest, so a restore can tell
+    # the backup worker's own manifest from one anyone with the bucket's put
+    # credential could encrypt to this tenant's public recipient.
+    signature = sign_manifest(data=manifest_signing_bytes(manifest), key_path=manifest_signing_key_path)
+    if not isinstance(signature, str) or not signature.strip():
+        raise MediaBackupError("the manifest signer returned no signature -- refusing to write an unsigned manifest")
+    manifest[MANIFEST_SIGNATURE_FIELD] = signature
     manifest_ciphertext = _encrypt_to_exactly_one_recipient(
         data=json.dumps(manifest, sort_keys=True).encode(),
         recipient=recipient,
@@ -475,12 +601,14 @@ def _restore_generation(
     backup_access_key: str,
     backup_secret_key: str,
     identity_path: str,
+    manifest_public_key_path: str,
     target_bucket: str | None,
     target_access_key: str | None,
     target_secret_key: str | None,
     get_object,
     put_object,
     decrypt,
+    verify_manifest,
 ) -> RestoreReport:
     """Decrypts and checksum-verifies every object that ONE named
     generation's manifest lists. Never falls back and never tries another
@@ -519,6 +647,36 @@ def _restore_generation(
             f"tenant {tenant!r}: the manifest at {manifest_key!r} decrypted and is valid "
             f"JSON, but is not a JSON object ({type(manifest).__name__}) -- refusing to "
             f"treat it as a manifest"
+        )
+
+    # Authenticated before a single field of it is used for anything else. A
+    # manifest that decrypts is not thereby one the backup worker wrote: age's
+    # recipient is public, so anyone able to write the bucket can encrypt a
+    # forged manifest to it. Only the holder of the signing key can sign one.
+    signature = manifest.get(MANIFEST_SIGNATURE_FIELD)
+    if not isinstance(signature, str) or not signature.strip():
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: the manifest at {manifest_key!r} carries no signature -- "
+            f"refusing to restore from a manifest nothing proves the backup worker wrote"
+        )
+    try:
+        verify_manifest(
+            data=manifest_signing_bytes(manifest),
+            signature=signature,
+            public_key_path=manifest_public_key_path,
+        )
+    except MediaRestoreVerificationError as error:
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: the manifest at {manifest_key!r} is not authentic: {error}"
+        ) from error
+
+    # Signed content is only as good as where it is read from: an authentic
+    # manifest copied to another generation's key (an older one replayed as
+    # the newest) names its own run, which will not be this key's.
+    if manifest.get("run_id") != run_id:
+        raise MediaRestoreVerificationError(
+            f"tenant {tenant!r}: the manifest at {manifest_key!r} is signed for generation "
+            f"{manifest.get('run_id')!r}, not {run_id!r} -- refusing a replayed manifest"
         )
 
     if manifest.get("tenant") != tenant:
@@ -619,6 +777,7 @@ def restore_tenant_media(
     backup_access_key: str,
     backup_secret_key: str,
     identity_path: str,
+    manifest_public_key_path: str,
     run_id: str | None = None,
     target_bucket: str | None = None,
     target_access_key: str | None = None,
@@ -627,6 +786,7 @@ def restore_tenant_media(
     get_object=_default_get_object,
     put_object=_default_put_object,
     decrypt=decrypt_with_age,
+    verify_manifest=verify_manifest_with_ssh_keygen,
 ) -> RestoreReport:
     """Restores this tenant's NEWEST generation by default, or a specific
     `run_id` -- never silently falling back to an older one if the newest
@@ -660,12 +820,14 @@ def restore_tenant_media(
         backup_access_key=backup_access_key,
         backup_secret_key=backup_secret_key,
         identity_path=identity_path,
+        manifest_public_key_path=manifest_public_key_path,
         target_bucket=target_bucket,
         target_access_key=target_access_key,
         target_secret_key=target_secret_key,
         get_object=get_object,
         put_object=put_object,
         decrypt=decrypt,
+        verify_manifest=verify_manifest,
     )
 
     if run_id is not None:
@@ -697,7 +859,8 @@ def restore_tenant_media(
         command = (
             f"python3 media_backup_restore.py restore --tenant {tenant} "
             f"--backup-bucket {backup_bucket} --endpoint {endpoint} --region {region} "
-            f"--identity-file {identity_path} --run-id {fallback_run_id}"
+            f"--identity-file {identity_path} --manifest-public-key-file {manifest_public_key_path} "
+            f"--run-id {fallback_run_id}"
         )
         if target_bucket is not None:
             command += f" --target-bucket {target_bucket}"
@@ -744,6 +907,14 @@ def main(argv: list[str] | None = None) -> int:
     restore_p.add_argument("--region", required=True)
     restore_p.add_argument("--identity-file", required=True)
     restore_p.add_argument(
+        "--manifest-public-key-file",
+        required=True,
+        help=(
+            "the ed25519 public key (one 'ssh-ed25519 <base64>' line) whose private half "
+            "signs the backup manifests; a manifest it did not sign is refused"
+        ),
+    )
+    restore_p.add_argument(
         "--run-id",
         help=(
             "restore this specific generation instead of the newest -- never chosen "
@@ -767,6 +938,7 @@ def main(argv: list[str] | None = None) -> int:
                 backup_access_key=_require_env("MEDIA_BACKUP_ACCESS_KEY_ID"),
                 backup_secret_key=_require_env("MEDIA_BACKUP_SECRET_ACCESS_KEY"),
                 recipient=_require_env("AGE_RECIPIENT_PUBLIC_KEY"),
+                manifest_signing_key_path=_require_env("MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE"),
                 confirm_tenant_has_no_media=args.confirm_tenant_has_no_media,
             )
             print(
@@ -786,6 +958,7 @@ def main(argv: list[str] | None = None) -> int:
                 target_access_key=os.environ.get("MEDIA_LIVE_ACCESS_KEY_ID"),
                 target_secret_key=os.environ.get("MEDIA_LIVE_SECRET_ACCESS_KEY"),
                 identity_path=args.identity_file,
+                manifest_public_key_path=args.manifest_public_key_file,
                 run_id=args.run_id,
             )
             print(

@@ -6,12 +6,18 @@ See test_media_backup_restore.md#module-overview.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import inspect
+import importlib.util
 import io
 import json
 import os
 import shutil
+import pathlib
 import subprocess
+import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.parse
@@ -26,15 +32,16 @@ from media_backup_restore import (
     _manifest_key,
     _object_key_for_backup,
     _tenant_generations_prefix,
-    backup_tenant_media,
     count_age_recipient_stanzas,
     encrypt_with_age,
     find_newest_generation,
     generate_backup_object_id,
     generate_run_id,
     main,
-    restore_tenant_media,
+    manifest_signing_bytes,
     sha256_hex,
+    sign_manifest_with_ssh_keygen,
+    verify_manifest_with_ssh_keygen,
 )
 import media_backup_restore
 import shared_objectstorage
@@ -45,6 +52,61 @@ REGION = "sandbox"
 
 AGE_AVAILABLE = shutil.which("age") is not None
 AGE_KEYGEN_AVAILABLE = shutil.which("age-keygen") is not None
+SSH_KEYGEN_AVAILABLE = shutil.which("ssh-keygen") is not None
+
+# The fake signer stands in for `ssh-keygen -Y sign` everywhere except
+# `RealSshKeygenSignatureTests`, which uses the real binary. A key "path" names
+# its secret: "/fake/<name>.key" signs and "/fake/<name>.pub" verifies, and a
+# signature made under one name never verifies under another -- the property
+# the real asymmetric pair gives, which these fakes only model.
+SIGNING_KEY = "/fake/writer.key"
+SIGNING_PUBLIC_KEY = "/fake/writer.pub"
+ATTACKER_SIGNING_KEY = "/fake/attacker.key"
+
+
+def _fake_secret(path: str) -> bytes:
+    return pathlib.PurePosixPath(path).stem.encode()
+
+
+def _fake_sign(*, data: bytes, key_path: str) -> str:
+    return "FAKE-SIGNATURE-" + hmac.new(_fake_secret(key_path), data, hashlib.sha256).hexdigest()
+
+
+def _fake_verify(*, data: bytes, signature: str, public_key_path: str) -> None:
+    expected = _fake_sign(data=data, key_path=public_key_path)
+    if not hmac.compare_digest(signature, expected):
+        raise MediaRestoreVerificationError("fake verifier: incorrect signature")
+
+
+def backup_tenant_media(**kwargs):
+    """The module's `backup_tenant_media` with the manifest signing wired to
+    the fake signer unless a test says otherwise, so every existing case keeps
+    exercising what it was written for."""
+    kwargs.setdefault("manifest_signing_key_path", SIGNING_KEY)
+    kwargs.setdefault("sign_manifest", _fake_sign)
+    return media_backup_restore.backup_tenant_media(**kwargs)
+
+
+def restore_tenant_media(**kwargs):
+    """As above, for restore, with the fake verifier."""
+    kwargs.setdefault("manifest_public_key_path", SIGNING_PUBLIC_KEY)
+    kwargs.setdefault("verify_manifest", _fake_verify)
+    return media_backup_restore.restore_tenant_media(**kwargs)
+
+
+def _signed_manifest_ciphertext(
+    manifest: dict, *, run_id: str, key_path: str = SIGNING_KEY, recipient: str | None = None
+) -> bytes:
+    """A manifest as the holder of `key_path` would store it: bound to
+    `run_id` unless the dict already names one, signed, then encrypted to the
+    tenant's recipient. Used wherever a test hand-builds a manifest, so the
+    case still reaches the check it exists for instead of the signature check."""
+    body = dict(manifest)
+    body.setdefault("run_id", run_id)
+    body[media_backup_restore.MANIFEST_SIGNATURE_FIELD] = _fake_sign(
+        data=manifest_signing_bytes(body), key_path=key_path
+    )
+    return _fake_encrypt(data=json.dumps(body).encode(), recipient=recipient or TENANT_A_RECIPIENT)
 
 
 class FakeObjectStore:
@@ -544,8 +606,8 @@ class RestoreTenantMediaTests(unittest.TestCase):
     def test_control_manifest_naming_a_different_tenant_is_refused(self):
         manifest_key = self._manifest_key()
         tampered = json.dumps({"tenant": "tenant-x", "objects": {}, "deliberately_empty": True}).encode()
-        self.store.buckets["backup"][manifest_key] = _fake_encrypt(
-            data=tampered, recipient=TENANT_A_RECIPIENT
+        self.store.buckets["backup"][manifest_key] = _signed_manifest_ciphertext(
+            json.loads(tampered), run_id=self.report.run_id
         )
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
             self._restore()
@@ -554,8 +616,8 @@ class RestoreTenantMediaTests(unittest.TestCase):
     def test_control_zero_objects_without_the_deliberate_mark_is_refused(self):
         manifest_key = self._manifest_key()
         tampered = json.dumps({"tenant": "tenant-a", "objects": {}}).encode()  # no deliberately_empty at all
-        self.store.buckets["backup"][manifest_key] = _fake_encrypt(
-            data=tampered, recipient=TENANT_A_RECIPIENT
+        self.store.buckets["backup"][manifest_key] = _signed_manifest_ciphertext(
+            json.loads(tampered), run_id=self.report.run_id
         )
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
             self._restore()
@@ -574,8 +636,10 @@ class RestoreTenantMediaTests(unittest.TestCase):
             "objects": {"../../escape.jpg": real_entry},
             "deliberately_empty": False,
         }
-        self.store.buckets["backup"][self._manifest_key()] = _fake_encrypt(
-            data=json.dumps(forged).encode(), recipient=TENANT_A_RECIPIENT
+        # Signed with the genuine key: this case is about the live key, not
+        # authenticity, which `ManifestAuthenticityTests` covers.
+        self.store.buckets["backup"][self._manifest_key()] = _signed_manifest_ciphertext(
+            forged, run_id=self.report.run_id
         )
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
             self._restore(target_bucket="restored-a", target_access_key="ak", target_secret_key="sk")
@@ -713,8 +777,8 @@ class RestoreFallbackTests(unittest.TestCase):
             "object_count": 1,
             "deliberately_empty": False,
         }
-        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
-            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _signed_manifest_ciphertext(
+            broken_manifest, run_id=newer_run_id
         )
 
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
@@ -743,8 +807,8 @@ class RestoreFallbackTests(unittest.TestCase):
             "object_count": 1,
             "deliberately_empty": False,
         }
-        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
-            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _signed_manifest_ciphertext(
+            broken_manifest, run_id=newer_run_id
         )
 
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
@@ -790,8 +854,8 @@ class RestoreFallbackTests(unittest.TestCase):
             "object_count": 1,
             "deliberately_empty": False,
         }
-        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
-            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _signed_manifest_ciphertext(
+            broken_manifest, run_id=newer_run_id
         )
 
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
@@ -825,8 +889,8 @@ class RestoreFallbackTests(unittest.TestCase):
             "object_count": 1,
             "deliberately_empty": False,
         }
-        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _fake_encrypt(
-            data=json.dumps(broken_manifest).encode(), recipient=TENANT_A_RECIPIENT
+        self.store.buckets["backup"][_manifest_key("tenant-a", newer_run_id)] = _signed_manifest_ciphertext(
+            broken_manifest, run_id=newer_run_id
         )
 
         with self.assertRaises(MediaRestoreVerificationError) as ctx:
@@ -1101,6 +1165,473 @@ class NewestCompleteCopyRestoreTests(unittest.TestCase):
         self.assertIsNone(pattern.match("media/tenant-a/objects/" + "a" * 64 + ".age"))
 
 
+class ManifestAuthenticityTests(unittest.TestCase):
+    """The control for branchLeft/workspace#1346: `age`'s recipient is public,
+    so anyone holding the bucket's put credential can encrypt a forged object
+    and a matching manifest to a tenant's recipient. Restore must refuse such
+    a pair because the manifest is not signed by the key the backup worker
+    holds, not because anything in it disagrees with itself."""
+
+    def setUp(self):
+        self.store = FakeObjectStore()
+        self.store.put("live-a", "content/images/photo.jpg", b"the real photo bytes")
+        self.report = backup_tenant_media(
+            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+            list_objects=self.store.list_objects,
+            get_object_with_content_type=self.store.get_object_with_content_type,
+            put_object=self.store.put_object, encrypt=_fake_encrypt,
+        )
+
+    def _restore(self, **overrides):
+        kwargs = dict(
+            tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
+            backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
+            list_objects=self.store.list_objects, get_object=self.store.get_object,
+            put_object=self.store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
+            target_bucket="serving", target_access_key="x", target_secret_key="x",
+        )
+        kwargs.update(overrides)
+        return restore_tenant_media(**kwargs)
+
+    def _forge_generation(self, *, sign_with: str | None) -> tuple[str, bytes]:
+        """What a holder of only the bucket's put credential can write: an
+        object of their own bytes encrypted to the tenant's public recipient,
+        and a manifest naming it with the right tenant, a fresh run id and a
+        digest that agrees with it. `sign_with` is the key they sign with, or
+        None for an unsigned manifest -- they do not hold the real one."""
+        forged_bytes = b"attacker-chosen bytes"
+        run_id = "20990101T000000000000Z-ffffffffffffffff"
+        backup_id = "e" * 64
+        self.store.put(
+            "backup", _object_key_for_backup("tenant-a", run_id, backup_id),
+            _fake_encrypt(data=forged_bytes, recipient=TENANT_A_RECIPIENT),
+        )
+        manifest = {
+            "tenant": "tenant-a", "run_id": run_id, "object_count": 1, "deliberately_empty": False,
+            "objects": {
+                "content/images/photo.jpg": {
+                    "sha256": sha256_hex(forged_bytes), "size": len(forged_bytes),
+                    "content_type": "image/jpeg", "backup_id": backup_id,
+                }
+            },
+        }
+        if sign_with is None:
+            ciphertext = _fake_encrypt(data=json.dumps(manifest).encode(), recipient=TENANT_A_RECIPIENT)
+        else:
+            ciphertext = _signed_manifest_ciphertext(manifest, run_id=run_id, key_path=sign_with)
+        self.store.put("backup", _manifest_key("tenant-a", run_id), ciphertext)
+        return run_id, forged_bytes
+
+    def test_the_genuine_signed_backup_restores(self):
+        report = self._restore()
+        self.assertEqual(report.verified_keys, ["content/images/photo.jpg"])
+        self.assertEqual(self.store.buckets["serving"]["content/images/photo.jpg"], b"the real photo bytes")
+
+    def test_backup_writes_a_signature_over_the_manifest_without_its_signature_field(self):
+        manifest = _decrypt_manifest(
+            self.store, bucket="backup", tenant="tenant-a", identity_path=TENANT_A_IDENTITY
+        )
+        self.assertEqual(
+            manifest["signature"],
+            _fake_sign(data=manifest_signing_bytes(manifest), key_path=SIGNING_KEY),
+        )
+        self.assertNotIn(b"signature", manifest_signing_bytes(manifest))
+
+    def test_control_a_forged_pair_with_an_unsigned_manifest_is_refused_and_writes_nothing(self):
+        run_id, _ = self._forge_generation(sign_with=None)
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore(run_id=run_id)
+        self.assertIn("no signature", str(ctx.exception))
+        self.assertNotIn("serving", self.store.buckets)
+
+    def test_control_a_forged_pair_signed_with_the_attackers_own_key_is_refused_and_writes_nothing(self):
+        run_id, _ = self._forge_generation(sign_with=ATTACKER_SIGNING_KEY)
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore(run_id=run_id)
+        self.assertIn("not authentic", str(ctx.exception))
+        self.assertNotIn("serving", self.store.buckets)
+
+    def test_control_the_default_restore_never_lands_a_forged_newest_generation(self):
+        # The forged generation sorts newest, so the default restore picks it;
+        # it must fail, name the genuine older generation, and write nothing.
+        self._forge_generation(sign_with=None)
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn(f"--run-id {self.report.run_id}", str(ctx.exception))
+        self.assertNotIn("serving", self.store.buckets)
+
+    def test_control_a_manifest_edited_after_signing_is_refused(self):
+        # Swap in forged bytes and re-point the digest at them, keeping the
+        # genuine signature: the digest check would now agree, the signature
+        # does not.
+        manifest = _decrypt_manifest(
+            self.store, bucket="backup", tenant="tenant-a", identity_path=TENANT_A_IDENTITY
+        )
+        entry = manifest["objects"]["content/images/photo.jpg"]
+        forged = b"attacker-chosen bytes"
+        entry["sha256"] = sha256_hex(forged)
+        self.store.put(
+            "backup", _object_key_for_backup("tenant-a", self.report.run_id, entry["backup_id"]),
+            _fake_encrypt(data=forged, recipient=TENANT_A_RECIPIENT),
+        )
+        self.store.put(
+            "backup", _manifest_key("tenant-a", self.report.run_id),
+            _fake_encrypt(data=json.dumps(manifest).encode(), recipient=TENANT_A_RECIPIENT),
+        )
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("not authentic", str(ctx.exception))
+        self.assertNotIn("serving", self.store.buckets)
+
+    def test_control_a_manifest_with_its_signature_stripped_is_refused(self):
+        manifest = _decrypt_manifest(
+            self.store, bucket="backup", tenant="tenant-a", identity_path=TENANT_A_IDENTITY
+        )
+        del manifest["signature"]
+        self.store.put(
+            "backup", _manifest_key("tenant-a", self.report.run_id),
+            _fake_encrypt(data=json.dumps(manifest).encode(), recipient=TENANT_A_RECIPIENT),
+        )
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("no signature", str(ctx.exception))
+
+    def test_control_an_authentic_manifest_replayed_under_a_newer_generation_is_refused(self):
+        # An older, genuinely signed manifest copied to a newer run's key to
+        # make it the "newest": every signature and digest is real, but the
+        # manifest names the run it was written for.
+        newer = "20990101T000000000000Z-aaaaaaaaaaaaaaaa"
+        genuine = self.store.buckets["backup"][_manifest_key("tenant-a", self.report.run_id)]
+        self.store.put("backup", _manifest_key("tenant-a", newer), genuine)
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore(run_id=newer)
+        self.assertIn("replayed manifest", str(ctx.exception))
+        self.assertNotIn("serving", self.store.buckets)
+
+    def test_the_signature_is_checked_before_any_other_field_is_trusted(self):
+        # An unsigned manifest that is ALSO cross-tenant, unsafe and empty must
+        # be refused for the signature, proving nothing in it was acted on first.
+        forged = {"tenant": "tenant-x", "objects": {"../../escape": {}}, "run_id": self.report.run_id}
+        self.store.put(
+            "backup", _manifest_key("tenant-a", self.report.run_id),
+            _fake_encrypt(data=json.dumps(forged).encode(), recipient=TENANT_A_RECIPIENT),
+        )
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            self._restore()
+        self.assertIn("no signature", str(ctx.exception))
+
+    def test_a_non_string_signature_is_refused_as_unsigned(self):
+        manifest = _decrypt_manifest(
+            self.store, bucket="backup", tenant="tenant-a", identity_path=TENANT_A_IDENTITY
+        )
+        for bad in (None, 7, "", "  ", ["sig"]):
+            with self.subTest(signature=bad):
+                manifest["signature"] = bad
+                self.store.put(
+                    "backup", _manifest_key("tenant-a", self.report.run_id),
+                    _fake_encrypt(data=json.dumps(manifest).encode(), recipient=TENANT_A_RECIPIENT),
+                )
+                with self.assertRaises(MediaRestoreVerificationError):
+                    self._restore()
+
+    def test_backup_and_restore_have_no_way_to_skip_the_signature(self):
+        backup_params = inspect.signature(media_backup_restore.backup_tenant_media).parameters
+        restore_params = inspect.signature(media_backup_restore.restore_tenant_media).parameters
+        self.assertIs(backup_params["manifest_signing_key_path"].default, inspect.Parameter.empty)
+        self.assertIs(restore_params["manifest_public_key_path"].default, inspect.Parameter.empty)
+        with self.assertRaises(TypeError):
+            media_backup_restore.backup_tenant_media(
+                tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+                region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+                backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+            )
+
+    def test_a_signer_that_fails_aborts_the_backup_before_any_manifest_is_written(self):
+        def failing_signer(*, data, key_path):
+            raise MediaBackupError("no key")
+
+        self.store.buckets["backup"] = {}
+        with self.assertRaises(MediaBackupError):
+            backup_tenant_media(
+                tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+                region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+                backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+                list_objects=self.store.list_objects,
+                get_object_with_content_type=self.store.get_object_with_content_type,
+                put_object=self.store.put_object, encrypt=_fake_encrypt,
+                sign_manifest=failing_signer,
+            )
+        self.assertEqual([k for k in self.store.buckets["backup"] if k.endswith("manifest.json.age")], [])
+
+    def test_a_signer_that_returns_nothing_is_refused(self):
+        self.store.buckets["backup"] = {}
+        with self.assertRaises(MediaBackupError):
+            backup_tenant_media(
+                tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+                region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+                backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+                list_objects=self.store.list_objects,
+                get_object_with_content_type=self.store.get_object_with_content_type,
+                put_object=self.store.put_object, encrypt=_fake_encrypt,
+                sign_manifest=lambda *, data, key_path: "",
+            )
+        self.assertEqual([k for k in self.store.buckets["backup"] if k.endswith("manifest.json.age")], [])
+
+
+class SabotageProofTests(unittest.TestCase):
+    """Red and green for the authenticity control, run in CI rather than
+    reported in prose. Each case removes ONE mechanism from a copy of the module
+    source and runs the same attack against the copy and against the real
+    module: the attack lands on the copy (red: the mechanism is what stopped it)
+    and is refused by the real one (green). A removal that no longer matches the
+    source fails the case, so the proof cannot drift into proving nothing."""
+
+    SIGNATURE_VERIFY_CALL = (
+        "        verify_manifest(\n"
+        "            data=manifest_signing_bytes(manifest),\n"
+        "            signature=signature,\n"
+        "            public_key_path=manifest_public_key_path,\n"
+        "        )"
+    )
+    UNSIGNED_REFUSAL = (
+        "    if not isinstance(signature, str) or not signature.strip():\n"
+        "        raise MediaRestoreVerificationError("
+    )
+    RUN_ID_BINDING = '    if manifest.get("run_id") != run_id:'
+
+    def _sabotaged(self, *replacements: tuple[str, str]):
+        source = pathlib.Path(media_backup_restore.__file__).read_text()
+        for old, new in replacements:
+            self.assertEqual(source.count(old), 1, f"the mechanism text moved: {old!r}")
+            source = source.replace(old, new)
+        name = "media_backup_restore_sabotaged"
+        spec = importlib.util.spec_from_loader(name, loader=None)
+        module = importlib.util.module_from_spec(spec)
+        module.__file__ = media_backup_restore.__file__
+        sys.modules[name] = module
+        self.addCleanup(sys.modules.pop, name, None)
+        exec(compile(source, name, "exec"), module.__dict__)
+        return module
+
+    def _world(self, module):
+        """A genuine signed backup of one object, plus the module's own backup
+        and restore bound to fakes. Returns (store, genuine_run_id, restore)."""
+        store = FakeObjectStore()
+        store.put("live-a", "photo.jpg", b"the real photo bytes")
+        report = module.backup_tenant_media(
+            tenant="tenant-a", live_bucket="live-a", backup_bucket="backup", endpoint=ENDPOINT,
+            region=REGION, live_access_key="x", live_secret_key="x", backup_access_key="x",
+            backup_secret_key="x", recipient=TENANT_A_RECIPIENT,
+            manifest_signing_key_path=SIGNING_KEY, sign_manifest=_fake_sign,
+            list_objects=store.list_objects,
+            get_object_with_content_type=store.get_object_with_content_type,
+            put_object=store.put_object, encrypt=_fake_encrypt,
+        )
+
+        def restore(run_id: str):
+            return module.restore_tenant_media(
+                tenant="tenant-a", backup_bucket="backup", endpoint=ENDPOINT, region=REGION,
+                backup_access_key="x", backup_secret_key="x", identity_path=TENANT_A_IDENTITY,
+                manifest_public_key_path=SIGNING_PUBLIC_KEY, verify_manifest=_fake_verify,
+                run_id=run_id, target_bucket="serving", target_access_key="x", target_secret_key="x",
+                list_objects=store.list_objects, get_object=store.get_object,
+                put_object=store.put_object, decrypt=_fake_decrypt(IDENTITY_TO_RECIPIENT),
+            )
+
+        return store, report.run_id, restore
+
+    def _plant_forged_generation(self, store, *, sign_with: str | None) -> str:
+        run_id = "20990101T000000000000Z-ffffffffffffffff"
+        forged = b"attacker-chosen bytes"
+        backup_id = "e" * 64
+        store.put(
+            "backup", _object_key_for_backup("tenant-a", run_id, backup_id),
+            _fake_encrypt(data=forged, recipient=TENANT_A_RECIPIENT),
+        )
+        manifest = {
+            "tenant": "tenant-a", "run_id": run_id, "object_count": 1, "deliberately_empty": False,
+            "objects": {"photo.jpg": {
+                "sha256": sha256_hex(forged), "size": len(forged),
+                "content_type": "image/jpeg", "backup_id": backup_id,
+            }},
+        }
+        if sign_with is None:
+            ciphertext = _fake_encrypt(data=json.dumps(manifest).encode(), recipient=TENANT_A_RECIPIENT)
+        else:
+            ciphertext = _signed_manifest_ciphertext(manifest, run_id=run_id, key_path=sign_with)
+        store.put("backup", _manifest_key("tenant-a", run_id), ciphertext)
+        return run_id
+
+    def _assert_attack_lands_only_without(self, replacements, plant, *, lands_as: bytes):
+        sabotaged_store, genuine, sabotaged_restore = self._world(self._sabotaged(*replacements))
+        run_id = plant(sabotaged_store, genuine)
+        sabotaged_restore(run_id)  # RED: no mechanism, no refusal
+        self.assertEqual(sabotaged_store.buckets["serving"]["photo.jpg"], lands_as)
+
+        real_store, genuine, real_restore = self._world(media_backup_restore)
+        run_id = plant(real_store, genuine)
+        with self.assertRaises(MediaRestoreVerificationError):  # GREEN: the real module refuses
+            real_restore(run_id)
+        self.assertNotIn("serving", real_store.buckets)
+
+    def test_without_signature_verification_a_pair_signed_by_the_attacker_restores(self):
+        self._assert_attack_lands_only_without(
+            [(self.SIGNATURE_VERIFY_CALL, "        pass")],
+            lambda store, genuine: self._plant_forged_generation(store, sign_with=ATTACKER_SIGNING_KEY),
+            lands_as=b"attacker-chosen bytes",
+        )
+
+    def test_without_the_unsigned_refusal_an_unsigned_pair_restores(self):
+        self._assert_attack_lands_only_without(
+            [
+                (self.UNSIGNED_REFUSAL, "    if False:\n        raise MediaRestoreVerificationError("),
+                (self.SIGNATURE_VERIFY_CALL, "        if signature:\n            pass"),
+            ],
+            lambda store, genuine: self._plant_forged_generation(store, sign_with=None),
+            lands_as=b"attacker-chosen bytes",
+        )
+
+    def test_without_the_run_id_binding_a_replayed_manifest_restores(self):
+        replayed = "20990101T000000000000Z-aaaaaaaaaaaaaaaa"
+
+        def plant(store, genuine):
+            # The whole genuine generation, objects included, copied to a
+            # newer run's prefix: every digest and signature in it is real.
+            old_prefix = f"media/tenant-a/generations/{genuine}/"
+            new_prefix = f"media/tenant-a/generations/{replayed}/"
+            for key, data in list(store.buckets["backup"].items()):
+                if key.startswith(old_prefix):
+                    store.put("backup", new_prefix + key[len(old_prefix):], data)
+            return replayed
+
+        # The replayed manifest is genuine, so what lands is the genuine older
+        # backup presented as the newest generation: the rollback the binding stops.
+        self._assert_attack_lands_only_without(
+            [(self.RUN_ID_BINDING, "    if False:")], plant, lands_as=b"the real photo bytes"
+        )
+
+
+@unittest.skipUnless(SSH_KEYGEN_AVAILABLE, "ssh-keygen is not installed")
+class RealSshKeygenSignatureTests(unittest.TestCase):
+    """The same property against the real `ssh-keygen -Y` binary: a signature
+    verifies only for the one public key it is given, over the exact bytes,
+    in this module's namespace."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls._tmp.cleanup)
+        cls.dir = pathlib.Path(cls._tmp.name)
+        cls.writer = cls._keypair("writer")
+        cls.attacker = cls._keypair("attacker")
+
+    @classmethod
+    def _keypair(cls, name: str, key_type: str = "ed25519") -> pathlib.Path:
+        private = cls.dir / name
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", key_type, "-N", "", "-C", "", "-f", str(private)],
+            check=True, capture_output=True,
+        )
+        return private
+
+    def _sign(self, key: pathlib.Path, data: bytes) -> str:
+        return sign_manifest_with_ssh_keygen(data=data, key_path=str(key))
+
+    def _verify(self, key: pathlib.Path, data: bytes, signature: str) -> None:
+        verify_manifest_with_ssh_keygen(
+            data=data, signature=signature, public_key_path=f"{key}.pub"
+        )
+
+    def test_a_genuine_signature_verifies(self):
+        signature = self._sign(self.writer, b"manifest bytes")
+        self.assertIn("BEGIN SSH SIGNATURE", signature)
+        self._verify(self.writer, b"manifest bytes", signature)
+
+    def test_a_signature_over_other_bytes_is_refused(self):
+        signature = self._sign(self.writer, b"manifest bytes")
+        with self.assertRaises(MediaRestoreVerificationError):
+            self._verify(self.writer, b"manifest bytez", signature)
+
+    def test_a_signature_by_another_key_is_refused(self):
+        signature = self._sign(self.attacker, b"manifest bytes")
+        with self.assertRaises(MediaRestoreVerificationError):
+            self._verify(self.writer, b"manifest bytes", signature)
+
+    def test_a_signature_in_another_namespace_is_refused(self):
+        other = subprocess.run(
+            ["ssh-keygen", "-Y", "sign", "-q", "-f", str(self.writer), "-n", "some-other-use"],
+            input=b"manifest bytes", capture_output=True, check=True,
+        ).stdout.decode()
+        with self.assertRaises(MediaRestoreVerificationError):
+            self._verify(self.writer, b"manifest bytes", other)
+
+    def test_a_garbage_signature_is_refused(self):
+        with self.assertRaises(MediaRestoreVerificationError):
+            self._verify(self.writer, b"manifest bytes", "not a signature")
+
+    def test_only_a_single_plain_ed25519_public_key_is_accepted(self):
+        rsa = self._keypair("rsa", key_type="rsa")
+        signature = self._sign(self.writer, b"x")
+        two_keys = self.dir / "two.pub"
+        two_keys.write_text(
+            pathlib.Path(f"{self.writer}.pub").read_text() + pathlib.Path(f"{self.attacker}.pub").read_text()
+        )
+        options = self.dir / "options.pub"
+        options.write_text('cert-authority,namespaces="*" ' + pathlib.Path(f"{self.writer}.pub").read_text())
+        empty = self.dir / "empty.pub"
+        empty.write_text("\n")
+        for name, path in (
+            ("rsa", f"{rsa}.pub"), ("two keys", str(two_keys)), ("options", str(options)),
+            ("empty", str(empty)), ("missing", str(self.dir / "absent.pub")),
+        ):
+            with self.subTest(public_key=name):
+                with self.assertRaises(MediaRestoreVerificationError):
+                    verify_manifest_with_ssh_keygen(
+                        data=b"x", signature=signature, public_key_path=path
+                    )
+
+    def test_a_missing_private_key_aborts_signing(self):
+        with self.assertRaises(MediaBackupError):
+            self._sign(self.dir / "absent", b"x")
+
+    @unittest.skipUnless(AGE_AVAILABLE and AGE_KEYGEN_AVAILABLE, "age is not installed")
+    def test_end_to_end_with_real_age_and_real_signatures(self):
+        identity = self.dir / "tenant.identity"
+        subprocess.run(["age-keygen", "-o", str(identity)], check=True, capture_output=True)
+        recipient = subprocess.run(
+            ["age-keygen", "-y", str(identity)], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        store = FakeObjectStore()
+        store.put("live-a", "a.jpg", b"real bytes")
+        common = dict(tenant="tenant-a", endpoint=ENDPOINT, region=REGION)
+        report = media_backup_restore.backup_tenant_media(
+            live_bucket="live-a", backup_bucket="backup", live_access_key="x", live_secret_key="x",
+            backup_access_key="x", backup_secret_key="x", recipient=recipient,
+            manifest_signing_key_path=str(self.writer),
+            list_objects=store.list_objects,
+            get_object_with_content_type=store.get_object_with_content_type,
+            put_object=store.put_object, **common,
+        )
+        restore_kwargs = dict(
+            backup_bucket="backup", backup_access_key="x", backup_secret_key="x",
+            identity_path=str(identity), list_objects=store.list_objects,
+            get_object=store.get_object, put_object=store.put_object, **common,
+        )
+        restored = media_backup_restore.restore_tenant_media(
+            manifest_public_key_path=f"{self.writer}.pub", **restore_kwargs
+        )
+        self.assertEqual(restored.verified_keys, ["a.jpg"])
+        # The same backup, read with the attacker's public key as the trusted
+        # one, is not authentic.
+        with self.assertRaises(MediaRestoreVerificationError) as ctx:
+            media_backup_restore.restore_tenant_media(
+                manifest_public_key_path=f"{self.attacker}.pub", run_id=report.run_id, **restore_kwargs
+            )
+        self.assertIn("not authentic", str(ctx.exception))
+
+
 class MainWiringTests(unittest.TestCase):
     """Proves the CLI's argument parsing actually reaches the function calls
     it claims to, not only that the process exits the right code -- a
@@ -1117,6 +1648,7 @@ class MainWiringTests(unittest.TestCase):
             "MEDIA_BACKUP_ACCESS_KEY_ID": "bak",
             "MEDIA_BACKUP_SECRET_ACCESS_KEY": "bsk",
             "AGE_RECIPIENT_PUBLIC_KEY": TENANT_A_RECIPIENT,
+            "MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE": "/keys/manifest-signing.key",
         }
         self.env_patch = mock.patch.dict("os.environ", self.env, clear=True)
         self.env_patch.start()
@@ -1137,6 +1669,9 @@ class MainWiringTests(unittest.TestCase):
         self.assertEqual(mock_backup.call_args.kwargs["confirm_tenant_has_no_media"], False)
         self.assertEqual(mock_backup.call_args.kwargs["tenant"], "t")
         self.assertEqual(mock_backup.call_args.kwargs["recipient"], TENANT_A_RECIPIENT)
+        self.assertEqual(
+            mock_backup.call_args.kwargs["manifest_signing_key_path"], "/keys/manifest-signing.key"
+        )
 
     @mock.patch("media_backup_restore.backup_tenant_media")
     def test_backup_with_the_flag_passes_confirm_true(self, mock_backup):
@@ -1169,11 +1704,12 @@ class MainWiringTests(unittest.TestCase):
         rc = main(
             [
                 "restore", "--tenant", "t", "--backup-bucket", "bb", "--target-bucket", "tb",
-                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id", "--manifest-public-key-file", "/keys/manifest.pub",
             ]
         )
         self.assertEqual(rc, 0)
         self.assertEqual(mock_restore.call_args.kwargs["identity_path"], "/tmp/id")
+        self.assertEqual(mock_restore.call_args.kwargs["manifest_public_key_path"], "/keys/manifest.pub")
         self.assertEqual(mock_restore.call_args.kwargs["target_bucket"], "tb")
         self.assertIsNone(mock_restore.call_args.kwargs["run_id"])
 
@@ -1186,7 +1722,7 @@ class MainWiringTests(unittest.TestCase):
         rc = main(
             [
                 "restore", "--tenant", "t", "--backup-bucket", "bb",
-                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id", "--manifest-public-key-file", "/keys/manifest.pub",
                 "--run-id", "20260101T000000000000Z-0000000000000000",
             ]
         )
@@ -1201,10 +1737,31 @@ class MainWiringTests(unittest.TestCase):
         rc = main(
             [
                 "restore", "--tenant", "t", "--backup-bucket", "bb",
-                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+                "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id", "--manifest-public-key-file", "/keys/manifest.pub",
             ]
         )
         self.assertEqual(rc, 1)
+
+    @mock.patch("media_backup_restore.backup_tenant_media")
+    def test_backup_without_a_signing_key_file_exits_1_and_never_backs_up(self, mock_backup):
+        del os.environ["MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE"]
+        rc = main(
+            [
+                "backup", "--tenant", "t", "--live-bucket", "lb", "--backup-bucket", "bb",
+                "--endpoint", ENDPOINT, "--region", REGION,
+            ]
+        )
+        self.assertEqual(rc, 1)
+        mock_backup.assert_not_called()
+
+    def test_restore_without_a_public_key_file_is_refused_by_the_parser(self):
+        with self.assertRaises(SystemExit):
+            main(
+                [
+                    "restore", "--tenant", "t", "--backup-bucket", "bb",
+                    "--endpoint", ENDPOINT, "--region", REGION, "--identity-file", "/tmp/id",
+                ]
+            )
 
     def test_missing_env_var_exits_1_before_any_network_call(self):
         del os.environ["AGE_RECIPIENT_PUBLIC_KEY"]

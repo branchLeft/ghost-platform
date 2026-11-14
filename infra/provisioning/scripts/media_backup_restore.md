@@ -73,6 +73,49 @@ see `generate_backup_object_id` -- and the live-key-to-id mapping, alongside
 the plaintext digest restore verification still uses, lives only inside the
 encrypted manifest.
 
+### The manifest is signed, because age is not
+
+`age` authenticates nothing about who wrote a ciphertext: the recipient is
+public by design. Anyone holding the backup bucket's put credential can
+therefore encrypt an object of their own bytes and a matching manifest (the
+right `tenant`, a digest that agrees with the object) to a tenant's own
+recipient, and every check that compares a manifest with its objects passes,
+because the two agree with each other. That is the forged pair that restored
+with `verified=1` in review of branchLeft/ghost-platform#249
+(branchLeft/workspace#1346).
+
+So the manifest carries a `signature`: an OpenSSH ed25519 signature made by
+`backup_tenant_media` with a private key held apart from the bucket put
+credential, over the manifest's canonical JSON with the `signature` field
+removed (`manifest_signing_bytes`), in the namespace
+`branchleft-media-backup-manifest-v1`. `restore_tenant_media` is handed the
+matching public key and refuses, before it uses any other field, a manifest
+that is unsigned or whose signature does not verify against that one key. The
+manifest names every object's SHA-256 and `backup_id`, so signing it
+authenticates the objects too: a swapped object no longer matches a digest the
+attacker cannot re-sign.
+
+The manifest also names its own `run_id`, and restore refuses a manifest whose
+`run_id` is not the generation it was read from. Without that, a genuine older
+manifest could be copied to a newer key and win "newest generation".
+
+There is no unsigned mode. `manifest_signing_key_path` and
+`manifest_public_key_path` have no default, so a caller that forgets them gets
+a `TypeError`, and a manifest written before this change is refused rather than
+trusted.
+
+What this does not close: a writer who can only put can still withhold the
+newest generation by never writing it, and a genuine older generation stays
+restorable when named with `--run-id` (that is how the fallback works). Neither
+is a forgery; both are visible as "the newest generation is not the one
+expected", which only a record kept outside the bucket (the other direction
+#1346 names) can settle.
+
+Custody is the owner's call and is not settled here. The signing key must not
+be the bucket put credential or sit on the same credential's blast radius, or
+the signature proves nothing the put credential did not already; the public key
+is not secret and goes to whatever host runs restore.
+
 ### The empty-backup floor
 
 The empty-backup floor is on by default, the same way `dump_tenant.py`'s
@@ -140,6 +183,33 @@ because the real implementation needs to see it. `secrets.token_hex`, not
 anything else, only generated once and carried in the manifest, so there
 is no argument for it being anything but unpredictable.
 
+## manifest_signing_bytes
+
+The exact bytes a manifest's signature covers: the manifest with its own
+`signature` field removed, as canonical JSON (sorted keys, no whitespace, ASCII
+only). Both sides compute it from the parsed manifest, so the signature does not
+depend on how the stored text happened to be laid out, and every other field --
+including any an attacker adds -- is covered.
+
+## sign_manifest_with_ssh_keygen
+
+Signs bytes with an ed25519 private key through `ssh-keygen -Y sign` and returns
+the armoured signature. The namespace is fixed to this module's. The key must
+have no passphrase: the process is started in its own session with no terminal,
+so a passphrase prompt fails the backup instead of hanging it. A non-zero exit,
+a missing binary or an answer with no signature in it raises
+`MediaBackupError`, so a backup never writes an unsigned manifest.
+
+## verify_manifest_with_ssh_keygen
+
+Returns only if a signature is a valid ed25519 signature over the given bytes by
+the key in the public key file, in this module's namespace. It builds a
+one-line `allowed_signers` file naming only that key, so no other key can pass.
+The public key file must hold exactly one `ssh-ed25519 <base64>` line; another
+key type, several keys, or a line with `allowed_signers` options is refused, so
+a file cannot widen what is trusted. Any failure raises
+`MediaRestoreVerificationError`.
+
 ## count_age_recipient_stanzas
 
 How many recipients an `age` ciphertext's header names, read structurally
@@ -163,6 +233,11 @@ to `recipient`, and writes the ciphertext to `backup_bucket` under a fresh
 dated generation, then writes the generation's manifest last as its
 completion marker. The only calls made against `backup_bucket` are PUTs, so
 the put-only key is enough. It never deletes, anywhere.
+
+Signs the manifest with the private key at `manifest_signing_key_path` before
+encrypting it (see "The manifest is signed, because age is not"); it cannot be
+called without one, and a signer that fails or returns nothing aborts the run
+before any manifest is written.
 
 Refuses -- raising `MediaBackupFloorError` and writing nothing -- if the
 live bucket lists zero objects, UNLESS `confirm_tenant_has_no_media` is
@@ -195,7 +270,10 @@ corrupt object. When `target_bucket` is given, each object already
 verified before a later failure has ALREADY been written there -- a
 partial restore on disk is real and intended (the objects that did verify
 are genuinely recovered), only the return value and exit code are
-all-or-nothing. Each object's backup-bucket key comes from `backup_id` in
+all-or-nothing. Before any of that, the manifest must carry a valid signature by
+the key in `manifest_public_key_path` and name the run it was read from; an
+unsigned, mis-signed or replayed manifest is refused before an object is read
+or a byte is written to the target bucket. Each object's backup-bucket key comes from `backup_id` in
 the manifest, never derived from the live key here; the live key itself is
 only ever used as the write path into `target_bucket`, and is checked by
 `_assert_safe_live_key` immediately before that write -- a decrypted
