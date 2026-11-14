@@ -10,6 +10,7 @@ import { Agent, createServer, request as httpRequest, type Server } from 'node:h
 import type { AddressInfo, Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { TenantLimits } from '../../src/limits/index.js';
 import { loadConfig, type GatewayConfig } from '../../src/config.js';
 import { ADMIN_HEADERS, adminSigningPayload } from '../../src/credentials/adminAuth.js';
 import { MASTER_SECRET_FILE_ENV } from '../../src/credentials/masterSecret.js';
@@ -214,6 +215,8 @@ export interface Rig {
 
 export interface RigOptions {
   readonly env?: Record<string, string>;
+  /** A gate to use in place of the one built from the settings. */
+  readonly limits?: TenantLimits;
   /** How many accepted signatures the replay guard remembers; the service default when absent. */
   readonly replayLimit?: number;
 }
@@ -277,6 +280,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
     trustedUid: process.getuid?.() ?? 0,
     adminClock: () => startMs + clockOffsetMs,
     ...(options.replayLimit === undefined ? {} : { replayLimit: options.replayLimit }),
+    ...(options.limits === undefined ? {} : { limits: options.limits }),
   });
   const port = gateway.address.port;
   const adminPort = (gateway.adminAddress as AddressInfo).port;

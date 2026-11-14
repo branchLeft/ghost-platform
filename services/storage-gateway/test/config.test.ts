@@ -78,6 +78,33 @@ describe('loadConfig', () => {
     expect(() => at('32', 'many')).toThrow(ENV.maxConcurrentUploadsPerTenant);
   });
 
+  it('reads the tenant rate and the switch file, and refuses what makes no sense', () => {
+    const base = loadConfig(GOOD);
+    expect(base.tenantRate).toEqual({ perSecond: 100, burst: 200 });
+    expect(base.writeSwitchesFile).toBeUndefined();
+    expect(loadConfig({ ...GOOD, [ENV.tenantRatePerSecond]: '7' }).tenantRate).toEqual({
+      perSecond: 7,
+      burst: 14,
+    });
+    expect(
+      loadConfig({ ...GOOD, [ENV.tenantRatePerSecond]: '7', [ENV.tenantRateBurst]: '3' }).tenantRate
+    ).toEqual({ perSecond: 7, burst: 3 });
+    expect(
+      loadConfig({ ...GOOD, [ENV.writeSwitchesFile]: '/var/lib/gw/switches.json' })
+        .writeSwitchesFile
+    ).toBe('/var/lib/gw/switches.json');
+    for (const [name, bad] of [
+      [ENV.tenantRatePerSecond, '0'],
+      [ENV.tenantRatePerSecond, '100001'],
+      [ENV.tenantRatePerSecond, 'fast'],
+      [ENV.tenantRateBurst, '0'],
+      [ENV.tenantRateBurst, '1000001'],
+      [ENV.writeSwitchesFile, 'relative/switches.json'],
+    ] as const) {
+      expect(() => loadConfig({ ...GOOD, [name]: bad })).toThrow(name);
+    }
+  });
+
   it('keeps the headers timeout inside the request timeout', () => {
     expect(() =>
       loadConfig({ ...GOOD, [ENV.requestTimeoutMs]: '5000', [ENV.headersTimeoutMs]: '6000' })
