@@ -4,6 +4,7 @@ import {
   type MinorRefusal,
   type RestoreDrillRecord,
 } from './minorEligibility.js';
+import { resolveCallDeadlines, withDeadline } from './deadlines.js';
 import { assertModelFreeEnvironment, type ModelFreeEnvironment } from './modelFreeEnvironment.js';
 import type { RingBakeConfig } from './rings.js';
 import {
@@ -71,6 +72,8 @@ export async function runUnattendedMinor(
     digest: request.release.digest,
     version: request.release.version,
   };
-  await deps.hold(held);
+  // Bounded like every other hold: `runRelease` is not on this path.
+  const { holdMs } = resolveCallDeadlines(deps.deadlines);
+  await withDeadline(deps.hold(held), holdMs, 'hold()');
   return held;
 }

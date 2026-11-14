@@ -128,6 +128,10 @@ export interface RecoveryDeadlines {
   readonly verifyMs: number;
   /** One `page()` call. */
   readonly pageMs: number;
+  /** One `persist()` call: a step or abort snapshot saved for a record. */
+  readonly persistMs: number;
+  /** The one `store.list()` call that opens the sweep. */
+  readonly listMs: number;
 }
 
 export const DEFAULT_RECOVERY_DEADLINES: RecoveryDeadlines = Object.freeze({
@@ -135,6 +139,8 @@ export const DEFAULT_RECOVERY_DEADLINES: RecoveryDeadlines = Object.freeze({
   stopColourMs: 10 * 60 * 1000,
   verifyMs: 5 * 60 * 1000,
   pageMs: 60 * 1000,
+  persistMs: 60 * 1000,
+  listMs: 60 * 1000,
 });
 
 const RECOVERY_DEADLINE_KEYS = Object.freeze([
@@ -142,6 +148,8 @@ const RECOVERY_DEADLINE_KEYS = Object.freeze([
   'stopColourMs',
   'verifyMs',
   'pageMs',
+  'persistMs',
+  'listMs',
 ] as const satisfies readonly (keyof RecoveryDeadlines)[]);
 
 /** As `resolveCallDeadlines`, for the recovery sweep: defaults filled in, and a bound that could never fire refused. */
