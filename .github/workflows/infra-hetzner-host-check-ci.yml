@@ -22,6 +22,10 @@ on:
     paths:
       - 'infra/hetzner-host-check/**'
       - '.github/workflows/infra-hetzner-host-check-ci.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
+  schedule:
+    - cron: '21 4 * * 1'
 
 # `packages: read` because @branchleft/hetzner-host and
 # @branchleft/tsconfig are both hosted on GitHub Packages, which answers 401

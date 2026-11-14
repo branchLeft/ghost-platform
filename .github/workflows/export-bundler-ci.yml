@@ -21,6 +21,10 @@ on:
       - 'services/export-bundler/**'
       - 'db/RUNBOOK-db.md'
       - '.github/workflows/export-bundler-ci.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
+  schedule:
+    - cron: '15 4 * * 1'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401

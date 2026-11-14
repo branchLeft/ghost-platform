@@ -35,6 +35,10 @@ on:
       - 'db/provision/objectstorage.py'
       - '.python-version'
       - '.github/workflows/scanning-storage-ci.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
+  schedule:
+    - cron: '42 4 * * 1'
 
 permissions:
   contents: read

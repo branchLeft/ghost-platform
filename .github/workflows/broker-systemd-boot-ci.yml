@@ -24,6 +24,10 @@ on:
       - 'demo-host/provision/**'
       - '.dockerignore'
       - '.github/workflows/broker-systemd-boot-ci.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
+  schedule:
+    - cron: '3 4 * * 1'
 
 permissions:
   contents: read

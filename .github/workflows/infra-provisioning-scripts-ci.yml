@@ -28,6 +28,22 @@ name: Provisioning scripts CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'infra/provisioning/**'
+      - 'db/**'
+      - 'render-core/src/naming.ts'
+      - 'infra/tenant/naming.ts'
+      - 'registers/**'
+      - 'scripts/sync-tenant-name-register.py'
+      - 'app/provision/provision_tenant_volume.py'
+      - 'RUNBOOK-bucket-fencing.md'
+      - '.python-version'
+      - '.github/workflows/**'
+      - '.github/CODEOWNERS'
+      - '**/package.json'
+      - '**/pnpm-workspace.yaml'
+      - '**/Dockerfile'
+      - 'scripts/**'
   # A pull request starts this only when its diff touches something the suite
   # reads. That reaches outside infra/provisioning: db/ (the dump, recovery and
   # object-storage modules, the runbook's image pins and the MySQL config the
@@ -37,9 +53,9 @@ on:
   # bucket-fencing runbook, and the pinned Python version. It also reaches the
   # inputs of test_codeowners_ownership.py: the CODEOWNERS file, every package
   # manifest, workspace file and Dockerfile, and the repository's scripts
-  # directory, which a secret-bearing job runs and CODEOWNERS must own. A file
-  # that such a job imports from elsewhere is caught by the push to main, which
-  # stays unfiltered as the backstop.
+  # directory, which a secret-bearing job runs and CODEOWNERS must own. A push to
+  # main starts it on the same paths, and a weekly run of the whole tree is the
+  # backstop for a file such a job imports from elsewhere.
   pull_request:
     branches: [main]
     paths:
@@ -58,6 +74,8 @@ on:
       - '**/pnpm-workspace.yaml'
       - '**/Dockerfile'
       - 'scripts/**'
+  schedule:
+    - cron: '24 4 * * 1'
 
 permissions:
   contents: read
