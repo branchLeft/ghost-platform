@@ -508,6 +508,7 @@ def parse_invocation(argv: Sequence[str]) -> Invocation:
 
 class SlotOps(Protocol):
     def systemctl(self, action: str, unit: str) -> None: ...
+    def unit_is_stopped(self, unit: str) -> bool: ...
     def read_content_volume_name(self, slot_dir: str) -> str | None: ...
     def remove_volume_contents(self, volume_dir: str) -> None: ...
     def remove_dir_contents(self, path: str) -> None: ...
@@ -614,6 +615,23 @@ class RealSlotOps:
 
     def systemctl(self, action: str, unit: str) -> None:
         subprocess.run(["systemctl", action, unit], check=True)
+
+    def unit_is_stopped(self, unit: str) -> bool:
+        """True when systemd has no such unit loaded, or it is inactive.
+        Reads two fixed properties with `systemctl show`; a property that
+        does not come back is never taken as stopped.
+        """
+        shown = subprocess.run(
+            ["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", unit],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        properties = dict(line.split("=", 1) for line in shown.splitlines() if "=" in line)
+        return (
+            properties.get("LoadState") == "not-found"
+            or properties.get("ActiveState") == "inactive"
+        )
 
     def load_image(self, path: str) -> None:
         """Opens `path` (always `IMAGE_LOAD_PATH`) with `O_NOFOLLOW` and
@@ -769,6 +787,20 @@ def _acquire_slot_lock(slot: str):
     return handle
 
 
+def _stop_colour_for_reset(ops: SlotOps, unit: str) -> None:
+    """Stops one colour unit for a reset. `systemctl stop` exits non-zero on
+    a unit that was never installed, which would abort the reset before
+    anything is emptied; a unit that is not loaded, or already inactive, is
+    as stopped as the reset needs it. Any other stop failure still raises.
+    """
+    try:
+        ops.systemctl("stop", unit)
+    except subprocess.CalledProcessError:
+        if ops.unit_is_stopped(unit):
+            return
+        raise
+
+
 def perform(invocation: Invocation, ops: SlotOps) -> None:
     if isinstance(invocation, LoadInvocation):
         # Not slot-scoped, so it never takes `_acquire_slot_lock` -- there is
@@ -790,7 +822,7 @@ def perform(invocation: Invocation, ops: SlotOps) -> None:
         # one (LLD-2 §01b, §02).
         for colour in COLOURS:
             unit = UNIT_TEMPLATE.format(slot=invocation.slot, colour=colour)
-            ops.systemctl("stop", unit)
+            _stop_colour_for_reset(ops, unit)
 
         # The tenant's Ghost data lives in two Docker volumes outside the slot
         # directory. The content volume's name is only on disk in that

@@ -118,7 +118,10 @@ see the next section.
 ## Content volume emptying
 
 `reset` empties the contents of two Docker volumes, after both colours are
-stopped and inside the per-slot lock, before it empties the slot directory:
+stopped and inside the per-slot lock, before it empties the slot directory.
+A colour unit that is not loaded (never installed, so `systemctl stop` exits
+non-zero) or already inactive counts as stopped; any other stop failure aborts
+the reset before anything is emptied:
 
 - **The data volume**, `_data_directory(slot)`: the SQLite database and local
   media both colours share.

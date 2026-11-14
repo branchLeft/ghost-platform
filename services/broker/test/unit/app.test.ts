@@ -215,6 +215,38 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       });
     });
 
+    it('a wrapper failure in a swap answers 503 with the head line only; the stderr reaches the log line, not the body', async () => {
+      const log: string[] = [];
+      broker = await startTestBroker({
+        wrapDeps: (deps) => ({ ...deps, log: (l) => log.push(l) }),
+      });
+      const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
+      await broker.signedFetch('POST', '/reconcile', { slot: '0', descriptor: first });
+
+      process.env.FAKE_WRAPPER_FAIL = '1';
+      process.env.FAKE_WRAPPER_STDERR = 'secret-reason: unit not loaded\r\nsecond line\n';
+      try {
+        const second = demoDescriptor({ ownerEmail: 'second@example.com' as EmailAddress });
+        const res = await broker.signedFetch('POST', '/reconcile', {
+          slot: '0',
+          descriptor: second,
+        });
+        expect(res.status).toBe(503);
+        const text = await res.text();
+        expect(text).toContain('slot wrapper failed: Command failed:');
+        expect(text).not.toContain('secret-reason');
+        expect(text).not.toContain('second line');
+        expect(text).not.toContain('forced failure');
+      } finally {
+        delete process.env.FAKE_WRAPPER_FAIL;
+        delete process.env.FAKE_WRAPPER_STDERR;
+      }
+
+      const swapFailure = log.find((l) => l.startsWith('colour swap failed for slot "0"'));
+      expect(swapFailure).toContain('stderr: secret-reason: unit not loaded\\r\\nsecond line');
+      expect(swapFailure).not.toMatch(/\n|\r/);
+    });
+
     it('a failed swap leaves the slot exactly as it found it -- the old colour is never reset', async () => {
       broker = await startTestBroker();
       const first = demoDescriptor({ ownerEmail: 'first@example.com' as EmailAddress });
