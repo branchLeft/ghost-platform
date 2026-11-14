@@ -8,7 +8,7 @@
 # inside its npm package, so neither base needs a compiler. bookworm-slim is
 # chosen because it tracks Debian's glibc and Node's own release-testing
 # matrix, which matters more at this service's scale than the size delta.
-FROM node:26.5.0-bookworm-slim
+FROM node:26.13.0-bookworm-slim
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json pins.
