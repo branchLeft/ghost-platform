@@ -41,10 +41,10 @@ A tenant's slug must not be taken. `registers/tenant-names.json` in the
 ghost-platform repository is the only list of taken names: `infrastructure`
 names (`website`, `edge`, `db`, `monitoring`, `nextcloud1`, `mail-spool`) are
 refused to every tenant, and a `tenant` name (tenant zero's `blog`) is taken
-only by the repository the register records for it. `GhostTenant` checks the
-second from `GITHUB_REPOSITORY` before anything else, and refuses a registered
-name when that variable is unset, so a local preview of tenant zero fails
-rather than passes. The list in `naming.ts` is generated from the register by
+only by the repository the register records for it. `GhostTenant` hands render
+core `GITHUB_REPOSITORY` as the claimant, and render core's claim rule is the
+only one; it refuses a registered name when that variable is unset, so a local
+preview of tenant zero fails rather than passes. The list in `naming.ts` is generated from the register by
 `scripts/sync-tenant-name-register.py` and checked in CI; it lags the register
 until the next release. See `naming.md`.
 

@@ -86,30 +86,6 @@ export function validateTenantSlug(slug: string): void {
   }
 }
 
-/**
- * Refuses a registered tenant name unless the apply runs in that name's own
- * repository. The claimant is the repo Actions reports in `GITHUB_REPOSITORY`,
- * never something derived from the slug. With the variable unset (a local
- * run) a registered name is refused: tenant applies run in CI. An
- * unregistered name passes. See naming.md#validatetenantnameclaim.
- */
-export function validateTenantNameClaim(
-  slug: string,
-  claimantRepo: string | undefined = process.env['GITHUB_REPOSITORY']
-): void {
-  const entry = TENANT_NAMES.find((candidate) => candidate.name === slug);
-  if (entry === undefined) {
-    return;
-  }
-  if (claimantRepo === undefined || claimantRepo.toLowerCase() !== entry.repo.toLowerCase()) {
-    throw new Error(
-      `GhostTenant: tenant name "${slug}" is registered to ${entry.repo}, and this apply runs in ` +
-        `${claimantRepo === undefined ? 'no repository (GITHUB_REPOSITORY is unset)' : claimantRepo}. ` +
-        `A name is claimed by its own repository only.`
-    );
-  }
-}
-
 /** MySQL identifiers cannot carry the hyphens a slug may. */
 export function sqlIdentifier(slug: string): string {
   return slug.replaceAll('-', '_');
