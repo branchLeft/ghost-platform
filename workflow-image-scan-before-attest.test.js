@@ -33,13 +33,13 @@ const PUBLISHERS = {
   'storage-gateway-image.yml': 'ghcr.io/branchleft/priv/storage-gateway',
   'percona-image.yml': 'ghcr.io/branchleft/percona-server',
   'mysqld-exporter-image.yml': 'ghcr.io/branchleft/mysqld-exporter',
+  'mailgun-shim-image.yml': 'ghcr.io/branchleft/mailgun-shim',
 };
 
 // Workflows that push but are not covered here, and why. A workflow that pushes
 // and is in neither list fails the discovery test below.
 const NOT_COVERED = {
   'image-mirror.yml': 'copies third-party images by digest; the mirror has its own change',
-  'mailgun-shim-image.yml': 'its attest step comes from an open change; the scan joins it there',
 };
 
 // The shapes of a step that sends an image to a registry.
