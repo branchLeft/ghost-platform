@@ -19,8 +19,24 @@ const FIXTURE_DIR = process.env.FIXTURE_DIR || '/fixtures';
 // the import manager is loaded.
 fs.mkdirSync(path.join(process.env.paths__contentPath, 'logs'), { recursive: true });
 
-const importManager = require(`${CORE}/data/importer/import-manager`);
 const adapterManager = require(`${CORE}/services/adapter-manager`).default;
+
+// The handlers and content-file importers a content import uses. Older Ghost
+// kept them on a singleton import manager; newer Ghost builds an ImportManager
+// per boot from `content-files.js`, so read them from wherever the image has
+// them. Either way they are Ghost's own code, built from the configured stores.
+function loadImporters() {
+  const legacy = require(`${CORE}/data/importer/import-manager`);
+  if (Array.isArray(legacy.handlers) && Array.isArray(legacy.importers)) {
+    return { handlers: legacy.handlers, importers: legacy.importers };
+  }
+  const { createContentFileHandlers, createContentFileImporters } = require(
+    `${CORE}/data/importer/content-files`
+  );
+  return { handlers: createContentFileHandlers(), importers: createContentFileImporters() };
+}
+
+const importManager = loadImporters();
 
 const KINDS = [
   { type: 'images', fixture: 'photo.png', entry: 'content/images/2019/01/photo.png' },
