@@ -59,3 +59,11 @@ jobs:
 
       - name: Mirror dry run
         run: python3 scripts/mirror-images.py --dry-run
+
+      # A package name not on registers/packages.json fails the pull request, so a
+      # new public name cannot be born by a merge.
+      - name: Package register tests
+        run: python3 -m unittest discover -s scripts -p 'test_package_register.py' -v
+
+      - name: Package names on the register
+        run: python3 scripts/package_register.py --root .
