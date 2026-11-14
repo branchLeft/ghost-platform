@@ -42,7 +42,7 @@ repos:
         name: prettier
         entry: sh -c 'pnpm_config_ignore_scripts=true pnpm run format'
         language: system
-        files: '\.(js|ts|json|yml|yaml|md)$'
+        files: '\.(js|mjs|ts|json|yml|yaml|md)$'
         pass_filenames: false
 
   - repo: local
