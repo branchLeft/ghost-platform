@@ -205,9 +205,17 @@ still hold more.
 `claimForDrain` atomically claims up to `limit` recipients for hand-over: every
 `pending` row whose `available_at` has come, plus every `held` row whose lease
 has lapsed (`held_until` has come), re-offered under its original id — nothing
-mints a new one. Candidates come oldest batch first and, within a batch (or
-between batches enqueued at the same moment), in enqueue order: SQLite's
-`rowid`, the one ordering key the schema does not otherwise carry.
+mints a new one. Candidates come login mail first, then bulk
+([`mailClass.ts`](mailClass.ts)): a message with no email id is sign-in mail a
+member is waiting on, and it is claimed ahead of every bulk row, including the
+unclaimed rest of a bulk batch enqueued earlier, so it never queues behind a
+newsletter. The rule is the mail collector's own (`mailClassOf`), so the shim
+and the collector's login lane agree on what a message is. Inside each class
+candidates come oldest batch first and, within a batch (or between batches
+enqueued at the same moment), in enqueue order: SQLite's `rowid`, the one
+ordering key the schema does not otherwise carry. A row already claimed stays
+with its drainer until its lease lapses; this orders what is claimed next, it
+does not take a claim back.
 
 - A suppressed recipient (any of the three types, for that domain) is resolved
   in place — recorded, excluded, no event — rather than ever handed to a

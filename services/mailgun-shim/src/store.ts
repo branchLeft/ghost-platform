@@ -17,6 +17,7 @@ import {
 } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { hashApiKey, verifyApiKey } from './crypto.js';
+import { MAIL_CLASS_RANK } from './mailClass.js';
 import { migrateStore } from './migrate.js';
 import { isSafeRecipientAddress } from './recipientSafety.js';
 import { events, queueBatches, queueRecipients, suppressions, tenants } from './schema.js';
@@ -179,7 +180,7 @@ export interface ShimStore {
 
   /**
    * Atomically claims up to `limit` recipients: pending rows, and held rows
-   * whose lease lapsed, oldest batch first. Suppressed and unsafe rows are
+   * whose lease lapsed, login mail (no email id) before bulk, then oldest batch first. Suppressed and unsafe rows are
    * resolved in place and still count toward `limit`; the first `false` from
    * `canSend` ends the claim. See store.md#claiming-for-drain.
    */
@@ -438,8 +439,14 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
               and(eq(queueRecipients.status, 'held'), lte(queueRecipients.heldUntil, now))
             )
           )
-          // rowid is enqueue order within a batch; SQLite-only, and the one ordering key the schema lacks.
-          .orderBy(asc(queueBatches.createdAt), asc(sql`${queueRecipients}.rowid`))
+          // Login mail first, so it is never queued behind a bulk batch enqueued earlier;
+          // then oldest batch first. rowid is enqueue order within a batch; SQLite-only,
+          // and the one ordering key the schema lacks. See store.md#claiming-for-drain.
+          .orderBy(
+            asc(MAIL_CLASS_RANK),
+            asc(queueBatches.createdAt),
+            asc(sql`${queueRecipients}.rowid`)
+          )
           .limit(limit)
           .all();
 
