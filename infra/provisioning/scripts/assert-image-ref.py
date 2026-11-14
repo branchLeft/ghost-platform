@@ -56,6 +56,7 @@ def check(image_ref):
     name = match.group("name")
     if not name.startswith(ALLOWED_PREFIX):
         detail = ""
+        # Deliberate: names the retired registry so a stale reference is told why.
         if "docker.pkg.dev" in name:
             detail = (" That is GCP Artifact Registry: the app host would need "
                       "GCP pull credentials, which is the dependency the "

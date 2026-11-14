@@ -61,6 +61,38 @@ that marks it dealt with. Nothing deletes a request. Nothing under
 revoke, a socket into a host, a child process or an ssh client. All wording is
 `ALL_CAPS` placeholder until the owner supplies it.
 
+### The support-access collector
+
+`src/collector/main.ts` is one run of the collector: it reads one host's
+exporter text from standard input, and for each tenant the text names it calls
+`OwnerDb.recordSupportAccess`. It is built into the same image as the two
+applications and run inside the console container, as
+`docker exec -i <console> node dist/collector/main.js`, so it holds no
+credential the console does not already hold (`CONSOLE_DATABASE_URL_FILE`).
+
+It does not fetch. A container on ops1 has no route to an app host (the
+`DOCKER-USER` policy drops it), so the fetch is `portal/host/`'s native program,
+which pipes each host's text to this one. The text is the five series the host
+writer emits (`branchleft_support_access_state`, `_lane`, `_granted_timestamp_seconds`,
+`_deadline_timestamp_seconds`, `_observed_timestamp_seconds`, each with a
+`tenant` label that is the tenant's slug); anything else in it is ignored.
+
+What it writes, and what it never does:
+
+- A tenant is written only from series the host gave for it. The collector has
+  no path that writes `closed` for a tenant, a host or a text it could not read:
+  silence is how the page learns `unknown`.
+- Nothing is written for a tenant whose slug is not a registered tenant name
+  (`OwnerDb.listTenantSlugs`), for a reading whose host time is more than 900
+  seconds (`SUPPORT_READING_FRESH_SECONDS`) before or after now, or for a tenant
+  whose series contradict the contract (a second state, no host time, a lane or
+  a clock on an account that is not open, a value that is not a number).
+- A line that carries one of the five names but is not a sample refuses the
+  whole text: nothing is written from it.
+- The run log has one line per tenant (`recorded state=...` or `left out: ...`)
+  and one for the run, and never a reason, a clock, a lane or an id. The exit
+  status is `0` only when the text was accepted and every write was made.
+
 ## Support tickets
 
 A signed-in tenant admin can raise a support ticket from the tenant portal. It

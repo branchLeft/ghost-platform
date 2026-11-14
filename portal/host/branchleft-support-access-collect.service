@@ -1,0 +1,20 @@
+# Carries each app host's support-access textfile into the portal: one run of
+# /usr/local/sbin/branchleft-support-access-collect. It runs as root on ops1, the
+# only user that may use the Docker socket, and holds no credential of its own:
+# the database URL stays inside the console container. See
+# portal/host/branchleft-support-access-collect.md.
+[Unit]
+Description=Carry each app host's support-access state into the portal
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# The exporter addresses, space separated, are the one value in the host file;
+# systemd splits them into one argument each.
+EnvironmentFile=/etc/branchleft/support-access-collect.env
+ExecStart=/usr/local/sbin/branchleft-support-access-collect $SUPPORT_ACCESS_EXPORTERS
+NoNewPrivileges=yes
+PrivateTmp=yes
+# One run reads each host in turn, each bounded at 10 seconds to fetch and 60 to write.
+TimeoutStartSec=5min

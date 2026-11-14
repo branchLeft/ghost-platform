@@ -42,6 +42,7 @@ export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.
 export type { DemoRequestView } from '../demoRequest.js';
 export {
   InvalidSupportReadingError,
+  SUPPORT_READING_FRESH_SECONDS,
   SUPPORT_REQUEST_STATUSES,
   type SupportAccessReading,
   type SupportRequestStatus,
@@ -129,6 +130,24 @@ export class OwnerDb {
         zitadelOrgId: row.zitadelOrgId,
         kind: parseTenantKind(row.kind),
       }));
+    });
+  }
+
+  /**
+   * Each registered tenant that has a name, as that name and its id. The name
+   * is the slug of the tenant's stack, which is the label a host's reports
+   * carry, so this is how a host's reading finds its tenant. A tenant with no
+   * name (a demo slot, tenant zero) is left out: nothing a host says can reach it.
+   */
+  async listTenantSlugs(): Promise<Array<{ slug: string; tenantId: string }>> {
+    return this.run(async (tx) => {
+      const rows = await tx
+        .select({ tenantId: tenantRegister.tenantId, tenantName: tenantRegister.tenantName })
+        .from(tenantRegister)
+        .orderBy(asc(tenantRegister.createdAt), asc(tenantRegister.tenantId));
+      return rows.flatMap((row) =>
+        row.tenantName === null ? [] : [{ slug: row.tenantName, tenantId: row.tenantId }]
+      );
     });
   }
 

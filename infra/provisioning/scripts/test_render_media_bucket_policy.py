@@ -311,7 +311,8 @@ class TestCredentialIsolation(unittest.TestCase):
 
 class TestPrefixCollision(unittest.TestCase):
     """A slug that is a prefix of another slug, which is where prefix-scoped
-    isolation went wrong on GCP and had to be defended with a trailing slash."""
+    isolation went wrong on an earlier platform and had to be defended with a
+    trailing slash."""
 
     def test_two_slugs_sharing_a_prefix_get_two_buckets(self):
         self.assertNotEqual(

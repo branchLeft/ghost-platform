@@ -143,8 +143,9 @@ ones the grant tool's read-only `report` command prints
 (`adapters/sso/scripts/break-glass-grant.md`). The tenant role holds `SELECT`
 alone, so nothing a tenant does can write what the page shows; the owner role
 holds `SELECT, INSERT, UPDATE`. `OwnerDb.recordSupportAccess(tenantId, reading,
-observedAt)` is the write the host-side collector will make; the collector
-itself is separate work.
+observedAt)` is the write the collector makes (`portal/apps/src/collector/`),
+and `OwnerDb.listTenantSlugs()` is its map from the slug a host's series carry
+(the tenant name above) to a tenant id; a tenant with no name is not in it.
 
 `TenantDb.ownSupportAccess(scope, now)` is what the page shows. A reading is
 believed for `SUPPORT_READING_FRESH_SECONDS` (900) either side of `now`: no

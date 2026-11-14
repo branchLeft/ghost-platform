@@ -11,7 +11,8 @@ const GhostErrors = require('@tryghost/errors');
 
 const { defineScanningStorageAdapter } = require('./scanning-storage');
 const { createPdqKnownMaterialCheck } = require('./checks');
-const { resolveVerdictSource } = require('./verdict-source');
+const { PRODUCTION, resolveVerdictSource } = require('./verdict-source');
+const { createSocketVerdictTransport } = require('./socket-verdict-transport');
 const { resolveTierPolicy } = require('./tier-policy');
 const { SafetyPolicy } = require('./policy');
 const { getProcessMetrics, configureProcessExport } = require('./metrics');
@@ -45,15 +46,32 @@ function loadImageTransform() {
 
 const Adapter = defineScanningStorageAdapter(StorageBase, { loadWrappedAdapterClass, GhostErrors });
 
-// The verdict channel is a separate story in a separate repo and does not
-// exist yet. Until it does, a feature has a verdict source only when its
-// config says `verdictSource=in-process-fake` outright (demo, dev and test
-// paths); otherwise it has none, and the decorator refuses new uploads
-// rather than vouching for bytes nobody scanned. verdict-source.md says why
-// the default is closed and what an operator sees.
+// The transport for `verdictSource=production`: the local unix socket the
+// host end listens on, named by `verdictSocketPath`. Only that setting names
+// a socket. With no path, or one the transport refuses (not an absolute
+// path), there is no transport, so `production` has no source and refuses
+// every upload: a missing setting is never turned into a guessed path.
+function socketTransportFor(config) {
+  if (config.verdictSource !== PRODUCTION) return undefined;
+  try {
+    return createSocketVerdictTransport({ socketPath: config.verdictSocketPath });
+  } catch {
+    return undefined;
+  }
+}
+
+// A feature has a verdict source only when its config names one outright:
+// `production` with a socket path (the host end of the verdict channel), or
+// `in-process-fake` (demo, dev and test paths). Otherwise it has none, and
+// the decorator refuses new uploads rather than vouching for bytes nobody
+// scanned. verdict-source.md says why the default is closed and what an
+// operator sees.
 module.exports = class ScanningStorageAdapter extends Adapter {
   constructor(config = {}) {
-    const { verdictClient, refuseUploadsReason } = resolveVerdictSource(config);
+    const { verdictClient, refuseUploadsReason } = resolveVerdictSource(config, {
+      transport: socketTransportFor(config),
+      logger: config.holdLogger || console,
+    });
     // One registry for the process, exported only when both keys are set
     // (metrics.md#configuration); nothing is written otherwise.
     const metrics = getProcessMetrics();

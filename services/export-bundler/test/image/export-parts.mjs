@@ -2,6 +2,11 @@
 // assertions name items rather than counting or checking status codes.
 // Rationale and how to add a part: export-reimport.image.test.md.
 
+// The named image. Media travels as an address, never as bytes: the content
+// export carries the reference and the media list carries the address, so the
+// image survives a re-import when the post still points at this address.
+export const NAMED_IMAGE = 'https://media.example.test/NAMED_TENANT/images/named-image.png';
+
 export const NAMED_POSTS = [
   {
     slug: 'named-post-published',
@@ -9,6 +14,7 @@ export const NAMED_POSTS = [
     status: 'published',
     body: 'NAMED_BODY_PUBLISHED',
     tag: 'named-tag-alpha',
+    image: NAMED_IMAGE,
   },
   {
     slug: 'named-post-draft',
@@ -61,6 +67,7 @@ export const contentPart = {
         status: post.status,
         html: `<p>${post.body}</p>`,
         tags: [{ slug: post.tag }],
+        ...(post.image === undefined ? {} : { feature_image: post.image }),
       });
     }
     await admin.setSettings(NAMED_SETTINGS);
@@ -96,6 +103,12 @@ export const contentPart = {
         (found.tags ?? []).some((t) => t.slug === named.tag),
         `post ${named.slug} is no longer tagged ${named.tag}`
       );
+      if (named.image !== undefined)
+        check(
+          failures,
+          found.feature_image === named.image,
+          `post ${named.slug} lost its image ${named.image}`
+        );
     }
     const tags = await admin.listTags();
     for (const named of NAMED_TAGS) {
@@ -200,5 +213,14 @@ export function dropPostFromContent(bytes, slug) {
     if (!data[key]) continue;
     data[key] = data[key].filter((row) => !dropped.includes(row.post_id));
   }
+  return Buffer.from(JSON.stringify(json));
+}
+
+/** The Content & settings JSON with one post's image removed: an export that lost a named image. */
+export function dropImageFromContent(bytes, slug) {
+  const json = JSON.parse(bytes.toString('utf8'));
+  const posts = json.db[0].data.posts.filter((p) => p.slug === slug && p.feature_image);
+  if (posts.length === 0) throw new Error(`the export holds no image on post ${slug} to drop`);
+  for (const post of posts) post.feature_image = null;
   return Buffer.from(JSON.stringify(json));
 }

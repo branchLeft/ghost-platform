@@ -30,9 +30,10 @@ serves nothing until one arrives. It does **not** build:
   extensible to other organisations later. `ScanningStorageAdapter.js`
   constructs a `FakeVerdictClient` from its own config only when
   `storage__<feature>__verdictSource=in-process-fake` is set outright, for
-  demo, dev and test paths. With that unset the adapter has no verdict
-  source and refuses every new upload with a 503 (see "No verdict source"
-  below); nothing here guesses the real channel's wire format or transport.
+  demo, dev and test paths, and the production client only when it says
+  `production` and names `verdictSocketPath` (`src/verdict-source.md`).
+  With neither the adapter has no verdict source and refuses every new
+  upload with a 503 (see "No verdict source" below).
   Because there is no real channel, "a later verdict arrives" can only
   mean one thing this decorator can observe: the same in-process
   `VerdictClient` answering differently on a later call (`src/hold.js`
@@ -42,7 +43,10 @@ serves nothing until one arrives. It does **not** build:
   local socket, a durable queue and an inbound end the safety service dials,
   is built in `verdict-host/` (`verdict-host/verdict-host.md`), with the
   decorator's transport in `src/socket-verdict-transport.js`
-  (`src/verdict-socket.md`). The entry file does not pass that transport yet.
+  (`src/verdict-socket.md`), which the entry file passes for `production`.
+  The digest it asks about is still a SHA-256 stand-in (`src/pdq.js`), which
+  the host end refuses as not a PDQ key, so until a real PDQ hash lands every
+  upload under `production` is held unserved, never allowed.
 - **An automated check for video, audio or arbitrary files.** PDQ is an
   image hash and no automated check for video or arbitrary files exists; it
   is not built here, and no frame sampling or fingerprinting is designed.

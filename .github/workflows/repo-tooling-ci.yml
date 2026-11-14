@@ -220,6 +220,16 @@ jobs:
       - name: Support-access textfile writer tests and sabotage proof
         run: python3 -m unittest discover -s adapters/sso/scripts/host -p 'test_*.py' -v
 
+      # The ops1 native half of the portal's support-access collector
+      # (portal/host/branchleft-support-access-collect.py): it fetches each app
+      # host's exporter text and hands it to the collector in the console
+      # container, and a host it cannot read must hand over nothing, never
+      # `closed`. Real local HTTP servers and a stand-in docker; no Docker, no
+      # root. The sabotage cases break the real source and require the matching
+      # check red.
+      - name: Support-access collector host program tests and sabotage proof
+        run: python3 -m unittest discover -s portal/host -p 'test_*.py' -v
+
       # registers/tenant-names.json is the only list of taken tenant names. The
       # two published TypeScript packages carry generated copies of it, and a
       # register edit that was not regenerated, or a hand edit to a copy, fails

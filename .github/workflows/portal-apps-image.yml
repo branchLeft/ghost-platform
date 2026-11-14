@@ -82,13 +82,13 @@ jobs:
             --tag portal-apps:ci \
             .
 
-      # Both entry points must load: a missing built sibling package fails
+      # Every entry point must load: a missing built sibling package fails
       # here, at import, rather than on the host. The container is removed on
       # exit. PORT and the config files are unset on purpose, so each process
       # must stop at its own configuration check, never at a missing module.
-      - name: Both entry points reach their configuration check
+      - name: Every entry point reaches its configuration check
         run: |
-          for entry in tenant console; do
+          for entry in tenant console collector; do
             output="$(docker run --rm portal-apps:ci node "dist/$entry/main.js" 2>&1 || true)"
             printf '%s\n' "$output" | grep -q 'ConfigError' || { echo "::error::$entry entry point did not reach its configuration check: $output"; exit 1; }
           done

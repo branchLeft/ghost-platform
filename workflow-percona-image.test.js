@@ -42,7 +42,9 @@ export function dockerfileProblems(source, mirroredDigests) {
       'the base is not the mirrored form ${IMAGE_REGISTRY:-docker.io/percona}/percona-server:8.0@sha256:<digest>'
     );
   } else if (!mirroredDigests.includes(from[1])) {
-    found.push(`the base digest ${from[1]} is not a percona-server entry in the mirror list`);
+    found.push(
+      `the base digest ${from[1]} is not the percona-server index entry in the mirror list`
+    );
   }
 
   const args = [...text.matchAll(/^ARG (.+)$/gm)].map((m) => m[1].trim());
@@ -188,8 +190,11 @@ const swap = (text, from, to) => {
 const dockerfile = read('db/percona/Dockerfile');
 const workflow = read('.github/workflows/percona-image.yml');
 const exemptions = JSON.parse(read('.image-scan-exemptions.json'));
+const AMD64_DIGEST = JSON.parse(read('.github/image-mirror/images.json')).images.find(
+  (i) => i.name === 'percona-server' && i.platform === 'linux/amd64'
+).digest;
 const mirrored = JSON.parse(read('.github/image-mirror/images.json'))
-  .images.filter((i) => i.name === 'percona-server')
+  .images.filter((i) => i.name === 'percona-server' && i.platform === undefined)
   .map((i) => i.digest);
 
 test('the Dockerfile layers over the mirrored Percona digest and changes only what it says', () => {
@@ -200,7 +205,8 @@ test('the Dockerfile checker reports each way the image can drift', () => {
   const digest = /@(sha256:[0-9a-f]{64})/.exec(dockerfile)[1];
   const cases = [
     [swap(dockerfile, `@${digest}`, ''), 'is not the mirrored form'],
-    [swap(dockerfile, digest, `sha256:${'0'.repeat(64)}`), 'not a percona-server entry'],
+    [swap(dockerfile, digest, `sha256:${'0'.repeat(64)}`), 'not the percona-server index entry'],
+    [swap(dockerfile, digest, AMD64_DIGEST), 'not the percona-server index entry'],
     [
       swap(dockerfile, '${IMAGE_REGISTRY:-docker.io/percona}', 'docker.io/percona'),
       'is not the mirrored form',

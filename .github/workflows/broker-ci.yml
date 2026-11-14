@@ -21,6 +21,9 @@ on:
       - 'render-core/**'
       - 'registers/**'
       - 'demo-host/provision/**'
+      # signedRequestScheme.test.ts scans the verdict host for a restated copy
+      # of the signed-request scheme.
+      - 'adapters/scanning-storage/verdict-host/**'
       - '.github/workflows/broker-ci.yml'
   # A pull request starts this only when its diff touches something the job
   # reads: the service, render-core (linked by `link:` and built first) and the
@@ -33,6 +36,9 @@ on:
       - 'render-core/**'
       - 'registers/**'
       - 'demo-host/provision/**'
+      # signedRequestScheme.test.ts scans the verdict host for a restated copy
+      # of the signed-request scheme.
+      - 'adapters/scanning-storage/verdict-host/**'
       - '.github/workflows/broker-ci.yml'
 
 # `packages: read` because this service takes a dev dependency on

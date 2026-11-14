@@ -2,9 +2,8 @@
  * Every name this component derives from a tenant slug, in one place.
  *
  * Pure string functions with no Pulumi types, so the whole set is testable
- * without an engine. That matters more here than it did on the GCP shape:
- * these names are not resource identifiers a provider would reject if wrong,
- * they are filesystem paths, Docker volume names and systemd instance names
+ * without an engine. That matters because these names are not resource
+ * identifiers a provider would reject if wrong, they are filesystem paths, Docker volume names and systemd instance names
  * on a host shared by every tenant. A collision is silent.
  */
 
