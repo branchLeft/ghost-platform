@@ -53,6 +53,22 @@ updates:
     labels:
       - 'dependencies'
 
+  # The mailgun shim's container base image (Dockerfile FROM line).
+  - package-ecosystem: 'docker'
+    directory: '/services/mailgun-shim'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
+    groups:
+      docker-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - 'minor'
+          - 'patch'
+    labels:
+      - 'dependencies'
+
   # Actions used by workflows in .github/workflows. Every action here is
   # pinned to a full commit SHA, so these bumps are how those pins move.
   - package-ecosystem: 'github-actions'
