@@ -124,11 +124,17 @@ describe('dist/server.js -- the header From check is on and has a scope', () => 
     expect(fromsAtSink()).toEqual(['hello@tenant-a.example']);
   });
 
-  it("holds a tenant's mail, unacked, when its descriptor names no sending domain", async () => {
+  it('refuses to drain a tenant whose descriptor names no sending domain: an error line, its mail left at the spool', async () => {
     shim.enqueue(message('genuine', 'hello@tenant-a.example'));
     await start({ kind: 'tenant' });
-    await until(() => logs.join('').includes('from-scope-unknown'), 'a hold', 10_000);
+    await until(
+      () => logs.join('').includes('descriptor_tenant_identity_missing'),
+      'a refusal',
+      10_000
+    );
     await settle();
+    expect(shim.drainRequests).toEqual([]);
+    expect(logs.join('')).not.toContain('from-scope-unknown');
     expect(sink.messages).toEqual([]);
     expect(acked()).toEqual([]);
   });

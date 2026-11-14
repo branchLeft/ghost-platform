@@ -19,6 +19,8 @@ const DRAIN_TOKEN = 'estate-drain-token';
 const here = dirname(fileURLToPath(import.meta.url));
 const COMMITTED_DESCRIPTORS = join(here, '..', '..', 'docker-proof', 'descriptors');
 
+const TENANT_IDENTITY = { kind: 'tenant', domain: 'tenant-a.example', dkimSelector: 'sel' };
+
 function descriptor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     kind: 'tenant',
@@ -26,6 +28,12 @@ function descriptor(overrides: Record<string, unknown> = {}): Record<string, unk
     appHostIp: '127.0.0.1',
     expiresAt: null,
     ...overrides,
+    // A tenant is drained only with a sendable identity (sendingDomain.test.ts), so a
+    // `mail` override that is a section keeps it; any other value is passed through.
+    mail:
+      typeof overrides.mail === 'object' && overrides.mail !== null
+        ? { identity: TENANT_IDENTITY, ...overrides.mail }
+        : (overrides.mail ?? { identity: TENANT_IDENTITY }),
   };
 }
 
@@ -59,7 +67,8 @@ describe('the drain target carries the descriptor mail route', () => {
   it('is mx1 for a descriptor that names no route, with or without a mail section', async () => {
     write('bare', descriptor({ slug: 'bare' }));
     write('mail-only', descriptor({ slug: 'mail-only', mail: { enabled: true } }));
-    write('odd-mail', descriptor({ slug: 'odd-mail', mail: 'not-an-object' }));
+    // A demo: a tenant with no readable identity is not drained at all (sendingDomain.test.ts).
+    write('odd-mail', descriptor({ kind: 'demo', slug: 'odd-mail', mail: 'not-an-object' }));
     const store = storeOver(dir);
     await store.refresh();
     expect(store.targets.map((t) => [t.id, t.route]).sort()).toEqual([

@@ -326,6 +326,18 @@ function checkNetworks(
       at(`joins network "${name}", which the file does not declare`);
       continue;
     }
+    // Every network the spool joins is IPv4 only. The routing reasoning (an
+    // internal tenant network, a drain bridge with masquerade off) and the host
+    // egress rule on the drain bridge are written for IPv4; an IPv6 network is a
+    // route neither covers. Anything but absent or a literal `false` is refused,
+    // so `true`, `'true'` and any other spelling fail closed.
+    if (network.enable_ipv6 !== undefined && network.enable_ipv6 !== false) {
+      at(
+        `network "${name}" must not set \`enable_ipv6\` (got ${JSON.stringify(network.enable_ipv6)}): ` +
+          'every network the spool joins is IPv4 only, and an IPv6 network gives it a route the ' +
+          'IPv4 reasoning does not cover'
+      );
+    }
     if (name === MAIL_SPOOL_DRAIN_NETWORK) {
       const opts = asRecord(network.driver_opts) ?? {};
       if (opts['com.docker.network.bridge.name'] !== MAIL_SPOOL_DRAIN_BRIDGE) {

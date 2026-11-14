@@ -275,6 +275,15 @@ first in `submit`). `server.ts` always switches it on (`enforceHeaderFrom`).
   descriptor. A demo descriptor carries no domain, so a demo's is
   `COLLECTOR_DEMO_MAIL_DOMAIN` (the platform's shared demo mail domain). The
   target carries it as `sendingDomain`; there is no second source.
+- **A tenant with no sending domain is refused, not held.** A tenant descriptor
+  whose `mail.identity` is missing, is not `kind: "tenant"`, or names a domain
+  that is not a plain hostname is not a drain target: the store logs an error
+  `descriptor_tenant_identity_missing` (file and slug, each refresh) and the
+  host's mail waits at its spool, never offered and never held one message at a
+  time. Whatever writes the descriptor on the collector host must therefore
+  write `mail.identity` for every tenant; the collector has no second lookup.
+  An expired descriptor is skipped before this check, and a demo is not subject
+  to it.
 - **Match.** Exact equality of the domain, after lower-casing, dropping trailing
   dots and converting an internationalised domain to its punycode form (the
   form the SMTP clients send). Never a subdomain or a suffix. The address is read
