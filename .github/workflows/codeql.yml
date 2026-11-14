@@ -34,6 +34,8 @@ on:
       - '**/*.vue'
       - '**/*.html'
       - '.github/workflows/codeql.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
   schedule:
     - cron: '30 1 * * 0'
 

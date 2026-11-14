@@ -7,7 +7,7 @@ via `BROKER_RENDERER_MODULE` in a real deploy.
 
 It carries no rendering logic of its own; every artefact comes from
 `render-core`'s `render()`, already a dependency of this service
-(`file:../../render-core` in `package.json`, used today for
+(pinned to a published version in `package.json`, used today for
 `TenantDescriptor`, `validate()` and `hashIdOf`).
 
 `zones` comes from `config.ts#zonesFromEnv` — the exact function

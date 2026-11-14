@@ -35,10 +35,11 @@ stop both of a slot's colour units and wipe the slot's own state: the slot
 directory, the two env files, and the contents of the slot's Ghost data
 volume and content volume (see "Content volume emptying" below; the
 adapters volume is never touched). For
-every slot/colour/reset invocation it never touches the Docker socket
-(systemctl is the only privileged primitive it uses there -- a docker
+every slot/colour/reset invocation it never touches the Docker socket,
+with one exception, `start` (see "Start creates the slot's volumes" below):
+systemctl is the privileged primitive everywhere else -- a docker
 command is root with no gradation, which is the exact erosion enumeration
-exists to avoid), never accepts a path as an argument, never writes
+exists to avoid. It never accepts a path as an argument, never writes
 `/etc/branchleft/<slot>-<colour>.env` (the broker writes that,
 unprivileged, before ever asking for a start), and never reads or touches
 anything outside the one slot its argv names.
@@ -115,10 +116,84 @@ SQLite file per slot, not one per colour -- so a colour argument changes
 nothing about which file this opens. `reset` empties this same directory,
 see the next section.
 
+## Start creates the slot's volumes
+
+The rendered `compose.yml` declares the slot's three volumes `external: true`
+(content, adapters, and the colour pair's shared data volume), so `docker
+compose up` fails on one that does not exist. Nothing else in the slot route
+creates them, so `start` does, before it starts the unit:
+`RealSlotOps.ensure_slot_volumes` reads `<slot dir>/compose.yml` (the same
+guarded reader `reset` uses) and runs `docker volume create <name>` for each
+name `_slot_volume_names` returns. `docker volume create` on a volume that
+exists exits zero and changes nothing, so a second lease, and the colour swap's
+`start`, repeat it harmlessly. A create that fails, times out or cannot run
+raises and the unit is never started.
+
+The creates run inside the broker's one wrapper call, which it kills at
+`BROKER_WRAPPER_TIMEOUT_MS` (30 s by default, `services/broker/src/config.ts`,
+the same figure for every verb). `start` runs up to three creates in a row and
+then `systemctl start`, so each create gets `_VOLUME_CREATE_TIMEOUT_SECONDS`
+(5 s): 15 s at worst, half the default, with the other half left for the unit.
+A create on a healthy daemon takes well under a second. A deploy that lowers
+the broker's figure has to lower this one with it.
+
+A failed or timed-out create raises `VolumeCreateFailed`, whose message names
+the volume and the exit status (or the timeout) and carries docker's stderr on
+the same line: whitespace runs collapsed to one space, anything outside
+printable ASCII written as `?`, cut at 300 characters. The argv is fixed words
+and a validated name, so the output holds no value this process was given
+beyond that name; the cut and the plain-ASCII rule keep one bad reply from
+filling or forging a log line. `main` prints it as the one stderr line, and the
+broker puts that stderr in its log, never in an HTTP body.
+
+This is the one place besides `load` that this process runs the Docker CLI,
+and it is narrow on the same terms: the argv is the fixed three words plus a
+name that has passed an anchored pattern; there is no shell; there is no path.
+`_slot_volume_names` returns only this slot's own `ghost-demo-<uid>-data`
+(never another slot's), one `ghost-<slug>-content` and one
+`ghost-<slug>-adapters` with a legal slug (the grammar `reset` already
+reads), and refuses a file naming two of either kind. Any other key, such as
+the mail spool, is never named: those are created elsewhere.
+
+Residual risk, as for `reset`: the names come from a broker-written file, so
+a compromised broker can make this process create an empty volume with a legal
+content or adapters name. It cannot name another slot's data volume, replace
+or empty an existing volume, or reach a path. The data volume is created
+root-owned, as `docker volume create` by hand makes it.
+
+A volume `docker volume create` makes has a root-owned `_data` directory,
+mode 0755, and the slot's Ghost runs as `<uid>:<uid>` with every capability
+dropped, so it could not create its SQLite file in the data volume. After the
+creates, `RealSlotOps._own_data_directory` gives that one directory,
+`DOCKER_VOLUME_ROOT/ghost-demo-<uid>-data/_data`, to the slot's own `uid:uid`
+(`_slot_uid`, the `UID_BASE + slot` the email-batches read already drops to,
+and the `user:` the compose file runs the slot as). The name is the slot's own,
+never taken from the compose file. The volume directory and `_data` are each
+opened `O_NOFOLLOW | O_DIRECTORY` relative to the one before and the owner is
+set with `fchown` on the open descriptor, so a link, a non-directory or a swap
+after the open is not followed; a link or non-directory raises `RefusedVolume`,
+a missing directory raises `VolumeCreateFailed`, and either stops the start.
+Only the directory is changed, never what is inside it. A directory the slot
+already owns is not touched, so a repeat `start` and the colour swap's `start`
+change nothing.
+
+Content and adapters are left alone on purpose: docker copies the image's own
+content directory into a fresh content volume with its ownership and mode, which
+the slot's uid can write (checked by mounting one that way), and the adapters
+volume is mounted `:ro`, so the slot never writes it. If either changes, so
+must this.
+
+`reset` never creates a volume, never removes one and never changes an owner:
+a slot that was never started has none, and the reset skips a volume directory
+that is missing (see below), so it finishes and the next `start` creates them.
+
 ## Content volume emptying
 
 `reset` empties the contents of two Docker volumes, after both colours are
-stopped and inside the per-slot lock, before it empties the slot directory:
+stopped and inside the per-slot lock, before it empties the slot directory.
+A colour unit that is not loaded (never installed, so `systemctl stop` exits
+non-zero) or already inactive counts as stopped; any other stop failure aborts
+the reset before anything is emptied:
 
 - **The data volume**, `_data_directory(slot)`: the SQLite database and local
   media both colours share.
