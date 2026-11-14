@@ -15,6 +15,16 @@ export const MAILER: Target = {
   folder: 'tenant',
 };
 
+export const CONSOLE: Target = {
+  file: fileURLToPath(new URL('../src/console/app.ts', import.meta.url)),
+  folder: 'console',
+};
+
+export const REQUESTS: Target = {
+  file: fileURLToPath(new URL('../src/console/requestsScreen.ts', import.meta.url)),
+  folder: 'console',
+};
+
 export const POOL: Target = {
   file: fileURLToPath(new URL('../src/shell/pool.ts', import.meta.url)),
   folder: 'shell',
@@ -37,8 +47,8 @@ export function clearMutants(): void {
  * something else, throws instead of passing quietly. `where` is the module:
  * a `Target`, or its path under `src/` (e.g. `shell/clientLimit.ts`); the SMTP
  * mailer when omitted. The copy's relative imports are pointed back at the
- * module's own directory under `src/` before the target is looked for, so a
- * target or a replacement may name one of them: `../../src/<directory>/<file>`
+ * module's own directory under `src/`, and `../` ones at `src/`, before the target is looked
+ * for, so a target or a replacement may name one of them: `../../src/<directory>/<file>`
  * for a real module, or `./<name>.js` for another mutant written by an earlier
  * call.
  */
@@ -51,10 +61,13 @@ export async function importSabotaged<T>(
   const source: Target =
     typeof where === 'string' ? { file: `${SOURCE_ROOT}${where}`, folder: dirname(where) } : where;
   const original = readFileSync(source.file, 'utf8');
-  const pointed = original.replace(
-    /from '\.\/([^']+)'/g,
-    (_match, file: string) => `from '../../src/${source.folder}/${file}'`
-  );
+  // A sibling folder (`../shell/html.js`) points back into `src/` the same way.
+  const pointed = original
+    .replace(/from '\.\.\/([^']+)'/g, (_match, file: string) => `from '../../src/${file}'`)
+    .replace(
+      /from '\.\/([^']+)'/g,
+      (_match, file: string) => `from '../../src/${source.folder}/${file}'`
+    );
   const occurrences = pointed.split(target).length - 1;
   if (occurrences !== 1) {
     throw new Error(`sabotage target must occur exactly once, found ${occurrences}`);
