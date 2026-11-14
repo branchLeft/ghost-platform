@@ -95,3 +95,68 @@ point inside the volume reports another device, so the reset must refuse
 and leave its contents alone. The test fakes `st_dev + 1` for that one
 descriptor, since a real mount needs root. `sabotage_branchleft_slot.py`
 disables the check in a scratch copy: the suite must go red, then green.
+
+## UnitIsStoppedTests
+
+`RealSlotOps.unit_is_stopped` is the whole of the reset's tolerance ruling: a
+colour unit counts as stopped only when it is not loaded (`LoadState=not-found`)
+or already inactive (`ActiveState=inactive`). `subprocess.run` is patched, so
+each test feeds it one `systemctl show` output. Not-found alone and inactive
+alone each get a test, so dropping either branch turns one red. Every other
+active state, every other load state, a property that does not come back, and
+output with no properties at all must read as not stopped. A `systemctl show`
+that fails must raise: the double raises only when the call asked for
+`check=True`, so dropping that argument is caught.
+
+## ResetOfUnitsNotStoppedTests
+
+Drives `perform` for a reset whose `systemctl stop` fails, with the real
+`unit_is_stopped` reading a patched `systemctl show`. The tolerated cases (not
+loaded, already inactive) must end with the slot emptied. Every other state, a
+missing property, a failing `systemctl show`, one colour tolerated and the other
+stuck, and any stop error that is not a failed exit (a missing binary, a
+permission error, a timeout) must raise with nothing wiped, not even the read of
+the content volume name. `sabotage_branchleft_slot.py` loosens each of these in a
+scratch copy and requires the suite red against a baseline run of the untouched
+copy, then green.
+
+## SlotVolumeNamesTests, StartCreatesSlotVolumesTests, RealEnsureSlotVolumesTests
+
+`start` creates the slot's external volumes before it starts the unit, since
+nothing else does. `_slot_volume_names` is tested as a pure function of a
+compose text: this slot's data volume, one content and one adapters volume,
+and nothing else (another slot's data volume, near-miss data names, the mail
+spool, path-shaped names, keys outside the top-level `volumes:` block, two
+content or two adapters volumes). `perform` is tested with `FakeSlotOps` for
+the order (create, then start) and for what must never create: `stop`, and
+`reset`. `RealSlotOps.ensure_slot_volumes` is tested with `subprocess.run`
+patched: the exact `docker volume create <name>` argv with `check=True`, a
+timeout and no shell; the same argv again on a second start; no compose file,
+a symlink or a FIFO creates nothing; a refused file creates nothing; a failing,
+missing or hanging `docker` raises, and a failed or timed-out create raises
+`VolumeCreateFailed` with docker's stderr on one line (newlines collapsed,
+control and non-ASCII characters replaced, cut short, absent stderr tolerated,
+one stderr line out of `main`).
+
+`DataVolumeOwnershipTests` covers the owner of the data volume's `_data`
+directory against a scratch volume root, with `os.fchown` patched (a test
+process is not root) to record the inode it was given: the slot's uid and gid
+(and another slot's), after the last create, on the directory only, once even
+across a repeat start, never on content or adapters or when the compose file
+names no data volume, a link or non-directory refused and not followed (also
+when swapped after the open), a missing directory or volume root an error, and
+a failed chown stopping the start before the unit. `reset` never chowning is
+asserted in `ResetOnVolumesThatDoNotExistYetTests`.
+
+`VolumeCreateTimeoutBudgetTests` pins the per-create timeout: a number above
+zero on every call (so a removed or `None` timeout fails), exactly 5 s, and the
+total at most half the broker's 30 s default. The 30 s is a constant in the
+test, guarded against `services/broker/src/config.ts` by a test that skips when
+that file is not beside the directory (the sabotage copy). The sabotage script
+proves the removed, `None` and 60 s timeouts and the stderr rows red.
+
+## ResetOnVolumesThatDoNotExistYetTests
+
+A slot never started has no volumes. `reset` of it, run for real against a
+scratch tree, must empty the slot directory, create nothing under the volume
+root and run only `systemctl`.

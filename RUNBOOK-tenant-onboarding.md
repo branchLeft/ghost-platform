@@ -9,6 +9,9 @@ is operator-run for a stated reason rather than because nobody automated it yet.
 `TENANT_PROVISIONING_FLOW_HETZNERISED` repository variable on
 `branchLeft/ghost-platform` is `true`. **Step 0 opens it, immediately before the
 run, and closes it again if the run fails.**
+`provisioning-gate-watch.yml` goes red when the variable is `true` and no
+provisioning run is active or recent, so a close that is skipped is reported
+within the hour.
 
 ## Addresses this runbook uses
 

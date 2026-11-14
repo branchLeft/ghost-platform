@@ -4,11 +4,11 @@ import type { TenantStackDescriptor } from '@branchleft/ghost-platform-render-co
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { GhostTenant as GhostTenantClass } from './index';
 import { mediaBucketName } from './media';
+import * as naming from './naming';
 import {
   RESERVED_STACK_NAMES,
   TENANT_NAMES,
   TENANT_NAME_REGISTER,
-  validateTenantNameClaim,
   validateTenantSlug,
 } from './naming';
 import { TEST_ZONES, tenantZeroEquivalent } from './test/fixtures';
@@ -64,43 +64,14 @@ describe('the generated register agrees with registers/tenant-names.json', () =>
   });
 });
 
-describe('validateTenantNameClaim', () => {
-  it('accepts a registered tenant name from its own repository', () => {
-    expect(() => validateTenantNameClaim('blog', TENANT_ZERO_REPO)).not.toThrow();
+describe("one claim implementation: render core's", () => {
+  it('naming.ts no longer carries a claim function of its own', () => {
+    expect(Object.keys(naming)).not.toContain('validateTenantNameClaim');
   });
 
-  it('compares the repository case-insensitively, as GitHub does', () => {
-    expect(() => validateTenantNameClaim('blog', TENANT_ZERO_REPO.toLowerCase())).not.toThrow();
-  });
-
-  it('refuses a registered tenant name from any other repository', () => {
-    expect(() => validateTenantNameClaim('blog', DUPLICATE_REPO)).toThrow(/registered to/);
-  });
-
-  it('refuses a registered tenant name when no repository is known', () => {
-    vi.stubEnv('GITHUB_REPOSITORY', '');
-    expect(() => validateTenantNameClaim('blog', '')).toThrow(/registered to/);
-  });
-
-  it('reads GITHUB_REPOSITORY when no repository is passed, and refuses when it is absent', () => {
-    vi.stubEnv('GITHUB_REPOSITORY', TENANT_ZERO_REPO);
-    expect(() => validateTenantNameClaim('blog')).not.toThrow();
-    vi.stubEnv('GITHUB_REPOSITORY', DUPLICATE_REPO);
-    expect(() => validateTenantNameClaim('blog')).toThrow(/registered to/);
-    vi.unstubAllEnvs();
-    delete process.env['GITHUB_REPOSITORY'];
-    expect(() => validateTenantNameClaim('blog')).toThrow(/GITHUB_REPOSITORY is unset/);
-  });
-
-  it('control: an unregistered name passes from any repository, or none', () => {
-    expect(() => validateTenantNameClaim('demo-1', DUPLICATE_REPO)).not.toThrow();
-    expect(() => validateTenantNameClaim('demo-1', undefined)).not.toThrow();
-  });
-
-  it('is not derived from the slug: a repo named for the slug is not enough', () => {
-    expect(() => validateTenantNameClaim('blog', 'someone/ghost-tenant-blog')).toThrow(
-      /registered to/
-    );
+  it('the package index no longer exports one either', async () => {
+    const index = await import('./index.js');
+    expect(Object.keys(index)).not.toContain('validateTenantNameClaim');
   });
 });
 
@@ -110,9 +81,24 @@ describe('GhostTenant and the tenant-name claim', () => {
     expect(() => buildBlog('duplicate')).toThrow(/registered to branchLeft\/ghost-tenant-blog/);
   });
 
-  it('refuses a local run, where GITHUB_REPOSITORY is unset', () => {
+  it('refuses a local run, where GITHUB_REPOSITORY is unset (fail closed)', () => {
     delete process.env['GITHUB_REPOSITORY'];
-    expect(() => buildBlog('local-run')).toThrow(/GITHUB_REPOSITORY is unset/);
+    expect(() => buildBlog('local-run')).toThrow(/registered to branchLeft\/ghost-tenant-blog/);
+  });
+
+  it('refuses a registered name when GITHUB_REPOSITORY is empty', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', '');
+    expect(() => buildBlog('empty-repo')).toThrow(/registered to branchLeft\/ghost-tenant-blog/);
+  });
+
+  it('is not derived from the slug: a repository named for the slug is not enough', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', 'someone/ghost-tenant-blog');
+    expect(() => buildBlog('look-alike')).toThrow(/registered to/);
+  });
+
+  it('compares the repository case-insensitively, as GitHub does', () => {
+    vi.stubEnv('GITHUB_REPOSITORY', TENANT_ZERO_REPO.toLowerCase());
+    expect(() => buildBlog('lower-case')).not.toThrow();
   });
 
   it("accepts tenant zero's own repository and constructs in full", async () => {

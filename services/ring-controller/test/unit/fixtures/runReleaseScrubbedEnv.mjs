@@ -1,19 +1,19 @@
 // Standalone fixture, plain JS with no dependency on this package's build:
-// runs the compiled `runRelease` in a real child process whose environment
-// the parent test chose, with fake hosts and a fake clock, and prints one
-// JSON line describing what happened.
+// runs the compiled real entry, `runReleaseFromProcess`, in a real child
+// process whose environment the parent test chose, with fake hosts and a
+// fake clock, and prints one JSON line describing what happened.
 //
 //   argv[2]  directory holding the compiled src/ (the test transpiles it)
 //   argv[3]  'green' or 'red': whether every gate passes
 //
-// It hands the child's own environment to `runRelease` as it stands; the
-// parent decides what that holds.
+// It passes no environment: the entry reads the child's own, as it stands,
+// and the parent decides what that holds.
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 
 const [, , compiledDir, scenario] = process.argv;
 const load = (name) => import(pathToFileURL(join(compiledDir, name)).href);
-const { runRelease } = await load('ringController.js');
+const { runReleaseFromProcess } = await load('processEntry.js');
 const { BumpStateMachine } = await load('bumpStateMachine.js');
 const { createApplyLock } = await load('applyLock.js');
 
@@ -70,11 +70,10 @@ const bake = { bakeMs: 1000, pollMs: 500 };
 const config = { 'slot-0': bake, demos: bake, entry: bake, professional: bake };
 
 try {
-  const outcome = await runRelease(
+  const outcome = await runReleaseFromProcess(
     { digest, version: '9.9.9', route: 'fast-path' },
     deps,
-    config,
-    process.env
+    config
   );
   console.log(
     JSON.stringify({

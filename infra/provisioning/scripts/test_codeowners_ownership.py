@@ -160,7 +160,7 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("scripts/mollie-test-charge.py", True, "protected environment"),
     ("scripts/test_mollie_test_charge.py", True, "protected environment"),
     ("scripts/assert-lockfile-package-dir.py", True, "gates a lockfile write"),
-    ("scripts/assert-broker-contract-generated.py", True, "speckify.yml writes"),
+    ("scripts/assert-contracts-generated.py", True, "speckify.yml writes"),
     ("services/broker/release/check_release_tag.py", True, "broker-release.yml release"),
     ("services/broker/release/pack-release.sh", True, "broker-release.yml build feeds release"),
     ("services/broker/esbuild.bundle.mjs", True, "bundle step of the job that feeds release"),
@@ -260,7 +260,7 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("db/recovery/Dockerfile", True, "recovery-image.yml push, packages write"),
     ("db/provision/install_host_prereqs.py", True, "copied into the recovery image and run by its build"),
     ("services/demo-edge/Dockerfile", True, "demo-edge-image.yml build feeds push; its xcaddy line picks the DNS module"),
-    ("adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh", True, "run by the root Dockerfile build"),
+    ("adapters/ghost-core-overlay/apply-patch.sh", True, "run by the root Dockerfile build"),
     ("themes/fetch.mjs", True, "run by the root Dockerfile build"),
     ("themes/lib/treehash.mjs", True, "imported by themes/verify.mjs, run by that build"),
     # Criterion 1 and 7: the pre-swap scratch-copy gate and its tests (nonzero exit means do not swap).

@@ -34,7 +34,11 @@ export interface RecordingRenderer extends Renderer {
 
 export interface RecordingAdminApi extends AdminApiClient {
   readonly calls: { baseUrl: string; descriptor: TenantDescriptor }[];
+  /** Every slot `forget` was called for, in order. */
+  readonly forgotten: SlotName[];
   fail: boolean;
+  /** When set, `forget` rejects, as a failed revoke would. */
+  failForget: boolean;
 }
 
 export interface ControllableDrainSource extends DrainSource {
@@ -122,10 +126,16 @@ function createRecordingRenderer(): RecordingRenderer {
 function createRecordingAdminApi(): RecordingAdminApi {
   return {
     calls: [],
+    forgotten: [],
     fail: false,
+    failForget: false,
     async configure(baseUrl, descriptor) {
       this.calls.push({ baseUrl, descriptor });
       if (this.fail) throw new Error('admin API sabotage failure');
+    },
+    async forget(slot) {
+      if (this.failForget) throw new Error('admin API forget sabotage failure');
+      this.forgotten.push(slot);
     },
   };
 }

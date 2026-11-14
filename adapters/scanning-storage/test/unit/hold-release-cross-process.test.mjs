@@ -6,10 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { holdersOf } from '../helpers/holders.mjs';
 
 const require = createRequire(import.meta.url);
 const { digestBytes } = require('../../src/pdq.js');
-const { HOLDS_SUFFIX } = require('../../src/hold.js');
+const { HoldRegistry } = require('../../src/hold.js');
 const { RELEASING_INFIX } = require('../../src/quarantine.js');
 
 const ACTOR = path.join(
@@ -75,8 +76,31 @@ async function open(role, n) {
 }
 
 async function sidecarOwners() {
-  const raw = await fs.readFile(path.join(quarantinePath, `${DIGEST}${HOLDS_SUFFIX}`), 'utf8');
-  return Object.keys(JSON.parse(raw).owners).sort();
+  return Object.keys((await holdersOf(quarantinePath, DIGEST)).owners).sort();
+}
+
+function registryFor(owner) {
+  return new HoldRegistry({
+    checks: [],
+    policy: { decide: () => 'hold' },
+    quarantinePath,
+    owner,
+    computeDigest: digestBytes,
+    logger: { error: () => {} },
+  });
+}
+
+// What a restart of this owner would resume: the targets it would promote,
+// or none when its hold was lost.
+function resumedTargets(owner) {
+  const registry = registryFor(owner);
+  const targets = [];
+  registry.resumeFromQuarantine((targetPath) => {
+    targets.push(targetPath);
+    return { onAllow: () => {}, onRefuse: () => {} };
+  });
+  registry.stopAll();
+  return targets;
 }
 
 // The release has two steps a second process can land inside: before the
@@ -122,3 +146,50 @@ describe.each([['before'], ['after']])(
     }, 30_000);
   }
 );
+
+// The last holder's release decides from what it finds whether other
+// holders remain. A hold in another process that lands after the releaser
+// looked, and before it gives up its own entry, must survive the release:
+// its entry kept, and the bytes with it.
+describe('a hold in another process landing while a release is deciding whether it is the last holder', () => {
+  async function race() {
+    const releaser = startActor('releaser', 'entry');
+    const holder = startActor('holder');
+    await waitFor('releaser.at0');
+    await waitFor('holder.at0');
+
+    await open('releaser', 0);
+    await waitFor('releaser.at1');
+    await open('holder', 0);
+    await waitFor('holder.done');
+
+    await open('releaser', 1);
+    await waitFor('releaser.done');
+    for (const { code, stderr } of await Promise.all([releaser.exited, holder.exited])) {
+      expect(code, stderr).toBe(0);
+    }
+  }
+
+  it('keeps the other process’s hold and the bytes when the releaser was the last holder', async () => {
+    await race();
+
+    await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
+    expect(resumedTargets('holder-owner')).toEqual(['holder.png']);
+  }, 30_000);
+
+  it('keeps the other process’s hold when a third holder also remains', async () => {
+    const bystander = registryFor('bystander-owner');
+    await bystander.hold(DIGEST, BYTES, {
+      targetPath: 'bystander.png',
+      onAllow: () => {},
+      onRefuse: () => {},
+    });
+    bystander.stopAll();
+
+    await race();
+
+    await expect(fs.readFile(path.join(quarantinePath, DIGEST))).resolves.toEqual(BYTES);
+    expect(resumedTargets('holder-owner')).toEqual(['holder.png']);
+    expect(resumedTargets('bystander-owner')).toEqual(['bystander.png']);
+  }, 30_000);
+});

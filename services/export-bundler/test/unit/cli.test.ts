@@ -3,7 +3,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { main } from '../../src/cli.js';
+import {
+  EXIT_CLEANUP_FAILED,
+  exitCodeFor,
+  failureLines,
+  main,
+  reportExport,
+} from '../../src/cli.js';
+import { ExportCleanupError, type ExportResult } from '../../src/exportRunner.js';
 import { DockerEngineTooOldError } from '../../src/containerRunner.js';
 import { TenantConfigError } from '../../src/tenantConfig.js';
 import { writeFakeDocker } from '../helpers/fakeDocker.js';
@@ -103,5 +110,59 @@ describe('main: the Docker engine gate runs first', () => {
     );
     expect(target.listenerCount('SIGINT')).toBe(1);
     expect(process.listenerCount('SIGINT')).toBe(before);
+  });
+});
+
+describe('reportExport and the failure lines', () => {
+  const result: ExportResult = {
+    archivePath: '/dest/t-export.tar.age',
+    manifestPath: '/dest/t-export.manifest.json',
+    archiveSha256: 'a'.repeat(64),
+    manifest: { complete: true } as ExportResult['manifest'],
+  };
+
+  it('prints path, sha256, manifest and completeness, and returns, when teardown was clean', () => {
+    const out: string[] = [];
+    reportExport(result, (l) => out.push(l));
+    expect(out).toEqual([
+      'export-bundler: wrote /dest/t-export.tar.age',
+      `export-bundler: sha256 ${'a'.repeat(64)}`,
+      'export-bundler: manifest /dest/t-export.manifest.json',
+      'export-bundler: complete true',
+    ]);
+  });
+
+  it('prints the whole result first, then raises ExportCleanupError naming the teardown failure', () => {
+    const out: string[] = [];
+    const cleanupErrors = [new Error('docker volume rm: volume is in use')];
+    let raised: unknown;
+    try {
+      reportExport({ ...result, cleanupErrors }, (l) => out.push(l));
+    } catch (err) {
+      raised = err;
+    }
+    expect(out).toHaveLength(4);
+    expect(out[1]).toBe(`export-bundler: sha256 ${'a'.repeat(64)}`);
+    expect(raised).toBeInstanceOf(ExportCleanupError);
+    expect((raised as ExportCleanupError).cleanupErrors).toBe(cleanupErrors);
+    expect(failureLines(raised)).toEqual([
+      'export-bundler: ExportCleanupError: the export succeeded but a cleanup step failed ' +
+        '(Error: docker volume rm: volume is in use)',
+    ]);
+    expect(exitCodeFor(raised)).toBe(EXIT_CLEANUP_FAILED);
+  });
+
+  it('a failed export keeps its own error first, then names the teardown failures; exit 1', () => {
+    const err = new Error('export sabotage failure');
+    Object.defineProperty(err, 'cleanupErrors', { value: [new Error('network rm refused')] });
+    expect(failureLines(err)).toEqual([
+      'export-bundler: Error: export sabotage failure',
+      'export-bundler: and then a cleanup step failed (Error: network rm refused)',
+    ]);
+    expect(exitCodeFor(err)).toBe(1);
+  });
+
+  it('a failed export with clean teardown prints one line', () => {
+    expect(failureLines(new Error('boom'))).toEqual(['export-bundler: Error: boom']);
   });
 });

@@ -1,0 +1,13 @@
+# Runs the textfile writer 60 seconds after the last run finished, so runs never
+# overlap. Not Persistent: a minute missed while the host was down is not replayed,
+# and the file's own observedAt times say how old each reading is.
+[Unit]
+Description=Write each tenant's support-access state to the node_exporter textfile, every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

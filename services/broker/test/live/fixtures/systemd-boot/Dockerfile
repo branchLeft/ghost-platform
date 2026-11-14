@@ -100,6 +100,16 @@ RUN mkdir -p /etc/branchleft /var/lib/branchleft/broker-slots /var/lib/docker/vo
  && chown root:root /var/lib/branchleft && chmod 0755 /var/lib/branchleft \
  && chown -R broker:broker /var/lib/branchleft/broker-slots
 
+# A tenant volume with content in it, laid out as Docker's local driver does
+# (`<volume root>/<name>/_data`): the data volume of slot 0, whose name the
+# wrapper derives from the slot (uid 30001 + 0). A plain file, a dotfile and a
+# nested directory with a file inside it, so a reset has real entries to unlink
+# and a subdirectory to remove, which is what a read-only volume root breaks.
+RUN mkdir -p /var/lib/docker/volumes/ghost-demo-30001-data/_data/nested/deeper \
+ && echo seeded > /var/lib/docker/volumes/ghost-demo-30001-data/_data/tenant.db \
+ && echo seeded > /var/lib/docker/volumes/ghost-demo-30001-data/_data/.hidden \
+ && echo seeded > /var/lib/docker/volumes/ghost-demo-30001-data/_data/nested/deeper/inner.txt
+
 COPY services/broker/systemd/broker.env.example /etc/branchleft/broker.env
 RUN chown root:root /etc/branchleft/broker.env && chmod 0600 /etc/branchleft/broker.env
 

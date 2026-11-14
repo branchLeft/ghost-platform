@@ -451,3 +451,86 @@ describe('the tenant moderation page, through the route', () => {
     }
   });
 });
+
+describe('the explainer and the FAQ, through the route', () => {
+  /**
+   * The control case's database: the real tenant data layer except the kind
+   * read, which answers whatever it is given (the same shape as the moderation
+   * control above).
+   */
+  const dbWithKind = (kind: () => Promise<unknown>): TenantDb => {
+    const real = new TenantDb(fixture.tenant);
+    return new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'ownKind') return kind;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
+
+  it('links the explainer and the FAQ from the landing of a REAL tenant only', async () => {
+    const real = new Browser(app.origin);
+    await signIn(real, tenantToken(ORG_A));
+    const realLanding = await real.request('/');
+    expect(realLanding.body).toContain('href="/explainer"');
+    expect(realLanding.body).toContain('href="/faq"');
+
+    const demo = new Browser(app.origin);
+    await signIn(demo, tenantToken(ORG_B));
+    const demoLanding = await demo.request('/');
+    expect(demoLanding.body).not.toContain('href="/explainer"');
+    expect(demoLanding.body).not.toContain('href="/faq"');
+  });
+
+  it('serves a REAL tenant the explainer and the FAQ, with no support link while support is off', async () => {
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_A));
+    const explainer = await browser.request('/explainer');
+    expect(explainer.status).toBe(200);
+    expect(explainer.body).toContain('EXPLAINER_TITLE');
+    const faq = await browser.request('/faq');
+    expect(faq.status).toBe(200);
+    expect(faq.body).toContain('FAQ_TITLE');
+    expect(faq.body).toContain('href="/documents"');
+    expect(faq.body).not.toContain('href="/support');
+  });
+
+  it('gives a DEMO-registered tenant the notice and none of the content', async () => {
+    const browser = new Browser(app.origin);
+    await signIn(browser, tenantToken(ORG_B));
+    for (const path of ['/explainer', '/faq']) {
+      const page = await browser.request(path);
+      expect(page.status).toBe(200);
+      expect(page.body).toContain('DEMO_NO_EXPLAINER');
+      expect(page.body).not.toContain('EXPLAINER_TITLE');
+      expect(page.body).not.toContain('FAQ_TITLE');
+    }
+  });
+
+  it.each([[undefined], ['real'], ['Real'], [''], [null]])(
+    'refuses the kind %j: both pages fail, with no content and no demo notice (control case)',
+    async (value) => {
+      const server = await serve((origin) =>
+        portalOn(
+          origin,
+          dbWithKind(async () => value)
+        )
+      );
+      try {
+        const browser = new Browser(server.origin);
+        await signIn(browser, tenantToken(ORG_A));
+        for (const path of ['/explainer', '/faq']) {
+          const page = await browser.request(path);
+          expect(page.status).toBe(500);
+          expect(page.body).toBe('FAILED');
+          expect(page.body).not.toContain('EXPLAINER_TITLE');
+          expect(page.body).not.toContain('FAQ_TITLE');
+          expect(page.body).not.toContain('DEMO_NO_EXPLAINER');
+        }
+      } finally {
+        await server.close();
+      }
+    }
+  );
+});

@@ -332,7 +332,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
     await throttleFor(lane).waitForToken();
     mx1Pins.markSubmitted(message.id);
     try {
-      await deps.deliveryClient.deliver(message, target.id);
+      await deps.deliveryClient.deliver(message, target.id, { demo: target.demo === true });
     } catch (error) {
       deps.health.recordFailure();
       if (lane === 'bulk' && deps.bulkCap && isBulkDeferral(error)) {

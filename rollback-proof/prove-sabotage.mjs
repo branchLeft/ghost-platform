@@ -67,6 +67,24 @@ export const CASES = [
     'false',
   ],
   [
+    'contract: the in-development tables are not filtered out of the expected tables',
+    'contract.mjs',
+    'if (skipped.has(table)) continue;',
+    '',
+  ],
+  [
+    'contract: the old image output is parsed from its start, not after the marker',
+    'contract.mjs',
+    'out.slice(at + SCHEMA_MARKER.length)',
+    'out',
+  ],
+  [
+    'proof: the old image in-development list is not passed to the contract',
+    'proof.mjs',
+    '          await session.readLiveColumns(),\n          inDevelopment\n',
+    '          await session.readLiveColumns()\n',
+  ],
+  [
     'proof: findings never turn the schema check red, so never warn',
     'proof.mjs',
     'if (findings.length > 0) {',
@@ -138,6 +156,24 @@ export const CASES = [
     'proof.mjs',
     "Object.freeze(['new-boots', 'data-intact'])",
     "Object.freeze(['new-boots'])",
+  ],
+  [
+    'gate: an old image that did not boot waives a gate check recorded as not run',
+    'proof.mjs',
+    '    else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);\n    else if (cascaded) warn(name, hits[0].detail);\n',
+    '    else if (cascaded) warn(name, hits[0].detail);\n    else if (GATE_CHECKS.includes(name)) reasons.push(`${name} is red: ${hits[0].detail}`);\n',
+  ],
+  [
+    'gate: the new image never reads the data, so lost posts go unchecked',
+    'proof.mjs',
+    'await readPosts(colour, await colour.signIn(OWNER));',
+    'void 0;',
+  ],
+  [
+    'gate: posts the old image cannot read are refused, not warned about',
+    'proof.mjs',
+    "Object.freeze(['new-boots', 'data-intact'])",
+    "Object.freeze(['new-boots', 'data-intact', 'old-reads-data'])",
   ],
   [
     'half-applied: findings next to a green schema check are ignored',

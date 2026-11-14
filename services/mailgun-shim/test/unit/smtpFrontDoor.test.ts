@@ -1316,8 +1316,6 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     socket.write('DATA\r\n');
     await waitFor(/^354 /m);
 
-    global.gc?.();
-    const before = process.memoryUsage().arrayBuffers + process.memoryUsage().external;
     const line = 'X'.repeat(998) + '\r\n';
     const oneMiB = line.repeat(1024);
     const chunksToSend = 200; // ~200 MiB streamed against a 1 MiB cap
@@ -1327,9 +1325,6 @@ describe('SMTP front door — acceptance into the durable queue', () => {
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
-    global.gc?.();
-    const duringMiB =
-      (process.memoryUsage().arrayBuffers + process.memoryUsage().external - before) / 1048576;
 
     socket.write('\r\n.\r\n');
     await waitFor(/^5\d\d /m);
@@ -1349,10 +1344,17 @@ describe('SMTP front door — acceptance into the durable queue', () => {
     expect(retainedBytes).toBeGreaterThan(capBytes * 0.9);
     expect(retainedBytes).toBeLessThan(capBytes * 2);
 
-    // Secondary, correlating check against real process memory — looser and
-    // relative to the cap too (not a fixed constant), since this measure is
-    // inherently noisier than the exact byte count above.
-    expect(duringMiB).toBeLessThan((capBytes / 1048576) * 100);
+    // The intent is retention past the cap, and the cap-exceeded line above
+    // cannot show that: it is snapshotted once, at the flip. So the test
+    // reads the bytes the handler actually holds when the stream ends.
+    // process.memoryUsage() is deliberately not used: it measures the whole
+    // runner process and flakes on unrelated allocation.
+    const heldLine = harness.logs.find(
+      (line) => line.event === 'smtp_data_held' && line.fields.submitter === 'tenant-a.example.com'
+    );
+    expect(heldLine).toBeDefined();
+    const heldBytes = heldLine!.fields.heldBytes as number;
+    expect(heldBytes).toBeLessThan(capBytes * 2);
     expect(harness.store.countUndrainedRecipients()).toBe(0);
   }, 30000);
 

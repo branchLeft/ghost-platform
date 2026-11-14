@@ -1,0 +1,10 @@
+{
+  "slug": "demo-tenant",
+  "uid": 30001,
+  "stackName": "demo-tenant",
+  "contentVolume": "ghost-demo-tenant-content",
+  "adaptersVolume": "ghost-demo-tenant-adapters",
+  "appHostPrivateIp": "10.20.1.201",
+  "databaseName": "ghost_demo_tenant",
+  "mediaBucket": "branchleft-media-demo-tenant"
+}

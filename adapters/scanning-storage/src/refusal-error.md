@@ -20,3 +20,10 @@ treated as adversaries.
 hashed or checked, so it names no classification. Its message and context
 are the placeholders `VIDEO_AUDIO_REFUSED_MESSAGE` and
 `VIDEO_AUDIO_REFUSED_CONTEXT`; the owner supplies the real wording.
+
+## Upload-name table errors
+
+`buildNamesFullError` and `buildNameLapsedError` are typed `MaintenanceError`
+(503) for the adapter's promised-name table being full, and for a `save()` of
+a file whose promised name lapsed. Neither judges the bytes, and the import
+can be run again, so neither is a 415.

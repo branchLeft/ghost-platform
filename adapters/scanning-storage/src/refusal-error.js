@@ -81,8 +81,36 @@ function buildVideoAudioRefusedError(GhostErrors) {
   });
 }
 
+// The upload-name tables (promised names and lapses) are full, or a file's
+// promised name lapsed before it was saved. Nothing about the bytes was
+// judged, and the import can be run again, so it is a 503 and not a 415.
+const NAMES_FULL_MESSAGE =
+  'ScanningStorageAdapter: too many upload names are reserved or lapsed and not yet saved; ' +
+  'a lapsed name clears only when its file is promised again or this process restarts';
+const NAMES_FULL_CONTEXT =
+  'Uploads are unavailable until earlier imports finish or this site restarts. Try again later.';
+
+function buildNamesFullError(GhostErrors) {
+  return new GhostErrors.MaintenanceError({
+    message: NAMES_FULL_MESSAGE,
+    context: NAMES_FULL_CONTEXT,
+  });
+}
+
+const NAME_LAPSED_CONTEXT =
+  'The name promised to this file expired before it was saved, so nothing was stored. Run the import again.';
+
+function buildNameLapsedError(GhostErrors, fileName) {
+  return new GhostErrors.MaintenanceError({
+    message: `ScanningStorageAdapter: the name promised to "${fileName}" lapsed after an hour before it was saved, so nothing was stored under another name; run the import again`,
+    context: NAME_LAPSED_CONTEXT,
+  });
+}
+
 module.exports = {
   buildRefusalError,
+  buildNamesFullError,
+  buildNameLapsedError,
   buildScannerUnconfiguredError,
   buildVerdictPendingError,
   buildUncheckableError,

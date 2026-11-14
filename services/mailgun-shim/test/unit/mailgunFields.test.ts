@@ -11,6 +11,7 @@ import {
 } from '../../src/mailgunFields.js';
 import {
   containsHeaderInjectionChars,
+  dropListUnsubscribePostWithoutHttps,
   dropUnresolvedListUnsubscribeEntries,
   isValidGhostEmailId,
   isValidHeaderFieldName,
@@ -476,6 +477,83 @@ describe('dropUnresolvedListUnsubscribeEntries', () => {
 
   it('leaves a value with no angle-bracketed entries untouched', () => {
     expect(dropUnresolvedListUnsubscribeEntries('not-a-list')).toBe('not-a-list');
+  });
+
+  it('drops an empty entry, with or without inner whitespace', () => {
+    expect(
+      dropUnresolvedListUnsubscribeEntries('<>, < >, <mailto:unsub@tenant1.example.com>')
+    ).toBe('<mailto:unsub@tenant1.example.com>');
+    expect(dropUnresolvedListUnsubscribeEntries('<>')).toBe('');
+  });
+
+  it('drops an entry that still carries a %recipient.*% token', () => {
+    expect(
+      dropUnresolvedListUnsubscribeEntries(
+        '<https://tenant1.example.com/u/%recipient.missing%>, <mailto:unsub@tenant1.example.com>'
+      )
+    ).toBe('<mailto:unsub@tenant1.example.com>');
+  });
+
+  it('keeps an https entry whose URL carries percent-encoding', () => {
+    expect(
+      dropUnresolvedListUnsubscribeEntries('<https://tenant1.example.com/u?a=%2Fx%2F&b=%20>')
+    ).toBe('<https://tenant1.example.com/u?a=%2Fx%2F&b=%20>');
+  });
+});
+
+describe('dropListUnsubscribePostWithoutHttps', () => {
+  it('keeps List-Unsubscribe-Post while an https entry survives', () => {
+    const headers = {
+      'List-Unsubscribe': '<https://tenant1.example.com/u/a>, <mailto:unsub@tenant1.example.com>',
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    };
+    expect(dropListUnsubscribePostWithoutHttps(headers)).toEqual(headers);
+  });
+
+  it('removes List-Unsubscribe-Post when only a mailto entry survives', () => {
+    expect(
+      dropListUnsubscribePostWithoutHttps({
+        'List-Unsubscribe': '<mailto:unsub@tenant1.example.com>',
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+        'Auto-Submitted': 'auto-generated',
+      })
+    ).toEqual({
+      'List-Unsubscribe': '<mailto:unsub@tenant1.example.com>',
+      'Auto-Submitted': 'auto-generated',
+    });
+  });
+
+  it('removes List-Unsubscribe-Post when List-Unsubscribe is absent', () => {
+    expect(
+      dropListUnsubscribePostWithoutHttps({ 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' })
+    ).toEqual({});
+  });
+
+  it('matches both header names case-insensitively, and treats the scheme case-insensitively', () => {
+    expect(
+      dropListUnsubscribePostWithoutHttps({
+        'list-unsubscribe': '<HTTPS://tenant1.example.com/u/a>',
+        'LIST-UNSUBSCRIBE-POST': 'List-Unsubscribe=One-Click',
+      })
+    ).toEqual({
+      'list-unsubscribe': '<HTTPS://tenant1.example.com/u/a>',
+      'LIST-UNSUBSCRIBE-POST': 'List-Unsubscribe=One-Click',
+    });
+    expect(
+      dropListUnsubscribePostWithoutHttps({
+        'list-unsubscribe': '<mailto:unsub@tenant1.example.com>',
+        'LIST-UNSUBSCRIBE-POST': 'List-Unsubscribe=One-Click',
+      })
+    ).toEqual({ 'list-unsubscribe': '<mailto:unsub@tenant1.example.com>' });
+  });
+
+  it('does not treat an http entry as https', () => {
+    expect(
+      dropListUnsubscribePostWithoutHttps({
+        'List-Unsubscribe': '<http://tenant1.example.com/u/a>',
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      })
+    ).toEqual({ 'List-Unsubscribe': '<http://tenant1.example.com/u/a>' });
   });
 });
 

@@ -4,8 +4,9 @@
 // process with the real HoldRegistry. It stops at numbered gates and waits
 // for the test to open each.
 //   releaser: holds the digest, is allowed at once, and pauses at gate 1
-//             in the middle of its release: just before the bytes are moved
-//             aside (pauseAt 'before') or just after (pauseAt 'after').
+//             in the middle of its release: before it gives up its own
+//             sidecar entry (pauseAt 'entry'), just before the bytes are
+//             moved aside (pauseAt 'before') or just after (pauseAt 'after').
 //   holder:   a second registry (another owner, another process) holds the
 //             same digest and never gets a verdict.
 const fs = require('node:fs');
@@ -41,6 +42,7 @@ async function main() {
     owner: `${role}-owner`,
     computeDigest: digestBytes,
     retryIntervalMs: 1,
+    onBeforeHolderRelease: releaser && pauseAt === 'entry' ? () => gate(1) : undefined,
     onBeforeBytesRelease: releaser && pauseAt === 'before' ? () => gate(1) : undefined,
     onBytesMovedAside: releaser && pauseAt === 'after' ? () => gate(1) : undefined,
     logger,

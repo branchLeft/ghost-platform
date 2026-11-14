@@ -368,6 +368,30 @@ describe('arfReader: spoofed reports fail closed', () => {
     ).toBe('unauthenticated');
   });
 
+  // Each form is the ONLY stamp on the report, so a rule that accepts any of
+  // them (a prefix match, a trimmed dot, a stripped quote) turns this red.
+  it.each([
+    ['a suffix after our id', 'mx1.collector.example.attacker.example'],
+    ['a prefix before our id', 'xmx1.collector.example'],
+    ['our id with a letter added', 'mx1.collector.examples'],
+    ['our id truncated', 'mx1.collector.exampl'],
+    ['our id with a trailing dot', 'mx1.collector.example.'],
+    ['our id in quotes', '"mx1.collector.example"'],
+    ['our id split by a comment', 'mx1.(x)collector.example'],
+    ['our id with a Cyrillic a', 'mx1.collector.ex\u0430mple'],
+    ['our id as a sub-label of another host', 'attacker.example.mx1.collector.example.evil'],
+  ])('rejects a lookalike authserv-id: %s', (_name, id) => {
+    expect(
+      verdict(
+        swap(
+          full(),
+          'Authentication-Results: mx1.collector.example;',
+          `Authentication-Results: ${id};`
+        )
+      )
+    ).toBe('unauthenticated');
+  });
+
   it('rejects two Authentication-Results headers carrying our id', () => {
     const forged = swap(
       full(),

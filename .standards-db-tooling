@@ -92,6 +92,11 @@ infra/provisioning/scripts/test_scratch_preflight.py
 infra/provisioning/scripts/scratch_boot_smoke.py
 infra/provisioning/scripts/test_scratch_boot_smoke.py
 
+# Part 3 of the same gate: reads the colour's migration tables on the throwaway
+# server after the colour has migrated it, never the live database.
+infra/provisioning/scripts/scratch_migrate.py
+infra/provisioning/scripts/test_scratch_migrate.py
+
 # Backup and restore check for the control host's Nextcloud stack: pg_dump,
 # a restore into a throwaway server, and count queries, never row reads.
 control/provision/nextcloud_backup.py

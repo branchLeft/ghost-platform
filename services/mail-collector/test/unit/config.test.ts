@@ -1,5 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, sweegoUsable } from '../../src/config.js';
+
+const KEY = randomBytes(32).toString('hex');
 
 const BASE_ENV = {
   COLLECTOR_DESCRIPTOR_DIR: '/tmp/descriptors',
@@ -62,65 +65,157 @@ describe('loadConfig', () => {
   });
 
   describe('outcomes', () => {
-    it('turns on only when both the return path and the notification directory are set', () => {
+    it('turns on only when the return path, the notification directory and the Message-ID key are all set', () => {
       expect(
         loadConfig({
           ...BASE_ENV,
           COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
           COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
         }).outcomes
-      ).toEqual({ returnPath: 'outcomes@collector.example', dsnDir: '/var/dsn', pollMs: 30000 });
+      ).toEqual({
+        returnPath: 'outcomes@collector.example',
+        dsnDir: '/var/dsn',
+        messageIdKey: KEY,
+        pollMs: 30000,
+      });
     });
 
     it.each([
       ['COLLECTOR_OUTCOMES_RETURN_PATH', 'outcomes@collector.example'],
       ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
-    ])('refuses %s without its partner', (name, value) => {
+      ['COLLECTOR_OUTCOMES_MESSAGE_ID_KEY', KEY],
+    ])('refuses %s without its partners', (name, value) => {
       expect(() => loadConfig({ ...BASE_ENV, [name]: value })).toThrow(/set together/);
     });
 
-    describe('the bulk return path', () => {
-      const ON = {
-        ...BASE_ENV,
-        COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
-        COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
-      };
+    it('refuses an outcome path with no Message-ID key, so a forged bounce can never be read', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+        })
+      ).toThrow(/COLLECTOR_OUTCOMES_MESSAGE_ID_KEY/);
+    });
 
-      it('is read when the outcome path is on', () => {
-        expect(
-          loadConfig({
-            ...ON,
-            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
-          }).outcomes
-        ).toEqual({
-          returnPath: 'login-bounces@collector.example',
-          bulkReturnPath: 'bulk-bounces@collector.example',
-          dsnDir: '/var/dsn',
-          pollMs: 30000,
+    it('refuses a key that is too short, without putting it in the error', () => {
+      const short = 'not-a-real-key-but-short';
+      let message = '';
+      try {
+        loadConfig({
+          ...BASE_ENV,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: short,
         });
-      });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toMatch(/at least 32 characters/);
+      expect(message).not.toContain(short);
+    });
 
-      it('is absent from the outcomes when unset', () => {
-        expect(loadConfig(ON).outcomes).not.toHaveProperty('bulkReturnPath');
-      });
-
-      it('is refused when the outcome path is off', () => {
+    it('refuses the replaced bulk return path whether or not the outcome path is on', () => {
+      for (const extra of [
+        {},
+        {
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'login-bounces@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
+        },
+      ]) {
         expect(() =>
           loadConfig({
             ...BASE_ENV,
+            ...extra,
             COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'bulk-bounces@collector.example',
           })
-        ).toThrow(/COLLECTOR_OUTCOMES_BULK_RETURN_PATH.*COLLECTOR_OUTCOMES_RETURN_PATH/);
-      });
+        ).toThrow(/COLLECTOR_OUTCOMES_BULK_RETURN_PATH.*replaced.*COLLECTOR_MX1_NL_RETURN_PATH/);
+      }
+    });
+  });
 
-      it('is refused when it names the same address as the login return path', () => {
-        expect(() =>
-          loadConfig({
-            ...ON,
-            COLLECTOR_OUTCOMES_BULK_RETURN_PATH: 'LOGIN-bounces@collector.example',
-          })
-        ).toThrow(/must differ/);
-      });
+  describe('the mx1 lane return paths', () => {
+    const LANES = {
+      COLLECTOR_MX1_TX_RETURN_PATH: 'bounce-tx@tx.example',
+      COLLECTOR_MX1_NL_RETURN_PATH: 'bounce-nl@nl.example',
+    };
+
+    it('are unset by default', () => {
+      expect(loadConfig(BASE_ENV).mx1Lanes).toBeUndefined();
+    });
+
+    it('are read when both are set, with the outcome path off', () => {
+      const config = loadConfig({ ...BASE_ENV, ...LANES });
+      expect(config.mx1Lanes).toEqual({ tx: 'bounce-tx@tx.example', nl: 'bounce-nl@nl.example' });
+      expect(config.outcomes).toBeUndefined();
+    });
+
+    it.each(Object.keys(LANES))('refuses %s without its partner', (name) => {
+      expect(() => loadConfig({ ...BASE_ENV, [name]: LANES[name as keyof typeof LANES] })).toThrow(
+        /set together/
+      );
+    });
+
+    it('refuses a value that is not a plain address', () => {
+      expect(() =>
+        loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_MX1_NL_RETURN_PATH: 'Bounce <b@nl.example>' })
+      ).toThrow(/plain address/);
+    });
+
+    it('refuses both on one domain', () => {
+      expect(() =>
+        loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_MX1_NL_RETURN_PATH: 'bounce-nl@tx.example' })
+      ).toThrow(/different domains/);
+    });
+
+    it('turn the outcome path on with the notification directory and the Message-ID key, and no return path', () => {
+      expect(
+        loadConfig({
+          ...BASE_ENV,
+          ...LANES,
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
+        }).outcomes
+      ).toEqual({ dsnDir: '/var/dsn', messageIdKey: KEY, pollMs: 30000 });
+    });
+
+    it.each([
+      ['COLLECTOR_OUTCOMES_DSN_DIR', '/var/dsn'],
+      ['COLLECTOR_OUTCOMES_MESSAGE_ID_KEY', KEY],
+    ])('refuse %s without its partner, so the outcome path is never on unsigned', (name, value) => {
+      expect(() => loadConfig({ ...BASE_ENV, ...LANES, [name]: value })).toThrow(/set together/);
+    });
+
+    it('refuse a Message-ID key that is too short', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          ...LANES,
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: 'too-short',
+        })
+      ).toThrow(/at least 32 characters/);
+    });
+
+    it('refuse the single outcome return path beside them: two settings would name the envelope sender', () => {
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          ...LANES,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+          COLLECTOR_OUTCOMES_DSN_DIR: '/var/dsn',
+          COLLECTOR_OUTCOMES_MESSAGE_ID_KEY: KEY,
+        })
+      ).toThrow(/COLLECTOR_OUTCOMES_RETURN_PATH.*COLLECTOR_MX1_TX_RETURN_PATH/);
+      expect(() =>
+        loadConfig({
+          ...BASE_ENV,
+          ...LANES,
+          COLLECTOR_OUTCOMES_RETURN_PATH: 'outcomes@collector.example',
+        })
+      ).toThrow(/COLLECTOR_OUTCOMES_RETURN_PATH.*COLLECTOR_MX1_TX_RETURN_PATH/);
     });
   });
 

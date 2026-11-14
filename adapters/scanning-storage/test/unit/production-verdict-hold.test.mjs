@@ -152,7 +152,7 @@ describe.each(BACKENDS)('production verdict source, %s backend', (_name, wrapped
       await expect(adapter.exists(url)).resolves.toBe(false);
       nothingWritten(adapter);
       await expect(
-        fs.readFile(path.join(quarantinePath, `${HELD_DIGEST}.holds.json`))
+        fs.stat(path.join(quarantinePath, `${HELD_DIGEST}.holds.json`))
       ).resolves.toBeTruthy();
 
       // The retry loop keeps dialling through the real client, and still

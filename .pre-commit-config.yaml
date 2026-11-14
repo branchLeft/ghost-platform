@@ -38,18 +38,20 @@ repos:
       # pnpm checks the install before every `run` and, in a tree with no
       # node_modules (a fresh worktree), installs first, running `prepare`.
       # The env var keeps that install script-free; the script itself still runs.
+      # A node_modules that is a symlink (a worktree sharing another clone's install)
+      # stops the hook before pnpm can reinstall through the link.
       - id: prettier
         name: prettier
-        entry: sh -c 'pnpm_config_ignore_scripts=true pnpm run format'
+        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; pnpm_config_ignore_scripts=true pnpm run format'
         language: system
-        files: '\.(js|ts|json|yml|yaml|md)$'
+        files: '\.(js|mjs|ts|json|yml|yaml|md)$'
         pass_filenames: false
 
   - repo: local
     hooks:
       - id: eslint
         name: eslint
-        entry: sh -c 'pnpm_config_ignore_scripts=true pnpm run lint'
+        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; pnpm_config_ignore_scripts=true pnpm run lint'
         language: system
         files: '\.(js|ts)$'
         pass_filenames: false

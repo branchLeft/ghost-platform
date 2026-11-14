@@ -157,7 +157,11 @@ paths:
         '401':
           description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
         '409':
-          description: The slot is locked by a concurrent request, or is detaching or holding frozen evidence not yet confirmed detached; the slot is left untouched.
+          description: >-
+            The slot is locked by a concurrent request (`reason` is `locked`,
+            retry later), or is detaching or holding frozen evidence not yet
+            confirmed detached (`reason` is `held-evidence`, never retry, page);
+            the slot is left untouched.
           content:
             application/json:
               schema:
@@ -176,6 +180,78 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SlotErrorPhase'
+  /freeze:
+    post:
+      operationId: freezeSlot
+      summary: Freeze a slot's held evidence and detach it to the held area
+      description: >-
+        The only writer of the held-evidence marker. Writes the slot
+        `detaching` with evidence `frozen` before any side effect, revokes the
+        slot's lease, gate hash, drain flags and Ghost access key, then runs
+        the sudoers-wrapped `detach` verb, which moves the slot's whole held
+        set (slot directory, content volume with its quarantine, data volume)
+        into the held area, seals, hashes and verifies it. Only when the
+        wrapper's receipt parses and names this slot does the broker, in one
+        write, record evidence `detached`, store the receipt and move the slot
+        to `error`, which is what lets a later `POST /reset` through. Idempotent:
+        a slot already `detached` answers from its stored receipt, and a slot
+        left `detaching` or `error` with evidence `frozen` resumes. Never
+        resets and never destroys. Requires the broker's signature scheme; the
+        signed bytes are the raw JSON request body.
+      security:
+        - brokerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/BrokerTimestampHeader'
+        - $ref: '#/components/parameters/BrokerNonceHeader'
+        - $ref: '#/components/parameters/BrokerSignatureHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotRequest'
+      responses:
+        '200':
+          description: The detach is confirmed. The receipt names the held entry, its manifest digest and its byte count, and nothing else about what was held.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FreezeSuccess'
+        '400':
+          description: The request body is not valid JSON.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
+        '409':
+          description: >-
+            The slot is locked by a concurrent request (`locked`); is free and
+            holds nothing to freeze (`nothing-to-freeze`); is in a phase a
+            freeze must not interrupt, or carries a confirmed marker with no
+            stored receipt (`occupied`). The slot is left untouched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: The request body exceeded the broker's fixed 256 KiB limit. Carries no body.
+        '422':
+          description: "`slot` is missing, not a string, not shaped like a slot name, or not one of the host's enumerated slot literals."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: >-
+            The revoke or the detach did not complete, or the wrapper's
+            receipt was not accepted. The slot stays `detaching` with evidence
+            `frozen`, so every `POST /reset` is refused; retry `POST /freeze`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FreezePending'
   /stop:
     post:
       operationId: stopSlot
@@ -490,6 +566,13 @@ components:
       properties:
         error:
           type: string
+        reason:
+          type: string
+          enum: [locked, held-evidence, occupied, nothing-to-freeze]
+          description: >-
+            Set by `POST /reset` and `POST /freeze` on a 409, so a caller never
+            has to read the English in `error` to tell "retry later"
+            (`locked`) from "held evidence, never retry" (`held-evidence`).
       additionalProperties: false
     SlotName:
       type: string
@@ -561,6 +644,50 @@ components:
           type: string
           enum: [error]
       additionalProperties: false
+    EvidenceStatus:
+      type: string
+      enum: [absent, frozen, detached]
+      description: >-
+        The held-evidence marker, and nothing else about it. `frozen` means a
+        freeze has begun and is not yet confirmed (a marker value the broker
+        does not recognise also reads `frozen`); `detached` means the held
+        set is confirmed in the held area; `absent` means none was ever taken.
+    FreezeSuccess:
+      type: object
+      required: [slot, phase, evidence, entry, sha256, bytes]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          type: string
+          enum: [error]
+        evidence:
+          type: string
+          enum: [detached]
+        entry:
+          type: string
+          description: The held entry's name under the held root, `<slot>-<counter>`.
+        sha256:
+          type: string
+          description: Lower-case hex SHA-256 over the entry's manifest.
+        bytes:
+          type: integer
+          minimum: 0
+          description: Bytes held in the entry.
+      additionalProperties: false
+    FreezePending:
+      type: object
+      required: [slot, phase, evidence]
+      properties:
+        slot:
+          $ref: '#/components/schemas/SlotName'
+        phase:
+          type: string
+          enum: [detaching]
+        evidence:
+          type: string
+          enum: [frozen]
+      additionalProperties: false
     ResetSuccess:
       type: object
       required: [slot, phase]
@@ -573,12 +700,14 @@ components:
       additionalProperties: false
     StatusResponse:
       type: object
-      required: [slot, phase, healthy, notReal, interim]
+      required: [slot, phase, evidence, healthy, notReal, interim]
       properties:
         slot:
           $ref: '#/components/schemas/SlotName'
         phase:
           $ref: '#/components/schemas/Phase'
+        evidence:
+          $ref: '#/components/schemas/EvidenceStatus'
         healthy:
           type: boolean
         notReal:

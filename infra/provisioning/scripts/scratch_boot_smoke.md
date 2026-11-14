@@ -1,6 +1,7 @@
 # scratch_boot_smoke.py
 
-The second part of the pre-swap scratch-copy gate. Part 1
+The second part of the pre-swap scratch-copy gate; its `migrations` check is
+part 3 (`scratch_migrate.md`). Part 1
 (`scratch_preflight.md`) restores a tenant's newest verified backup into a
 throwaway MySQL server. This part keeps that server, boots the green colour
 (the candidate Ghost and its drain sidecar) against the restored copy with no
@@ -33,16 +34,27 @@ It is deterministic software. No agent takes part in it.
    |---|---|
    | `drained at boot` | The sidecar reports the drained state (503) while the flag is up, so a colour that came up in rotation is caught. |
    | `serves` | Ghost answers 200 on `/` within the content timeout. |
+   | `migrations` | The colour's boot migrations finished on the copy: the lock is released and every earlier migration is still applied. Recorded as one `migrations:` line. |
    | `tenant content` | The rendered page carries the site title and the newest post title the backup's manifest recorded. A 200 is never the check: a Ghost on an empty database serves 200 too. |
    | `ready once undrained` | With the flag removed, the sidecar reports ready (200). |
+
+   The `migrations` check is part 3: Ghost migrates as it boots, so once it
+   serves, the migration tables of the copy are read and the swap is refused
+   unless the colour's migrations finished (`scratch_migrate.md`). They are read
+   once before the colour starts, so what it applied is the difference.
 
    The flag is removed only after the content is proven. The checks read each URL
    from inside the Ghost container (`docker exec ... node`), so no host port is
    needed.
-5. **Discard**, whatever happened: the sidecar, Ghost, the scratch server, its
-   network, the plaintext dump and the drain-flag directory.
+5. **Discard**, whatever happened, an error nobody foresaw and a SIGTERM
+   included: the sidecar, Ghost, the scratch server, its network, the plaintext
+   dump and the drain-flag directory. Each removal is tried whatever an earlier
+   one did, so one that fails never leaves another behind. A removal that
+   fails (Docker answering nonzero for anything but "not found", or breaking)
+   refuses the swap: a copy that could not be removed is not a pass, and
+   `--cleanup` is the step that clears it.
 
-`ok` is set only after all four checks pass.
+`ok` is set only after all five checks pass and everything is discarded.
 
 ## What it never does
 
@@ -87,10 +99,13 @@ and the colour's HTTP. Each control is a colour that must not pass:
 | Control | Refused at |
 |---|---|
 | Ghost never serves | `serves` |
+| Ghost serves, but its migration left the lock held | `migrations` |
 | Ghost serves a page without the tenant's content (an empty database) | `tenant content` |
 | The sidecar is not drained at boot | `drained at boot` |
 | The sidecar never reports ready | `ready once undrained` |
 | The colour's containers cannot start | the start, everything removed |
+| An error nobody foresaw, at any stage | refused, everything removed |
+| A removal fails (the colour, or the network) | refused, the other removals still run |
 | An image cannot be pulled | before anything starts |
 | Part 1 refuses the restore | before a colour exists |
 

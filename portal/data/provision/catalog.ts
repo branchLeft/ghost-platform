@@ -4,6 +4,7 @@ import {
   FUNCTIONS,
   INIT,
   MEMBERSHIPS,
+  NAMED_INDEXES,
   POLICIES,
   ROLE_ATTRIBUTES,
   ROW_SECURITY,
@@ -612,7 +613,7 @@ async function ownership(
         `${DERIVED_WITH}
          SELECT pg_get_userbyid(c.${col}) || ' owns ' || (o).type || ' ' || coalesce((o).identity, '?') AS text
            FROM m, pg_catalog.${table} c, pg_identify_object('pg_catalog.${table}'::regclass, c.oid, 0) o
-          WHERE c.${col} = ANY($5::oid[]) AND (${rule})`,
+          WHERE c.${col} = ANY($6::oid[]) AND (${rule})`,
         [...derivedParams(checkpoint), scope.mayOwnOids]
       );
       permitted.push(...allowed.map((r) => r.text));
@@ -1031,6 +1032,7 @@ const DERIVED: Record<string, string> = {
   pg_class: `c.oid = ANY(m.rels)
     OR c.oid IN (SELECT reltoastrelid FROM pg_class WHERE oid = ANY(m.rels))
     OR (c.relkind = 'i' AND c.oid IN (SELECT conindid FROM pg_constraint WHERE conrelid = ANY(m.rels)))
+    OR (c.relkind = 'i' AND c.oid = ANY(m.idxs))
     OR (c.relkind = 'i' AND c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN
           (SELECT reltoastrelid FROM pg_class WHERE oid = ANY(m.rels))))`,
   pg_type: `c.oid IN (SELECT reltype FROM pg_class WHERE oid = ANY(m.rels) AND reltype <> 0)
@@ -1053,15 +1055,17 @@ const IDENTIFY_AS: Record<string, string> = {
 /** The `m` CTE the DERIVED rules read, over the parameters `derivedParams` gives. */
 const DERIVED_WITH = `WITH m AS (SELECT ARRAY(SELECT to_regclass(r) FROM unnest($1::text[]) r)::oid[] AS rels,
                          ARRAY(SELECT to_regprocedure(f) FROM unnest($2::text[]) f)::oid[] AS funcs,
-                         $3::text[] AS schemas, $4::text[] AS pols)`;
+                         $3::text[] AS schemas, $4::text[] AS pols,
+                         ARRAY(SELECT to_regclass(i) FROM unnest($5::text[]) i)::oid[] AS idxs)`;
 
-function derivedParams(checkpoint: Checkpoint): [string[], string[], string[], string[]] {
+function derivedParams(checkpoint: Checkpoint): [string[], string[], string[], string[], string[]] {
   const expected = expectedObjects(checkpoint);
   return [
     relationList(checkpoint),
     expected.filter((o) => o.kind === 'function').map((o) => o.identity),
     expected.filter((o) => o.kind === 'schema').map((o) => o.identity),
     POLICIES.filter((p) => checkpoint.applied.includes(p.since)).map((p) => `${p.table}:${p.name}`),
+    NAMED_INDEXES.filter((i) => checkpoint.applied.includes(i.since)).map((i) => i.identity),
   ];
 }
 
@@ -1084,7 +1088,7 @@ async function catchAll(
   checkpoint: Checkpoint,
   scope: Scope
 ): Promise<Observation> {
-  const [rels, funcs, schemas, pols] = derivedParams(checkpoint);
+  const [rels, funcs, schemas, pols, idxs] = derivedParams(checkpoint);
   const catalogs = await rows<{ relname: string; readable: boolean }>(
     client,
     `SELECT c.relname, has_table_privilege(c.oid, 'SELECT') AS readable
@@ -1110,7 +1114,7 @@ async function catchAll(
          FROM m, ${source} c,
               LATERAL pg_identify_object('pg_catalog.${IDENTIFY_AS[relname] ?? relname}'::regclass, c.oid, 0) o
         WHERE c.oid >= 16384 AND NOT (${rule})`,
-      [rels, funcs, schemas, pols]
+      [rels, funcs, schemas, pols, idxs]
     );
     unclassified.push(...found.map((r) => `unclassified ${r.text}`));
   }

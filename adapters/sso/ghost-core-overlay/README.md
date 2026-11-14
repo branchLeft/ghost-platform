@@ -10,14 +10,16 @@ committed is our change only:
 |---|---|
 | `session-from-token.patch` | The unified diff of our one change, against Ghost's file. |
 | `session-from-token.patched.sha256` | The SHA-256 of Ghost's file with the patch applied. |
-| `apply-session-from-token-patch.sh` | Applies the patch to a directory holding Ghost's file and checks the result against the pin. The image build and the unit tests both run it. |
 | `session-from-token.md` | What the patched function does and why. |
+
+The script that applies it is the generic `adapters/ghost-core-overlay/apply-patch.sh`: it applies the patch to
+Ghost's file and checks the result against the pin. The image build and the unit tests both run it.
 
 `derived/` (git-ignored) is where the unit tests build the patched file; it is never committed.
 
 ## How the image build uses it
 
-The root `Dockerfile` runs `apply-session-from-token-patch.sh` on Ghost's file in the base image, in one
+The root `Dockerfile` runs `apply-patch.sh` on Ghost's file in the base image, in one
 layer: `patch` is installed, used and removed there, and its output is hash-checked, so the tool never reaches
 the image. The build **fails** in two distinct ways, each with its own message:
 

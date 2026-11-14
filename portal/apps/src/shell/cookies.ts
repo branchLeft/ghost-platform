@@ -19,6 +19,25 @@ export interface CookieOptions {
   readonly secure: boolean;
 }
 
+/**
+ * What a `cookiePrefix` may be: a lowercase letter, then lowercase letters,
+ * digits and hyphens, at most 32 characters. The prefix becomes part of a cookie
+ * name written straight into a `Set-Cookie` header, so a `;`, `=`, space or line
+ * break in it would add attributes or headers of its own. An underscore is
+ * refused so `<prefix>_session` and `<prefix>_login` cannot collide with another
+ * prefix, and a leading `_` so no prefix can begin `__Host-` or `__Secure-`.
+ */
+const COOKIE_PREFIX = /^[a-z][a-z0-9-]{0,31}$/;
+
+/** Throws unless `prefix` is a safe cookie-name prefix. The value is not echoed back. */
+export function assertCookiePrefix(prefix: unknown): asserts prefix is string {
+  if (typeof prefix !== 'string' || !COOKIE_PREFIX.test(prefix)) {
+    throw new TypeError(
+      'cookiePrefix must be 1 to 32 characters: a lowercase letter, then lowercase letters, digits or hyphens'
+    );
+  }
+}
+
 /** The cookie's name as sent: `__Host-` pins it to this host and path. */
 export function cookieName(base: string, secure: boolean): string {
   return secure ? `__Host-${base}` : base;

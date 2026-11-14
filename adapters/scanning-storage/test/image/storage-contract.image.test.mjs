@@ -72,6 +72,7 @@ const SCENARIOS = {
     'HeadObject',
     'PutObject',
   ],
+  'icon variant already stored by the upload (no resize on request)': ['HeadObject'],
   'hold release (saveRaw from the scanning decorator)': ['PutObject'],
   'admin media inliner (saveRaw)': ['HeadObject', 'PutObject'],
   'oEmbed thumbnail and icon (saveRaw)': ['PutObject'],
@@ -257,6 +258,26 @@ describe('the storage request contract, against the real Ghost image', () => {
     // instead means the resize middleware gave up.
     assert.equal(probe.status, 301);
     assert.ok(probe.location.includes('/size/w600/'), `redirected to ${probe.location}`);
+    assert.deepEqual(shapesOf(list), SCENARIOS[name]);
+  });
+
+  // Ghost core rewrites a stored image's absolute bucket URL to its
+  // size/w256h256 variant for the Publication Icon, and the browser then asks
+  // the bucket for it directly, so only an upload-time write can satisfy it.
+  // A HEAD with no GetObject or PutObject after it means the variant was
+  // already there when Ghost's resize middleware was asked for it.
+  it('icon variant: the upload already stored the 256x256 variant', async () => {
+    const name = 'icon variant already stored by the upload (no resize on request)';
+    assert.ok(imageUrl, 'the image upload scenario must run first');
+    const sizePath = new URL(imageUrl).pathname
+      .replace(`/${BUCKET}`, '')
+      .replace('/content/images/', '/content/images/size/w256h256/');
+    let probe;
+    const list = await scenario(name, async () => {
+      probe = await ghost.probe(sizePath);
+    });
+    assert.equal(probe.status, 301);
+    assert.ok(probe.location.includes('/size/w256h256/'), `redirected to ${probe.location}`);
     assert.deepEqual(shapesOf(list), SCENARIOS[name]);
   });
 

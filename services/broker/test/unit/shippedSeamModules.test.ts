@@ -119,6 +119,7 @@ function fakeConfig(): BrokerConfig {
     wrapperCommand: '/bin/true',
     wrapperPrefix: [],
     wrapperTimeoutMs: 1000,
+    wrapperDetachTimeoutMs: 1000,
     zones: TEST_ZONES,
     slotLiterals: ['0'],
     drainPollTimeoutMs: 1000,
@@ -188,6 +189,7 @@ describe('stand-ins are reported, the shipped modules carry their markers', () =
       expect(await res.json()).toEqual({
         slot: '0',
         phase: 'free',
+        evidence: 'absent',
         healthy: false,
         notReal: ['adminApi'],
         interim: ['adminApi'],

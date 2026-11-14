@@ -1108,7 +1108,7 @@ describe('the hold branch', () => {
       const quarantined = await fs.readFile(path.join(quarantinePath, BAD_DIGEST));
       expect(quarantined.equals(BAD_BYTES)).toBe(true);
       await expect(
-        fs.readFile(path.join(quarantinePath, `${BAD_DIGEST}.holds.json`))
+        fs.stat(path.join(quarantinePath, `${BAD_DIGEST}.holds.json`))
       ).resolves.toBeTruthy();
     });
 
@@ -1160,7 +1160,7 @@ describe('the hold branch', () => {
       expect(quarantined.equals(BAD_BYTES)).toBe(true);
       // The sidecar is gone -- indistinguishable from a synchronous refusal now.
       await expect(
-        fs.readFile(path.join(quarantinePath, `${BAD_DIGEST}.holds.json`))
+        fs.stat(path.join(quarantinePath, `${BAD_DIGEST}.holds.json`))
       ).rejects.toThrow();
     });
 

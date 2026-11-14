@@ -55,7 +55,7 @@ authenticate against, and `tenants.sender_domain` is what From is bound to. So
 the proof needs no shim change, only one row per slot with one shared
 `--sender-domain`.
 
-The CONTROL case registers the single shared row a demo host has today and
+The CONTROL case registers a single shared row for a demo host and
 shows slot B's send is accepted with the key slot A holds, on the Mailgun route
 and over SMTP. That is what makes the isolation case meaningful: the same
 harness, the same sends, and only the row layout differs. The isolation case

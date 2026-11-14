@@ -4,6 +4,46 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+## 0.5.0
+
+**The descriptor can name the production verdict source.**
+
+- **Additive:** `safety.verdictSource` is optional, `"none"` or
+  `"production"`. With `"production"`, a paying tenant's environment renders
+  `storage__<feature>__verdictSource=production` and
+  `storage__<feature>__verdictSocketPath=/var/lib/ghost/verdict/verdict.sock`
+  for all three features, and both colours mount the slot's own
+  `ghost-<slug>-verdict` volume read-only at `/var/lib/ghost/verdict`.
+  Absent or `"none"`, every artefact is byte-identical to before (the goldens
+  are unchanged). Any other value is refused, and a demo that names
+  `"production"` is refused. New exports `verdictVolumeName` and
+  `VerdictSourceKind`; `ComposeStackArgs` takes an optional `verdictVolume`.
+  See src/environment.md#verdict-source and src/compose.md#the-verdict-volume.
+- **Rollout:** the volume is `external`, and nothing listens on the socket
+  until the slot's verdict host end runs. Do not set the switch on a
+  descriptor before both exist, or uploads are held, never served.
+
+**The strict content policy can carry Stripe.**
+
+- **Additive:** `renderEdgeSiteBlock()` takes an optional fifth argument,
+  `payments: PaymentsCsp` (`{ kind: 'stripe' }` or `{ kind: 'none' }`), and
+  `render()` takes it as `options.payments`. Absent or `none`, the policy is
+  byte-identical to 0.4.0 (pinned in `test/edge.test.ts`). With `stripe`, the
+  origins in `src/payments-origins.json` are added to `script-src`, and to an
+  explicit `frame-src 'self' ...` (and `connect-src 'self' ...` if a
+  re-measurement ever finds one), because `default-src` no longer covers them.
+  Today that is `https://js.stripe.com` in `script-src` and `frame-src`.
+- The origins are **measured, not written**: `payments-origins.json` is produced
+  only by `csp/derive/derive-payment-origins.mjs` from a real browser's report
+  against the real Stripe.js, and checked by `csp-checkout-gate.py --derive`.
+  `render-core` validates every origin on use (`validatePaymentOrigin`): a bare
+  https origin on `stripe.com` or `stripe.network`, no wildcard, port or path.
+  New exports `PaymentsCsp`, `PAYMENTS_CSP_NONE` and `validatePaymentOrigin`.
+- **Rollout:** nothing passes `payments: stripe` yet, so no rendered tenant
+  artefact changes with this release. A consumer that wants the allowance needs
+  this release and a call that passes it; consumers lag a release by one day.
+  See src/edge.md#the-payments-allowance.
+
 **The mail spool can serve the outcomes route.**
 
 - **Additive:** `MailSpoolStackArgs` takes an optional `drainOutcomes`. When

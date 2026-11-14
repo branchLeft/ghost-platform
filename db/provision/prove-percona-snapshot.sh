@@ -39,9 +39,10 @@ cd "$REPO_ROOT"
 
 PLATFORM="${PROOF_PLATFORM:-linux/amd64}"
 
-# The Percona candidate: the index digest the hosts would pull, mirrored in
-# .github/image-mirror/images.json (test_percona_snapshot_probe.py asserts it).
-PERCONA_IMAGE="percona/percona-server@sha256:a4ba7d1afd325f40bc6d65b6455fb4f15388638dfa39e3b85f9755755fd9ec2d"
+# The Percona candidate: the index digest the hosts would pull, read from the
+# image mirror list by percona_pin.py (test_percona_pin.py guards the scripts).
+PERCONA_INDEX="$(python3 db/provision/percona_pin.py index)"
+PERCONA_IMAGE="percona/percona-server@$PERCONA_INDEX"
 
 # The one digest db1 runs. A re-pin in the runbook re-points this proof.
 PINS="$(grep -oE 'mysql:8\.0@sha256:[0-9a-f]{64}' db/RUNBOOK-db.md | sort -u)"

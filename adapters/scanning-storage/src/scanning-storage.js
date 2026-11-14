@@ -11,6 +11,8 @@ const {
   buildVerdictPendingError,
   buildUncheckableError,
   buildVideoAudioRefusedError,
+  buildNamesFullError,
+  buildNameLapsedError,
 } = require('./refusal-error');
 const { detectVideoAudioFamily } = require('./media-kind');
 const { stampImageContentType } = require('./content-type');
@@ -107,17 +109,24 @@ function truncateToBytes(text, maxBytes) {
   return out;
 }
 
-// `<stem>-<random>.<ext>`, the stem cut so the whole name fits; a file with
-// no usable name is left alone for the wrapped adapter to reject or default
-// as it always did.
+// `<stem>-<component>.<ext>`, the stem cut so the whole name fits. An original
+// (`<stem>_o.<ext>`) is named from the same stem and component with `_o` after
+// them, which is the name Ghost looks for beside the processed image.
+function nameWithComponent(file, component, isOriginal) {
+  const { stem, ext } = splitName(file.name);
+  const base = isOriginal ? stem.slice(0, -ORIGINAL_SUFFIX.length) : stem;
+  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
+  const kept = truncateToBytes(base, Math.max(0, room)) || 'upload';
+  return `${kept}-${component}${isOriginal ? ORIGINAL_SUFFIX : ''}${ext}`;
+}
+
+// A file with no usable name is left alone for the wrapped adapter to reject
+// or default as it always did.
 function withRandomName(file) {
   if (!file || typeof file.name !== 'string' || file.name.length === 0) {
     return file;
   }
-  const { stem, ext } = splitName(file.name);
-  const room = MAX_STORED_NAME_BYTES - NAME_RANDOM_CHARS - 1 - Buffer.byteLength(ext);
-  const kept = truncateToBytes(stem, Math.max(0, room)) || 'upload';
-  return { ...file, name: `${kept}-${randomNameComponent()}${ext}` };
+  return { ...file, name: nameWithComponent(file, randomNameComponent(), false) };
 }
 
 function pruneStoredNames(names, now) {
@@ -189,6 +198,74 @@ function liveReservation(reservations, key, now = Date.now(), lapsed = null) {
   return reservations.get(key)?.name;
 }
 
+// An imported processed image and its original arrive as two files,
+// `photo.png` and `photo_o.png`, and Ghost finds the original of a stored
+// `photo-<c>.png` at `photo-<c>_o.png`. Ghost's importer asks for every file's
+// name at once, so neither is promised before the other asks. They are paired
+// by what the two share: the directory they will be stored in, the temp
+// directory the zip was extracted to (one per import, so another import's
+// `photo.png` never matches), and the processed image's name. The first of the
+// pair to ask picks the component, the second takes it, and the record goes.
+// A record the second never claims is dropped after the same window as a
+// promise, and the table is bounded, so a full one only leaves files unpaired.
+const FAMILY_WINDOW_MS = RESERVATION_WINDOW_MS;
+
+function isOriginalName(name) {
+  const { stem } = splitName(name);
+  return stem.endsWith(ORIGINAL_SUFFIX) && stem.length > ORIGINAL_SUFFIX.length;
+}
+
+function familyKey(file, targetDir) {
+  const { stem, ext } = splitName(file.name);
+  const processed = isOriginalName(file.name)
+    ? `${stem.slice(0, -ORIGINAL_SUFFIX.length)}${ext}`
+    : file.name;
+  return `${targetDir || ''}\n${path.dirname(file.path)}\n${processed}`;
+}
+
+// The component this file should be named with, or null when it has none to
+// share: its role in the family was already taken (a file promised afresh) or
+// the table is full. `release` hands the role back when the ask fails.
+function claimFamily(families, file, targetDir, maxEntries, now = Date.now()) {
+  for (const [key, family] of families) {
+    if (family.expiresAt > now) {
+      break;
+    }
+    families.delete(key);
+  }
+  const role = isOriginalName(file.name) ? 'original' : 'processed';
+  const key = familyKey(file, targetDir);
+  let family = families.get(key);
+  if (!family) {
+    if (families.size >= maxEntries) {
+      return null;
+    }
+    family = {
+      component: randomNameComponent(),
+      expiresAt: now + FAMILY_WINDOW_MS,
+      taken: { original: false, processed: false },
+    };
+    families.set(key, family);
+  }
+  if (family.taken[role]) {
+    return null;
+  }
+  family.taken[role] = true;
+  if (family.taken.original && family.taken.processed) {
+    families.delete(key);
+  }
+  return {
+    component: family.component,
+    isOriginal: role === 'original',
+    release: () => {
+      family.taken[role] = false;
+      if (!families.has(key)) {
+        families.set(key, family);
+      }
+    },
+  };
+}
+
 // The reserved basename, spent, or undefined.
 function takeReservation(reservations, key, now = Date.now(), lapsed = null) {
   const name = liveReservation(reservations, key, now, lapsed);
@@ -203,6 +280,53 @@ function storedBasename(url, fallback) {
     return fallback;
   }
   return url.split(/[?#]/)[0].split('/').pop() || fallback;
+}
+
+// Icon variants. Ghost core rewrites a stored image's URL to its 256x256
+// variant (`/content/images/size/w256h256/...`) for the settings API (Ghost
+// admin and the Content API) and for the site's favicon link. On object
+// storage the stored URL is absolute, so the rewrite stays on the bucket and
+// the browser asks the bucket for the variant directly. Ghost's resize
+// middleware, the only thing that writes a variant, never sees the request,
+// and the bucket answers 403 for a key that was never written. So the
+// decorator writes the variants when it stores an image (size-variants in
+// README.md says why this, and not a Ghost patch or a URL change).
+const ICON_SIZE_DIR = 'w256h256';
+const ICON_SIZE = { width: 256, height: 256 };
+// The resize bound Ghost's middleware uses.
+const ICON_RESIZE_TIMEOUT_SECONDS = 10;
+const ICON_VARIANT_FAILED_LOG_PREFIX = 'ScanningStorageAdapter: ICON_VARIANT_FAILED';
+const ICON_VARIANTS_UNAVAILABLE_LOG_PREFIX = 'ScanningStorageAdapter: ICON_VARIANTS_UNAVAILABLE';
+// A stored original Ghost keeps beside its processed upload (`name_o.png`).
+const ORIGINAL_NAME_PATTERN = /_o\.[^./]+$/;
+
+// The format blog-icon.js asks for when the icon's own type is not served
+// as it is: a .jpg as jpeg, anything else that is not png or jpeg as png.
+// null: the plain variant is the one it asks for.
+function iconFormatFor(ext) {
+  if (ext === '.png' || ext === '.jpeg') {
+    return null;
+  }
+  return ext === '.jpg' ? 'jpeg' : 'png';
+}
+
+// The variants of one stored image that Ghost core asks the bucket for, as
+// [format-or-null, ...]. Mirrors handle-image-sizes.js: a variant is only
+// ever made where the middleware would make it, so a type it redirects to
+// the original (an .ico, a plain .svg) gets none.
+function iconVariantFormats(ext, imageTransform) {
+  if (!imageTransform.canTransformFileExtension(ext)) {
+    return [];
+  }
+  const formats = [];
+  if (imageTransform.shouldResizeFileExtension(ext)) {
+    formats.push(null);
+  }
+  const format = iconFormatFor(ext);
+  if (format !== null && imageTransform.canTransformToFormat(format)) {
+    formats.push(format);
+  }
+  return formats;
 }
 
 // Builds the decorator over an injected StorageBase, composing with the
@@ -286,11 +410,18 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         );
       }
       this.storagePath = this.wrapped.storagePath;
+      this.imageTransform = config.imageTransform || null;
       // Ghost's content importer reads this to name imported files, so it must
       // match the wrapped adapter.
       this.staticFileURLPrefix = this.wrapped.staticFileURLPrefix;
       this.quarantinePath = config.quarantinePath;
       this.wrappedConfig = wrappedConfig || {};
+      if (this.#isBucketImages() && !this.imageTransform) {
+        // Silent otherwise: the upload works and only the next icon save fails.
+        this.logger.error(
+          `${ICON_VARIANTS_UNAVAILABLE_LOG_PREFIX} wraps=${wraps}: no image transform is available, so the size variants Ghost asks the bucket for (the Publication Icon's) are never written`
+        );
+      }
       // Only the checks that may refuse ever run here: an advisory check
       // ships with blocking=false and is filtered out before it is ever
       // invoked by this adapter.
@@ -316,6 +447,11 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       this.storedNames = new Map();
       this.reservedNames = new Map();
       this.lapsedReservations = new Map();
+      // A promise being worked out, so a concurrent ask for the same file
+      // shares it instead of making a second one.
+      this.namesInFlight = new Map();
+      // Imported processed images awaiting their original, or the reverse.
+      this.nameFamilies = new Map();
       // Bounds reservations and lapses together; only a test sets it.
       this.reservationMaxEntries =
         Number(config.reservationMaxEntries) > 0
@@ -399,7 +535,11 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // go to the same key as an ordinary, scanned, overwriting write.
         const targetPath = this.#overwriteKey(file.name, targetDir);
         return this.#scanAndProceed(buffer, {
-          proceed: () => this.wrapped.saveRaw(buffer, targetPath),
+          proceed: async () => {
+            const url = await this.wrapped.saveRaw(buffer, targetPath);
+            await this.#writeIconVariants(buffer, targetPath);
+            return url;
+          },
           onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
         });
       }
@@ -425,9 +565,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // would dangle them silently. Kept, so a retry is refused too, until
         // getUniqueFileName() promises this file a fresh name.
         if (this.lapsedReservations.has(key)) {
-          throw new Error(
-            `ScanningStorageAdapter: the name promised to "${file.name}" lapsed after an hour before it was saved, so nothing was stored under another name; run the import again`
-          );
+          throw buildNameLapsedError(GhostErrors, file.name);
         }
         if (takeOriginalOf(file, this.storedNames)) {
           return { fixed: file.name, remember: false };
@@ -443,6 +581,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
             if (remember) {
               rememberStoredName(this.storedNames, storedBasename(url, name));
             }
+            await this.#writeIconVariants(buffer, this.#pathOfStoredUrl(url));
             return url;
           },
           onHold: (digest) => {
@@ -471,7 +610,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           : path.join(targetDir || '', named.name);
       const usable = file && typeof file.name === 'string' && file.name.length > 0;
       // A refused upload will never be saved, so there is nothing to reserve.
-      if (!usable || this.refuseUploadsReason) {
+      // Nor is there for a file with no temp path (Ghost's media inliner and
+      // oEmbed thumbnails): they write with saveRaw() to the path returned, which
+      // never takes a reservation, so one would only be kept for an hour and
+      // hand a second file of that name a path that follows the first's.
+      const hasTempPath = usable && typeof file.path === 'string' && file.path.length > 0;
+      if (!hasTempPath || this.refuseUploadsReason) {
         return unique(usable ? withRandomName(file) : file);
       }
       const key = reservationKey(file, targetDir);
@@ -484,25 +628,51 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       if (reserved !== undefined) {
         return unique({ ...file, name: reserved });
       }
+      // Asked again before the first ask has finished: the same promise.
+      const inFlight = this.namesInFlight.get(key);
+      if (inFlight) {
+        return inFlight;
+      }
+      const promise = (async () => {
+        try {
+          return await this.#promiseName(file, targetDir, key, unique);
+        } finally {
+          this.namesInFlight.delete(key);
+        }
+      })();
+      this.namesInFlight.set(key, promise);
+      return promise;
+    }
+
+    async #promiseName(file, targetDir, key, unique) {
       // A file that already lapsed swaps its lapse for the new promise, so it
       // adds nothing to the count and is let through even when the bound is hit.
       if (
         !this.lapsedReservations.has(key) &&
         this.reservedNames.size + this.lapsedReservations.size >= this.reservationMaxEntries
       ) {
-        throw new Error(
-          'ScanningStorageAdapter: too many upload names are reserved or lapsed and not yet saved; ' +
-            'a lapsed name clears only when its file is promised again or this process restarts'
-        );
+        throw buildNamesFullError(GhostErrors);
       }
-      const result = await unique(withRandomName(file));
-      this.reservedNames.set(key, {
-        name: path.basename(result),
-        expiresAt: Date.now() + RESERVATION_WINDOW_MS,
-      });
-      // A fresh promise replaces any earlier lapse of the same file.
-      this.lapsedReservations.delete(key);
-      return result;
+      const family = claimFamily(this.nameFamilies, file, targetDir, this.reservationMaxEntries);
+      try {
+        const result = await unique(
+          family
+            ? { ...file, name: nameWithComponent(file, family.component, family.isOriginal) }
+            : withRandomName(file)
+        );
+        this.reservedNames.set(key, {
+          name: path.basename(result),
+          expiresAt: Date.now() + RESERVATION_WINDOW_MS,
+        });
+        // A fresh promise replaces any earlier lapse of the same file.
+        this.lapsedReservations.delete(key);
+        return result;
+      } catch (error) {
+        if (family) {
+          family.release();
+        }
+        throw error;
+      }
     }
 
     // For bytes Ghost writes as a directory tree outside save()/saveRaw()
@@ -690,6 +860,73 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       throw new Error(HOLD_OR_FLAG_NOT_IMPLEMENTED.replace('%s', decision));
     }
 
+    // True where Ghost core builds absolute bucket URLs for images: an
+    // object-storage adapter serving the images feature. The local adapters
+    // serve /content/images/size/... through Ghost's own middleware, and the
+    // other features are never resized.
+    #isBucketImages() {
+      return (
+        Boolean(this.wrappedConfig && this.wrappedConfig.bucket) &&
+        typeof this.storagePath === 'string' &&
+        path.posix.basename(this.storagePath) === 'images'
+      );
+    }
+
+    #writesIconVariants() {
+      return this.#isBucketImages() && Boolean(this.imageTransform);
+    }
+
+    // The path under the adapter's storage root that the wrapped adapter
+    // stored a URL at, or null when it cannot say.
+    #pathOfStoredUrl(url) {
+      if (typeof this.wrapped.urlToPath !== 'function') {
+        return null;
+      }
+      try {
+        return this.wrapped.urlToPath(url);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    // Writes the size variants Ghost core asks the bucket for, after the
+    // image itself is stored. The variants go through this decorator's own
+    // saveRaw, so they are scanned like every other byte served from the
+    // bucket. Best effort: the upload has already succeeded, and the same
+    // variant is still made on demand when the request does reach Ghost.
+    async #writeIconVariants(buffer, storedPath) {
+      if (!this.#writesIconVariants() || typeof storedPath !== 'string') {
+        return;
+      }
+      const storageRoot = `${this.storagePath.replace(/^\/+|\/+$/g, '')}/`;
+      let relative = storedPath.replace(/^\/+/, '');
+      if (relative.startsWith(storageRoot)) {
+        relative = relative.slice(storageRoot.length);
+      }
+      // A variant is never itself resized, and the _o original is never
+      // asked for at a size.
+      if (relative === '' || relative.startsWith('size/') || ORIGINAL_NAME_PATTERN.test(relative)) {
+        return;
+      }
+      const ext = path.posix.extname(relative).toLowerCase();
+      try {
+        for (const format of iconVariantFormats(ext, this.imageTransform)) {
+          const resized = await this.imageTransform.resizeFromBuffer(buffer, {
+            withoutEnlargement: ext !== '.svg',
+            ...ICON_SIZE,
+            format,
+            timeout: ICON_RESIZE_TIMEOUT_SECONDS,
+          });
+          const variantDir = format
+            ? `size/${ICON_SIZE_DIR}/format/${format}`
+            : `size/${ICON_SIZE_DIR}`;
+          await this.saveRaw(resized, `${variantDir}/${relative}`);
+        }
+      } catch (error) {
+        this.logger.error(`${ICON_VARIANT_FAILED_LOG_PREFIX} path=${relative}`, error);
+      }
+    }
+
     // Never writes to the wrapped adapter until a clean verdict promotes
     // it -- identical on both backends now. On object storage that is the
     // only way "unserved" can mean anything (the CDN reads the bucket
@@ -711,6 +948,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       return {
         onAllow: async (heldBuffer) => {
           await this.wrapped.saveRaw(heldBuffer, targetPath);
+          await this.#writeIconVariants(heldBuffer, targetPath);
         },
         onRefuse: async () => {},
       };

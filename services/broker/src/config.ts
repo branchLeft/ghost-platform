@@ -28,6 +28,8 @@ export interface BrokerConfig {
   /** Prepended to `wrapperCommand`'s argv -- `sudo` in production, empty in a sandbox that runs the stand-in directly. */
   readonly wrapperPrefix: readonly string[];
   readonly wrapperTimeoutMs: number;
+  /** The longer bound `detach` runs under: it hashes a whole tenancy. */
+  readonly wrapperDetachTimeoutMs: number;
   readonly zones: ZoneConfig;
   /**
    * The closed set of legal slot literals -- LLD-2 §02's whole point is
@@ -137,6 +139,7 @@ export function wrapperConfigFromEnv(env: BrokerEnv): WrapperConfig {
     prefix:
       wrapperPrefixRaw === undefined ? ['sudo', '-n'] : wrapperPrefixRaw.split(' ').filter(Boolean),
     timeoutMs: positiveInteger(env, 'BROKER_WRAPPER_TIMEOUT_MS', 30_000, 300_000),
+    detachTimeoutMs: positiveInteger(env, 'BROKER_WRAPPER_DETACH_TIMEOUT_MS', 600_000, 3_600_000),
   };
 }
 
@@ -200,6 +203,7 @@ export function loadConfig(
     wrapperCommand: wrapper.command,
     wrapperPrefix: wrapper.prefix,
     wrapperTimeoutMs: wrapper.timeoutMs,
+    wrapperDetachTimeoutMs: wrapper.detachTimeoutMs ?? wrapper.timeoutMs,
     zones: zonesFromEnv(env),
     slotLiterals: (env.BROKER_SLOT_LITERALS ?? '0,1,2,3,4,5,6')
       .split(',')

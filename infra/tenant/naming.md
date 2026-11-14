@@ -45,23 +45,25 @@ documents how to refresh it when that register changes.
 `GhostTenant`'s own tenant-zero slug, and reserving it would make
 tenant-zero's own stack throw at construction time on its next deploy. It is
 in the register as a `tenant` entry with its repository instead, and
-`validateTenantNameClaim` below is what stops a second tenant taking it.
+the tenant-name claim below is what stops a second tenant taking it.
 
-## validateTenantNameClaim
+## The tenant-name claim
 
-A registered `tenant` name is claimed by its own repository only. The
-claimant is the repository GitHub Actions reports in `GITHUB_REPOSITORY`; it
-is never derived from the slug or from anything in the descriptor, because a
-duplicate of tenant zero would copy those. With the variable unset, a local
-run, a registered name is refused rather than allowed: tenant applies run in
-CI, so failing closed costs nothing there. An unregistered name passes.
+A registered `tenant` name is claimed by its own repository only. This package
+holds no claim rule of its own: the one rule is render core's
+`validateSlugAvailability`, reached through `validateTenantStack`. `GhostTenant`
+passes it `{ claimantRepo: process.env.GITHUB_REPOSITORY }`, the repository
+GitHub Actions reports. The claimant is never derived from the slug or from
+anything in the descriptor, because a duplicate of tenant zero would copy
+those. With the variable unset, a local run, render core refuses a registered
+name rather than allowing it: tenant applies run in CI, so failing closed costs
+nothing there. An unregistered name passes. The comparison is
+case-insensitive, as GitHub is.
 
-`GhostTenant` calls it first, before the descriptor is validated or rendered.
-The check duplicates `render-core`'s `validateSlugAvailability` claim rule,
-adopted with render-core 0.3.0. `GhostTenant` passes `GITHUB_REPOSITORY` to
-render core as `options.claimantRepo`, the same claimant this check reads;
-without it render core refuses even tenant zero's own repository. The two
-checks agree, and this copy stays as the first, clearer refusal. The register holds tenant zero and the infrastructure names only.
+`claim.test.ts` drives the rule through `GhostTenant`, and
+`claim.sabotage.test.ts` mutates the claimant argument in `index.ts` to show a
+duplicate of tenant zero, and a local run, would otherwise be accepted. The
+register holds tenant zero and the infrastructure names only.
 Customer tenant names are deliberately absent, because the register is public and
 this package is published; whether one is taken is decided by the control plane
 when it accepts the sign-up (`portal/data`, the tenant name column), and by the

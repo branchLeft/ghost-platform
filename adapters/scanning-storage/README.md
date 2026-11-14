@@ -30,9 +30,10 @@ serves nothing until one arrives. It does **not** build:
   extensible to other organisations later. `ScanningStorageAdapter.js`
   constructs a `FakeVerdictClient` from its own config only when
   `storage__<feature>__verdictSource=in-process-fake` is set outright, for
-  demo, dev and test paths. With that unset the adapter has no verdict
-  source and refuses every new upload with a 503 (see "No verdict source"
-  below); nothing here guesses the real channel's wire format or transport.
+  demo, dev and test paths, and the production client only when it says
+  `production` and names `verdictSocketPath` (`src/verdict-source.md`).
+  With neither the adapter has no verdict source and refuses every new
+  upload with a 503 (see "No verdict source" below).
   Because there is no real channel, "a later verdict arrives" can only
   mean one thing this decorator can observe: the same in-process
   `VerdictClient` answering differently on a later call (`src/hold.js`
@@ -42,7 +43,10 @@ serves nothing until one arrives. It does **not** build:
   local socket, a durable queue and an inbound end the safety service dials,
   is built in `verdict-host/` (`verdict-host/verdict-host.md`), with the
   decorator's transport in `src/socket-verdict-transport.js`
-  (`src/verdict-socket.md`). The entry file does not pass that transport yet.
+  (`src/verdict-socket.md`), which the entry file passes for `production`.
+  The digest it asks about is still a SHA-256 stand-in (`src/pdq.js`), which
+  the host end refuses as not a PDQ key, so until a real PDQ hash lands every
+  upload under `production` is held unserved, never allowed.
 - **An automated check for video, audio or arbitrary files.** PDQ is an
   image hash and no automated check for video or arbitrary files exists; it
   is not built here, and no frame sampling or fingerprinting is designed.
@@ -81,7 +85,8 @@ fact about the tier decides the rest: `storage__<feature>__tier`.
   design document's amendment of that date), not anything in this code.
 - **The tier key.** Only the exact string `professional` accepts video and
   audio (`src/tier-policy.md`). Unset, empty, a different case, a stray
-  space, a boolean, `entry`, `demo`, `hobbyist` or a typo all refuse, so a
+  space, a boolean, `entry`, `demo`, `essentials`, `hobbyist` or a typo all
+  refuse, so a
   mistake can only fail closed. `hobbyist` is the retired name for the entry
   tier, kept in this list so an old value still fails closed. It is read from
   boot config only.
@@ -165,8 +170,10 @@ replacement leaves the old thumbnail in place. The write goes through
 ## Upload names
 
 `save()` stores every new upload as `<stem>-<22 random base32 characters>.<ext>`
-(110 bits from `crypto.randomBytes`), so a URL cannot be derived from a
-neighbouring one. The stem is cut to keep the stored name within 240 bytes.
+(110 bits from `crypto.randomBytes`), so a URL a user's upload gets through
+`save()` cannot be derived from a neighbouring one. The stem is cut to keep the
+stored name within 240 bytes. Names Ghost chooses for media it writes through
+`saveRaw()` are covered under "Limits of the names" below.
 Three small tables, per adapter instance, make Ghost's own flows still find
 what they wrote. None survives a restart. The first expires and drops its
 oldest entry when full; the other two are bounded together and a lapse is
@@ -175,7 +182,7 @@ never dropped.
 | Table | Remembers | Why | Window | Bound |
 | --- | --- | --- | --- | --- |
 | stored names (`storedNames`) | the basename each upload was stored under | Ghost saves an image's original as `<stored basename>_o<ext>` and looks for exactly that; an upload named so keeps that name, once | 60 s | 1000, oldest dropped |
-| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` throws |
+| promised names (`reservedNames`) | the name `getUniqueFileName()` returned for a file, keyed by its temp path, directory and name | Ghost's content importer rewrites every reference it matches to that path, then calls `save()`; `save()` stores at exactly it, once | 1 hour | 100000 together with the lapses below, then `getUniqueFileName()` refuses with a 503 |
 | lapsed promises (`lapsedReservations`) | the key of a promise that ran out before its `save()` | the importer has already written the promised path into its references, so a later `save()` of that file is refused rather than stored under another name | until the file is promised a fresh name | counted with the promised names; never evicted |
 
 A promise that lapses moves from the promised table to the lapse table, so the
@@ -200,6 +207,40 @@ ordinary upload and gets its own component. A refused upload leaves no entry
 in any table. When a verdict source is missing, nothing is promised. An
 original that arrives after its window, after a restart, or after eviction is
 stored under a fresh component: Ghost then falls back to the processed image.
+
+### Limits of the names
+
+- **Promises are per file object.** `getUniqueFileName()` called again for one
+  file (same temp path, directory and name) returns the same path, and that
+  holds when the calls overlap: a second ask while the first is still being
+  worked out waits for it. Two different file objects of one name are two files
+  and get two components.
+- **No promise without a temp path.** Ghost's media inliner and oEmbed
+  thumbnails call `getUniqueFileName()` with a name and a directory only, then
+  write with `saveRaw()` to what came back; nothing ever spends a promise for
+  such a file. So none is made: each ask returns a fresh component, and two
+  inlined media of one name share none. The name is stored at the path Ghost
+  was handed, and this adapter does not choose it again at `saveRaw()`.
+- **An imported original is paired with its processed image.** Ghost's importer
+  asks for every file's name at once, so neither of `photo.png` and
+  `photo_o.png` is promised before the other asks. They are matched by the
+  directory they will be stored in, the temp directory the zip was extracted to
+  (one per import) and the processed image's name; whichever asks first picks
+  the component and the other takes it, so the original is promised
+  `<processed stem>_o<ext>`, the name Ghost looks for. Another import's
+  `photo.png` never matches. The record is dropped once both have asked, or after
+  an hour, and the table is bounded by the same limit as the promises: past
+  it a file is simply not paired. A lone original is named
+  `<stem>-<component>_o<ext>`, and a name that is only an extension is never an
+  original. Pairing relies on Ghost extracting one import to one temp
+  directory; a caller that passes no temp path is not paired at all.
+- **Ghost's importer rewrites only the references its own pattern matches.** It
+  builds that pattern from the file name without escaping it, so a name with
+  regular-expression characters, such as `my photo (1).JPG`, is not rewritten
+  in the posts on any store, this one or Ghost's own: the reference dangles the
+  same on both. Nothing in this adapter can change that.
+- **A full or lapsed name table answers 503.** Both refusals are typed (a
+  `MaintenanceError`) and say to run the import again or try later.
 
 ## Configuration
 
@@ -305,10 +346,10 @@ shape) builds an absolute, CDN-hosted URL from `wrappedConfig.cdnUrl` (or
 
 **Restart-safety.** The quarantine directory is the only source of truth,
 never this process's memory. A hold's bytes are quarantined immediately
-(exactly as a refusal's are), with a `<digest>.holds.json` sidecar recording
-which target path(s) are waiting on it -- the only way to tell a still-
-pending hold apart from a permanently quarantined refusal, since both live
-at `<quarantinePath>/<digest>`. `ScanningStorageAdapter`'s constructor calls
+(exactly as a refusal's are), with a `<digest>.holds.json/` sidecar
+directory recording which target path(s) are waiting on it -- the only way
+to tell a still-pending hold apart from a permanently quarantined refusal,
+since both live at `<quarantinePath>/<digest>`. `ScanningStorageAdapter`'s constructor calls
 `HoldRegistry#resumeFromQuarantine` synchronously, before it returns, so a
 restarted process resumes every pending hold before it can serve a single
 request. Bytes are never held in memory for a hold's full (potentially
@@ -321,8 +362,8 @@ ever bounding how long a hold itself is allowed to live.
 **One quarantine, three features.** Ghost constructs one decorator per
 storage feature (`images`, `media`, `files`) and never tells it which
 feature it serves, while a deployment gives all three the same
-`quarantinePath`. The sidecar is therefore keyed by owner --
-`{"owners": {"<wraps>:<storagePath>": [targetPaths]}}`, the wrapped
+`quarantinePath`. Each sidecar entry therefore names its owner --
+`{"owner": "<wraps>:<storagePath>", "targets": [targetPaths]}`, the wrapped
 adapter's `storagePath` being what differs between features on both
 backends -- and a restarted decorator resumes only its own owner's
 targets. Without that, whichever feature's decorator polled first would
@@ -330,8 +371,9 @@ promote another feature's hold into its own served tree and delete the
 bytes the owning feature was still waiting on, so the upload would never
 be served. When the same bytes are held by two features, each promotes
 into its own tree and only the last to release the digest removes the
-bytes. A sidecar with no `owners` map is left held and unresumed, and
-logged, rather than guessed at.
+bytes. An entry with no owner, or a sidecar that is a file with no
+`owners` map, is left held and unresumed, and logged, rather than guessed
+at.
 
 **A refusal by any feature is final for every feature.** A refusal --
 synchronous, or a held digest's later match -- writes the bytes, then a
@@ -382,13 +424,42 @@ retried, then stuck), a release puts the bytes back, and a sweep leaves the
 copy. `test/unit/cross-process.test.mjs` runs a sealer and a releaser as
 two real processes, pausing each between its steps, in all six orders.
 
-The hold sidecar's read-modify-write is still single-process, which is a
-safety-neutral but real availability gap: a held digest is never served
-and never loses sealed bytes, but during a swap both colours re-arm the
-same holds, so a hold one colour promotes can fail its retries in the
-other and raise a false "hold stuck" alert, and two processes updating
-one sidecar at once can drop an owner's entry, leaving a hold that is
-never resumed and never marked stuck, with nothing logged.
+**One entry per holder.** The sidecar is a directory with one entry file
+per holder, a holder being one feature's decorator in one process, so the
+three features of a Ghost and both colours of a swap never write the same
+file, and no holder ever reads, rewrites or removes another's entry. A
+release removes its own entry, then the directory with `rmdir`, which
+fails while any entry is in it, and only then the bytes, through
+`releaseBytes`, which looks for the directory again after moving them
+aside. So a hold that lands in another process at any point of a release
+keeps its entry, and its bytes: before the `rmdir`, it fails; after it,
+`releaseBytes` puts the bytes back, or the hold's own check after writing
+its entry does. A writer whose directory is removed between making it and
+writing its entry makes it again. A restarted decorator takes over every
+entry its owner's earlier processes left, claiming each by `rename` before
+reading it, and writes them as one entry of its own; during a swap that
+includes the live other colour's, which goes on rewriting and removing
+only its own. A sidecar left by an older release as one file, `{"owners":
+{...}, "stuck": {...}}`, is split into one entry per owner at start-up;
+the bytes are read first and put back if a release or sweep removed them
+while no sidecar stood. The old file is renamed to a dotfile aside copy
+before the first entry is written, and removed after the last. A process
+killed between leaves the aside copy, and the next start-up, and every
+orphan sweep, finishes the split from it before it looks for orphaned
+bytes; a split another process has begun is finished the same way before
+an owner adopts its entries. Finishing a split can fail (a full disk, EIO,
+EACCES): the failure is logged and the aside copy stays. While it stands it
+is a hold on the digest it names, as a sidecar is, for every path that
+removes bytes: the orphan sweep, `releaseBytes` with `keepIfHeld`, and the
+sweep of releasing copies each keep them, on the same pass and on every
+later one, until a split completes. `test/unit/hold-release-cross-process.test.mjs`
+runs a releaser and a holder as two real processes, pausing the releaser
+before it gives up its entry, before it moves the bytes aside and after.
+
+A digest held in both colours during a swap is still promoted by both, and
+a hold one colour promotes can fail its retries in the other and raise a
+false "hold stuck" alert: safety-neutral, since a held digest is never
+served unverified and never loses sealed bytes.
 
 **Why the registry is shaped as it is.** There is no real verdict channel
 yet, so "a later verdict arrives" means the same in-process `VerdictClient`
@@ -416,11 +487,11 @@ that does not settle within `writeTimeoutMs` counts as a failed retry, and a
 request-path write that does not settle is rejected after the same budget
 (default 60000 ms, set through the adapter's `writeTimeoutMs` config). It is
 logged once with the fixed prefix
-`ScanningStorageAdapter: hold stuck` and recorded in its sidecar as
-`"stuck": {"<owner>": {"reason": "..."}}`; a restart that finds it logs the
-same line again rather than resuming it. To retry a stuck hold once its
-cause is fixed, remove that owner's `stuck` entry from the sidecar and
-restart Ghost.
+`ScanningStorageAdapter: hold stuck` and recorded in its sidecar entry as
+`"stuck": {"reason": "..."}`; a restart that finds it logs the same line
+again rather than resuming it. To retry a stuck hold once its cause is
+fixed, remove the `stuck` field from that owner's entry in
+`<digest>.holds.json/` and restart Ghost.
 
 **Why the write budget matters.** Ghost's `S3Storage` builds its S3 client with
 only a region, endpoint, path-style flag and credentials, and its config schema
@@ -429,7 +500,10 @@ that budget is the only bound on a write the object store never acknowledges.
 
 **Orphaned bytes.** A hold writes the bytes, then the sidecar. A crash
 between the two leaves bytes under `<digest>` with no sidecar and no
-refusal record. They were never served, but nothing would ever resume or
+refusal record, or with a sidecar directory holding no entry, only the
+crashed writer's temp file or nothing. Each sweep first removes such a
+directory, with any temp file in it older than `holdOrphanMinAgeMs`; a live
+writer whose empty directory is removed makes it again. They were never served, but nothing would ever resume or
 remove them, and the sidecar was the only record of the target path they
 were held for, so they cannot be resumed either. The registry therefore
 sweeps them: once at start-up, right after the aside-copy sweep and before
@@ -438,7 +512,8 @@ the adapter's constructor returns, and then every
 and that `stopAll` ends. A file is an orphan when it is a regular file
 whose name is not a dotfile (a live writer's temp file), an aside copy, a
 sidecar or a refusal record; it is older than `holdOrphanMinAgeMs`; and no
-sidecar of any owner and no refusal record sits beside it. Each removal is
+sidecar of any owner, no unfinished split's aside copy and no refusal record sits
+beside it. Each removal is
 logged with the fixed prefix `ScanningStorageAdapter: orphaned quarantine
 bytes`, then the digest and the age. Nothing about the digest's shape is
 assumed: a name is classified by what it is not.
@@ -464,7 +539,8 @@ argument as a releaser: it writes the record before the bytes, so a sweep
 either sees the record and puts the bytes back, or moved them aside first
 and the sealer restores or rewrites them. `test/unit/cross-process.test.mjs`
 runs a sealer and a sweep as two real processes in all six orders, and
-kills a real `hold` between its two writes.
+kills a real `hold` between its two writes, before its sidecar directory
+exists and with only its temp file in it.
 
 The default age is 10 minutes. It has to be far larger than the longest a
 live writer can sit between its two writes: the write timeout is 60 seconds
@@ -488,6 +564,53 @@ with the fixed prefix `ScanningStorageAdapter: crash-residue quarantine temp
 file`, then the name and the age. A temp file holds no verdict and is never
 served, so nothing else is checked. Every other dotfile, and every byte,
 sidecar, refusal record and aside copy, is untouched by this rule.
+
+## Icon size variants (size-variants)
+
+On object storage Ghost core rewrites a stored image's absolute bucket URL
+to `<bucket>/content/images/size/w256h256/<file>` in two places: the settings
+output serializer (Ghost admin and the Content API, for the Publication Icon)
+and `blog-icon.js` (the site's favicon link, with `/format/<type>/` added when
+the icon's own type is not served as it is). The browser fetches that URL from
+the bucket, so Ghost's resize middleware, the only thing that writes a
+variant, never runs, and the bucket answers 403 for the key nobody wrote.
+Saving the Publication Icon in Ghost admin fails on it.
+
+The decorator writes those variants itself, when it stores an image
+(`#writeIconVariants` in `src/scanning-storage.js`): after `save()`, after a
+same-name overwrite, and after a held upload is promoted. Why this and not the
+other two ways out:
+
+- **Size URLs through Ghost** needs Ghost core patched in both places (the
+  serializer and `blog-icon.js`), each pinned by hash like the other overlays,
+  and re-derived on every Ghost bump. The adapter API is the stable seam.
+- **Resize hooks** do not exist: `handle-image-sizes.js` calls `exists`,
+  `read` and `saveRaw` on the adapter and nothing else, and it only runs for
+  requests that reach Ghost.
+
+Rules, each mirroring `handle-image-sizes.js` so a variant is made only where
+the middleware would make one:
+
+- Only the images feature on a bucket config. The local adapters serve the
+  size path through Ghost itself.
+- The size is 256x256 (Ghost's `icon` internal size). A plain variant is
+  written when `shouldResizeFileExtension` says so (png, jpg, jpeg, webp); a
+  format variant when `blog-icon.js` would ask for one (jpg as jpeg; webp and
+  svg as png). A type Ghost cannot transform, an `.ico` for one, gets none.
+- Never for a `size/` key (a variant is not resized again) and never for a
+  `_o` original.
+- The variants go through this decorator's own `saveRaw`, so they are scanned,
+  held and typed like every other byte served from the bucket. A held upload
+  gets its variants when it is promoted, never before.
+- Best effort. A failed resize or refused variant is logged
+  (`ICON_VARIANT_FAILED`) and the upload still succeeds. Without
+  `@tryghost/image-transform` the object-storage images tier logs
+  `ICON_VARIANTS_UNAVAILABLE` at boot.
+
+Not covered: a plain `size/w256h256/` URL for an `.svg` or `.ico` icon, which
+Ghost's middleware answers with a redirect to the original and the bucket has
+no object for. Images uploaded before this shipped have no variants either,
+until they are asked for through Ghost or re-uploaded.
 
 ## What Ghost's extension point does, and the traps in it
 
@@ -566,6 +689,18 @@ serves.
 feature refuses the bytes the images feature is holding, the images
 verdict then comes back clean, and the image must stay unserved with the
 sealed bytes and `.refused.json` still in quarantine.
+
+**Ghost's own content importer is proven through the decorator.**
+`test/image/importer-handlers.image.test.mjs` runs
+`test/helpers/importer-in-image.cjs` inside the built image, where Ghost's real
+import manager is available (its handlers need Ghost core, which this package
+does not carry). An image, a media file and a file go through Ghost's real
+`handlers/image.js` and `importer-content-file-handler.js` and its content-file
+importers, with the decorator as each feature's store. Every reference must
+resolve to a stored key: the name the handler promised is the URL `save`
+returns, the file is in the store with the imported bytes, and the post's
+reference was rewritten to it. Without the decorator's `staticFileURLPrefix`
+the handler throws `reading 'split'` on its first file.
 
 **Bind-mount ownership.** The base image's entrypoint chowns everything
 under the content directory to `node` on every boot, including the

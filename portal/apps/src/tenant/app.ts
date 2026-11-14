@@ -9,9 +9,20 @@ import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-po
 import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
+import { renderSupportAccess } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
+import {
+  explainerLinks,
+  payingOnlyBody,
+  renderExplainerPage,
+  renderFaqPage,
+} from './explainerPages.js';
+import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
+import { createPromotionRoutes } from './promotionRoutes.js';
+import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
+import { createSiteRoutes } from './site.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
 export interface TenantPortalOptions {
@@ -37,6 +48,11 @@ export interface TenantPortalOptions {
   readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
+  /**
+   * How to reach the provisioning API. Absent, no screen that calls it is
+   * served: no page, no action and no navigation entry.
+   */
+  readonly provisioning?: ProvisioningSettings;
 }
 
 /**
@@ -63,6 +79,11 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
+  const site = createSiteRoutes(options.provisioning, { onError: options.onError });
+  const demo = createDemoRoutes(options.provisioning);
+  const promotion = createPromotionRoutes(options.provisioning, options.support, options.db, () =>
+    Math.floor(now().getTime() / 1000)
+  );
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -77,7 +98,11 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      { label: 'NAV_SITE_ACCESS', href: '/site-access' },
+      ...demo.nav,
+      ...site.nav,
       ...support.nav,
+      ...promotion.nav,
     ],
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
@@ -95,16 +120,35 @@ export function createTenantPortal(options: TenantPortalOptions) {
       const pending = await options.db.pendingAcceptances(scope, now());
       const notice =
         pending.length === 0 ? '' : '<p><a href="/documents">DOCUMENTS_AWAIT_ACCEPTANCE</a></p>';
-      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${renderHealth(health)}${support.linkFrom('HOME')}`;
+      const explainer = explainerLinks(await options.db.ownKind(scope));
+      return `<h1>LANDING_PLACEHOLDER</h1><p>YOUR_TENANT_ID <code>${id}</code></p>${notice}${explainer}${renderHealth(health)}${support.linkFrom('HOME')}`;
     },
     pages: {
       ...support.pages,
+      '/explainer': async (scope) =>
+        payingOnlyBody(scope, (bound) => options.db.ownKind(bound), renderExplainerPage),
+      '/faq': async (scope) =>
+        payingOnlyBody(
+          scope,
+          (bound) => options.db.ownKind(bound),
+          () => renderFaqPage(options.support !== undefined)
+        ),
+      ...site.pages,
+      ...demo.pages,
+      ...promotion.pages,
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
           (bound) => options.db.ownKind(bound),
           (bound) => options.db.moderationSettings(bound)
         )) + support.linkFrom('MODERATION'),
+      '/site-access': async (scope) => {
+        const [access, request] = await Promise.all([
+          options.db.ownSupportAccess(scope, now()),
+          options.db.ownSupportRequest(scope),
+        ]);
+        return renderSupportAccess(access, request);
+      },
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([
@@ -125,6 +169,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     },
     actions: {
       ...support.actions,
+      ...promotion.actions,
       '/moderation/save': async (scope, identity, form) => {
         await saveModeration({
           scope,
@@ -135,6 +180,12 @@ export function createTenantPortal(options: TenantPortalOptions) {
           now: now(),
         });
         return '/moderation';
+      },
+      // The only thing the page can do: file the signed-in tenant's request.
+      // It reads no field of the form, so nothing the visitor sends reaches it.
+      '/site-access/request': async (scope) => {
+        await options.db.requestSupportAccess(scope);
+        return '/site-access';
       },
       '/documents/accept': async (scope, identity, form) => {
         const kind = form.get('kind') ?? '';

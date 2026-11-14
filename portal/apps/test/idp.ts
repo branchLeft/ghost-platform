@@ -21,6 +21,8 @@ export interface TokenSpec {
   readonly role: string;
   readonly subject?: string;
   readonly exp?: number;
+  /** The `iss` claim; the shared test issuer when absent. An HTTP issuer names its own origin. */
+  readonly issuer?: string;
 }
 
 /** A token signed by the test issuer, shaped as Zitadel's access tokens are. */
@@ -28,7 +30,7 @@ export function mint(spec: TokenSpec): string {
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: KID })).toString('base64url');
   const payload = Buffer.from(
     JSON.stringify({
-      iss: ISSUER,
+      iss: spec.issuer ?? ISSUER,
       aud: [spec.client, CLIENT_PORTAL, CLIENT_CONSOLE],
       client_id: spec.client,
       sub: spec.subject ?? 'user-1',

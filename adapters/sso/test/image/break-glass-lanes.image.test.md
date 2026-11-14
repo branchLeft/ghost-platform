@@ -2,8 +2,8 @@
 
 ## Why this test exists
 
-ISSUE branchLeft/workspace#1245's "Done means", against a real Ghost at the
-pinned version. Each case below runs the real code:
+The break-glass lanes, against a real Ghost at the pinned version. Each case
+below runs the real code:
 
 - the minter CLI, run as `ops1` runs it: in the pinned Node image, with no
   network, and with the key directory mounted read-only at

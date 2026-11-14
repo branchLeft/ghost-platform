@@ -3,21 +3,31 @@
   "version": "0.0.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE",
-  "packageManager": "pnpm@11.17.0",
-  "description": "The tenant provisioning controller's core: from one recorded owner approval and the tenant register alone, an ordered, keyed, typed plan of every onboarding step, and an executor that runs it idempotently with recorded state, bounded retry and resume, through ports only.",
+  "packageManager": "pnpm@11.28.11",
+  "description": "The tenant provisioning controller's core: from one recorded owner approval and the tenant register alone, an ordered, keyed, typed plan of every onboarding step, and an executor that runs it idempotently with recorded state, bounded retry and resume, through ports only. Also holds the provisioning API contract (openapi.yaml), its generated client and server (src/generated), and an in-memory mock of it (mock/); the real service behind that contract is not built.",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./provisioning-api": "./dist/src/generated/index.js",
+    "./provisioning-api/server": "./dist/src/generated/server.js"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test:unit": "vitest run",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "mock": "node dist/mock/main.js"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.3.1",
     "@types/node": "^26.0.0",
     "@vitest/coverage-v8": "4.1.11",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.1"
   }
 }

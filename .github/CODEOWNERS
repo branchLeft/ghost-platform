@@ -18,7 +18,10 @@
 
 # --- Criterion 1: the rules, the gates, the floors and the exemptions ---
 /gate-set/                                       @branchLeft/branchleft-admin
-/csp/gate/                                       @branchLeft/branchleft-admin
+# Promotion attestation: the workflow that signs a candidate digest's verdict, and the scripts it runs.
+/promote/                                        @branchLeft/branchleft-admin
+/.github/workflows/promote-candidate.yml         @branchLeft/branchleft-admin
+/csp/gate/                                      @branchLeft/branchleft-admin
 /csp/derive/                                     @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
 # What the gate set pins or reads: the overlay file whose own hash is the pin (gate-set/gates.mjs
@@ -82,6 +85,7 @@
 /adapters/sso/test/image/                        @branchLeft/branchleft-admin
 /adapters/sso/test/helpers/                      @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/docker-ghost.mjs @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/helpers/media-bytes.mjs @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/recording-s3-double.cjs @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/theme-zip.mjs @branchLeft/branchleft-admin
 
@@ -106,15 +110,16 @@
 /services/drain-sidecar/Dockerfile               @branchLeft/branchleft-admin
 /services/mail-collector/Dockerfile              @branchLeft/branchleft-admin
 /services/mailgun-shim/Dockerfile                @branchLeft/branchleft-admin
+/services/mysqld-exporter/Dockerfile               @branchLeft/branchleft-admin
 /services/odask/Dockerfile                       @branchLeft/branchleft-admin
 /services/sweego-webhook-receiver/Dockerfile     @branchLeft/branchleft-admin
+/services/storage-gateway/Dockerfile              @branchLeft/branchleft-admin
 /portal/Dockerfile                               @branchLeft/branchleft-admin
 # Criterion 2 and 3: what a job that holds a token builds into an image: the Dockerfile, its
 # ignore file (what keeps .git, and the token it holds, out of the build) and what it copies and runs.
 /Dockerfile                                      @branchLeft/branchleft-admin
 /docker-entrypoint.branchleft.sh                 @branchLeft/branchleft-admin
 /services/demo-edge/Dockerfile                   @branchLeft/branchleft-admin
-/adapters/sso/ghost-core-overlay/apply-session-from-token-patch.sh @branchLeft/branchleft-admin
 /adapters/ghost-core-overlay/apply-patch.sh      @branchLeft/branchleft-admin
 /themes/fetch.mjs                                @branchLeft/branchleft-admin
 /themes/verify.mjs                               @branchLeft/branchleft-admin
@@ -148,6 +153,8 @@
 /adapters/scanning-storage/verdict-host/auth.js  @branchLeft/branchleft-admin
 /services/broker/src/auth.ts                     @branchLeft/branchleft-admin
 /services/broker/test/unit/auth.test.ts          @branchLeft/branchleft-admin
+/services/broker/src/signedRequestScheme.ts      @branchLeft/branchleft-admin
+/services/broker/test/unit/signedRequestScheme.test.ts @branchLeft/branchleft-admin
 /services/storage-gateway/src/credentials/       @branchLeft/branchleft-admin
 /services/storage-gateway/src/sigv4-verifier.ts  @branchLeft/branchleft-admin
 /services/storage-gateway/src/admit.ts           @branchLeft/branchleft-admin

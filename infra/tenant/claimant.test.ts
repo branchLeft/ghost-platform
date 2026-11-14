@@ -6,15 +6,8 @@ import { TEST_ZONES, tenantZeroEquivalent } from './test/fixtures';
 import { installMocks } from './test/harness';
 
 // The claimant handed to render core must be the repository Actions reports,
-// not a constant. The local claim check runs first and would refuse the other
-// repository before render core is reached, so it is stubbed out here: the
-// refusal (or acceptance) that follows is render core's own decision.
+// not a constant: render core's refusal (or acceptance) is the only claim check.
 const OTHER_REPO = 'branchLeft/ghost-tenant-someone-else';
-
-vi.mock('./naming', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./naming')>()),
-  validateTenantNameClaim: () => undefined,
-}));
 
 vi.mock('@branchleft/ghost-platform-render-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@branchleft/ghost-platform-render-core')>();

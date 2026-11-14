@@ -720,8 +720,8 @@ fi
 
 echo "--- checking the decrypted archive's real contents ---"
 LISTING="$(age -d -i "$KEY_DIR/identity.txt" "$ARCHIVE" | tar -tf -)"
-if [ "$LISTING" = "$(printf 'content_and_settings.json\npost_analytics.csv\nmanifest.json')" ]; then
-    echo "PASS: decrypts to content_and_settings.json, post_analytics.csv and manifest.json"
+if [ "$LISTING" = "$(printf 'content_and_settings.json\npost_analytics.csv\nmembers.json\nmembers.csv\ncomments.json\nmanifest.json')" ]; then
+    echo "PASS: decrypts to content_and_settings.json, post_analytics.csv, members.json, members.csv, comments.json and manifest.json"
 else
     fail "unexpected decrypted listing: $LISTING"
 fi
@@ -753,7 +753,7 @@ else
     fail "archive $archive_mode, manifest $sidecar_mode, directory $dest_mode (expected 600 / 600 / 700)"
 fi
 if grep -q "\"tenantId\":\"$TENANT\"" "$AUDIT_DIR/audit.jsonl" 2>/dev/null && \
-   grep -q '"contents":\["content_and_settings","post_analytics"\]' "$AUDIT_DIR/audit.jsonl" && \
+   grep -q '"contents":\["content_and_settings","post_analytics","members","members_csv","comments"\]' "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"grant\":{\"lane\":\"consented\",\"reference\":\"$GRANT_REFERENCE\"}" "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"supportIdentity\":\"$SUPPORT_EMAIL\"" "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"encryptedTo\":\"$EXPECTED_FINGERPRINT\"" "$AUDIT_DIR/audit.jsonl" && \

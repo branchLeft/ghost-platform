@@ -1,8 +1,8 @@
 #!/bin/sh
-# branchLeft entrypoint wrapper for Cloud Run. Translates Cloud Run's $PORT
+# branchLeft entrypoint wrapper. Translates the platform's $PORT
 # into Ghost's server__port/server__host env vars, then hands off to the
 # upstream image's entrypoint, which still has to run first.
-# See docker-entrypoint.branchleft.md#cloud-run-port-translation.
+# See docker-entrypoint.branchleft.md#port-translation.
 set -e
 
 export server__port="${PORT:-2368}"
@@ -23,7 +23,7 @@ check_storage_feature() {
         "")
             echo "FATAL: storage__${feature}__adapter is not set." >&2
             echo "Ghost defaults to local-disk storage (Local*Storage), which is silently" >&2
-            echo "lost on every Cloud Run instance recycle, and even a durable adapter set" >&2
+            echo "lost whenever the container is replaced, and even a durable adapter set" >&2
             echo "directly (storage__${feature}__adapter=S3Storage) is silently unscanned." >&2
             echo "Set storage__${feature}__adapter=ScanningStorageAdapter plus" >&2
             echo "storage__${feature}__wraps and the storage__${feature}__wrappedConfig__*" >&2
@@ -69,8 +69,8 @@ check_storage_feature() {
         case "$wraps" in
             Local*Storage)
                 echo "FATAL: storage__${feature}__wraps=${wraps} is a local-disk adapter." >&2
-                echo "Local disk is not durable on Cloud Run -- uploaded media is lost" >&2
-                echo "silently on the next instance recycle, decorator or not. Set" >&2
+                echo "Local disk is not durable -- uploaded media is lost" >&2
+                echo "silently when the container is next replaced, decorator or not. Set" >&2
                 echo "storage__${feature}__wraps=S3Storage plus the" >&2
                 echo "storage__${feature}__wrappedConfig__* variables documented in" >&2
                 echo "adapters/scanning-storage/README.md for any real deploy." >&2

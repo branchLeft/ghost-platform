@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { TokenVerifier } from 'ghost-platform-identity/dist/index.js';
 import { createClientLimit, type ClientLimitOptions } from './clientLimit.js';
-import { cookieName, parseCookies, setCookie } from './cookies.js';
+import { assertCookiePrefix, cookieName, parseCookies, setCookie } from './cookies.js';
 import { portalErrorLine, type PortalErrorStep } from './errorLine.js';
 import { escapeHtml, renderPage, STYLESHEET, type NavItem } from './html.js';
 import { authorizeUrl, expiryOf, exchangeCode, newPkce, type OidcClient } from './oidc.js';
@@ -104,6 +104,7 @@ const text = (response: ServerResponse, status: number, body: string, extra = {}
  * this holds no tenant logic and imports neither storage entry point.
  */
 export function createShell<S>(options: ShellOptions<S>): Handler {
+  assertCookiePrefix(options.cookiePrefix);
   const clock = options.clock ?? (() => Math.floor(Date.now() / 1000));
   const fetchImpl = options.fetch ?? fetch;
   const secure = options.secureCookies ?? true;

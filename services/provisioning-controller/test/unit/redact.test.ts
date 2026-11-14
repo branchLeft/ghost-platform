@@ -1,5 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { afterAll, describe, expect, it } from 'vitest';
 import { REDACTED, redactSecrets } from '../../src/redact.js';
+
+// The real source, with only its Authorization rules swapped for the single rule main had before
+// the fix, so a test can show that the old rule leaves a remnant where the real one leaves none.
+const SOURCE = new URL('../../src/redact.ts', import.meta.url);
+const AUTHORIZATION_RULES = '...AUTHORIZATION_RULES,';
+const OLD_AUTHORIZATION_RULE = String.raw`[new RegExp('\\b(authorization["\']?\\s*[=:]\\s*["\']?)(' + AUTH_SCHEME + '[ \\t]+)?(?:(?!' + NEXT_FIELD + ')[^\\s,;"\'}])+', 'gi'), '$1$2' + REDACTED],`;
+const readSource = (): string => readFileSync(SOURCE, 'utf8');
+const scratch = mkdtempSync(join(tmpdir(), 'redact-prefix-'));
+afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+let preFix: Promise<{ redactSecrets: (text: string) => string }> | undefined;
+const importPreFix = (): Promise<{ redactSecrets: (text: string) => string }> => {
+  preFix ??= (async () => {
+    const file = join(scratch, 'redactPreFix.ts');
+    writeFileSync(file, readSource().replace(AUTHORIZATION_RULES, OLD_AUTHORIZATION_RULE));
+    return (await import(/* @vite-ignore */ pathToFileURL(file).href)) as {
+      redactSecrets: (text: string) => string;
+    };
+  })();
+  return preFix;
+};
 
 // Secret-shaped values are built at run time so no scanner sees a literal token here.
 const filler = (n: number, ch = 'a'): string => ch.repeat(n);
@@ -105,6 +129,231 @@ describe('redactSecrets', () => {
     expect(redactSecrets('Authorization: OAuth abcdef123456')).toBe(
       `Authorization: OAuth ${REDACTED}`
     );
+  });
+
+  // An Authorization credential is the whole header value up to whitespace: a comma, a semicolon,
+  // a quote or a brace inside it is part of the secret, not the end of it. The remnant marker is
+  // RETX9; no output may hold it.
+  describe('an Authorization credential that holds punctuation', () => {
+    const PUNCTUATED = [
+      ['a comma', 'SEC,RETX9'],
+      ['a semicolon', 'SEC;RETX9'],
+      ['a double quote', 'SEC"RETX9'],
+      ['a single quote', "SEC'RETX9"],
+      ['a closing brace', 'SEC}RETX9'],
+      ['an opening brace', 'SEC{RETX9'],
+      ['every one of them', 'SEC,;"\'}{RETX9'],
+      ['a trailing comma', 'SECRETX9,'],
+      ['a leading comma', ',SECRETX9'],
+      ['a run of commas', 'SEC,,,RETX9'],
+    ] as const;
+    const SCHEMES = ['Token', 'Bearer', 'Hmac', 'OAuth', 'Basic', 'Digest'] as const;
+
+    it('redacts the example from the report with no remnant', () => {
+      expect(redactSecrets('Authorization: Token SEC,RETX9')).toBe(
+        `Authorization: Token ${REDACTED}`
+      );
+    });
+
+    it.each(
+      SCHEMES.flatMap((scheme) =>
+        PUNCTUATED.map(([what, credential]) => [scheme, what, credential] as const)
+      )
+    )('removes the whole %s credential holding %s', (scheme, _what, credential) => {
+      expect(redactSecrets(`Authorization: ${scheme} ${credential}`)).toBe(
+        `Authorization: ${scheme} ${REDACTED}`
+      );
+    });
+
+    it.each(PUNCTUATED)(
+      'removes a credential holding %s with no scheme word',
+      (_what, credential) => {
+        expect(redactSecrets(`Authorization: ${credential}`)).toBe(`Authorization: ${REDACTED}`);
+      }
+    );
+
+    it.each(PUNCTUATED)(
+      'removes a credential holding %s after an equals sign',
+      (_what, credential) => {
+        expect(redactSecrets(`Authorization=Token ${credential}`)).toBe(
+          `Authorization=Token ${REDACTED}`
+        );
+      }
+    );
+
+    // The value of the header is everything after its name to the end of the line, so the words
+    // after the credential go with it and the next line stays.
+    it('ends the value at the end of the line and keeps the next line', () => {
+      expect(
+        redactSecrets('call failed: Authorization: Token SEC,RETX9 rejected, retry later\nstep 3')
+      ).toBe(`call failed: Authorization: Token ${REDACTED}\nstep 3`);
+    });
+
+    it.each([
+      ['a line feed', '\n'],
+      ['a carriage return and line feed', '\r\n'],
+      ['a lone carriage return', '\r'],
+      ['a line separator', ' '],
+      ['a paragraph separator', ' '],
+      ['a next-line character', '\u0085'],
+    ])('ends the value at %s', (_what, eol) => {
+      expect(redactSecrets(`Authorization: Token SEC,RETX9${eol}keep this line`)).toBe(
+        `Authorization: Token ${REDACTED}${eol}keep this line`
+      );
+    });
+
+    it('removes a credential inside a JSON string and keeps the fields around it', () => {
+      const out = redactSecrets('{"step":2,"Authorization":"Token SEC,;}{RETX9","next":3}');
+      expect(out).not.toContain('RETX9');
+      expect(out).not.toContain('SEC');
+      expect(out).toContain('"step":2');
+      expect(out).toContain('"next":3}');
+    });
+
+    it.each([
+      ['an escaped double quote', '{"Authorization":"Token SEC\\"RETX9","next":3}'],
+      ['an escaped backslash', '{"Authorization":"Token SEC\\\\RETX9","next":3}'],
+      ['a single quote inside double quotes', '{"Authorization":"Token SEC\'RETX9","next":3}'],
+      ['a double quote inside single quotes', "{'Authorization': 'Token SEC\"RETX9', 'next': 3}"],
+      ['an escaped single quote', "{'Authorization': 'Token SEC\\'RETX9', 'next': 3}"],
+      ['a comma and a semicolon', '{"Authorization":"Token SEC,RETX9;","next":3}'],
+      ['braces and a comma', '{"Authorization":"Bearer SE}C,{RETX9","next":3}'],
+      ['a space after the colon', '{"Authorization": "Token SEC,RETX9", "next": 3}'],
+      ['spaces around the colon', '{"Authorization" : "Token SEC,RETX9", "next": 3}'],
+      ['a space in the value', '{"Authorization":"Token SEC RETX9","next":3}'],
+      ['an unknown scheme', '{"Authorization":"Custom SECRETX9","next":3}'],
+      ['an empty first credential', '{"Authorization":"Token , Bearer RETX9","next":3}'],
+      ['a field name inside it', '{"Authorization":"Token SEC,token=RETX9,RETX8","next":3}'],
+      ['a no-break space after the scheme', '{"Authorization":"Token SEC,RETX9","next":3}'],
+      ['a Proxy-Authorization key', '{"Proxy-Authorization":"Token SEC,RETX9","next":3}'],
+    ])('removes the whole quoted credential holding %s', (_what, text) => {
+      const out = redactSecrets(text);
+      expect(out).not.toContain('RETX');
+      expect(out).not.toContain('SEC');
+      expect(out).toMatch(/["']next["']: ?3\}/);
+    });
+
+    // Each of these kept a credential fragment before the value became the whole rest of the line.
+    describe('a credential the scheme-word rule could not read', () => {
+      it.each([
+        ['an unknown scheme word', 'Authorization: Custom SECRETX9', 'Authorization: [redacted]'],
+        [
+          'an unknown scheme after a known credential',
+          'Authorization: Token SEC, Custom RETX9',
+          'Authorization: Token [redacted]',
+        ],
+        [
+          'a scheme with a hyphen and digits',
+          'Authorization: AWS4-HMAC-SHA256 Credential=AKID/2026,Signature=RETX9',
+          'Authorization: [redacted]',
+        ],
+        [
+          'an unknown scheme and a punctuated credential',
+          'Authorization: SSWS SEC,RETX9;RETX8',
+          'Authorization: [redacted]',
+        ],
+      ])('removes %s', (_what, text, expected) => {
+        expect(redactSecrets(text)).toBe(expected);
+      });
+
+      it.each([
+        ['a no-break space', ' '],
+        ['an em space', ' '],
+        ['an ideographic space', '　'],
+        ['a narrow no-break space', ' '],
+        ['a zero-width no-break space', '﻿'],
+        ['a vertical tab', '\v'],
+        ['a form feed', '\f'],
+        ['two different spaces', '  '],
+      ])('removes a credential after %s following the scheme word', (_what, gap) => {
+        for (const scheme of ['Token', 'Bearer', 'Hmac', 'OAuth', 'Custom']) {
+          const out = redactSecrets(`Authorization: ${scheme}${gap}SEC,RETX9`);
+          expect(out).not.toContain('RETX9');
+          expect(out).not.toContain('SEC');
+        }
+      });
+
+      it.each([
+        ['after the name', 'Authorization: Token SEC,RETX9'],
+        ['around the colon', 'Authorization : Token SEC,RETX9'],
+      ])('removes a credential with a no-break space %s', (_what, text) => {
+        expect(redactSecrets(text)).not.toContain('RETX9');
+      });
+
+      it.each([
+        ['an empty first credential', 'Authorization: Token , Bearer RETX9'],
+        ['an empty first credential and no space', 'Authorization: Token ,Bearer RETX9'],
+        ['two empty credentials', 'Authorization: Token , Bearer , Hmac RETX9'],
+        ['a lone comma', 'Authorization: , RETX9'],
+      ])('removes a second credential after %s', (_what, text) => {
+        const out = redactSecrets(text);
+        expect(out).not.toContain('RETX9');
+        expect(out).toContain(REDACTED);
+      });
+
+      it.each([
+        ['a field name inside it', 'Authorization: Token SEC,token=RETX9,RETX8'],
+        ['a password field inside it', 'Authorization: Token SEC,password=RETX9;RETX8'],
+        ['a quoted field inside it', 'Authorization: Token SEC,secret="RETX9",RETX8'],
+        ['an Authorization key inside it', 'Authorization: Token SEC,authorization=RETX9,RETX8'],
+        ['a flag inside it', 'Authorization: Token SEC --token RETX9 RETX8'],
+      ])('removes the tail after %s', (_what, text) => {
+        const out = redactSecrets(text);
+        expect(out).not.toContain('RETX');
+        expect(out).not.toContain('SEC');
+      });
+    });
+
+    describe('a Proxy-Authorization header', () => {
+      it.each([
+        ['Proxy-Authorization: Token SEC,RETX9', `Proxy-Authorization: Token ${REDACTED}`],
+        ['proxy-authorization: Custom SEC,RETX9', `proxy-authorization: ${REDACTED}`],
+        ['Proxy-Authorization=Bearer SEC;RETX9', `Proxy-Authorization=Bearer ${REDACTED}`],
+        ['Proxy-Authorization: Token SEC,RETX9', undefined],
+      ])('redacts %j', (text, expected) => {
+        const out = redactSecrets(text);
+        expect(out).not.toContain('RETX9');
+        expect(out).not.toContain('SEC');
+        if (expected !== undefined) expect(out).toBe(expected);
+      });
+    });
+
+    it('removes both credentials of a header that names a second scheme', () => {
+      expect(redactSecrets('Authorization: Token SEC,RETX9, Bearer SE,RETX8')).toBe(
+        `Authorization: Token ${REDACTED}`
+      );
+      expect(redactSecrets('Authorization: Token SEC,RETX9,Bearer ab')).toBe(
+        `Authorization: Token ${REDACTED}`
+      );
+    });
+  });
+
+  // The Authorization rule before this fix, put back into the real source: the same file, with only
+  // the rule swapped for the one main had. Without this, the table above could pass on a rule that
+  // never read the input; each case below must leak under the old rule and not under the real one.
+  describe('the fix is what removes the credential', () => {
+    const HEADERS = [
+      'Authorization: Token SEC,RETX9',
+      'Authorization: Token SEC;RETX9',
+      'Authorization: Token SEC"RETX9',
+      'Authorization: Token SEC}RETX9',
+      'Authorization: Token SEC,;"\'}{RETX9',
+      'Authorization: Custom SECRETX9',
+      'Authorization: Token SEC,RETX9',
+      'Authorization: Token , Bearer RETX9',
+      'Authorization: Token SEC,token=RETX9,RETX8',
+      'Proxy-Authorization: Token SEC,RETX9',
+    ];
+
+    it('finds the rule it puts back in the real source', () => {
+      expect(readSource()).toContain(AUTHORIZATION_RULES);
+    });
+
+    it.each(HEADERS)('the real rule removes %j and the old rule leaves a remnant', async (text) => {
+      const old = await importPreFix();
+      expect(redactSecrets(text)).not.toMatch(/RETX|SEC/);
+      expect(old.redactSecrets(text)).toMatch(/RETX|SEC/);
+    });
   });
 
   // The rules above add coverage; none may stop catching what the original single
@@ -334,6 +583,26 @@ describe('redactSecrets on adversarial 100 KB input', () => {
     ['dotted words inside an open quoted value', repeated('token.', 'password="')],
     ['glued secret words after a separator', repeated('token', 'password=')],
     ['glued secret words before a separator', `${repeated('token')} =`],
+    ['a long comma-separated Authorization credential', repeated('a,', 'Authorization: Token ')],
+    ['a long Authorization credential of dotted words', repeated('ab.', 'Authorization: Token ')],
+    ['a long Authorization credential of secret words', repeated('token', 'Authorization: ')],
+    ['a long quoted Authorization credential', repeated(',a', '{"Authorization":"Token ')],
+    ['a long quoted Authorization credential of escapes', repeated('\\"', '{"Authorization":"')],
+    ['a long run of no-break spaces after a scheme', `Authorization: Token${' '.repeat(SIZE)}x`],
+    ['a long run of no-break spaces after the name', `Authorization:${' '.repeat(SIZE)}x`],
+    ['many Authorization lines', repeated('Authorization: Token a,b\n')],
+    ['many Proxy-Authorization lines', repeated('Proxy-Authorization: Custom a,b\r\n')],
+    ['Authorization names separated by spaces', repeated('authorization   ')],
+    ['Authorization names with a colon and a scheme', repeated('authorization: token ')],
+    ['a long quoted value that never closes', `{"Authorization":"Token ${'a\\'.repeat(SIZE)}`],
+    ['glued Authorization openings', repeated('Authorization:')],
+    ['glued quoted Authorization openings', repeated('Authorization:"')],
+    ['a long run of scheme-like segments', repeated(',token ', 'Authorization: Token a')],
+    ['a long run of spaced commas', repeated(', ', 'Authorization: Token a')],
+    [
+      'a long run of commas then spaces',
+      `Authorization: Token a${','.repeat(SIZE)}${' '.repeat(SIZE)}`,
+    ],
   ])('finishes %s in under 50 ms', (_name, text) => {
     expect(text.length).toBeGreaterThanOrEqual(SIZE);
     expect(bestOfThreeMs(text)).toBeLessThan(50);

@@ -68,9 +68,10 @@ export function parseGrantArgs(argv) {
     revoke: { needs: ['tenant', 'reason'], may: [] },
     expire: { needs: [], may: [] },
     status: { needs: [], may: [] },
+    report: { needs: ['tenant'], may: [] },
   }[command];
   if (!allowed) {
-    throw new GrantRefusedError('the command must be grant, revoke, expire or status');
+    throw new GrantRefusedError('the command must be grant, revoke, expire, status or report');
   }
   const extra = Object.keys(flags).filter(
     (name) => !allowed.needs.includes(name) && !allowed.may.includes(name)
@@ -129,6 +130,21 @@ async function main() {
     }
     if (expected && expected !== email) {
       refuse(expected + ' is not this tenant\\'s configured support identity');
+    }
+    if (action === 'report') {
+      // Read-only: plain selects, no transaction, no row lock, no write. It
+      // prints the status and the roles and never the address.
+      const row = await knex('users').where('email', email).first('id', 'status');
+      const names = row
+        ? await knex('roles').join('roles_users', 'roles_users.role_id', 'roles.id')
+            .where('roles_users.user_id', row.id).select('roles.name')
+        : [];
+      console.log('${RESULT_MARKER}' + JSON.stringify({
+        present: Boolean(row),
+        status: row ? row.status : null,
+        roles: names.map((r) => r.name),
+      }));
+      return;
     }
     const result = await knex.transaction(async (trx) => {
       if (action === 'identity') return { identity: email };
@@ -661,12 +677,58 @@ export function status(deps = defaultDeps()) {
   return [...open, ...held];
 }
 
+/** Ghost's staff statuses that let the account sign in (the inner script's list, kept in step). */
+const OPEN_STATUSES = ['active', 'warn-1', 'warn-2', 'warn-3', 'warn-4'];
+/** Statuses that refuse every sign-in. Any other status is not claimed either way. */
+const CLOSED_STATUSES = ['inactive', 'locked'];
+
+/** open, closed or unknown, from what the container read; unknown unless it is plainly one of the two. */
+function reportedState(account) {
+  if (!account.present) return 'closed';
+  const onlyAdministrator = account.roles.length === 1 && account.roles[0] === 'Administrator';
+  if (!onlyAdministrator) return 'unknown';
+  if (OPEN_STATUSES.includes(account.status)) return 'open';
+  if (CLOSED_STATUSES.includes(account.status)) return 'closed';
+  return 'unknown';
+}
+
+/**
+ * The read-only report for one tenant: whether its support account is open,
+ * closed or unknown, with the lane and the clock when open. It reads the
+ * account's status through Ghost's knex and the clock file, and writes nothing:
+ * no state file, no record, no claim, no purge and no change to the account. It
+ * never prints the reason, the reference, the grant id or the identity, and it
+ * needs no running expire timer, which only a grant needs. A clock that cannot
+ * be read leaves the lane and the clock null; it never changes the state.
+ */
+export async function report({ tenant }, deps = defaultDeps()) {
+  let clock = null;
+  try {
+    clock = readGrant(deps, tenant);
+  } catch {
+    // An unreadable clock says nothing about the account; the state is the account's.
+  }
+  const container = await deps.findContainer(tenant);
+  const account = await deps.run({ container, action: 'report' });
+  const state = reportedState(account);
+  const open = state === 'open' && clock !== null;
+  return {
+    tenant,
+    state,
+    lane: open && LANES.includes(clock.lane) ? clock.lane : null,
+    grantedAt: open && typeof clock.grantedAt === 'string' ? clock.grantedAt : null,
+    deadline: open ? clock.deadline : null,
+    observedAt: iso(deps.now()),
+  };
+}
+
 export async function main(argv, deps = defaultDeps(), stdout = process.stdout) {
   const args = parseGrantArgs(argv);
   let result;
   if (args.command === 'grant') result = await grant(args, deps);
   else if (args.command === 'revoke') result = await revoke(args, deps);
   else if (args.command === 'status') result = status(deps);
+  else if (args.command === 'report') result = await report(args, deps);
   else result = await expire(deps);
   stdout.write(`${JSON.stringify(result)}\n`);
   return args.command === 'expire' && result.failed.length > 0 ? 1 : 0;

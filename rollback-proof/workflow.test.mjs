@@ -32,13 +32,23 @@ describe('the live matrix', () => {
     );
   });
 
-  it('runs the old image the Dockerfile pins today', () => {
+  it('runs the accepted case on the image the Dockerfile pins today', () => {
     const pinned = dockerfile.match(/^FROM (ghost:\S+-alpine@sha256:[0-9a-f]{64})$/m)?.[1];
     assert.ok(pinned, 'the Dockerfile pins a ghost image by digest');
-    assert.ok(
-      matrix.every((m) => m.old === pinned),
-      `old image is ${pinned}`
-    );
+    const accepted = matrix.find((m) => m.name === 'accepted');
+    assert.equal(accepted?.old, pinned, `old image is ${pinned}`);
+    assert.equal(accepted?.new, pinned, `new image is ${pinned}`);
+  });
+
+  it('keeps the warned case on its historic pair, which an old image newer than the rename cannot warn on', () => {
+    const version = (ref) =>
+      ref
+        .match(/^ghost:(\d+)\.(\d+)\./)
+        .slice(1)
+        .map(Number);
+    const warned = matrix.find((m) => m.name === 'warned');
+    const [major, minor] = version(warned.old);
+    assert.ok(major === 6 && minor < 58, `${warned.old} writes email_batches.provider_id`);
   });
 
   it('accepts the image on its own data and warns about a real later release', () => {

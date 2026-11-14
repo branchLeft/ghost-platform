@@ -1,6 +1,6 @@
 # Break-glass SSO adapter
 
-The only code this platform adds to Ghost. It lets an operator holding a short-lived signed token open an Administrator session as **one account fixed per site**, with no standing password anywhere. Design: `ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html`, section 05, break-glass support access.
+It lets an operator holding a short-lived signed token open an Administrator session as **one account fixed per site**, with no standing password anywhere. Design: `ghost-platform-docs/19-try-it-now-design/05-gate-and-edge.html`, section 05, break-glass support access.
 
 `src/BreakGlassSSO.js` and `src/break-glass.js` are copied by the root `Dockerfile` into Ghost's internal adapter directory, `core/server/adapters/sso/`. They are never placed in the content directory, which a tenant can write to. The adapter is inert until a tenant's config selects it.
 
@@ -13,7 +13,7 @@ Ghost config, normally set as environment variables on the tenant's container:
 | `adapters__sso__active=BreakGlassSSO` | Selects this adapter. Unset, Ghost uses its own no-op adapter. |
 | `adapters__sso__BreakGlassSSO__publicKey` | Ed25519 public key, base64 SPKI DER. Only the public half is ever on a tenant. |
 | `adapters__sso__BreakGlassSSO__tenant` | This tenant's name. A token's `aud` must equal it. |
-| `adapters__sso__BreakGlassSSO__supportIdentity` | The one account the adapter can produce: the support account on a paying site, the prospect's account on a demo. |
+| `adapters__sso__BreakGlassSSO__supportIdentity` | The one account the adapter can produce: the support account on a paying site. A demo never carries break-glass. |
 
 If any of the three is missing, is not a string, or the key is not an Ed25519 key, the adapter logs `break-glass: disabled (<reason>)` once at boot and refuses every token. The site boots regardless. Ghost parses environment values as JSON where it can, so a tenant name such as `2024` arrives as a number and disables break-glass. The renderer should never produce one.
 

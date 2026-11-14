@@ -55,9 +55,9 @@ describe('tenantEnvironment() — breakGlass', () => {
 });
 
 // The scanning decorator refuses every upload unless a verdict source is
-// named, and the only one it knows is an in-process fake that scans nothing.
-// No render may name it: a demo is where the scan matters most, and a paying
-// tenant has no real source wired yet either, so both refuse uploads.
+// named. A descriptor that does not name `safety.verdictSource` renders none,
+// and no render ever names the in-process fake that scans nothing. The
+// switch itself is pinned in verdict-source.test.ts.
 describe('tenantEnvironment() — verdictSource', () => {
   const FEATURES = ['images', 'media', 'files'] as const;
 

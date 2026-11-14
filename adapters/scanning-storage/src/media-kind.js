@@ -213,14 +213,15 @@ function isVideoOrAudioWithFileType(buffer, boxes, consumed) {
   if (brand === null || !IMAGE_BRANDS.has(brand)) {
     return true;
   }
-  // An image brand is the claim of the file, not a fact about its tracks. With
-  // no movie box found, only a walk that consumed the whole file cleanly shows
-  // an image; any other stop leaves the file undecided, so it is refused.
-  const movieBox = boxes.find((box) => box.type === 'moov');
-  if (movieBox === undefined) {
-    return !consumed;
+  // An image brand is the claim of the file, not a fact about its tracks. Only
+  // a walk that consumed the whole file cleanly can show an image; any other
+  // stop leaves the file undecided, so it is refused. The format allows one
+  // movie box, but a reader may use a later one, so every movie box is checked
+  // and a video or sound track in any of them refuses the file.
+  if (!consumed) {
+    return true;
   }
-  return !consumed || hasVideoOrSoundTrack(buffer, movieBox);
+  return boxes.some((box) => box.type === 'moov' && hasVideoOrSoundTrack(buffer, box));
 }
 
 function detectIsoBaseMedia(buffer) {

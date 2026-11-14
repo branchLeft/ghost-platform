@@ -97,14 +97,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The image on its own migrated data: nothing moved, so it is accepted.
+          # The image the Dockerfile pins, on its own migrated data: nothing
+          # moved, so it is accepted. Moves with the Dockerfile's pin.
           - case: accepted
-            old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
-            new: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
+            old: ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
+            new: ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
             expect: '0'
             outcome: accepted
           # The first real bump range: 6.58 renames a column the 6.55 code writes.
-          # Accepted with a warning: the way back is the backup.
+          # Accepted with a warning: the way back is the backup. A fixed
+          # historic pair: it does not follow the Dockerfile, because an old
+          # image from 6.58 on no longer writes the renamed column.
           - case: warned
             old: ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918
             new: ghost:6.69.0-alpine@sha256:db4c56c196d6d5ed8ef9c0e80012792c16c51d4c23adb1683279506f525212b5

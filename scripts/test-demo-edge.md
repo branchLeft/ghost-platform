@@ -5,7 +5,7 @@
 The Caddyfile that `render_demo_site.py` renders, loaded by a real Caddy
 beside the real demo gate image, over TLS verified against Caddy's local root
 (copied out of the container and trusted explicitly; verification is never
-disabled) and a resolved name (no public name exists before the demo goes public). Stand-ins:
+disabled) and a resolved name. Stand-ins:
 two colour upstreams and a health router that answers per colour from the
 `X-Colour-Upstream` header, all in one network namespace as on the host.
 

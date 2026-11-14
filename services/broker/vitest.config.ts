@@ -16,7 +16,7 @@ export default defineConfig({
       // listen/signal handling. Exercised by every other test through
       // `createBrokerHandler` directly instead. `src/generated` is Speckify's
       // output, committed as generated: its own tests live in Speckify, and
-      // scripts/assert-broker-contract-generated.py guards its content.
+      // scripts/assert-contracts-generated.py guards its content.
       exclude: [
         'src/server.ts',
         'src/controlPlaneSidecarPushCli.ts',

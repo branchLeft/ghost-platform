@@ -5,14 +5,15 @@ import prettier from 'eslint-config-prettier';
 
 export default [
   {
-    // `services/broker/src/generated` is Speckify's output, committed as
-    // generated and never edited by hand (see scripts/assert-broker-contract-generated.py).
+    // The `src/generated` trees below are Speckify's output, committed as
+    // generated and never edited by hand (see scripts/assert-contracts-generated.py).
     ignores: [
       '**/node_modules',
       '**/dist',
       '**/bin',
       'graphify-out',
       'services/broker/src/generated',
+      'services/provisioning-controller/src/generated',
     ],
   },
   {

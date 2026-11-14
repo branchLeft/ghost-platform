@@ -79,8 +79,8 @@ fails closed, and it is a limit.
 A hold decided in this client is counted by the check as an `unavailable`
 verdict (`scanning_storage_verdicts_total`), not as a verdict error
 (`scanning_storage_verdict_errors_total`): only the check's own timeout and
-catch are counted there. Until the check counts them, read an outage of this
-channel from the `unavailable` classification and the held-age series.
+catch are counted there. Read an outage of this channel from the
+`unavailable` classification and the held-age series.
 
 ## Logging
 

@@ -9,6 +9,7 @@ import {
   TENANT_B,
   type Fixture,
 } from '../../data/test/helpers.js';
+import { supportAccessRequest } from '../../data/src/schema.js';
 import { createOwnerConsole } from '../src/console/app.js';
 import { Browser, serve, type Running } from './browser.js';
 import {
@@ -25,12 +26,21 @@ import {
 
 let fixture: Fixture;
 let app: Running;
+
+const postForm = (browser: Browser, path: string, body: string, origin = app.origin) =>
+  browser.request(path, {
+    method: 'POST',
+    headers: { origin, 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  });
 let failing = false;
+let ownerData: OwnerDb;
 const issuer = new FakeIssuer();
 
 beforeAll(async () => {
   fixture = await createFixture();
   const db = new OwnerDb(fixture.owner);
+  ownerData = db;
   await db.recordReading(
     TENANT_A,
     [
@@ -55,6 +65,8 @@ beforeAll(async () => {
       ownerOrgId: OWNER_ORG,
       db: {
         listHealth: () => (failing ? Promise.reject(new Error('down')) : db.listHealth()),
+        listSupportRequests: () => db.listSupportRequests(),
+        markSupportRequestDealtWith: (tenantId: string) => db.markSupportRequestDealtWith(tenantId),
       } as OwnerDb,
       secureCookies: false,
       clock: () => NOW,
@@ -92,6 +104,107 @@ describe('the owner console', () => {
     expect(page.body).toContain('VERSION_MISMATCH');
     expect(page.body).toContain('MISMATCH_SINCE');
     expect(page.body).toContain('2026-10-02');
+  });
+
+  it('lists every tenant asking for support access, oldest first, in one page', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    const empty = await browser.request('/');
+    expect(empty.body).toContain('SUPPORT_REQUESTS_PENDING 0');
+    await fixture.adminDb
+      .insert(supportAccessRequest)
+      .values({ tenantId: TENANT_B, requestedAt: new Date('2027-01-14T09:00:00Z') });
+    await fixture.adminDb
+      .insert(supportAccessRequest)
+      .values({ tenantId: TENANT_A, requestedAt: new Date('2027-01-14T10:00:00Z') });
+    try {
+      const page = await browser.request('/');
+      expect(page.body).toContain('SUPPORT_REQUESTS_PENDING 2');
+      expect(page.body).toContain('2027-01-14T09:00:00.000Z');
+      expect(page.body).toContain('2027-01-14T10:00:00.000Z');
+      const queue = page.body.slice(page.body.indexOf('SUPPORT_REQUESTS_PENDING'));
+      expect(queue.indexOf(TENANT_B)).toBeGreaterThan(-1);
+      expect(queue.indexOf(TENANT_B)).toBeLessThan(queue.indexOf(TENANT_A));
+      expect(await ownerData.listSupportRequests()).toHaveLength(2);
+    } finally {
+      await fixture.adminDb.delete(supportAccessRequest);
+    }
+  });
+
+  it('lists open requests first, then the ones dealt with', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    await fixture.adminDb.insert(supportAccessRequest).values({
+      tenantId: TENANT_A,
+      requestedAt: new Date('2027-01-14T09:00:00Z'),
+      status: 'dealt_with',
+    });
+    await fixture.adminDb
+      .insert(supportAccessRequest)
+      .values({ tenantId: TENANT_B, requestedAt: new Date('2027-01-14T10:00:00Z') });
+    try {
+      const page = await browser.request('/');
+      expect(page.body).toContain('SUPPORT_REQUESTS_PENDING 1');
+      const queue = page.body.slice(page.body.indexOf('SUPPORT_REQUESTS_PENDING'));
+      expect(queue.indexOf(TENANT_B)).toBeLessThan(queue.indexOf(TENANT_A));
+      expect(queue.match(/action="\/support-requests\/dealt-with"/g)).toHaveLength(1);
+    } finally {
+      await fixture.adminDb.delete(supportAccessRequest);
+    }
+  });
+
+  it('marks an open request dealt with, keeps the row, and redirects home', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    await fixture.adminDb.insert(supportAccessRequest).values({ tenantId: TENANT_A });
+    try {
+      const reply = await postForm(browser, '/support-requests/dealt-with', `tenant=${TENANT_A}`);
+      expect(reply.status).toBe(303);
+      expect(reply.location).toBe('/');
+      const rows = await fixture.adminDb.select().from(supportAccessRequest);
+      expect(rows.map((row) => [row.tenantId, row.status])).toEqual([[TENANT_A, 'dealt_with']]);
+      const page = await browser.request('/');
+      expect(page.body).toContain('SUPPORT_REQUESTS_PENDING 0');
+      expect(page.body).toContain('SUPPORT_REQUEST_STATUS_DEALT_WITH');
+    } finally {
+      await fixture.adminDb.delete(supportAccessRequest);
+    }
+  });
+
+  it('refuses the mark from another origin, from none, from a visitor not signed in, and for a tenant id that is not one', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    await fixture.adminDb.insert(supportAccessRequest).values({ tenantId: TENANT_A });
+    try {
+      const other = await postForm(
+        browser,
+        '/support-requests/dealt-with',
+        `tenant=${TENANT_A}`,
+        'https://evil.example'
+      );
+      expect(other.status).toBe(403);
+      const none = await browser.request('/support-requests/dealt-with', { method: 'POST' });
+      expect(none.status).toBe(403);
+      const lone = await postForm(
+        new Browser(app.origin),
+        '/support-requests/dealt-with',
+        `tenant=${TENANT_A}`
+      );
+      expect(lone.status).toBe(302);
+      expect(lone.location).toBe('/login');
+      const bad = await postForm(browser, '/support-requests/dealt-with', 'tenant=not-a-tenant');
+      expect(bad.status).toBe(400);
+      const rows = await fixture.adminDb.select().from(supportAccessRequest);
+      expect(rows.map((row) => row.status)).toEqual(['open']);
+    } finally {
+      await fixture.adminDb.delete(supportAccessRequest);
+    }
+  });
+
+  it('serves the mark as a post only', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    expect((await browser.request('/support-requests/dealt-with')).status).toBe(405);
   });
 
   // Browsers do not isolate cookies by port, so on loopback development the

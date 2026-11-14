@@ -9,7 +9,13 @@ import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
 import { createFileAuditLog } from './auditLog.js';
-import { runExport } from './exportRunner.js';
+import {
+  cleanupErrorsOf,
+  describeCleanupErrors,
+  ExportCleanupError,
+  runExport,
+  type ExportResult,
+} from './exportRunner.js';
 import { createPromptedTokenSource } from './operatorToken.js';
 import { createDockerStatusProbe } from './supportAccountProbe.js';
 import { parseSupportGrant, type SupportGrant } from './supportGrant.js';
@@ -233,16 +239,49 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
     }
   );
 
-  console.log(`export-bundler: wrote ${result.archivePath}`);
-  console.log(`export-bundler: sha256 ${result.archiveSha256}`);
-  console.log(`export-bundler: manifest ${result.manifestPath}`);
-  console.log(`export-bundler: complete ${String(result.manifest.complete)}`);
+  reportExport(result, (line) => console.log(line));
+}
+
+/** Exit code when the export succeeded but a teardown step failed; the code a failed signal cleanup uses. */
+export const EXIT_CLEANUP_FAILED = 70;
+
+/**
+ * Prints the result, then refuses to call the run clean. The archive, its
+ * sha256 and the manifest are printed first, because they exist and are
+ * audited whatever teardown did; a teardown failure then raises
+ * ExportCleanupError so the process exits non-zero with the leftover named.
+ */
+export function reportExport(result: ExportResult, out: (line: string) => void): void {
+  out(`export-bundler: wrote ${result.archivePath}`);
+  out(`export-bundler: sha256 ${result.archiveSha256}`);
+  out(`export-bundler: manifest ${result.manifestPath}`);
+  out(`export-bundler: complete ${String(result.manifest.complete)}`);
+  if (result.cleanupErrors !== undefined && result.cleanupErrors.length > 0) {
+    throw new ExportCleanupError(result, result.cleanupErrors);
+  }
+}
+
+/** The lines written to stderr for a run that did not end clean: the error, then any teardown failures. */
+export function failureLines(err: unknown): string[] {
+  const error = err as Error;
+  const lines = [`export-bundler: ${error.name}: ${error.message}`];
+  // ExportCleanupError already names its failures in its own message.
+  if (!(err instanceof ExportCleanupError)) {
+    const attached = cleanupErrorsOf(err);
+    if (attached.length > 0) {
+      lines.push(`export-bundler: and then ${describeCleanupErrors(attached)}`);
+    }
+  }
+  return lines;
+}
+
+export function exitCodeFor(err: unknown): number {
+  return err instanceof ExportCleanupError ? EXIT_CLEANUP_FAILED : 1;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main(process.argv.slice(2)).catch((err) => {
-    const error = err as Error;
-    console.error(`export-bundler: ${error.name}: ${error.message}`);
-    process.exitCode = 1;
+    for (const line of failureLines(err)) console.error(line);
+    process.exitCode = exitCodeFor(err);
   });
 }
