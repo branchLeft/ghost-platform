@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +22,7 @@ import {
   tableNames,
   withFixture,
 } from '../helpers/sqliteFixtures.js';
+import { withFreePorts } from '../helpers/freePorts.js';
 import { createTestLogger, type TestLogger } from '../helpers/testLogger.js';
 import { createUnlimitedThrottle } from '../helpers/testThrottle.js';
 import { startRouter, type StartedRouter } from './helpers/startRouter.js';
@@ -518,91 +518,74 @@ describe('src/server.ts — starts against a pre-drain database and serves /metr
     }
   });
 
-  function findFreePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const srv = createServer();
-      srv.listen(0, '127.0.0.1', () => {
-        const address = srv.address();
-        if (!address || typeof address === 'string') {
-          reject(new Error('could not determine a free port'));
-          return;
-        }
-        const { port } = address;
-        srv.close(() => resolve(port));
-      });
-      srv.on('error', reject);
-    });
-  }
-
   it('boots against a pre-drain database and serves /metrics', async () => {
     dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-pre-drain-server-'));
     const dbPath = join(dir, 'shim.sqlite');
     await seedPreDrainDatabase(dbPath);
 
-    const port = await findFreePort();
-    const smtpPort = await findFreePort();
-
-    const child = spawn(process.execPath, [serverJsPath], {
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        SHIM_DB_PATH: dbPath,
-        SHIM_DRAIN_TOKEN: 'pre-drain-server-startup-token',
-        PORT: String(port),
-        SMTP_LISTEN_PORT: String(smtpPort),
-        SMTP_LISTEN_HOST: '127.0.0.1',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf8');
-    });
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
-
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const deadline = Date.now() + 10_000;
-        const check = (): void => {
-          if (stdout.includes('"event":"listening"')) {
-            resolve();
-            return;
-          }
-          if (child.exitCode !== null) {
-            reject(new Error(`server exited early (code ${child.exitCode}). stderr:\n${stderr}`));
-            return;
-          }
-          if (Date.now() > deadline) {
-            reject(
-              new Error(`server never logged "listening". stdout:\n${stdout}\nstderr:\n${stderr}`)
-            );
-            return;
-          }
-          setTimeout(check, 50);
-        };
-        check();
+    await withFreePorts(2, async ([port, smtpPort]) => {
+      const child = spawn(process.execPath, [serverJsPath], {
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          SHIM_DB_PATH: dbPath,
+          SHIM_DRAIN_TOKEN: 'pre-drain-server-startup-token',
+          PORT: String(port),
+          SMTP_LISTEN_PORT: String(smtpPort),
+          SMTP_LISTEN_HOST: '127.0.0.1',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
 
-      const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics`);
-      expect(metricsResponse.status).toBe(200);
-    } finally {
-      const exitPromise = new Promise<void>((resolve) => {
-        child.on('exit', () => resolve());
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString('utf8');
       });
-      child.kill('SIGTERM');
-      await Promise.race([
-        exitPromise,
-        new Promise<void>((resolve) =>
-          setTimeout(() => {
-            child.kill('SIGKILL');
-            resolve();
-          }, 5000)
-        ),
-      ]);
-    }
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString('utf8');
+      });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const deadline = Date.now() + 10_000;
+          const check = (): void => {
+            if (stdout.includes('"event":"listening"')) {
+              resolve();
+              return;
+            }
+            if (child.exitCode !== null) {
+              reject(new Error(`server exited early (code ${child.exitCode}). stderr:\n${stderr}`));
+              return;
+            }
+            if (Date.now() > deadline) {
+              reject(
+                new Error(`server never logged "listening". stdout:\n${stdout}\nstderr:\n${stderr}`)
+              );
+              return;
+            }
+            setTimeout(check, 50);
+          };
+          check();
+        });
+
+        const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics`);
+        expect(metricsResponse.status).toBe(200);
+      } finally {
+        const exitPromise = new Promise<void>((resolve) => {
+          child.on('exit', () => resolve());
+        });
+        child.kill('SIGTERM');
+        await Promise.race([
+          exitPromise,
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              child.kill('SIGKILL');
+              resolve();
+            }, 5000)
+          ),
+        ]);
+      }
+    });
   }, 20_000);
 });

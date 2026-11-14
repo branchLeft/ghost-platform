@@ -1,5 +1,4 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -8,6 +7,7 @@ import type { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import nodemailer from 'nodemailer';
 import { createSqliteStore } from '../src/store.js';
+import { withFreePorts } from './helpers/freePorts.js';
 
 /**
  * Runs server.ts itself, enqueues over HTTP and SMTP, and stays alive
@@ -23,22 +23,6 @@ const preloadPath = join(__dirname, 'helpers', 'connectGuardPreload.mjs');
 const CONNECT_MARKER = 'CONNECT_ATTEMPT ';
 const TENANT_DOMAIN = 'tenant1.example.com';
 const TENANT_API_KEY = 'startup-proof-api-key';
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const address = srv.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('could not determine a free port'));
-        return;
-      }
-      const { port } = address;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 interface RunResult {
   connectAttempts: unknown[];
@@ -232,9 +216,9 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
 
   it('startup alone (nothing ever queued) stays silent — the baseline', async () => {
     const db = await freshDb();
-    const port = await findFreePort();
-    const smtpPort = await findFreePort();
-    const result = await runServerLifecycle({ dbPath: db, port, smtpPort, liveForMs: 1500 });
+    const result = await withFreePorts(2, ([port, smtpPort]) =>
+      runServerLifecycle({ dbPath: db, port, smtpPort, liveForMs: 1500 })
+    );
     // Every one of these kinds (net.connect, dns.*, dgram.send,
     // child_process.*) is unexpected here, with no baseline to filter:
     // this is a spawned child, so the parent's own HTTP client traffic
@@ -247,16 +231,16 @@ describe('src/server.ts — the real entrypoint, with real queued mail, makes no
 
   it('a real message enqueued through the real HTTP API and another through the real SMTP front door, then held alive for several seconds, still makes no outbound connection of any kind', async () => {
     const db = await freshDb();
-    const port = await findFreePort();
-    const smtpPort = await findFreePort();
-    const result = await runServerLifecycle({
-      dbPath: db,
-      port,
-      smtpPort,
-      enqueue: true,
-      enqueueSmtp: true,
-      liveForMs: 3000,
-    });
+    const result = await withFreePorts(2, ([port, smtpPort]) =>
+      runServerLifecycle({
+        dbPath: db,
+        port,
+        smtpPort,
+        enqueue: true,
+        enqueueSmtp: true,
+        liveForMs: 3000,
+      })
+    );
     expect(result.connectAttempts).toEqual([]);
   }, 20_000);
 });
