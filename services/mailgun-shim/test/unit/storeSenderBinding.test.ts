@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { tenants } from '../../src/schema.js';
 import { createSqliteStore, TenantRegistrationRefused, type ShimStore } from '../../src/store.js';
 import { withFixture } from '../helpers/sqliteFixtures.js';
 
@@ -216,12 +217,13 @@ describe('legacy rows that already overlap', () => {
   // into the file, because registration now refuses to create them.
   function openWithLegacyOverlap(): ShimStore {
     createSqliteStore(dbPath).close();
-    withFixture(dbPath, ({ client }) => {
-      const insert = client.prepare(
-        'INSERT INTO tenants (domain, api_key_salt, api_key_hash, sender_domain) VALUES (?, ?, ?, ?)'
-      );
-      insert.run(SLOT_A, 'aa', 'aa', SENDER);
-      insert.run(SLOT_B, 'bb', 'bb', SENDER);
+    withFixture(dbPath, ({ db }) => {
+      db.insert(tenants)
+        .values([
+          { domain: SLOT_A, apiKeySalt: 'aa', apiKeyHash: 'aa', senderDomain: SENDER },
+          { domain: SLOT_B, apiKeySalt: 'bb', apiKeyHash: 'bb', senderDomain: SENDER },
+        ])
+        .run();
     });
     return createSqliteStore(dbPath);
   }
