@@ -83,8 +83,8 @@ export function renderSecretsTemplate(descriptor: TenantStackDescriptor): string
   const keys = requiredSecretKeys(descriptor);
   const lines = [
     `# Secrets for the ${descriptor.slug} Ghost stack, at ${path}.`,
-    '# Root-owned, mode 0600. Written by an operator; no automated path may',
-    '# rewrite this file. render() names the keys this tenant needs below —',
+    '# Root-owned, mode 0600. Written by app/provision/render_tenant_secrets.py on the host;',
+    '# no other path may rewrite this file. render() names the keys this tenant needs below —',
     '# it never has a value to put here.',
   ];
   if (keys.length === 0) {
