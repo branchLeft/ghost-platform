@@ -44,7 +44,7 @@ repos:
         name: prettier
         entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; pnpm_config_ignore_scripts=true pnpm run format'
         language: system
-        files: '\.(js|ts|json|yml|yaml|md)$'
+        files: '\.(js|mjs|ts|json|yml|yaml|md)$'
         pass_filenames: false
 
   - repo: local
