@@ -18,7 +18,7 @@ name: Portal applications image
 # pinning a digest.
 #
 # Mirrors mail-collector-image.yml. GHCR authenticates with the workflow's own
-# GITHUB_TOKEN, so there is no new secret and no GCP identity involved. The push
+# GITHUB_TOKEN, so there is no new secret. The push
 # job requests `packages: write` only for itself, on the triggers that ever run
 # it, so a PR build never sits in the same permissions block as a publish
 # credential.

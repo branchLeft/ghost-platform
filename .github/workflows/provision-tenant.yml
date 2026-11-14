@@ -39,11 +39,11 @@ name: Provision tenant
 #
 # THE GATE. This workflow is `workflow_dispatch` only -- no push, no schedule,
 # no merge starts it -- and the job declares `environment: tenant-provisioning`,
-# which carries a required reviewer. **That is now the whole gate.** The GCP
-# half, a Workload Identity provider condition pinning `job_workflow_ref` to
-# this file, is gone with WIF, and nothing replaces it like for like: it was
-# enforced by Google regardless of any GitHub setting, and the environment rule
-# is enforced by GitHub. So the first steps below verify the rule is actually
+# which carries a required reviewer. **That is now the whole gate.** The cloud
+# half, a federated-identity provider condition pinning `job_workflow_ref` to
+# this file, went with the retired hyperscaler platform, and nothing replaces
+# it like for like: it was enforced by the cloud provider regardless of any
+# GitHub setting, and the environment rule is enforced by GitHub. So the first steps below verify the rule is actually
 # present and that every provisioning-capable credential is scoped to that
 # environment rather than to the repository -- because an environment carrying
 # no protection rule does not pause a run and does not say so, and a
@@ -252,7 +252,7 @@ jobs:
           TENANT_PROVISIONING_APP_PRIVATE_KEY: ${{ secrets.TENANT_PROVISIONING_APP_PRIVATE_KEY }}
         run: python3 infra/provisioning/scripts/tenant_provisioning_app_token.py mint
 
-      # The replacement for the Workload Identity provider condition this
+      # The replacement for the federated-identity provider condition this
       # rewrite deletes, and it is checked rather than assumed for the same
       # reason that one was worth having: it is the only thing standing between
       # this workflow's credentials and any run of it.
@@ -451,8 +451,10 @@ jobs:
           # last logged into.
           [[ -n "$TENANT_BACKEND_URL" ]] \
             || fail "the HETZNER_PULUMI_BACKEND_URL repository variable is empty or unset"
+          # Deliberate: refuses a gs:// (Google Cloud) backend by name, so a
+          # copied-over old value fails loudly instead of reaching Pulumi.
           [[ "$TENANT_BACKEND_URL" == s3://* ]] \
-            || fail "HETZNER_PULUMI_BACKEND_URL must be an s3:// backend; a gs:// backend would give this tenant a GCP dependency"
+            || fail "HETZNER_PULUMI_BACKEND_URL must be an s3:// backend; a gs:// backend would give this tenant a Google Cloud dependency"
           # The bucket name is extracted and compared, not substring-matched.
           # An earlier spelling tested for the literal `s3://branchleft-pulumi-state?`
           # and so passed the same bucket written without query parameters --

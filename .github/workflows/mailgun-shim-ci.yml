@@ -1,7 +1,7 @@
 name: Mailgun shim CI
 
 # Type-checks and tests the Mailgun-shaped shim (services/mailgun-shim/).
-# No deploy job here: this story doesn't deploy anywhere (no Cloud Run
+# No deploy job here: this story doesn't deploy anywhere (no deployed
 # service, no Pulumi resources) — that's a later story once the shim has a
 # store and a delivery host worth pointing at in a real environment.
 

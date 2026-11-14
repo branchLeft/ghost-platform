@@ -7,13 +7,9 @@ name: Push tenant image
 # GHCR (`ghcr.io/branchleft/ghost-tenant`) is the one a Hetzner app host pulls
 # from, and is what `provision-tenant.yml` accepts.
 #
-# Used to also push a second copy to Artifact Registry, for a tenant still
-# served from GCP during the migration to Hetzner. The GCP estate was
-# destroyed -- nothing reads that
-# registry any more, and its own Workload Identity Federation pool went with
-# it, so every run of this workflow since has failed at the auth step, before
-# `docker build` or the GHCR push it gated ever run. Removing the dead half
-# restores the live one.
+# It used to also push a second copy to the retired hyperscaler's registry.
+# That estate was destroyed and nothing reads that registry any more, so the
+# second push is gone and GHCR is the only destination.
 #
 # Deliberately its own workflow, not a job bolted onto build.yml. build.yml's
 # `build` job runs on every PR, including from forks, and stays completely
