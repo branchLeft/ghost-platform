@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { TENANT_B } from '../../data/test/helpers.js';
 import { PromotionError, type PromotionRefusal } from '../src/tenant/promotionError.js';
-import { requestPromotion, type PromotionOutcome } from '../src/tenant/provisioningSettings.js';
+import { requestPromotion, type PromotionOutcome } from '../src/tenant/promotionRequest.js';
 import { deadBaseUrl, settingsFor, startStub } from './promotionRig.js';
 
 const OPEN_REQUEST = {
@@ -70,6 +70,18 @@ describe('what the portal makes of each answer the contract (and a service that 
     await expect(
       requestPromotion(settingsFor(await deadBaseUrl()), TENANT_B, 'essentials')
     ).rejects.toMatchObject({ name: 'PromotionError', reason: 'PROVISIONING_UNREACHABLE' });
+  });
+
+  it('is refused, and asks nothing, when no credential was issued for the tenant', async () => {
+    const stub = await startStub(201, OPEN_REQUEST);
+    try {
+      await expect(
+        requestPromotion(settingsFor(stub.baseUrl), OTHER_TENANT, 'essentials')
+      ).rejects.toMatchObject({ name: 'PromotionError', reason: 'PROVISIONING_REFUSED' });
+      expect(stub.seen).toEqual([]);
+    } finally {
+      await stub.close();
+    }
   });
 
   it('asks for exactly the tenant, the tier and the credential it was given', async () => {

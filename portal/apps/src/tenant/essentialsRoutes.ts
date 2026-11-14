@@ -13,11 +13,8 @@ import {
   renderEssentialsUnavailable,
   renderNotForThisTenant,
 } from './promotionPages.js';
-import {
-  requestPromotion,
-  type PromotionOutcome,
-  type ProvisioningSettings,
-} from './provisioningSettings.js';
+import { requestPromotion, type PromotionOutcome } from './promotionRequest.js';
+import type { ProvisioningSettings } from './provisioningSettings.js';
 
 /** The one read the promotion screens need of the tenant data layer. `TenantDb` satisfies it. */
 export interface KindReader {

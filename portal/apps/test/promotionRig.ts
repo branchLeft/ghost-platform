@@ -63,11 +63,7 @@ export function settingsFor(baseUrl: string): ProvisioningSettings {
   ]);
   return {
     baseUrl,
-    credentialFor: (tenantId) => {
-      const credential = issued.get(tenantId);
-      if (credential === undefined) throw new Error('no credential issued for this tenant');
-      return credential;
-    },
+    credentialFor: (tenantId) => issued.get(tenantId),
   };
 }
 

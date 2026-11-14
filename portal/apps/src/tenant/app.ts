@@ -10,6 +10,7 @@ import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { createShell } from '../shell/app.js';
+import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
 import { createPromotionRoutes } from './promotionRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
@@ -40,8 +41,8 @@ export interface TenantPortalOptions {
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
   /**
-   * Absent, there is no Essentials request page or action and no navigation
-   * entry for it. The Professional enquiry needs `support` instead.
+   * How to reach the provisioning API. Absent, no screen that calls it is
+   * served: no page, no action and no navigation entry.
    */
   readonly provisioning?: ProvisioningSettings;
 }
@@ -70,6 +71,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
+  const demo = createDemoRoutes(options.provisioning);
   const promotion = createPromotionRoutes(options.provisioning, options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
@@ -87,6 +89,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_HOME', href: '/' },
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
+      ...demo.nav,
       ...support.nav,
       ...promotion.nav,
     ],
@@ -110,6 +113,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     },
     pages: {
       ...support.pages,
+      ...demo.pages,
       ...promotion.pages,
       '/moderation': async (scope) =>
         (await moderationBody(

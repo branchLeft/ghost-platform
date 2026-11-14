@@ -1,85 +1,96 @@
-import {
-  createPromotionRequest,
-  type PromotionTier,
-} from 'ghost-platform-provisioning-controller/provisioning-api';
-import { PromotionError } from './promotionError.js';
+import { ConfigError, type FileReader } from '../shell/config.js';
 
 /**
- * What the tenant portal needs to ask the provisioning API for anything: where
- * it is and the credential issued for one tenant (the contract's
- * `tenantCredential`, which is refused on any other tenant's path). Injected,
- * never a literal in source.
+ * How the tenant portal reaches the provisioning API: where it is, and the
+ * credential issued for one tenant. The credential is looked up by the tenant
+ * id the session bound, so a request can never choose which one is presented.
  */
 export interface ProvisioningSettings {
   readonly baseUrl: string;
-  /** The credential issued for exactly this tenant. */
-  credentialFor(tenantId: string): string;
+  /** The credential issued for exactly this tenant, or undefined when none was. */
+  readonly credentialFor: (tenantId: string) => string | undefined;
+  /** Test seam only; absent, the generated client uses the platform's `fetch`. */
+  readonly fetch?: typeof fetch;
 }
 
-/** How long the portal waits for the provisioning API before it gives up. */
-export const PROVISIONING_TIMEOUT_MS = 5000;
+export const PROVISIONING_VARIABLES = {
+  url: 'PORTAL_PROVISIONING_URL',
+  credentialsFile: 'PORTAL_PROVISIONING_CREDENTIALS_FILE',
+} as const;
 
-/**
- * What the contract can answer to a promotion request that the portal shows
- * to the person instead of failing: the request is recorded (or already was),
- * the tenant has a request open for the other tier, or the demo cannot be
- * promoted now.
- */
-export type PromotionOutcome = 'REQUESTED' | 'OTHER_REQUEST_OPEN' | 'NOT_PROMOTABLE';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/**
- * Asks the provisioning API, through the generated client, to record one
- * promotion request for `tenantId`. Asking again for the tier already open is
- * the contract's replay: the same 201 with the existing request, nothing new
- * created, so a double submit is `REQUESTED` both times.
- *
- * @throws {PromotionError} PROVISIONING_REFUSED, PROVISIONING_UNREACHABLE or UNEXPECTED_ANSWER.
- */
-export async function requestPromotion(
-  settings: ProvisioningSettings,
-  tenantId: string,
-  tier: PromotionTier
-): Promise<PromotionOutcome> {
-  const credential = settings.credentialFor(tenantId);
-  let result: Awaited<ReturnType<typeof createPromotionRequest>>;
+/** Plain HTTP is accepted only for a loopback address, for local development. */
+function parseBaseUrl(value: string): string {
+  let url: URL;
   try {
-    result = await createPromotionRequest({
-      baseUrl: settings.baseUrl,
-      auth: () => credential,
-      throwOnError: false,
-      signal: AbortSignal.timeout(PROVISIONING_TIMEOUT_MS),
-      path: { tenant: tenantId },
-      body: { tier },
-    });
-  } catch (error) {
-    throw new PromotionError(
-      'PROVISIONING_UNREACHABLE',
-      error instanceof Error ? { cause: error } : undefined
-    );
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(`${PROVISIONING_VARIABLES.url} is not a URL`);
   }
-  // No response at all is the client's own failure: a network error or a request it could not build.
-  const status = result.response?.status;
-  if (status === undefined) throw new PromotionError('PROVISIONING_UNREACHABLE');
-  if (status === 201) {
-    const recorded = result.data;
-    // The answer is for this tenant, this tier and an open request, or it is not an answer to this call.
-    const ours =
-      recorded !== undefined &&
-      recorded.tenant_id === tenantId &&
-      recorded.tier === tier &&
-      recorded.state === 'pending';
-    if (!ours) throw new PromotionError('UNEXPECTED_ANSWER');
-    return 'REQUESTED';
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new ConfigError(`${PROVISIONING_VARIABLES.url} must be https`);
   }
-  if (status === 404) return 'NOT_PROMOTABLE';
-  if (status === 409) {
-    const code = (result.error as { code?: unknown } | undefined)?.code;
-    if (code === 'request-already-open') return 'OTHER_REQUEST_OPEN';
-    if (code === 'demo-not-promotable') return 'NOT_PROMOTABLE';
-    throw new PromotionError('UNEXPECTED_ANSWER');
+  if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
+    throw new ConfigError(`${PROVISIONING_VARIABLES.url} must not carry credentials or a query`);
   }
-  if (status === 400 || status === 401 || status === 403) {
-    throw new PromotionError('PROVISIONING_REFUSED');
+  return url.href.replace(/\/$/, '');
+}
+
+/** Lines of `<tenant uuid>=<credential>`; each tenant and each credential appears once. */
+function parseCredentials(raw: string): ReadonlyMap<string, string> {
+  const byTenant = new Map<string, string>();
+  const seen = new Set<string>();
+  for (const line of raw.split('\n')) {
+    const entry = line.trim();
+    if (entry === '') continue;
+    const at = entry.indexOf('=');
+    const tenant = entry.slice(0, at);
+    const credential = entry.slice(at + 1);
+    if (at < 0 || !UUID.test(tenant) || credential === '') {
+      throw new ConfigError(
+        `${PROVISIONING_VARIABLES.credentialsFile} must hold lines of <tenant uuid>=<credential>`
+      );
+    }
+    if (byTenant.has(tenant) || seen.has(credential)) {
+      throw new ConfigError(
+        `${PROVISIONING_VARIABLES.credentialsFile} must name each tenant and each credential once`
+      );
+    }
+    byTenant.set(tenant, credential);
+    seen.add(credential);
   }
-  throw new PromotionError(status >= 500 ? 'PROVISIONING_UNREACHABLE' : 'UNEXPECTED_ANSWER');
+  if (byTenant.size === 0) {
+    throw new ConfigError(`${PROVISIONING_VARIABLES.credentialsFile} holds no credential`);
+  }
+  return byTenant;
+}
+
+/**
+ * The provisioning API settings, or undefined when the URL variable is unset
+ * or blank (the portal then has no demo screen). A URL that is set must be
+ * usable, with a readable credentials file beside it: a half-configured
+ * screen stops the process at start rather than answer every request with a
+ * failure. The credentials come from a file, never the environment.
+ */
+export function loadProvisioningSettings(
+  env: Readonly<Record<string, string | undefined>>,
+  read: FileReader
+): ProvisioningSettings | undefined {
+  const url = env[PROVISIONING_VARIABLES.url];
+  if (url === undefined || url.trim() === '') return undefined;
+  const baseUrl = parseBaseUrl(url.trim());
+  const file = env[PROVISIONING_VARIABLES.credentialsFile];
+  if (file === undefined || file.trim() === '') {
+    throw new ConfigError(`${PROVISIONING_VARIABLES.credentialsFile} is not set`);
+  }
+  let raw: string;
+  try {
+    raw = read(file.trim());
+  } catch {
+    throw new ConfigError(`${PROVISIONING_VARIABLES.credentialsFile} cannot be read`);
+  }
+  const credentials = parseCredentials(raw);
+  return { baseUrl, credentialFor: (tenantId) => credentials.get(tenantId) };
 }
