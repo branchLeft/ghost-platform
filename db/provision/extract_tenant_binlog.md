@@ -54,7 +54,15 @@ reads either (`find_recovery_start`, returning a `RecoveryStart`):
 
 - **File and position**: the `-- CHANGE MASTER TO MASTER_LOG_FILE=...,
   MASTER_LOG_POS=...;` comment the bounded snapshot writes. Replay starts at
-  that position in that file (above).
+  that position in that file (above). db1's nightly dump is taken one schema
+  at a time and carries one such comment per section, in the form
+  `-- BRANCHLEFT-SECTION CHANGE MASTER TO ...` (`dump_nightly.section_comment`).
+  The position for a database is that of the latest section comment before
+  the line that declares it, so a database dumped in the first section and one
+  dumped in the fifth each start from their own. Both forms in one dump, or a
+  database declared before any section comment, are refused: the position is
+  one thing, read from one place. The section form is not matched by the bare
+  pattern, so a reader that predates it finds no comment and refuses.
 - **GTID set**: the `SET @@GLOBAL.GTID_PURGED=...` statement of a lock-free
   dump (`gtid_snapshot.md`): exactly the transactions the dump holds. No file
   or position is involved. Replay runs every given file with
@@ -93,6 +101,71 @@ fail partway through, between two binlog files or mid-transaction, leaving
 the target in whatever state the events applied so far produced. Run it
 only against a drained or scratch restore target nothing else is reading or
 writing -- never against a database serving live traffic.
+
+## The instance pass
+
+`--all-databases` restores a whole dump taken a schema at a time. Replaying
+only each declared database from its own position loses two things, both
+because `mysqlbinlog --database` keeps a statement only when its `USE`
+database matches:
+
+- **Account statements** (`CREATE`/`ALTER`/`DROP`/`RENAME USER`, `GRANT`,
+  `REVOKE`, `SET PASSWORD`, roles) are issued by an admin session with no
+  default database, so no per-database filter keeps them.
+- **A database created after the dump** is in no section, so there is no
+  position to start it from, and the extractor refuses it as undeclared.
+
+The old one-header dump did not have this problem, because one unfiltered
+replay from the one position kept everything. The fix keeps each database's
+own position and adds a pass for what the filters cannot carry, in this order:
+
+1. **Instance pass.** Unfiltered `mysqlbinlog --base64-output=DECODE-ROWS`
+   (no `--verbose`: statements print, row events do not, so the output is not
+   the size of the log) from the dump's *earliest* resume point, the first
+   section's. Of its Query events only two kinds are kept: account statements,
+   and `CREATE DATABASE`/`CREATE SCHEMA` of a database the dump does not
+   declare. They are applied as one stream.
+2. Each declared database, from its own section's position, as a single
+   `--tenant-database` replay does, except that account statements are
+   dropped from the stream (and from step 3's): an account statement run
+   under a `USE` is in that database's filtered stream as well as in step 1,
+   and step 1 already applies every one exactly once, in log order. Applied
+   twice it would stop the restore with an error, or let an older
+   `ALTER USER ... IDENTIFIED BY` land after a newer one. A single
+   `--tenant-database` replay has no instance pass and keeps them.
+3. Each database step 1 created, from the earliest position, with the event
+   that creates it removed (`without_database_creation`), because step 1
+   already applied it. Whether the server tags `CREATE DATABASE` with the new
+   database or with no database, the creation is applied exactly once; both
+   cases are tested.
+
+**Why applying the instance pass is safe (idempotence).** The first section
+is where `mysql` and `sys` are dumped, and it is the first section taken, so
+its position is the earliest in the dump: the dump's accounts are exactly the
+accounts as of that position. An account statement after it is therefore not
+in the dump, and is applied once, in log order (a `CREATE USER` then an
+`ALTER USER` then a `DROP USER` replays correctly). A database is created in
+this pass only if the dump does not declare it, so it is not in the dump
+either. A database that is declared is never created here, even if the log
+re-creates it later: its own replay carries that, as before.
+
+**Not covered, and how it is noticed.** A database created between the
+nightly run's schema listing and its first snapshot is not in the dump and its
+creation precedes the earliest position, so the instance pass does not see it.
+The window is the listing's own few queries plus the first lock's wait and
+retries. The runbook's last restore step lists every database and account the
+shipped binlogs created, from their start, and reads them against the restored
+server, which does catch it.
+
+**Not verified without a real MySQL.** Which default database a server tags
+a `CREATE DATABASE` event with (tested both ways instead); that `CREATE USER`,
+`GRANT` and `ALTER USER` are logged as statement events with no default
+database under row format (the runbook says so and `provision_tenant_db.py`
+issues them with no `USE`); and the exact framing of real `mysqlbinlog`
+output around the events this module keeps (the preamble before the first
+event and the `DELIMITER ;` lines after the last are kept, and only Query
+events are taken from between). The tests use a fake whose events follow
+the shape the existing counters already read.
 
 ## Timezone handling
 

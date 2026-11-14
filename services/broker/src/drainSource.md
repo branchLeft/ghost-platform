@@ -7,11 +7,10 @@ but where it comes from is not this endpoint's job. Both are owned by
 components outside this module: the mail spool has its own "spool never
 dials out" contract, a different mechanism from this endpoint — the mail
 exchange host drains the spool directly over its own connection — and
-nothing here defines what produces a media-hash record for hand-over. The
-consumer named in the design ("reaper") is not built either. This is the
-same kind of seam as `Renderer`: the long-poll mechanics below are real and
-proven; what feeds them is wired in by whichever component builds the spool
-and the reaper.
+nothing here defines what produces a media-hash record for hand-over. This is
+the same kind of seam as `Renderer`: the long-poll mechanics below are real
+and proven; what feeds them is the loaded plugin (the shipped one is
+`plugins/refusingDrainSource.ts`).
 
 ## poll
 

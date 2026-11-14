@@ -203,8 +203,7 @@ first and rejected — unlike Linux, macOS does not route the rest of
 connection to it hangs (`ETIMEDOUT`) rather than proving anything. The
 machine's real, already-configured interface has no such platform gap.
 
-How to reproduce this test's sabotage case (recorded verbatim in the
-delivering PR's body): in `src/server.ts`, change
+How to reproduce this test's sabotage case: in `src/server.ts`, change
 `app.listen(config.port, config.bindHost, () => { ... })` to
 `app.listen(config.port, config.bindHost && '::', () => { ... })`, then
 `pnpm run build` and re-run this file. `config.bindHost` is always a

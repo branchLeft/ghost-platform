@@ -4,12 +4,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   createSlotWrapper,
   DetachReceiptError,
+  errorLogText,
+  stderrOneLine,
   WrapperError,
   type SlotWrapper,
 } from '../../src/wrapper.js';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { join } from 'node:path';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
+
+// Any C0 control character, DEL, or a Unicode line separator.
+// eslint-disable-next-line no-control-regex
+const CONTROL_OR_LINE_BREAK = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/;
 
 const FAKE_WRAPPER = fileURLToPath(new URL('../helpers/fakeWrapper.mjs', import.meta.url));
 
@@ -20,6 +26,31 @@ async function readLoggedInvocations(logPath: string): Promise<string[][]> {
     .filter(Boolean)
     .map((line) => JSON.parse(line) as string[]);
 }
+
+describe('stderrOneLine', () => {
+  it('trims the ends and escapes CR and LF so the text is one line', () => {
+    expect(stderrOneLine('  first\r\nsecond\n')).toBe('first\\r\\nsecond');
+  });
+
+  it('is empty for stderr that is only whitespace', () => {
+    expect(stderrOneLine(' \n\t')).toBe('');
+  });
+
+  it('escapes a lone CR', () => {
+    expect(stderrOneLine('one\rtwo')).toBe('one\\rtwo');
+  });
+
+  it('escapes every other C0 control character, DEL and the Unicode line separators', () => {
+    expect(stderrOneLine('a\u0000b\u001bc\u007fd\u0085e\u2028f\u2029g\th')).toBe(
+      'a\\u0000b\\u001bc\\u007fd\\u0085e\\u2028f\\u2029g\\th'
+    );
+  });
+
+  it('leaves no control character or line separator in its output', () => {
+    const everyC0 = Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)).join('x');
+    expect(stderrOneLine(`x${everyC0}x\u0085\u2028\u2029x`)).not.toMatch(CONTROL_OR_LINE_BREAK);
+  });
+});
 
 describe('createSlotWrapper', () => {
   let dir: string;
@@ -76,6 +107,59 @@ describe('createSlotWrapper', () => {
   it('rejects with a WrapperError, carrying stdout/stderr, when the wrapper exits non-zero', async () => {
     process.env.FAKE_WRAPPER_FAIL = '1';
     await expect(wrapper.reset('0' as SlotName)).rejects.toBeInstanceOf(WrapperError);
+  });
+
+  it('keeps the child stderr out of the WrapperError message, which can reach an HTTP body', async () => {
+    process.env.FAKE_WRAPPER_FAIL = '1';
+    process.env.FAKE_WRAPPER_STDERR = 'slot 0: unit not loaded\r\nslot 0: no volume\n';
+    try {
+      const error = await wrapper.reset('0' as SlotName).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(WrapperError);
+      const wrapperError = error as WrapperError;
+      expect(wrapperError.message).toMatch(/^slot wrapper failed: Command failed: [^\r\n]*$/);
+      expect(wrapperError.message).not.toContain('unit not loaded');
+      expect(wrapperError.message).not.toContain('forced failure');
+      expect(wrapperError.stderr).toContain('slot 0: unit not loaded');
+    } finally {
+      delete process.env.FAKE_WRAPPER_FAIL;
+      delete process.env.FAKE_WRAPPER_STDERR;
+    }
+  });
+
+  it('puts the stderr on one line in the log text, control characters escaped', async () => {
+    process.env.FAKE_WRAPPER_FAIL = '1';
+    process.env.FAKE_WRAPPER_STDERR = 'slot 0: unit not loaded\r\nslot 0: no volume\n';
+    try {
+      const error = await wrapper.reset('0' as SlotName).catch((caught: unknown) => caught);
+      const text = errorLogText(error);
+      expect(text).not.toMatch(/\n|\r/);
+      expect(text).toMatch(/^slot wrapper failed: Command failed: /);
+      expect(
+        text.endsWith(
+          ' stderr: slot 0: unit not loaded\\r\\nslot 0: no volume\\nfake wrapper: forced failure'
+        )
+      ).toBe(true);
+    } finally {
+      delete process.env.FAKE_WRAPPER_FAIL;
+      delete process.env.FAKE_WRAPPER_STDERR;
+    }
+  });
+
+  it("a lone CR, or a Unicode line separator, in the first line of Node's message never reaches the WrapperError message", async () => {
+    process.env.FAKE_WRAPPER_FAIL = '1';
+    try {
+      for (const separator of ['\r', '\u2028', '\u0085']) {
+        const error = await wrapper.load(`/x${separator}y`).catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(WrapperError);
+        expect((error as WrapperError).message).not.toMatch(CONTROL_OR_LINE_BREAK);
+      }
+    } finally {
+      delete process.env.FAKE_WRAPPER_FAIL;
+    }
+  });
+
+  it('errorLogText is the plain message for an error that is not a WrapperError', () => {
+    expect(errorLogText(new Error('plain'))).toBe('plain');
   });
 
   it('rejects with a WrapperError when the wrapper runs longer than timeoutMs', async () => {

@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 # Test-only image for the demo edge's wildcard proof against a local ACME CA:
-# Caddy 2.11.4 with a stub DNS provider (stubdns), Pebble and
+# Caddy 2.11.5 with a stub DNS provider (stubdns), Pebble and
 # pebble-challtestsrv at pinned versions, a DNS front for zone lookups
 # (tools/soashim), a throwaway TLS identity generator (tools/mkcert), and the
 # run script. Never published or deployed; see ../test_demo_edge_tier2.md.
 
 # Pinned by digest so a re-pointed tag cannot change what is built. The
-# builder image carries a Go toolchain new enough for Caddy 2.11.4 (Go 1.25.1
-# or later) and Pebble 2.10.1 (Go 1.24). Re-read the digests when either tag is
+# builder image (Go 1.26.8, the 2.11.4 tag: no 2.11.5 builder tag exists yet)
+# carries a Go toolchain new enough for Caddy 2.11.5 (Go 1.26.0 or later) and Pebble 2.10.1 (Go 1.24). Re-read the digests when either tag is
 # bumped.
 #
 # Every Go program here is built from a committed module (caddy/, ca/, tools/)

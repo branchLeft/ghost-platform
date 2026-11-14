@@ -25,6 +25,11 @@ if (sleepMs) {
     // busy-wait
   }
 }
+// The stderr a failing run writes, overridable so wrapper.test.ts can prove a
+// multi-line reason reaches the WrapperError message on one line.
+if (process.env.FAKE_WRAPPER_STDERR !== undefined) {
+  process.stderr.write(process.env.FAKE_WRAPPER_STDERR);
+}
 if (process.env.FAKE_WRAPPER_FAIL === '1') {
   process.stderr.write('fake wrapper: forced failure\n');
   process.exit(1);

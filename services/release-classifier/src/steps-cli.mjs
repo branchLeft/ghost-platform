@@ -5,6 +5,7 @@
 // Exit 0 = every step reversible, 2 = a step is forward-only or unclassified,
 // 1 = an error (usage, read, order). Exit 1 is never a verdict and never reversible.
 
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readTree } from './cli.mjs';
 import { CLASS, classifySteps } from './steps.mjs';
@@ -24,9 +25,24 @@ function parseArgs(argv) {
   return releases;
 }
 
+// One directory for two tags would read the same tree twice and call the step reversible
+// with 0 new files. Two copies of a tree (a patch release) are read as they are.
+function refuseSharedDirectory(releases) {
+  const seen = new Map();
+  for (const { tag, dir } of releases) {
+    const real = realpathSync(dir);
+    if (seen.has(real)) {
+      throw new Error(`the same directory is passed for ${seen.get(real)} and ${tag}`);
+    }
+    seen.set(real, tag);
+  }
+}
+
 export function main(argv) {
   try {
-    const releases = parseArgs(argv).map(({ tag, dir }) => ({
+    const parsed = parseArgs(argv);
+    refuseSharedDirectory(parsed);
+    const releases = parsed.map(({ tag, dir }) => ({
       tag,
       migrations: readTree(dir).migrations,
     }));

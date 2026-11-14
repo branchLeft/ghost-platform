@@ -31,14 +31,13 @@ On a push to `main` (or a manual dispatch from `main`) the workflow:
 4. Prints `Pin this: ghcr.io/branchleft/demo-edge@sha256:...` in the push job's
    summary. That digest reference is the value for `demo1_build_caddy_image`, and
    the only thing a consumer may pin.
-5. Pulls that digest with no credential and runs the pins check against the
-   pulled image (the `anonymous-pull` job).
+5. Logs in with the run's own token (`packages: read`), pulls that digest back
+   and checks the pulled image reports it as its repo digest, then runs the pins
+   check against the pulled image (the `registry-pull` job).
 
-GHCR creates the package private on its first push, and no workflow can change
-that. The owner sets it to Public once, in the package settings on GitHub
-(`orgs/branchLeft/packages/container/demo-edge/settings`, "Change package
-visibility"). Until then `anonymous-pull` is red by design, and the digest in the
-push summary is already valid and attested. After it, a stranger can run
+The package is private and stays private: build artifacts are not published
+unless they help the open-source community. A reader pulls it by digest after
+`docker login ghcr.io` with a token that can read the package, for example
 `docker pull --platform linux/amd64 ghcr.io/branchleft/demo-edge@sha256:...`
 (`--platform` because an Apple-silicon Mac is arm64).
 

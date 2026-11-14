@@ -22,6 +22,7 @@ from unittest import mock
 
 import restore_drill as rd
 import scratch_boot_smoke as sbs
+import scratch_migrate as sm
 import scratch_preflight as sp
 import test_restore_drill as trd
 import test_scratch_preflight as tsp
@@ -32,7 +33,16 @@ SIDECAR = "scratch-preflight-sidecar-abcd"
 MYSQL = "scratch-preflight-mysql-abcd"
 NETWORK = "scratch-preflight-abcd"
 PASSING_BODY = html.escape("<h1>Fixture's Site</h1><p>Newest Fixture Post</p>")
-ALL_CHECKS = ["drained at boot", "serves", "tenant content", "ready once undrained"]
+ALL_CHECKS = ["drained at boot", "serves", "migrations", "tenant content", "ready once undrained"]
+
+# What the colour's boot migrations do to the restored copy, as the throwaway
+# server sees it. The restore leaves two applied migrations and a free lock.
+MIGRATED = (
+    f"INSERT INTO `{tsp.DATABASE}`.`migrations` (`name`, `version`) VALUES "
+    "('2026-09-01-00-00-00-fixture-two.js','6.56'),('2026-09-02-00-00-00-fixture-three.js','6.56');"
+)
+LOCK_HELD = f"UPDATE `{tsp.DATABASE}`.`migrations_lock` SET `locked`=1 WHERE `lock_key`='km01';"
+LOCK_FREE = f"UPDATE `{tsp.DATABASE}`.`migrations_lock` SET `locked`=0 WHERE `lock_key`='km01';"
 
 
 class FakeColourHttp:
@@ -57,11 +67,19 @@ class FakeColourHttp:
 
 class BootDocker(tsp.ThrowawayDocker):
     """The part 1 fake, except that starting the colour does not reset the
-    scratch server: only the scratch server's own `docker run` does."""
+    scratch server: only the scratch server's own `docker run` does. Starting
+    the Ghost runs `migrate` on the server, as Ghost's boot migrations would."""
+
+    def __init__(self, server, *, migrate: str | None = MIGRATED, **kwargs) -> None:
+        super().__init__(server, **kwargs)
+        self.migrate = migrate
 
     def __call__(self, argv, **kwargs):
         if argv[:3] == ["docker", "run", "-d"] and ("--name" in argv) and argv[argv.index("--name") + 1] in (GHOST, SIDECAR):
-            return trd.FakeDocker.__call__(self, argv, **kwargs)
+            result = trd.FakeDocker.__call__(self, argv, **kwargs)
+            if argv[argv.index("--name") + 1] == GHOST and result.returncode == 0 and self.migrate:
+                self.server.sql(self.migrate)
+            return result
         return super().__call__(argv, **kwargs)
 
     def colour_runs(self) -> list[list[str]]:
@@ -104,16 +122,18 @@ class BootGateTests(unittest.TestCase):
         hooks.sidecar_timeout_s = 5.0
         return hooks
 
-    def boot(self, docker, http=None, **kwargs):
+    def boot(self, docker, http=None, *, sleep=None, **kwargs):
         http = http or FakeColourHttp(self.flag_dir)
         self.asked_for = []
+        hooks = self.hooks(docker)
+        if sleep is not None:
+            hooks.sleep = sleep
 
         def make_get(container):
             self.asked_for.append(container)
             return http
 
-        return sbs.run_boot_gate(config=self.config, tenant=TENANT, hooks=self.hooks(docker),
-                                 make_get=make_get, **kwargs)
+        return sbs.run_boot_gate(config=self.config, tenant=TENANT, hooks=hooks, make_get=make_get, **kwargs)
 
     def assert_nothing_left(self, docker):
         self.assertEqual(self.server.databases(), [], "the scratch server still holds a tenant database")
@@ -204,7 +224,7 @@ class BootGateTests(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertIn("check 'tenant content' failed", report.error)
         self.assertIn("ContentVerificationError", report.error)
-        self.assertEqual(report.checks, ["drained at boot", "serves"])
+        self.assertEqual(report.checks, ["drained at boot", "serves", "migrations"])
         self.assert_nothing_left(docker)
 
     def test_control_a_colour_that_is_not_drained_at_boot_is_refused(self):
@@ -220,8 +240,175 @@ class BootGateTests(unittest.TestCase):
         report = self.boot(docker, FakeColourHttp(self.flag_dir, undrained=503))
         self.assertFalse(report.ok)
         self.assertIn("check 'ready once undrained' failed", report.error)
-        self.assertEqual(report.checks, ["drained at boot", "serves", "tenant content"])
+        self.assertEqual(report.checks, ["drained at boot", "serves", "migrations", "tenant content"])
         self.assert_nothing_left(docker)
+
+    # the migrations: what the colour's boot migrations did to the copy -------------
+
+    def test_green_records_what_the_colours_migrations_did_to_the_copy(self):
+        docker = BootDocker(self.server)
+        report = self.boot(docker)
+        self.assertTrue(report.ok, report.error)
+        outcome = report.migrations
+        self.assertEqual((outcome.before_count, outcome.after_count), (2, 4))
+        self.assertEqual((outcome.from_version, outcome.to_version), ("6.55", "6.56"))
+        self.assertEqual(outcome.applied, ("2026-09-01-00-00-00-fixture-two.js", "2026-09-02-00-00-00-fixture-three.js"))
+        self.assertIn("scratch_boot_smoke: migrations: before=2 after=4 applied=2 from=6.55 to=6.56",
+                      sbs.format_report(report))
+        self.assert_nothing_left(docker)
+
+    def test_a_colour_with_nothing_to_migrate_passes_and_records_that(self):
+        report = self.boot(BootDocker(self.server, migrate=None))
+        self.assertTrue(report.ok, report.error)
+        self.assertEqual(report.migrations.applied, ())
+        self.assertEqual(report.migrations.before_count, report.migrations.after_count)
+
+    def test_the_migrations_are_read_after_the_colour_serves_and_before_its_content_is_checked(self):
+        report = self.boot(BootDocker(self.server))
+        self.assertEqual(report.checks.index("migrations"), report.checks.index("serves") + 1)
+        self.assertEqual(report.checks.index("tenant content"), report.checks.index("migrations") + 1)
+
+    def test_a_lock_that_is_released_while_the_gate_waits_is_a_pass(self):
+        docker = BootDocker(self.server, migrate=MIGRATED + LOCK_HELD)
+        report = self.boot(docker, sleep=lambda seconds: self.server.sql(LOCK_FREE))
+        self.assertTrue(report.ok, report.error)
+        self.assertEqual(len(report.migrations.applied), 2)
+        self.assert_nothing_left(docker)
+
+    def test_control_a_colour_whose_migration_never_releases_its_lock_is_refused(self):
+        """Ghost answers 200 and shows the tenant's content, and the swap is
+        still refused: the migration did not finish."""
+        docker = BootDocker(self.server, migrate=MIGRATED + LOCK_HELD)
+        report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("check 'migrations' failed", report.error)
+        self.assertIn("lock is still held", report.error)
+        self.assertEqual(report.checks, ["drained at boot", "serves"])
+        self.assertIsNone(report.migrations)
+        self.assert_nothing_left(docker)
+
+    def test_control_the_lock_check_is_what_refuses_it(self):
+        """The same colour with that check removed passes."""
+        docker = BootDocker(self.server, migrate=MIGRATED + LOCK_HELD)
+        free = sm.MigrationOutcome(before_count=2, after_count=4, from_version="6.55", to_version="6.56", applied=())
+        with mock.patch.object(sm, "judge", lambda before, after: free):
+            report = self.boot(docker)
+        self.assertTrue(report.ok, "the sabotaged gate should have wrongly passed this colour")
+
+    def test_control_a_migration_that_removed_an_applied_migration_is_refused(self):
+        docker = BootDocker(self.server, migrate=f"DELETE FROM `{tsp.DATABASE}`.`migrations` WHERE `id` = 1;")
+        report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("do not extend", report.error)
+        self.assert_nothing_left(docker)
+
+    def test_control_migration_tables_that_cannot_be_read_after_the_run_are_refused(self):
+        docker = BootDocker(self.server, migrate=f"DROP TABLE `{tsp.DATABASE}`.`migrations`;")
+        report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("check 'migrations' failed", report.error)
+        self.assertIn("could not be read", report.error)
+        self.assert_nothing_left(docker)
+
+    def test_control_a_backup_with_no_migration_record_is_refused_before_the_colour_starts(self):
+        self.store_backup(tsp.backup_plaintext(lines=tsp.dump_lines(migration_tables=False)))
+        docker = BootDocker(self.server)
+        report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("could not be read", report.error)
+        self.assertEqual(docker.colour_runs(), [])
+        self.assert_nothing_left(docker)
+
+    # the discard, on every path ---------------------------------------------------
+
+    def test_discard_after_a_pass(self):
+        docker = BootDocker(self.server)
+        self.assertTrue(self.boot(docker).ok)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_a_failed_smoke_check(self):
+        docker = BootDocker(self.server)
+        self.assertFalse(self.boot(docker, FakeColourHttp(self.flag_dir, ghost=503)).ok)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_a_failed_migration(self):
+        docker = BootDocker(self.server, migrate=MIGRATED + LOCK_HELD)
+        self.assertFalse(self.boot(docker).ok)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_an_error_nobody_foresaw_while_the_colour_is_checked(self):
+        def boom(url, timeout_s):
+            raise RuntimeError("a bug in a check")
+
+        docker = BootDocker(self.server)
+        report = self.boot(docker, boom)
+        self.assertFalse(report.ok)
+        self.assertIn("UnexpectedError: RuntimeError: a bug in a check", report.error)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_an_error_nobody_foresaw_while_the_colour_starts(self):
+        def boom(argv):
+            raise RuntimeError("docker returned nonsense")
+
+        docker = BootDocker(self.server, fail={f"--name {GHOST}": boom})
+        report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("UnexpectedError: RuntimeError", report.error)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_an_error_nobody_foresaw_while_the_migrations_are_read(self):
+        docker = BootDocker(self.server)
+        with mock.patch.object(sm, "read_state", side_effect=RuntimeError("a bug in the reader")):
+            report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("UnexpectedError: RuntimeError: a bug in the reader", report.error)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_sigterm_during_the_checks(self):
+        def term(url, timeout_s):
+            raise rd.DrillInterrupted()
+
+        docker = BootDocker(self.server)
+        report = self.boot(docker, term)
+        self.assertTrue(report.interrupted)
+        self.assertFalse(report.ok)
+        self.assert_nothing_left(docker)
+
+    def test_discard_after_a_keyboard_interrupt_during_the_checks(self):
+        def interrupt(url, timeout_s):
+            raise KeyboardInterrupt()
+
+        docker = BootDocker(self.server)
+        with self.assertRaises(KeyboardInterrupt):
+            self.boot(docker, interrupt)
+        self.assert_nothing_left(docker)
+
+    def test_discard_when_removing_the_colour_itself_fails(self):
+        """The runner breaks on the sidecar's removal; the Ghost, the scratch
+        server and the network are still removed, and the swap is refused."""
+        def gone(argv):
+            raise OSError("docker went away")
+
+        docker = BootDocker(self.server, fail={f"rm -f -v {SIDECAR}": gone})
+        report = self.boot(docker)
+        self.assertFalse(report.ok, "a copy that could not be removed must refuse the swap")
+        self.assertIn("could not remove the scratch copy", report.error)
+        self.assert_nothing_left(docker)
+
+    def test_discard_when_removing_the_network_fails_refuses_the_swap(self):
+        docker = BootDocker(self.server, fail={
+            "network rm": trd._completed([], code=1, err="network has active endpoints"),
+        })
+        report = self.boot(docker)
+        self.assertFalse(report.ok)
+        self.assertIn("network has active endpoints", report.error)
+        self.assertEqual(report.checks, ALL_CHECKS, "the refusal is the removal, not a check")
+
+    def test_a_thing_that_is_already_gone_is_not_a_failed_discard(self):
+        docker = BootDocker(self.server, fail={
+            f"rm -f -v {GHOST}": trd._completed([], code=1, err="Error: No such container"),
+        })
+        self.assertTrue(self.boot(docker).ok)
 
     def test_control_the_smoke_checks_are_what_refuse_an_empty_colour(self):
         """The same colour with the checks removed passes: the controls above
@@ -308,6 +495,24 @@ class ExecGetTests(unittest.TestCase):
         self.assertEqual(sbs.exec_get(run, GHOST)("http://x/", 5.0), (0, "garbage"))
 
 
+class MigrationFake(trd.FakeDocker):
+    """The drill's docker fake, answering the migration read with `before` the
+    first time and `after` on every read after it."""
+
+    BEFORE = "M\t1-create-fixture-tables.js\tinit\nM\t2026-08-01-00-00-00-fixture-one.js\t6.55\nL\tkm01\t0\n"
+    AFTER = BEFORE.replace("L\tkm01", "M\t2026-09-01-00-00-00-fixture-two.js\t6.56\nL\tkm01")
+
+    def __init__(self, *, after=AFTER, **kwargs):
+        super().__init__(**kwargs)
+        self.reads = [self.BEFORE, after]
+
+    def _mysql(self, argv, kwargs):
+        if sm.MIGRATIONS_QUERY in argv:
+            out = self.reads.pop(0) if len(self.reads) > 1 else self.reads[0]
+            return trd._completed(argv, out=out)
+        return super()._mysql(argv, kwargs)
+
+
 @unittest.skipUnless(trd.HAVE_AGE, "needs the age binary")
 class MainTests(unittest.TestCase):
     def setUp(self):
@@ -336,8 +541,8 @@ class MainTests(unittest.TestCase):
             code = sbs.main(argv, hooks=self.hooks(docker), environ=self.env)
         return code, out.getvalue(), err.getvalue()
 
-    def good_docker(self):
-        return trd.FakeDocker(snapshot="Fixture's Site\t1\t2\t3\tNewest Fixture Post\n")
+    def good_docker(self, **kwargs):
+        return MigrationFake(snapshot="Fixture's Site\t1\t2\t3\tNewest Fixture Post\n", **kwargs)
 
     def test_a_pass_exits_zero_and_lists_every_check(self):
         code, out, err = self.main(self.good_docker(), ["--tenant", TENANT, "--allow-disk-work-dir"])
@@ -354,6 +559,19 @@ class MainTests(unittest.TestCase):
         self.assertNotIn("PASS", out + err)
         self.assertTrue(err.strip().splitlines()[-1].startswith("scratch_boot_smoke: REFUSED"), err)
         self.assertIn("tenant content", err)
+
+    def test_a_pass_prints_what_the_migrations_did(self):
+        code, out, _ = self.main(self.good_docker(), ["--tenant", TENANT, "--allow-disk-work-dir"])
+        self.assertEqual(code, 0)
+        self.assertIn("scratch_boot_smoke: migrations: before=2 after=3 applied=1 from=6.55 to=6.56", out)
+
+    def test_a_migration_that_did_not_finish_exits_one_and_never_says_pass(self):
+        unfinished = MigrationFake.AFTER.replace("L\tkm01\t0", "L\tkm01\t1")
+        code, out, err = self.main(self.good_docker(after=unfinished), ["--tenant", TENANT, "--allow-disk-work-dir"])
+        self.assertEqual(code, sbs.EXIT_REFUSED)
+        self.assertNotIn("PASS", out + err)
+        self.assertTrue(err.strip().splitlines()[-1].startswith("scratch_boot_smoke: REFUSED"), err)
+        self.assertIn("check 'migrations' failed", err)
 
     def test_a_restore_refusal_exits_one_before_any_boot(self):
         docker = trd.FakeDocker(snapshot="Ghost\t1\t1\t0\tComing soon\n")

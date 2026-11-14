@@ -2,16 +2,25 @@
 // shim refuses to start with SHIM_DRAIN_PORT and no SHIM_DRAIN_HOST, and a
 // wildcard host would put /drain on every network the spool joins. The gate runs
 // the spool with that contract, on a network with a fixed subnet and the spool at
-// a fixed address inside it. This checks the spool container's run args and the
-// network creation in mail-gate.mjs as source text, so it needs no Docker. The
-// real source passes; each mutated copy of it is refused.
+// a fixed address inside it. These tests build the real `docker run` argument list
+// the gate passes (spoolRunArgs), read its flags and values back, and judge them.
+// Each mutated argument list is refused. No Docker is needed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { GATE_SPOOL_ADDRESS, GATE_SUBNET } from './mail-gate.mjs';
+import { GATE_SPOOL_ADDRESS, GATE_SUBNET, spoolRunArgs } from './mail-gate.mjs';
 
-const source = readFileSync(fileURLToPath(new URL('./mail-gate.mjs', import.meta.url)), 'utf8');
+const IMAGE = 'example.invalid/spool@sha256:' + 'a'.repeat(64);
+
+function gateArgs(overrides = {}) {
+  return spoolRunArgs({
+    spool: 'drain-host-test-spool',
+    net: 'drain-host-test-net',
+    token: 'token-for-test',
+    drainPort: 40123,
+    spoolImage: IMAGE,
+    ...overrides,
+  });
+}
 
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 const UNSPECIFIED = /^\[?[0.:]+\]?$/;
@@ -31,60 +40,49 @@ function inSubnet(address, cidr) {
   return Math.floor(a / size) === Math.floor(b / size);
 }
 
-// A run-arg or call-arg value: a quoted literal, or an exported const of this file.
-function resolve(text, token) {
-  const literal = /^'([^']*)'$/.exec(token);
-  if (literal) return literal[1];
-  const named = new RegExp(`export const ${token} =\\s*'([^']*)';`).exec(text);
-  return named ? named[1] : null;
+// The value that follows each occurrence of a flag, e.g. every '-e' value.
+function valuesOf(args, flag) {
+  const out = [];
+  args.forEach((arg, i) => {
+    if (arg === flag && i + 1 < args.length) out.push(args[i + 1]);
+  });
+  return out;
 }
 
-// The problems with how a gate source runs its spool, empty when it is right.
-function drainHostProblems(text) {
+// The problems with a spool run argument list on a network with the given
+// subnet, empty when the spool gets a drain host, a fixed address and a subnet.
+function drainHostProblems(args, subnet) {
   const problems = [];
-  const runStart = text.indexOf("'run',");
-  const spoolImageAt = text.indexOf('spoolImage', runStart);
-  if (runStart < 0 || spoolImageAt < runStart) {
-    return ['the spool container run call must be present'];
-  }
-  const args = text.slice(runStart, spoolImageAt);
-
-  if (!/'-e',\s*'SHIM_DRAIN_PORT=\d+'/.test(args)) {
-    problems.push(
-      "the spool container must set 'SHIM_DRAIN_PORT=<n>' as separate '-e' and value arguments"
-    );
-  }
-
-  const hostArg = /'-e',\s*(?:'SHIM_DRAIN_HOST=([^']*)'|`SHIM_DRAIN_HOST=\$\{(\w+)\}`)/.exec(args);
-  const host = hostArg ? (hostArg[1] ?? resolve(text, hostArg[2])) : null;
-  if (!hostArg) {
+  const env = valuesOf(args, '-e');
+  const hostEntries = env.filter((v) => v.startsWith('SHIM_DRAIN_HOST='));
+  const hasDrainPort = env.includes('SHIM_DRAIN_PORT=8081');
+  if (hasDrainPort && hostEntries.length === 0) {
     problems.push('the spool container sets SHIM_DRAIN_PORT with no SHIM_DRAIN_HOST');
-  } else if (host === null || host === '') {
-    problems.push('SHIM_DRAIN_HOST is empty or does not resolve to a literal');
+  }
+  const host = hostEntries.length === 1 ? hostEntries[0].slice('SHIM_DRAIN_HOST='.length) : null;
+  if (hostEntries.length > 1) {
+    problems.push('the spool container sets SHIM_DRAIN_HOST more than once');
+  } else if (host === '' || host === null) {
+    if (hostEntries.length === 1) problems.push('SHIM_DRAIN_HOST is empty');
   } else if (UNSPECIFIED.test(host)) {
     problems.push(`SHIM_DRAIN_HOST is a wildcard address (${host})`);
   } else if (ipv4ToInt(host) === null) {
     problems.push(`SHIM_DRAIN_HOST is not an IPv4 address literal (${host})`);
   }
 
-  const networkArg = /createNetwork\(\s*net\s*(?:,\s*(\w+|'[^']*'))?\s*\)/.exec(text);
-  const subnet = networkArg?.[1] ? resolve(text, networkArg[1]) : null;
-  if (!networkArg) {
-    problems.push('the gate must create its network with createNetwork(net, <subnet>)');
-  } else if (!subnet) {
+  if (subnet === undefined || subnet === null || subnet === '') {
     problems.push(
       'the gate network is created with no fixed subnet, so the spool has no stable address'
     );
   }
 
-  const ipArg = /'--ip',\s*(\w+|'[^']*')/.exec(args);
-  const ip = ipArg ? resolve(text, ipArg[1]) : null;
-  if (!ipArg) {
+  const ips = valuesOf(args, '--ip');
+  if (ips.length !== 1) {
     problems.push(
       'the spool container is not started with --ip, so its address is not the bound host'
     );
-  } else if (host && ip !== host) {
-    problems.push(`--ip (${ip}) differs from SHIM_DRAIN_HOST (${host})`);
+  } else if (host && ips[0] !== host) {
+    problems.push(`--ip (${ips[0]}) differs from SHIM_DRAIN_HOST (${host})`);
   }
 
   if (host && subnet && ipv4ToInt(host) !== null && !inSubnet(host, subnet)) {
@@ -93,16 +91,23 @@ function drainHostProblems(text) {
   return problems;
 }
 
-function mutate(from, to) {
-  assert.ok(source.includes(from), `mutation target not found in mail-gate.mjs: ${from}`);
-  return source.replace(from, to);
+function without(args, flag, value) {
+  const i = args.findIndex((a, j) => a === flag && args[j + 1] === value);
+  assert.ok(i >= 0, `${flag} ${value} is not in the argument list`);
+  return [...args.slice(0, i), ...args.slice(i + 2)];
 }
 
-test('GREEN: the real gate runs its spool with a drain host, a fixed address and a fixed subnet', () => {
-  assert.deepEqual(drainHostProblems(source), []);
+function replaced(args, from, to) {
+  const i = args.indexOf(from);
+  assert.ok(i >= 0, `${from} is not in the argument list`);
+  return args.map((a, j) => (j === i ? to : a));
+}
+
+test('GREEN: the gate spool runs with a drain host, a fixed address and a fixed subnet', () => {
+  assert.deepEqual(drainHostProblems(gateArgs(), GATE_SUBNET), []);
 });
 
-test('the exported gate addressing is an IPv4 address inside the exported subnet', () => {
+test('the gate addressing is an IPv4 address inside the gate subnet, never a wildcard', () => {
   assert.ok(
     inSubnet(GATE_SPOOL_ADDRESS, GATE_SUBNET),
     `${GATE_SPOOL_ADDRESS} not in ${GATE_SUBNET}`
@@ -114,55 +119,53 @@ test('the gate subnet is not the production drain subnet', () => {
   assert.notEqual(GATE_SUBNET, '10.231.200.0/29');
 });
 
-const reds = [
-  [
-    'no SHIM_DRAIN_HOST',
-    () => mutate("      '-e',\n      `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,\n", ''),
-    /no SHIM_DRAIN_HOST/,
-  ],
-  [
-    'a wildcard host, 0.0.0.0',
-    () => mutate('`SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`', "'SHIM_DRAIN_HOST=0.0.0.0'"),
-    /wildcard address \(0\.0\.0\.0\)/,
-  ],
-  [
-    'a wildcard host, ::',
-    () => mutate('`SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`', "'SHIM_DRAIN_HOST=::'"),
-    /wildcard address \(::\)/,
-  ],
-  [
-    'a host outside the gate subnet',
-    () => mutate('`SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`', "'SHIM_DRAIN_HOST=10.231.203.2'"),
-    /outside the gate network subnet/,
-  ],
-  [
-    'a host name instead of an address',
-    () => mutate('`SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`', "'SHIM_DRAIN_HOST=mail-spool'"),
-    /not an IPv4 address literal/,
-  ],
-  [
-    'no --ip',
-    () => mutate("      '--ip',\n      GATE_SPOOL_ADDRESS,\n", ''),
-    /not started with --ip/,
-  ],
-  [
-    '--ip that differs from the bound host',
-    () => mutate("'--ip',\n      GATE_SPOOL_ADDRESS,", "'--ip',\n      '10.231.202.3',"),
-    /differs from SHIM_DRAIN_HOST/,
-  ],
-  [
-    'a network created with no subnet',
-    () => mutate('createNetwork(net, GATE_SUBNET)', 'createNetwork(net)'),
-    /no fixed subnet/,
-  ],
-];
+test('RED: a gate spool with no SHIM_DRAIN_HOST is refused', () => {
+  const args = without(gateArgs(), '-e', `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`);
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /no SHIM_DRAIN_HOST/);
+});
 
-for (const [label, build, expected] of reds) {
-  test(`RED: a gate with ${label} is refused`, () => {
-    const problems = drainHostProblems(build());
-    assert.ok(
-      problems.some((p) => expected.test(p)),
-      `expected a problem matching ${expected}, got ${JSON.stringify(problems)}`
-    );
-  });
-}
+test('RED: a wildcard SHIM_DRAIN_HOST, 0.0.0.0, is refused', () => {
+  const args = replaced(
+    gateArgs(),
+    `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,
+    'SHIM_DRAIN_HOST=0.0.0.0'
+  );
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /wildcard address \(0\.0\.0\.0\)/);
+});
+
+test('RED: a wildcard SHIM_DRAIN_HOST, ::, is refused', () => {
+  const args = replaced(gateArgs(), `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`, 'SHIM_DRAIN_HOST=::');
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /wildcard address \(::\)/);
+});
+
+test('RED: a SHIM_DRAIN_HOST outside the gate subnet is refused', () => {
+  const args = replaced(
+    gateArgs(),
+    `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,
+    'SHIM_DRAIN_HOST=10.231.203.2'
+  );
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /outside the gate network subnet/);
+});
+
+test('RED: a SHIM_DRAIN_HOST that is a host name is refused', () => {
+  const args = replaced(
+    gateArgs(),
+    `SHIM_DRAIN_HOST=${GATE_SPOOL_ADDRESS}`,
+    'SHIM_DRAIN_HOST=mail-spool'
+  );
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /not an IPv4 address literal/);
+});
+
+test('RED: a spool started with no --ip is refused', () => {
+  const args = without(gateArgs(), '--ip', GATE_SPOOL_ADDRESS);
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /not started with --ip/);
+});
+
+test('RED: an --ip that differs from the bound host is refused', () => {
+  const args = replaced(gateArgs(), GATE_SPOOL_ADDRESS, '10.231.202.3');
+  assert.match(drainHostProblems(args, GATE_SUBNET).join('\n'), /differs from SHIM_DRAIN_HOST/);
+});
+
+test('RED: a gate network with no fixed subnet is refused', () => {
+  assert.match(drainHostProblems(gateArgs(), undefined).join('\n'), /no fixed subnet/);
+});

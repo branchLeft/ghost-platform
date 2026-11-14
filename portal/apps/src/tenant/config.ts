@@ -8,6 +8,7 @@ import {
   requireEnv,
   type FileReader,
 } from '../shell/config.js';
+import { loadProvisioningSettings, type ProvisioningSettings } from './provisioningSettings.js';
 
 export interface TenantPortalConfig {
   readonly issuer: string;
@@ -20,6 +21,8 @@ export interface TenantPortalConfig {
   readonly port: number;
   /** Set by `PORTAL_TRUSTED_PROXIES`; absent, sign-in is not rate limited. */
   readonly trustedProxies?: BlockList;
+  /** Set by `PORTAL_PROVISIONING_URL`; absent, there is no demo screen. */
+  readonly provisioning?: ProvisioningSettings;
 }
 
 /**
@@ -34,6 +37,7 @@ export function loadTenantConfig(
   const outputs = parseOutputs(read(requireEnv(env, 'PORTAL_OUTPUTS_FILE')));
   const origin = parseOrigin(env['PORTAL_PUBLIC_ORIGIN']);
   const trustedProxies = parseTrustedProxyList(env, 'PORTAL_TRUSTED_PROXIES');
+  const provisioning = loadProvisioningSettings(env, read);
   return {
     issuer: requireEnv(env, 'PORTAL_ISSUER_URL'),
     clientId: outputs.clientIds.portal,
@@ -44,5 +48,6 @@ export function loadTenantConfig(
     databaseUrl: read(requireEnv(env, 'PORTAL_DATABASE_URL_FILE')).trim(),
     port: parsePort(env['PORT'], 8080),
     ...(trustedProxies === undefined ? {} : { trustedProxies }),
+    ...(provisioning === undefined ? {} : { provisioning }),
   };
 }

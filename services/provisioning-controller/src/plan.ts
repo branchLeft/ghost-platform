@@ -2,8 +2,16 @@ import { createHash } from 'node:crypto';
 import type { ApprovalScope, RegisterEntry } from './ports.js';
 
 /** Where a step is carried out; each is a narrow entry point, never a shell. */
-export type EntryPoint =
-  'controller' | 'db-host' | 'app-host' | 'storage-gateway' | 'source-host' | 'edge' | 'dns';
+export const ENTRY_POINTS = [
+  'controller',
+  'db-host',
+  'app-host',
+  'storage-gateway',
+  'source-host',
+  'edge',
+  'dns',
+] as const;
+export type EntryPoint = (typeof ENTRY_POINTS)[number];
 
 export const STEP_IDS = [
   'confirm-register-assignment',

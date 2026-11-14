@@ -43,6 +43,39 @@ class ScratchStartError(rd.DrillError):
     """The throwaway server could not be created."""
 
 
+# What Docker says, in either of its wordings, about a thing that is not there.
+ALREADY_GONE = ("no such", "not found")
+
+
+class ScratchDiscardError(rd.DrillError):
+    """Something the gate created could not be removed."""
+
+
+def run_removals(runner: rd.Runner, commands: Sequence[list[str]]) -> None:
+    """Runs every removal whatever an earlier one did, so one that fails never
+    leaves the rest undone, then raises once, naming each that did. A thing that
+    is already gone is not a failure. A SIGTERM or an interrupt that lands in
+    the middle is held until every removal has been tried, then raised."""
+    failures: list[str] = []
+    held: BaseException | None = None
+    for argv in commands:
+        what = " ".join(argv[1:3])
+        try:
+            result = runner(argv, capture_output=True, text=True, check=False, env=rd._child_env())
+        except BaseException as exc:  # noqa: BLE001 -- the removals after this one must still run
+            if not isinstance(exc, Exception) and held is None:
+                held = exc
+            failures.append(f"{what}: {type(exc).__name__}: {exc}")
+            continue
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0 and not any(gone in stderr.lower() for gone in ALREADY_GONE):
+            failures.append(f"{what}: {stderr or 'docker exited nonzero'}")
+    if held is not None:
+        raise held
+    if failures:
+        raise ScratchDiscardError("could not remove the scratch copy: " + "; ".join(failures))
+
+
 @dataclasses.dataclass
 class ScratchMysql:
     """One throwaway MySQL server, on a Docker network with no route out of the
@@ -86,11 +119,13 @@ class ScratchMysql:
         return rd.container_mysql_runner(runner=self.runner, image=recovery_image, network=self.network)
 
     def discard(self) -> None:
-        """Safe to call whether or not `start` got as far as creating anything."""
-        self.runner(
-            ["docker", "rm", "-f", "-v", self.container], capture_output=True, check=False, env=rd._child_env()
-        )
-        self.runner(["docker", "network", "rm", self.network], capture_output=True, check=False, env=rd._child_env())
+        """Safe to call whether or not `start` got as far as creating anything.
+        The network cannot go while a container is attached, so the server goes
+        first; both are tried, and a removal that failed is raised after."""
+        run_removals(self.runner, [
+            ["docker", "rm", "-f", "-v", self.container],
+            ["docker", "network", "rm", self.network],
+        ])
 
 
 def sweep_leftovers(runner: rd.Runner) -> None:
@@ -214,10 +249,22 @@ def run_gate(
     except rd.DrillInterrupted:
         report.interrupted = True
         report.error = "DrillInterrupted: stopped by SIGTERM before the gate finished"
+    except Exception as exc:  # noqa: BLE001 -- a failure nobody foresaw refuses the swap like any other
+        report.error = f"UnexpectedError: {type(exc).__name__}: {exc}"
     finally:
-        if not handed_over:
-            scratch.discard()
-        shutil.rmtree(run_dir, ignore_errors=True)
+        discard_error: str | None = None
+        try:
+            if not handed_over:
+                scratch.discard()
+        except ScratchDiscardError as exc:
+            discard_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        if discard_error is not None:
+            # A copy that could not be removed is a refusal, whatever else passed.
+            report.ok = False
+            report.scratch = None
+            report.error = discard_error if report.error is None else f"{report.error}; {discard_error}"
     return report
 
 

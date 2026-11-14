@@ -18,7 +18,10 @@
 
 # --- Criterion 1: the rules, the gates, the floors and the exemptions ---
 /gate-set/                                       @branchLeft/branchleft-admin
-/csp/gate/                                       @branchLeft/branchleft-admin
+# Promotion attestation: the workflow that signs a candidate digest's verdict, and the scripts it runs.
+/promote/                                        @branchLeft/branchleft-admin
+/.github/workflows/promote-candidate.yml         @branchLeft/branchleft-admin
+/csp/gate/                                      @branchLeft/branchleft-admin
 /csp/derive/                                     @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/image/           @branchLeft/branchleft-admin
 # What the gate set pins or reads: the overlay file whose own hash is the pin (gate-set/gates.mjs
@@ -82,6 +85,7 @@
 /adapters/sso/test/image/                        @branchLeft/branchleft-admin
 /adapters/sso/test/helpers/                      @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/docker-ghost.mjs @branchLeft/branchleft-admin
+/adapters/scanning-storage/test/helpers/media-bytes.mjs @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/recording-s3-double.cjs @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/theme-zip.mjs @branchLeft/branchleft-admin
 
@@ -106,8 +110,10 @@
 /services/drain-sidecar/Dockerfile               @branchLeft/branchleft-admin
 /services/mail-collector/Dockerfile              @branchLeft/branchleft-admin
 /services/mailgun-shim/Dockerfile                @branchLeft/branchleft-admin
+/services/mysqld-exporter/Dockerfile               @branchLeft/branchleft-admin
 /services/odask/Dockerfile                       @branchLeft/branchleft-admin
 /services/sweego-webhook-receiver/Dockerfile     @branchLeft/branchleft-admin
+/services/storage-gateway/Dockerfile              @branchLeft/branchleft-admin
 /portal/Dockerfile                               @branchLeft/branchleft-admin
 # Criterion 2 and 3: what a job that holds a token builds into an image: the Dockerfile, its
 # ignore file (what keeps .git, and the token it holds, out of the build) and what it copies and runs.

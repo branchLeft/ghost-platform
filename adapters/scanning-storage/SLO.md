@@ -32,8 +32,7 @@ Reading them:
   outcome. A tenant with no uploads and no holds has no outcomes and returns
   nothing, which is no data and not a zero. On the production path a hold
   decided inside the client is counted as `unavailable`, not as an error, so
-  this rate reads low there until the check counts it
-  (`src/production-verdict-client.md`).
+  this rate reads low there (`src/production-verdict-client.md`).
 - **Held age** is 0 when nothing is held, and is dated from the quarantined
   bytes, so it keeps counting across a restart. A hold that stopped retrying
   is counted separately by `scanning_storage_held_stuck`.
