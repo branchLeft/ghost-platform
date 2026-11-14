@@ -61,7 +61,7 @@ function demoEdgeProblems(source) {
   const top = text.split(/^jobs:\n/m)[0];
   const jobs = parseJobs(source);
   const { build, push, scan, attest } = jobs;
-  const pull = jobs['anonymous-pull'];
+  const pull = jobs['registry-pull'];
 
   if (!/^permissions:\n {2}contents: read\n(?! {2}\S)/m.test(top)) {
     found.push('top-level permissions are not exactly contents: read');
@@ -117,27 +117,51 @@ function demoEdgeProblems(source) {
   }
   if (!/Pin this: /.test(push.text)) found.push('push job summary lacks "Pin this:"');
 
-  if (!pull) return [...found, 'there is no anonymous-pull job'];
+  // The package is private by ruling, so this job reads it back with the run's
+  // own token. It must hold exactly the read grant, log in with that token and
+  // nothing else, and pull the very digest the push job read and attest signed.
+  if (!pull) return [...found, 'there is no registry-pull job'];
+  if (jobs['anonymous-pull']) found.push('an anonymous-pull job is back');
   if (!/^ {4}needs: \[push, attest\]$/m.test(pull.text)) {
-    found.push('anonymous-pull does not wait on push and attest');
+    found.push('registry-pull does not wait on push and attest');
   }
   if (normalise(pull.condition) !== GUARD) {
-    found.push('anonymous-pull has no job-level guard that is exactly the main-only expression');
+    found.push('registry-pull has no job-level guard that is exactly the main-only expression');
   }
-  if (!/^ {4}permissions:\n {6}contents: read\n(?! {6}\S)/m.test(pull.text)) {
-    found.push('anonymous-pull permissions are not exactly contents: read');
+  if (!/^ {4}permissions:\n {6}contents: read\n {6}packages: read\n(?! {6}\S)/m.test(pull.text)) {
+    found.push('registry-pull permissions are not exactly contents: read and packages: read');
   }
-  if (/login|secrets\.|GITHUB_TOKEN|docker\/login-action/i.test(pull.text)) {
-    found.push('anonymous-pull logs in or reads a credential');
+  const logins = [...pull.text.matchAll(/uses: docker\/login-action@[0-9a-f]{40}\b/g)];
+  if (
+    logins.length !== 1 ||
+    !/registry: ghcr\.io\n\s+username: \$\{\{ github\.actor \}\}\n\s+password: \$\{\{ secrets\.GITHUB_TOKEN \}\}/.test(
+      pull.text
+    )
+  ) {
+    found.push('registry-pull does not log in to ghcr.io with the run token');
+  }
+  if (/secrets\.(?!GITHUB_TOKEN\b)/.test(pull.text)) {
+    found.push('registry-pull reads a secret other than the run token');
+  }
+  const loginAt = pull.text.indexOf('docker/login-action');
+  const pullAt = pull.text.indexOf('docker pull');
+  if (loginAt < 0 || pullAt < 0 || loginAt > pullAt) {
+    found.push('registry-pull pulls before it logs in');
   }
   if (!/docker pull --platform linux\/amd64 "\$PINNED_IMAGE"/.test(pull.text)) {
-    found.push('anonymous-pull does not pull the pinned digest for linux/amd64');
+    found.push('registry-pull does not pull the pinned digest for linux/amd64');
   }
   if (!/needs\.push\.outputs\.image/.test(pull.text)) {
-    found.push('anonymous-pull does not take the digest from the push job');
+    found.push('registry-pull does not take the digest from the push job');
+  }
+  if (!/grep -Fxq "\$PINNED_IMAGE"/.test(pull.text)) {
+    found.push('registry-pull does not check the pulled repo digest is the pushed one');
+  }
+  if (!/if ! docker pull [^\n]*; then\n[^\n]*\n\s+exit 1\n/.test(pull.text)) {
+    found.push('registry-pull does not fail when the pull is refused');
   }
   if (!/node scripts\/demo-edge-pins\.mjs "\$PINNED_IMAGE"/.test(pull.text)) {
-    found.push('anonymous-pull does not hold the pulled binary to the Dockerfile pins');
+    found.push('registry-pull does not hold the pulled binary to the Dockerfile pins');
   }
   return found;
 }
@@ -152,7 +176,7 @@ test('the real Dockerfile pins agree with what the built binary reported', () =>
   assert.deepEqual(compareReports(readPins(DOCKERFILE), OBSERVED), []);
 });
 
-test('the real publish workflow is gated, scoped, digest-verified, signed and checked anonymously', () => {
+test('the real publish workflow is gated, scoped, digest-verified, signed and read back with the run token', () => {
   assert.deepEqual(demoEdgeProblems(WORKFLOW), []);
 });
 
@@ -252,9 +276,11 @@ test('the binary check reports each way the built image can differ from the pins
 });
 
 test('the workflow checker reports each way the publish workflow can go wrong', () => {
-  const [beforePull, pullJob] = WORKFLOW.split('\n  anonymous-pull:\n');
-  const inPull = (from, to) => `${beforePull}\n  anonymous-pull:\n${swap(pullJob, from, to)}`;
-  const inPush = (from, to) => `${swap(beforePull, from, to)}\n  anonymous-pull:\n${pullJob}`;
+  const [beforePull, pullJob] = WORKFLOW.split('\n  registry-pull:\n');
+  const inPull = (from, to) => `${beforePull}\n  registry-pull:\n${swap(pullJob, from, to)}`;
+  const inPush = (from, to) => `${swap(beforePull, from, to)}\n  registry-pull:\n${pullJob}`;
+  const loginStep =
+    '      - name: Log in to GHCR\n        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0\n        with:\n          registry: ghcr.io\n          username: ${{ github.actor }}\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n';
   const widened = "(github.event_name != 'x')";
   const guardTail = "(github.event_name == 'workflow_dispatch' || github.event_name == 'push')";
   const cases = [
@@ -352,28 +378,57 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
       swap(WORKFLOW, 'echo "image-id=$(docker image inspect', 'echo "id=$(docker image inspect'),
       'save the proven image',
     ],
-    // The anonymous pull.
-    [`${beforePull}\n`, 'no anonymous-pull job'],
+    // The registry pull, with the run token, of a private package.
+    [`${beforePull}\n`, 'no registry-pull job'],
+    [
+      `${beforePull}\n  anonymous-pull:\n${pullJob}\n  registry-pull:\n${pullJob}`,
+      'an anonymous-pull job is back',
+    ],
     [inPull('    needs: [push, attest]\n', ''), 'does not wait on push and attest'],
     [inPull(guardTail, widened), 'exactly the main-only'],
     [
-      inPull('      contents: read\n', '      contents: read\n      packages: write\n'),
+      inPull('      packages: read\n', '      packages: read\n      packages: write\n'),
       'only push and attest may',
     ],
+    [inPull('      packages: read\n', ''), 'permissions are not exactly'],
     [
-      inPull('      contents: read\n', '      contents: read\n      packages: read\n'),
-      'permissions are not exactly',
+      inPull('      packages: read\n', '      packages: read\n      id-token: write\n'),
+      'only push and attest may',
+    ],
+    [inPull(loginStep, ''), 'does not log in to ghcr.io with the run token'],
+    [
+      inPull('password: ${{ secrets.GITHUB_TOKEN }}', 'password: ${{ secrets.OTHER_TOKEN }}'),
+      'does not log in to ghcr.io with the run token',
+    ],
+    [
+      inPull(loginStep, `${loginStep}${loginStep}`),
+      'does not log in to ghcr.io with the run token',
     ],
     [
       inPull(
-        '      - name: Pull the digest anonymously\n',
-        '      - name: Log in\n        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6\n        with:\n          registry: ghcr.io\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n      - name: Pull the digest anonymously\n'
+        '    env:\n      PINNED_IMAGE:',
+        '    env:\n      EXTRA: ${{ secrets.OTHER_TOKEN }}\n      PINNED_IMAGE:'
       ),
-      'logs in',
+      'reads a secret other than the run token',
+    ],
+    [
+      inPull(loginStep, '').replace(
+        '      - name: Hold the pulled binary',
+        `${loginStep}      - name: Hold the pulled binary`
+      ),
+      'pulls before it logs in',
     ],
     [
       inPull('docker pull --platform linux/amd64 "$PINNED_IMAGE"', 'docker pull "$PINNED_IMAGE"'),
       'does not pull the pinned digest',
+    ],
+    [inPull('grep -Fxq "$PINNED_IMAGE"', 'true'), 'repo digest is the pushed one'],
+    [
+      inPull(
+        'the pushed digest cannot be read back from the registry with this run\'s token."\n            exit 1',
+        'the pushed digest cannot be read back from the registry with this run\'s token."'
+      ),
+      'does not fail when the pull is refused',
     ],
     [
       inPull('${{ needs.push.outputs.image }}', 'ghcr.io/branchleft/demo-edge:latest'),
