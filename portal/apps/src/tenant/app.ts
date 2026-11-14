@@ -11,7 +11,10 @@ import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { renderSupportAccess } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
+import { createDemoRoutes } from './demoScreen.js';
 import { moderationBody, saveModeration } from './moderationSettings.js';
+import { createPromotionRoutes } from './promotionRoutes.js';
+import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
@@ -38,6 +41,11 @@ export interface TenantPortalOptions {
   readonly trustedProxies?: BlockList;
   /** Absent, there is no support page, no support action and no navigation entry. */
   readonly support?: SupportSettings;
+  /**
+   * How to reach the provisioning API. Absent, no screen that calls it is
+   * served: no page, no action and no navigation entry.
+   */
+  readonly provisioning?: ProvisioningSettings;
 }
 
 /**
@@ -64,6 +72,10 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
+  const demo = createDemoRoutes(options.provisioning);
+  const promotion = createPromotionRoutes(options.provisioning, options.support, options.db, () =>
+    Math.floor(now().getTime() / 1000)
+  );
   return createShell<TenantScope>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -79,7 +91,9 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
       { label: 'NAV_SITE_ACCESS', href: '/site-access' },
+      ...demo.nav,
       ...support.nav,
+      ...promotion.nav,
     ],
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
@@ -101,6 +115,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
     },
     pages: {
       ...support.pages,
+      ...demo.pages,
+      ...promotion.pages,
       '/moderation': async (scope) =>
         (await moderationBody(
           scope,
@@ -134,6 +150,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
     },
     actions: {
       ...support.actions,
+      ...promotion.actions,
       '/moderation/save': async (scope, identity, form) => {
         await saveModeration({
           scope,
