@@ -1,10 +1,12 @@
 name: Speckify
 
-# The broker's signed host API is described once, in services/broker/openapi.yaml.
-# On a pull request this works out the version that spec would publish as and
-# posts it as a comment. On a merge to main it publishes the TypeScript client and
-# server package generated from the spec to GitHub Packages, from this job and
-# this workflow file, with the run's own GITHUB_TOKEN and nothing else.
+# Each contract is described once, in its own spec: the broker's signed host API
+# in services/broker/openapi.yaml, the provisioning API in
+# services/provisioning-controller/openapi.yaml. On a pull request this works
+# out the version each spec would publish as and posts it as a comment. On a
+# merge to main it publishes the TypeScript client and server package generated
+# from each spec to GitHub Packages, from this job and this workflow file, with
+# the run's own GITHUB_TOKEN and nothing else.
 #
 # Speckify is checked out at the commit its v0.1.0 tag points at, built from its
 # lockfile, and run directly. Its composite action is not used: called as
@@ -19,7 +21,9 @@ on:
       - speckify.yaml
       - services/broker/openapi.yaml
       - services/broker/src/generated/**
-      - scripts/assert-broker-contract-generated.py
+      - services/provisioning-controller/openapi.yaml
+      - services/provisioning-controller/src/generated/**
+      - scripts/assert-contracts-generated.py
       - .github/workflows/speckify.yml
   push:
     branches: [main]
@@ -27,7 +31,9 @@ on:
       - speckify.yaml
       - services/broker/openapi.yaml
       - services/broker/src/generated/**
-      - scripts/assert-broker-contract-generated.py
+      - services/provisioning-controller/openapi.yaml
+      - services/provisioning-controller/src/generated/**
+      - scripts/assert-contracts-generated.py
       - .github/workflows/speckify.yml
   # Re-runs the publish for the current main, e.g. after a registry outage.
   # Publishing is idempotent: a version the registry already holds is skipped.
@@ -88,7 +94,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: The committed generated sources are what Speckify generates
-        run: python3 scripts/assert-broker-contract-generated.py .speckify/out/broker-api/typescript/src
+        run: python3 scripts/assert-contracts-generated.py .speckify/out
 
   publish:
     name: Publish the generated packages
@@ -150,13 +156,19 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: The committed generated sources are what Speckify generates
-        run: python3 scripts/assert-broker-contract-generated.py .speckify/out/broker-api/typescript/src
+        run: python3 scripts/assert-contracts-generated.py .speckify/out
 
       - name: Speckify plan
         run: node .speckify-tool/dist/cli.js plan --json --config speckify.yaml
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # Only the broker's package is packed and published below. The provisioning
+      # API is built and drift-checked above like the broker's, but nothing
+      # consumes it from the registry yet: the portal links its generated
+      # sources from this repository, and the real service it describes does not
+      # exist. Publishing it is its own change, made when something installs it.
+      #
       # This last step is a workaround, not the design. Speckify 0.1.0 writes a
       # package.json with no `repository` and no `publishConfig`, and a package
       # GitHub Packages cannot link to this repository can be refused a publish

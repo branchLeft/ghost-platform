@@ -2,17 +2,21 @@ name: Provisioning controller CI
 
 # Type-checks and tests the tenant provisioning controller's core
 # (services/provisioning-controller/): the ordered plan, the approval gate
-# and the idempotent executor, with the coverage floor enforced in
-# vitest.config.ts. Formatting and ESLint are not run here: the repo-tooling
+# and the idempotent executor, and the provisioning API contract's in-memory
+# mock (mock/) with the spec-agreement test (contract/), with the coverage floor
+# enforced in vitest.config.ts. Formatting and ESLint are not run here: the repo-tooling
 # workflow runs the root `format:check` and `lint:check` over the whole tree
 # on every pull request.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/provisioning-controller/**'
+      - '.github/workflows/provisioning-controller-ci.yml'
   # A pull request starts this only when its diff touches something the job
-  # reads: the package or this workflow. Push to main stays unfiltered as the
-  # backstop.
+  # reads: the package or this workflow. A push to main starts it on the same
+  # paths.
   pull_request:
     branches: [main]
     paths:
@@ -69,3 +73,11 @@ jobs:
 
       - name: Test with coverage
         run: pnpm run coverage
+
+      - name: Build
+        run: pnpm run build
+
+      # The mock is started the way the package README says, on the built
+      # output, and answers each of the contract's five operations over HTTP.
+      - name: The built mock answers every operation
+        run: python3 mock/smoke.py

@@ -7,10 +7,13 @@
 # container gets its own port, hostname, sign-in client and database login.
 #
 # The build context is the repository root, because the applications depend on
-# three sibling packages by `link:` path (portal/data, services/identity and
-# services/request-guard) and pnpm links them rather than copying. The final
-# layout therefore keeps all four at their repository paths, built, with
-# development dependencies pruned.
+# four sibling packages by `link:` path (portal/data, services/identity,
+# services/request-guard and services/provisioning-controller) and pnpm links
+# them rather than copying. The final layout therefore keeps all five at their
+# repository paths, built, with development dependencies pruned. From the
+# provisioning controller the portal takes only its generated provisioning-API
+# client (`ghost-platform-provisioning-controller/provisioning-api`); the
+# in-memory mock beside it is not part of the image (Dockerfile.dockerignore).
 #
 # Alpine (musl), not Debian: the image scan of 2026-11-10 (grype 0.115.0) found
 # the Debian base carried 53 blocking findings with no published fix, and the
@@ -30,6 +33,7 @@ WORKDIR /app
 COPY portal/data/ portal/data/
 COPY services/identity/ services/identity/
 COPY services/request-guard/ services/request-guard/
+COPY services/provisioning-controller/ services/provisioning-controller/
 COPY portal/apps/ portal/apps/
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
@@ -48,10 +52,10 @@ RUN --mount=type=secret,id=node_auth_token \
     sh -eu -c 'npm install --global pnpm@11.28.11; \
       printf "//npm.pkg.github.com/:_authToken=%s\n" "$(cat /run/secrets/node_auth_token)" > /tmp/npmrc; \
       export NPM_CONFIG_USERCONFIG=/tmp/npmrc; \
-      for dir in portal/data services/identity services/request-guard portal/apps; do \
+      for dir in portal/data services/identity services/request-guard services/provisioning-controller portal/apps; do \
         (cd "$dir" && pnpm install --frozen-lockfile && pnpm run build); \
       done; \
-      for dir in portal/apps portal/data services/identity services/request-guard; do \
+      for dir in portal/apps portal/data services/identity services/request-guard services/provisioning-controller; do \
         (cd "$dir" && pnpm prune --prod); \
       done; \
       rm -f /tmp/npmrc; \

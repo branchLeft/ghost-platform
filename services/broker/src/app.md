@@ -27,14 +27,14 @@ so the client has to compile into it with relative imports; and a build-time
 inside every test run. The header is there because the broker's compiler
 options (unused locals, no DOM library) are stricter than the package's own.
 
-`scripts/assert-broker-contract-generated.py` is the guard that the committed
+`scripts/assert-contracts-generated.py` is the guard that the committed
 tree is exactly what Speckify generates: `speckify.yml` runs it on every pull
 request and again before a publish. To regenerate after editing the spec:
 
 ```sh
 speckify build
-python3 scripts/assert-broker-contract-generated.py --write \
-  .speckify/out/broker-api/typescript/src
+python3 scripts/assert-contracts-generated.py --write --contract broker-api \
+  .speckify/out
 ```
 
 `createBrokerHandler` is a thin front door around the listener the generated

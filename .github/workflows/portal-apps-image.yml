@@ -30,6 +30,7 @@ on:
       - portal/**
       - services/identity/**
       - services/request-guard/**
+      - services/provisioning-controller/**
       - .github/workflows/portal-apps-image.yml
   pull_request:
     branches: [main]
@@ -37,6 +38,7 @@ on:
       - portal/**
       - services/identity/**
       - services/request-guard/**
+      - services/provisioning-controller/**
       - .github/workflows/portal-apps-image.yml
   workflow_dispatch:
 
@@ -90,6 +92,14 @@ jobs:
             output="$(docker run --rm portal-apps:ci node "dist/$entry/main.js" 2>&1 || true)"
             printf '%s\n' "$output" | grep -q 'ConfigError' || { echo "::error::$entry entry point did not reach its configuration check: $output"; exit 1; }
           done
+
+      # The screens import the provisioning-API client from the built
+      # controller package, by its package name, from the portal's own directory.
+      # A missing built file or export fails here, at import, rather than later.
+      - name: The provisioning API client loads from the image
+        run: |
+          docker run --rm portal-apps:ci node --input-type=module \
+            --eval "const api = await import('ghost-platform-provisioning-controller/provisioning-api'); for (const name of ['getDemo', 'createPromotionRequest', 'getTenant', 'listPromotionRequests', 'approvePromotionRequest']) { if (typeof api[name] !== 'function') { console.error('missing ' + name); process.exit(1); } }"
 
   push:
     name: Build and push portal-apps image

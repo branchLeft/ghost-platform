@@ -160,7 +160,7 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
     ("scripts/mollie-test-charge.py", True, "protected environment"),
     ("scripts/test_mollie_test_charge.py", True, "protected environment"),
     ("scripts/assert-lockfile-package-dir.py", True, "gates a lockfile write"),
-    ("scripts/assert-broker-contract-generated.py", True, "speckify.yml writes"),
+    ("scripts/assert-contracts-generated.py", True, "speckify.yml writes"),
     ("services/broker/release/check_release_tag.py", True, "broker-release.yml release"),
     ("services/broker/release/pack-release.sh", True, "broker-release.yml build feeds release"),
     ("services/broker/esbuild.bundle.mjs", True, "bundle step of the job that feeds release"),

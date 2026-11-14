@@ -16,10 +16,19 @@ name: Broker CI
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/broker/**'
+      - 'render-core/**'
+      - 'registers/**'
+      - 'demo-host/provision/**'
+      # signedRequestScheme.test.ts scans the verdict host for a restated copy
+      # of the signed-request scheme.
+      - 'adapters/scanning-storage/verdict-host/**'
+      - '.github/workflows/broker-ci.yml'
   # A pull request starts this only when its diff touches something the job
   # reads: the service, render-core (linked by `link:` and built first) and the
-  # demo-host golden files and wrapper the unit tests compare against. Push to
-  # main stays unfiltered as the backstop.
+  # demo-host golden files and wrapper the unit tests compare against. A push to
+  # main starts it on the same paths.
   pull_request:
     branches: [main]
     paths:
