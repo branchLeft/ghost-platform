@@ -206,10 +206,11 @@ an upgrade.
 
 ## Breaking changes in 1.0.0
 
-The 0.x component targeted GCP: a per-tenant service account, a Cloud SQL
-database and DB user, a GCS media prefix with IAM-condition write isolation,
-Secret Manager secrets and a scale-to-zero Cloud Run service. None of that
-exists here. Every input and every output changed, `@pulumi/gcp` and
+The 0.x component targeted a hyperscaler platform that has since been retired:
+a per-tenant service account, a managed SQL database and DB user, an
+object-store media prefix with IAM-condition write isolation, managed secrets
+and a scale-to-zero container service. None of that exists here. Every input
+and every output changed, that platform's Pulumi provider package and
 `@pulumi/random` are no longer dependencies, and a 0.x caller does not compile
 against 1.0.0. There is no migration path in code: a tenant moves by being
 rebuilt on the new platform, which is the migration the programme is running
