@@ -507,13 +507,13 @@
     "change": "changed",
     "path": "secrets.comment.1",
     "before": "# Written by an operator; no automated path may rewrite this file.",
-    "after": "# Root-owned, mode 0600. Written by app/provision/render_tenant_secrets.py on the host;",
+    "after": "# Root-owned, mode 0600. Written by an operator; no automated path may",
     "decision": "single-renderer"
   },
   {
     "change": "added",
     "path": "secrets.comment.2",
-    "after": "# no other path may rewrite this file. render() names the keys this tenant needs below \u2014",
+    "after": "# rewrite this file. render() names the keys this tenant needs below \u2014",
     "decision": "single-renderer"
   },
   {
