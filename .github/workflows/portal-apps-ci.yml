@@ -20,10 +20,13 @@ on:
       - 'services/identity/**'
       - 'services/request-guard/**'
       - 'services/provisioning-controller/**'
+      - 'adapters/scanning-storage/src/production-verdict-client.js'
+      - 'adapters/scanning-storage/test/helpers/fake-verdict-transport.mjs'
       - '.github/workflows/portal-apps-ci.yml'
   # Same set as the push filter above: the applications, the data layer they
-  # build first (both under portal/), the identity verifier, the request guard
-  # and the provisioning controller.
+  # build first (both under portal/), the identity verifier, the request guard,
+  # the provisioning controller and the two scanning-storage files the
+  # applications' test rig loads.
   pull_request:
     branches: [main]
     paths:
@@ -31,6 +34,8 @@ on:
       - 'services/identity/**'
       - 'services/request-guard/**'
       - 'services/provisioning-controller/**'
+      - 'adapters/scanning-storage/src/production-verdict-client.js'
+      - 'adapters/scanning-storage/test/helpers/fake-verdict-transport.mjs'
       - '.github/workflows/portal-apps-ci.yml'
 
 # `packages: read` because these packages take a dev dependency on
