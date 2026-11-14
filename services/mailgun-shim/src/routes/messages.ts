@@ -98,11 +98,14 @@ export function createMessagesRouter(store: ShimStore, wake: DrainWake, log: Log
       // What is queued is the value the gate bound, not the raw string: the
       // collector re-parses `from` with its own copy of the parser.
       // See senderAuthorization.md#boundsender.
-      const boundFrom = boundSender(fields.from, senderDomain);
+      const boundFrom = boundSender(fields.from, senderDomain, undefined, tenant.senderLocalPart);
       if (boundFrom === null) {
-        res
-          .status(400)
-          .json({ message: `'from' address must belong to the domain ${senderDomain}` });
+        res.status(400).json({
+          message:
+            tenant.senderLocalPart === null
+              ? `'from' address must belong to the domain ${senderDomain}`
+              : `'from' address must be ${tenant.senderLocalPart}@${senderDomain}`,
+        });
         return;
       }
       // Reply-To names where replies go, not the sender, so it is not checked;

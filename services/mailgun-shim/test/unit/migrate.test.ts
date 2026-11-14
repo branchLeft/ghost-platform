@@ -118,6 +118,41 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
       expect(tables).not.toContain('events');
     });
   });
+
+  it('a database one release behind gains sender_local_part NULL on every row, and the one-address index', () => {
+    // The previous release's file: a ledger through the sender-domain migration,
+    // no sender_local_part column, and a tenant row already in it.
+    createSqliteStore(dbPath).close();
+    withFixture(dbPath, ({ client }) => {
+      client.exec(
+        'DROP INDEX idx_tenants_sender_address; ALTER TABLE tenants DROP COLUMN sender_local_part;'
+      );
+      client
+        .prepare(
+          'INSERT INTO tenants (domain, api_key_salt, api_key_hash, sender_domain) VALUES (?, ?, ?, ?)'
+        )
+        .run(DOMAIN, 'salt', 'hash', 'sender.example.com');
+      client.prepare('DELETE FROM __drizzle_migrations WHERE hash = ?').run(MIGRATIONS[3]!.hash);
+    });
+    expect(columnNames(dbPath, 'tenants')).not.toContain('sender_local_part');
+
+    const store = createSqliteStore(dbPath);
+    try {
+      expect(store.listTenants()).toEqual([
+        { domain: DOMAIN, senderDomain: 'sender.example.com', senderLocalPart: null },
+      ]);
+    } finally {
+      store.close();
+    }
+
+    expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
+    withFixture(dbPath, ({ client }) => {
+      const indexes = (
+        client.pragma('index_list(tenants)') as Array<{ name: string; unique: number }>
+      ).filter((index) => index.name === 'idx_tenants_sender_address');
+      expect(indexes).toEqual([expect.objectContaining({ unique: 1 })]);
+    });
+  });
 });
 
 describe('failureReason', () => {

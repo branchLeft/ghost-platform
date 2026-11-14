@@ -51,9 +51,10 @@ render-core renders a demo slot's spool credential as
 `slot-<uid>.<demoMailDomain>` (render-core/src/mail.md#credential-domain),
 while every slot sends from the one `<demoMailDomain>`. The shim already holds
 the two apart: `tenants.domain` is the credential domain both front doors
-authenticate against, and `tenants.sender_domain` is what From is bound to. So
-the proof needs no shim change, only one row per slot with one shared
-`--sender-domain`.
+authenticate against, and `tenants.sender_domain` is what From is bound to, with
+`tenants.sender_local_part` binding it to the one slot's address. So the
+isolation proof is one row per slot, one shared `--sender-domain`, and one
+`--sender-local-part` each.
 
 The CONTROL case registers a single shared row for a demo host and
 shows slot B's send is accepted with the key slot A holds, on the Mailgun route
@@ -64,6 +65,21 @@ an EAUTH refusal on SMTP AUTH, queues nothing, and that each slot's own key
 still sends. The rotation case replaces slot A's row and shows B's key is
 untouched.
 
-Not proven here, and not claimed: that a slot's From local part is bound to the
-slot. The shim binds From to the sender domain only; that needs a schema change
-and is filed separately. All keys are test values.
+The `From local part is bound to the slot` cases then register one row per
+slot with its own local part and show that a slot's own credential cannot send
+as another slot's address: on the Mailgun route (400, nothing queued), at SMTP
+MAIL FROM (553), and in the SMTP header From when the envelope sender is the
+slot's own (550). A longer, prefixed or dotted variant of the slot's address is
+refused, a case variant of its own address is accepted, and each slot's own
+address sends on both front doors.
+
+The `two slots cannot hold one key` case shows registration refusing slot B's row
+for a key slot A holds (`TenantRegistrationRefused`), so slot A's key never
+authenticates against B's credential domain on either front door. The other
+refusals (an overlapping sender address, legacy rows, the CLI messages) are
+proven against the store in `test/unit/storeSenderBinding.test.ts` and
+`test/unit/cli.test.ts`.
+
+The CONTROL case above registers the one shared row directly because it
+reproduces the layout the per-slot rows replace. Two unbound rows on one sender
+domain can no longer be registered. All keys are test values.

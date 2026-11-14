@@ -134,6 +134,31 @@ Which form each route sees:
 Domains that hold `=` or `?` and are not encoded words are refused by the
 hostname rule below; a pinned row keeps that so.
 
+## The local part binding
+
+A credential may be bound to one From local part (`Tenant.senderLocalPart`,
+store.md#sender-local-part). `senderBelongsToTenant` takes it as an optional
+third argument and `boundSender` as an optional fourth, after the header as
+written. `null` or omitted is the unbound case: any local part at the sender
+domain, as before the binding existed.
+
+When it is set, every mailbox must name exactly that local part, compared
+lower-cased and as a whole: `demo-1` admits `demo-1@d` and `DEMO-1@d`, and
+refuses `demo-10`, `demo-1.x`, `demo-1+tag`, `xdemo-1` and every other slot's
+address. The local part compared is the one the parser read, which is the one
+`boundSender` queues, so the gate and the queue cannot name different mailboxes.
+A display name that spells another address (`"demo-1@d" <demo-2@d>`) is read by
+its address, so it is refused; a multi-address From needs every address to be
+the bound one.
+
+Why. Slots on one demo host share a sender domain and are told apart only by
+credential. Binding the domain alone let any slot's credential send as another
+slot's address, or as the platform's, at that domain; the reply path and the
+reputation of a shared domain then belong to whichever slot sent last. The
+binding is applied at the same three points the domain is: the HTTP `from`, the
+SMTP envelope MAIL FROM and the SMTP header From (which falls back to the
+envelope sender when the message has no header From).
+
 ## Domains are compared as hostnames
 
 A domain is compared as a hostname. After trailing dots are stripped,

@@ -25,6 +25,22 @@ export function hashApiKey(apiKey: string): HashedApiKey {
 }
 
 /**
+ * Synchronous check of a key against a stored record, for the one caller that
+ * is not on a request path: registration, which has to know whether a key is
+ * already bound to another credential. A corrupted record is "no match", like
+ * `verifyApiKey`. See crypto.md#keymatchessync.
+ */
+export function keyMatchesSync(apiKey: string, stored: HashedApiKey): boolean {
+  try {
+    const candidate = scryptSync(apiKey, stored.salt, KEY_LENGTH);
+    const expected = Buffer.from(stored.hash, 'hex');
+    return candidate.length === expected.length && timingSafeEqual(candidate, expected);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Async scrypt (libuv threadpool, not the event loop) — every caller is on
  * a request path (SMTP AUTH, the HTTP Basic-auth route) this service must
  * keep answering while a check is running. scryptSync here would serialise

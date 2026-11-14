@@ -246,6 +246,27 @@ export function rawFromHeaderValue(
   return values.length > 0 ? values.join(', ') : undefined;
 }
 
+/**
+ * The local part of an address, as the gate read it. Callers pass an address
+ * that already has a domain, so the last `@` splits it.
+ */
+function localPartOf(address: string): string {
+  return address.slice(0, address.lastIndexOf('@'));
+}
+
+/**
+ * True when the credential is bound to a local part and the address names a
+ * different one. Compared lower-cased, never as a prefix or suffix, so a slot
+ * cannot send as another slot's address by differing in case or by extension.
+ * `null` (an unbound credential) never differs. See
+ * senderAuthorization.md#the-local-part-binding.
+ */
+function localPartDiffers(address: string, boundLocalPart: string | null): boolean {
+  return (
+    boundLocalPart !== null && localPartOf(address).toLowerCase() !== boundLocalPart.toLowerCase()
+  );
+}
+
 function extractAddresses(headerValue: string | null | undefined): string[] | null {
   const mailboxes = extractMailboxes(headerValue);
   return mailboxes ? mailboxes.map((mailbox) => mailbox.address) : null;
@@ -258,7 +279,8 @@ function extractAddresses(headerValue: string | null | undefined): string[] | nu
  */
 export function senderBelongsToTenant(
   headerValue: string | null | undefined,
-  tenantDomain: string
+  tenantDomain: string,
+  boundLocalPart: string | null = null
 ): boolean {
   if (typeof headerValue === 'string' && refusesEncodedWord(headerValue)) {
     return false;
@@ -271,7 +293,11 @@ export function senderBelongsToTenant(
   if (!normalizedTenantDomain) {
     return false;
   }
-  return addresses.every((address) => extractDomain(address) === normalizedTenantDomain);
+  return addresses.every(
+    (address) =>
+      extractDomain(address) === normalizedTenantDomain &&
+      !localPartDiffers(address, boundLocalPart)
+  );
 }
 
 /** A display name with any control character folded to a space and a trailing backslash or whitespace dropped, so it sits inside one quoted string. */
@@ -324,7 +350,8 @@ function serialiseMailboxes(mailboxes: Mailbox[]): string {
 export function boundSender(
   headerValue: string | null | undefined,
   tenantDomain: string,
-  rawHeaderValue?: string
+  rawHeaderValue?: string,
+  boundLocalPart: string | null = null
 ): string | null {
   if (typeof headerValue === 'string' && refusesEncodedWord(headerValue)) {
     return null;
@@ -340,7 +367,13 @@ export function boundSender(
   if (!normalizedTenantDomain) {
     return null;
   }
-  if (!parsed.every((mailbox) => extractDomain(mailbox.address) === normalizedTenantDomain)) {
+  if (
+    !parsed.every(
+      (mailbox) =>
+        extractDomain(mailbox.address) === normalizedTenantDomain &&
+        !localPartDiffers(mailbox.address, boundLocalPart)
+    )
+  ) {
     return null;
   }
   // The local part is compared and queued as the parser read it, but the domain

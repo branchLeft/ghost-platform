@@ -31,7 +31,7 @@ domain, so this change leaves a tenant's rendered output unchanged.
 - **The sending domain does not move.** `mail__from`, `members_support_address`
   and DKIM stay `<localPart>@<demoMailDomain>` (a local part per demo, not a
   subdomain per demo). Only the credential identity moves.
-- **No shim change.** The shim keys a credential on `tenants.domain` and holds
+- **One shim row per slot.** The shim keys a credential on `tenants.domain` and holds
   the sending domain apart in `tenants.sender_domain`. One row per slot, every
   row with `--sender-domain <demoMailDomain>`, maps each slot credential back to
   the shared sender domain.
@@ -42,14 +42,20 @@ domain, so this change leaves a tenant's rendered output unchanged.
 - **Cost.** None. A naming change and one extra row per slot in the existing
   spool.
 
-**Not decided here.** Binding the From local part to the slot needs a shim
-schema change. Key rotation on recycle (`register --rotate`) is operator and
-broker discipline, not rendered. The per-credential ceiling and the lease purge
-are shim work that consumes this key.
+**The shim binds the From local part and refuses a shared key.** Register each
+slot's row with `--sender-local-part <localPart>` (the descriptor's
+`mail.identity.localPart`): the shim then refuses a send from that credential as
+any other address at `<demoMailDomain>` (the shim's `0003_sender_local_part`
+migration; see its `src/store.md#sender-local-part`), and registration refuses a key already bound to another credential and a second
+row for an address another row holds.
+
+**Not decided here.** Key rotation on recycle (`register --rotate`) is operator
+and broker discipline, not rendered. The per-credential ceiling and the lease
+purge are shim work that consumes this key.
 
 **Rollout order.** Register each `slot-<uid>.<demoMailDomain>` row with
-`--sender-domain <demoMailDomain>` and write its key to that slot's
-`/etc/branchleft/<slug>.env` as `GHOST_BULK_EMAIL_API_KEY` before deploying a
+`--sender-domain <demoMailDomain> --sender-local-part <localPart>` and write its
+key to that slot's `/etc/branchleft/<slug>.env` as `GHOST_BULK_EMAIL_API_KEY` before deploying a
 build that carries this change. A slot rendered with the new username before
 its row exists gets 401 on every send.
 
