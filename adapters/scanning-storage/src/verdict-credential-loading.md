@@ -39,8 +39,11 @@ built in a separate repo and owns the names; this note follows it.
    that holds a colon and a control character in either half.
 5. The pair is held in the transport's memory and sent only as the
    authentication the vendor requires: HTTP Basic, the header value `Basic `
-   followed by the base64 of `username:password`. Each half is trimmed of its
-   surrounding whitespace before use.
+   followed by the base64 of `username:password`. The two halves are not
+   trimmed alike. The username is trimmed of all its surrounding whitespace.
+   The password has only one trailing line ending stripped (`\n` or `\r\n`);
+   a leading or trailing space in it is part of the password and is sent as
+   written.
 6. A refused credential is a boot-time error on the service's own log, with
    a stable token an alert can match. It is not retried in a loop.
 
