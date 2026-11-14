@@ -17,6 +17,7 @@ const CODES: RefusalCode[] = [
   'upstream-timeout',
   'upstream-unavailable',
   'upstream-throttled',
+  'tenant-upload-limit',
   'body-too-large',
   'body-incomplete',
 ];
@@ -46,6 +47,11 @@ describe('refusal', () => {
     expect(refusalBody(refusal('rate-limited'))).toContain('<Code>SlowDown</Code>');
     expect(refusal('writes-disabled').status).toBe(503);
     expect(refusalBody(refusal('writes-disabled'))).toContain('<Code>ServiceUnavailable</Code>');
+  });
+
+  it('answers a tenant at its upload cap with the SlowDown code the SDK retries', () => {
+    expect(refusal('tenant-upload-limit').status).toBe(503);
+    expect(refusalBody(refusal('tenant-upload-limit'))).toContain('<Code>SlowDown</Code>');
   });
 
   it('answers a body over the ceiling with 413 and one cut short with 400, in S3 terms', () => {

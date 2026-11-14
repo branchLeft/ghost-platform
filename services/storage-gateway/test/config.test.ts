@@ -47,15 +47,35 @@ describe('loadConfig', () => {
     expect(config.keepAliveTimeoutMs).toBe(5000);
     expect(config.maxConnections).toBe(512);
     expect(config.maxConcurrentUploads).toBe(32);
+    expect(config.maxConcurrentUploadsPerTenant).toBe(8);
     for (const [name, low, high] of [
       [ENV.headersTimeoutMs, '999', '120001'],
       [ENV.keepAliveTimeoutMs, '999', '120001'],
       [ENV.maxConnections, '0', '100001'],
       [ENV.maxConcurrentUploads, '0', '10001'],
+      [ENV.maxConcurrentUploadsPerTenant, '0', '10001'],
     ] as const) {
       expect(() => loadConfig({ ...GOOD, [name]: low })).toThrow(name);
       expect(() => loadConfig({ ...GOOD, [name]: high })).toThrow(name);
     }
+  });
+
+  it('sets a tenant a quarter of the uploads by default, at least one, and never more than the total', () => {
+    const at = (total: string, tenant?: string) =>
+      loadConfig({
+        ...GOOD,
+        [ENV.maxConcurrentUploads]: total,
+        ...(tenant === undefined ? {} : { [ENV.maxConcurrentUploadsPerTenant]: tenant }),
+      }).maxConcurrentUploadsPerTenant;
+    expect(at('32')).toBe(8);
+    expect(at('100')).toBe(25);
+    expect(at('4')).toBe(1);
+    expect(at('1')).toBe(1);
+    expect(at('32', '5')).toBe(5);
+    expect(at('32', '32')).toBe(32);
+    expect(() => at('32', '33')).toThrow(/must not exceed/);
+    expect(() => at('32', '33')).toThrow(ENV.maxConcurrentUploadsPerTenant);
+    expect(() => at('32', 'many')).toThrow(ENV.maxConcurrentUploadsPerTenant);
   });
 
   it('keeps the headers timeout inside the request timeout', () => {

@@ -71,6 +71,8 @@ export type RefusalCode =
   | 'upstream-unavailable'
   /** The storage service kept asking the gateway to slow down until the deadline. Retryable. */
   | 'upstream-throttled'
+  /** The tenant already has its share of uploads in flight. Retryable: the SDK retries a SlowDown. */
+  | 'tenant-upload-limit'
   /** The body is larger than the tenant's upload ceiling. Not retryable as sent. */
   | 'body-too-large'
   /** The body ended short of, ran past, or was cut off before its declared length. */
