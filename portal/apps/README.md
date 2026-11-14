@@ -133,6 +133,57 @@ portal's clock: five tickets an hour (`MAX_TICKETS_PER_WINDOW`,
 forgets the counts. Origin and session checks are the shell's: a foreign origin
 is a 403 and no session is a redirect to sign-in, and neither sends anything.
 
+## Ask for Essentials, and the Professional enquiry
+
+Two pages for a signed-in **demo** tenant (`TenantDb.ownKind` is `DEMO`, read
+fresh from the register row). A tenant of any other kind sees the placeholder
+`NOT_FOR_THIS_TENANT` where the form would be, and a post is refused (`REFUSED`,
+the error name `PromotionError` logged, nothing sent or recorded).
+
+**`/essentials`** is one button and no field. It posts to `/essentials/request`,
+which asks the provisioning API to record one `essentials` promotion request for
+the tenant bound at sign-in, through the generated client
+(`ghost-platform-provisioning-controller/provisioning-api`, `createPromotionRequest`).
+The tenant comes from the `TenantScope` and from nothing the request carries: a
+query, a form field or a header that names another tenant is ignored. The answer
+decides where the tenant lands:
+
+| The API answers | Landing | Placeholder |
+|---|---|---|
+| 201, a pending `essentials` request for this tenant | `/essentials/sent` | `ESSENTIALS_REQUEST_PENDING` |
+| 409 `request-already-open` (the other tier is open) | `/essentials/open-request` | `ANOTHER_REQUEST_ALREADY_OPEN` |
+| 409 `demo-not-promotable`, or 404 | `/essentials/unavailable` | `ESSENTIALS_NOT_AVAILABLE_NOW` |
+| 400, 401, 403, a server error, no answer, or anything the contract does not allow | the shell's 400 `REFUSED` | none; `PromotionError` is logged |
+
+A second submit while the first is pending is the contract's replay (the same
+201, the existing request, nothing new), so it lands on the same pending page and
+creates nothing. The screen holds no state of its own. Without
+`provisioning: { baseUrl, credentialFor }` (the contract's per-tenant credential,
+injected, never in source) the page, the action and the navigation entry
+`NAV_ESSENTIALS` are absent and answer 404. The call waits 5000 ms at most.
+
+**`/professional`** is a contact address and a message. It posts to
+`/professional/send`, which sends one plain-text email through the support mail
+path: the same `SupportMailer`, the same `validateContact` and `validateMessage`
+(so the same refusals, 1000 characters at most) and a `SupportLimiter` of its own
+with the same ceiling (five an hour per tenant, then `/professional/limited`).
+The subject is `PROFESSIONAL_ENQUIRY <tenant id>` and the body is `TENANT_ID` and
+`SCREEN: PROFESSIONAL` lines, the delimiter and the message. The tenant id is
+the session's; no tenant name is asked for or sent. It does not call the
+provisioning API and records nothing: the email is the enquiry, so an open
+Essentials request never blocks it. The contract's `professional-enquiry` tier is
+for the console to count enquiries, which needs the screen to record one: left
+for a later step if the owner wants that count. Without the `support` settings
+the page, the action and `NAV_PROFESSIONAL` are absent (404), as for support.
+
+The code is `src/tenant/promotionRoutes.ts` (assembly), `essentialsRoutes.ts`,
+`professionalRoutes.ts`, `provisioningSettings.ts` (the one place that calls the
+generated client) and `promotionPages.ts`. Tests: `test/tenantEssentials.test.ts`,
+`test/tenantProfessional.test.ts`, `test/provisioningSettings.test.ts` and
+`test/promotionSabotage.test.ts`. They run against the in-memory mock served
+through the generated `createServer` (built from `services/provisioning-controller`,
+imported by tests only), never a hand-rolled fetch.
+
 ## Why two applications
 
 A token issued to one application is refused by the other, by client id, by
@@ -175,8 +226,8 @@ name and the SQLSTATE, never the message.
 Sessions live in this process's memory, so a restart signs everyone out and
 there is one instance per application. Build the data layer and the identity
 verifier first (`pnpm install --frozen-lockfile && pnpm run build` in `portal/data` and
-`services/identity` and `services/request-guard`): this package imports their
-built output.
+`services/identity`, `services/request-guard` and `services/provisioning-controller`): this package
+imports their built output.
 
 ## Limiting sign-in per client
 
