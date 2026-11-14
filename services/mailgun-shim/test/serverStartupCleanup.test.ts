@@ -1,5 +1,4 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -11,6 +10,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { queueBatches } from '../src/schema.js';
 import { createSqliteStore } from '../src/store.js';
+import { withFreePorts } from './helpers/freePorts.js';
 
 /**
  * Proves server.ts starts the cleanup scheduler: a 31-day-old batch is gone
@@ -24,22 +24,6 @@ const serverJsPath = join(projectRoot, 'dist', 'server.js');
 
 const DOMAIN = 'tenant1.example.com';
 const RETENTION_SECONDS = 30 * 24 * 3600;
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const address = srv.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('could not determine a free port'));
-        return;
-      }
-      const { port } = address;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 function payload() {
   return {
@@ -187,9 +171,9 @@ describe('src/server.ts — actually starts the cleanup scheduler (not just impo
     expect(countBatchRows(dbPath, 'old-batch')).toBe(1);
     expect(countBatchRows(dbPath, 'recent-batch')).toBe(1);
 
-    const port = await findFreePort();
-    const smtpPort = await findFreePort();
-    await runServerAndWaitForListening(dbPath, port, smtpPort);
+    await withFreePorts(2, ([port, smtpPort]) =>
+      runServerAndWaitForListening(dbPath, port, smtpPort)
+    );
 
     expect(countBatchRows(dbPath, 'old-batch')).toBe(0); // swept
     expect(countBatchRows(dbPath, 'recent-batch')).toBe(1); // untouched — the control

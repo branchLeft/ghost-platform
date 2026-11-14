@@ -1,11 +1,12 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
-import { connect, createServer } from 'node:net';
+import { connect } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
+import { freePorts, withFreePorts } from './helpers/freePorts.js';
 
 /**
  * Runs the real compiled entrypoint and checks the drain handover is bound to
@@ -19,22 +20,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, '..');
 const serverJsPath = join(projectRoot, 'dist', 'server.js');
 const TOKEN = 'split-listener-startup-proof-token';
-
-function findFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const address = srv.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('could not determine a free port'));
-        return;
-      }
-      const { port } = address;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 interface Running {
   child: ChildProcessByStdio<null, Readable, Readable>;
@@ -125,40 +110,39 @@ async function untilListening(running: Running, events: string[]): Promise<void>
 }
 
 describe('src/server.ts — the drain handover is bound to its own port', () => {
-  it('with SHIM_DRAIN_PORT set, /drain is served on the drain port and 404s on the mail API port', async () => {
-    const port = await findFreePort();
-    const drainPort = await findFreePort();
-    const running = start({
-      PORT: String(port),
-      SHIM_DRAIN_PORT: String(drainPort),
-      SHIM_DRAIN_HOST: '127.0.0.1',
-      // An empty queue holds GET /drain open for the full hold.
-      SHIM_DRAIN_HOLD_MS: '200',
-      SMTP_LISTEN_PORT: String(await findFreePort()),
-    });
-    try {
-      await untilListening(running, ['listening', 'drain_listening']);
-      const auth = { Authorization: `Bearer ${TOKEN}` };
-
-      const onMail = await fetch(`http://127.0.0.1:${port}/drain`, { headers: auth });
-      expect(onMail.status).toBe(404);
-      const ackOnMail = await fetch(`http://127.0.0.1:${port}/drain/ack`, {
-        method: 'POST',
-        headers: { ...auth, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ acks: [] }),
+  it('with SHIM_DRAIN_PORT set, /drain is served on the drain port and 404s on the mail API port', () =>
+    withFreePorts(3, async ([port, drainPort, smtpPort]) => {
+      const running = start({
+        PORT: String(port),
+        SHIM_DRAIN_PORT: String(drainPort),
+        SHIM_DRAIN_HOST: '127.0.0.1',
+        // An empty queue holds GET /drain open for the full hold.
+        SHIM_DRAIN_HOLD_MS: '200',
+        SMTP_LISTEN_PORT: String(smtpPort),
       });
-      expect(ackOnMail.status).toBe(404);
+      try {
+        await untilListening(running, ['listening', 'drain_listening']);
+        const auth = { Authorization: `Bearer ${TOKEN}` };
 
-      const onDrain = await fetch(`http://127.0.0.1:${drainPort}/drain`, {
-        headers: auth,
-        signal: AbortSignal.timeout(5000),
-      });
-      expect(onDrain.status).toBe(200);
-      expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
-    } finally {
-      await stop(running);
-    }
-  });
+        const onMail = await fetch(`http://127.0.0.1:${port}/drain`, { headers: auth });
+        expect(onMail.status).toBe(404);
+        const ackOnMail = await fetch(`http://127.0.0.1:${port}/drain/ack`, {
+          method: 'POST',
+          headers: { ...auth, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acks: [] }),
+        });
+        expect(ackOnMail.status).toBe(404);
+
+        const onDrain = await fetch(`http://127.0.0.1:${drainPort}/drain`, {
+          headers: auth,
+          signal: AbortSignal.timeout(5000),
+        });
+        expect(onDrain.status).toBe(200);
+        expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
+      } finally {
+        await stop(running);
+      }
+    }));
 
   it('binds the drain listener to SHIM_DRAIN_HOST alone: another address of the machine is refused', async () => {
     const other = nonLoopbackIPv4();
@@ -169,22 +153,22 @@ describe('src/server.ts — the drain handover is bound to its own port', () => 
       console.warn('skipped: no non-loopback IPv4 address on this machine');
       return;
     }
-    const port = await findFreePort();
-    const drainPort = await findFreePort();
-    const running = start({
-      PORT: String(port),
-      SHIM_DRAIN_PORT: String(drainPort),
-      SHIM_DRAIN_HOST: '127.0.0.1',
-      SMTP_LISTEN_PORT: String(await findFreePort()),
+    await withFreePorts(3, async ([port, drainPort, smtpPort]) => {
+      const running = start({
+        PORT: String(port),
+        SHIM_DRAIN_PORT: String(drainPort),
+        SHIM_DRAIN_HOST: '127.0.0.1',
+        SMTP_LISTEN_PORT: String(smtpPort),
+      });
+      try {
+        await untilListening(running, ['listening', 'drain_listening']);
+        expect(await connectOutcome('127.0.0.1', drainPort)).toBe('connected');
+        expect(await connectOutcome(other, drainPort)).toBe('ECONNREFUSED');
+        expect(running.output().stdout).toContain('"host":"127.0.0.1"');
+      } finally {
+        await stop(running);
+      }
     });
-    try {
-      await untilListening(running, ['listening', 'drain_listening']);
-      expect(await connectOutcome('127.0.0.1', drainPort)).toBe('connected');
-      expect(await connectOutcome(other, drainPort)).toBe('ECONNREFUSED');
-      expect(running.output().stdout).toContain('"host":"127.0.0.1"');
-    } finally {
-      await stop(running);
-    }
   });
 
   it.each([
@@ -196,12 +180,12 @@ describe('src/server.ts — the drain handover is bound to its own port', () => 
   ])(
     'with SHIM_DRAIN_PORT set and SHIM_DRAIN_HOST %s, the process exits non-zero and never listens',
     async (_label, host) => {
-      const drainPort = await findFreePort();
+      const [port, drainPort, smtpPort] = await freePorts(3);
       const running = start({
-        PORT: String(await findFreePort()),
+        PORT: String(port),
         SHIM_DRAIN_PORT: String(drainPort),
         ...(host === undefined ? {} : { SHIM_DRAIN_HOST: host }),
-        SMTP_LISTEN_PORT: String(await findFreePort()),
+        SMTP_LISTEN_PORT: String(smtpPort),
       });
       try {
         const code = await new Promise<number | null>((resolve) =>
@@ -218,11 +202,11 @@ describe('src/server.ts — the drain handover is bound to its own port', () => 
   );
 
   it('with SHIM_DRAIN_PORT equal to PORT, the process exits non-zero and never listens', async () => {
-    const port = await findFreePort();
+    const [port, smtpPort] = await freePorts(2);
     const running = start({
       PORT: String(port),
       SHIM_DRAIN_PORT: String(port),
-      SMTP_LISTEN_PORT: String(await findFreePort()),
+      SMTP_LISTEN_PORT: String(smtpPort),
     });
     try {
       const code = await new Promise<number | null>((resolve) =>
