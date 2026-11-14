@@ -129,7 +129,7 @@ breaks('a missing job permissions block', (t) =>
   t.replace('    permissions:\n      contents: read\n      packages: read\n', '')
 );
 breaks('a narrowed root', (t) =>
-  t.replace(/(v1\.2\.1\n)$/, '$1        with:\n          root: render-core\n')
+  t.replace(/(v1\.2\.2\n)$/, '$1        with:\n          root: render-core\n')
 );
 breaks('a condition on the step', (t) =>
   t.replace(
