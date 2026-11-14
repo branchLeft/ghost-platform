@@ -106,6 +106,54 @@ describe('createSqliteStore — tenant key/domain mapping', () => {
     expect(store.setSenderDomain('never-registered.example.com', 'branchleft.co.uk')).toBe(false);
     expect(store.tenantExists('never-registered.example.com')).toBe(false);
   });
+
+  it('removeTenant deletes exactly the named credential row: its key stops working and a sibling keeps its own', async () => {
+    store.registerTenant('slot-30001.demo.example.com', 'key-a', 'demo.example.com');
+    store.registerTenant('slot-30002.demo.example.com', 'key-b', 'demo.example.com');
+    store.registerTenant('blog.branchleft.co.uk', 'blog-key', 'branchleft.co.uk');
+
+    expect(store.removeTenant('slot-30001.demo.example.com')).toBe(true);
+
+    expect(store.tenantExists('slot-30001.demo.example.com')).toBe(false);
+    await expect(store.verifyTenant('slot-30001.demo.example.com', 'key-a')).resolves.toBeNull();
+    await expect(store.verifyTenant('slot-30002.demo.example.com', 'key-b')).resolves.toEqual({
+      domain: 'slot-30002.demo.example.com',
+      senderDomain: 'demo.example.com',
+    });
+    await expect(store.verifyTenant('blog.branchleft.co.uk', 'blog-key')).resolves.toEqual({
+      domain: 'blog.branchleft.co.uk',
+      senderDomain: 'branchleft.co.uk',
+    });
+    expect(store.listTenants().map((t) => t.domain)).toEqual([
+      'blog.branchleft.co.uk',
+      'slot-30002.demo.example.com',
+    ]);
+  });
+
+  it('removeTenant returns false and changes nothing for a domain that was never registered', () => {
+    store.registerTenant(DOMAIN, 'the-secret-key', DOMAIN);
+    expect(store.removeTenant('never-registered.example.com')).toBe(false);
+    expect(store.listTenants()).toHaveLength(1);
+  });
+
+  it("removeTenant leaves the removed domain's events and suppressions in place", () => {
+    store.registerTenant(DOMAIN, 'the-secret-key', DOMAIN);
+    store.recordEvent(makeEvent({ domain: DOMAIN }));
+    store.addSuppression(DOMAIN, 'bounces', 'gone@example.com');
+
+    store.removeTenant(DOMAIN);
+
+    expect(store.listEvents(DOMAIN, { limit: 10, offset: 0 }).events).toHaveLength(1);
+    expect(store.isSuppressed(DOMAIN, 'bounces', 'gone@example.com')).toBe(true);
+  });
+
+  it('a removed credential domain can be registered afresh with a new key, and the old key stays dead', async () => {
+    store.registerTenant(DOMAIN, 'old-key', DOMAIN);
+    store.removeTenant(DOMAIN);
+    store.registerTenant(DOMAIN, 'new-key', DOMAIN);
+    await expect(store.verifyTenant(DOMAIN, 'old-key')).resolves.toBeNull();
+    await expect(store.verifyTenant(DOMAIN, 'new-key')).resolves.not.toBeNull();
+  });
 });
 
 describe('createSqliteStore — migrating a database that predates sender_domain', () => {

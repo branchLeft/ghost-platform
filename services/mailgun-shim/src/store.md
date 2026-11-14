@@ -164,6 +164,12 @@ zero's credential key is its Mailgun `bulkEmailDomain`
   tenant's credential out from under it. It returns `false` when the domain is
   not a registered tenant, and `true` for a registered one even when the value
   is unchanged.
+- `removeTenant` deletes the one `tenants` row for a domain and returns
+  `false` when there is none. It is the store half of the CLI's `remove`
+  verb ([`cli.md#remove`](cli.md#remove)). It touches no other table: events,
+  suppressions and queued batches for the domain stay, because the drain does
+  not look a tenant up, so queued mail still goes out after the credential is
+  retired. Only the credential stops authenticating.
 - `listTenants` returns each domain with its sender domain, because an operator
   checking whether the sender-domain control is live for a tenant (the
   shim-upgrade runbook's post-redeploy check) needs both: a bare list of

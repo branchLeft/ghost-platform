@@ -118,6 +118,10 @@ export function createFakeStore(): FakeShimStore {
       return true;
     },
 
+    removeTenant(domain) {
+      return tenants.delete(domain);
+    },
+
     recordEvent(event) {
       events.push({ ...event, id: `fake-event-${nextId++}` });
     },
