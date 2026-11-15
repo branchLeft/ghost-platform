@@ -43,6 +43,30 @@ What this proves, through the built CLI:
   support identity, the fingerprint and the archive's SHA-256
 - on success, and on Ctrl-C at the token prompt, nothing the run created is
   left: no colour, no scratch container, network or volume, no env file
+- the three extensions each come out `complete` in the manifest, with the
+  count the seed puts in: two media objects, two members (one with a
+  subscription) and one comment. The rendered stack names an object-storage
+  media address (`storage__images__wrappedConfig__cdnUrl`), the way a
+  platform tenant's does; without one the media extension reports `failed`
+  and the manifest says so. The archive carries each: `media_addresses.json`
+  lists both public addresses, `members.json` the subscribed member and
+  subscription, `comments.json` the comment
+
+## The fake object storage, and the sabotage
+
+The media probe is a HEAD against the tenant's public media address, run from
+the host over https. The script starts
+`services/export-bundler/test/helpers/fakeMediaStorage.ts` for it (Node runs
+the TypeScript directly), with a certificate made for the run that only the
+bundler process trusts (`NODE_EXTRA_CA_CERTS`). It answers 200 with a size for
+the two seeded objects and 404 for anything else, and logs each request; the
+script checks the log, so a status that did not come from a real probe fails.
+
+`EXPORT_PROOF_MEDIA_500=1 ./scripts/test-export-bundler.sh <image>` is the
+sabotage: the fake answers 500 for the seeded video. The bundler cannot tell
+that from an outage, lists the object as unchecked and reports `media` as
+`partial`, so the script must exit 1. A run that is green with the switch on
+is not proving the media extension.
 
 The "refused while undrained" control case is proven at the unit level
 (`test/unit/exportRunner.test.ts`), against `runExport`.

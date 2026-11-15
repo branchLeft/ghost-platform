@@ -23,6 +23,19 @@ LIVE_DB="export-bundler-proof-livedb-$RUN_ID"
 SEED_NAME="export-bundler-proof-seed-$RUN_ID"
 SEED_PORT=4310
 EXPORT_PORT=4311
+MEDIA_PORT=4312
+# The tenant's object-storage media address is a path under one host, as the
+# platform renders it: cdnUrl is the bucket, so every object key sits below it.
+MEDIA_BUCKET="media-proof-$RUN_ID"
+MEDIA_BASE_URL="https://localhost:$MEDIA_PORT/$MEDIA_BUCKET"
+MEDIA_IMAGE_KEY="content/images/proof-image.png"
+MEDIA_VIDEO_KEY="content/media/proof-video.mp4"
+# The sabotage switch. EXPORT_PROOF_MEDIA_500=1 makes the fake storage answer
+# 500 for one of the two media objects: the media extension then cannot be
+# complete, and this script must go red. A green run with it set proves nothing.
+MEDIA_500="${EXPORT_PROOF_MEDIA_500:-}"
+SUBSCRIBER_EMAIL="subscriber@proof.invalid"
+COMMENT_TEXT="Proof comment on the media post"
 OWNER_EMAIL="owner@$TENANT.test"
 OWNER_PASSWORD="Xk9-export-bundler-proof-$RUN_ID"
 SITE_TITLE="Export Bundler Proof $RUN_ID"
@@ -41,13 +54,15 @@ AUDIT_DIR="$WORK_DIR/audit"
 RUN_TMP="$WORK_DIR/tmp"
 KEY_DIR="$WORK_DIR/key"
 HELPER_DIR="$WORK_DIR/helpers"
+MEDIA_DIR="$WORK_DIR/media"
 FIFO="$WORK_DIR/token.fifo"
 STACK_DIR="$WORK_DIR/stack"
 OWNER_STACK_DIR="$WORK_DIR/stack-owner"
 TENANT_ETC="$WORK_DIR/etc"
 DESCRIPTOR="$WORK_DIR/descriptor.json"
-mkdir -p "$FLAG_DIR" "$AUDIT_DIR" "$RUN_TMP" "$KEY_DIR" "$HELPER_DIR" "$STACK_DIR" "$OWNER_STACK_DIR" "$TENANT_ETC"
+mkdir -p "$FLAG_DIR" "$AUDIT_DIR" "$RUN_TMP" "$KEY_DIR" "$HELPER_DIR" "$STACK_DIR" "$OWNER_STACK_DIR" "$TENANT_ETC" "$MEDIA_DIR"
 CLI_PID=""
+MEDIA_PID=""
 FAILURES=0
 
 BUNDLER_DIR="$(cd "$(dirname "$0")/../services/export-bundler" && pwd)"
@@ -63,6 +78,7 @@ run_leftovers() {
 
 cleanup() {
     if [ -n "$CLI_PID" ]; then kill "$CLI_PID" >/dev/null 2>&1 || true; fi
+    if [ -n "$MEDIA_PID" ]; then kill "$MEDIA_PID" >/dev/null 2>&1 || true; fi
     pkill -f "dist/cli.js --descriptor $DESCRIPTOR" >/dev/null 2>&1 || true
     docker rm -f "$SEED_NAME" >/dev/null 2>&1 || true
     run_leftovers | while read -r kind name; do
@@ -207,6 +223,7 @@ services:
       storage__images__adapter: ScanningStorageAdapter
       storage__images__wraps: LocalImagesStorage
       storage__images__quarantinePath: /var/lib/ghost/content/quarantine
+      storage__images__wrappedConfig__cdnUrl: $MEDIA_BASE_URL
       storage__media__adapter: ScanningStorageAdapter
       storage__media__wraps: LocalMediaStorage
       storage__media__quarantinePath: /var/lib/ghost/content/quarantine
@@ -336,10 +353,39 @@ echo "--- building the export bundler ---"
 echo "PASS: built dist/"
 echo
 
+echo "--- starting the fake object storage the tenant's media address names ---"
+# The bundler probes each referenced media object with a HEAD against the
+# public address, from the host, over https. Node 26 runs the TypeScript
+# helper directly. The certificate is this run's own and is trusted only by
+# the bundler process, through NODE_EXTRA_CA_CERTS in run_bundler.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout "$MEDIA_DIR/key.pem" -out "$MEDIA_DIR/cert.pem" -days 1 \
+    -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" >/dev/null 2>&1
+set -- --port "$MEDIA_PORT" --prefix "/$MEDIA_BUCKET" \
+    --object "$MEDIA_IMAGE_KEY=1024" --object "$MEDIA_VIDEO_KEY=2048" \
+    --cert "$MEDIA_DIR/cert.pem" --key "$MEDIA_DIR/key.pem" --request-log "$MEDIA_DIR/requests.log"
+if [ -n "$MEDIA_500" ]; then
+    set -- "$@" --answer-500 "$MEDIA_VIDEO_KEY"
+    echo "SABOTAGE: the fake storage answers 500 for $MEDIA_VIDEO_KEY"
+fi
+"$NODE_BIN_DIR/node" "$BUNDLER_DIR/test/helpers/fakeMediaStorage.ts" "$@" >"$MEDIA_DIR/server.out" 2>&1 &
+MEDIA_PID=$!
+deadline=$(($(date +%s) + 20))
+until grep -q '^listening ' "$MEDIA_DIR/server.out" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$deadline" ] || ! kill -0 "$MEDIA_PID" 2>/dev/null; then
+        echo "FAIL: the fake object storage did not start:"
+        cat "$MEDIA_DIR/server.out"
+        exit 1
+    fi
+    sleep 0.2
+done
+echo "PASS: fake object storage serving $MEDIA_BASE_URL (two objects)"
+echo
+
 RUN_STACK="$STACK_DIR"
 RUN_RECIPIENT="$AGE_RECIPIENT"
 run_bundler() {
-    (cd "$BUNDLER_DIR" && TMPDIR="$RUN_TMP" PATH="$NODE_BIN_DIR:$PATH" exec node dist/cli.js \
+    (cd "$BUNDLER_DIR" && TMPDIR="$RUN_TMP" PATH="$NODE_BIN_DIR:$PATH" NODE_EXTRA_CA_CERTS="$MEDIA_DIR/cert.pem" exec node dist/cli.js \
         --descriptor "$DESCRIPTOR" \
         --stack-dir "$RUN_STACK" \
         --secrets-env "$TENANT_ETC/secrets.env" \
@@ -434,6 +480,50 @@ if grep -q "^run	$WELCOME_RUN	0	-	-	$AUTOMATED_EMAIL\$" "$WORK_DIR/live-before.t
     echo "PASS: live state seeded"
 else
     fail "could not seed the live state"
+fi
+echo
+
+echo "--- on the LIVE database: media, a subscribed member and a comment, for the three extensions ---"
+# Media: a published post whose feature image and body point at two objects in
+# the tenant's object storage. The bundler lists a public address for each
+# object the storage confirms; it never fetches the bytes.
+MEDIA_POST="$(hexid)"; PAID_MEMBER="$(hexid)"; PAID_TIER="$(echo "SELECT id FROM products WHERE type = 'paid' ORDER BY created_at LIMIT 1;" | live_sql)"
+COMMENT_ID="$(hexid)"
+live_sql <<EOF
+CREATE TEMPORARY TABLE mp AS SELECT * FROM posts WHERE id = '$SRC_POST';
+UPDATE mp SET id = '$MEDIA_POST', uuid = UUID(), slug = 'media-proof-post', title = 'Media proof post',
+  feature_image = '$MEDIA_BASE_URL/$MEDIA_IMAGE_KEY',
+  html = '<p>Media proof</p><figure><video src="$MEDIA_BASE_URL/$MEDIA_VIDEO_KEY"></video></figure>',
+  newsletter_id = NULL;
+INSERT INTO posts SELECT * FROM mp;
+CREATE TEMPORARY TABLE mpa AS SELECT * FROM posts_authors WHERE post_id = '$SRC_POST';
+UPDATE mpa SET id = '$(hexid)', post_id = '$MEDIA_POST';
+INSERT INTO posts_authors SELECT * FROM mpa;
+-- A paid member with one Stripe subscription, on the platform's paid tier.
+INSERT INTO members (id, uuid, transient_id, email, name, status, created_at)
+  VALUES ('$PAID_MEMBER', UUID(), '$(hexid)', '$SUBSCRIBER_EMAIL', 'Subscriber', 'paid', UTC_TIMESTAMP());
+INSERT INTO members_products (id, member_id, product_id, sort_order) VALUES ('$(hexid)', '$PAID_MEMBER', '$PAID_TIER', 0);
+INSERT INTO stripe_products (id, product_id, stripe_product_id, created_at)
+  VALUES ('$(hexid)', '$PAID_TIER', 'prod_exportproof', UTC_TIMESTAMP());
+INSERT INTO stripe_prices (id, stripe_price_id, stripe_product_id, active, nickname, currency, amount, type, \`interval\`, created_at)
+  VALUES ('$(hexid)', 'price_exportproof', 'prod_exportproof', 1, 'Monthly', 'usd', 500, 'recurring', 'month', UTC_TIMESTAMP());
+INSERT INTO members_stripe_customers (id, member_id, customer_id, name, email, created_at)
+  VALUES ('$(hexid)', '$PAID_MEMBER', 'cus_exportproof', 'Subscriber', '$SUBSCRIBER_EMAIL', UTC_TIMESTAMP());
+INSERT INTO members_stripe_customers_subscriptions (id, customer_id, subscription_id, stripe_price_id, status,
+  cancel_at_period_end, current_period_end, start_date, created_at, mrr, plan_id, plan_nickname, plan_interval, plan_amount, plan_currency)
+  VALUES ('$(hexid)', 'cus_exportproof', 'sub_exportproof', 'price_exportproof', 'active', 0,
+  UTC_TIMESTAMP() + INTERVAL 30 DAY, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 500, 'price_exportproof', 'Monthly', 'month', 500, 'usd');
+-- One published comment by the free member on the media post.
+INSERT INTO comments (id, post_id, member_id, status, html, created_at, updated_at)
+  VALUES ('$COMMENT_ID', '$MEDIA_POST', '$MEMBER', 'published', '<p>$COMMENT_TEXT</p>', UTC_TIMESTAMP(), UTC_TIMESTAMP());
+EOF
+if [ "$(echo "SELECT COUNT(*) FROM members;" | live_sql)" = "2" ] && \
+   [ "$(echo "SELECT COUNT(*) FROM members_stripe_customers_subscriptions;" | live_sql)" = "1" ] && \
+   [ "$(echo "SELECT COUNT(*) FROM comments WHERE status = 'published';" | live_sql)" = "1" ] && \
+   [ "$(echo "SELECT COUNT(*) FROM posts WHERE feature_image = '$MEDIA_BASE_URL/$MEDIA_IMAGE_KEY';" | live_sql)" = "1" ]; then
+    echo "PASS: seeded two media references, two members (one subscribed) and one comment"
+else
+    fail "could not seed the media post, the subscribed member or the comment"
 fi
 echo
 
@@ -720,8 +810,8 @@ fi
 
 echo "--- checking the decrypted archive's real contents ---"
 LISTING="$(age -d -i "$KEY_DIR/identity.txt" "$ARCHIVE" | tar -tf -)"
-if [ "$LISTING" = "$(printf 'content_and_settings.json\npost_analytics.csv\nmembers.json\nmembers.csv\ncomments.json\nmanifest.json')" ]; then
-    echo "PASS: decrypts to content_and_settings.json, post_analytics.csv, members.json, members.csv, comments.json and manifest.json"
+if [ "$LISTING" = "$(printf 'content_and_settings.json\npost_analytics.csv\nmedia_addresses.json\nmembers.json\nmembers.csv\ncomments.json\nmanifest.json')" ]; then
+    echo "PASS: decrypts to content_and_settings.json, post_analytics.csv, media_addresses.json, members.json, members.csv, comments.json and manifest.json"
 else
     fail "unexpected decrypted listing: $LISTING"
 fi
@@ -753,7 +843,7 @@ else
     fail "archive $archive_mode, manifest $sidecar_mode, directory $dest_mode (expected 600 / 600 / 700)"
 fi
 if grep -q "\"tenantId\":\"$TENANT\"" "$AUDIT_DIR/audit.jsonl" 2>/dev/null && \
-   grep -q '"contents":\["content_and_settings","post_analytics","members","members_csv","comments"\]' "$AUDIT_DIR/audit.jsonl" && \
+   grep -q '"contents":\["content_and_settings","post_analytics","media_addresses","members","members_csv","comments"\]' "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"grant\":{\"lane\":\"consented\",\"reference\":\"$GRANT_REFERENCE\"}" "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"supportIdentity\":\"$SUPPORT_EMAIL\"" "$AUDIT_DIR/audit.jsonl" && \
    grep -q "\"encryptedTo\":\"$EXPECTED_FINGERPRINT\"" "$AUDIT_DIR/audit.jsonl" && \
@@ -763,6 +853,60 @@ if grep -q "\"tenantId\":\"$TENANT\"" "$AUDIT_DIR/audit.jsonl" 2>/dev/null && \
 else
     fail "audit log missing or malformed:"
     cat "$AUDIT_DIR/audit.jsonl" 2>/dev/null || echo "(no audit log at all)"
+fi
+echo
+
+echo "--- checking the manifest's three extension statuses against what was seeded ---"
+# One manifest entry per extension, name first: name, status, expected, present.
+extension_field() {
+    grep -A4 "\"name\": \"$1\"," "$SIDECAR" | grep "\"$2\":" | head -1 | sed -E 's/^[^:]*: "?([^",]*)"?,?$/\1/'
+}
+check_extension() {
+    ext_name="$1"; ext_count="$2"
+    ext_status="$(extension_field "$ext_name" status)"
+    ext_expected="$(extension_field "$ext_name" expected)"
+    ext_present="$(extension_field "$ext_name" present)"
+    if [ "$ext_status" = "complete" ] && [ "$ext_expected" = "$ext_count" ] && [ "$ext_present" = "$ext_count" ]; then
+        echo "PASS: the manifest reports $ext_name complete, $ext_present of $ext_expected"
+    else
+        fail "the manifest reports $ext_name as \"$ext_status\", expected $ext_expected, present $ext_present (wanted complete, $ext_count of $ext_count)"
+        grep -A8 "\"name\": \"$ext_name\"," "$SIDECAR" | head -12
+    fi
+}
+check_extension media 2
+check_extension members_and_subscriptions 2
+check_extension comments 1
+if grep -q '"complete": true' "$SIDECAR"; then
+    echo "PASS: the manifest reports the whole export complete"
+else
+    fail "the manifest does not report the export complete: $(grep -A12 '"excluded"' "$SIDECAR" | head -14)"
+fi
+# The archive carries what the statuses claim.
+MEDIA_ADDRESSES="$(age -d -i "$KEY_DIR/identity.txt" "$ARCHIVE" | tar -xOf - media_addresses.json)"
+if echo "$MEDIA_ADDRESSES" | grep -q -F "\"url\": \"$MEDIA_BASE_URL/$MEDIA_IMAGE_KEY\"" && \
+   echo "$MEDIA_ADDRESSES" | grep -q -F "\"url\": \"$MEDIA_BASE_URL/$MEDIA_VIDEO_KEY\""; then
+    echo "PASS: media_addresses.json lists the public address of the image and the video"
+else
+    fail "media_addresses.json does not list both seeded media addresses:"
+    echo "$MEDIA_ADDRESSES"
+fi
+if age -d -i "$KEY_DIR/identity.txt" "$ARCHIVE" | tar -xOf - members.json | grep -q -F "$SUBSCRIBER_EMAIL" && \
+   age -d -i "$KEY_DIR/identity.txt" "$ARCHIVE" | tar -xOf - members.json | grep -q -F "sub_exportproof"; then
+    echo "PASS: members.json carries the subscribed member and the subscription record"
+else
+    fail "members.json does not carry the subscribed member and subscription"
+fi
+if age -d -i "$KEY_DIR/identity.txt" "$ARCHIVE" | tar -xOf - comments.json | grep -q -F "$COMMENT_TEXT"; then
+    echo "PASS: comments.json carries the seeded comment"
+else
+    fail "comments.json does not carry the seeded comment"
+fi
+# The fake storage saw the bundler's probe: the status came from a real HEAD, not a default.
+if grep -q "^HEAD /$MEDIA_BUCKET/$MEDIA_IMAGE_KEY 200\$" "$MEDIA_DIR/requests.log" && \
+   grep -q "^HEAD /$MEDIA_BUCKET/$MEDIA_VIDEO_KEY 200\$" "$MEDIA_DIR/requests.log"; then
+    echo "PASS: the bundler's HEAD probe reached the fake storage and got 200 for both objects"
+else
+    fail "the fake storage did not answer 200 to a HEAD for both objects: $(cat "$MEDIA_DIR/requests.log" 2>/dev/null || echo '(no requests)')"
 fi
 echo
 
