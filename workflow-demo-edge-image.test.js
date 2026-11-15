@@ -280,7 +280,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
   const inPull = (from, to) => `${beforePull}\n  registry-pull:\n${swap(pullJob, from, to)}`;
   const inPush = (from, to) => `${swap(beforePull, from, to)}\n  registry-pull:\n${pullJob}`;
   const loginStep =
-    '      - name: Log in to GHCR\n        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0\n        with:\n          registry: ghcr.io\n          username: ${{ github.actor }}\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n';
+    '      - name: Log in to GHCR\n        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0\n        with:\n          registry: ghcr.io\n          username: ${{ github.actor }}\n          password: ${{ secrets.GITHUB_TOKEN }}\n\n';
   const widened = "(github.event_name != 'x')";
   const guardTail = "(github.event_name == 'workflow_dispatch' || github.event_name == 'push')";
   const cases = [
@@ -314,7 +314,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     [inPush('      packages: write\n', '      packages: read\n'), 'lacks packages: write'],
     [
       inPush(
-        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@77506b6d4603ef432bbdec734139fec91e5bea47 # v1.1.0\n',
+        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1\n',
         '      - name: Attest and verify the pushed image\n        run: true\n'
       ),
       'shared attest and verify action',
