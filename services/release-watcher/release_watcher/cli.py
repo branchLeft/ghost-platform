@@ -87,8 +87,8 @@ def main(argv=None):
 
     notes = [decision.reason]
     if decision.notify_major is not None:
-        # Not recorded as noticed: the owner digest has no input from this job,
-        # so the notice re-raises on every run until that feed exists.
+        # Not recorded as noticed: nothing takes this notice from the job to
+        # the owner, so it is raised again on every run until something does.
         notes.append(f"new major {decision.notify_major} seen; notice only, nothing started")
         print(f"::notice::Ghost major {decision.notify_major} is available; no PR opened")
 

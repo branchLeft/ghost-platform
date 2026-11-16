@@ -43,12 +43,17 @@ describe('filingCommand', () => {
   const item = upstreamMajorItem(ITEM_INPUT);
   const command = filingCommand(item);
 
-  it('runs the board_write file verb with the platform-story type on board 1, in the workspace repo', () => {
-    expect(command).toContain('python3 .claude/hooks/board_write.py file');
+  it('runs gh issue create in the workspace repo with the platform-story and ghost-platform labels', () => {
+    expect(command).toContain('gh issue create');
     expect(command).toContain('--repo branchLeft/workspace');
-    expect(command).toContain('--type platform-story');
-    expect(command).toContain('--board 1');
-    expect(command).toContain('--repo-label ghost-platform');
+    expect(command).toContain('--label type:platform-story');
+    expect(command).toContain('--label repo:ghost-platform');
+  });
+
+  it('is only the command: no line starts with a #, so pasting it into an interactive zsh runs nothing else', () => {
+    for (const line of command.split('\n')) {
+      expect(line.startsWith('#')).toBe(false);
+    }
   });
 
   it('passes the filled title and feeds the filled body through a quoted heredoc', () => {

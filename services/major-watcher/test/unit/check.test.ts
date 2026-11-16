@@ -114,9 +114,18 @@ describe('run (end to end, network and ntfy both faked)', () => {
     });
 
     const [, msg] = publishNtfy.mock.calls[0] as [unknown, { message: string }];
-    expect(msg.message).toContain('python3 .claude/hooks/board_write.py file');
-    expect(msg.message).toContain('--board 1');
-    expect(msg.message).toContain('--type platform-story');
+    expect(msg.message).toContain('gh issue create');
+    expect(msg.message).toContain('--label type:platform-story');
+    // The sub-issue sentence is printed as ordinary text before the command,
+    // never as a line inside the block a person pastes.
+    expect(msg.message).toContain('added as a sub-issue of the launch item it belongs to');
+    const lines = msg.message.split('\n');
+    const commandStart = lines.findIndex((line) => line.startsWith('BODY=$(mktemp)'));
+    expect(commandStart).toBeGreaterThan(-1);
+    expect(lines.findIndex((line) => line.includes('sub-issue'))).toBeLessThan(commandStart);
+    for (const line of lines.slice(commandStart)) {
+      expect(line.startsWith('#')).toBe(false);
+    }
     // ntfy truncates a message over 4096 bytes into an attachment; the
     // command must arrive whole in the page itself.
     expect(Buffer.byteLength(msg.message, 'utf8')).toBeLessThan(4096);
