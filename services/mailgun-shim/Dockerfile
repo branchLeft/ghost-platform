@@ -8,7 +8,7 @@
 # and musl inside its npm package (prebuilds/linuxmusl-x64.node), selected at
 # load time on musl, so neither base needs a compiler. alpine is the smallest
 # base with no critical or high finding lacking a fix (see the PR body).
-FROM node:26.13.0-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216
+FROM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5
 
 # Alpine's zlib fix is not in the base's package index until upgraded here.
 RUN apk upgrade --no-cache zlib
