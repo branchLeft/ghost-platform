@@ -1,17 +1,34 @@
 name: Portal journey
 
-# Walks the portal in a real browser (Chromium through Playwright, a pinned
-# version) against the HTTP test identity provider in portal/apps/test/, and
-# uploads one screenshot per screen as a workflow artifact. The portal runs on
-# its real data layer, a PostgreSQL started the way portal-apps-ci.yml starts
-# it. The walk is the list in portal/apps/test/journey/steps/index.ts; each
-# screen added to the portal adds one step there.
+# Walks the promotion journey in a real browser (Chromium through Playwright,
+# a pinned version) and uploads one screenshot per screen as a workflow
+# artifact: sign in, See my demo, Ask for Essentials, the owner's console
+# sign-in, the queue and its Approve button, then the Essentials site; and a
+# second run, the Professional enquiry, to its confirmation. The walk is the
+# list in portal/apps/test/journey/steps/index.ts.
 #
-# The portal imports the provisioning controller's generated client, so that
-# package is installed and built before the portal's own install.
+# What it runs against, from the `image` input:
+#   - empty (a pull request, a push, a manual run with no image): the tenant
+#     portal and the owner console built from this checkout, as their own
+#     processes with the variables and files they read in production;
+#   - a digest reference: the pushed image itself. It runs on main when
+#     portal-apps-image.yml completes successfully (push, scan and attest all
+#     passed), for the digest the registry holds at that commit's tag, and by
+#     hand with a digest named. Nothing starts until the digest's attestation
+#     is verified for that exact digest, signer workflow and ref, and an image
+#     with no attestation is shown to be refused first. It is a separate
+#     workflow, not a job of the image workflow, so a red walk never turns the
+#     image run red: consumers resolve the newest *successful* image run
+#     (scripts/resolve-published-image.sh), and a browser fault must not hide
+#     a digest that was built, scanned and attested.
+# Either way the rig is the same: the data layer's PostgreSQL with its
+# migrations applied and a DEMO tenant in the register, the provisioning API
+# mock as its own process, an HTTP test identity provider and a mail double.
+# The last three exist only under portal/apps/test and are never in the image;
+# the image job below proves that.
 #
-# This job runs the portal from source. Running the journey against the
-# attested image is a later step of the same work.
+# The registry token is on the install steps alone; a build or test step runs
+# code from the repository and from what was just installed.
 
 on:
   push:
@@ -21,6 +38,7 @@ on:
       - 'services/identity/**'
       - 'services/request-guard/**'
       - 'services/provisioning-controller/**'
+      - 'scripts/verify-image-attestation.sh'
       - '.github/workflows/portal-apps-journey.yml'
   pull_request:
     branches: [main]
@@ -29,15 +47,29 @@ on:
       - 'services/identity/**'
       - 'services/request-guard/**'
       - 'services/provisioning-controller/**'
+      - 'scripts/verify-image-attestation.sh'
       - '.github/workflows/portal-apps-journey.yml'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Optional: ghcr.io/branchleft/portal-apps@sha256:<64 hex>. Empty walks the build of this checkout.'
+        required: false
+        type: string
+        default: ''
+  workflow_run:
+    workflows: ['Portal applications image']
+    types: [completed]
+    branches: [main]
 
-# `packages: read` for `@branchleft/tsconfig`, hosted on GitHub Packages.
+# `packages: read` for `@branchleft/tsconfig`, hosted on GitHub Packages, and
+# to pull the image.
 permissions:
   contents: read
   packages: read
 
 # One run per pull request: a newer push cancels the superseded run. A push,
-# merge_group, schedule or manual run is its own group and is never cancelled.
+# merge_group, schedule, manual or workflow_run is its own group and is never
+# cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -46,26 +78,104 @@ jobs:
   journey:
     name: Portal journey in a browser
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    # A workflow_run is for a push to main whose image run passed in full.
+    if: |
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event != 'pull_request')
     env:
       PORTAL_TEST_DATABASE_URL: postgres://postgres:ci-only-throwaway@127.0.0.1:5432/postgres
+      # The attestation is bound to this workflow of this repository on main.
+      ATTESTED_REPO: branchLeft/ghost-platform
+      ATTESTED_SIGNER: branchLeft/ghost-platform/.github/workflows/portal-apps-image.yml
+      # A public image from another registry's library: a real image, by
+      # digest, that this repository's workflow never attested.
+      UNATTESTED_IMAGE: docker.io/library/postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
 
     steps:
+      # For a workflow_run the commit the image was built from, so the walk and
+      # the image are of one commit; otherwise the event's own.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
+
+      # IMAGE is empty for the checkout target. For a finished image run it is
+      # the digest the registry holds at that commit's tag; the attestation
+      # check below is what makes that digest trustworthy, so a wrong answer
+      # here fails closed rather than walking something else.
+      - name: Name the image to walk
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -eu
+          reference=''
+          if [ -n "$INPUT_IMAGE" ]; then
+            reference="$INPUT_IMAGE"
+          elif [ -n "$RUN_SHA" ]; then
+            path=branchleft/portal-apps
+            token="$(curl -fsS "https://ghcr.io/token?scope=repository:$path:pull" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+            digest="$(curl -fsS -o /dev/null -D - \
+              -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$path/manifests/$RUN_SHA" | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
+            reference="ghcr.io/$path@$digest"
+          fi
+          echo "image: ${reference:-none, walking the build of this checkout}"
+          echo "IMAGE=$reference" >> "$GITHUB_ENV"
+
+      # Before anything starts: an image with no attestation is refused, and
+      # refused for that reason (the registry holds none), not for a fault.
+      - name: Control, an image with no attestation is refused
+        if: ${{ env.IMAGE != '' }}
+        run: |
+          set +e
+          output="$(VERIFY_PLAIN_ERRORS=1 sh scripts/verify-image-attestation.sh "$UNATTESTED_IMAGE" "$ATTESTED_REPO" "$ATTESTED_SIGNER" --bundle-from-oci 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 1 ]; then echo "::error::the unattested image was not refused (exit $status)"; exit 1; fi
+          printf '%s\n' "$output" | grep -q 'no attestations found' || { echo "::error::the refusal was not for a missing attestation"; exit 1; }
+
+      # The digest under test must carry an attestation from this repository's
+      # image workflow on main. Fail closed: nothing below runs otherwise.
+      - name: Verify the attestation of the image digest
+        if: ${{ env.IMAGE != '' }}
+        run: sh scripts/verify-image-attestation.sh "$IMAGE" "$ATTESTED_REPO" "$ATTESTED_SIGNER" --bundle-from-oci
+
+      - name: Log in to GHCR
+        if: ${{ env.IMAGE != '' }}
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the verified digest
+        if: ${{ env.IMAGE != '' }}
+        run: docker pull "$IMAGE"
+
+      # None of the rig is in what ships: not the test identity provider's
+      # screens, not the rig's database login, not a test directory.
+      - name: The image carries no test identity provider, credential or test code
+        if: ${{ env.IMAGE != '' }}
+        run: |
+          docker run --rm --entrypoint sh "$IMAGE" -c '
+            if grep -rIlE "TEST_IDP|test-only-not-a-secret|startTestIdp" /app; then echo "test code or a test credential is in the image"; exit 1; fi
+            if [ -e /app/portal/apps/test ] || [ -e /app/portal/apps/dist/test ]; then echo "a test directory is in the image"; exit 1; fi
+          '
 
       - name: Start PostgreSQL with the data layer's test pg_hba.conf
         env:
-          IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
+          PG_IMAGE: postgres:17@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f
         run: |
           install -m 0666 portal/data/test/pg_hba.ci.conf "$RUNNER_TEMP/pg_hba.conf"
           sleep 1
           docker run -d --rm --name portal-journey-pg -p 5432:5432 \
             -e POSTGRES_PASSWORD=ci-only-throwaway \
             -v "$RUNNER_TEMP/pg_hba.conf:/etc/postgresql/pg_hba.conf" \
-            "$IMAGE" -c hba_file=/etc/postgresql/pg_hba.conf
+            "$PG_IMAGE" -c hba_file=/etc/postgresql/pg_hba.conf
           for attempt in $(seq 1 60); do
             if docker exec portal-journey-pg pg_isready -U postgres -h 127.0.0.1 >/dev/null; then exit 0; fi
             sleep 1
@@ -90,8 +200,6 @@ jobs:
             services/request-guard/pnpm-lock.yaml
             services/provisioning-controller/pnpm-lock.yaml
 
-      # The registry token is on the install steps alone; a build or test step
-      # runs code from the repository and from what was just installed.
       - name: Install the data layer's dependencies
         working-directory: portal/data
         run: pnpm install --frozen-lockfile
@@ -122,6 +230,8 @@ jobs:
         working-directory: services/request-guard
         run: pnpm run build
 
+      # The portal imports the generated client, and the rig runs the mock,
+      # from this package's build.
       - name: Install the provisioning controller's dependencies
         working-directory: services/provisioning-controller
         run: pnpm install --frozen-lockfile
@@ -138,6 +248,12 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Only for the checkout target: the image has its own build.
+      - name: Build the portal and the console
+        if: ${{ env.IMAGE == '' }}
+        working-directory: portal/apps
+        run: pnpm run build
+
       # The browser build is the one the pinned Playwright version names.
       - name: Install Chromium
         working-directory: portal/apps
@@ -147,14 +263,37 @@ jobs:
         working-directory: portal/apps
         env:
           JOURNEY_SCREENSHOT_DIR: ${{ github.workspace }}/journey-screenshots
+          JOURNEY_IMAGE: ${{ env.IMAGE }}
         run: pnpm run journey
+
+      - name: Say what was walked and where the screenshots are
+        if: ${{ always() }}
+        run: |
+          if [ -n "$IMAGE" ]; then
+            target="\`$IMAGE\` (its attestation verified before it was pulled)"
+            artifact=portal-journey-screenshots-image
+          else
+            target='the build of this checkout'
+            artifact=portal-journey-screenshots
+          fi
+          {
+            echo '## Portal journey'
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "Commit: \`${GITHUB_SHA}\`"
+            echo "Target: $target"
+            echo
+            echo "Screenshots, in the artifact \`$artifact\`:"
+            echo
+            find journey-screenshots -name '*.png' 2>/dev/null | sort | sed 's/^/- `/; s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Also on failure: a failed step's screenshot is the first thing to read.
       - name: Upload the screenshots
         if: ${{ always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: portal-journey-screenshots
-          path: journey-screenshots/journey/*.png
+          name: portal-journey-screenshots${{ env.IMAGE != '' && '-image' || '' }}
+          path: journey-screenshots/**/*.png
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30

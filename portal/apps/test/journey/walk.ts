@@ -2,11 +2,17 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Page } from 'playwright';
 
+/** Who is looking at the screen: the demo tenant's administrator or the owner. */
+export type Actor = 'tenant' | 'owner';
+
 /** What a step may use. Grows as screens are added; nothing here is global state. */
 export interface JourneyContext {
-  readonly page: Page;
+  /** One browser page per actor, each in its own browser context (its own cookies). */
+  readonly pages: Readonly<Record<Actor, Page>>;
   /** The tenant portal's origin. */
   readonly portalOrigin: string;
+  /** The owner console's origin. */
+  readonly consoleOrigin: string;
   /** The test identity provider's origin. */
   readonly idpOrigin: string;
   /** The demo tenant's id, as the portal's home shows it. */
@@ -15,12 +21,14 @@ export interface JourneyContext {
 
 /**
  * One screen of the journey. To add a screen, add one of these to the list in
- * `steps/index.ts`: drive the page there in `go`, name the placeholder text it
- * must show in `expect`, and the walk takes its screenshot.
+ * `steps/index.ts`: drive the actor's page there in `go`, name the placeholder
+ * text it must show in `expect`, and the walk takes its screenshot.
  */
 export interface JourneyStep {
   /** Kebab-case; the screenshot is `<position>-<id>.png`. */
   readonly id: string;
+  /** Whose page this screen is on; that page is the one photographed. */
+  readonly actor: Actor;
   /** Moves the browser to the screen. It asserts nothing; `expect` does. */
   readonly go: (context: JourneyContext) => Promise<void>;
   /** Text the screen must show. Missing any one fails the step. */
@@ -61,14 +69,15 @@ export async function walk(
   const results: StepResult[] = [];
   for (const [index, step] of steps.entries()) {
     await step.go(context);
-    const text = await context.page.locator('body').innerText();
+    const page = context.pages[step.actor];
+    const text = await page.locator('body').innerText();
     const problems = [
       ...step.expect.filter((want) => !text.includes(want)).map((want) => `missing ${want}`),
       ...(step.forbid ?? []).filter((no) => text.includes(no)).map((no) => `shows ${no}`),
     ];
     const name = `${position(index)}-${step.id}${problems.length === 0 ? '' : '-FAILED'}.png`;
     const file = join(outDir, name);
-    writeFileSync(file, await context.page.screenshot({ fullPage: true }));
+    writeFileSync(file, await page.screenshot({ fullPage: true }));
     if (problems.length > 0) throw new StepFailure(step.id, problems, file);
     results.push({ id: step.id, screenshot: file });
   }

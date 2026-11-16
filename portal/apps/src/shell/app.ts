@@ -19,7 +19,12 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'content-security-policy':
     "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   'x-content-type-options': 'nosniff',
-  'referrer-policy': 'no-referrer',
+  // Not `no-referrer`: with that policy a browser sends `Origin: null` on a
+  // same-origin form POST, and `act` below refuses every action whose Origin
+  // is not the public origin, so no button on any screen would work.
+  // `same-origin` sends the real Origin to this application and nothing to any
+  // other site, so the Referer still never leaves it.
+  'referrer-policy': 'same-origin',
   'cache-control': 'no-store',
 };
 
