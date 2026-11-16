@@ -13,8 +13,8 @@ import path from 'node:path';
 const ROOT = import.meta.dirname;
 const REPO = 'branchLeft/ghost-platform';
 const ACTION = 'branchLeft/github-workflows/.github/actions/attest-npm-tarball';
-const ACTION_SHA = '2c34b90b367fd160bb01d311d29224d250460086';
-const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.1`;
+const ACTION_SHA = '231e592397f4c94668c64646c14160d9d497bdde';
+const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.2`;
 const SIGNING = ['id-token: write', 'attestations: write'];
 
 const uncommented = (file) =>
