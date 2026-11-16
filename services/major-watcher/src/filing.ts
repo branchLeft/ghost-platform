@@ -49,6 +49,5 @@ export function filingCommand(item: UpstreamMajorItem): string {
     item.body,
     HEREDOC_DELIMITER,
     `gh issue create --repo branchLeft/workspace --title ${shellQuote(item.title)} --body-file "$BODY" --label type:platform-story --label repo:ghost-platform`,
-    '# The new issue is then added as a sub-issue of the launch item it belongs to.',
   ].join('\n');
 }

@@ -50,8 +50,10 @@ describe('filingCommand', () => {
     expect(command).toContain('--label repo:ghost-platform');
   });
 
-  it('says the new issue is then added as a sub-issue of its launch item', () => {
-    expect(command).toContain('added as a sub-issue of the launch item it belongs to');
+  it('is only the command: no line starts with a #, so pasting it into an interactive zsh runs nothing else', () => {
+    for (const line of command.split('\n')) {
+      expect(line.startsWith('#')).toBe(false);
+    }
   });
 
   it('passes the filled title and feeds the filled body through a quoted heredoc', () => {

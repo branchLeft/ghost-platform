@@ -49,7 +49,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
     message: [
       result.message as string,
       '',
-      'File the tracked item (then label it upstream-major):',
+      'File the tracked item (then label it upstream-major). The new issue is then added as a sub-issue of the launch item it belongs to. Paste only the command below:',
       filingCommand(tracked),
     ].join('\n'),
     priority: 'high',
