@@ -114,9 +114,8 @@ describe('run (end to end, network and ntfy both faked)', () => {
     });
 
     const [, msg] = publishNtfy.mock.calls[0] as [unknown, { message: string }];
-    expect(msg.message).toContain('python3 .claude/hooks/board_write.py file');
-    expect(msg.message).toContain('--board 1');
-    expect(msg.message).toContain('--type platform-story');
+    expect(msg.message).toContain('gh issue create');
+    expect(msg.message).toContain('--label type:platform-story');
     // ntfy truncates a message over 4096 bytes into an attachment; the
     // command must arrive whole in the page itself.
     expect(Buffer.byteLength(msg.message, 'utf8')).toBeLessThan(4096);

@@ -49,7 +49,7 @@ export async function run(options: RunOptions): Promise<RunResult> {
     message: [
       result.message as string,
       '',
-      'File the tracked item (run from the branchLeft root, then label it upstream-major):',
+      'File the tracked item (then label it upstream-major):',
       filingCommand(tracked),
     ].join('\n'),
     priority: 'high',

@@ -15,7 +15,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
  * -- resolving the published `dist/` over the registry rather than a `file:`
  * link. No Pulumi program or stack lives alongside this test: the Hetzner
  * host stack that calls `Host` for real is a separate, not-yet-started
- * story, tracked on the board rather than invented speculatively here.
+ * story, tracked as an issue rather than invented speculatively here.
  */
 
 type Created = { type: string; name: string; inputs: Record<string, unknown> };
