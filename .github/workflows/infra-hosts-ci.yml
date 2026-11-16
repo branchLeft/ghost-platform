@@ -216,7 +216,7 @@ jobs:
       - name: Decide whether the plan could cost money
         id: spend
         continue-on-error: true
-        uses: branchLeft/github-workflows/.github/actions/spend-gate@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
         with:
           preview-json: preview.json
           working-directory: infra/hosts
@@ -263,7 +263,7 @@ jobs:
       - name: Decide whether the plan changes anything
         id: noop
         if: always()
-        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
         with:
           preview-json: preview.json
           plan-file: preview-plan.json
@@ -417,7 +417,7 @@ jobs:
       - name: Decide whether the plan could cost money
         id: spend
         continue-on-error: true
-        uses: branchLeft/github-workflows/.github/actions/spend-gate@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1
+        uses: branchLeft/github-workflows/.github/actions/spend-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
         with:
           preview-json: preview.json
           working-directory: infra/hosts

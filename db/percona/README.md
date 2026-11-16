@@ -19,7 +19,7 @@ Everything else is inherited: `ENTRYPOINT`, `CMD`, `EXPOSE`, `VOLUME`, and
 
 ## The scan and the exemptions
 
-The scan is the shared `image-scan.yml` at the v1.2.1 release, on the pushed
+The scan is the shared `image-scan.yml` at the v1.2.2 release, on the pushed
 digest. It blocks on any Critical or High finding that no valid exemption
 covers, and the threshold cannot be set from this repository.
 
