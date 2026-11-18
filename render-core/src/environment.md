@@ -168,7 +168,25 @@ The overlay is inert without the key, and the key is only partial protection
 without the overlay, so the image carrying the overlay must be live before a
 render carrying the key (see the changelog's rollout note).
 
-## Scanner metrics export
+## Widget origin
+
+Ghost loads six front-end widgets (Portal, search, comments, the announcement
+bar, the signup form, the admin toolbar) from a public CDN unless a config key
+says otherwise. `tenantEnvironment()` takes a `widgets` source, `cdn` by
+default: nothing is rendered, and Ghost keeps its compiled-in addresses. With
+`own-origin` it renders Ghost's seven address keys, each as
+`<siteUrl>/bl-assets/<file>`: `portal__url`, `sodoSearch__url`,
+`sodoSearch__styles`, `announcementBar__url`, `comments__url`,
+`adminToolbar__url` and `signupForm__url`. `comments` has no styles key in
+Ghost 6.76.0. `render()` carries the choice as `options.widgets`.
+
+The files are the sha384-pinned bundles in the repository's `widgets/dist/`;
+`widgets/pins.json` lists the same seven keys and paths, and
+`test/widgets.test.ts` fails when this list and that one disagree. The renderer
+does not serve anything: the edge must answer `/bl-assets/*` on the tenant's
+hostname with those files before a tenant is rendered with `own-origin`, or
+Portal and search stop loading. The default is `cdn` for that reason: a
+consumer that upgrades this package changes nothing until it asks.
 
 Every paying tenant's object-storage branch renders two more keys per
 storage feature, six in all: `storage__<feature>__metricsTextfilePath`

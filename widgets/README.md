@@ -31,10 +31,33 @@ rather than asserted from config; a production edge is expected to fold `origin/
 config rather than run this container permanently. `/bl-assets/` is the URL
 path LLD-5 §06 marks incidental.
 
-**Not wired into the rendered Ghost environment.** Pointing production env
-vars at a `/bl-assets/` path nothing serves would be a config lie. That
-wiring belongs to whichever edge consumes these pins -- `pins.json` is
-written so it can.
+**Wired into the rendered Ghost environment, opt-in.** `render-core`'s
+`tenantEnvironment()` renders the seven override keys as
+`<siteUrl>/bl-assets/<file>` when asked for `widgets: 'own-origin'`
+(`render()`'s `options.widgets`), and renders nothing by default: pointing a
+tenant at a `/bl-assets/` path its edge does not serve would stop Portal and
+search loading. `render-core/test/widgets.test.ts` fails when the renderer's
+list and `pins.json` disagree. The edge that serves the path is
+`branchLeft/shared-infra`'s `hetzner/edge`.
+
+## Same-origin proof
+
+`proof/same-origin.ts` is read-only and needs no setup, so it can be pointed
+at a live site: it loads the named public pages in headless Chromium and fails
+if any request leaves the site's origin (bar origins named in
+`PROOF_ALLOW_ORIGINS`) or if `portal.min.js` and `sodo-search.min.js` are not
+served 200 from `/bl-assets/`.
+
+```
+cd widgets/proof && pnpm install
+PROOF_ORIGIN=https://site.example PROOF_PATHS=/,/some-post/ node same-origin.ts
+```
+
+Checked locally against the Docker pair above with the seven keys set: exit 0;
+with them removed: exit 1, naming the two jsDelivr requests. A fresh Ghost
+install also requests two `static.ghost.org` images (see above), so a local run
+sets `PROOF_ALLOW_ORIGINS=https://static.ghost.org`; a tenant's own media is on
+its object-storage origin and needs that origin named the same way.
 
 ## The live proof
 

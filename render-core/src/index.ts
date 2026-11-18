@@ -100,7 +100,13 @@ export type { GhostSettings, CodeInjectionSettings } from './settings.js';
 export { CODE_INJECTION_EXPLAINER } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
-export { SECRET_ENV_KEYS, tenantEnvironment } from './environment.js';
+export {
+  OWN_ORIGIN_WIDGETS,
+  SECRET_ENV_KEYS,
+  WIDGET_ASSET_PATH_PREFIX,
+  tenantEnvironment,
+} from './environment.js';
+export type { WidgetSource } from './environment.js';
 export {
   credentialDomainOf,
   DEFAULT_MAIL_ROUTE,

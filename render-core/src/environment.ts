@@ -384,6 +384,49 @@ function hostLimitsEnvironment(limits: LimitsSpec): Record<string, string | numb
   return env;
 }
 
+/** Where a tenant's Ghost front-end widgets (Portal, search, comments, the
+ * announcement bar, the signup form, the admin toolbar) load from. `cdn` renders
+ * nothing, so Ghost keeps its compiled-in jsDelivr addresses; `own-origin`
+ * points every widget at the tenant's own site. See environment.md#widget-origin. */
+export type WidgetSource = 'cdn' | 'own-origin';
+
+/** The path the edge serves the vendored widget files under, on every tenant
+ * hostname. The edge's file server and this prefix must move together. */
+export const WIDGET_ASSET_PATH_PREFIX = '/bl-assets';
+
+/** Ghost's seven widget address keys (in their environment form) and the
+ * vendored file each is pointed at. `widgets/pins.json` is the other list of
+ * the same seven rows; `test/widgets.test.ts` fails when the two disagree. */
+export const OWN_ORIGIN_WIDGETS: Readonly<Record<string, string>> = {
+  portal__url: 'portal.min.js',
+  sodoSearch__url: 'sodo-search.min.js',
+  sodoSearch__styles: 'sodo-search.min.css',
+  announcementBar__url: 'announcement-bar.min.js',
+  comments__url: 'comments-ui.min.js',
+  adminToolbar__url: 'admin-toolbar.min.js',
+  signupForm__url: 'signup-form.min.js',
+};
+
+/**
+ * With `own-origin`, each widget key is `<siteUrl>/bl-assets/<file>`: the same
+ * origin as the page, so a reader's browser contacts no third party to render
+ * them. With `cdn`, nothing is rendered. See environment.md#widget-origin.
+ */
+function widgetEnvironment(
+  siteUrl: string,
+  source: WidgetSource
+): Record<string, string | number | boolean> {
+  if (source === 'cdn') {
+    return {};
+  }
+  const base = siteUrl.replace(/\/+$/, '');
+  const env: Record<string, string | number | boolean> = {};
+  for (const [key, file] of Object.entries(OWN_ORIGIN_WIDGETS)) {
+    env[key] = `${base}${WIDGET_ASSET_PATH_PREFIX}/${file}`;
+  }
+  return env;
+}
+
 /**
  * A demo may not connect a real Stripe account; a paying tenant keeps Ghost's
  * standard Stripe behaviour. The key is Ghost's own `limitStripeConnect`
@@ -417,10 +460,12 @@ export function tenantEnvironment(
   >,
   limits: UploadLimits,
   secretsFilePath: string,
-  zones: Pick<ZoneConfig, 'demoMailDomain'>
+  zones: Pick<ZoneConfig, 'demoMailDomain'>,
+  widgets: WidgetSource = 'cdn'
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     url: descriptor.siteUrl,
+    ...widgetEnvironment(descriptor.siteUrl, widgets),
     ...databaseEnvironment(descriptor.slug, descriptor.database),
     ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
     ...transportEnvironment(descriptor.transport, descriptor.mail, zones, descriptor.uid),
