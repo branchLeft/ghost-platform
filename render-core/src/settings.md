@@ -40,3 +40,13 @@ restriction upstream rejects the two disagreeing as an opaque HTTP 400,
 with the real cause visible only in container output, so both are computed
 from the same call to `mail.ts#renderSendingAddress` rather than from two
 independent readings of the descriptor's sending identity.
+
+**`heading_font` and `body_font` are always `''` ("Theme default").** Ghost's
+Design settings font picker writes these two settings, and Ghost's `ghost_head`
+helper then puts a stylesheet link to `fonts.bunny.net` (a third-party origin)
+into every page of the site, which the platform's rule that a tenant page
+requests nothing from another origin forbids. Both are writable through the
+Admin API (they are in Ghost's settings-input allowlist), so, like the two
+code-injection boxes, they are named on every apply: a font chosen by hand is
+cleared again. The platform's own self-hosted fonts are a separate path
+(`themes/README.md`, "How the fonts are served").
