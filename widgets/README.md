@@ -1,8 +1,13 @@
 # Self-hosted front-end widgets (branchLeft/workspace#1230)
 
-The pinned `ghost:6.55.0` image loads six CDN script bundles plus one CDN
-stylesheet by default, all on floating `~` version ranges (`forks/Ghost` at
-`v6.55.0`, `ghost/core/core/shared/config/defaults.json:294-318`): `portal`,
+The image built from the root `Dockerfile` loads six CDN script bundles plus
+one CDN stylesheet by default, all on floating `~` version ranges. Ghost picks
+each range from the `version` its own release carries in
+`ghost/core/shared/config/defaults.json` (the path was `ghost/core/core/shared/...`
+before 6.7x), so the pins are only valid for the Ghost release they were
+resolved from; `pins.json` records it as `ghostVersion` and `sourceGhostImage`,
+and `verify-pins.test.mjs` fails when either stops matching the Dockerfile's
+`FROM` line. The keys: `portal`,
 `sodoSearch` (script + `styles`), `announcementBar`, `comments`,
 `adminToolbar`, `signupForm`. Each is a plain Ghost config key, overridable
 by env var (nconf, `__` separator) with no Ghost source change.
@@ -132,12 +137,14 @@ separate, type-independent signal and is not scoped at all.
 
 ## fetch-pins.mjs
 
-Resolves the six CDN script bundles and the one CDN stylesheet the pinned
-Ghost image loads by default (`ghost/core/core/shared/config/defaults.json`
-in `forks/Ghost` at `v6.55.0`, lines 294-318), downloads the exact bytes
-jsdelivr currently resolves each floating `~` range to, and writes them
-into `widgets/dist/` alongside a content-digest manifest in
-`widgets/pins.json`.
+Reads the Ghost version from the root `Dockerfile`, fetches that release's
+`defaults.json` from the public Ghost repository at its tag, takes each
+widget's floating `~` range from it, downloads the exact bytes jsdelivr
+currently resolves each range to, and writes them into `widgets/dist/`
+alongside a content-digest manifest in `widgets/pins.json`. Bumping the
+Ghost base image in the Dockerfile therefore needs `node
+widgets/scripts/fetch-pins.mjs` in the same pull request, or the pin check
+fails.
 
 Re-running this is how a future upgrade re-pins: it always re-resolves
 against the live CDN, so the diff in `pins.json` and `dist/` is the whole

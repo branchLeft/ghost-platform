@@ -1,9 +1,10 @@
 {
-  "$comment": "Pins for the six CDN script bundles plus one CDN stylesheet the pinned ghost:6.55.0 image loads by default (core/shared/config/defaults.json:294-318 in forks/Ghost at v6.55.0). Each row overrides one Ghost config key via its env-var form (nconf, separator \"__\") so the byte served is exactly the one pinned here, not whatever jsdelivr currently resolves the floating range to. Re-generate with widgets/scripts/fetch-pins.mjs; verify with widgets/scripts/verify-pins.mjs.",
-  "sourceGhostImage": "ghost:6.55.0-alpine@sha256:de23ea18e09f1f6e94dd323c831c3821494fa054b7a55984a5bd0b817fcab918",
-  "sourceDefaultsJson": "forks/Ghost @ v6.55.0, ghost/core/core/shared/config/defaults.json:294-318",
+  "$comment": "Pins for the six CDN script bundles plus one CDN stylesheet that the Ghost image built by the root Dockerfile loads by default (the widget config keys in that Ghost release's shared/config/defaults.json). Each row overrides one Ghost config key via its env-var form (nconf, separator \"__\") so the byte served is exactly the one pinned here, not whatever jsdelivr currently resolves the floating range to. Re-generate with widgets/scripts/fetch-pins.mjs; verify with widgets/scripts/verify-pins.mjs, which also fails when ghostVersion or sourceGhostImage stop matching the Dockerfile.",
+  "ghostVersion": "6.76.0",
+  "sourceGhostImage": "ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a",
+  "sourceDefaultsJson": "TryGhost/Ghost @ v6.76.0, ghost/core/shared/config/defaults.json",
   "servedFrom": "widgets/origin (Caddy file_server on /bl-assets/, reverse-proxying everything else to the Ghost container) -- see widgets/README.md",
-  "pinnedAt": "2026-09-23",
+  "pinnedAt": "2026-11-17",
   "bundles": [
     {
       "configKey": "portal",
@@ -12,11 +13,11 @@
       "servedPath": "/bl-assets/portal.min.js",
       "vendoredFile": "dist/portal.min.js",
       "mime": "application/javascript",
-      "sourceUrl": "https://cdn.jsdelivr.net/ghost/portal@~2.69/umd/portal.min.js",
-      "resolvedFrom": "portal@~2.69",
-      "resolvedVersion": "2.69.339",
-      "sha384": "sha384-YLARw+JrKTPUwhRrOUp/uslCAhg6EfLQJrZ8WiKqv3rbNo0VrDutWmkHwlXDKdAj",
-      "bytes": 2406990
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/portal@~2.72/umd/portal.min.js",
+      "resolvedFrom": "portal@~2.72",
+      "resolvedVersion": "2.72.36",
+      "sha384": "sha384-Fjwnzb5fL7hcN6Gfo3Dwf0bn0si8fEX9uNWeNLAQ19pheEArLxWZZcm99qx27UER",
+      "bytes": 2584555
     },
     {
       "configKey": "sodoSearch",
@@ -25,11 +26,11 @@
       "servedPath": "/bl-assets/sodo-search.min.js",
       "vendoredFile": "dist/sodo-search.min.js",
       "mime": "application/javascript",
-      "sourceUrl": "https://cdn.jsdelivr.net/ghost/sodo-search@~1.8/umd/sodo-search.min.js",
-      "resolvedFrom": "sodo-search@~1.8",
-      "resolvedVersion": "1.8.554",
-      "sha384": "sha384-6wnKbY9PAoSONXNAY3KnVfBYTPO7IGEmSL2J/hqBe2ta1s7N838vzzM6so2u764W",
-      "bytes": 266755
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/sodo-search@~1.9/umd/sodo-search.min.js",
+      "resolvedFrom": "sodo-search@~1.9",
+      "resolvedVersion": "1.9.7",
+      "sha384": "sha384-RN4DWp2uFisQPnxpkK2tvDG3CXYXCT3QmfgC/QrFrH4EJjO2EXrDEp4n+o8CdPer",
+      "bytes": 128431
     },
     {
       "configKey": "sodoSearch",
@@ -38,11 +39,11 @@
       "servedPath": "/bl-assets/sodo-search.min.css",
       "vendoredFile": "dist/sodo-search.min.css",
       "mime": "text/css",
-      "sourceUrl": "https://cdn.jsdelivr.net/ghost/sodo-search@~1.8/umd/main.css",
-      "resolvedFrom": "sodo-search@~1.8",
-      "resolvedVersion": "1.8.554",
-      "sha384": "sha384-Ki57sKlMz8j0bkB6wDjGiM2Tuu9F14xszzP+hIYk/qL2K/H/8s8KXnbpMaY1ecx0",
-      "bytes": 9790
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/sodo-search@~1.9/umd/main.css",
+      "resolvedFrom": "sodo-search@~1.9",
+      "resolvedVersion": "1.9.7",
+      "sha384": "sha384-h79oowHjGepqnwTE0aRoTqA0NBiwlmJXkIu2+0bHQgniQ3LGiAHS5WQ9O2xZlZvB",
+      "bytes": 9819
     },
     {
       "configKey": "announcementBar",
@@ -53,9 +54,9 @@
       "mime": "application/javascript",
       "sourceUrl": "https://cdn.jsdelivr.net/ghost/announcement-bar@~1.1/umd/announcement-bar.min.js",
       "resolvedFrom": "announcement-bar@~1.1",
-      "resolvedVersion": "1.1.525",
-      "sha384": "sha384-TRE/DVlWwvpiCvi2wqTnV8ZiVyGgDlFdMWXn2ddFDFY0+cPnz2+1dAOd2pHFSpxa",
-      "bytes": 133217
+      "resolvedVersion": "1.1.679",
+      "sha384": "sha384-7XBzTS5JXNYADKqsNvthmXrW4K8weErRANhD3DML0eUmI6EfhN889OCTyAEZH5yt",
+      "bytes": 17165
     },
     {
       "configKey": "comments",
@@ -64,11 +65,11 @@
       "servedPath": "/bl-assets/comments-ui.min.js",
       "vendoredFile": "dist/comments-ui.min.js",
       "mime": "application/javascript",
-      "sourceUrl": "https://cdn.jsdelivr.net/ghost/comments-ui@~1.5/umd/comments-ui.min.js",
-      "resolvedFrom": "comments-ui@~1.5",
-      "resolvedVersion": "1.5.261",
-      "sha384": "sha384-G0OI2un8Kh7niW360+qBVmKg1ARVx6MQbDoHSA80UQgwBNIBPUdDXZBQx7P/0jzb",
-      "bytes": 849362
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/comments-ui@~1.6/umd/comments-ui.min.js",
+      "resolvedFrom": "comments-ui@~1.6",
+      "resolvedVersion": "1.6.456",
+      "sha384": "sha384-0qn0JFlgEtCp1nqBKcjlcQFVU9L9pwOKu51K8w4Jn9O0iiJjhbCg7tpabx0qebhE",
+      "bytes": 854843
     },
     {
       "configKey": "adminToolbar",
@@ -79,9 +80,9 @@
       "mime": "application/javascript",
       "sourceUrl": "https://cdn.jsdelivr.net/ghost/admin-toolbar@~0.1/umd/admin-toolbar.min.js",
       "resolvedFrom": "admin-toolbar@~0.1",
-      "resolvedVersion": "0.1.508",
-      "sha384": "sha384-J1wK8b7EN/TjWKZj/zJZAp1YgOSFyOmNVwOM8YM0hAFLof6mkvG/ycuFuiRvMlMu",
-      "bytes": 33908
+      "resolvedVersion": "0.1.663",
+      "sha384": "sha384-ItWM4j4+vCvV/vIwkN5CUK3Z/PLDipOdxgoXswyNWNx49Qd32NEIaop9Gg0kjgbW",
+      "bytes": 34145
     },
     {
       "configKey": "signupForm",
@@ -90,11 +91,11 @@
       "servedPath": "/bl-assets/signup-form.min.js",
       "vendoredFile": "dist/signup-form.min.js",
       "mime": "application/javascript",
-      "sourceUrl": "https://cdn.jsdelivr.net/ghost/signup-form@~0.3/umd/signup-form.min.js",
-      "resolvedFrom": "signup-form@~0.3",
-      "resolvedVersion": "0.3.555",
-      "sha384": "sha384-Fj1RRc6cCtdUSeX7tGAdV/yGk+X9/dUB80etgJ4U0yqjvHFnknMTxalCJWzUmGos",
-      "bytes": 257509
+      "sourceUrl": "https://cdn.jsdelivr.net/ghost/signup-form@~0.4/umd/signup-form.min.js",
+      "resolvedFrom": "signup-form@~0.4",
+      "resolvedVersion": "0.4.8",
+      "sha384": "sha384-1Fp2xFkYoNG2pMqTaA0+pLw+gJpmaROwSJ+WE1nJvnfOhcIh0kO3lNhv/jO97727",
+      "bytes": 130340
     }
   ]
 }

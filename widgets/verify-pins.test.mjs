@@ -9,7 +9,11 @@ import { mkdtemp, readFile, writeFile, mkdir, rm, realpath } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { verifyPins } from './scripts/verify-pins.mjs';
+import {
+  readDockerfileGhostImage,
+  verifyGhostAlignment,
+  verifyPins,
+} from './scripts/verify-pins.mjs';
 
 const execFileAsync = promisify(execFile);
 const WIDGETS_ROOT = new URL('.', import.meta.url).pathname;
@@ -90,6 +94,8 @@ test('a vendored file absent from dist/ is flagged as missing, not silently skip
 // the running script's own path) resolves inside the scratch dir and nothing
 // here can mutate the committed pins or vendored bytes CI depends on.
 async function makeScratchWidgetsCopy() {
+  // The scratch root mirrors the repo root: the Dockerfile beside a widgets/
+  // directory, because the Ghost-version check reads ../Dockerfile.
   // realpath matters here: on macOS os.tmpdir() lives under /var, which is
   // itself a symlink to /private/var, and the CLI's own run-as-main guard
   // compares import.meta.url (which Node resolves through the symlink)
@@ -97,10 +103,12 @@ async function makeScratchWidgetsCopy() {
   // with). Passing the unresolved path to execFile below would make the
   // guard see two different paths and silently skip main() -- not a bug in
   // the script, but a mismatch this harness must not introduce.
-  const scratch = await realpath(await mkdtemp(join(tmpdir(), 'widgets-pin-cli-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'widgets-pin-cli-')));
+  const scratch = join(root, 'widgets');
   await mkdir(join(scratch, 'dist'), { recursive: true });
   await mkdir(join(scratch, 'scripts'), { recursive: true });
 
+  await writeFile(join(root, 'Dockerfile'), await readFile(join(WIDGETS_ROOT, '..', 'Dockerfile')));
   const manifest = JSON.parse(await readFile(join(WIDGETS_ROOT, 'pins.json'), 'utf8'));
   await writeFile(join(scratch, 'pins.json'), JSON.stringify(manifest, null, 2));
   await writeFile(
@@ -113,21 +121,21 @@ async function makeScratchWidgetsCopy() {
       await readFile(join(WIDGETS_ROOT, bundle.vendoredFile))
     );
   }
-  return { scratch, manifest };
+  return { root, scratch, manifest };
 }
 
 test('CLI: exits 0 and reports OK when every bundle matches its pin', async () => {
-  const { scratch } = await makeScratchWidgetsCopy();
+  const { root, scratch } = await makeScratchWidgetsCopy();
   try {
     const { stdout } = await execFileAsync('node', [join(scratch, 'scripts', 'verify-pins.mjs')]);
-    assert.match(stdout, /^OK: all 7 vendored bundles match their pinned sha384 digest\.$/m);
+    assert.match(stdout, /^OK: all 7 vendored bundles match their pinned sha384 digest, /m);
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
 
 test('SABOTAGE (CLI): exits non-zero and names every mismatch when a bundle is tampered', async () => {
-  const { scratch, manifest } = await makeScratchWidgetsCopy();
+  const { root, scratch, manifest } = await makeScratchWidgetsCopy();
   try {
     const target = manifest.bundles.find((b) => b.configKey === 'signupForm');
     const original = await readFile(join(scratch, target.vendoredFile));
@@ -146,6 +154,79 @@ test('SABOTAGE (CLI): exits non-zero and names every mismatch when a bundle is t
       }
     );
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the pins are for the Ghost release and image digest the root Dockerfile builds on', async () => {
+  const drift = await verifyGhostAlignment(WIDGETS_ROOT.replace(/\/$/, ''));
+  assert.deepEqual(drift, []);
+
+  const image = await readDockerfileGhostImage(join(WIDGETS_ROOT, '..'));
+  const manifest = JSON.parse(await readFile(join(WIDGETS_ROOT, 'pins.json'), 'utf8'));
+  assert.equal(manifest.ghostVersion, image.version);
+  assert.equal(manifest.sourceGhostImage, image.ref);
+});
+
+test('SABOTAGE (CLI): a Dockerfile moved to another Ghost release fails the build', async () => {
+  const { root, scratch } = await makeScratchWidgetsCopy();
+  try {
+    const dockerfile = join(root, 'Dockerfile');
+    const text = await readFile(dockerfile, 'utf8');
+    await writeFile(
+      dockerfile,
+      text.replace(/^FROM ghost:\d+\.\d+\.\d+-alpine@/m, 'FROM ghost:9.9.9-alpine@')
+    );
+
+    await assert.rejects(
+      execFileAsync('node', [join(scratch, 'scripts', 'verify-pins.mjs')]),
+      (err) => {
+        assert.equal(err.code, 1);
+        assert.match(err.stderr, /no longer matches the image's Ghost version/);
+        assert.match(err.stderr, /Dockerfile builds on Ghost 9\.9\.9/);
+        assert.doesNotMatch(err.stderr, /pinned bundle\(s\) do not match/);
+        return true;
+      }
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SABOTAGE: a re-pointed base image digest at the same Ghost version is flagged', async () => {
+  const { root, scratch } = await makeScratchWidgetsCopy();
+  try {
+    const dockerfile = join(root, 'Dockerfile');
+    const text = await readFile(dockerfile, 'utf8');
+    await writeFile(
+      dockerfile,
+      text.replace(/^(FROM ghost:\S+@sha256:)[0-9a-f]{64}$/m, `$1${'0'.repeat(64)}`)
+    );
+
+    const drift = await verifyGhostAlignment(scratch);
+    assert.ok(
+      drift.some((d) => /sourceGhostImage differs from the Dockerfile base image/.test(d)),
+      `expected a digest drift, got:\n${drift.join('\n')}`
+    );
+    assert.ok(!drift.some((d) => /ghostVersion/.test(d)), 'the version itself is unchanged');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('SABOTAGE: a resolved version outside its recorded range is flagged', async () => {
+  const { root, scratch, manifest } = await makeScratchWidgetsCopy();
+  try {
+    const target = manifest.bundles.find((b) => b.configKey === 'portal');
+    target.resolvedVersion = '2.69.339';
+    await writeFile(join(scratch, 'pins.json'), JSON.stringify(manifest, null, 2));
+
+    const drift = await verifyGhostAlignment(scratch);
+    assert.ok(
+      drift.some((d) => d.startsWith('portal.url: resolved 2.69.339 is outside portal@~')),
+      `expected portal.url flagged, got:\n${drift.join('\n')}`
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
