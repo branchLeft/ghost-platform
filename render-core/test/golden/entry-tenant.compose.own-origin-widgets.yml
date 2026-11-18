@@ -43,6 +43,7 @@ services:
       - '10.20.2.20:3201:2368'
     environment:
       url: 'https://blog.entry-co.example'
+      client_sentry__disabled: true
       portal__url: 'https://blog.entry-co.example/bl-assets/portal.min.js'
       sodoSearch__url: 'https://blog.entry-co.example/bl-assets/sodo-search.min.js'
       sodoSearch__styles: 'https://blog.entry-co.example/bl-assets/sodo-search.min.css'
@@ -173,6 +174,7 @@ services:
       - '10.20.2.20:3202:2368'
     environment:
       url: 'https://blog.entry-co.example'
+      client_sentry__disabled: true
       portal__url: 'https://blog.entry-co.example/bl-assets/portal.min.js'
       sodoSearch__url: 'https://blog.entry-co.example/bl-assets/sodo-search.min.js'
       sodoSearch__styles: 'https://blog.entry-co.example/bl-assets/sodo-search.min.css'

@@ -180,6 +180,19 @@ default: nothing is rendered, and Ghost keeps its compiled-in addresses. With
 `adminToolbar__url` and `signupForm__url`. `comments` has no styles key in
 Ghost 6.76.0. `render()` carries the choice as `options.widgets`.
 
+`own-origin` also renders `client_sentry__disabled=true`. Portal reports its
+errors to Sentry whenever Ghost's site API carries a DSN, and the API carries
+one unless that key is set (`ghost/core/server/api/endpoints/utils/public-config/site.js`,
+Ghost 6.76.0). 6.76.0 ships no DSN, so today this closes the door and stops no call.
+
+Two calls the bundles can make have no configuration key, only a tenant
+setting that is off by default. Portal loads `cdn.firstpromoter.com` when the
+`firstpromoter` setting is on and `firstpromoter_id` is set, and fetches
+`partner.transistor.fm` for a signed-in member when the Transistor integration
+and `transistor_portal_enabled` are on. Neither runs on an anonymous page of a
+tenant that has not enabled it; a tenant that does enable one has chosen that
+third party. `widgets/proof/same-origin.ts` would show either.
+
 The files are the sha384-pinned bundles in the repository's `widgets/dist/`;
 `widgets/pins.json` lists the same seven keys and paths, and
 `test/widgets.test.ts` fails when this list and that one disagree. The renderer

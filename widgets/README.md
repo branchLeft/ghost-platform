@@ -53,6 +53,14 @@ cd widgets/proof && pnpm install
 PROOF_ORIGIN=https://site.example PROOF_PATHS=/,/some-post/ node same-origin.ts
 ```
 
+Serving the bundles from the site does not stop what they call. Portal can
+load `cdn.firstpromoter.com` (the `firstpromoter` setting) and fetch
+`partner.transistor.fm` for a signed-in member (the Transistor integration);
+Ghost has no config key for either, only those off-by-default tenant settings,
+so a tenant that turns one on fails this check by design. Portal's Sentry
+reporting is the one call Ghost's config can switch off, and `own-origin`
+renders `client_sentry__disabled=true` (see `render-core/src/environment.md`).
+
 Checked locally against the Docker pair above with the seven keys set: exit 0;
 with them removed: exit 1, naming the two jsDelivr requests. A fresh Ghost
 install also requests two `static.ghost.org` images (see above), so a local run

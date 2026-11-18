@@ -10,7 +10,8 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
   (the committed goldens are unchanged). With `own-origin`, the seven Ghost widget
   address keys (`portal__url`, `sodoSearch__url`, `sodoSearch__styles`,
   `announcementBar__url`, `comments__url`, `adminToolbar__url`, `signupForm__url`)
-  render as `<siteUrl>/bl-assets/<file>`. New exports `OWN_ORIGIN_WIDGETS`,
+  render as `<siteUrl>/bl-assets/<file>`, with `client_sentry__disabled=true`
+  beside them. New exports `OWN_ORIGIN_WIDGETS`,
   `WIDGET_ASSET_PATH_PREFIX` and `WidgetSource`. See
   src/environment.md#widget-origin.
 - **Rollout:** do not pass `own-origin` for a tenant until its edge serves

@@ -81,11 +81,15 @@ describe('own-origin widgets — tenantEnvironment()', () => {
     }
   });
 
-  it('changes nothing but the seven widget keys', () => {
+  it('changes nothing but the seven widget keys and the Sentry switch', () => {
     const plain = environmentOf(entryTenantDescriptor);
     const own = environmentOf(entryTenantDescriptor, 'own-origin');
     const added = Object.keys(own).filter((key) => !(key in plain));
-    expect(added.sort()).toEqual(Object.keys(OWN_ORIGIN_WIDGETS).sort());
+    expect(added.sort()).toEqual(
+      [...Object.keys(OWN_ORIGIN_WIDGETS), 'client_sentry__disabled'].sort()
+    );
+    expect(own.client_sentry__disabled).toBe(true);
+    expect(plain).not.toHaveProperty('client_sentry__disabled');
     for (const key of Object.keys(plain)) {
       expect(own[key]).toBe(plain[key]);
     }

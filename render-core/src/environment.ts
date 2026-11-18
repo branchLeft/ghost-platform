@@ -407,10 +407,20 @@ export const OWN_ORIGIN_WIDGETS: Readonly<Record<string, string>> = {
   signupForm__url: 'signup-form.min.js',
 };
 
+/** The one browser-side call Ghost's own configuration can switch off: Portal
+ * reports its errors to Sentry when the site API carries a DSN, and the API
+ * carries one unless `client_sentry.disabled` is set
+ * (`ghost/core/server/api/endpoints/utils/public-config/site.js`, Ghost 6.76.0).
+ * 6.76.0 ships no DSN, so this closes the door rather than a call made today. */
+const WIDGET_PRIVACY_ENVIRONMENT: Record<string, boolean> = {
+  client_sentry__disabled: true,
+};
+
 /**
  * With `own-origin`, each widget key is `<siteUrl>/bl-assets/<file>`: the same
  * origin as the page, so a reader's browser contacts no third party to render
- * them. With `cdn`, nothing is rendered. See environment.md#widget-origin.
+ * them, and Portal's Sentry reporting is switched off. With `cdn`, nothing is
+ * rendered. See environment.md#widget-origin.
  */
 function widgetEnvironment(
   siteUrl: string,
@@ -420,7 +430,7 @@ function widgetEnvironment(
     return {};
   }
   const base = siteUrl.replace(/\/+$/, '');
-  const env: Record<string, string | number | boolean> = {};
+  const env: Record<string, string | number | boolean> = { ...WIDGET_PRIVACY_ENVIRONMENT };
   for (const [key, file] of Object.entries(OWN_ORIGIN_WIDGETS)) {
     env[key] = `${base}${WIDGET_ASSET_PATH_PREFIX}/${file}`;
   }
