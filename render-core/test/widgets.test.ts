@@ -130,6 +130,23 @@ describe('own-origin widgets — tenantEnvironment()', () => {
     );
     expect(env.portal__url).toBe(`${descriptor.siteUrl}/bl-assets/portal.min.js`);
   });
+
+  it('strips a long run of trailing slashes in one pass', () => {
+    const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
+    const started = Date.now();
+    const env = tenantEnvironment(
+      {
+        ...descriptor,
+        siteUrl: `${descriptor.siteUrl}${'/'.repeat(200000)}` as typeof descriptor.siteUrl,
+      },
+      LIMITS,
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES,
+      'own-origin'
+    );
+    expect(env.portal__url).toBe(`${descriptor.siteUrl}/bl-assets/portal.min.js`);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });
 
 describe('own-origin widgets — the pins', () => {

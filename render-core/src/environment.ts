@@ -445,7 +445,11 @@ function widgetEnvironment(
   if (source === 'cdn') {
     return {};
   }
-  const base = siteUrl.replace(/\/+$/, '');
+  let end = siteUrl.length;
+  while (end > 0 && siteUrl.charCodeAt(end - 1) === 47) {
+    end -= 1; // 47 is '/'; a loop, not a regexp, so a long run of slashes costs one pass
+  }
+  const base = siteUrl.slice(0, end);
   const env: Record<string, string | number | boolean> = {
     ...WIDGET_PRIVACY_ENVIRONMENT,
     ...(blockThirdPartyIntegrations ? THIRD_PARTY_INTEGRATION_OVERRIDES : {}),
