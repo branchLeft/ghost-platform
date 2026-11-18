@@ -1,4 +1,5 @@
 import {
+  OWN_ORIGIN_WIDGETS,
   render,
   validateTenantStack,
   type TenantStackDescriptor,
@@ -89,6 +90,55 @@ describe('GhostTenant identity', () => {
     ]) {
       expect(ours[field]).toEqual(identity[field]);
     }
+  });
+});
+
+describe('GhostTenant widgets', () => {
+  const OWN_ORIGIN_KEYS = Object.keys(OWN_ORIGIN_WIDGETS);
+
+  function composeWith(args: Record<string, unknown>): string {
+    return new GhostTenant('widgets', {
+      descriptor: tenantZeroEquivalent(),
+      zones: TEST_ZONES,
+      ...args,
+    }).composeFile;
+  }
+
+  it('leaves the compose file byte-identical when no widget option is given', () => {
+    expect(composeWith({})).toBe(rendered().get('compose.yml'));
+    expect(composeWith({})).not.toContain('/bl-assets/');
+  });
+
+  it('renders every widget address from the tenant origin with own-origin', () => {
+    const compose = composeWith({ widgets: 'own-origin' });
+    expect(OWN_ORIGIN_KEYS).toHaveLength(7);
+    for (const [key, file] of Object.entries(OWN_ORIGIN_WIDGETS)) {
+      expect(compose).toContain(`${key}: 'https://`);
+      expect(compose).toContain(`/bl-assets/${file}`);
+    }
+    expect(compose).not.toContain('jsdelivr');
+  });
+
+  it('matches what render() returns for the same options', () => {
+    const expected = new Map(
+      render(validateTenantStack(tenantZeroEquivalent(), TEST_ZONES), TEST_ZONES, undefined, {
+        widgets: 'own-origin',
+      }).map((a) => [a.path, a.content])
+    );
+    expect(composeWith({ widgets: 'own-origin' })).toBe(expected.get('compose.yml'));
+  });
+
+  it('switches FirstPromoter and Transistor off by default, and back on when told', () => {
+    const blocked = composeWith({ widgets: 'own-origin' });
+    expect(blocked).toContain('hostSettings__settingsOverrides__firstpromoter: false');
+    expect(blocked).toContain('hostSettings__settingsOverrides__transistor: false');
+    const left = composeWith({ widgets: 'own-origin', blockThirdPartyIntegrations: false });
+    expect(left).not.toContain('settingsOverrides__firstpromoter');
+    expect(left).not.toContain('settingsOverrides__transistor');
+  });
+
+  it('ignores blockThirdPartyIntegrations without own-origin', () => {
+    expect(composeWith({ blockThirdPartyIntegrations: false })).toBe(rendered().get('compose.yml'));
   });
 });
 

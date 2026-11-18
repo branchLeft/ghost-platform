@@ -70,7 +70,10 @@ decision.
   in `ghostSettings` (0.3.0). The mail spool's drain binding, the demo-only
   keys and the 0.4.0 mail route and one-colour options change nothing in this
   diff: the spool is not a tenant artefact, the fixture is a paying tenant, and
-  the new options are absent. A host must have the metrics volume (re-run
+  the new options are absent. Raising the pin to 0.6.0 (0.5.0 was never
+  published) changes only the wording of two `secrets.env` header comment
+  lines, which now name the host script that fills the file; the 0.5.0 and
+  0.6.0 options are all opt-in and absent from this fixture. A host must have the metrics volume (re-run
   `provision_tenant_volume.py`) before a stack rendered with this pin starts.
 
 ## The slug
