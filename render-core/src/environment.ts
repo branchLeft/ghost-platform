@@ -384,6 +384,82 @@ function hostLimitsEnvironment(limits: LimitsSpec): Record<string, string | numb
   return env;
 }
 
+/** Where a tenant's Ghost front-end widgets (Portal, search, comments, the
+ * announcement bar, the signup form, the admin toolbar) load from. `cdn` renders
+ * nothing, so Ghost keeps its compiled-in jsDelivr addresses; `own-origin`
+ * points every widget at the tenant's own site. See environment.md#widget-origin. */
+export type WidgetSource = 'cdn' | 'own-origin';
+
+/** The path the edge serves the vendored widget files under, on every tenant
+ * hostname. The edge's file server and this prefix must move together. */
+export const WIDGET_ASSET_PATH_PREFIX = '/bl-assets';
+
+/** Ghost's seven widget address keys (in their environment form) and the
+ * vendored file each is pointed at. `widgets/pins.json` is the other list of
+ * the same seven rows; `test/widgets.test.ts` fails when the two disagree. */
+export const OWN_ORIGIN_WIDGETS: Readonly<Record<string, string>> = {
+  portal__url: 'portal.min.js',
+  sodoSearch__url: 'sodo-search.min.js',
+  sodoSearch__styles: 'sodo-search.min.css',
+  announcementBar__url: 'announcement-bar.min.js',
+  comments__url: 'comments-ui.min.js',
+  adminToolbar__url: 'admin-toolbar.min.js',
+  signupForm__url: 'signup-form.min.js',
+};
+
+/** The one browser-side call Ghost's own configuration can switch off: Portal
+ * reports its errors to Sentry when the site API carries a DSN, and the API
+ * carries one unless `client_sentry.disabled` is set
+ * (`ghost/core/server/api/endpoints/utils/public-config/site.js`, Ghost 6.76.0).
+ * 6.76.0 ships no DSN, so this closes the door rather than a call made today. */
+const WIDGET_PRIVACY_ENVIRONMENT: Record<string, boolean> = {
+  client_sentry__disabled: true,
+};
+
+/** The two third-party integrations Portal reaches out to from a reader's
+ * browser, each read-only off for the tenant through Ghost's own host override
+ * (`hostSettings:settingsOverrides`, `ghost/core/server/services/settings/settings-service.js`
+ * and `shared/settings-cache/cache-manager.js`, Ghost 6.76.0): FirstPromoter
+ * (`cdn.firstpromoter.com`) and Transistor (`partner.transistor.fm`). Ghost has
+ * no other switch for either. Turning them off removes both features for the
+ * tenant, so it is a named option (`blockThirdPartyIntegrations`), on by
+ * default. See environment.md#widget-origin. */
+const THIRD_PARTY_INTEGRATION_OVERRIDES: Record<string, boolean> = {
+  hostSettings__settingsOverrides__firstpromoter: false,
+  hostSettings__settingsOverrides__transistor: false,
+};
+
+/**
+ * With `own-origin`, each widget key is `<siteUrl>/bl-assets/<file>`: the same
+ * origin as the page, so a reader's browser contacts no third party to render
+ * them, and Portal's Sentry reporting is switched off. With
+ * `blockThirdPartyIntegrations` (the default) FirstPromoter and Transistor are
+ * switched off as well. With `cdn`, nothing is rendered. See
+ * environment.md#widget-origin.
+ */
+function widgetEnvironment(
+  siteUrl: string,
+  source: WidgetSource,
+  blockThirdPartyIntegrations: boolean
+): Record<string, string | number | boolean> {
+  if (source === 'cdn') {
+    return {};
+  }
+  let end = siteUrl.length;
+  while (end > 0 && siteUrl.charCodeAt(end - 1) === 47) {
+    end -= 1; // 47 is '/'; a loop, not a regexp, so a long run of slashes costs one pass
+  }
+  const base = siteUrl.slice(0, end);
+  const env: Record<string, string | number | boolean> = {
+    ...WIDGET_PRIVACY_ENVIRONMENT,
+    ...(blockThirdPartyIntegrations ? THIRD_PARTY_INTEGRATION_OVERRIDES : {}),
+  };
+  for (const [key, file] of Object.entries(OWN_ORIGIN_WIDGETS)) {
+    env[key] = `${base}${WIDGET_ASSET_PATH_PREFIX}/${file}`;
+  }
+  return env;
+}
+
 /**
  * A demo may not connect a real Stripe account; a paying tenant keeps Ghost's
  * standard Stripe behaviour. The key is Ghost's own `limitStripeConnect`
@@ -417,10 +493,13 @@ export function tenantEnvironment(
   >,
   limits: UploadLimits,
   secretsFilePath: string,
-  zones: Pick<ZoneConfig, 'demoMailDomain'>
+  zones: Pick<ZoneConfig, 'demoMailDomain'>,
+  widgets: WidgetSource = 'cdn',
+  blockThirdPartyIntegrations = true
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     url: descriptor.siteUrl,
+    ...widgetEnvironment(descriptor.siteUrl, widgets, blockThirdPartyIntegrations),
     ...databaseEnvironment(descriptor.slug, descriptor.database),
     ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
     ...transportEnvironment(descriptor.transport, descriptor.mail, zones, descriptor.uid),

@@ -4,6 +4,23 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Additive:** `tenantEnvironment()` takes an optional fifth argument,
+  `widgets: WidgetSource` (`'cdn'` or `'own-origin'`), and `render()` takes it as
+  `options.widgets`. Absent or `cdn`, every artefact is byte-identical to before
+  (the committed goldens are unchanged). With `own-origin`, the seven Ghost widget
+  address keys (`portal__url`, `sodoSearch__url`, `sodoSearch__styles`,
+  `announcementBar__url`, `comments__url`, `adminToolbar__url`, `signupForm__url`)
+  render as `<siteUrl>/bl-assets/<file>`, with `client_sentry__disabled=true`
+  beside them, and (unless `options.blockThirdPartyIntegrations` is `false`, a
+  sixth `tenantEnvironment()` argument) `hostSettings__settingsOverrides__firstpromoter`
+  and `hostSettings__settingsOverrides__transistor` set to `false`, which removes
+  FirstPromoter and Transistor for the tenant and makes both read-only in Admin.
+  New exports `OWN_ORIGIN_WIDGETS`,
+  `WIDGET_ASSET_PATH_PREFIX` and `WidgetSource`. See
+  src/environment.md#widget-origin.
+- **Rollout:** do not pass `own-origin` for a tenant until its edge serves
+  `/bl-assets/*` with the pinned widget files, or Portal and search stop loading.
+
 - `assertSpoolPosture` refuses `enable_ipv6` on any network the spool joins
   (anything but absent or a literal `false`), so a spool network cannot be given
   an IPv6 route the IPv4-only reasoning does not cover. The renderer never sets

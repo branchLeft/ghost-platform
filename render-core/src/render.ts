@@ -21,7 +21,7 @@ import {
   type PaymentsCsp,
   type ThemeCsp,
 } from './edge.js';
-import { tenantEnvironment, SECRET_ENV_KEYS } from './environment.js';
+import { tenantEnvironment, SECRET_ENV_KEYS, type WidgetSource } from './environment.js';
 import { renderIdentity } from './identity.js';
 import {
   imageEnvPath,
@@ -212,6 +212,16 @@ export interface RenderOptions {
   /** Whether the edge policy carries the measured Stripe origins. Absent is
    * `none`, which renders the policy byte-identically to before payments. */
   readonly payments?: PaymentsCsp;
+  /** Where the Ghost front-end widgets load from. Absent is `cdn`, which
+   * renders every artefact byte-identically to before; `own-origin` needs an
+   * edge that serves `/bl-assets/` on the tenant's hostname. See
+   * environment.md#widget-origin. */
+  readonly widgets?: WidgetSource;
+  /** With `widgets: 'own-origin'`, whether FirstPromoter and Transistor are
+   * switched off for the tenant (read-only in Ghost Admin), which removes both
+   * features. Absent is `true`; `false` leaves them to the tenant. No effect
+   * without `own-origin`. */
+  readonly blockThirdPartyIntegrations?: boolean;
 }
 
 /**
@@ -230,7 +240,14 @@ export function render(
   const dataMount = demoDataMount(descriptor);
 
   const limits = uploadLimits();
-  const environment = tenantEnvironment(descriptor, limits, secretsEnvPath(descriptor.slug), zones);
+  const environment = tenantEnvironment(
+    descriptor,
+    limits,
+    secretsEnvPath(descriptor.slug),
+    zones,
+    options.widgets,
+    options.blockThirdPartyIntegrations
+  );
   const compose = renderComposeStack({
     kind: descriptor.kind,
     slug: descriptor.slug,
