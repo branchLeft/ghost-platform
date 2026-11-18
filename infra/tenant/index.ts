@@ -15,6 +15,7 @@ import {
   validateTenantStack,
   type Artefact,
   type TenantStackDescriptor,
+  type WidgetSource,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
 
@@ -28,6 +29,18 @@ export interface GhostTenantArgs {
   /** Applied on `db1` by the provisioning script; recorded in the identity so
    * the tenant's configured cap is visible in its own stack. Defaults to 10. */
   maxUserConnections?: number;
+  /** Where Ghost's front-end widgets (Portal, search, comments and the rest)
+   * load from. `'own-origin'` points all seven at `<siteUrl>/bl-assets/`, which
+   * the tenant's edge serves, so a public page makes no request to a third
+   * party; `'cdn'` (the default) leaves Ghost's own jsDelivr addresses and
+   * renders every artefact byte-identically to before. Needs an edge that
+   * serves `/bl-assets/`. See index.md#widgets. */
+  widgets?: WidgetSource;
+  /** With `widgets: 'own-origin'`: whether FirstPromoter and Transistor are
+   * switched off for the tenant, so Portal reaches no third party. Defaults to
+   * `true`, the owner's ruling of 18 November. `false` leaves both to the
+   * tenant. No effect without `own-origin`. */
+  blockThirdPartyIntegrations?: boolean;
 }
 
 /**
@@ -135,7 +148,12 @@ export class GhostTenant extends pulumi.ComponentResource {
     const descriptor = validateTenantStack(args.descriptor, args.zones, {
       claimantRepo: process.env['GITHUB_REPOSITORY'],
     });
-    const artefacts = render(descriptor, args.zones);
+    const artefacts = render(descriptor, args.zones, undefined, {
+      ...(args.widgets === undefined ? {} : { widgets: args.widgets }),
+      ...(args.blockThirdPartyIntegrations === undefined
+        ? {}
+        : { blockThirdPartyIntegrations: args.blockThirdPartyIntegrations }),
+    });
     const slug = descriptor.slug;
 
     const secretsTemplate = artefactContent(artefacts, 'secrets.env');

@@ -27,6 +27,21 @@ host (the `provisionScript` output), and the secrets file at
 `/etc/branchleft/<slug>.env` (rendered on the host from the
 `secretsEnvTemplate` output, see below).
 
+## Widgets
+
+`widgets` and `blockThirdPartyIntegrations` are passed straight to `render()`'s
+`options` and nothing else reads them. Left unset, the component calls `render()`
+as it always did and every artefact is byte-identical (`index.test.ts` holds
+this). `widgets: 'own-origin'` renders Ghost's seven widget address keys as
+`<siteUrl>/bl-assets/<file>`, plus `client_sentry__disabled`, and (unless
+`blockThirdPartyIntegrations: false`) switches FirstPromoter and Transistor off,
+which removes both features for the tenant and makes them read-only in Ghost
+Admin. It is opt-in, not a default, because a tenant whose edge does not serve
+`/bl-assets/` would lose Portal and search. The environment change reaches the
+container only when the host's `compose.yml` is replaced with the new
+`composeFile` output and the stack restarts; the image pin does not carry it.
+See `render-core/src/environment.md#widget-origin`.
+
 ## Secrets on the host
 
 **The tenant stack holds no secret value.** Since 8.0.0 the component takes no

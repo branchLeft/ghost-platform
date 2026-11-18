@@ -4,6 +4,19 @@ All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
 ## Unreleased
 
+- **Additive:** `GhostTenant` takes two optional arguments, `widgets`
+  (`'cdn'` or `'own-origin'`) and `blockThirdPartyIntegrations` (default
+  `true`), and passes them to `render()`. Unset, every output is byte-identical
+  to before. With `widgets: 'own-origin'`, Ghost loads Portal, search,
+  comments, the announcement bar, the admin toolbar and the signup form from
+  `<siteUrl>/bl-assets/` instead of jsDelivr, and FirstPromoter and Transistor
+  are switched off (read-only in Admin) unless `blockThirdPartyIntegrations` is
+  `false`. **Rollout:** do not set `own-origin` until the tenant's edge serves
+  `/bl-assets/`, and replace the host's `compose.yml` with the new
+  `composeFile` for the container to see it.
+- The render core pin moves from 0.4.0 to 0.6.0. Nothing rendered changes for a
+  stack that leaves `widgets` unset (0.5.0 and 0.6.0 are additive and opt-in).
+
 - **Breaking: `validateTenantNameClaim` is removed from `naming.ts` and from the
   package exports.** The tenant-name claim has one implementation, render core's
   `validateSlugAvailability`, reached through `validateTenantStack`, which
