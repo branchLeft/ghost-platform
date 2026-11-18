@@ -2,6 +2,14 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## Unreleased
+
+- **Additive:** `renderSettings()` names `heading_font` and `body_font` as `''` (Ghost's
+  "Theme default") in `ghost-settings.json`, so a reconciler that applies the artefact clears a
+  font chosen in Ghost's Design settings, which would otherwise make Ghost link a stylesheet from
+  `fonts.bunny.net` into every page. Both keys are in Ghost's Admin API settings allowlist. The
+  `ghost-settings.json` goldens gain the two keys; no other artefact changes.
+
 ## 0.6.0
 
 0.5.0 was never published, so 0.6.0 is the first release that carries the 0.5.0 changes too.
