@@ -416,21 +416,40 @@ const WIDGET_PRIVACY_ENVIRONMENT: Record<string, boolean> = {
   client_sentry__disabled: true,
 };
 
+/** The two third-party integrations Portal reaches out to from a reader's
+ * browser, each read-only off for the tenant through Ghost's own host override
+ * (`hostSettings:settingsOverrides`, `ghost/core/server/services/settings/settings-service.js`
+ * and `shared/settings-cache/cache-manager.js`, Ghost 6.76.0): FirstPromoter
+ * (`cdn.firstpromoter.com`) and Transistor (`partner.transistor.fm`). Ghost has
+ * no other switch for either. Turning them off removes both features for the
+ * tenant, so it is a named option (`blockThirdPartyIntegrations`), on by
+ * default. See environment.md#widget-origin. */
+const THIRD_PARTY_INTEGRATION_OVERRIDES: Record<string, boolean> = {
+  hostSettings__settingsOverrides__firstpromoter: false,
+  hostSettings__settingsOverrides__transistor: false,
+};
+
 /**
  * With `own-origin`, each widget key is `<siteUrl>/bl-assets/<file>`: the same
  * origin as the page, so a reader's browser contacts no third party to render
- * them, and Portal's Sentry reporting is switched off. With `cdn`, nothing is
- * rendered. See environment.md#widget-origin.
+ * them, and Portal's Sentry reporting is switched off. With
+ * `blockThirdPartyIntegrations` (the default) FirstPromoter and Transistor are
+ * switched off as well. With `cdn`, nothing is rendered. See
+ * environment.md#widget-origin.
  */
 function widgetEnvironment(
   siteUrl: string,
-  source: WidgetSource
+  source: WidgetSource,
+  blockThirdPartyIntegrations: boolean
 ): Record<string, string | number | boolean> {
   if (source === 'cdn') {
     return {};
   }
   const base = siteUrl.replace(/\/+$/, '');
-  const env: Record<string, string | number | boolean> = { ...WIDGET_PRIVACY_ENVIRONMENT };
+  const env: Record<string, string | number | boolean> = {
+    ...WIDGET_PRIVACY_ENVIRONMENT,
+    ...(blockThirdPartyIntegrations ? THIRD_PARTY_INTEGRATION_OVERRIDES : {}),
+  };
   for (const [key, file] of Object.entries(OWN_ORIGIN_WIDGETS)) {
     env[key] = `${base}${WIDGET_ASSET_PATH_PREFIX}/${file}`;
   }
@@ -471,11 +490,12 @@ export function tenantEnvironment(
   limits: UploadLimits,
   secretsFilePath: string,
   zones: Pick<ZoneConfig, 'demoMailDomain'>,
-  widgets: WidgetSource = 'cdn'
+  widgets: WidgetSource = 'cdn',
+  blockThirdPartyIntegrations = true
 ): Record<string, string | number | boolean> {
   const env: Record<string, string | number | boolean> = {
     url: descriptor.siteUrl,
-    ...widgetEnvironment(descriptor.siteUrl, widgets),
+    ...widgetEnvironment(descriptor.siteUrl, widgets, blockThirdPartyIntegrations),
     ...databaseEnvironment(descriptor.slug, descriptor.database),
     ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
     ...transportEnvironment(descriptor.transport, descriptor.mail, zones, descriptor.uid),

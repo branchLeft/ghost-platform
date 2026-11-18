@@ -11,7 +11,11 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
   address keys (`portal__url`, `sodoSearch__url`, `sodoSearch__styles`,
   `announcementBar__url`, `comments__url`, `adminToolbar__url`, `signupForm__url`)
   render as `<siteUrl>/bl-assets/<file>`, with `client_sentry__disabled=true`
-  beside them. New exports `OWN_ORIGIN_WIDGETS`,
+  beside them, and (unless `options.blockThirdPartyIntegrations` is `false`, a
+  sixth `tenantEnvironment()` argument) `hostSettings__settingsOverrides__firstpromoter`
+  and `hostSettings__settingsOverrides__transistor` set to `false`, which removes
+  FirstPromoter and Transistor for the tenant and makes both read-only in Admin.
+  New exports `OWN_ORIGIN_WIDGETS`,
   `WIDGET_ASSET_PATH_PREFIX` and `WidgetSource`. See
   src/environment.md#widget-origin.
 - **Rollout:** do not pass `own-origin` for a tenant until its edge serves

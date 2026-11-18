@@ -217,6 +217,11 @@ export interface RenderOptions {
    * edge that serves `/bl-assets/` on the tenant's hostname. See
    * environment.md#widget-origin. */
   readonly widgets?: WidgetSource;
+  /** With `widgets: 'own-origin'`, whether FirstPromoter and Transistor are
+   * switched off for the tenant (read-only in Ghost Admin), which removes both
+   * features. Absent is `true`; `false` leaves them to the tenant. No effect
+   * without `own-origin`. */
+  readonly blockThirdPartyIntegrations?: boolean;
 }
 
 /**
@@ -240,7 +245,8 @@ export function render(
     limits,
     secretsEnvPath(descriptor.slug),
     zones,
-    options.widgets
+    options.widgets,
+    options.blockThirdPartyIntegrations
   );
   const compose = renderComposeStack({
     kind: descriptor.kind,

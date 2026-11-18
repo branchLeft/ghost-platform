@@ -48,7 +48,8 @@ const fixtures = [
 
 function environmentOf(
   fixture: (typeof fixtures)[number][1],
-  widgets?: 'cdn' | 'own-origin'
+  widgets?: 'cdn' | 'own-origin',
+  blockThirdPartyIntegrations?: boolean
 ): Record<string, string | number | boolean> {
   const descriptor = validate(fixture(), TEST_ZONES);
   return tenantEnvironment(
@@ -56,9 +57,15 @@ function environmentOf(
     LIMITS,
     secretsEnvPath(descriptor.slug),
     TEST_ZONES,
-    widgets
+    widgets,
+    blockThirdPartyIntegrations
   );
 }
+
+const INTEGRATION_KEYS = [
+  'hostSettings__settingsOverrides__firstpromoter',
+  'hostSettings__settingsOverrides__transistor',
+];
 
 describe('own-origin widgets — tenantEnvironment()', () => {
   it.each(fixtures)('renders no widget key by default, for a %s', (_label, fixture) => {
@@ -81,18 +88,35 @@ describe('own-origin widgets — tenantEnvironment()', () => {
     }
   });
 
-  it('changes nothing but the seven widget keys and the Sentry switch', () => {
+  it('changes nothing but the seven widget keys, the Sentry switch and the two integration overrides', () => {
     const plain = environmentOf(entryTenantDescriptor);
     const own = environmentOf(entryTenantDescriptor, 'own-origin');
     const added = Object.keys(own).filter((key) => !(key in plain));
     expect(added.sort()).toEqual(
-      [...Object.keys(OWN_ORIGIN_WIDGETS), 'client_sentry__disabled'].sort()
+      [...Object.keys(OWN_ORIGIN_WIDGETS), 'client_sentry__disabled', ...INTEGRATION_KEYS].sort()
     );
     expect(own.client_sentry__disabled).toBe(true);
+    for (const key of INTEGRATION_KEYS) {
+      expect(own[key]).toBe(false);
+    }
     expect(plain).not.toHaveProperty('client_sentry__disabled');
     for (const key of Object.keys(plain)) {
       expect(own[key]).toBe(plain[key]);
     }
+  });
+
+  it('leaves FirstPromoter and Transistor to the tenant when blockThirdPartyIntegrations is false', () => {
+    const open = environmentOf(entryTenantDescriptor, 'own-origin', false);
+    for (const key of INTEGRATION_KEYS) {
+      expect(open).not.toHaveProperty(key);
+    }
+    expect(open.portal__url).toBeDefined();
+  });
+
+  it('renders no integration override without own-origin, whatever the option says', () => {
+    const plain = environmentOf(entryTenantDescriptor);
+    expect(environmentOf(entryTenantDescriptor, 'cdn', true)).toEqual(plain);
+    expect(environmentOf(entryTenantDescriptor, undefined, true)).toEqual(plain);
   });
 
   it('does not double the slash when the site URL ends in one', () => {

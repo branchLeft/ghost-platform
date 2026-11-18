@@ -44,6 +44,8 @@ services:
     environment:
       url: 'https://blog.entry-co.example'
       client_sentry__disabled: true
+      hostSettings__settingsOverrides__firstpromoter: false
+      hostSettings__settingsOverrides__transistor: false
       portal__url: 'https://blog.entry-co.example/bl-assets/portal.min.js'
       sodoSearch__url: 'https://blog.entry-co.example/bl-assets/sodo-search.min.js'
       sodoSearch__styles: 'https://blog.entry-co.example/bl-assets/sodo-search.min.css'
@@ -175,6 +177,8 @@ services:
     environment:
       url: 'https://blog.entry-co.example'
       client_sentry__disabled: true
+      hostSettings__settingsOverrides__firstpromoter: false
+      hostSettings__settingsOverrides__transistor: false
       portal__url: 'https://blog.entry-co.example/bl-assets/portal.min.js'
       sodoSearch__url: 'https://blog.entry-co.example/bl-assets/sodo-search.min.js'
       sodoSearch__styles: 'https://blog.entry-co.example/bl-assets/sodo-search.min.css'

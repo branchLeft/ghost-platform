@@ -185,13 +185,22 @@ errors to Sentry whenever Ghost's site API carries a DSN, and the API carries
 one unless that key is set (`ghost/core/server/api/endpoints/utils/public-config/site.js`,
 Ghost 6.76.0). 6.76.0 ships no DSN, so today this closes the door and stops no call.
 
-Two calls the bundles can make have no configuration key, only a tenant
-setting that is off by default. Portal loads `cdn.firstpromoter.com` when the
-`firstpromoter` setting is on and `firstpromoter_id` is set, and fetches
-`partner.transistor.fm` for a signed-in member when the Transistor integration
-and `transistor_portal_enabled` are on. Neither runs on an anonymous page of a
-tenant that has not enabled it; a tenant that does enable one has chosen that
-third party. `widgets/proof/same-origin.ts` would show either.
+Two calls the bundles can make have no switch of their own. Portal loads
+`cdn.firstpromoter.com` when the `firstpromoter` setting is on and
+`firstpromoter_id` is set, and fetches `partner.transistor.fm` for a signed-in
+member when the Transistor integration and `transistor_portal_enabled` are on.
+Ghost's host override (`hostSettings:settingsOverrides`, read by
+`services/settings/settings-service.js` and applied in
+`shared/settings-cache/cache-manager.js`, Ghost 6.76.0) pins a setting to a
+value and makes it read-only in Admin, so with `blockThirdPartyIntegrations`
+(`render()`'s `options.blockThirdPartyIntegrations`, **true unless the caller
+says otherwise**) `own-origin` also renders
+`hostSettings__settingsOverrides__firstpromoter=false` and
+`hostSettings__settingsOverrides__transistor=false`. **That removes FirstPromoter
+and Transistor for the tenant**: the product choice is the owner's, which is why
+it is a named option. With the option `false` neither key is rendered, a tenant
+that enables one chooses that third party, and `widgets/proof/same-origin.ts`
+fails for it by design.
 
 The files are the sha384-pinned bundles in the repository's `widgets/dist/`;
 `widgets/pins.json` lists the same seven keys and paths, and
