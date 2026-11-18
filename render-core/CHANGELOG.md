@@ -2,7 +2,9 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
-## Unreleased
+## 0.6.0
+
+0.5.0 was never published, so 0.6.0 is the first release that carries the 0.5.0 changes too.
 
 - **Additive:** `tenantEnvironment()` takes an optional fifth argument,
   `widgets: WidgetSource` (`'cdn'` or `'own-origin'`), and `render()` takes it as
