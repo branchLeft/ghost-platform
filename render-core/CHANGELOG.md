@@ -4,6 +4,12 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Additive:** `renderSettings()` names `footerCredit` (`text`, `url`, `keepGhostCredit: true`) in
+  `ghost-settings.json` for every kind: the default footer credit that extends Ghost's own
+  "Powered by Ghost". `text` and `url` are the placeholders `FOOTER_CREDIT_TEXT` and
+  `PUBLICPRESS_MAIN_SITE_URL` until the owner supplies the copy; Ghost's credit stays. New exports
+  `FOOTER_CREDIT_TEXT`, `FOOTER_CREDIT_URL` and `FooterCreditSettings`. The `ghost-settings.json`
+  goldens gain the key; code injection is unchanged.
 - **Additive:** `renderSettings()` names `heading_font` and `body_font` as `''` (Ghost's
   "Theme default") in `ghost-settings.json`, so a reconciler that applies the artefact clears a
   font chosen in Ghost's Design settings, which would otherwise make Ghost link a stylesheet from
