@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SlotName } from '@branchleft/ghost-platform-render-core';
+import type { EmailAddress, SlotName } from '@branchleft/ghost-platform-render-core';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { AdminAccessLostError, createGhostAdminClient } from '../../src/ghostAdmin/client.js';
 import { createAdminKeyStore } from '../../src/ghostAdmin/keyStore.js';
@@ -109,6 +109,7 @@ describe.skipIf(!canRun)('LIVE — the admin client against Ghost 6.55.0', () =>
       keyStore: createAdminKeyStore(keyDir),
       zones: TEST_ZONES,
       readyTimeoutMs: 180_000,
+      ownerReader: 'owner-review@example.invalid' as EmailAddress,
     });
 
   beforeAll(async () => {

@@ -333,6 +333,7 @@ describe('the real dist/server.js entrypoint', () => {
       BROKER_RENDERER_MODULE: join(distPlugins, 'renderCorePlugin.js'),
       BROKER_ADMIN_API_MODULE: join(distPlugins, 'ghostAdminApi.js'),
       BROKER_ADMIN_KEY_DIR: await makeTempDir('broker-spawn-keys-'),
+      OWNER_DUE_DILIGENCE_EMAIL: 'owner-review@example.invalid',
       BROKER_IMAGE_LOADER_MODULE: join(distPlugins, 'dockerImageLoader.js'),
     };
 
