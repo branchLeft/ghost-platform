@@ -356,7 +356,7 @@ describe('safety.inbound refusals', () => {
     ['inbound a string', '8443', 'safety.inbound'],
   ];
 
-  it.each(refusals)('refuses %s, naming %s', (_l, inbound, field) => {
+  it.each(refusals)('refuses %s', (_label, inbound, field) => {
     expect(refusedField(withInbound(production, inbound))).toBe(field);
   });
 
