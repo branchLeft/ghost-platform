@@ -4,6 +4,22 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Additive: storage gateway media.** `media.kind: "gateway"` (`endpoint`, `region`, `shard`,
+  `folder`, `resize`, `srcsets`) renders Ghost's `S3Storage` against the storage gateway:
+  `endpoint` the gateway, `forcePathStyle: true`, `bucket` the shard, `tenantPrefix` the tenant's
+  opaque folder and `cdnUrl` the new `zones.mediaOrigin`, the platform's own media address. The
+  secrets template names `GHOST_STORAGE_GATEWAY_KEY_ID` and `GHOST_STORAGE_GATEWAY_SECRET`, never a
+  `GHOST_S3_*` key. A folder that equals or contains the slug, a missing folder, a per-tenant or
+  slug-bearing shard, and a gateway descriptor with no `zones.mediaOrigin` are refused. The rendered
+  identity gains `mediaFolder` for a gateway descriptor only. New exports
+  `GATEWAY_FOLDER_PATTERN`, `bareHttpsOrigin`, `validateMediaFolder`, `validateMediaShard`. Every
+  `local` and `s3` artefact is byte-identical (the goldens are unchanged). See
+  src/media.md#the-tenant-folder.
+- **Rollout:** `s3` stays for the demo-tenant slot until the gateway is live; the descriptor's
+  `media.kind` is the switch. Do not set `gateway` on a descriptor until the gateway answers on
+  `media.endpoint`, the tenant's folder has a minted credential, and the edge serves
+  `zones.mediaOrigin`, or uploads fail and published images do not load.
+
 - **Additive:** `tenantEnvironment()` renders `privacy__useGravatar: false` for every tenant, so
   Ghost no longer builds a Gravatar address from a hash of a member's email and Portal's account
   page sends nothing about a reader to Gravatar. Every compose golden gains the one line; no other

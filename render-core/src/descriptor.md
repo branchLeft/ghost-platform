@@ -52,3 +52,14 @@ A demo keeps `ownerEmail` inline. The broker holds it in its own store and
 never commits it, and it creates the owner from it. A promotion's
 `transform()` still returns a full `TenantDescriptor`, and the caller removes
 `ownerEmail` before the result goes into a tenant repository.
+
+## Gateway media
+
+`media.kind: "gateway"` is a paying tenant's media as one folder in a shared
+shard bucket, reached through the storage gateway with a key the gateway
+mints. It carries the gateway's https `endpoint`, the `region`, the `shard` the
+folder was assigned to and the tenant's opaque `folder`. It carries no bucket
+of its own and no Hetzner key: `render()` names
+`GHOST_STORAGE_GATEWAY_KEY_ID` and `GHOST_STORAGE_GATEWAY_SECRET` in the
+secrets template instead of the two `GHOST_S3_*` keys. See
+media.md#the-tenant-folder and media.md#the-two-object-storage-kinds.

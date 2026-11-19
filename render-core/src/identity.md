@@ -16,3 +16,12 @@ available to a reconciler that never touches Pulumi at all (the broker).
 `GhostTenantArgs`, not on anything `TenantDescriptor` carries today, and
 fabricating a value here would be a config surface this schema does not yet
 expose. A consumer that needs it still has `db/provision`'s own default.
+
+## The media folder
+
+A `gateway` tenant's media is one folder in a shared shard bucket. Its
+`mediaBucket` is that shard and `mediaFolder` is the folder. The folder is in
+every published media URL (Ghost's `tenantPrefix`), so changing it orphans
+every object and breaks every published post's images; it is identity, not
+configuration. The key is absent for `local` and `s3` descriptors, so their
+rendered identity is byte-identical to before.
