@@ -58,7 +58,11 @@ const GATEWAY_OWNED_HEADER: ReadonlySet<string> = new Set([
  */
 const DIGEST_METADATA = 'x-amz-meta-gateway-sha256';
 /** The most of a complete's part list read back to compute the ETag it should produce. */
-const MAX_COMPLETE_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_COMPLETE_BODY_BYTES = 2 * 1024 * 1024;
+/** S3's own ceiling on the parts of one upload. */
+const MAX_COMPLETE_PARTS = 10_000;
+/** A real `<Part>` element is about 100 bytes; one this long is not a part list worth reading. */
+const MAX_PART_ELEMENT_BYTES = 4096;
 const DEFAULT_CONFIRM_CAP_MS = 15_000;
 const DEFAULT_CONFIRM_INTERVAL_MS = 1000;
 /** The headers of a confirmed upload's answer: what the service would have sent for the PUT. */
@@ -355,10 +359,11 @@ function normalisedEtag(raw: string | undefined): string | undefined {
  * `undefined` when it is larger, so a check is skipped rather than guessed.
  */
 async function readBodyText(body: UpstreamBody): Promise<string | undefined> {
-  const stream = body.open();
   const chunks: Buffer[] = [];
   let total = 0;
+  let stream: Readable | undefined;
   try {
+    stream = body.open();
     for await (const chunk of stream) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
       total += buf.length;
@@ -368,7 +373,7 @@ async function readBodyText(body: UpstreamBody): Promise<string | undefined> {
   } catch {
     return undefined;
   } finally {
-    stream.destroy();
+    stream?.destroy();
   }
   return Buffer.concat(chunks).toString('utf8');
 }
@@ -378,14 +383,31 @@ async function readBodyText(body: UpstreamBody): Promise<string | undefined> {
  * honoured: the MD5 of the parts' binary MD5s, then `-` and the part count.
  * `undefined` when any part's ETag is not a plain MD5 (for example an
  * encrypted part), because then it cannot be computed and no claim is made.
+ *
+ * The document is the client's, so it is read in one forward pass with
+ * `indexOf` and never with a pattern that can backtrack: each search starts
+ * where the last ended, the count of parts and the length of each are capped,
+ * and anything unclosed or oversized gives `undefined` at once.
  */
 export function compositeEtagFromCompleteBody(document: string): string | undefined {
+  const OPEN = '<Part>';
+  const CLOSE = '</Part>';
   const etags: Buffer[] = [];
-  for (const part of document.matchAll(/<Part>([\s\S]*?)<\/Part>/g)) {
-    const raw = /<ETag>([^<]*)<\/ETag>/.exec(part[1] ?? '')?.[1];
-    const etag = normalisedEtag(raw === undefined ? undefined : decodeEntities(raw));
+  let at = 0;
+  for (;;) {
+    const open = document.indexOf(OPEN, at);
+    if (open === -1) break;
+    const close = document.indexOf(CLOSE, open + OPEN.length);
+    if (close === -1 || close - open > MAX_PART_ELEMENT_BYTES) return undefined;
+    if (etags.length >= MAX_COMPLETE_PARTS) return undefined;
+    const part = document.slice(open + OPEN.length, close);
+    const from = part.indexOf('<ETag>');
+    const to = from === -1 ? -1 : part.indexOf('</ETag>', from + 6);
+    if (to === -1) return undefined;
+    const etag = normalisedEtag(decodeEntities(part.slice(from + 6, to)));
     if (etag === undefined || !/^[0-9a-f]{32}$/.test(etag)) return undefined;
     etags.push(Buffer.from(etag, 'hex'));
+    at = close + CLOSE.length;
   }
   if (etags.length === 0) return undefined;
   const digest = createHash('md5').update(Buffer.concat(etags)).digest('hex');

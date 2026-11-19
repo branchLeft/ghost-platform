@@ -1016,6 +1016,46 @@ describe('upstream: a multipart complete the service took but never answered', (
     expect(compositeEtagFromCompleteBody('<CompleteMultipartUpload/>')).toBeUndefined();
   });
 
+  describe('a part list built to make the parse slow', () => {
+    const TIME_BOUND_MS = 250;
+    const timed = (document: string): { result: string | undefined; ms: number } => {
+      const started = performance.now();
+      const result = compositeEtagFromCompleteBody(document);
+      return { result, ms: performance.now() - started };
+    };
+
+    it('returns nothing, fast, for tens of thousands of opening tags that never close', () => {
+      const { result, ms } = timed(`<CompleteMultipartUpload>${'<Part>'.repeat(50_000)}`);
+      expect(result).toBeUndefined();
+      expect(ms).toBeLessThan(TIME_BOUND_MS);
+    });
+
+    it('returns nothing, fast, for part tags nested without end and ETag tags left open', () => {
+      for (const unit of ['<Part><Part>', '<Part><ETag>', '<Part><ETag></Part>', '</Part><Part>']) {
+        const { result, ms } = timed(`<CompleteMultipartUpload>${unit.repeat(50_000)}`);
+        expect(result).toBeUndefined();
+        expect(ms).toBeLessThan(TIME_BOUND_MS);
+      }
+    });
+
+    it('refuses a part list longer than S3 allows, and accepts one of exactly that length', () => {
+      const etag = partEtags[0] as string;
+      const parts = (n: number): string => completeBody(Array.from({ length: n }, () => etag));
+      expect(compositeEtagFromCompleteBody(parts(10_001))).toBeUndefined();
+      const full = timed(parts(10_000));
+      expect(full.result).toMatch(/^[0-9a-f]{32}-10000$/);
+      expect(full.ms).toBeLessThan(TIME_BOUND_MS);
+    });
+
+    it('checks nothing for a body past the cap, however it is shaped', async () => {
+      const double = await lossyService({ onComplete: 'hang', committed: true });
+      const huge = `<CompleteMultipartUpload>${'<Part>'.repeat(400_000)}</CompleteMultipartUpload>`;
+      const { answer } = await runComplete(double, huge);
+      expect(answer.status).toBe(504);
+      expect(double.probes()).toBe(0);
+    });
+  });
+
   it('answers success, once, when the deadline passes but the object was made', async () => {
     const double = await lossyService({ onComplete: 'hang', committed: true });
     const { answer, logs, uploads } = await runComplete(double);
@@ -1104,6 +1144,28 @@ describe('upstream: a multipart complete the service took but never answered', (
     const double = await lossyService({ onComplete: 'hang', committed: true });
     const odd = completeBody(['an-encrypted-part-etag']);
     const { answer } = await runComplete(double, odd);
+    expect(answer.status).toBe(504);
+    expect(double.probes()).toBe(0);
+  });
+
+  it('leaves the failure standing when the part list cannot be read back', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: true });
+    const up = createUpstream(rig().options(double, quick));
+    const prepared = await prepare(complete);
+    let opens = 0;
+    const unreadable: UpstreamBody = {
+      sha256: sha256Hex(COMPLETE_BODY),
+      size: Buffer.byteLength(COMPLETE_BODY),
+      open: () => {
+        opens += 1;
+        if (opens > 1) throw new Error('spool gone');
+        return Readable.from([Buffer.from(COMPLETE_BODY)]);
+      },
+    };
+    const answer = await answerWithin(
+      up.forward({ ...prepared, tenant: TENANT, body: unreadable }),
+      3000
+    );
     expect(answer.status).toBe(504);
     expect(double.probes()).toBe(0);
   });
