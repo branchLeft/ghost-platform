@@ -47,6 +47,7 @@ migration in `drizzle/meta/`:
 | 1   | `0001_drain_handover`     | Converts the queue to the drain shape in place. Hand-written; see [the drain-handover migration](#the-drain-handover-migration). |
 | 2   | `0002_sender_domain`      | Adds `tenants.sender_domain`. Generated.                                                                                         |
 | 3   | `0003_sender_local_part`  | Adds `tenants.sender_local_part` (NULL on every existing row) and the unique index `idx_tenants_sender_address`. Generated.      |
+| 4   | `0004_demo_lease`         | Adds `tenants.lease_id` and `queue_batches.lease_id` (NULL on every existing row) and the index `idx_queue_batches_lease`. Generated; see [the lease a batch belongs to](#the-lease-a-batch-belongs-to). |
 
 To change the schema: edit `schema.ts`, run
 `pnpm exec drizzle-kit generate --name <what-it-does>` in this package, and commit
@@ -84,6 +85,7 @@ the file's shape already reflects, then applies the rest as usual:
 | drain-shaped (`id`, `drain_count`, `available_at`, `held_until`) | no                            | 0, 1                |
 | drain-shaped                                                     | yes                           | 0, 1, 2             |
 | drain-shaped                                                     | yes, and `sender_local_part`  | 0, 1, 2, 3          |
+| drain-shaped                                                     | yes, `sender_local_part` and `lease_id` | 0, 1, 2, 3, 4 |
 
 For the first row it also creates any baseline table or index the file lacks,
 which is what the pre-drain release's own `CREATE TABLE IF NOT EXISTS` did on
@@ -382,3 +384,35 @@ portable form for it:
   table's columns to baseline it.
 
 The hand-written drain-handover migration is the fourth.
+
+## The lease a batch belongs to
+
+A demo slot's credential serves one lease at a time (`tenants.lease_id`, set by
+`registerTenant` or `setTenantLease`). `enqueueBatch` reads that lease in its own
+transaction and stamps it onto the batch it inserts (`queue_batches.lease_id`),
+so the Ghost submit path (the HTTP bulk route and the SMTP front door alike)
+needs no lease of its own. A batch keeps the lease it was submitted under: moving
+the credential to the next lease later does not move mail already queued. A
+credential that serves no lease stamps `NULL`, and `NULL` never matches a purge.
+
+Migration `0004_demo_lease` adds the two nullable columns and an index on the
+batch column. It rewrites no row: mail queued before it has no lease and is never
+purged by one.
+
+## Purging a lease
+
+`purgeLease(leaseId)` finds the batches stamped with exactly that lease and, in
+one transaction, deletes their `pending` and `held` recipients, then deletes each
+of those batches that has no recipient left. `held` is included because a held
+row is mail the drainer has taken and not acknowledged: it is still unsent. A
+`sent`, `delivered`, `failed` or `suppressed` recipient is the record of what
+happened and stays, with its batch. An acknowledgement that arrives later for a
+purged row reads as unknown (`ackDrain`), never as an error.
+
+The key is the lease and not the credential on purpose. A recycled slot's
+credential is the same domain under the next lease, and the next visitor's first
+message can be queued before the old lease's purge runs. A purge by credential
+would delete it; a purge by lease cannot. `storeLeasePurge.test.ts` holds that
+case, and goes red when the purge is keyed on the credential.
+
+A malformed lease id is a `TypeError` and removes nothing.

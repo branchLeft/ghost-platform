@@ -13,6 +13,7 @@ export const BASELINE = 0;
 export const DRAIN_HANDOVER = 1;
 export const SENDER_DOMAIN = 2;
 export const SENDER_LOCAL_PART = 3;
+export const DEMO_LEASE = 4;
 
 /** drizzle's own migration ledger, so drizzle-kit and this runner read one history. */
 export const migrationsLedger = sqliteTable('__drizzle_migrations', {
@@ -49,6 +50,7 @@ const DRAIN_QUEUE = [
 const TENANTS = ['api_key_hash', 'api_key_salt', 'domain'];
 const TENANTS_WITH_SENDER = [...TENANTS, 'sender_domain'].sort();
 const TENANTS_WITH_LOCAL_PART = [...TENANTS_WITH_SENDER, 'sender_local_part'].sort();
+const TENANTS_WITH_LEASE = [...TENANTS_WITH_LOCAL_PART, 'lease_id'].sort();
 
 /**
  * Brings the database to the newest migration in one IMMEDIATE transaction,
@@ -166,6 +168,8 @@ function baselineLegacyDatabase(
     reflects = SENDER_DOMAIN;
   } else if (queue === DRAIN_QUEUE.join(',') && tenants === TENANTS_WITH_LOCAL_PART.join(',')) {
     reflects = SENDER_LOCAL_PART;
+  } else if (queue === DRAIN_QUEUE.join(',') && tenants === TENANTS_WITH_LEASE.join(',')) {
+    reflects = DEMO_LEASE;
   } else {
     throw new Error(
       `Unrecognised schema in a database older than the migration ledger: ` +

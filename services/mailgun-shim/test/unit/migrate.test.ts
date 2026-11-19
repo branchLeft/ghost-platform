@@ -41,7 +41,8 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
       db.insert(preDrain.tenants)
         .values({ domain: DOMAIN, apiKeySalt: 'salt', apiKeyHash: 'hash' })
         .run();
-      db.insert(schema.queueBatches)
+      const batches = (tables as { queueBatches?: typeof schema.queueBatches }).queueBatches;
+      db.insert(batches ?? schema.queueBatches)
         .values({ batchId: 'b1', domain: DOMAIN, emailId: null, payload: '{}', createdAt: 0 })
         .run();
       db.insert(schema.queueRecipients)
@@ -62,7 +63,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
 
   it('drain-shaped without sender_domain: records the first two migrations and applies only the third', async () => {
     // The shape every image between the drain handover and this store ran.
-    await seed({ ...schema, tenants: preDrain.tenants });
+    await seed({ ...schema, tenants: preDrain.tenants, queueBatches: preDrain.queueBatches });
 
     createSqliteStore(dbPath).close();
 
@@ -119,7 +120,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
     });
   });
 
-  it('a database one release behind gains sender_local_part NULL on every row, and the one-address index', async () => {
+  it('a database two releases behind gains sender_local_part NULL on every row, and the one-address index', async () => {
     // The previous release's file: the drain-shaped queue, a tenants table with
     // sender_domain and no sender_local_part, and a tenant row already in it.
     const previousTenants = sqliteTable('tenants', {
@@ -130,7 +131,11 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
     });
     const { client, db } = openFixture(dbPath);
     try {
-      await createTables(db, { ...schema, tenants: previousTenants });
+      await createTables(db, {
+        ...schema,
+        tenants: previousTenants,
+        queueBatches: preDrain.queueBatches,
+      });
       db.insert(previousTenants)
         .values({
           domain: DOMAIN,
@@ -159,6 +164,71 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
         c.pragma('index_list(tenants)') as Array<{ name: string; unique: number }>
       ).filter((index) => index.name === 'idx_tenants_sender_address');
       expect(indexes).toEqual([expect.objectContaining({ unique: 1 })]);
+    });
+  });
+});
+
+describe('migrateStore — the demo-lease migration', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-migrate-lease-test-'));
+    dbPath = join(dir, 'shim.sqlite');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a database one release behind gains lease_id NULL on its credentials and queued batches, and loses no row', async () => {
+    const previousTenants = sqliteTable('tenants', {
+      domain: text('domain').primaryKey(),
+      apiKeySalt: text('api_key_salt').notNull(),
+      apiKeyHash: text('api_key_hash').notNull(),
+      senderDomain: text('sender_domain'),
+      senderLocalPart: text('sender_local_part'),
+    });
+    const { client, db } = openFixture(dbPath);
+    try {
+      await createTables(db, {
+        ...schema,
+        tenants: previousTenants,
+        queueBatches: preDrain.queueBatches,
+      });
+      db.insert(previousTenants)
+        .values({ domain: DOMAIN, apiKeySalt: 'salt', apiKeyHash: 'hash', senderDomain: DOMAIN })
+        .run();
+      db.insert(preDrain.queueBatches)
+        .values({ batchId: 'old', domain: DOMAIN, emailId: null, payload: '{}', createdAt: 0 })
+        .run();
+      db.insert(schema.queueRecipients)
+        .values({ id: 'r1', batchId: 'old', recipient: 'queued@example.com', availableAt: 0 })
+        .run();
+    } finally {
+      client.close();
+    }
+    expect(columnNames(dbPath, 'tenants')).not.toContain('lease_id');
+    expect(columnNames(dbPath, 'queue_batches')).not.toContain('lease_id');
+
+    const store = createSqliteStore(dbPath);
+    try {
+      expect(store.tenantExists(DOMAIN)).toBe(true);
+      expect(store.tenantLease(DOMAIN)).toBeNull();
+      expect(store.countUndrainedRecipients()).toBe(1);
+      // Mail queued before the migration carries no lease, so no purge reaches it.
+      expect(store.purgeLease('01J9F4Q7ZC3M8V2K6X0R5T1B9D')).toEqual({ recipients: 0, batches: 0 });
+      expect(store.countUndrainedRecipients()).toBe(1);
+    } finally {
+      store.close();
+    }
+
+    expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
+    expect(columnNames(dbPath, 'tenants')).toContain('lease_id');
+    expect(columnNames(dbPath, 'queue_batches')).toContain('lease_id');
+    withFixture(dbPath, ({ client: c }) => {
+      const indexes = c.pragma('index_list(queue_batches)') as Array<{ name: string }>;
+      expect(indexes.map((index) => index.name)).toContain('idx_queue_batches_lease');
     });
   });
 });

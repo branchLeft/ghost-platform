@@ -212,6 +212,12 @@ jobs:
       - name: Demo site block sabotage proof
         run: python3 demo-host/provision/sabotage_render_demo_site.py
 
+      # The recycle's host-side residue check (workspace#1657): each wipe the
+      # reset does loosened in a scratch copy of the wrapper, the residue
+      # suite must go red for every one, and green on the real copy.
+      - name: Recycle residue sabotage proof
+        run: python3 demo-host/provision/sabotage_recycle_residue.py
+
       # The control host's backup-worker installer. Its tests also tie the
       # units and the required environment to the scripts they run, so a
       # change on either side fails here rather than on the host.

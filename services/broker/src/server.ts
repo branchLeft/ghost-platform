@@ -14,6 +14,7 @@ import { createHttpHealthChecker } from './healthCheck.js';
 import type { ImageLoader } from './imagePush.js';
 import { createFileRealTrafficChecker, createZeroRealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
+import { UNWIRED_RECYCLE_EFFECTS } from './recycle.js';
 import { createSlotLock } from './slotLock.js';
 import { seamReadiness } from './seamReadiness.js';
 import { recoverCrashedSlots } from './stateStore.js';
@@ -107,6 +108,9 @@ export function buildDeps(
       leaseDir: config.leaseDir,
       nowMs: config.nowMs,
     },
+    // No real mail purge or hostname register is wired in yet, so a reset of a
+    // slot that held a lease ends `error`, never `free`: see recycle.md.
+    recycle: UNWIRED_RECYCLE_EFFECTS,
     drainFlags: createDrainFlagStore(config.drainFlagDir),
     imagePush: {
       loader: imageLoader,
