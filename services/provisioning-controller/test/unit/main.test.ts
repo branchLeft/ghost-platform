@@ -126,8 +126,9 @@ describe('runCli: a run that stops resumes without repeating what is done', () =
     const state = await readFile(work.path('state.jsonl'), 'utf8');
     expect(state).toContain('no host entry point is configured for edge');
     const called = await work.calledIds();
+    expect(called).toContain('create-owner-account');
     expect(called).not.toContain('publish-hostnames');
-    expect(called).not.toContain('first-deploy');
+    expect(called).not.toContain('enrol-backups');
   });
 
   it('keeps what a host prints out of the state file, the console and the error', async () => {
