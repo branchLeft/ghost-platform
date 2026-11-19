@@ -168,6 +168,17 @@ The overlay is inert without the key, and the key is only partial protection
 without the overlay, so the image carrying the overlay must be live before a
 render carrying the key (see the changelog's rollout note).
 
+## Gravatar
+
+Ghost fills a member's `avatar_image` with a Gravatar address built from a
+hash of the member's email, unless its config key `privacy:useGravatar` is
+off. Portal's account page then loads that image, so a signed-in reader's
+hash would go to a third party. `tenantEnvironment()` renders
+`privacy__useGravatar=false` for every kind of tenant, under both widget
+sources, with nothing to switch it back on: a reader without a picture shows
+Ghost's initial avatar instead. A consumer gets the key when it raises its pin
+on this package.
+
 ## Widget origin
 
 Ghost loads six front-end widgets (Portal, search, comments, the announcement
