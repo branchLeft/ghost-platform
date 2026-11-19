@@ -134,6 +134,12 @@ function verdictEnvironment(safety: SafetySpec): Record<string, string | number 
       env[`storage__${feature}__verdictSource`] = 'production';
       env[`storage__${feature}__verdictSocketPath`] = VERDICT_SOCKET_PATH;
     }
+    // The host end's own setting names. Its certificate and key paths are
+    // host-local and never rendered here; the pin is made by the host end.
+    if (safety.inbound !== undefined) {
+      env.VERDICT_HOST_INBOUND_PORT = String(safety.inbound.port);
+      env.VERDICT_HOST_INBOUND_TLS = safety.inbound.tls;
+    }
   }
   return env;
 }
