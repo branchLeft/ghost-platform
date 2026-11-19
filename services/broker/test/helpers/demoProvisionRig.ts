@@ -3,6 +3,7 @@ import type { DemoEstate } from '../../src/controlPlaneDemoDescriptor.js';
 import type { GateIssuer } from '../../src/controlPlaneDemoGate.js';
 import { createTunnelBroker, type DemoBroker } from '../../src/controlPlaneDemoBroker.js';
 import type {
+  Arrival,
   LifecycleStore,
   ProvisionDeps,
   ProvisionState,
@@ -146,12 +147,33 @@ export function tunnelTo(
   });
 }
 
+/** An arrival mailer that records what it was given, and fails on demand. */
+export interface RecordingMailer {
+  readonly sent: Arrival[];
+  /** When set, the next sends throw, as a mail relay that is down would. */
+  fail: boolean;
+  send(arrival: Arrival): Promise<void>;
+}
+
+export function recordingMailer(): RecordingMailer {
+  const mailer: RecordingMailer = {
+    sent: [],
+    fail: false,
+    async send(arrival) {
+      if (mailer.fail) throw new Error('mail sabotage failure');
+      mailer.sent.push(arrival);
+    },
+  };
+  return mailer;
+}
+
 export function depsFor(
   store: LifecycleStore,
   broker: DemoBroker,
   gate: GateIssuer,
   clock: { nowMs: () => number; sleep: (ms: number) => Promise<void> },
-  logs: string[] = []
+  logs: string[] = [],
+  sendArrival: (arrival: Arrival) => Promise<void> = async () => undefined
 ): ProvisionDeps {
   return {
     store,
@@ -163,6 +185,7 @@ export function depsFor(
     pollIntervalMs: 1000,
     provisionTimeoutMs: 30_000,
     resendLimit: 2,
+    sendArrival,
     log: (line) => logs.push(line),
   };
 }

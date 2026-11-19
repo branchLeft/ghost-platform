@@ -231,6 +231,23 @@ describe('the control case: a slot is freed', () => {
     }
   );
 
+  it('a demo that FAILED with its hostname not retired still holds its slot: the slot is not offered again, so a request waits', async () => {
+    const ids = await fillHouse();
+    // The worker's failure path with a slot it could not reset: FAILED, hostname left unretired.
+    await provisioner.allocateHostname(ids[0]!);
+    await advance(ids[0]!, ['PROVISIONING', 'FAILED']);
+    const next = await arrive();
+    expect(next.admission.state).toBe('WAITING');
+  });
+
+  it('a demo that FAILED and had its hostname retired (the slot freed) holds no slot, so a request is claimed', async () => {
+    const ids = await fillHouse();
+    const label = await provisioner.allocateHostname(ids[0]!);
+    await advance(ids[0]!, ['PROVISIONING', 'FAILED']);
+    await provisioner.retireHostname(label);
+    expect((await arrive()).admission.state).toBe('CLAIMED');
+  });
+
   it('a request never passes someone already waiting, even when a slot is free', async () => {
     const ids = await fillHouse();
     const first = await arrive();

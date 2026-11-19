@@ -19,9 +19,13 @@ The replies are closed sets, not response bodies:
 
 - `reconcile`: `running` (200 with the documented body, nothing else counts),
   `failed` (503 with phase `error`: the broker's own reset-and-retry-once is
-  spent), `refused` (every other answer, final), `unanswered` (no answer in
-  the deadline: it may or may not have run, and sending it again is safe).
-- `reset`: `free`, `refused` or `unanswered`.
+  spent), `locked` (409 with reason `locked`: an earlier send of the reconcile
+  is still running, because the broker holds the slot lock for all of it;
+  retry later, never a refusal), `refused` (every other answer, final),
+  `unanswered` (no answer in the deadline: it may or may not have run, and
+  sending it again is safe).
+- `reset`: `free`, `locked` (409 with reason `locked`: retry later), `refused`
+  or `unanswered`.
 - `status`: the phase and the per-colour health answer, or `undefined` when the
   host gave no usable answer. `GET /status` is unauthenticated by design.
 
