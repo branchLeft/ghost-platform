@@ -15,6 +15,7 @@ import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { credentials } from '../../src/credentials/schema.js';
 import {
   MIGRATIONS_FOLDER,
   SqliteCredentialStore,
@@ -274,10 +275,16 @@ describe('SqliteCredentialStore', () => {
     const raw = new Database(path);
     try {
       expect(() =>
-        raw
-          .prepare(
-            "INSERT INTO credentials (key_id, folder, bucket, state, profile, created_at) VALUES ('GWCCCCCCCCCCCCCCCCCCCCCCCC', 'f', 'b', 'active', 'admin', 'x')"
-          )
+        drizzle(raw)
+          .insert(credentials)
+          .values({
+            keyId: 'GWCCCCCCCCCCCCCCCCCCCCCCCC',
+            folder: 'f',
+            bucket: 'b',
+            state: 'active',
+            profile: 'admin' as 'media',
+            createdAt: 'x',
+          })
           .run()
       ).toThrow(/credentials_profile_known/);
     } finally {
