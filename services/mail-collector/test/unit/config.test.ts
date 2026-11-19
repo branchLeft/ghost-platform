@@ -447,3 +447,48 @@ describe('loadConfig', () => {
     });
   });
 });
+
+describe('loadConfig: the IP2 newsletter lane', () => {
+  const LANES = {
+    COLLECTOR_MX1_TX_RETURN_PATH: 'bounce-tx@tx.example',
+    COLLECTOR_MX1_NL_RETURN_PATH: 'bounce-nl@nl.example',
+  };
+
+  it('is off while the state path is unset', () => {
+    expect(loadConfig(BASE_ENV).ip2).toBeUndefined();
+    expect(loadConfig({ ...BASE_ENV, ...LANES }).ip2).toBeUndefined();
+  });
+
+  it('reads both paths', () => {
+    expect(
+      loadConfig({
+        ...BASE_ENV,
+        ...LANES,
+        COLLECTOR_IP2_STATE_PATH: '/state/ip2.json',
+        COLLECTOR_IP2_COUNTER_PATH: '/var/ip2-count.json',
+      }).ip2
+    ).toEqual({ statePath: '/state/ip2.json', counterPath: '/var/ip2-count.json' });
+  });
+
+  it('refuses to start with the state path and no counter path', () => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_IP2_STATE_PATH: '/state/ip2.json' })
+    ).toThrow(/COLLECTOR_IP2_COUNTER_PATH/);
+  });
+
+  it('refuses to start with a counter path and no state path', () => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_IP2_COUNTER_PATH: '/var/ip2-count.json' })
+    ).toThrow(/COLLECTOR_IP2_STATE_PATH/);
+  });
+
+  it('refuses to start without the lane return paths: the newsletter lane has no meaning without them', () => {
+    expect(() =>
+      loadConfig({
+        ...BASE_ENV,
+        COLLECTOR_IP2_STATE_PATH: '/state/ip2.json',
+        COLLECTOR_IP2_COUNTER_PATH: '/var/ip2-count.json',
+      })
+    ).toThrow(/COLLECTOR_MX1_NL_RETURN_PATH/);
+  });
+});

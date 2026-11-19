@@ -1,5 +1,11 @@
 import { dirname, join } from 'node:path';
 import {
+  IP2_COUNTER_PATH_ENV,
+  IP2_STATE_PATH_ENV,
+  parseIp2Paths,
+  type Ip2Paths,
+} from './ip2Lane.js';
+import {
   MX1_NL_RETURN_PATH_ENV,
   MX1_TX_RETURN_PATH_ENV,
   parseLaneReturnPaths,
@@ -168,6 +174,13 @@ export interface CollectorConfig {
    */
   mx1Lanes?: Mx1LaneReturnPaths;
   /**
+   * The second sending IP's warm-up caps: the operator-written state file and
+   * the day counter. Absent unless COLLECTOR_IP2_STATE_PATH is set (the counter
+   * path is then required, and so are the lane return paths: the newsletter
+   * lane has no meaning without them). Absent, nothing is capped here.
+   */
+  ip2?: Ip2Paths;
+  /**
    * Opt-in outcome path; absent unless COLLECTOR_OUTCOMES_RETURN_PATH,
    * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY are all
    * set (a partial set throws). With `mx1Lanes` set, the return path is not
@@ -304,6 +317,18 @@ function outcomesEnv(
     messageIdKey,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
+}
+
+function ip2Env(env: CollectorEnv, mx1Lanes: Mx1LaneReturnPaths | undefined): Ip2Paths | undefined {
+  const paths = parseIp2Paths(env[IP2_STATE_PATH_ENV], env[IP2_COUNTER_PATH_ENV]);
+  if (paths && !mx1Lanes) {
+    // Without lane return paths nothing is told apart by lane: the caps would
+    // count mail that does not leave from the second IP.
+    throw new Error(
+      `${IP2_STATE_PATH_ENV} needs ${MX1_TX_RETURN_PATH_ENV} and ${MX1_NL_RETURN_PATH_ENV}: the newsletter lane is the envelope sender's domain`
+    );
+  }
+  return paths;
 }
 
 function bulkDeferralStatePathEnv(env: CollectorEnv): string | undefined {
@@ -490,6 +515,7 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       DEFAULT_HEARTBEAT_FAILURE_THRESHOLD
     ),
     mx1Lanes,
+    ip2: ip2Env(env, mx1Lanes),
     outcomes: outcomesEnv(env, mx1Lanes),
   };
 }

@@ -50,6 +50,8 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_OUTCOMES_BULK_RETURN_PATH` | removed | Replaced by the lane return paths below. Setting it is refused at start-up, so a stale value cannot go on routing bulk mail silently. |
 | `COLLECTOR_MX1_TX_RETURN_PATH` | no (off) | Envelope sender of non-demo sign-in mail submitted to mx1 (the transactional lane). A plain address on a different domain from `COLLECTOR_MX1_NL_RETURN_PATH`. Set together with it, or neither. See Lane return paths. |
 | `COLLECTOR_MX1_NL_RETURN_PATH` | no (off) | Envelope sender of every newsletter and every demo message submitted to mx1 (the newsletter lane). A plain address on a different domain from `COLLECTOR_MX1_TX_RETURN_PATH`. Set together with it, or neither. The mailboxes, DNS and the credential's sender scope for both domains are set up on the mail host before these are set. |
+| `COLLECTOR_IP2_STATE_PATH` | no (off) | The operator-written state file of the second sending IP's newsletter lane: `{ "stage": 1, "held": false, "destinationHolds": [] }`. Set, every mx1 message on the newsletter lane takes a place under the day's caps first. Needs both lane return paths, and `COLLECTOR_IP2_COUNTER_PATH`: start-up refuses without them. Unset, nothing is capped here. See the IP2 newsletter lane section. |
+| `COLLECTOR_IP2_COUNTER_PATH` | with the state path | File, on a volume that outlives the container and is writable by the `node` user, the day's count is kept in, a different file from the state file. Set without the state path it fails start-up. |
 | `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. With the lane return paths set it and `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY` turn the outcome path on; otherwise it needs `COLLECTOR_OUTCOMES_RETURN_PATH` and the key. |
 | `COLLECTOR_OUTCOMES_POLL_MS` | no (default `30000`) | How often the directory is read. |
 
@@ -806,6 +808,81 @@ Limits, stated so they are not mistaken for guarantees:
   mx1's settings, not here.
 - The ramp's evidence gate (rising only on clean bounce and complaint
   numbers) is not enforced by code: whoever edits the file applies it.
+
+### IP2 newsletter lane (ip2Lane.ts)
+
+The newsletter lane (`mx1Lane` = `nl`: every newsletter and all demo mail on
+mx1) leaves mx1 from the second sending IP, and nothing on mx1 caps it. This
+file is the warm-up's only enforcement point, so the lane must not send before
+it is on. Off while `COLLECTOR_IP2_STATE_PATH` is unset: every existing
+behaviour is untouched.
+
+A newsletter-lane message takes a place before it is submitted, under three
+checks in this order: the operator's holds, the day's cap, then the destination
+group's cap. Without a place the message is left unacked, so the shim offers it
+again, and it goes on a later pass or the next UTC day. It is never sent on the
+sign-in address, to Sweego, or any other way. Sweego mail never reaches this
+file and is never counted.
+
+The stage table, per UTC day (total; Gmail / Microsoft / Yahoo), pinned by a
+test to the accepted design:
+
+| Stage | Total | Gmail | Microsoft | Yahoo |
+|---|---|---|---|---|
+| 1 | 50 | 25 | 15 | 15 |
+| 2 | 100 | 50 | 30 | 30 |
+| 3 | 200 | 100 | 60 | 60 |
+| 4 | 400 | 200 | 120 | 120 |
+| 5 | 800 | 400 | 240 | 240 |
+| 6 | 1,600 | 800 | 480 | 480 |
+| 7 | 3,200 | 1,600 | 960 | 960 |
+
+A recipient domain outside the three groups counts against the total only.
+The domains of each group are the `DESTINATION_DOMAINS` constant (Gmail:
+gmail.com, googlemail.com; Microsoft: outlook.com, hotmail.com, live.com,
+msn.com and their .co.uk forms; Yahoo: yahoo.com, yahoo.co.uk, ymail.com,
+rocketmail.com), matched exactly. No destination cap applies to the
+transactional lane.
+
+The state file is written by the operator and re-read on every message:
+`stage` (1 to 7; the clean-evidence gate that moves it is the operator's, not
+code), `held` (stops the whole newsletter lane) and `destinationHolds` (a list
+of `gmail`, `microsoft` or `yahoo`, each stopping that group). A missing or
+invalid file while the path is set holds the newsletter lane and logs
+`ip2_lane_held`; the sign-in lane is unaffected. It recovers on the next read
+of a valid file.
+
+The day's count is reserved before the submission and written down (temp file,
+fsync, rename) in `COLLECTOR_IP2_COUNTER_PATH`, so a restart never resets the
+day. The day is the UTC day of the collector's clock; a day that has passed
+starts a fresh count, and a clock set back does not. A counter file that is
+there and cannot be read holds the lane until it is repaired, never a reset on
+a guess; a missing file is a first run. A message already holding a place (a
+retry) takes no second one. A place is given back only when the submission
+definitely took nothing (the connection, login, sender or a recipient was
+refused before any data); anything that may have been taken stays counted.
+`ip2State(lane)` answers stage, sent today, cap and held for the later alert
+signals.
+
+Demo mail rides the newsletter lane, so its sign-in links could eat the blog's
+first sends: in stages 1 and 2 demo mail may use at most 20 percent of the
+day's total (`DEMO_SHARE_PERCENT`), and all of it from stage 3. It also counts
+against its destination group. One constant, reversible.
+
+Limits, stated so they are not mistaken for guarantees:
+
+- The shim's drain claims with a batch limit and no class filter, and offers an
+  unacked row again every lease, oldest batch first. A held newsletter backlog
+  of one batch limit (25) therefore fills every claim for that host's spool and
+  a later newsletter behind it is not offered until the backlog is acked
+  (recorded against the real store in
+  `services/mailgun-shim/test/unit/store.heldRowsCrowdOutLaterBulk.test.ts`).
+  Sign-in mail is claimed first and is not crowded out. The switch-on waits for
+  a class- or hold-aware claim on the shim.
+- The collector sees only mx1's acceptance. Gmail 421, SNDS and blocklist stop
+  conditions arise in mx1's queue, so nothing here writes the state file: the
+  operator sets `held` or a destination hold.
+- The hourly ramp and the deferral halving are unchanged and apply as well.
 
 ### throttle token bucket
 

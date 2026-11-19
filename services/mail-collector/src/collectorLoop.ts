@@ -5,7 +5,9 @@ import type { DeliveryClient } from './deliveryClient.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
 import type { DroppedOutcomes } from './droppedOutcomes.js';
 import type { HealthState } from './health.js';
+import { isDefiniteNonAcceptance, type Ip2Lane, type Ip2Slot } from './ip2Lane.js';
 import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
+import { mx1Lane } from './mx1Lane.js';
 import { checkHeaderFrom } from './headerFromScope.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
@@ -77,6 +79,13 @@ export interface CollectorLoopDeps {
   loginThrottle?: Throttle;
   /** Optional: a receiving-side deferral on a bulk submission halves the bulk rate for a hold period. */
   bulkCap?: BulkCap;
+  /**
+   * Optional, off unless supplied: the second sending IP's warm-up caps and
+   * hold. Every mx1 message on the newsletter lane takes a place from it
+   * before it is submitted; a message with no place is left unacked and waits.
+   * Sweego mail never reaches it. See ../README.md#ip2-newsletter-lane-ip2lanets.
+   */
+  ip2Lane?: Ip2Lane;
   dedupe: SubmittedTracker;
   health: HealthState;
   /**
@@ -329,11 +338,29 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       // Left unacked: the shim re-offers it and the resolver is asked again.
       return 'held';
     }
+    // A newsletter-lane message takes its place on the second IP, written down,
+    // before anything is spent on it. With no place it is left unacked: it is
+    // never sent on the sign-in address, to Sweego, or any other way.
+    let ip2Slot: Ip2Slot | undefined;
+    if (deps.ip2Lane !== undefined && mx1Lane(mailClass, target.demo === true) === 'nl') {
+      const place = deps.ip2Lane.reserve({
+        id: message.id,
+        to: message.to,
+        demo: target.demo === true,
+      });
+      if (!place.ok) {
+        // The line names a reason and a message id only: no address.
+        deps.log.warn('ip2_held', { target: target.id, message: message.id, reason: place.reason });
+        return 'held';
+      }
+      ip2Slot = place.slot;
+    }
     await throttleFor(lane).waitForToken();
     mx1Pins.markSubmitted(message.id);
     try {
       await deps.deliveryClient.deliver(message, target.id, { demo: target.demo === true });
     } catch (error) {
+      ip2Slot?.settle(isDefiniteNonAcceptance(error) ? 'not-sent' : 'accepted');
       deps.health.recordFailure();
       if (lane === 'bulk' && deps.bulkCap && isBulkDeferral(error)) {
         deps.bulkCap.recordDeferral();
@@ -350,6 +377,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       });
       return 'stop';
     }
+    ip2Slot?.settle('accepted');
     deps.health.recordSuccess();
     // Awaiting its ack: a batch at a low ramp rate can outlast the TTL, and
     // the id must not be swept before the shim has taken it.
