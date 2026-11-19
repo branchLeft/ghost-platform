@@ -142,6 +142,7 @@ const DEMO_REQUEST = '0010_demo_request';
 const SUPPORT_ACCESS = '0011_support_access';
 export const STATUS_READ = '0012_demo_request_status_read';
 const QUEUE = '0013_moderation_item';
+const TENANT_BILLING = '0014_tenant_billing';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -271,6 +272,20 @@ export function manifest(major: number, database: string): readonly ManifestObje
       grants: [
         { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
+      ],
+    },
+    // TenantDb.ownBilling reads; OwnerDb.setPaymentState and
+    // setBillingReference insert and, through ON CONFLICT DO UPDATE, update,
+    // and billingOf, listBilling and listOverdue read. The tenant role holds
+    // SELECT alone, so a tenant cannot mark itself paid. Nothing deletes a
+    // record, and the table has no column that holds free text or card data.
+    {
+      kind: 'table',
+      identity: 'portal.tenant_billing',
+      since: TENANT_BILLING,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
       ],
     },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
@@ -406,6 +421,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.health_reading': { enabled: true, forced: false },
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
+  'portal.tenant_billing': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
@@ -513,6 +529,14 @@ export const POLICIES: readonly PolicyEntry[] = [
     'portal.support_access_reading',
     'tenant_isolation',
     SUPPORT_ACCESS,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  policy(
+    'portal.tenant_billing',
+    'tenant_isolation',
+    TENANT_BILLING,
     '*',
     `(${BOUND})`,
     `(${BOUND})`
@@ -709,6 +733,25 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
       'index portal.support_access_reading_pkey CREATE UNIQUE INDEX support_access_reading_pkey ' +
         'ON portal.support_access_reading USING btree (tenant_id)',
+    ],
+  },
+  'portal.tenant_billing': {
+    since: TENANT_BILLING,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column billing_reference text notnull=false ${PLAIN}`,
+      `column payment_state text notnull=true ${PLAIN}`,
+      `column state_changed_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default state_changed_at now()',
+      "constraint tenant_billing_payment_state_known CHECK ((payment_state = ANY (ARRAY['unpaid'::text, " +
+        "'paid'::text, 'overdue'::text])))",
+      'constraint tenant_billing_pkey PRIMARY KEY (tenant_id)',
+      "constraint tenant_billing_reference_not_card_like CHECK ((billing_reference !~ '^([_.:-]?[0-9]){12,}$'::text))",
+      "constraint tenant_billing_reference_shape CHECK ((billing_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{2,63}$'::text))",
+      'constraint tenant_billing_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.tenant_billing_pkey CREATE UNIQUE INDEX tenant_billing_pkey ' +
+        'ON portal.tenant_billing USING btree (tenant_id)',
     ],
   },
   'portal.support_access_request': {
