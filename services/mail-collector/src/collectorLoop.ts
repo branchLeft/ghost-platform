@@ -11,6 +11,8 @@ import { mx1Lane } from './mx1Lane.js';
 import { checkHeaderFrom } from './headerFromScope.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
+import type { ComplaintPuller } from './complaints/complaintPuller.js';
+import type { SentJournal } from './sentJournal.js';
 import {
   QUOTA_UNKNOWN,
   failureKindOf,
@@ -101,6 +103,18 @@ export interface CollectorLoopDeps {
   dedupeSweepMs?: number;
   /** Optional, off unless supplied: carries mx1's outcomes back to the spools on a timer. */
   outcomes?: { runner: OutcomeRunner; intervalMs: number };
+  /**
+   * Written down, before each attempt at Sweego, which message it was and which
+   * spool it came from, so a complaint about it can be placed later. Unset, no
+   * Sweego message is recorded and no complaint can match.
+   */
+  sentJournal?: SentJournal;
+  /**
+   * Off unless supplied: pulls the Sweego complaint receiver and reports each
+   * complaint the sent-id journal places. Each pass names its own wait, so a
+   * failure backs off and a full page runs again at once.
+   */
+  complaints?: { puller: ComplaintPuller; firstDelayMs: number };
 }
 
 export interface CollectorRuntime {
@@ -128,6 +142,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
+  let complaintTimer: ReturnType<typeof setTimeout> | undefined;
+  let complaintInFlight: Promise<unknown> = Promise.resolve();
   const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
@@ -275,6 +291,19 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
+      // Written down before the attempt, as the pin is: an attempt that times
+      // out may still have been taken, and its complaint must still match. A
+      // journal that cannot keep it does not stop the mail.
+      if (
+        deps.sentJournal?.record({
+          targetId: target.id,
+          id: message.id,
+          drainCount: message.drainCount,
+          atMs: Date.now(),
+        }) === false
+      ) {
+        deps.log.warn('sent_journal_not_recorded', { target: target.id, message: message.id });
+      }
       let accepted = false;
       try {
         await sweego.deliver(message, target.id);
@@ -567,6 +596,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         mx1Pins.sweep();
         sweegoPins.sweep(isHeldAtCap);
         sweegoAmbiguous.sweep(isHeldAtCap);
+        deps.sentJournal?.sweep();
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 
@@ -583,6 +613,29 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         }, outcomes.intervalMs);
         outcomeTimer.unref?.();
       }
+
+      const complaints = deps.complaints;
+      if (complaints) {
+        // One pass at a time: the next is scheduled only once this one has said how long to wait.
+        const schedule = (delayMs: number): void => {
+          complaintTimer = setTimeout(() => {
+            if (globalStop) {
+              return;
+            }
+            complaintInFlight = complaints.puller
+              .runOnce()
+              .then((summary) => summary.nextDelayMs)
+              .catch(() => complaints.firstDelayMs)
+              .then((next) => {
+                if (!globalStop) {
+                  schedule(next);
+                }
+              });
+          }, delayMs);
+          complaintTimer.unref?.();
+        };
+        schedule(complaints.firstDelayMs);
+      }
     },
     async stop(): Promise<void> {
       globalStop = true;
@@ -595,11 +648,14 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       if (outcomeTimer) {
         clearInterval(outcomeTimer);
       }
+      if (complaintTimer) {
+        clearTimeout(complaintTimer);
+      }
       for (const state of running.values()) {
         state.stopped = true;
       }
       await Promise.allSettled([...running.values()].map((s) => s.done));
-      await Promise.allSettled([outcomeInFlight]);
+      await Promise.allSettled([outcomeInFlight, complaintInFlight]);
     },
   };
 }

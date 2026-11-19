@@ -188,6 +188,12 @@ export interface CollectorConfig {
    * directory and the Message-ID key together turn it on.
    * Absent, submissions and the drain loop are exactly as before.
    */
+  /**
+   * Opt-in Sweego complaint path; absent unless COLLECTOR_COMPLAINTS_URL,
+   * COLLECTOR_COMPLAINTS_TOKEN_FILE and COLLECTOR_SENT_JOURNAL_PATH are all set
+   * (a partial set throws), and then only beside the Sweego relay.
+   */
+  complaints?: ComplaintsConfig;
   outcomes?: {
     /**
      * The one envelope sender mx1 returns delivery status notifications to,
@@ -201,6 +207,24 @@ export interface CollectorConfig {
     messageIdKey: string;
     pollMs: number;
   };
+}
+
+export interface ComplaintsConfig {
+  /** The receiver's private drain address. We dial it; it never dials us. */
+  receiverUrl: string;
+  /** Path of the file holding the receiver's drain bearer token. The value is never in config. */
+  tokenFile: string;
+  /** File the sent-id journal is kept in, on a volume that outlives the container. */
+  sentJournalPath: string;
+  sentJournalTtlMs: number;
+  /** Lower-case name of the correlation header sent on every Sweego message; the receiver's `WEBHOOK_OUTCOME_HEADER` must be the same. */
+  outcomeHeader: string;
+  pollMs: number;
+  retryBackoffMs: number;
+  maxBackoffMs: number;
+  timeoutMs: number;
+  perTenantPerHour: number;
+  giveUpMs: number;
 }
 
 export type CollectorEnv = Record<string, string | undefined>;
@@ -453,6 +477,90 @@ function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
   };
 }
 
+const COMPLAINTS_PARTNERS = [
+  'COLLECTOR_COMPLAINTS_URL',
+  'COLLECTOR_COMPLAINTS_TOKEN_FILE',
+  'COLLECTOR_SENT_JOURNAL_PATH',
+] as const;
+const DEFAULT_COMPLAINTS_POLL_MS = 30_000;
+const DEFAULT_COMPLAINTS_RETRY_BACKOFF_MS = 5_000;
+const DEFAULT_COMPLAINTS_MAX_BACKOFF_MS = 5 * 60 * 1000;
+const DEFAULT_COMPLAINTS_TIMEOUT_MS = 10_000;
+const DEFAULT_COMPLAINTS_PER_TENANT_PER_HOUR = 50;
+const DEFAULT_COMPLAINTS_GIVE_UP_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SENT_JOURNAL_TTL_MS = 35 * 24 * 60 * 60 * 1000;
+const DEFAULT_OUTCOME_HEADER = 'x-branchleft-outcome';
+const HEADER_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+
+function complaintsEnv(env: CollectorEnv): ComplaintsConfig | undefined {
+  const [url, tokenFile, journalPath] = COMPLAINTS_PARTNERS.map((name) => env[name]);
+  if (!url && !tokenFile && !journalPath) {
+    return undefined;
+  }
+  if (!url || !tokenFile || !journalPath) {
+    throw new Error(`${COMPLAINTS_PARTNERS.join(', ')} must be set together`);
+  }
+  if (env.COLLECTOR_COMPLAINTS_TOKEN !== undefined) {
+    throw new Error(
+      'The receiver token is read from a file: set COLLECTOR_COMPLAINTS_TOKEN_FILE to its path, never the value'
+    );
+  }
+  if (!env.COLLECTOR_SWEEGO_SMTP_HOST) {
+    throw new Error('COLLECTOR_COMPLAINTS_URL is set but COLLECTOR_SWEEGO_SMTP_HOST is not');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('COLLECTOR_COMPLAINTS_URL is not a URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('COLLECTOR_COMPLAINTS_URL must be http or https');
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new Error('COLLECTOR_COMPLAINTS_URL must not carry credentials');
+  }
+  const outcomeHeader = (
+    env.COLLECTOR_COMPLAINTS_OUTCOME_HEADER || DEFAULT_OUTCOME_HEADER
+  ).toLowerCase();
+  if (!HEADER_NAME.test(outcomeHeader)) {
+    throw new Error('COLLECTOR_COMPLAINTS_OUTCOME_HEADER is not a header name');
+  }
+  return {
+    receiverUrl: url.replace(/\/+$/, ''),
+    tokenFile,
+    sentJournalPath: journalPath,
+    sentJournalTtlMs: positiveIntEnv(
+      env,
+      'COLLECTOR_SENT_JOURNAL_TTL_MS',
+      DEFAULT_SENT_JOURNAL_TTL_MS
+    ),
+    outcomeHeader,
+    pollMs: positiveIntEnv(env, 'COLLECTOR_COMPLAINTS_POLL_MS', DEFAULT_COMPLAINTS_POLL_MS),
+    retryBackoffMs: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_RETRY_BACKOFF_MS',
+      DEFAULT_COMPLAINTS_RETRY_BACKOFF_MS
+    ),
+    maxBackoffMs: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_MAX_BACKOFF_MS',
+      DEFAULT_COMPLAINTS_MAX_BACKOFF_MS
+    ),
+    timeoutMs: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_TIMEOUT_MS',
+      DEFAULT_COMPLAINTS_TIMEOUT_MS
+    ),
+    perTenantPerHour: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_PER_TENANT_PER_HOUR',
+      DEFAULT_COMPLAINTS_PER_TENANT_PER_HOUR
+    ),
+    giveUpMs: positiveIntEnv(env, 'COLLECTOR_COMPLAINTS_GIVE_UP_MS', DEFAULT_COMPLAINTS_GIVE_UP_MS),
+  };
+}
+
 export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
   const mx1Lanes = parseLaneReturnPaths(env[MX1_TX_RETURN_PATH_ENV], env[MX1_NL_RETURN_PATH_ENV]);
   return {
@@ -517,5 +625,6 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     mx1Lanes,
     ip2: ip2Env(env, mx1Lanes),
     outcomes: outcomesEnv(env, mx1Lanes),
+    complaints: complaintsEnv(env),
   };
 }
