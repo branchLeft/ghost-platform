@@ -89,7 +89,13 @@ describe.skipIf(!runnable)('the Pulumi CLI against the state process', () => {
 
   it('logs in, creates a stack and previews, inside its own prefix', async () => {
     const backend = `s3://${STATE_BUCKET}/${tenant.folder}?endpoint=127.0.0.1:${String(edge.port)}&s3ForcePathStyle=true&region=nbg1`;
-    for (const args of [['login', backend], ['stack', 'init', 'probe'], ['preview']]) {
+    // An update writes a stack, so it runs only when a person asks for it, and then only
+    // against the loopback stand-in for the shard that this file starts.
+    const steps = [['login', backend], ['stack', 'init', 'probe'], ['preview']];
+    if (process.env.STATE_PROBE_UP === '1') {
+      steps.push(['up', '--yes'], ['up', '--yes'], ['refresh', '--yes']);
+    }
+    for (const args of steps) {
       const result = await pulumi(...args);
       expect(result.status, `pulumi ${args[0]}: ${result.text.slice(-600)}`).toBe(0);
     }
@@ -97,7 +103,7 @@ describe.skipIf(!runnable)('the Pulumi CLI against the state process', () => {
     for (const key of shard.keys()) expect(key.startsWith(`${tenant.folder}/`)).toBe(true);
   }, 240_000);
 
-  it('records the request set the allowlist is built from', () => {
+  it('records the request set the allowlist is built from, and every delete it saw', () => {
     const table = new Map<string, number>();
     for (const s of edge.shapes) {
       const row = `${s.method} ${s.path} ?${s.query.join(',')} payload=${s.payload} [${s.notable.join(',')}] -> ${String(s.status)}`;
@@ -105,5 +111,9 @@ describe.skipIf(!runnable)('the Pulumi CLI against the state process', () => {
     }
     console.log([...table].map(([row, n]) => `${String(n).padStart(3)} x ${row}`).join('\n'));
     console.log(rig.refusals().join(','));
+    // Nothing the CLI does in these runs deletes anything but a lock.
+    const deletes = edge.shapes.filter((x) => x.method === 'DELETE');
+    for (const d of deletes) expect(d.path).toContain('/.pulumi/locks/');
+    expect(rig.refusals()).toEqual([]);
   });
 });
