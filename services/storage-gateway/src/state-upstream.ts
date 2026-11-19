@@ -169,6 +169,18 @@ export function createStateUpstream(options: StateUpstreamOptions): StateUpstrea
     }
     const forwarded = forwardedHeaders(request);
     if (forwarded === undefined) return before('target-malformed', 'InvalidURI');
+    // The framing and its checksum were this process's to check and are gone from the
+    // bytes it sends: the shard gets a plain signed body, and must not be told otherwise.
+    forwarded.delete('x-amz-sdk-checksum-algorithm');
+    for (const name of [...forwarded.keys()]) {
+      if (name.startsWith('x-amz-checksum-')) forwarded.delete(name);
+    }
+    if (
+      forwarded.get('content-encoding')?.some((v) => v.toLowerCase().includes('aws-chunked')) ===
+      true
+    ) {
+      forwarded.delete('content-encoding');
+    }
     if (route.operation === 'CopyObject' && route.copySource !== undefined) {
       forwarded.set('x-amz-copy-source', [
         objectPath(route.copySource.bucket, route.copySource.key),

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { crc32 } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { UPSTREAM_KEY_ID, UPSTREAM_SECRET, call, type Minted } from './support/gateway-rig.js';
 import { STATE_BUCKET, nextPrefix, startStateRig, type StateRig } from './support/state-rig.js';
@@ -14,6 +16,12 @@ const listing = (p: string, rest = '.pulumi/stacks/') => ({
 });
 
 let visibleReads = 0;
+
+const crc32Of = (text: string): string => {
+  const out = Buffer.alloc(4);
+  out.writeUInt32BE(crc32(text));
+  return out.toString('base64');
+};
 
 describe('the state process, end to end', () => {
   let rig: StateRig;
@@ -238,6 +246,84 @@ describe('the state process, end to end', () => {
       expect(['403', 'reset']).toContain(outcome);
       expect(rig.refusals().slice(refusals)).toEqual(['operation-not-allowed']);
       expect(seenCount()).toBe(before);
+    });
+
+    describe('a body framed as aws-chunked with a checksum trailer', () => {
+      const framed = (payload: string, checksum = crc32Of(payload)): string =>
+        `${Buffer.byteLength(payload).toString(16)}\r\n${payload}\r\n0\r\nx-amz-checksum-crc32:${checksum}\r\n\r\n`;
+      const streamingPut = (t: Minted, payload: string, wire: string, over = {}) =>
+        rig.s3(t, {
+          method: 'PUT',
+          path: fresh(checkpoint(t.folder)),
+          body: wire,
+          payloadHash: 'STREAMING-UNSIGNED-PAYLOAD-TRAILER',
+          headers: {
+            'content-encoding': 'aws-chunked',
+            'x-amz-decoded-content-length': String(Buffer.byteLength(payload)),
+            'x-amz-trailer': 'x-amz-checksum-crc32',
+            ...over,
+          },
+        });
+
+      it('stores the decoded bytes, signed upstream with their own digest and none of the framing', async () => {
+        const before = seenCount();
+        const result = await streamingPut(a, '{"v":2}', framed('{"v":2}'));
+        expect(result.status).toBe(200);
+        const sent = rig.upstream.seen.slice(before);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]?.bytes).toBe(7);
+        expect(sent[0]?.sha256).toBe(createHash('sha256').update('{"v":2}').digest('hex'));
+        expect(sent[0]?.headers['x-amz-content-sha256']).toBe(sent[0]?.sha256);
+        for (const name of [
+          'content-encoding',
+          'x-amz-trailer',
+          'x-amz-decoded-content-length',
+          'x-amz-sdk-checksum-algorithm',
+        ]) {
+          expect(sent[0]?.headers[name]).toBeUndefined();
+        }
+      });
+
+      it('refuses a checksum that is not the bytes, stores nothing and lets the SDK try again', async () => {
+        const before = seenCount();
+        const result = await streamingPut(
+          a,
+          '{"v":3}',
+          framed('{"v":3}', Buffer.from([1, 2, 3, 4]).toString('base64'))
+        );
+        expect(result.status).toBe(400);
+        expect(result.text).toContain('IncompleteBody');
+        expect(seenCount()).toBe(before);
+      });
+
+      it('refuses a body longer than the headers declared, stores nothing', async () => {
+        const before = seenCount();
+        const result = await streamingPut(a, '{"v":4}', framed('{"v":4}'), {
+          'x-amz-decoded-content-length': '3',
+        });
+        expect(result.status).toBe(400);
+        expect(seenCount()).toBe(before);
+      });
+
+      it('refuses the marker on a read, a listing or a delete, and any other form of it', async () => {
+        const before = seenCount();
+        const read = await rig.s3(a, {
+          method: 'GET',
+          path: fresh(checkpoint(a.folder)),
+          payloadHash: 'STREAMING-UNSIGNED-PAYLOAD-TRAILER',
+          headers: {
+            'content-encoding': 'aws-chunked',
+            'x-amz-decoded-content-length': '0',
+            'x-amz-trailer': 'x-amz-checksum-crc32',
+          },
+        });
+        expect(read.status).toBe(403);
+        const signed = await streamingPut(a, 'x', framed('x'), { 'x-amz-trailer': 'x-amz-meta-x' });
+        expect(signed.status).toBe(403);
+        const signedChunks = await streamingPut(a, 'x', framed('x'), {});
+        expect(signedChunks.status).toBe(200);
+        expect(seenCount()).toBe(before + 1);
+      });
     });
 
     it('refuses a replay of the same signed request', async () => {

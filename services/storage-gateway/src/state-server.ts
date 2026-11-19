@@ -12,6 +12,11 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, RequestListener, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream';
+import {
+  STREAMING_UNSIGNED_TRAILER,
+  createUnsignedTrailerDecoder,
+  parseStreamingTrailer,
+} from './aws-chunked.js';
 import { receiveBody, type ReceivedBody } from './body.js';
 import type { RefusalCode } from './contracts.js';
 import type { StateLimits } from './limits/state.js';
@@ -174,8 +179,16 @@ export function createStateHandler(
       if (route.operation !== 'PutObject' && declaresBody(req)) {
         return refusedWith('operation-not-allowed');
       }
+      const streaming = declared?.[0] === STREAMING_UNSIGNED_TRAILER;
+      if (streaming && route.operation !== 'PutObject') return refusedWith('operation-not-allowed');
       if (route.operation === 'PutObject') {
-        const declaredLength = declaredLengthOf(req);
+        // A streaming body is framed: its length on the wire is not the object's, so the
+        // cap and the length check are on the decoded bytes the headers declare.
+        const trailer = streaming
+          ? parseStreamingTrailer((name) => req.headersDistinct[name])
+          : undefined;
+        if (streaming && trailer === undefined) return refusedWith('signature-refused');
+        const declaredLength = trailer?.decodedLength ?? declaredLengthOf(req);
         if (declaredLength !== undefined && declaredLength > deps.maxBodyBytes) {
           return refusedWith('body-too-large');
         }
@@ -190,17 +203,23 @@ export function createStateHandler(
         slotFolder = tenant.folder;
 
         if (req.headers.expect?.toLowerCase() === '100-continue') res.writeContinue();
-        const received = await receiveBody(guardedBody(req), {
-          ceilingBytes: deps.maxBodyBytes,
-          spoolDir: deps.spoolDir,
-          ...(deps.spoolThresholdBytes === undefined
-            ? {}
-            : { thresholdBytes: deps.spoolThresholdBytes }),
-          ...(declaredLength === undefined ? {} : { declaredLength }),
-          signal,
-          logger: deps.log,
-          log: { method, keyId: tenant.keyId, folder: tenant.folder, operation: route.operation },
-        });
+        const source = guardedBody(req);
+        const received = await receiveBody(
+          trailer === undefined
+            ? source
+            : pipeline(source, createUnsignedTrailerDecoder(trailer), () => undefined),
+          {
+            ceilingBytes: deps.maxBodyBytes,
+            spoolDir: deps.spoolDir,
+            ...(deps.spoolThresholdBytes === undefined
+              ? {}
+              : { thresholdBytes: deps.spoolThresholdBytes }),
+            ...(declaredLength === undefined ? {} : { declaredLength }),
+            signal,
+            logger: deps.log,
+            log: { method, keyId: tenant.keyId, folder: tenant.folder, operation: route.operation },
+          }
+        );
         if (!received.ok) {
           return {
             answer: refusalAnswer(received.refusal.code),
@@ -211,7 +230,8 @@ export function createStateHandler(
         body = received.body;
         sized = { bytesIn: body.size };
         // The bytes must be the ones the signature covered.
-        if (!digestMatches(body.sha256, declaredDigest)) {
+        // A streaming body was checked against its trailer as it was decoded.
+        if (trailer === undefined && !digestMatches(body.sha256, declaredDigest)) {
           logRefusal('signature-refused');
           return refuse('signature-refused', { ...known, ...sized });
         }

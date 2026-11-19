@@ -92,6 +92,8 @@ export async function startStateFakeUpstream(
 
 type S3Spec = Omit<SignSpec, 'headers' | 'payloadHash'> & {
   readonly headers?: Record<string, string>;
+  /** The payload marker to sign, where it is not the body's own digest. */
+  readonly payloadHash?: string;
 };
 
 export interface StateRig {
@@ -228,7 +230,7 @@ export async function startStateRig(options: StateRigOptions = {}): Promise<Stat
           'content-length': String(Buffer.byteLength(body)),
           ...spec.headers,
         },
-        payloadHash: sha256Hex(body),
+        payloadHash: spec.payloadHash ?? sha256Hex(body),
       },
       { keyId: tenant.keyId, secret: tenant.secret, region: REGION, signingDate: new Date() }
     );

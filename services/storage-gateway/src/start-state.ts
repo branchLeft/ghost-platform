@@ -85,6 +85,8 @@ export async function startStateGateway(
     const verifier = new SigV4Verifier({
       region: config.region,
       secrets: createSigningSecretSource(store, master, 'state'),
+      // Pulumi's S3 client frames every object write this way over TLS.
+      acceptUnsignedTrailer: true,
     });
     const replay = createInMemoryReplayGuard({
       windowMs: verifier.clockWindowMs,

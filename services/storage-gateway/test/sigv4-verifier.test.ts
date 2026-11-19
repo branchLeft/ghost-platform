@@ -106,6 +106,53 @@ describe('payload signing', () => {
     expect(await reasonFor(await sign(spec))).toBe('payload-streaming');
   });
 
+  describe('the unsigned streaming payload with a checksum trailer', () => {
+    const MARKER = 'STREAMING-UNSIGNED-PAYLOAD-TRAILER';
+    const framing = {
+      'content-encoding': 'aws-chunked',
+      'x-amz-decoded-content-length': '23',
+      'x-amz-trailer': 'x-amz-checksum-crc32',
+    };
+    const streaming = (headers: Record<string, string> = framing): SignSpec => ({
+      ...PUT,
+      headers: { ...PUT.headers, ...headers },
+      payloadHash: MARKER,
+    });
+    const accepting = makeVerifier({ acceptUnsignedTrailer: true });
+
+    it('is refused unless the verifier was told to accept it', async () => {
+      expect(await reasonFor(await sign(streaming()))).toBe('payload-streaming');
+      expect(await reasonFor(await sign(streaming()), makeVerifier())).toBe('payload-streaming');
+    });
+
+    it('is accepted when it was, whatever bytes the caller later reads', async () => {
+      expect(await reasonFor(await sign(streaming()), accepting)).toBe('accepted');
+    });
+
+    it.each([
+      ['content-encoding', 'gzip'],
+      ['x-amz-decoded-content-length', 'many'],
+      ['x-amz-trailer', 'x-amz-meta-note'],
+    ])('is refused even then when %s is %s', async (name, value) => {
+      const request = await sign(streaming({ ...framing, [name]: value }));
+      expect(await reasonFor(request, accepting)).toBe('payload-streaming');
+    });
+
+    it('still refuses a signed payload that carries the framing, and the other streaming modes', async () => {
+      expect(
+        await reasonFor(await sign({ ...PUT, headers: { ...PUT.headers, ...framing } }), accepting)
+      ).toBe('payload-streaming');
+      for (const mode of [
+        'STREAMING-AWS4-HMAC-SHA256-PAYLOAD',
+        'STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER',
+      ]) {
+        expect(await reasonFor(await sign({ ...streaming(), payloadHash: mode }), accepting)).toBe(
+          'payload-streaming'
+        );
+      }
+    });
+  });
+
   it.each(['', 'abc', sha256Hex(BODY).toUpperCase(), `${sha256Hex(BODY)}0`])(
     'refuses a payload hash that is not 64 lower-case hex digits: %j',
     async (hash) => {
