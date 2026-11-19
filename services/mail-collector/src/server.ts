@@ -14,12 +14,16 @@ import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch
 import { createLogger } from './log.js';
 import { createDirectoryDsnMailbox } from './dsnMailbox.js';
 import { createOutcomeRunner } from './outcomeRunner.js';
+import { createComplaintPuller } from './complaints/complaintPuller.js';
+import { createReceiverClient } from './complaints/receiverClient.js';
+import { createSentJournal } from './sentJournal.js';
 import { createFailureCounter } from './submissionFailures.js';
 import { createSweegoDeliveryClient } from './sweegoDeliveryClient.js';
 import { createStateWitness } from './stateWitness.js';
 import { createSweegoSuspension } from './sweegoSuspension.js';
 import { createSweegoUsage } from './sweegoUsage.js';
 import { createThrottle } from './throttle.js';
+import { createIp2Lane } from './ip2Lane.js';
 import { createBulkCap } from './lanes.js';
 
 const config = loadConfig();
@@ -61,6 +65,13 @@ const bulkCap = createBulkCap({
   onStateError: (error) => log.warn('bulk_deferral_state_error', { error: error.message }),
   log,
 });
+
+// Off unless the state file path is set. Set, a message on the newsletter
+// lane is sent only when the lane has a place for it.
+const ip2Lane = config.ip2 ? createIp2Lane({ ...config.ip2, log }) : undefined;
+if (!ip2Lane) {
+  log.warn('ip2_lane_caps_off', {});
+}
 
 const throttle = createThrottle({
   configPath: config.throttleConfigPath,
@@ -156,6 +167,7 @@ const sweegoDeliveryClient = sweegoConfig
       user: sweegoConfig.user,
       passFile: sweegoConfig.passFile,
       timeoutMs: sweegoConfig.timeoutMs,
+      ...(config.complaints ? { outcomeHeader: config.complaints.outcomeHeader } : {}),
     })
   : undefined;
 const sweegoThrottle = sweegoConfig
@@ -234,8 +246,48 @@ const droppedOutcomes = createDroppedOutcomes({
     : {}),
 });
 
+// The complaint path needs the Sweego relay in use: with it off no message is
+// sent there, so no complaint could match and nothing is pulled.
+const complaintsConfig = sweegoConfig ? config.complaints : undefined;
+if (config.complaints && !complaintsConfig) {
+  log.warn('complaints_not_enabled', { reason: 'sweego_not_configured' });
+}
+const sentJournal = complaintsConfig
+  ? createSentJournal({
+      path: complaintsConfig.sentJournalPath,
+      ttlMs: complaintsConfig.sentJournalTtlMs,
+      onError: (error) => log.warn('sent_journal_error', { error: error.message }),
+    })
+  : undefined;
+const complaints =
+  complaintsConfig && sentJournal
+    ? {
+        puller: createComplaintPuller({
+          receiver: createReceiverClient({
+            baseUrl: complaintsConfig.receiverUrl,
+            tokenFile: complaintsConfig.tokenFile,
+            timeoutMs: complaintsConfig.timeoutMs,
+          }),
+          journal: sentJournal,
+          store,
+          outcomes: drainClient,
+          log,
+          options: {
+            pollMs: complaintsConfig.pollMs,
+            retryBackoffMs: complaintsConfig.retryBackoffMs,
+            maxBackoffMs: complaintsConfig.maxBackoffMs,
+            perTenantPerHour: complaintsConfig.perTenantPerHour,
+            giveUpMs: complaintsConfig.giveUpMs,
+          },
+        }),
+        firstDelayMs: complaintsConfig.pollMs,
+      }
+    : undefined;
+
 const runtime = createCollectorRuntime({
   outcomes,
+  sentJournal,
+  complaints,
   droppedOutcomes,
   store,
   drainClient,
@@ -253,6 +305,7 @@ const runtime = createCollectorRuntime({
   throttle,
   loginThrottle,
   bulkCap,
+  ip2Lane,
   dedupe,
   health,
   heartbeat,

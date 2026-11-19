@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { buildTar } from '../../src/archive.js';
 import {
@@ -42,7 +43,7 @@ describe('readTar', () => {
     expect(() => readTar(half)).toThrow(BundleReadError);
   });
 
-  it('refuses an entry that is not a regular file, one with a path prefix, and a repeated name', () => {
+  it('refuses an entry that is not a regular file, one with a prefix that is not a media path, and a repeated name', () => {
     const tar = buildTar([{ name: 'a.txt', data: 'x' }], 0);
     const link = Buffer.from(tar);
     link.write('2', 156, 1, 'ascii');
@@ -51,7 +52,7 @@ describe('readTar', () => {
     const prefixed = Buffer.from(tar);
     prefixed.write('dir', 345, 3, 'ascii');
     refreshChecksum(prefixed);
-    expect(() => readTar(prefixed)).toThrow(/prefix/);
+    expect(() => readTar(prefixed)).toThrow(/unsafe/);
     const one = buildTar([{ name: 'a.txt', data: 'x' }], 0).subarray(0, 1024);
     const twice = Buffer.concat([one, one, Buffer.alloc(1024)]);
     expect(() => readTar(twice)).toThrow(/duplicate/);
@@ -73,6 +74,65 @@ function refreshChecksum(header: Buffer): void {
   for (let i = 0; i < 512; i += 1) sum += header[i]!;
   header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148, 8, 'ascii');
 }
+
+describe('media entries', () => {
+  const sha = (data: string): string => createHash('sha256').update(data).digest('hex');
+  const MEDIA = { 'content/images/2026/a.png': 'PNG-A', 'content/files/b.pdf': 'PDF-B' } as const;
+
+  function withMedia(
+    mutate: (listed: Record<string, unknown>[]) => void = () => undefined,
+    entries: Record<string, string> = { ...MEDIA }
+  ): ReturnType<typeof bundleFiles> {
+    const listed: Record<string, unknown>[] = Object.entries(MEDIA).map(([path, data]) => ({
+      path,
+      size: data.length,
+      sha256: sha(data),
+      status: 'carried',
+    }));
+    listed.push({ path: 'content/media/huge.mp4', size: 9, sha256: sha('x'), status: 'oversized' });
+    mutate(listed);
+    const base = bundleFiles();
+    const manifest = JSON.parse(
+      Buffer.from(base.find((f) => f.name === 'manifest.json')!.data).toString('utf8')
+    );
+    manifest.mediaFiles = { files: listed };
+    return [
+      ...bundleFiles({ override: { 'manifest.json': JSON.stringify(manifest) } }),
+      ...Object.entries(entries).map(([name, data]) => ({ name, data })),
+    ];
+  }
+
+  it('a bundle carrying media reads back, each file as the manifest lists it', () => {
+    const files = readTar(buildTar(withMedia(), 0));
+    const { mediaFiles } = openBundle(files);
+    expect(mediaFiles.map((f) => [f.path, Buffer.from(f.data).toString()])).toEqual([
+      ['content/images/2026/a.png', 'PNG-A'],
+      ['content/files/b.pdf', 'PDF-B'],
+    ]);
+    expect(openBundle(bundleFiles()).mediaFiles).toEqual([]);
+  });
+
+  it('refuses a media entry the manifest does not list, one whose bytes differ, and a listed file that is missing', () => {
+    expect(() => openBundle(withMedia((l) => l.splice(0, 1)))).toThrow(/not in the manifest/);
+    expect(() =>
+      openBundle(withMedia(undefined, { ...MEDIA, 'content/files/b.pdf': 'TAMPERED' }))
+    ).toThrow(/not the file it lists/);
+    const { 'content/files/b.pdf': _gone, ...fewer } = MEDIA;
+    expect(() => openBundle(withMedia(undefined, fewer))).toThrow(/lists 1 carried media files/);
+  });
+
+  it('a hostile tar entry that names a path outside the bundle is refused by the reader', () => {
+    const tar = buildTar([{ name: 'content/images/a.png', data: 'x' }], 0);
+    const evil = Buffer.from(tar);
+    evil.write('content/images/../../../etc/passwd', 0, 100, 'ascii');
+    refreshChecksum(evil);
+    expect(() => readTar(evil)).toThrow(/unsafe/);
+    const resized = Buffer.from(tar);
+    resized.write('content/images/size/w600/a.png', 0, 100, 'ascii');
+    refreshChecksum(resized);
+    expect(() => readTar(resized)).toThrow(/unsafe/);
+  });
+});
 
 describe('parseCsv', () => {
   it('reads quoted fields with commas, doubled quotes, CRLF and line breaks inside', () => {

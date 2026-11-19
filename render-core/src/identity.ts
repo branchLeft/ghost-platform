@@ -6,7 +6,12 @@
 
 import type { Slug, TenantUid } from './brand.js';
 import type { DatabaseSpec, MediaSpec, TenantDescriptor } from './descriptor.js';
-import { mediaBucketName, validateMediaBucket } from './media.js';
+import {
+  mediaBucketName,
+  validateMediaBucket,
+  validateMediaFolder,
+  validateMediaShard,
+} from './media.js';
 import { adaptersVolumeName, contentVolumeName, databaseAndUserName, stackName } from './naming.js';
 
 export interface TenantIdentity {
@@ -22,18 +27,31 @@ export interface TenantIdentity {
   /** `null` for a `sqlite` descriptor: there is no separate database name
    * to orphan, only the file at `database.path`. */
   readonly databaseName: string | null;
-  /** `null` for a `local` descriptor: there is no bucket to orphan. */
+  /** `null` for a `local` descriptor: there is no bucket to orphan. For a
+   * `gateway` descriptor, the shared shard the tenant's folder is in. */
   readonly mediaBucket: string | null;
+  /** Present only for a `gateway` descriptor: the tenant's folder. Changing
+   * it orphans every object and every published media URL. See
+   * identity.md#the-media-folder. */
+  readonly mediaFolder?: string;
 }
 
 function databaseIdentity(slug: Slug, database: DatabaseSpec): string | null {
   return database.kind === 'mysql' ? databaseAndUserName(slug) : null;
 }
 
-function mediaIdentity(slug: Slug, media: MediaSpec): string | null {
-  if (media.kind !== 's3') return null;
+function mediaIdentity(
+  slug: Slug,
+  media: MediaSpec
+): Pick<TenantIdentity, 'mediaBucket' | 'mediaFolder'> {
+  if (media.kind === 'local') return { mediaBucket: null };
+  if (media.kind === 'gateway') {
+    validateMediaShard(slug, media);
+    validateMediaFolder(slug, media);
+    return { mediaBucket: media.shard, mediaFolder: media.folder };
+  }
   validateMediaBucket(slug, media);
-  return mediaBucketName(slug);
+  return { mediaBucket: mediaBucketName(slug) };
 }
 
 export function renderIdentity(
@@ -47,6 +65,6 @@ export function renderIdentity(
     adaptersVolume: adaptersVolumeName(descriptor.slug),
     appHostPrivateIp: descriptor.appHostIp,
     databaseName: databaseIdentity(descriptor.slug, descriptor.database),
-    mediaBucket: mediaIdentity(descriptor.slug, descriptor.media),
+    ...mediaIdentity(descriptor.slug, descriptor.media),
   };
 }

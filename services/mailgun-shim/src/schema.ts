@@ -57,14 +57,22 @@ export const suppressions = sqliteTable(
   (table) => [primaryKey({ columns: [table.domain, table.type, table.email] })]
 );
 
-export const queueBatches = sqliteTable('queue_batches', {
-  batchId: text('batch_id').primaryKey(),
-  domain: text('domain').notNull(),
-  emailId: text('email_id'),
-  payload: text('payload').notNull(),
-  createdAt: real('created_at').notNull(),
-  completedAt: real('completed_at'),
-});
+export const queueBatches = sqliteTable(
+  'queue_batches',
+  {
+    batchId: text('batch_id').primaryKey(),
+    domain: text('domain').notNull(),
+    emailId: text('email_id'),
+    payload: text('payload').notNull(),
+    createdAt: real('created_at').notNull(),
+    completedAt: real('completed_at'),
+  },
+  (table) => [
+    // Finds the batches of one newsletter for one domain, so enqueueBatch can
+    // refuse a replayed recipient. See store.md#a-replayed-batch-is-refused.
+    index('idx_queue_batches_domain_email').on(table.domain, table.emailId),
+  ]
+);
 
 // `id` is the drain-facing identity, stable across re-offers; the primary key
 // stays (batch_id, recipient) because enqueue de-duplication relies on it.

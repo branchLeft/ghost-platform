@@ -108,6 +108,7 @@ export async function startRig(options: RigOptions = {}): Promise<Rig> {
       db: {
         listHealth: () => Promise.resolve([]),
         listSupportRequests: () => Promise.resolve([]),
+        waitingCount: () => Promise.resolve(0),
       } as unknown as OwnerDb,
       secureCookies: false,
       clock: () => NOW,

@@ -1,9 +1,15 @@
-import { and, count, eq, gt, sql, type SQL } from 'drizzle-orm';
+import { and, count, eq, getTableColumns, gt, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import {
+  demoStateEventInsert,
+  hostnameRegisterInsert,
+  hostnameRetirementInsert,
+} from './insertShapes.js';
 import { FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
 import {
+  AdmissionRefusedError,
   ConcurrentTransitionError,
   DemoExistsError,
   DemoHostnameExistsError,
@@ -12,6 +18,8 @@ import {
   HostnameRetiredError,
   HostnameReusedError,
   LEASE_DAYS,
+  SLOT_COUNT,
+  SLOT_HOLDING_STATES,
   UnknownDemoError,
   UnknownHostnameError,
   assertExtensionAllowed,
@@ -19,14 +27,30 @@ import {
   deriveEventView,
   generateLabel,
   parseDemoId,
+  type Admission,
   type DemoEventView,
   type DemoState,
 } from '../demoLifecycle.js';
-import { eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
+import {
+  countDemosIn,
+  countFailedHoldingSlot,
+  eventsOf,
+  hostnameOf,
+  latestEvent,
+  requestOf,
+} from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
-import { demoStateEvent, hostnameRegister, hostnameRetirement } from '../schema.js';
+import { demoStateEvent } from '../schema.js';
 
 export * from '../demoLifecycle.js';
+
+/**
+ * The advisory lock every admission takes, so that two requests cannot both
+ * see a free slot and take the last one. The value is arbitrary: it only has to
+ * be the same everywhere admission is decided. The lock is scoped to the
+ * database and held to the end of the transaction.
+ */
+const ADMISSION_LOCK_KEY = 4_172_906_385;
 
 /** The two columns of a term: what is written to them, as SQL the database evaluates. */
 interface Term {
@@ -73,14 +97,51 @@ export class ProvisionerDb {
     return this.run(async (tx) => {
       try {
         const [row] = await tx
-          .insert(demoStateEvent)
+          .insert(demoStateEventInsert)
           .values({ demoId: id, sequence: 1, toState: 'VERIFIED' })
-          .returning();
+          .returning(getTableColumns(demoStateEvent));
         return deriveEventView(row!);
       } catch (error) {
         if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) throw new DemoExistsError(id);
         throw error;
       }
+    });
+  }
+
+  /**
+   * Decides, for a demo at VERIFIED whose request is recorded, whether the
+   * request gets a slot or goes onto the waiting list, and records that as
+   * its next state. A full house is an outcome, never an error: a request
+   * that finds every slot held is a lead on the list, with the contact
+   * details its recorded request already carries.
+   *
+   * It is CLAIMED only when fewer than `SLOT_COUNT` demos hold a slot (a
+   * demo in a slot-holding state, or one FAILED whose hostname is not yet
+   * retired: its slot has not been freed) and nobody is waiting, so a later request never passes an earlier one. The
+   * decision is made under one advisory lock held to the end of the
+   * transaction, so concurrent requests are decided one at a time: the
+   * seventh can never also be given the sixth slot.
+   *
+   * @throws InvalidDemoIdError
+   * @throws UnknownDemoError
+   * @throws AdmissionRefusedError
+   * @throws ConcurrentTransitionError
+   */
+  async admit(demoId: string): Promise<Admission> {
+    const id = parseDemoId(demoId);
+    return this.run(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${ADMISSION_LOCK_KEY})`);
+      const latest = await this.latestOrThrow(tx, id);
+      if (latest.toState !== 'VERIFIED') throw new AdmissionRefusedError(id, 'state');
+      if ((await requestOf(tx, id)) === undefined) throw new AdmissionRefusedError(id, 'request');
+      // A demo that FAILED with its slot not yet freed still holds it: the
+      // worker retires the hostname only once the slot is free.
+      const holding =
+        (await countDemosIn(tx, SLOT_HOLDING_STATES)) + (await countFailedHoldingSlot(tx));
+      const waiting = await countDemosIn(tx, ['WAITING']);
+      const state = holding < SLOT_COUNT && waiting === 0 ? 'CLAIMED' : 'WAITING';
+      const event = await this.append(tx, latest, state, carried(tx, latest), 0);
+      return { event, state, queuePosition: state === 'WAITING' ? waiting + 1 : null };
     });
   }
 
@@ -146,7 +207,7 @@ export class ProvisionerDb {
       }
       const label = this.newLabel();
       try {
-        await tx.insert(hostnameRegister).values({ label, demoId });
+        await tx.insert(hostnameRegisterInsert).values({ label, demoId });
       } catch (error) {
         const found = readDatabaseError(error);
         if (found?.code === UNIQUE_VIOLATION && found.constraint === 'hostname_register_pkey') {
@@ -169,7 +230,7 @@ export class ProvisionerDb {
   async retireHostname(label: string): Promise<void> {
     await this.run(async (tx) => {
       try {
-        await tx.insert(hostnameRetirement).values({ label });
+        await tx.insert(hostnameRetirementInsert).values({ label });
       } catch (error) {
         const found = readDatabaseError(error);
         if (found?.code === FOREIGN_KEY_VIOLATION) throw new UnknownHostnameError(label);
@@ -212,7 +273,7 @@ export class ProvisionerDb {
   ): Promise<DemoEventView> {
     try {
       const [row] = await tx
-        .insert(demoStateEvent)
+        .insert(demoStateEventInsert)
         .values({
           demoId: latest.demoId,
           sequence: latest.sequence + 1,
@@ -223,7 +284,7 @@ export class ProvisionerDb {
           leaseEndsAt: term.endsAt,
           extensionDays,
         })
-        .returning();
+        .returning(getTableColumns(demoStateEvent));
       return deriveEventView(row!);
     } catch (error) {
       if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) {
