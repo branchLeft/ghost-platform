@@ -116,9 +116,19 @@ and the audit record carries the same `complete` flag.
   files, not behind the storage gateway, so a promotion needs the bytes
   (ghost-platform-docs page 26). With `--carry-media-files` the bundler reads the
   slot's content volume (the one the rendered stack mounts at
-  `/var/lib/ghost/content`, found with `docker volume inspect`; the tree is only
-  listed, opened for reading with `O_NOFOLLOW` and read, and the demo is drained
-  for the run) and carries the originals under `content/images`, `content/media`
+  `/var/lib/ghost/content`) from a throwaway container of the tenant's own image:
+  the volume mounted **read-only**, as the tenant's unprivileged user, with no
+  network, no capability, a read-only root and no log. Nothing on the host ever
+  opens a path inside the tree. The demo's own Ghost keeps writing to that volume,
+  and a tenant can plant a link in it, so the container's script reaches every
+  directory through the descriptor of its parent (`/proc/self/fd/<n>/<name>`, the
+  last component opened with `O_NOFOLLOW`, each directory checked against the
+  `lstat` that found it) and lists a directory through its own descriptor: a path
+  is never resolved twice, so a directory swapped for a link mid-read leads
+  nowhere, and a link that did resolve would resolve inside the container, where
+  there is nothing of the host's. The read is a snapshot of a tree that can still
+  change: a file added or deleted during it can be missing from it, and the
+  manifest lists what was read. It carries the originals under `content/images`, `content/media`
   and `content/files` in the encrypted archive, one entry each. The manifest
   inside the archive lists every file with its path, size, checksum and status
   (`mediaFiles`); the manifest beside it carries counts only, because a file's
@@ -130,13 +140,15 @@ and the audit record carries the same `complete` flag.
     entered), anything a hold has not released (it is not in the served tree),
     and anything that is not a regular file.
   - A symlink, a device, a pipe, a socket, or a media root that is itself a link
-    **refuses the export** by name (`MediaTreeRefusedError`); nothing is written.
+    **refuses the export** by name (`MediaTreeRefusedError`), also when it is
+    swapped in during the read; nothing is written.
   - A file over the destination tier's upload ceiling (`--upload-ceiling-bytes`,
     128 MiB by default) is listed as `oversized` with its size and checksum and not
     carried. A name outside the safe set is listed under `unrepresentable`.
     References in the content to a file the tree does not hold are listed in
     `danglingReferences`. More than 512 MiB to carry refuses the export, because
-    the archive is built in memory.
+    the archive is built in memory. The script needs Linux (`/proc`); its tests run
+    on Linux only.
   - Entry names: `archive.ts` and `bundleReader.ts` share `entryNames.ts`, which
     allows a flat name or `content/<images|media|files>/<safe segments>` and nothing
     else, so a crafted archive cannot name a path that leaves the bundle.

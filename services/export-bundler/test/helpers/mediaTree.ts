@@ -1,6 +1,12 @@
 import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import {
+  MEDIA_READ_SCRIPT,
+  readFrames,
+  type MediaTreeSource,
+  type TreeEntry,
+} from '../../src/mediaSource.js';
 
 /**
  * A demo slot's content directory: the three served trees, a resized variant,
@@ -38,4 +44,36 @@ export async function seedContentDir(
 export async function plantSymlink(dir: string, rel: string, target: string): Promise<void> {
   await mkdir(dirname(join(dir, rel)), { recursive: true });
   await symlink(target, join(dir, rel));
+}
+
+/** The tree as a source would have read it, for tests that are about what the host does with it. */
+export function entriesOf(files: Readonly<Record<string, string>>): TreeEntry[] {
+  return Object.entries(files).map(([rel, data]) => ({
+    rel,
+    size: data.length,
+    data: Buffer.from(data),
+    sha256: null,
+  }));
+}
+
+export function fakeSource(
+  entries: readonly TreeEntry[] | (() => Promise<never>)
+): MediaTreeSource {
+  return {
+    async read() {
+      return typeof entries === 'function' ? entries() : entries;
+    },
+  };
+}
+
+/** The real reader script, run by this machine's node on a directory. Linux only (it needs /proc). */
+export function localMediaSource(contentDir: string): MediaTreeSource {
+  return {
+    read: (limits) =>
+      readFrames(
+        process.execPath,
+        ['-e', MEDIA_READ_SCRIPT, contentDir, String(limits.uploadCeilingBytes)],
+        limits
+      ),
+  };
 }

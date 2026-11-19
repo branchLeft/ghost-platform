@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -35,8 +35,9 @@ import {
   SupportAccountNotActiveError,
   type SupportGrant,
 } from '../../src/supportGrant.js';
+import type { MediaTreeSource, TreeEntry } from '../../src/mediaSource.js';
 import { MediaTreeRefusedError } from '../../src/mediaTree.js';
-import { plantSymlink, SERVED_FILES, seedContentDir } from '../helpers/mediaTree.js';
+import { entriesOf, fakeSource, SERVED_FILES } from '../helpers/mediaTree.js';
 import {
   decryptAge,
   filesContaining,
@@ -706,39 +707,27 @@ describe('runExport', () => {
   });
 
   describe("a demo slot's media files", () => {
-    let contentDir: string;
-    let outside: string;
     const DEMO_CONTENT = JSON.stringify({
       posts: [
         { feature_image: '__GHOST_URL__/content/images/2026/11/hero-AAAAAAAAAAAAAAAAAAAAAA.png' },
         { feature_image: '__GHOST_URL__/content/images/2026/11/held.png' },
       ],
     });
-
-    beforeEach(async () => {
-      contentDir = await seedContentDir();
-      outside = await mkdtemp(join(tmpdir(), 'export-bundler-run-outside-'));
-      await writeFile(join(outside, 'secret.txt'), 'OUTSIDE-the-tree');
-    });
-
-    afterEach(async () => {
-      await rm(contentDir, { recursive: true, force: true });
-      await rm(outside, { recursive: true, force: true });
-    });
-
-    const demoRequest = (): ExportRequest =>
+    const demoRequest = (
+      source: MediaTreeSource = fakeSource(entriesOf(SERVED_FILES))
+    ): ExportRequest =>
       request({
         media: { baseUrl: null, erasureDate: '2030-01-01' },
-        mediaTree: { contentDir, uploadCeilingBytes: 1024 },
+        mediaTree: { source, uploadCeilingBytes: 1024 },
       });
     const find = async (dir: string): Promise<number> => (await filesUnder(dir)).length;
 
-    it('carries the originals of the served tree in the encrypted bundle, and the bundle reader accepts it', async () => {
+    it('carries the originals of the served tree in the encrypted bundle', async () => {
       const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
       const result = await runExport(deps, demoRequest());
       const tar = decryptAge(result.archivePath, identity.identityPath);
       const served = Object.keys(SERVED_FILES).map((rel) => `content/${rel}`);
-      expect(tarListing(tar).filter((n) => n.startsWith('content/'))).toEqual(served.sort());
+      expect(tarListing(tar).filter((n) => n.startsWith('content/'))).toEqual([...served].sort());
       for (const [rel, data] of Object.entries(SERVED_FILES)) {
         expect(tarMember(tar, `content/${rel}`).toString('utf8')).toBe(data);
       }
@@ -747,14 +736,11 @@ describe('runExport', () => {
       expect(inArchive.mediaFiles.files).toHaveLength(Object.keys(SERVED_FILES).length);
       expect(inArchive.mediaFiles.danglingReferences).toEqual(['content/images/2026/11/held.png']);
       expect(inArchive).toEqual(JSON.parse(JSON.stringify(result.manifest)));
-      const media = result.manifest.extensions.find((e) => e.name === 'media_files');
-      expect(media).toMatchObject({
+      expect(result.manifest.extensions.find((e) => e.name === 'media_files')).toMatchObject({
         status: 'complete',
         expected: served.length,
         present: served.length,
       });
-      // The archive's own entries: a resized variant and the quarantine are not in it.
-      expect(tarListing(tar).join('\n')).not.toMatch(/size\/|quarantine|themes/);
     });
 
     it('the manifest beside the archive carries counts, never a file name, and the bytes are no longer a named gap', async () => {
@@ -777,17 +763,22 @@ describe('runExport', () => {
     });
 
     it('lists an oversized file by size before anything is imported, and does not put it in the bundle', async () => {
-      await writeFile(join(contentDir, 'media/huge.mp4'), 'H'.repeat(2000));
+      const big: TreeEntry = {
+        rel: 'media/huge.mp4',
+        size: 2000,
+        data: null,
+        sha256: 'c'.repeat(64),
+      };
       const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
-      const result = await runExport(deps, demoRequest());
+      const result = await runExport(
+        deps,
+        demoRequest(fakeSource([...entriesOf(SERVED_FILES), big]))
+      );
       const tar = decryptAge(result.archivePath, identity.identityPath);
       const listed = JSON.parse(tarMember(tar, 'manifest.json').toString('utf8')).mediaFiles.files;
       expect(
         listed.find((f: { path: string }) => f.path === 'content/media/huge.mp4')
-      ).toMatchObject({
-        size: 2000,
-        status: 'oversized',
-      });
+      ).toMatchObject({ size: 2000, status: 'oversized', sha256: 'c'.repeat(64) });
       expect(tarListing(tar)).not.toContain('content/media/huge.mp4');
       expect(JSON.parse(await readFile(result.manifestPath, 'utf8')).mediaFiles.oversized).toBe(1);
     });
@@ -808,35 +799,29 @@ describe('runExport', () => {
       ).toBe(false);
     });
 
-    it('a media root that is not a directory refuses the export', async () => {
-      await rm(join(contentDir, 'images'), { recursive: true });
-      await writeFile(join(contentDir, 'images'), 'a file where a directory belongs');
+    it('a tree that cannot be read is a failed extension: the archive is made and says it is not complete', async () => {
       const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
-      await expect(runExport(deps, demoRequest())).rejects.toBeInstanceOf(MediaTreeRefusedError);
+      const result = await runExport(
+        deps,
+        demoRequest(
+          fakeSource(async () => {
+            throw new Error('the read container failed');
+          })
+        )
+      );
+      expect(result.manifest.complete).toBe(false);
+      const media = result.manifest.extensions.find((e) => e.name === 'media_files');
+      expect(media?.status).toBe('failed');
+      expect(media?.notes).toEqual(['Error']);
+      expect(result.manifest.mediaFiles).toBeUndefined();
     });
 
-    it.skipIf(process.getuid?.() === 0)(
-      'a directory that cannot be read is a failed extension: the archive is made and says it is not complete',
-      async () => {
-        await chmod(join(contentDir, 'files'), 0o000);
-        try {
-          const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
-          const result = await runExport(deps, demoRequest());
-          expect(result.manifest.complete).toBe(false);
-          const media = result.manifest.extensions.find((e) => e.name === 'media_files');
-          expect(media?.status).toBe('failed');
-          expect(media?.notes).toEqual(['Error']);
-          expect(result.manifest.mediaFiles).toBeUndefined();
-        } finally {
-          await chmod(join(contentDir, 'files'), 0o700);
-        }
-      }
-    );
-
-    it('CONTROL: a symlink planted out of the tree REFUSES the export by name, writes no archive, audits nothing, and still tears down', async () => {
-      await plantSymlink(contentDir, 'images/2026/11/planted.png', join(outside, 'secret.txt'));
+    it('CONTROL: a refusal by the reader REFUSES the export by name, writes no archive, audits nothing, and still tears down', async () => {
+      const refusing = fakeSource(async () => {
+        throw new MediaTreeRefusedError('content/images/2026/11/planted.png', 'a symbolic link');
+      });
       const { deps, recording } = fakeDeps({ contentJson: DEMO_CONTENT });
-      const err = await runExport(deps, demoRequest()).catch((e: unknown) => e);
+      const err = await runExport(deps, demoRequest(refusing)).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(MediaTreeRefusedError);
       expect((err as Error).message).toContain('content/images/2026/11/planted.png');
       expect(await find(destDir)).toBe(0);
@@ -846,11 +831,14 @@ describe('runExport', () => {
       expect(recording.drainClearCalls).toEqual(['tenant-1-export-1']);
     });
 
-    it('a media tree refusal is not turned into a failed extension report: the bytes outside the tree are never read', async () => {
-      await plantSymlink(contentDir, 'files/leak.txt', join(outside, 'secret.txt'));
+    it('a refusal is not turned into a failed extension report', async () => {
+      const refusing = fakeSource(async () => {
+        throw new MediaTreeRefusedError('content/files/leak.txt', 'a symbolic link');
+      });
       const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
-      await expect(runExport(deps, demoRequest())).rejects.toThrow(/leak\.txt.*symbolic link/);
-      expect(await filesContaining(destDir, 'OUTSIDE-the-tree')).toEqual([]);
+      await expect(runExport(deps, demoRequest(refusing))).rejects.toThrow(
+        /leak\.txt.*symbolic link/
+      );
     });
   });
 

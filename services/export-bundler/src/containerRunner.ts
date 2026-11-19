@@ -164,15 +164,6 @@ export function parseInspectedEnv(stdout: string): Record<string, string> {
 /** Ghost's content directory inside the tenant's image; the volume mounted here holds its media. */
 export const GHOST_CONTENT_DIR = '/var/lib/ghost/content';
 
-/** What `docker volume inspect --format '{{.Mountpoint}}'` prints: one absolute path. */
-export function parseVolumeMountpoint(stdout: string): string {
-  const path = stdout.trim();
-  if (!path.startsWith('/') || path.includes('\n') || path.includes('\0')) {
-    throw new Error('docker volume inspect did not return one absolute path');
-  }
-  return path;
-}
-
 export function runDocker(
   dockerCommand: string,
   argv: readonly string[],

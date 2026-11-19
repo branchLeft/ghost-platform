@@ -83,8 +83,8 @@ export interface ExportRequest {
   /** Where this tenant's media is served from, and how links to it are signed. */
   readonly media: MediaConfig;
   /**
-   * Set for a demo slot: where its served media tree is read from. The demo is
-   * drained for the run, so the tree does not change under the read.
+   * Set for a demo slot: where its served media tree is read from. The live
+   * demo's Ghost can still write to the volume, so the read is a snapshot.
    */
   readonly mediaTree?: MediaTreeConfig;
 }

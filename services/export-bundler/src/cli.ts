@@ -7,11 +7,10 @@ import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
 import {
   createDockerContainerRunner,
   GHOST_CONTENT_DIR,
-  parseVolumeMountpoint,
-  runDocker,
   startup,
   type VolumeMount,
 } from './containerRunner.js';
+import { createContainerMediaSource } from './mediaSource.js';
 import { DEFAULT_UPLOAD_CEILING_BYTES } from './mediaTree.js';
 import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
@@ -216,14 +215,9 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
       throw new TenantConfigError(`the rendered stack mounts no volume at ${GHOST_CONTENT_DIR}`);
     }
     mediaTree = {
-      contentDir: parseVolumeMountpoint(
-        await runDocker(dockerCommand, [
-          'volume',
-          'inspect',
-          '--format',
-          '{{.Mountpoint}}',
-          content.volume,
-        ])
+      source: createContainerMediaSource(
+        { runId: colourId, image: runtime.image, user: runtime.user, volume: content.volume },
+        { dockerCommand }
       ),
       uploadCeilingBytes: opts.uploadCeilingBytes,
     };

@@ -18,7 +18,6 @@ import {
   RELAY_SCRIPT,
   createDockerContainerRunner,
   parseInspectedEnv,
-  parseVolumeMountpoint,
   type TenantColourTemplate,
   type TenantColourSpec,
 } from '../../src/containerRunner.js';
@@ -517,17 +516,5 @@ describe('startup', () => {
     ).rejects.toThrow(DockerEngineTooOldError);
     expect(target.listenerCount('SIGINT')).toBe(0);
     expect(target.listenerCount('SIGTERM')).toBe(0);
-  });
-});
-
-describe('parseVolumeMountpoint', () => {
-  it('takes the one absolute path docker prints', () => {
-    expect(parseVolumeMountpoint('/var/lib/docker/volumes/v/_data\n')).toBe(
-      '/var/lib/docker/volumes/v/_data'
-    );
-  });
-
-  it.each([[''], ['relative/path'], ['/a\n/b'], ['<no value>']])('refuses %j', (out) => {
-    expect(() => parseVolumeMountpoint(out)).toThrow(/absolute path/);
   });
 });

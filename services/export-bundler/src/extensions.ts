@@ -1,6 +1,7 @@
 import type { ArchiveFile } from './archive.js';
 import type { Collection, ExportFile, GhostExportClient } from './ghostExportClient.js';
 import type { MediaFilesListing } from './manifest.js';
+import type { MediaTreeSource } from './mediaSource.js';
 import { MediaTreeRefusedError, MediaTreeTooLargeError, readMediaTree } from './mediaTree.js';
 import {
   parseErasureDate,
@@ -45,8 +46,8 @@ export interface ExtensionOutcome {
 
 /** Where a demo slot's served media tree is read from. */
 export interface MediaTreeConfig {
-  /** The slot's content directory, holding `images`, `media` and `files`. */
-  readonly contentDir: string;
+  /** Reads the slot's `images`, `media` and `files` from a throwaway read-only container. */
+  readonly source: MediaTreeSource;
   /** The destination tier's upload ceiling; a larger file is listed, not carried. */
   readonly uploadCeilingBytes: number;
 }
