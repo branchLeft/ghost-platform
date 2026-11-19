@@ -225,6 +225,39 @@ class ParsingTests(unittest.TestCase):
         lines.append("GRANT RELOAD, REPLICATION CLIENT ON *.* TO `mover`@`localhost`")
         self.assertEqual(sp.parse_global_privileges(lines), frozenset({"BACKUP_ADMIN", "RELOAD", "REPLICATION CLIENT"}))
 
+    def test_a_role_is_found_and_expanded(self) -> None:
+        lines = ["GRANT USAGE ON *.* TO `mover`@`localhost`", "GRANT `r1`@`%`, `r2`@`%` TO `mover`@`localhost`"]
+        self.assertEqual(sp.parse_role_grants(lines), ["`r1`@`%`", "`r2`@`%`"])
+        asked: list[str] = []
+
+        def query(sql: str) -> list[str]:
+            asked.append(sql)
+            return lines if len(asked) == 1 else ["GRANT BACKUP_ADMIN, RELOAD ON *.* TO `mover`@`localhost`", lines[1]]
+
+        grants = sp.effective_grants(query, "'mover'@'localhost'")
+        self.assertEqual(asked[1], "SHOW GRANTS FOR 'mover'@'localhost' USING `r1`@`%`, `r2`@`%`;")
+        self.assertEqual(sp.parse_global_privileges(grants), frozenset({"BACKUP_ADMIN", "RELOAD"}))
+
+    def test_a_grant_outside_the_design_is_stray(self) -> None:
+        lines = [
+            "GRANT USAGE ON *.* TO `mover`@`localhost`",
+            "GRANT BACKUP_ADMIN ON *.* TO `mover`@`localhost`",
+            "GRANT SELECT, LOCK TABLES ON `blog`.* TO `mover`@`localhost`",
+            "GRANT SELECT ON `performance_schema`.`log_status` TO `mover`@`localhost`",
+            "GRANT SELECT ON `other`.* TO `mover`@`localhost`",
+            "GRANT INSERT ON `blog`.`posts` TO `mover`@`localhost`",
+        ]
+        allowed = ["`blog`.*", "`performance_schema`.`log_status`"]
+        self.assertEqual(sp.stray_grants(lines, allowed), [lines[4], lines[5]])
+        self.assertEqual(sp.stray_grants(lines[:4], allowed), [])
+
+    def test_a_stray_grant_fails_control_four(self) -> None:
+        stray = sp.stray_grants(["GRANT SELECT ON `other`.* TO `mover`@`localhost`"], [])
+        verdict = sp.scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], stray)
+        self.assertFalse(verdict.passed)
+        self.assertIn("`other`.*", verdict.reason)
+        self.assertTrue(sp.scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], []).passed)
+
     def test_exit_codes(self) -> None:
         self.assertEqual(sp.exit_code({1: True, 2: True, 3: True, 4: True, 5: True, 6: True}, sabotaged=False), sp.EXIT_PASSED)
         for number in (1, 2, 3, 4, 5):

@@ -318,16 +318,23 @@ def _quote_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
-def list_tables_sql(schemas: Sequence[str] | None) -> str:
-    """Every base table to lock: the named schemas', or every user
-    schema's when `schemas` is None."""
+def _scope_sql(schemas: Sequence[str] | None) -> str:
+    """The schema scope of every table listing: the named schemas', or every
+    user schema's when `schemas` is None. One home, so the listing and the
+    engine refusal cannot drift apart."""
     if schemas is None:
-        scope = "TABLE_SCHEMA NOT IN (" + ", ".join(_quote_string(s) for s in SYSTEM_SCHEMAS) + ")"
-    else:
-        scope = "TABLE_SCHEMA IN (" + ", ".join(_quote_string(s) for s in schemas) + ")"
+        return "TABLE_SCHEMA NOT IN (" + ", ".join(_quote_string(s) for s in SYSTEM_SCHEMAS) + ")"
+    return "TABLE_SCHEMA IN (" + ", ".join(_quote_string(s) for s in schemas) + ")"
+
+
+def list_tables_sql(schemas: Sequence[str] | None) -> str:
+    """Every base table to lock, with its storage engine: the named schemas',
+    or every user schema's when `schemas` is None. The engine is read with the
+    name so the listing taken under the lock can show an engine that changed
+    between the first listing and the lock."""
     return (
-        "SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES "
-        f"WHERE TABLE_TYPE = 'BASE TABLE' AND {scope} ORDER BY TABLE_SCHEMA, TABLE_NAME;"
+        "SELECT TABLE_SCHEMA, TABLE_NAME, IFNULL(ENGINE, '') FROM information_schema.TABLES "
+        f"WHERE TABLE_TYPE = 'BASE TABLE' AND {_scope_sql(schemas)} ORDER BY TABLE_SCHEMA, TABLE_NAME;"
     )
 
 
@@ -337,12 +344,28 @@ def lock_tables_sql(tables: Sequence[tuple[str, str]]) -> str:
     ) + ";"
 
 
-def _parse_tables(lines: Sequence[str]) -> list[tuple[str, str]]:
+def _parse_tables(lines: Sequence[str]) -> list[tuple[str, str, str]]:
+    """Schema, table and engine of each listed row. A row with no engine
+    field is kept with an empty engine, which the refusal treats as not
+    InnoDB."""
     tables = []
     for line in lines:
-        schema, _, table = line.partition("\t")
-        tables.append((schema, table))
+        schema, _, rest = line.partition("\t")
+        table, _, engine = rest.partition("\t")
+        tables.append((schema, table, engine))
     return tables
+
+
+def _refuse_non_innodb(tables: Sequence[tuple[str, str, str]]) -> None:
+    """The dump runs as one InnoDB snapshot that opens after the lock is
+    released, and the binary-log position is read under the lock. A table
+    that is not transactional (MyISAM, MEMORY, CSV) is read after the unlock,
+    so its rows would run past the position and then be replayed again from
+    the log. Nothing is locked yet when this runs."""
+    foreign = [f"{schema}.{table} ({engine or 'no engine'})" for schema, table, engine in tables if engine.lower() != "innodb"]
+    if foreign:
+        shown = ", ".join(foreign[:10]) + (f" and {len(foreign) - 10} more" if len(foreign) > 10 else "")
+        raise _Fatal(f"a table that is not InnoDB cannot be snapshotted consistently with the binary-log position: {shown}")
 
 
 def parse_log_status(lines: Sequence[str]) -> tuple[str, int]:
@@ -449,10 +472,11 @@ def _attempt(
         tables = _parse_tables(coordinator.ask(list_tables_sql(schemas), setup_deadline))
         if not tables:
             raise _Fatal(f"no base tables to lock in {list(schemas) if schemas is not None else 'any user schema'}")
+        _refuse_non_innodb(tables)
 
         requested = clock()
         try:
-            coordinator.ask(lock_tables_sql(tables), requested + limits.wait_deadline_seconds)
+            coordinator.ask(lock_tables_sql([(schema, table) for schema, table, _ in tables]), requested + limits.wait_deadline_seconds)
         except _DeadlinePassed:
             raise _Abort(f"lock not granted within {limits.wait_deadline_seconds}s") from None
         except _SessionEnded as exc:
@@ -464,7 +488,7 @@ def _attempt(
 
         try:
             if _parse_tables(coordinator.ask(list_tables_sql(schemas), hold_deadline)) != tables:
-                raise _Abort("the set of tables changed while the lock was requested")
+                raise _Abort("the set of tables, or a table's engine, changed while the lock was requested")
             log_file, position = read_coordinates(
                 coordinates, coordinator.ask(_COORDINATE_SQL[coordinates], hold_deadline)
             )
