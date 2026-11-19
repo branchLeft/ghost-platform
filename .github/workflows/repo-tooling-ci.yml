@@ -116,6 +116,13 @@ jobs:
       - name: Bundled themes and fonts tests
         run: node --test themes/*.test.mjs
 
+      # The platform's footer credit patches (themes/footer-credit/README.md):
+      # one patch per bundled theme, none removing Ghost's own credit, and the
+      # partial carries what render-core names. Their application to the real
+      # themes is proved by the image test in build.yml.
+      - name: Theme footer credit tests
+        run: python3 -m unittest discover -s themes/footer-credit -p 'test_*.py' -v
+
       # The CSP gates' verdict logic. Needs render-core built, so build it
       # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
       # Docker and Chromium and stays out of CI, like csp/proof/.

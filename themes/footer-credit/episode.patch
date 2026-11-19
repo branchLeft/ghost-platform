@@ -1,0 +1,11 @@
+--- a/partials/components/footer.hbs
++++ b/partials/components/footer.hbs
+@@ -27,6 +27,7 @@
+             {{else}}
+                 {{footerText}}
+             {{/unless}}
++            {{> platform-footer-credit}}
+         </div>
+     </div>
+ </footer>
+\ No newline at end of file
