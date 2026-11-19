@@ -852,10 +852,10 @@ export const MISSING: readonly Tamper[] = [
   },
   {
     id: 'M06',
-    title: "the provisioner role's INSERT on the hostname register",
-    apply: [[P, 'REVOKE INSERT ON portal.hostname_register FROM portal_provisioner']],
-    undo: [[P, 'GRANT INSERT ON portal.hostname_register TO portal_provisioner']],
-    expect: /missing M06: INSERT on table portal.hostname_register to portal_provisioner/,
+    title: "the provisioner role's SELECT on the hostname register",
+    apply: [[P, 'REVOKE SELECT ON portal.hostname_register FROM portal_provisioner']],
+    undo: [[P, 'GRANT SELECT ON portal.hostname_register TO portal_provisioner']],
+    expect: /missing M06: SELECT on table portal.hostname_register to portal_provisioner/,
   },
   {
     id: 'M06',
