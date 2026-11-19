@@ -25,15 +25,27 @@ let consoleApp: Running;
 let tenantApp: Running;
 const issuer = new FakeIssuer();
 
-const post = (browser: Browser, origin: string, path: string, fields: Record<string, string>) =>
+const post = (
+  browser: Browser,
+  origin: string,
+  path: string,
+  fields: Record<string, string>,
+  extra: Record<string, string> = {}
+) =>
   browser.request(path, {
     method: 'POST',
-    headers: { origin, 'content-type': 'application/x-www-form-urlencoded' },
+    headers: { origin, 'content-type': 'application/x-www-form-urlencoded', ...extra },
     body: new URLSearchParams(fields).toString(),
   });
 
-const publish = (browser: Browser, fields: Record<string, string>) =>
-  post(browser, consoleApp.origin, '/documents/publish', fields);
+const publish = (
+  browser: Browser,
+  fields: Record<string, string>,
+  extra: Record<string, string> = {}
+) => post(browser, consoleApp.origin, '/documents/publish', fields, extra);
+
+// An oversize post may be cut off mid-send, so it never shares a pooled connection.
+const ONCE = { connection: 'close' };
 
 /**
  * The status of a post the console refuses as too large. It answers 413 and
@@ -170,12 +182,16 @@ describe('publishing a document from the owner console', () => {
 
     const before = await versionsStored();
     const huge = await tooLarge(
-      publish(owner, {
-        kind: 'usage',
-        title: 'TEST_USAGE_TITLE',
-        effective_date: '2026-12-01',
-        body: 'x'.repeat(600_000),
-      })
+      publish(
+        owner,
+        {
+          kind: 'usage',
+          title: 'TEST_USAGE_TITLE',
+          effective_date: '2026-12-01',
+          body: 'x'.repeat(600_000),
+        },
+        ONCE
+      )
     );
     expect([413, 'reset']).toContain(huge);
     expect(await versionsStored()).toBe(before);
@@ -184,9 +200,13 @@ describe('publishing a document from the owner console', () => {
   it('keeps the shell limit on every other action', async () => {
     const owner = await ownerBrowser();
     const reply = await tooLarge(
-      post(owner, consoleApp.origin, '/support-requests/dealt-with', {
-        tenant: 'x'.repeat(5000),
-      })
+      post(
+        owner,
+        consoleApp.origin,
+        '/support-requests/dealt-with',
+        { tenant: 'x'.repeat(5000) },
+        ONCE
+      )
     );
     expect([413, 'reset']).toContain(reply);
   });
