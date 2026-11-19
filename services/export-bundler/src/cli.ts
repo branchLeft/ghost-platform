@@ -50,6 +50,12 @@ export interface CliOptions {
   readonly imageEnv: string | undefined;
   /** The operator's statement of the recipient; refused unless it is the descriptor's. */
   readonly ageRecipient: string;
+  /**
+   * The public `age` recipient a promotion supplies for a demo, whose
+   * descriptor has no backup recipient. Must equal `ageRecipient`, and is
+   * accepted only under a consented grant and only for such a descriptor.
+   */
+  readonly promotionRecipient: string | undefined;
   readonly requestedBy: string;
   readonly deliveredTo: string;
   readonly destDir: string;
@@ -93,6 +99,15 @@ export function parseArgs(argv: readonly string[]): CliOptions {
         `identity come from its own rendered stack`
     );
   }
+  // A flag with no value is refused, never read as absent: absent would fall
+  // back to the descriptor's own recipient.
+  const promotionRecipient = flagValue(argv, 'promotion-recipient');
+  if (
+    argv.includes('--promotion-recipient') &&
+    (promotionRecipient === undefined || promotionRecipient.startsWith('--'))
+  ) {
+    throw new TenantConfigError('--promotion-recipient has no value');
+  }
   return {
     grant,
     descriptorPath: requireFlag(argv, 'descriptor'),
@@ -100,6 +115,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     secretsEnv: flagValue(argv, 'secrets-env'),
     imageEnv: flagValue(argv, 'image-env'),
     ageRecipient: requireFlag(argv, 'age-recipient'),
+    promotionRecipient,
     requestedBy: requireFlag(argv, 'requested-by'),
     deliveredTo: requireFlag(argv, 'delivered-to'),
     destDir: requireFlag(argv, 'dest-dir'),
@@ -145,7 +161,14 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
       dockerCommand
     )
   );
-  const ageRecipient = bindTenant(descriptor, runtime, opts.ageRecipient);
+  const ageRecipient = bindTenant(
+    descriptor,
+    runtime,
+    opts.ageRecipient,
+    opts.promotionRecipient === undefined
+      ? null
+      : { recipient: opts.promotionRecipient, grantLane: opts.grant.lane }
+  );
 
   const colourId = `${slug}-export-${process.pid}`;
   // runExport clears the flag itself on every normal exit; this covers a signal.
