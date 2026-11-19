@@ -190,6 +190,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0010_demo_request',
       'applied migration 0011_support_access',
       'applied migration 0012_demo_request_status_read',
+      'applied migration 0013_tenant_billing',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',

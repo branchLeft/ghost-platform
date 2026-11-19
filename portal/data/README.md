@@ -176,6 +176,46 @@ manifest's grants, policies and shapes (`provision/manifest.ts`) pin them, and
 `test/supportAccess.test.ts` loosens each control in turn to show its probe
 goes red.
 
+## Billing reference and payment state
+
+`portal.tenant_billing` holds one row per paying tenant: an opaque
+`billing_reference` (nullable) into whatever invoicing tool the owner uses, a
+`payment_state` (`unpaid`, `paid` or `overdue`, no default, held by a CHECK) and
+`state_changed_at`, the database's clock, which moves only when the state does.
+It is the tenant record's billing half: one row per `tenant_register` row, kept
+apart so the register stays insert-only and a tenant can read its own payment
+state without the register being widened.
+
+**What it never holds.** No card number, bank detail, name, address, e-mail
+address, provider key or token, and no column that could hold free text: the
+table has the four columns above and the manifest pins them (a fifth is an
+extra). The reference is a token of 3 to 64 letters, digits and `_ . : -`
+(`BILLING_REFERENCE_PATTERN`), so a space, an `@` or a URL cannot be stored; one
+that is twelve or more digits (`4242-4242-4242-4242` and `4242424242424242`
+alike, `CARD_NUMBER_LIKE_PATTERN`) is refused as a mistaken paste. Both rules are
+a CHECK on the table as well as in `parseBillingReference`, so a statement that
+skips the code is refused too. The card rule is a backstop, not a detector: the
+control is that the platform stores a reference and the owner's invoicing tool
+holds everything else. The platform makes no call to any payment provider.
+
+**Who writes.** The tenant role holds `SELECT` alone (its own row, by the
+`tenant_isolation` policy), so a tenant cannot mark itself paid. The owner role
+holds `SELECT, INSERT, UPDATE`; no role deletes a record. `OwnerDb`:
+
+- `setPaymentState(tenantId, state)` creates the record with no reference if
+  there is none; repeating the state a tenant already has leaves the clock alone.
+- `setBillingReference(tenantId, reference | null)` records, replaces or clears
+  the reference; a tenant with no record gets one as `unpaid`, and an existing
+  record keeps its state.
+- `billingOf`, `listBilling` and `listOverdue` (the longest overdue first) are the
+  console's reads. `TenantDb.ownBilling(scope)` is the tenant's read of its own.
+
+Both writes refuse a tenant that is not registered (`TenantNotRegisteredError`)
+and a demo slot (`TenantNotBillableError`): only a real tenant is billed. The
+console screen, suspension and any provider integration are separate stories.
+`test/billing.test.ts` holds the tests; the manifest's grants, policy and shape
+(`provision/manifest.ts`) and the closed-world tampers pin the table.
+
 ## Versioned documents and acceptance
 
 `document_version` has no row-level policy: it holds no tenant's data, and a

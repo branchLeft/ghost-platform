@@ -473,6 +473,63 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     expect: /extra M20: policy open_all on portal.support_access_reading: cmd=r/,
   },
   {
+    id: 'M06',
+    title: 'UPDATE on the billing records given to the tenant role',
+    apply: [[P, 'GRANT UPDATE ON portal.tenant_billing TO portal_tenant']],
+    undo: [[P, 'REVOKE UPDATE ON portal.tenant_billing FROM portal_tenant']],
+    expect: /extra M06: UPDATE on table portal.tenant_billing to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'INSERT on the billing records given to the tenant role',
+    apply: [[P, 'GRANT INSERT ON portal.tenant_billing TO portal_tenant']],
+    undo: [[P, 'REVOKE INSERT ON portal.tenant_billing FROM portal_tenant']],
+    expect: /extra M06: INSERT on table portal.tenant_billing to portal_tenant/,
+  },
+  {
+    id: 'M06',
+    title: 'DELETE on the billing records given to the owner role',
+    apply: [[P, 'GRANT DELETE ON portal.tenant_billing TO portal_owner']],
+    undo: [[P, 'REVOKE DELETE ON portal.tenant_billing FROM portal_owner']],
+    expect: /extra M06: DELETE on table portal.tenant_billing to portal_owner/,
+  },
+  {
+    id: 'M21',
+    title: 'the card-number check dropped from the billing records',
+    apply: [
+      [
+        P,
+        'ALTER TABLE portal.tenant_billing DROP CONSTRAINT tenant_billing_reference_not_card_like',
+      ],
+    ],
+    undo: [
+      [
+        P,
+        "ALTER TABLE portal.tenant_billing ADD CONSTRAINT tenant_billing_reference_not_card_like CHECK (billing_reference !~ '^([_.:-]?[0-9]){12,}$')",
+      ],
+    ],
+    expect: /missing M21: portal.tenant_billing constraint tenant_billing_reference_not_card_like/,
+  },
+  {
+    id: 'M21',
+    title: 'a free-text column added to the billing records',
+    apply: [[P, 'ALTER TABLE portal.tenant_billing ADD COLUMN note text']],
+    undo: [[P, 'ALTER TABLE portal.tenant_billing DROP COLUMN note']],
+    expect: /extra M21: portal.tenant_billing column note/,
+  },
+  {
+    id: 'M20',
+    title: 'an extra policy on the billing records',
+    apply: [
+      [
+        P,
+        'CREATE POLICY open_all ON portal.tenant_billing FOR SELECT TO portal_tenant USING (true)',
+      ],
+    ],
+    undo: [[P, 'DROP POLICY open_all ON portal.tenant_billing']],
+    expect: /extra M20: policy open_all on portal.tenant_billing: cmd=r/,
+  },
+  {
     id: 'M01',
     title: 'the provisioner role allowed to bypass row security',
     apply: [[PG, 'ALTER ROLE portal_provisioner BYPASSRLS']],
