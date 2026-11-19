@@ -31,6 +31,12 @@ decision.
   Every `services.ghost.*` value moves to `services.ghost-a.*` unchanged except
   where another decision below changes it, and `ghost-b` is its twin on
   `ports.b`.
+- **`one-colour-at-a-time`**: the owner's Mode A ruling of 19 November
+  (branchLeft/workspace#3017): a tenant never has two Ghosts running, because
+  two Ghosts on one database send a newsletter or a welcome mail twice. The
+  document carries one colour, `ghost-a` unless `activeColour: 'b'`, so
+  `compose.serviceNames` reads `ghost-a`, not `ghost-a,ghost-b`. `ghost-b` is
+  still the same service on `ports.b`; the colour-B test renders it.
 - **`scanning-wrapper`**: every tier runs the scanning check and neither may
   be silently unprotected (LLD-7 S1b). `storage__active: S3Storage` and its
   `storage__S3Storage__*` keys become the scanning adapter, wrapping

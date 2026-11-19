@@ -25,6 +25,7 @@ const BEFORE = path.join(GOLDEN, 'tenant-4.0.0');
 /** The ratified decisions a changed value may be tied to. See output-diff.md#decisions. */
 const DECISIONS = new Set([
   'blue-green',
+  'one-colour-at-a-time',
   'scanning-wrapper',
   'mail-spool',
   'single-renderer',
@@ -95,7 +96,10 @@ async function afterPaths(): Promise<Map<string, unknown>> {
 /**
  * Compares colour A against 4.0.0's single service, so the diff shows value
  * changes rather than every path moving; colour B is held to colour A by its
- * own test below. The service list itself is kept as one synthetic path.
+ * own test below. The component renders one colour only, so the idle colour's
+ * paths never appear; the filter is kept so a second service would still be
+ * dropped here and caught by `one-colour.test.ts`. The service list itself is
+ * kept as one synthetic path.
  */
 function colourA(paths: Map<string, unknown>): Map<string, unknown> {
   const out = new Map<string, unknown>();
@@ -141,18 +145,24 @@ describe('the reviewed output diff against tenant 4.0.0', () => {
   });
 
   it('renders colour B as colour A on the second port of the pair', () => {
-    const tenant = new GhostTenant('colours', {
-      descriptor: tenantZeroEquivalent(),
-      zones: TEST_ZONES,
-    });
-    const paths = composePaths(tenant.composeFile);
-    const colour = (name: string) =>
+    const colour = (activeColour: 'a' | 'b') =>
       new Map(
-        [...paths]
-          .filter(([key]) => key.startsWith(`compose.services.${name}.`))
-          .map(([key, value]) => [key.slice(`compose.services.${name}.`.length), value])
+        [
+          ...composePaths(
+            new GhostTenant(`colour-${activeColour}`, {
+              descriptor: tenantZeroEquivalent(),
+              zones: TEST_ZONES,
+              activeColour,
+            }).composeFile
+          ),
+        ]
+          .filter(([key]) => key.startsWith(`compose.services.ghost-${activeColour}.`))
+          .map(([key, value]) => [
+            key.slice(`compose.services.ghost-${activeColour}.`.length),
+            value,
+          ])
       );
-    const differences = diff(colour('ghost-a'), colour('ghost-b'));
+    const differences = diff(colour('a'), colour('b'));
     expect(differences).toEqual([
       {
         change: 'changed',

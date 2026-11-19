@@ -75,6 +75,58 @@ clock included, so the tests drive whole releases against fakes and a fake
 clock. `package.json` declares no runtime dependencies, and a test asserts it.
 The narrative is in `src/README.md`.
 
+## One Ghost colour at a time (Mode A)
+
+The owner's ruling of 19 November (branchLeft/workspace#3017): a tenant never
+runs two Ghost colours. Two Ghosts on one database both run
+`resumeInterruptedSends()` at boot and both poll for welcome mail, so a
+newsletter or a welcome mail can go twice, and nothing in the database refuses
+the second set of rows. `src/colourSwitch.ts` is the swap that makes the
+overlap impossible, and it replaces the overlap `apply()` was first drawn
+with (the new colour booting beside the old one for a bake window).
+
+The sequence, against an injected `ColourHost`: pull the new image and check
+its migrations on a scratch copy **while the old colour runs**
+(`prepare`); stop the old colour and wait for it to exit; read the host to
+confirm no process is left; start the new colour and wait for health. If the
+new colour does not come up, it is stopped and confirmed the same way and the
+old colour is started again on its old image. Rollback (`rollbackColour`, and
+the state machine's `revertTraffic()`) is the same function with the plan
+turned round. `colourSwitchDependencies` supplies `apply`, `revertTraffic` and
+`stopColour` for `BumpDependencies`; in Mode A `stopColour` only makes sure a
+colour is down, which after a switch it already is.
+
+Two layers hold the invariant, and each is tested to be needed: the switch
+reads the host and refuses to start a colour while the other has a process
+(the guard, in `guardedStart`), and it stops the old colour and reads the host
+again before it starts anything (the confirm, in `stopAndConfirm`). The host
+side of the contract is that `stop` resolves only once the process has exited,
+and `start` is run against a document that carries that colour alone (the
+tenant component's `activeColour`, `infra/tenant/index.md#one-colour-at-a-time`),
+so even a start that skipped the guard could not leave the old colour's
+service in the file.
+
+What this costs, stated plainly: the tenant is down between the stop and the
+new colour's first healthy response. That is why the owner asked for swaps in
+the 03:00 window, a policy the ring controller's policy file carries. A crash
+inside the switch leaves one colour or none, never two; `switchColour` starts
+from whatever the host reports, so running it again is safe.
+
+What the tests prove (`test/unit/colourSwitch*.test.ts`): against a fake host
+that counts a process from the moment `start` is called, because Ghost's boot
+work runs then, the most processes alive at once never exceeds one, across the
+happy path, rollback, a broken new image, and every single fault (a call that
+throws, fails, or a stop that returns while the process lives) on every call
+of a switch followed by its rollback, in both directions. The sabotage pairs
+break the stop, the guard and the confirm in a copy of the source and show
+two Ghosts up; the real module shows one. The tenant component's own part,
+that `compose.yml` never carries two Ghost services, is
+`infra/tenant/one-colour.test.ts`.
+
+What is not here: the real `ColourHost` (the docker and systemd calls on the
+app host, and the scratch-copy migration check, branchLeft/workspace#3134),
+and the 03:00 window policy.
+
 ## Unattended minors: the decision, switched off
 
 `src/minorEligibility.ts` is a pure function, `decideUnattendedMinor`, that

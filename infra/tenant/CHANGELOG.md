@@ -4,6 +4,17 @@ All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
 ## Unreleased
 
+- **Breaking: `compose.yml` carries one Ghost service, never two.** Mode A, the
+  owner's ruling of 19 November (branchLeft/workspace#3017): a tenant runs one
+  colour at a time, so two Ghosts can never both resume an interrupted send or
+  poll for welcome mail. `GhostTenant` takes an optional `activeColour`
+  (`'a'` or `'b'`, default `'a'`) and passes it to `render()`. The `composeFile`
+  output used to hold `ghost-a` and `ghost-b`, which the generic unit's
+  `docker compose up -d --remove-orphans --wait` would have started together;
+  it now holds the named colour's service and nothing else. Every other output
+  is byte-identical. **Rollout:** a swap is the same render with the other
+  colour, replaced on the host and applied stop-then-start (see
+  `services/ring-controller/src/colourSwitch.ts`). See index.md#one-colour-at-a-time.
 - **Additive:** `GhostTenant` takes two optional arguments, `widgets`
   (`'cdn'` or `'own-origin'`) and `blockThirdPartyIntegrations` (default
   `true`), and passes them to `render()`. Unset, every output is byte-identical
