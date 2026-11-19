@@ -55,6 +55,21 @@ export interface CollectorConfig {
    * mail of every demo host is held, never sent.
    */
   demoMailDomain?: string;
+  /**
+   * The demo mail ceilings (LLD-6 section 05), counted here so a compromised
+   * demo host cannot lift them. Both count messages in a rolling window and
+   * are keyed on the slot, never on an address.
+   */
+  demoCeilings: {
+    /** A demo slot's own ceiling when its descriptor names none (`mail.ceiling`). */
+    slotCeiling: number;
+    /** What every demo slot together may send in one window: the hard cap they share. */
+    estateCeiling: number;
+    /** The rolling window both count in. */
+    windowMs: number;
+    /** File the counted places are kept in, so a restart does not reset them. Defaults to a file beside `dedupeStatePath`; with neither set, a restart forgets them. */
+    statePath?: string;
+  };
   /** Client-side timeout for one GET /drain call -- must exceed the shim's own holdMs (~30s) or every long-poll would be treated as a failure. */
   drainTimeoutMs: number;
   /** How long to back off after a failed GET/POST to a target before retrying it. */
@@ -218,6 +233,20 @@ const DEFAULT_OUTCOMES_POLL_MS = 30_000;
 const DEFAULT_SHIM_SCHEME = 'http';
 const DEFAULT_BULK_DEFERRAL_STATE_FILE = 'bulk-deferral.json';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
+// Enough to try sign-up and a test send, no more.
+const DEFAULT_DEMO_SLOT_CEILING = 20;
+const DEFAULT_DEMO_ESTATE_CEILING = 200;
+const DEFAULT_DEMO_CEILING_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_DEMO_CEILING_STATE_FILE = 'demo-ceilings.json';
+
+function demoCeilingStatePathEnv(env: CollectorEnv): string | undefined {
+  if (env.COLLECTOR_DEMO_CEILING_STATE_PATH) {
+    return env.COLLECTOR_DEMO_CEILING_STATE_PATH;
+  }
+  return env.COLLECTOR_DEDUPE_STATE_PATH
+    ? join(dirname(env.COLLECTOR_DEDUPE_STATE_PATH), DEFAULT_DEMO_CEILING_STATE_FILE)
+    : undefined;
+}
 
 function shimSchemeEnv(env: CollectorEnv): string {
   const raw = env.COLLECTOR_SHIM_SCHEME;
@@ -445,6 +474,20 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     ),
     shimScheme: shimSchemeEnv(env),
     demoMailDomain: env.COLLECTOR_DEMO_MAIL_DOMAIN || undefined,
+    demoCeilings: {
+      slotCeiling: positiveIntEnv(env, 'COLLECTOR_DEMO_SLOT_CEILING', DEFAULT_DEMO_SLOT_CEILING),
+      estateCeiling: positiveIntEnv(
+        env,
+        'COLLECTOR_DEMO_ESTATE_CEILING',
+        DEFAULT_DEMO_ESTATE_CEILING
+      ),
+      windowMs: positiveIntEnv(
+        env,
+        'COLLECTOR_DEMO_CEILING_WINDOW_MS',
+        DEFAULT_DEMO_CEILING_WINDOW_MS
+      ),
+      statePath: demoCeilingStatePathEnv(env),
+    },
     shimPort: positiveIntEnv(env, 'COLLECTOR_SHIM_PORT', DEFAULT_SHIM_PORT),
     // No default: an empty or guessable token defeats the drain endpoint's
     // one credential check, the same reasoning as the shim's own

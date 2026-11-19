@@ -14,6 +14,10 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DESCRIPTOR_REFRESH_MS` | no (default `5000`) | How often the descriptor directory is re-read. |
 | `COLLECTOR_DESCRIPTOR_MAX_STALENESS_MS` | no (default `60000`) | Past this age, the drain list is treated as empty rather than as its last good read. |
 | `COLLECTOR_DEMO_MAIL_DOMAIN` | for a demo host | The platform's shared demo mail domain: the one domain a demo host's header From may carry (a demo descriptor holds a local part only). Unset, the mail of every demo host is held, unsent and unacked, and the collector logs `demo_mail_domain_not_set` at start-up. See the header From scope section. |
+| `COLLECTOR_DEMO_SLOT_CEILING` | no (default `20`) | A demo slot's own ceiling, in messages per window, when its descriptor's `mail.ceiling` names none. See Demo mail containment. |
+| `COLLECTOR_DEMO_ESTATE_CEILING` | no (default `200`) | The hard cap every demo slot shares, in messages per window. |
+| `COLLECTOR_DEMO_CEILING_WINDOW_MS` | no (default `86400000`, one day) | The rolling window both demo ceilings count in. |
+| `COLLECTOR_DEMO_CEILING_STATE_PATH` | no (beside `COLLECTOR_DEDUPE_STATE_PATH`, as `demo-ceilings.json`) | File the counted places are kept in, so a restart does not hand every demo slot a fresh ceiling. With neither this nor the dedupe path set, a restart forgets them and the collector logs `demo_ceilings_not_persistent` at start-up. |
 | `COLLECTOR_SHIM_PORT` | no (default `8080`) | The HTTP port every host's mailgun-shim listens on for its drain surface — a deployment convention, combined with the descriptor's own `appHostIp`. |
 | `COLLECTOR_DRAIN_TOKEN` | yes | The drain endpoint's shared bearer credential. One value across every host. |
 | `COLLECTOR_DRAIN_TIMEOUT_MS` | no (default `40000`) | Client-side timeout for one `GET /drain` call. Must exceed the target shim's own `SHIM_DRAIN_HOLD_MS`. |
@@ -132,6 +136,44 @@ mx1 honours the DSN request at all, is the mx1-side half.
 A feedback-loop complaint (an RFC 5965 abuse report) arriving in the same
 directory can be read as a `complained` outcome by an opt-in reader that is off
 by default: see [src/arf/README.md](src/arf/README.md).
+
+## Demo mail containment
+
+A demo slot sends real mail as an accepted risk, so the design owes
+containment rather than prevention (LLD-6 section 05). The visitor is an
+administrator in the slot's Ghost, so none of it is left to the slot or its
+host: it is enforced here, on the draining side, where a compromised demo host
+cannot lift it. `demoContainment.ts` decides each drained demo message, after
+the header From check and before any target sees it:
+
+1. **The sender is the slot's own.** The From the message leaves with is the
+   descriptor's `mail.identity.localPart` on the demo mail domain, whatever
+   the slot's Ghost asked for. A From outside the demo domain is still refused
+   by the header From check. A slot with no well-formed local part, or no demo
+   mail domain configured, has its mail held, unsent and unacked.
+2. **The recipient is in the verified-address record.** The record is an
+   interface (`VerifiedRecipients`). Today it is the descriptor's `ownerEmail`,
+   the prospect's own claimed address and nothing else: compared exactly after
+   lower-casing, so a plus-tagged variant, a list or a display name never
+   matches. A slot whose descriptor carries no usable `ownerEmail` has no
+   verified recipient. A refused recipient is acked, never sent, and reported
+   to its spool as a permanent failure (the existing outcome route), so Ghost
+   shows it instead of the message vanishing. It takes no place under a ceiling.
+3. **Two ceilings, not one** (`demoCeilings.ts`). Per slot: the descriptor's
+   `mail.ceiling`, or `COLLECTOR_DEMO_SLOT_CEILING` when it names none. Per
+   estate: `COLLECTOR_DEMO_ESTATE_CEILING`, shared by every demo slot. Both
+   count messages in a rolling window and both are keyed on the slot's
+   descriptor slug, never on a client address, so there is no address-keyed
+   path to reach over IPv6. One slot filling its ceiling stops no other slot;
+   the estate ceiling stops all of them. A message that finds a ceiling full is
+   acked, never sent, and reported to its spool as a temporary failure, so the
+   owner's own address is never suppressed for it. A message id that already
+   holds a place takes no second one, so a re-offer after a lost ack or an mx1
+   failure never spends the ceiling twice.
+
+A demo's mail is held, never sent, when the loop is built without the
+containment. Logs name a reason and a message id only: no address, subject or
+domain. A tenant's mail is untouched by all of it.
 
 ## Source notes
 

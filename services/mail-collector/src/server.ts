@@ -7,6 +7,8 @@ import { DescriptorTargetStore } from './descriptorTargets.js';
 import { createDrainClient } from './drainClient.js';
 import { createDroppedOutcomes } from './droppedOutcomes.js';
 import { createDeliveryClient } from './deliveryClient.js';
+import { createDemoCeilings } from './demoCeilings.js';
+import { createDemoContainment, descriptorOwnerRecipients } from './demoContainment.js';
 import { createHealthState } from './health.js';
 import { createDeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import { createLogger } from './log.js';
@@ -34,6 +36,23 @@ const store = new DescriptorTargetStore({
 if (!config.demoMailDomain) {
   // Only a demo host is affected: its mail is held until the domain is set.
   log.warn('demo_mail_domain_not_set', {});
+}
+
+// The demo mail containment: the slot's own sender, the verified recipient
+// record, and the two ceilings. Enforced here, on the draining side, because a
+// compromised demo host must not be able to lift its own ceiling.
+const demoContainment = createDemoContainment({
+  recipients: descriptorOwnerRecipients,
+  ceilings: createDemoCeilings({
+    estateCeiling: config.demoCeilings.estateCeiling,
+    defaultSlotCeiling: config.demoCeilings.slotCeiling,
+    windowMs: config.demoCeilings.windowMs,
+    ...(config.demoCeilings.statePath ? { statePath: config.demoCeilings.statePath } : {}),
+    onError: (error) => log.warn('demo_ceiling_state_error', { error: error.message }),
+  }),
+});
+if (!config.demoCeilings.statePath) {
+  log.warn('demo_ceilings_not_persistent', {});
 }
 
 const bulkCap = createBulkCap({
@@ -225,6 +244,7 @@ const runtime = createCollectorRuntime({
   sweegoThrottle,
   sweegoFailures,
   enforceHeaderFrom: true,
+  demoContainment,
   sweegoQuota: sweegoUsage,
   sweegoSuspension,
   mx1Pins,
