@@ -6,7 +6,12 @@
   "packageManager": "pnpm@11.17.0",
   "description": "Headless-browser live proof for the strict content policy (branchLeft/workspace#1238). Not part of the repo's build or published packages -- run by hand (csp/proof/run-proof.sh) against a real Docker pair, never in CI, since it needs a Chromium download and Docker-in-Docker either way.",
   "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
-    "playwright": "^1.56.0"
+    "@types/node": "26.6.2",
+    "playwright": "^1.56.0",
+    "typescript": "5.9.3"
   }
 }
