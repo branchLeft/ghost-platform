@@ -2307,13 +2307,52 @@ describe('validate() — breakGlass', () => {
     );
   });
 
-  it('refuses breakGlass enabled on a demo -- a demo visitor already holds admin on their own disposable slot', () => {
-    const descriptor: TenantDescriptor = {
-      ...demoDescriptor(),
-      breakGlass: breakGlassEnabled(demoDescriptor().slug),
+  describe('on a demo: the sign-in adapter is for the owner and nobody else', () => {
+    const demoWith = (supportIdentity: string): TenantDescriptor => {
+      const demo = demoDescriptor();
+      return {
+        ...demo,
+        breakGlass: { ...breakGlassEnabled(demo.slug), supportIdentity: supportIdentity as never },
+      };
     };
-    const zones = { ...TEST_ZONES, imagesWithBreakGlassAdapter: [descriptor.image] };
-    expect(() => validate(descriptor, zones)).toThrow(TierMismatchError);
+    const zonesFor = (descriptor: TenantDescriptor) => ({
+      ...TEST_ZONES,
+      imagesWithBreakGlassAdapter: [descriptor.image],
+    });
+
+    it("accepts breakGlass pinned to the demo's own ownerEmail, in any letter case", () => {
+      const demo = demoDescriptor();
+      for (const identity of [demo.ownerEmail, demo.ownerEmail.toUpperCase()]) {
+        const descriptor = demoWith(identity);
+        expect(() => validate(descriptor, zonesFor(descriptor))).not.toThrow();
+      }
+    });
+
+    it('refuses breakGlass pinned to any other identity -- a demo has no support account', () => {
+      const descriptor = demoWith('support@branchleft.co.uk');
+      expect(() => validate(descriptor, zonesFor(descriptor))).toThrow(TierMismatchError);
+      expect(() => validate(descriptor, zonesFor(descriptor))).toThrow(/equal its own ownerEmail/);
+    });
+
+    it('does not echo either address in the refusal', () => {
+      const descriptor = demoWith('support@branchleft.co.uk');
+      let message = '';
+      try {
+        validate(descriptor, zonesFor(descriptor));
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).not.toContain('support@branchleft.co.uk');
+      expect(message).not.toContain(descriptor.ownerEmail);
+    });
+
+    it('still names the image-pin ordering rule for a demo, so an adapter-less image is refused', () => {
+      const demo = demoDescriptor();
+      const descriptor = demoWith(demo.ownerEmail);
+      expect(() =>
+        validate(descriptor, { ...TEST_ZONES, imagesWithBreakGlassAdapter: [] })
+      ).toThrow(/to be one of zones\.imagesWithBreakGlassAdapter/);
+    });
   });
 
   it('accepts breakGlass disabled on a demo', () => {

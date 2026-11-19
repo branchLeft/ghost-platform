@@ -9,8 +9,10 @@ import {
 } from 'ghost-platform-request-guard/dist/index.js';
 import { loadConfig } from './config.js';
 import { createDerivationGate } from './derivationGate.js';
+import { createMailProofReader } from './mailProof.js';
 import { createLeaseReader, createSlotsSource } from './slots.js';
 import { createTrafficCounterStore } from './trafficCounter.js';
+import { createFileLedger } from './usedTokens.js';
 
 const config = loadConfig(process.env);
 const slots = createSlotsSource(config.slotsPath);
@@ -22,7 +24,20 @@ if (config.trafficCounterDir) {
   await mkdir(config.trafficCounterDir, { recursive: true });
 }
 
+if (config.invitation) {
+  // Owner-only: the ledger holds the hash of every link used, nothing else.
+  await mkdir(config.invitation.ledgerDir, { recursive: true, mode: 0o700 });
+}
+
 const handler = createGateHandler({
+  arrival: config.invitation
+    ? {
+        publicKey: config.invitation.publicKey,
+        ledger: createFileLedger(config.invitation.ledgerDir),
+        mailProofOf: createMailProofReader(config.invitation.mailProofDir),
+        mailProofMaxAgeSeconds: config.invitation.mailProofMaxAgeSeconds,
+      }
+    : undefined,
   slots,
   leaseOf: createLeaseReader(config.leaseDir),
   signingKey: config.signingKey,
