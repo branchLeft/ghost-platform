@@ -523,6 +523,11 @@ export function tenantEnvironment(
     theme__uploadLimits__totalUncompressedBytes: limits.themeTotalUncompressedBytes,
 
     privacy__useUpdateCheck: false,
+    // Ghost fills a member's `avatar_image` with a Gravatar address built from a
+    // hash of the member's email unless this is off, so Portal's account page
+    // would send every signed-in reader's hash to a third party. Off for every
+    // kind of tenant, under both widget sources. See environment.md#gravatar.
+    privacy__useGravatar: false,
     logging__transports: '["stdout"]',
   };
 
