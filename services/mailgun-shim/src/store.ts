@@ -279,6 +279,8 @@ type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
 
 const TERMINAL_STATUSES: QueueRecipientStatus[] = ['sent', 'delivered', 'failed', 'suppressed'];
 const UNDRAINED_STATUSES: QueueRecipientStatus[] = ['pending', 'held'];
+/** A recipient in one of these for a newsletter is not queued again for it. */
+const REPLAY_REFUSING_STATUSES: QueueRecipientStatus[] = ['pending', 'held', 'sent', 'delivered'];
 
 // The type is compile-time only, and a typo'd string stored under a real
 // column would never match a lookup rather than fail loudly.
@@ -592,8 +594,34 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       return isSuppressedIn(db, domain, type, email);
     },
 
-    enqueueBatch({ batchId, domain, emailId, payload, recipients, now }) {
+    enqueueBatch({ batchId, domain, emailId, payload, recipients: offered, now }) {
       db.transaction((tx) => {
+        // A recipient already queued or sent this newsletter is dropped, whichever
+        // batch carried it; a failed or suppressed copy is not. Mail with no
+        // email id is not checked. See store.md#a-replayed-batch-is-refused.
+        const recipients =
+          emailId === null || emailId === ''
+            ? offered
+            : offered.filter(
+                (recipient) =>
+                  tx
+                    .select({ one: sql<number>`1` })
+                    .from(queueRecipients)
+                    .innerJoin(queueBatches, eq(queueBatches.batchId, queueRecipients.batchId))
+                    .where(
+                      and(
+                        eq(queueBatches.domain, domain),
+                        eq(queueBatches.emailId, emailId),
+                        eq(queueRecipients.recipient, recipient),
+                        inArray(queueRecipients.status, REPLAY_REFUSING_STATUSES)
+                      )
+                    )
+                    .limit(1)
+                    .get() === undefined
+              );
+        if (recipients.length === 0 && offered.length > 0) {
+          return;
+        }
         tx.insert(queueBatches)
           .values({ batchId, domain, emailId, payload: JSON.stringify(payload), createdAt: now })
           .run();
