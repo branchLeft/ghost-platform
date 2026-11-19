@@ -10,6 +10,12 @@ name: Major watcher run
 # Every 6 hours, well inside a day-long alerting SLA even allowing for a
 # missed run.
 #
+# On a new major it also files one tracked item in the workspace repository,
+# idempotent per major (services/major-watcher/src/issues.ts), with its own
+# filing identity: a GitHub App installation token scoped to the workspace
+# repository with issues: write, minted below. The ambient token of this job
+# cannot write another repository and is never used for filing.
+#
 # Dedupe state (see services/major-watcher/README.md "State") lives on its
 # own branch, `state/major-watcher`, never on `main` -- `main` requires
 # signed commits and PR review (this repo's ruleset), and a dedupe write is
@@ -107,6 +113,24 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The filing identity: an installation token for the App named by the
+      # repository variable MAJOR_WATCHER_APP_ID, limited to the workspace
+      # repository and to issues: write, which also covers adding a sub-issue.
+      # Owed, like NTFY_URL: until the variable is set no token is minted,
+      # the watcher fails closed on the first new major (it still pages, files
+      # nothing, and the run goes red) and every quiet run is unaffected. See
+      # services/major-watcher/README.md "Filing credential".
+      - name: Mint the filing token
+        id: filing-token
+        if: ${{ vars.MAJOR_WATCHER_APP_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.MAJOR_WATCHER_APP_ID }}
+          private-key: ${{ secrets.MAJOR_WATCHER_APP_PRIVATE_KEY }}
+          owner: branchLeft
+          repositories: workspace
+          permission-issues: write
+
       # NTFY_URL and NTFY_TOKEN are owed -- see README.md "Owed". Until
       # NTFY_URL is set, src/cli.ts exits 0 with one log line rather than
       # going red every 6 hours; once it is set, a real failure (GitHub
@@ -119,6 +143,8 @@ jobs:
           NTFY_URL: ${{ secrets.NTFY_URL }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAJOR_WATCHER_FILING_TOKEN: ${{ steps.filing-token.outputs.token }}
+          MAJOR_WATCHER_LAUNCH_ITEM: ${{ vars.MAJOR_WATCHER_LAUNCH_ITEM }}
         run: node dist/cli.js
 
       - name: Push updated state, only if it changed
