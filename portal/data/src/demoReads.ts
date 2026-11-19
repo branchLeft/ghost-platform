@@ -1,4 +1,4 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { asc, count, desc, eq, inArray } from 'drizzle-orm';
 import type { Tx } from './db.js';
 import {
   deriveEventView,
@@ -86,4 +86,22 @@ export async function listRequests(tx: Tx): Promise<DemoRequestView[]> {
     .from(demoRequest)
     .orderBy(asc(demoRequest.submittedAt), asc(demoRequest.demoId));
   return rows.map(deriveRequestView);
+}
+
+/**
+ * How many demos are in any of `states` right now: each demo counts once, by
+ * its latest row. Read inside the caller's transaction, so a count taken under
+ * a lock is the count the lock protects.
+ */
+export async function countDemosIn(tx: Tx, states: readonly DemoState[]): Promise<number> {
+  const latest = tx
+    .selectDistinctOn([demoStateEvent.demoId], { toState: demoStateEvent.toState })
+    .from(demoStateEvent)
+    .orderBy(asc(demoStateEvent.demoId), desc(demoStateEvent.sequence))
+    .as('latest');
+  const [row] = await tx
+    .select({ total: count() })
+    .from(latest)
+    .where(inArray(latest.toState, [...states]));
+  return row?.total ?? 0;
 }

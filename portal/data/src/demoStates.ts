@@ -28,6 +28,12 @@ export const SLOT_HOLDING_STATES: readonly DemoState[] = [
   'PROMOTING',
 ];
 
+/**
+ * How many demos may hold a slot at once: the six the offer is sized to. A
+ * request that finds all of them held goes onto the waiting list instead.
+ */
+export const SLOT_COUNT = 6;
+
 const SAFETY_EXITS: readonly DemoState[] = ['KILLED', 'FROZEN'];
 
 const EXITS: Record<DemoState, readonly DemoState[]> = {
