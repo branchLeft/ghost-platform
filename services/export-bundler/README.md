@@ -141,23 +141,32 @@ and the audit record carries the same `complete` flag.
   nowhere, and a link that did resolve would resolve inside the container, where
   there is nothing of the host's. The read is a snapshot of a tree that can still
   change: a file added or deleted during it can be missing from it, and the
-  manifest lists what was read. It carries the originals under `content/images`, `content/media`
-  and `content/files` in the encrypted archive, one entry each. The manifest
-  inside the archive lists every file with its path, size, checksum and status
-  (`mediaFiles`); the manifest beside it carries counts only, because a file's
-  name is the tenant's own content. The `media_files` extension must be `complete`
-  for `complete: true` when it was attempted; `media_bytes` is then no longer a
+  manifest lists what was read. It carries only the originals the content
+  **references** under `content/images` and `content/files` in the encrypted
+  archive, one entry each (a resized address such as `images/size/w600/...`
+  names the original it was made from). An original no content references is
+  **counted and left out**; a file under `content/media` is **listed and never
+  sent**, referenced or not (a demo refuses video and audio). The manifest
+  inside the archive lists every carried or not-sent file with its path, size,
+  checksum and status (`carried`, `oversized` or `not-sent`) and names each
+  unreferenced file under `unreferenced` (`mediaFiles`); the manifest beside it
+  carries counts only (`carried`, `notSent`, `unreferenced`, ...), because a
+  file's name is the tenant's own content. `treeFileCount` is the whole served
+  tree and equals the listed files plus `unreferenced` plus `unrepresentable`.
+  The `media_files` extension must be `complete` for `complete: true` when it was attempted; `media_bytes` is then no longer a
   named gap.
-  - Never carried: resized variants (`images/size/...`), the scanning decorator's
+  - Never carried: an original no content references, anything under
+    `content/media`, resized variants (`images/size/...`), the scanning decorator's
     quarantine directory (`content/quarantine`, beside the three trees, never
     entered), anything a hold has not released (it is not in the served tree),
     and anything that is not a regular file.
   - A symlink, a device, a pipe, a socket, or a media root that is itself a link
     **refuses the export** by name (`MediaTreeRefusedError`), also when it is
     swapped in during the read; nothing is written.
-  - A file over the destination tier's upload ceiling (`--upload-ceiling-bytes`,
-    128 MiB by default) is listed as `oversized` with its size and checksum and not
-    carried. A name outside the safe set is listed under `unrepresentable`.
+  - A referenced file over the destination tier's upload ceiling
+    (`--upload-ceiling-bytes`, 128 MiB by default) is listed as `oversized` with
+    its size and checksum and not carried (size limits are issue #3906's). A
+    name outside the safe set is listed under `unrepresentable`.
     References in the content to a file the tree does not hold are listed in
     `danglingReferences`. More than 512 MiB to carry refuses the export, because
     the archive is built in memory. The script needs Linux (`/proc`); its tests run

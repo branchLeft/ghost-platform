@@ -27,19 +27,30 @@ export interface ManifestMediaFile {
   readonly path: string;
   readonly size: number;
   readonly sha256: string;
-  /** `oversized`: above the destination's upload ceiling, listed and not carried. */
-  readonly status: 'carried' | 'oversized';
+  /**
+   * `carried`: its bytes are in the archive. `oversized`: a referenced original
+   * above the destination's upload ceiling, listed and not carried. `not-sent`:
+   * a file under `content/media`, listed and never carried (a demo refuses video
+   * and audio).
+   */
+  readonly status: 'carried' | 'oversized' | 'not-sent';
 }
 
 /**
  * The media files of a demo slot's content volume. `treeFileCount` is every
  * regular file in the served tree (the originals, never `images/size/`), and
- * equals `files.length + unrepresentable.length`.
+ * equals `files.length + unreferenced.length + unrepresentable.length`. Only
+ * the originals the content references under `images` and `files` are carried.
  */
 export interface MediaFilesListing {
   readonly uploadCeilingBytes: number;
   readonly treeFileCount: number;
   readonly files: readonly ManifestMediaFile[];
+  /**
+   * Files under `images` and `files` that no content references: counted and
+   * left out, named here (inside the archive only).
+   */
+  readonly unreferenced: readonly string[];
   /** Files whose name is outside the safe set: not carried, named here. */
   readonly unrepresentable: readonly string[];
   /** References in the content to a file the tree does not hold (held, refused or deleted). */
@@ -56,6 +67,10 @@ export interface MediaFilesSummary {
   readonly carried: number;
   readonly carriedBytes: number;
   readonly oversized: number;
+  /** Files under `content/media`: listed, never sent. */
+  readonly notSent: number;
+  /** Referenced by no content: counted, left out. */
+  readonly unreferenced: number;
   readonly unrepresentable: number;
   readonly danglingReferences: number;
 }
@@ -92,7 +107,9 @@ export function sidecarOf(manifest: ExportManifest): SidecarManifest {
       treeFileCount: mediaFiles.treeFileCount,
       carried: carried.length,
       carriedBytes: carried.reduce((n, f) => n + f.size, 0),
-      oversized: mediaFiles.files.length - carried.length,
+      oversized: mediaFiles.files.filter((f) => f.status === 'oversized').length,
+      notSent: mediaFiles.files.filter((f) => f.status === 'not-sent').length,
+      unreferenced: mediaFiles.unreferenced.length,
       unrepresentable: mediaFiles.unrepresentable.length,
       danglingReferences: mediaFiles.danglingReferences.length,
     },

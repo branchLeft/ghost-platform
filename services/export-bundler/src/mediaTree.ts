@@ -11,8 +11,13 @@ import type { ManifestMediaFile, MediaFilesListing } from './manifest.js';
  * goes through the tenant's own Ghost and its storage adapters, never as
  * copied files).
  *
- * What is carried is the served tree and nothing else:
+ * What is carried is the originals the content references under `images` and
+ * `files`, and nothing else:
  *
+ * - an original no content references is counted and left out (its path is
+ *   named in the manifest inside the archive only);
+ * - a file under `media` is listed with its size and checksum and never sent:
+ *   a demo refuses video and audio;
  * - resized variants (`images/size/...`) are never carried: Ghost makes them
  *   again on first request;
  * - the scanning decorator's quarantine directory and anything a hold has not
@@ -117,7 +122,9 @@ export async function readMediaTree(options: ReadMediaTreeOptions): Promise<Medi
       maxCarriedBytes,
     })),
   ].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  const referenced = new Set(referencedMedia(options.contentJson));
   const listed: ManifestMediaFile[] = [];
+  const unreferenced: string[] = [];
   const unrepresentable: string[] = [];
   const archiveFiles: ArchiveFile[] = [];
   let carriedBytes = 0;
@@ -127,6 +134,23 @@ export async function readMediaTree(options: ReadMediaTreeOptions): Promise<Medi
       continue;
     }
     const path = `${MEDIA_ENTRY_PREFIX}${file.rel}`;
+    if (file.rel.startsWith('media/')) {
+      listed.push({
+        path,
+        size: file.data?.length ?? file.size,
+        sha256:
+          file.sha256 ??
+          createHash('sha256')
+            .update(file.data ?? '')
+            .digest('hex'),
+        status: 'not-sent',
+      });
+      continue;
+    }
+    if (!referenced.has(file.rel)) {
+      unreferenced.push(path);
+      continue;
+    }
     if (file.data === null || file.data.length > options.uploadCeilingBytes) {
       listed.push({
         path,
@@ -152,7 +176,7 @@ export async function readMediaTree(options: ReadMediaTreeOptions): Promise<Medi
     archiveFiles.push({ name: path, data: file.data });
   }
   const present = new Set(tree.map((f) => f.rel));
-  const dangling = referencedMedia(options.contentJson)
+  const dangling = [...referenced]
     .filter((rel) => !present.has(rel))
     .map((rel) => `content/${rel}`);
   return {
@@ -161,6 +185,7 @@ export async function readMediaTree(options: ReadMediaTreeOptions): Promise<Medi
       uploadCeilingBytes: options.uploadCeilingBytes,
       treeFileCount: tree.length,
       files: listed,
+      unreferenced,
       unrepresentable,
       danglingReferences: dangling,
     },

@@ -328,6 +328,7 @@ export async function collectMediaFiles(deps: ExtensionDeps): Promise<ExtensionO
   }
   const { listing } = result;
   const oversized = listing.files.filter((f) => f.status === 'oversized');
+  const notSent = listing.files.filter((f) => f.status === 'not-sent');
   const notes: string[] = [];
   if (listing.unrepresentable.length > 0) {
     notes.push(
@@ -339,10 +340,12 @@ export async function collectMediaFiles(deps: ExtensionDeps): Promise<ExtensionO
       name: 'media_files',
       status: statusFor(notes),
       expected: listing.treeFileCount,
-      present: listing.files.length,
+      present: listing.files.length + listing.unreferenced.length,
       notes,
       info: [
-        `${result.files.length} files carried`,
+        `${result.files.length} referenced files carried`,
+        `${listing.unreferenced.length} files no content references counted, left out`,
+        `${notSent.length} files under media listed, not sent`,
         `${oversized.length} files over the upload ceiling listed, not carried`,
         `${listing.danglingReferences.length} references to files the tree does not hold`,
       ],
