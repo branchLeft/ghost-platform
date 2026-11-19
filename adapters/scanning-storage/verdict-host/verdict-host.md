@@ -110,9 +110,10 @@ Three layers inside this process, and one outside it.
 4. **Outside this process.** The guard is not a sandbox: code in the process can
    undo it. The load-bearing control is the unit that runs the process denying
    it every network address but its own listener. For a slot that is the
-   `verdict-host` sidecar render-core renders on a per-slot `internal: true`
-   network (`render-core/src/compose.md#the-verdict-host-sidecar`), proven by
-   an outbound connect from inside it that fails
+   `verdict-host` sidecar render-core renders with `network_mode: none`, so it
+   has no network at all and no address of the host's to reach
+   (`render-core/src/compose.md#the-verdict-host-sidecar`), proven by an
+   outbound connect from inside it that fails
    (`render-core/test/verdict-host-network.test.ts`).
 
 ## Metrics
