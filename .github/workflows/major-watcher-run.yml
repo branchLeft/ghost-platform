@@ -10,12 +10,6 @@ name: Major watcher run
 # Every 6 hours, well inside a day-long alerting SLA even allowing for a
 # missed run.
 #
-# On a new major it also files one tracked item in the workspace repository,
-# idempotent per major (services/major-watcher/src/issues.ts), with its own
-# filing identity: a GitHub App installation token scoped to the workspace
-# repository with issues: write, minted below. The ambient token of this job
-# cannot write another repository and is never used for filing.
-#
 # Dedupe state (see services/major-watcher/README.md "State") lives on its
 # own branch, `state/major-watcher`, never on `main` -- `main` requires
 # signed commits and PR review (this repo's ruleset), and a dedupe write is
@@ -113,6 +107,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # On a new major the watcher also files one tracked item in the workspace
+      # repository, idempotent per major (services/major-watcher/src/issues.ts).
+      # The ambient token of this job cannot write another repository and is
+      # never used for filing.
+      #
       # The filing identity: an installation token for the App named by the
       # repository variable MAJOR_WATCHER_APP_ID, limited to the workspace
       # repository and to issues: write, which also covers adding a sub-issue.
