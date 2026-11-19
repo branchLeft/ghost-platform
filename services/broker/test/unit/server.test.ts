@@ -324,6 +324,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 
@@ -350,6 +351,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
     broker.stop();
 
@@ -628,6 +630,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
+      productionVerdictSource: false,
     });
 
     await new Promise((resolve) => setTimeout(resolve, 1100)); // past item 2's same-second floor
@@ -649,6 +652,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 
