@@ -35,6 +35,19 @@ const post = (browser: Browser, origin: string, path: string, fields: Record<str
 const publish = (browser: Browser, fields: Record<string, string>) =>
   post(browser, consoleApp.origin, '/documents/publish', fields);
 
+/**
+ * The status of a post the console refuses as too large. It answers 413 and
+ * stops reading, so a client still sending may see the connection reset
+ * instead; either is a refusal, and a post that was taken answers 303.
+ */
+async function tooLarge(attempt: Promise<{ readonly status: number }>): Promise<number | 'reset'> {
+  try {
+    return (await attempt).status;
+  } catch {
+    return 'reset';
+  }
+}
+
 async function ownerBrowser(): Promise<Browser> {
   const browser = new Browser(consoleApp.origin);
   const token = mint({ org: OWNER_ORG, client: CLIENT_CONSOLE, role: 'owner' });
@@ -156,22 +169,26 @@ describe('publishing a document from the owner console', () => {
     expect(page).toContain('TEST_LONG_BODY_END');
 
     const before = await versionsStored();
-    const huge = await publish(owner, {
-      kind: 'usage',
-      title: 'TEST_USAGE_TITLE',
-      effective_date: '2026-12-01',
-      body: 'x'.repeat(600_000),
-    });
-    expect(huge.status).toBe(413);
+    const huge = await tooLarge(
+      publish(owner, {
+        kind: 'usage',
+        title: 'TEST_USAGE_TITLE',
+        effective_date: '2026-12-01',
+        body: 'x'.repeat(600_000),
+      })
+    );
+    expect([413, 'reset']).toContain(huge);
     expect(await versionsStored()).toBe(before);
   });
 
   it('keeps the shell limit on every other action', async () => {
     const owner = await ownerBrowser();
-    const reply = await post(owner, consoleApp.origin, '/support-requests/dealt-with', {
-      tenant: 'x'.repeat(5000),
-    });
-    expect(reply.status).toBe(413);
+    const reply = await tooLarge(
+      post(owner, consoleApp.origin, '/support-requests/dealt-with', {
+        tenant: 'x'.repeat(5000),
+      })
+    );
+    expect([413, 'reset']).toContain(reply);
   });
 
   it('publishes nothing for a form that is incomplete or names an unknown kind or a date that is not one', async () => {
