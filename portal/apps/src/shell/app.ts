@@ -71,6 +71,12 @@ export interface ShellOptions<S> extends OidcClient {
   readonly actions?: Readonly<
     Record<string, (bound: S, identity: Signed, form: URLSearchParams) => Promise<string>>
   >;
+  /**
+   * A larger form size, in bytes, for named actions that carry pasted text;
+   * every other action keeps the default of 4096 bytes. A path that is not an
+   * action here is ignored.
+   */
+  readonly formLimits?: Readonly<Record<string, number>>;
   readonly clock?: () => number;
   readonly fetch?: typeof fetch;
   readonly sessionSeconds?: number;
@@ -237,12 +243,15 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     );
   }
 
-  async function readForm(request: IncomingMessage): Promise<URLSearchParams | null> {
+  async function readForm(
+    request: IncomingMessage,
+    limit: number
+  ): Promise<URLSearchParams | null> {
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of request) {
       size += (chunk as Buffer).length;
-      if (size > MAX_FORM_BYTES) return null;
+      if (size > limit) return null;
       chunks.push(chunk as Buffer);
     }
     return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
@@ -251,7 +260,8 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
   async function act(
     request: IncomingMessage,
     response: ServerResponse,
-    run: (bound: S, identity: Signed, form: URLSearchParams) => Promise<string>
+    run: (bound: S, identity: Signed, form: URLSearchParams) => Promise<string>,
+    limit: number
   ): Promise<void> {
     if (request.headers.origin !== options.publicOrigin) return text(response, 403, 'REFUSED');
     const session = sessions.get(parseCookies(request.headers.cookie).get(sessionName));
@@ -260,7 +270,7 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
       response.end();
       return;
     }
-    const form = await readForm(request);
+    const form = await readForm(request, limit);
     if (form === null) return text(response, 413, 'TOO_LARGE');
     let location: string;
     try {
@@ -305,7 +315,10 @@ export function createShell<S>(options: ShellOptions<S>): Handler {
     }
     for (const [extra, run] of Object.entries(options.actions ?? {})) {
       if (!Object.hasOwn(routes, extra)) {
-        routes[extra] = { method: 'POST', run: () => act(request, response, run) };
+        routes[extra] = {
+          method: 'POST',
+          run: () => act(request, response, run, options.formLimits?.[extra] ?? MAX_FORM_BYTES),
+        };
       }
     }
     const route = Object.hasOwn(routes, path) ? routes[path] : undefined;

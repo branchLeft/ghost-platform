@@ -36,7 +36,14 @@ import {
 } from '../supportAccess.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
-export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
+export {
+  DOCUMENT_KINDS,
+  InvalidPublicationError,
+  SUBPROCESSOR_NOTICE_DAYS,
+  type DocumentKind,
+  type DocumentView,
+  type SubprocessorEntry,
+} from '../documents.js';
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 export type { DemoRequestView } from '../demoRequest.js';
