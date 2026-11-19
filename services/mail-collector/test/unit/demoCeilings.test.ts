@@ -120,34 +120,38 @@ describe('the demo ceilings: per slot, and per estate', () => {
 
   describe('per mail class: sign-in and newsletters are counted apart', () => {
     it('newsletter_ceiling_does_not_spend_sign_in_place', () => {
+      // The same ids in both classes: a counter keyed without the class would
+      // treat the sign-in message as a re-offer of the newsletter.
       const ceilings = make({ defaultSlotCeiling: 2 });
-      expect(ceilings.reserve('slot-a', 'n1', 'bulk')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 'n2', 'bulk')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 'n3', 'bulk')).toBe('slot');
-      expect(ceilings.reserve('slot-a', 's1', 'transactional')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 's2', 'transactional')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 's3', 'transactional')).toBe('slot');
+      expect(ceilings.reserve('slot-a', 'm1', 'bulk')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm2', 'bulk')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm3', 'bulk')).toBe('slot');
+      expect(ceilings.reserve('slot-a', 'm1', 'transactional')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm2', 'transactional')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm3', 'transactional')).toBe('slot');
+      expect(ceilings.size).toBe(4);
     });
 
     it('sign_in_ceiling_does_not_spend_newsletter_place', () => {
       const ceilings = make({ defaultSlotCeiling: 2 });
-      expect(ceilings.reserve('slot-a', 's1', 'transactional')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 's2', 'transactional')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 's3', 'transactional')).toBe('slot');
-      expect(ceilings.reserve('slot-a', 'n1', 'bulk')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 'n2', 'bulk')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 'n3', 'bulk')).toBe('slot');
+      expect(ceilings.reserve('slot-a', 'm1', 'transactional')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm2', 'transactional')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm3', 'transactional')).toBe('slot');
+      expect(ceilings.reserve('slot-a', 'm1', 'bulk')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm2', 'bulk')).toBe('ok');
+      expect(ceilings.reserve('slot-a', 'm3', 'bulk')).toBe('slot');
+      expect(ceilings.size).toBe(4);
     });
 
     it('estate_newsletter_and_sign_in_counted_separately', () => {
       const ceilings = make({ estateCeiling: 2 });
-      expect(ceilings.reserve('slot-a', 'n1', 'bulk')).toBe('ok');
-      expect(ceilings.reserve('slot-b', 'n1', 'bulk')).toBe('ok');
-      expect(ceilings.reserve('slot-c', 'n1', 'bulk')).toBe('estate');
-      expect(ceilings.reserve('slot-c', 's1', 'transactional')).toBe('ok');
-      expect(ceilings.reserve('slot-a', 's1', 'transactional')).toBe('ok');
-      expect(ceilings.reserve('slot-b', 's1', 'transactional')).toBe('estate');
-      expect(ceilings.reserve('slot-d', 'n1', 'bulk')).toBe('estate');
+      expect(ceilings.reserve('slot-a', 'm1', 'bulk')).toBe('ok');
+      expect(ceilings.reserve('slot-b', 'm1', 'bulk')).toBe('ok');
+      expect(ceilings.reserve('slot-c', 'm1', 'bulk')).toBe('estate');
+      expect(ceilings.reserve('slot-a', 'm1', 'transactional')).toBe('ok');
+      expect(ceilings.reserve('slot-b', 'm1', 'transactional')).toBe('ok');
+      expect(ceilings.reserve('slot-c', 'm1', 'transactional')).toBe('estate');
+      expect(ceilings.size).toBe(4);
     });
 
     it('takes each class its own ceilings, so the two classes need not match', () => {
