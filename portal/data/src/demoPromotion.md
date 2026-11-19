@@ -16,8 +16,12 @@ exactly as it was. The checks run in this order:
 3. A consent is recorded.
 4. Every promotion target is supplied by name. A field left out is refused by its name.
 5. The export of the demo content is done.
-6. The demo's drain flag is set.
-7. The gate answers PROMOTE. WAIT and ABANDON both refuse.
+6. The demo's owner has accepted the current version of each document (terms,
+   privacy, DPA). The effect `assertDocumentsAccepted` is wired to the data
+   layer's `assertAccepted`; a refusal names the pending documents, and an
+   acceptance that cannot be read refuses too.
+7. The demo's drain flag is set.
+8. The gate answers PROMOTE. WAIT and ABANDON both refuse.
 
 ## The path
 

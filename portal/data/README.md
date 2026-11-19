@@ -204,8 +204,8 @@ in no current list and cannot be accepted.
 whom and when. It is isolated like every tenant table and insert-only.
 Acceptance belongs to a version, so a new version is pending again for a tenant
 that accepted the last (`pendingAcceptances`, and `assertAccepted` as the
-gate; its caller will be the step that turns a demo user into a paying tenant,
-not built here). Only the version in force can be accepted. Text in this layer is
+gate; its caller is the promotion step, `promoteDemo`, which refuses a demo
+whose owner has not accepted the current documents). Only the version in force can be accepted. Text in this layer is
 placeholder only; the real wording is supplied by the owner.
 
 ## Moderation settings
