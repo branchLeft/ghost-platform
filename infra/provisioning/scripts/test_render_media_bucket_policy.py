@@ -436,8 +436,13 @@ class TestCommands(unittest.TestCase):
         # Hetzner does not support NewerNoncurrentVersions; a count-based
         # retention policy cannot be expressed here at all.
         self.assertNotIn("NewerNoncurrentVersions", body)
-        # An Expiration rule on current objects would delete live media.
-        self.assertNotIn("Expiration\"", body.replace("NoncurrentVersionExpiration", ""))
+        # An Expiration rule on current objects would delete live media: the
+        # only elements a rule may carry are the noncurrent and multipart ones.
+        for each in json.loads(body)["Rules"]:
+            self.assertEqual(
+                set(each) - {"ID", "Status", "Filter"},
+                {"NoncurrentVersionExpiration", "AbortIncompleteMultipartUpload"},
+            )
 
     def test_enables_versioning_before_the_lifecycle_rule(self):
         commands = policy_module.render_commands(
