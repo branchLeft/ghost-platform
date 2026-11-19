@@ -165,6 +165,22 @@ an image and holds `=`, `/` or a space (the value of a flag the guard does not
 know, such as `--ulimit nofile=1024:2048`) is reported the same way, because the
 image may be behind it. Enforce mode fails on any UNRESOLVED reference.
 
+Three workflow expressions are accepted, because the file itself shows they can only
+be one of our own images with a verified digest. Each link is checked, and breaking
+any one makes the expression UNRESOLVED again:
+
+- `${{ steps.<id>.outputs.<name> }}`, when the step with that `id` in the same job
+  writes `<name>=$REPO@$digest` to `$GITHUB_OUTPUT`, `REPO` expands only to
+  `ghcr.io/branchleft/...` outside the mirror namespaces, and the same step checks
+  the digest against `sha256:[0-9a-f]{64}` before writing it.
+- `${{ needs.<job>.outputs.<name> }}`, when that job's `outputs:` hands on a step
+  output that passes the check above.
+- `image: ${{ env.<NAME> }}` with a `digest:` key beside it in the same mapping,
+  when `NAME` expands only to such a repository: the digest completes it.
+
+The check is on the shape of the workflow text. It does not run the step, so it
+shows that a digest is verified, not that it is the right one.
+
 ## Modes
 
 - `--mode warn` prints every finding and exits 0. It exits 2 when the list cannot
