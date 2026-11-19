@@ -75,6 +75,7 @@ services:
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
       privacy__useUpdateCheck: false
+      privacy__useGravatar: false
       logging__transports: '["stdout"]'
       mail__options__auth__pass: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
       bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
@@ -162,6 +163,7 @@ services:
       theme__uploadLimits__entryUncompressedBytes: 33554432
       theme__uploadLimits__totalUncompressedBytes: 67108864
       privacy__useUpdateCheck: false
+      privacy__useGravatar: false
       logging__transports: '["stdout"]'
       mail__options__auth__pass: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'
       bulkEmail__mailgun__apiKey: '${GHOST_BULK_EMAIL_API_KEY:?set GHOST_BULK_EMAIL_API_KEY in /etc/branchleft/demo-1.env}'

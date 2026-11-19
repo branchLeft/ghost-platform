@@ -79,14 +79,15 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
       : { clientLimit: { trustedProxies: options.trustedProxies } }),
     bind: async () => true,
     landing: async () => {
-      const [tenants, requests] = await Promise.all([
+      const [tenants, requests, waiting] = await Promise.all([
         options.db.listHealth(),
         options.db.listSupportRequests(),
+        options.db.waitingCount(),
       ]);
       const rows = tenants
         .map((t) => `<li><code>${escapeHtml(t.tenantId)}</code>${renderHealth(t.health)}</li>`)
         .join('');
-      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><ul>${rows}</ul>${renderSupportQueue(requests)}`;
+      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><p>DEMOS_WAITING ${waiting}</p><ul>${rows}</ul>${renderSupportQueue(requests)}`;
     },
     actions: {
       ...requests.actions,

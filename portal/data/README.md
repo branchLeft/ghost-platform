@@ -336,6 +336,23 @@ command's own check (M06) and smoke test both hold. The owner role may only
 `listHostnames`); the tenant role holds nothing on them. The internet-facing
 prospect path is a separate role, `portal_prospect`, below.
 
+**The waiting list.** Six slots are offered (`SLOT_COUNT`). A demo holds one
+from `CLAIMED` to `PROMOTING`; `ProvisionerDb.admit` decides, for a demo at
+`VERIFIED` whose request is recorded, whether it is `CLAIMED` or `WAITING`. A
+full house is an outcome and never an error: the request goes onto the list as
+`WAITING`, keeps the request row the front door wrote (the same contact details,
+consent and explainer wording, read through `ProvisionerDb.request` and
+`OwnerDb.demoRequest`), holds no term and no hostname, and comes back with its
+place in the queue. A request is `CLAIMED` only when fewer than six demos hold a
+slot and nobody is waiting, so a later request never passes an earlier one; a
+slot that frees while someone waits is for the front of the list, offered by a
+later step that is not built here (the move is `WAITING` to `CLAIMED`). The
+decision is made under one advisory lock held to the end of the transaction, so
+simultaneous requests are decided one at a time and the seventh can never also
+take the sixth slot. A demo that is not at `VERIFIED`, or that has no recorded
+request, is refused (`AdmissionRefusedError`) and nothing is written.
+`OwnerDb.waitingCount` is the console's count of demos on the list.
+
 Control cases (each is a test that fails if the mechanism is removed): the
 full 14 by 14 matrix of states, through the operation and straight at the
 table; the term read back from the stored row; the extension's before and
