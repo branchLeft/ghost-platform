@@ -6,9 +6,9 @@ import { installMocks } from './test/harness';
 import { type ComposeDocument, ghostServices } from './test/composeServices';
 
 /**
- * Mode A (branchLeft/workspace#3017): a tenant's rendered `compose.yml` never
- * carries two Ghost services, whatever options are set, because the generic
- * unit starts every service in the file. See index.md#one-colour-at-a-time.
+ * Mode A: a tenant's rendered `compose.yml` never carries two Ghost services,
+ * whatever options are set, because the generic unit starts every service in
+ * the file. See index.md#one-colour-at-a-time.
  */
 
 let GhostTenant: typeof GhostTenantClass;

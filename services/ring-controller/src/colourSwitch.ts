@@ -4,9 +4,9 @@ import type { BumpDependencies, StepResult } from './bumpStateMachine.js';
 export type Colour = 'a' | 'b';
 
 /**
- * What the host does for one tenant, one call at a time. Mode A
- * (branchLeft/workspace#3017): at most one Ghost process exists per tenant at
- * any instant. See README.md in this directory for the contract of each call.
+ * What the host does for one tenant, one call at a time. Mode A: at most one
+ * Ghost process exists per tenant at any instant. See README.md in this
+ * directory for the contract of each call.
  */
 export interface ColourHost {
   /** Pull the image and check its migrations on a scratch copy. Starts no Ghost on the tenant's database. */
