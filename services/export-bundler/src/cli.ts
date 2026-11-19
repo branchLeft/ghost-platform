@@ -4,7 +4,15 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
-import { createDockerContainerRunner, startup, type VolumeMount } from './containerRunner.js';
+import {
+  createDockerContainerRunner,
+  GHOST_CONTENT_DIR,
+  parseVolumeMountpoint,
+  runDocker,
+  startup,
+  type VolumeMount,
+} from './containerRunner.js';
+import { DEFAULT_UPLOAD_CEILING_BYTES } from './mediaTree.js';
 import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
@@ -58,6 +66,13 @@ export interface CliOptions {
   readonly loopbackPort: number;
   /** The day after which the tenant's public media addresses stop working, YYYY-MM-DD. */
   readonly erasureDate: string;
+  /**
+   * A demo slot: also carry the originals in the content volume's `images`,
+   * `media` and `files`, which a promotion imports through the tenant's own Ghost.
+   */
+  readonly carryMediaFiles: boolean;
+  /** The destination tier's upload ceiling; a larger file is listed, not carried. */
+  readonly uploadCeilingBytes: number;
 }
 
 const RETIRED_FLAGS = [
@@ -78,6 +93,14 @@ function requireFlag(argv: readonly string[], name: string): string {
   const value = flagValue(argv, name);
   if (!value) throw new Error(`missing required flag --${name}`);
   return value;
+}
+
+function parseCeiling(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_UPLOAD_CEILING_BYTES;
+  if (!/^[1-9][0-9]{0,15}$/.test(value)) {
+    throw new Error('--upload-ceiling-bytes must be a positive whole number');
+  }
+  return Number(value);
 }
 
 export function parseArgs(argv: readonly string[]): CliOptions {
@@ -107,6 +130,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     auditLogPath: requireFlag(argv, 'audit-log'),
     loopbackPort: Number(requireFlag(argv, 'loopback-port')),
     erasureDate: requireFlag(argv, 'erasure-date'),
+    carryMediaFiles: argv.includes('--carry-media-files'),
+    uploadCeilingBytes: parseCeiling(flagValue(argv, 'upload-ceiling-bytes')),
   };
 }
 
@@ -184,6 +209,25 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
         );
 
   const container = { user: runtime.user, volumes };
+  let mediaTree;
+  if (opts.carryMediaFiles) {
+    const content = volumes.find((v) => v.mountPath === GHOST_CONTENT_DIR);
+    if (content === undefined) {
+      throw new TenantConfigError(`the rendered stack mounts no volume at ${GHOST_CONTENT_DIR}`);
+    }
+    mediaTree = {
+      contentDir: parseVolumeMountpoint(
+        await runDocker(dockerCommand, [
+          'volume',
+          'inspect',
+          '--format',
+          '{{.Mountpoint}}',
+          content.volume,
+        ])
+      ),
+      uploadCeilingBytes: opts.uploadCeilingBytes,
+    };
+  }
   const result = await runExport(
     {
       drainFlags: createDrainFlagStore(opts.flagDir),
@@ -236,6 +280,7 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
         baseUrl: mediaBaseUrlOf(runtime.env),
         erasureDate: opts.erasureDate,
       },
+      ...(mediaTree === undefined ? {} : { mediaTree }),
     }
   );
 

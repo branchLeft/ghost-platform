@@ -112,6 +112,35 @@ and the audit record carries the same `complete` flag.
   tenant's object: it is listed as `refused` and never as an address. Every
   object is checked to exist first. No signing, no secret and no download
   route exist or are needed.
+- **A demo slot's media files: the bytes.** A demo keeps its media as local
+  files, not behind the storage gateway, so a promotion needs the bytes
+  (ghost-platform-docs page 26). With `--carry-media-files` the bundler reads the
+  slot's content volume (the one the rendered stack mounts at
+  `/var/lib/ghost/content`, found with `docker volume inspect`; the tree is only
+  listed, opened for reading with `O_NOFOLLOW` and read, and the demo is drained
+  for the run) and carries the originals under `content/images`, `content/media`
+  and `content/files` in the encrypted archive, one entry each. The manifest
+  inside the archive lists every file with its path, size, checksum and status
+  (`mediaFiles`); the manifest beside it carries counts only, because a file's
+  name is the tenant's own content. The `media_files` extension must be `complete`
+  for `complete: true` when it was attempted; `media_bytes` is then no longer a
+  named gap.
+  - Never carried: resized variants (`images/size/...`), the scanning decorator's
+    quarantine directory (`content/quarantine`, beside the three trees, never
+    entered), anything a hold has not released (it is not in the served tree),
+    and anything that is not a regular file.
+  - A symlink, a device, a pipe, a socket, or a media root that is itself a link
+    **refuses the export** by name (`MediaTreeRefusedError`); nothing is written.
+  - A file over the destination tier's upload ceiling (`--upload-ceiling-bytes`,
+    128 MiB by default) is listed as `oversized` with its size and checksum and not
+    carried. A name outside the safe set is listed under `unrepresentable`.
+    References in the content to a file the tree does not hold are listed in
+    `danglingReferences`. More than 512 MiB to carry refuses the export, because
+    the archive is built in memory.
+  - Entry names: `archive.ts` and `bundleReader.ts` share `entryNames.ts`, which
+    allows a flat name or `content/<images|media|files>/<safe segments>` and nothing
+    else, so a crafted archive cannot name a path that leaves the bundle.
+  `openBundle` checks each media entry against the manifest's size and checksum.
 - **Members and subscriptions.** `members.json` is every member with tiers,
   labels, newsletters and subscription records; `members.csv` is Ghost's own
   re-importable export. Stripe's side of each subscription is named as out of
@@ -367,7 +396,8 @@ mark the tenant live":
   or a member who was on a tier at the source is not on it now. It names
   figures and a count, never a member's address.
 
-Comments and media are other stories; their entries in the bundle are ignored.
+Comments are not imported. Media entries are checked against the manifest by
+`openBundle` (`mediaFiles`) but not imported here: that is the media story.
 The unit tests use an in-memory stand-in for Ghost (`test/helpers/promotionBundle.ts`);
 nothing here has run against a real Ghost yet.
 
@@ -391,6 +421,7 @@ node dist/cli.js \
   --audit-log <path to the audit JSONL file> \
   --loopback-port <an unused local port> \
   --erasure-date <YYYY-MM-DD, the day the tenant's media addresses stop working> \
+  [--carry-media-files [--upload-ceiling-bytes <n>]] \
   [--stack-dir /opt/branchleft/<slug>] \
   [--secrets-env /etc/branchleft/<slug>.env] \
   [--image-env /etc/branchleft/<slug>.image.env]

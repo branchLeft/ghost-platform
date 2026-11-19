@@ -1,5 +1,7 @@
 import type { ArchiveFile } from './archive.js';
 import type { Collection, ExportFile, GhostExportClient } from './ghostExportClient.js';
+import type { MediaFilesListing } from './manifest.js';
+import { MediaTreeRefusedError, MediaTreeTooLargeError, readMediaTree } from './mediaTree.js';
 import {
   parseErasureDate,
   countSiteRelativeReferences,
@@ -18,7 +20,7 @@ import {
  * short archive.
  */
 
-export type ExtensionName = 'media' | 'members_and_subscriptions' | 'comments';
+export type ExtensionName = 'media' | 'media_files' | 'members_and_subscriptions' | 'comments';
 export type ExtensionStatus = 'complete' | 'partial' | 'failed';
 
 export interface ExtensionReport {
@@ -37,6 +39,16 @@ export interface ExtensionReport {
 export interface ExtensionOutcome {
   readonly report: ExtensionReport;
   readonly files: readonly ArchiveFile[];
+  /** Set by `media_files` only: the list that goes in the manifest. */
+  readonly mediaFiles?: MediaFilesListing;
+}
+
+/** Where a demo slot's served media tree is read from. */
+export interface MediaTreeConfig {
+  /** The slot's content directory, holding `images`, `media` and `files`. */
+  readonly contentDir: string;
+  /** The destination tier's upload ceiling; a larger file is listed, not carried. */
+  readonly uploadCeilingBytes: number;
 }
 
 export interface MediaConfig {
@@ -52,6 +64,8 @@ export interface ExtensionDeps {
   readonly baseUrl: string;
   readonly tenantId: string;
   readonly media: MediaConfig;
+  /** Set for a demo slot, whose media is local files rather than object-storage addresses. */
+  readonly mediaTree?: MediaTreeConfig;
   readonly nowSeconds: number;
   readonly contentJson: string;
 }
@@ -296,7 +310,53 @@ export async function collectMedia(deps: ExtensionDeps): Promise<ExtensionOutcom
   }
 }
 
-/** Runs all three; one failing never stops the others. */
+/**
+ * The originals of a demo slot's served media tree. A link, a device or any
+ * other non-file in the tree is not a failure to report but a refusal, and it
+ * ends the export: the error is thrown, never turned into a report.
+ */
+export async function collectMediaFiles(deps: ExtensionDeps): Promise<ExtensionOutcome> {
+  const tree = deps.mediaTree;
+  if (tree === undefined) throw new Error('collectMediaFiles needs a media tree');
+  let result;
+  try {
+    result = await readMediaTree({ ...tree, contentJson: deps.contentJson });
+  } catch (err) {
+    if (err instanceof MediaTreeRefusedError || err instanceof MediaTreeTooLargeError) throw err;
+    return failure('media_files', err);
+  }
+  const { listing } = result;
+  const oversized = listing.files.filter((f) => f.status === 'oversized');
+  const notes: string[] = [];
+  if (listing.unrepresentable.length > 0) {
+    notes.push(
+      `${listing.unrepresentable.length} files have names the bundle cannot carry and were listed, not carried`
+    );
+  }
+  return {
+    report: {
+      name: 'media_files',
+      status: statusFor(notes),
+      expected: listing.treeFileCount,
+      present: listing.files.length,
+      notes,
+      info: [
+        `${result.files.length} files carried`,
+        `${oversized.length} files over the upload ceiling listed, not carried`,
+        `${listing.danglingReferences.length} references to files the tree does not hold`,
+      ],
+    },
+    files: result.files,
+    mediaFiles: listing,
+  };
+}
+
+/** Runs them all; one failing never stops the others. A media tree refusal still ends the export. */
 export async function collectExtensions(deps: ExtensionDeps): Promise<readonly ExtensionOutcome[]> {
-  return [await collectMedia(deps), await collectMembers(deps), await collectComments(deps)];
+  const outcomes = [
+    await collectMedia(deps),
+    await collectMembers(deps),
+    await collectComments(deps),
+  ];
+  return deps.mediaTree === undefined ? outcomes : [...outcomes, await collectMediaFiles(deps)];
 }

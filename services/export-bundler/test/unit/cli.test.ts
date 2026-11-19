@@ -8,6 +8,7 @@ import {
   exitCodeFor,
   failureLines,
   main,
+  parseArgs,
   reportExport,
 } from '../../src/cli.js';
 import { ExportCleanupError, type ExportResult } from '../../src/exportRunner.js';
@@ -164,5 +165,48 @@ describe('reportExport and the failure lines', () => {
 
   it('a failed export with clean teardown prints one line', () => {
     expect(failureLines(new Error('boom'))).toEqual(['export-bundler: Error: boom']);
+  });
+});
+
+describe('parseArgs: the media flags', () => {
+  const base = [
+    '--grant-lane',
+    'consented',
+    '--grant-reference',
+    'ref',
+    '--descriptor',
+    'd.json',
+    '--age-recipient',
+    'age1x',
+    '--requested-by',
+    'a',
+    '--delivered-to',
+    'b',
+    '--dest-dir',
+    '/d',
+    '--flag-dir',
+    '/f',
+    '--audit-log',
+    '/a',
+    '--loopback-port',
+    '1',
+    '--erasure-date',
+    '2030-01-01',
+  ];
+
+  it('carries no media files by default, with the 128 MiB upload ceiling', () => {
+    const opts = parseArgs(base);
+    expect(opts.carryMediaFiles).toBe(false);
+    expect(opts.uploadCeilingBytes).toBe(128 * 1024 * 1024);
+  });
+
+  it('carries them only when asked, with the ceiling the destination tier states', () => {
+    const opts = parseArgs([...base, '--carry-media-files', '--upload-ceiling-bytes', '5000']);
+    expect(opts.carryMediaFiles).toBe(true);
+    expect(opts.uploadCeilingBytes).toBe(5000);
+  });
+
+  it.each([['0'], ['-1'], ['1.5'], ['abc'], ['']])('refuses the upload ceiling %j', (value) => {
+    expect(() => parseArgs([...base, '--upload-ceiling-bytes', value])).toThrow(/positive whole/);
   });
 });
