@@ -18,6 +18,7 @@ import { createStateWitness } from './stateWitness.js';
 import { createSweegoSuspension } from './sweegoSuspension.js';
 import { createSweegoUsage } from './sweegoUsage.js';
 import { createThrottle } from './throttle.js';
+import { createIp2Lane } from './ip2Lane.js';
 import { createBulkCap } from './lanes.js';
 
 const config = loadConfig();
@@ -42,6 +43,13 @@ const bulkCap = createBulkCap({
   onStateError: (error) => log.warn('bulk_deferral_state_error', { error: error.message }),
   log,
 });
+
+// Off unless the state file path is set. Set, a message on the newsletter
+// lane is sent only when the lane has a place for it.
+const ip2Lane = config.ip2 ? createIp2Lane({ ...config.ip2, log }) : undefined;
+if (!ip2Lane) {
+  log.warn('ip2_lane_caps_off', {});
+}
 
 const throttle = createThrottle({
   configPath: config.throttleConfigPath,
@@ -233,6 +241,7 @@ const runtime = createCollectorRuntime({
   throttle,
   loginThrottle,
   bulkCap,
+  ip2Lane,
   dedupe,
   health,
   heartbeat,
