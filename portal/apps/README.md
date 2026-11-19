@@ -200,7 +200,7 @@ the one issued for that tenant (the API refuses a tenant credential on any other
 tenant's path), looked up by the scope's tenant id.
 
 ```text
-PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback)
+PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback or a bare service name such as `provisioning`)
 PORTAL_PROVISIONING_CREDENTIALS_FILE  a file of lines <tenant uuid>=<credential>, one per tenant
 ```
 
@@ -297,7 +297,7 @@ restart. `*_DATABASE_URL_FILE` holds the connection URL of a login that is a
 member of `portal_tenant` alone (portal) or `portal_owner` alone (console).
 The URL may omit the password (`postgres://LOGIN@HOST:PORT/portal`): the `pg`
 driver then reads `PGPASSWORD` from the process environment, so the password
-need not appear in the URL file. Plain HTTP is accepted only for a loopback origin.
+need not appear in the URL file. Plain HTTP is accepted only for a loopback origin or a bare service name with no dot (the compose network's name for the provisioning service).
 
 A pending sign-in rides in a cookie sealed under a key drawn at start, so a restart drops every pending sign-in and several instances cannot accept each other's cookie.
 
@@ -446,7 +446,7 @@ with no button, because the contract refuses to approve one.
   other stops the process at start.
 
 ```text
-CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback only
+CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback or a bare service name only
 CONSOLE_PROVISIONING_CREDENTIAL_FILE  a file holding the owner credential
 ```
 
