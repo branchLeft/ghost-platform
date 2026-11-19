@@ -91,7 +91,8 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0010_demo_request',
       'applied migration 0011_support_access',
       'applied migration 0012_demo_request_status_read',
-      'applied migration 0013_tenant_billing',
+      'applied migration 0013_moderation_item',
+      'applied migration 0014_tenant_billing',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),
@@ -165,6 +166,12 @@ describe('the provisioning lifecycle', () => {
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'UPDATE')).toBe(true);
     expect(await privilege('portal_tenant', 'portal.moderation_setting', 'DELETE')).toBe(false);
     expect(await privilege('portal_owner', 'portal.moderation_setting', 'SELECT')).toBe(false);
+    // A tenant holds and reads its own queue items; nothing changes or deletes one yet.
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'INSERT')).toBe(true);
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'SELECT')).toBe(true);
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'UPDATE')).toBe(false);
+    expect(await privilege('portal_tenant', 'portal.moderation_item', 'DELETE')).toBe(false);
+    expect(await privilege('portal_owner', 'portal.moderation_item', 'SELECT')).toBe(false);
     // A tenant requests, connects and removes its own domains; it never edits a row,
     // and no other role touches either table.
     for (const table of ['portal.custom_domain_request', 'portal.connected_domain']) {
@@ -329,7 +336,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 15 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 16 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 

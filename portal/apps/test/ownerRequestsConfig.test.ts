@@ -42,11 +42,19 @@ describe('the owner console provisioning variables', () => {
     });
   });
 
-  it('accepts plain http for loopback alone', () => {
+  it('accepts plain http for loopback and a bare service name alone', () => {
     const local = { ...provisioned, CONSOLE_PROVISIONING_URL: 'http://127.0.0.1:8095' };
     expect(loadConsoleConfig(local, read).provisioning?.baseUrl).toBe('http://127.0.0.1:8095');
-    const remote = { ...provisioned, CONSOLE_PROVISIONING_URL: 'http://provisioning.example.test' };
-    expect(() => loadConsoleConfig(remote, read)).toThrow('https');
+    const service = { ...provisioned, CONSOLE_PROVISIONING_URL: 'http://provisioning:8095' };
+    expect(loadConsoleConfig(service, read).provisioning?.baseUrl).toBe('http://provisioning:8095');
+    for (const url of [
+      'http://provisioning.example.test',
+      'http://10.20.1.50:8095',
+      'http://3232235777',
+    ]) {
+      const remote = { ...provisioned, CONSOLE_PROVISIONING_URL: url };
+      expect(() => loadConsoleConfig(remote, read), url).toThrow('https');
+    }
   });
 
   it('configures nothing when neither variable is set', () => {
