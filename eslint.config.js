@@ -12,6 +12,8 @@ export default [
       '**/dist',
       '**/bin',
       'graphify-out',
+      // Vendored build, pinned by sha256 in PIN.json (adapters/scanning-storage/src/pdq-ts).
+      'adapters/scanning-storage/src/pdq-ts',
       'services/broker/src/generated',
       'services/provisioning-controller/src/generated',
     ],

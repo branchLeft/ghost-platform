@@ -15,6 +15,11 @@ const { defineScanningStorageAdapter } = require('../../src/scanning-storage.js'
 const { FakeVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
+// These tests ask fakes keyed by the content digest, so the verdict key is the
+// digest here; the perceptual hash is tested in pdq.test.ts.
+const keyByDigest = async (buffer) => ({
+  hash: require('node:crypto').createHash('sha256').update(buffer).digest('hex'),
+});
 const { digestBytes } = require('../../src/pdq.js');
 const { sealRefusal } = require('../../src/quarantine.js');
 const {
@@ -69,7 +74,12 @@ function buildAdapter({
     GhostErrors,
   });
   const verdictClient = new FakeVerdictClient({ refuse, unavailable });
-  const checks = [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })];
+  const checks = [
+    createPdqKnownMaterialCheck(verdictClient, {
+      computeVerdictKey: keyByDigest,
+      computeDigest: digestBytes,
+    }),
+  ];
   const resolvedQuarantinePath = quarantinePath ?? path.join(tmpDir, 'quarantine');
   const instance = new Adapter({
     wraps: 'FakeAdapter',
@@ -1809,7 +1819,11 @@ describe('a configured channel that does not answer in time', () => {
       wrappedConfig: { storagePath: 'wrapped' },
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [
-        createPdqKnownMaterialCheck(slowClient, { computeDigest: digestBytes, timeoutMs: 10 }),
+        createPdqKnownMaterialCheck(slowClient, {
+          computeVerdictKey: keyByDigest,
+          computeDigest: digestBytes,
+          timeoutMs: 10,
+        }),
       ],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,

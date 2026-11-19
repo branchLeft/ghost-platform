@@ -16,6 +16,11 @@ bin/
 # breaks the pin.
 widgets/dist/
 
+# The vendored pdq-ts build the scanning adapter hashes pictures with. Its bytes
+# are pinned by sha256 in PIN.json and a test holds them to it: reformatting
+# them breaks the pin.
+adapters/scanning-storage/src/pdq-ts/
+
 # Vendored third-party Kalotyp bundle (vendor/kalotyp/README.md). Pinned by
 # sha256 in vendor/kalotyp/kalotyp.sha256 and checked at image build: any
 # reformatting changes the bytes and breaks the pin.
