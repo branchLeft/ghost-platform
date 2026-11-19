@@ -8,8 +8,15 @@
 import { FieldValidationError, validatePrivateIpV4 } from './brand.js';
 import type { ResourceCaps, TenantDescriptor } from './descriptor.js';
 import type { UploadLimits } from './runtime.js';
-import { METRICS_MOUNT_PATH, VERDICT_MOUNT_PATH } from './environment.js';
-import { adaptersVolumeName, contentVolumeName, metricsVolumeName, stackName } from './naming.js';
+import { METRICS_MOUNT_PATH, VERDICT_MOUNT_PATH, VERDICT_SOCKET_PATH } from './environment.js';
+import {
+  adaptersVolumeName,
+  contentVolumeName,
+  metricsVolumeName,
+  stackName,
+  verdictJournalVolumeName,
+  verdictNetworkName,
+} from './naming.js';
 import type { YamlValue } from './yaml.js';
 import { toYaml } from './yaml.js';
 
@@ -33,6 +40,36 @@ export const GHOST_STOP_GRACE_PERIOD = '60s';
 
 const CONTENT_MOUNT_PATH = '/var/lib/ghost/content';
 const ADAPTERS_MOUNT_PATH = `${CONTENT_MOUNT_PATH}/adapters`;
+
+/** The service name of a slot's verdict host end. See
+ * compose.md#the-verdict-host-sidecar. */
+export const VERDICT_HOST_SERVICE = 'verdict-host';
+
+/**
+ * Where the image carries the verdict host end: the `adapters/scanning-storage`
+ * tree, `src/` and `verdict-host/` side by side, because the host end requires
+ * `../src/verdict-socket-frame`. The image does not carry it yet (the
+ * `Dockerfile` copies `src/` only); until it does, the sidecar fails to start
+ * and the descriptor switch stays off. See compose.md#the-verdict-host-sidecar.
+ */
+export const VERDICT_HOST_ENTRYPOINT = '/opt/branchleft/scanning-storage/verdict-host/main.js';
+
+/** Where the sidecar mounts its own journal volume, read-write. */
+export const VERDICT_HOST_STATE_PATH = '/var/lib/verdict-host';
+
+/**
+ * The sidecar's resource limits. A small queue process, not a Ghost: it holds
+ * at most 10,000 PDQ hashes and serves a handful of connections.
+ */
+export const VERDICT_HOST_LIMITS = {
+  tmpfsSize: '16m',
+  memoryLimit: '192m',
+  cpus: '0.5',
+  cpuShares: 256,
+  pidsLimit: 64,
+  nofile: 1024,
+  stopGracePeriod: '10s',
+} as const;
 
 /** Loopback: what every demo slot binds to instead of `appHostIp` — see the
  * module doc comment's "Load-bearing" note. */
@@ -174,7 +211,69 @@ function ghostService(
   };
 }
 
-function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
+/**
+ * The per-slot verdict host end, from the same digest-pinned image as Ghost.
+ * It joins one network and no other, `internal: true`, so an outbound connect
+ * has no route; it publishes no port. The posture matches Ghost's. See
+ * compose.md#the-verdict-host-sidecar.
+ */
+function verdictHostService(
+  args: ComposeStackArgs,
+  verdict: string,
+  journal: string,
+  network: string
+): Record<string, YamlValue> {
+  return {
+    image: '${IMAGE}',
+    restart: 'unless-stopped',
+    stop_grace_period: VERDICT_HOST_LIMITS.stopGracePeriod,
+    // The slot's own uid for now. A uid of its own, and a group Ghost shares
+    // for the socket, are the per-slot socket identity's, not this render's.
+    user: `${args.uid}:${args.uid}`,
+    init: true,
+    read_only: true,
+    tmpfs: [`/tmp:rw,noexec,nosuid,nodev,size=${VERDICT_HOST_LIMITS.tmpfsSize}`],
+    cap_drop: ['ALL'],
+    security_opt: ['no-new-privileges:true'],
+    pids_limit: VERDICT_HOST_LIMITS.pidsLimit,
+    mem_limit: VERDICT_HOST_LIMITS.memoryLimit,
+    memswap_limit: VERDICT_HOST_LIMITS.memoryLimit,
+    cpus: VERDICT_HOST_LIMITS.cpus,
+    cpu_shares: VERDICT_HOST_LIMITS.cpuShares,
+    ulimits: {
+      nofile: { soft: VERDICT_HOST_LIMITS.nofile, hard: VERDICT_HOST_LIMITS.nofile },
+    },
+    logging: {
+      driver: 'json-file',
+      options: { 'max-size': '10m', 'max-file': '3' },
+    },
+    // The image's own entrypoint starts Ghost; this one starts the host end.
+    entrypoint: ['node', VERDICT_HOST_ENTRYPOINT],
+    // The verify key file and the inbound port are the descriptor and edge
+    // route's, not this render's: the host end refuses to start without
+    // them, so it never runs half-configured.
+    environment: {
+      VERDICT_HOST_SOCKET: VERDICT_SOCKET_PATH,
+      VERDICT_HOST_JOURNAL: `${VERDICT_HOST_STATE_PATH}/queue.journal`,
+      VERDICT_HOST_METRICS_FILE: `${VERDICT_HOST_STATE_PATH}/verdict-host.prom`,
+    },
+    networks: [network],
+    // Read-write here, read-only in Ghost: the host end creates the socket.
+    volumes: [`${verdict}:${VERDICT_MOUNT_PATH}`, `${journal}:${VERDICT_HOST_STATE_PATH}`],
+    healthcheck: {
+      test: ['CMD', 'test', '-S', VERDICT_SOCKET_PATH],
+      interval: '30s',
+      timeout: '5s',
+      retries: 3,
+      start_period: '30s',
+    },
+  };
+}
+
+/** The stack as a document, before the posture check and the header. Exported
+ * for the render tests, which assert on the structure rather than the text; not
+ * part of the package's public surface (`index.ts` does not re-export it). */
+export function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   const content = contentVolumeName(args.slug);
   const adapters = adaptersVolumeName(args.slug);
   // Exactly the condition under which `environment.ts` renders the metrics
@@ -190,24 +289,39 @@ function composeDocument(args: ComposeStackArgs): Record<string, YamlValue> {
   if (metrics !== null) {
     volumes[metrics] = { external: true };
   }
-  if (verdict !== null) {
+  const journal = verdict === null ? null : verdictJournalVolumeName(args.slug);
+  const verdictNetwork = verdict === null ? null : verdictNetworkName(args.slug);
+  if (verdict !== null && journal !== null) {
     volumes[verdict] = { external: true };
+    volumes[journal] = { external: true };
   }
   if (args.dataMount) {
     volumes[args.dataMount.volumeName] = { external: true };
   }
 
+  const services: Record<string, YamlValue> = Object.fromEntries(
+    coloursToRender(args.activeColour).map((colour) => [
+      `ghost-${colour}`,
+      ghostService(args, colour, content, adapters, metrics, verdict),
+    ])
+  );
+  const networks: Record<string, YamlValue> = {};
+  if (args.mailNetwork) {
+    networks[args.mailNetwork] = { name: args.mailNetwork, external: true };
+  }
+  if (verdict !== null && journal !== null && verdictNetwork !== null) {
+    // Both colours use the one sidecar, so it is rendered whichever colours
+    // are, and a one-colour render keeps it from being removed as an orphan.
+    services[VERDICT_HOST_SERVICE] = verdictHostService(args, verdict, journal, verdictNetwork);
+    // Owned by this file, never `external`, so `internal` is what Docker
+    // applies: no gateway, no NAT, no route off the network.
+    networks[verdictNetwork] = { name: verdictNetwork, internal: true };
+  }
+
   return {
     name: stackName(args.slug),
-    services: Object.fromEntries(
-      coloursToRender(args.activeColour).map((colour) => [
-        `ghost-${colour}`,
-        ghostService(args, colour, content, adapters, metrics, verdict),
-      ])
-    ),
-    ...(args.mailNetwork
-      ? { networks: { [args.mailNetwork]: { name: args.mailNetwork, external: true } } }
-      : {}),
+    services,
+    ...(Object.keys(networks).length > 0 ? { networks } : {}),
     // `external: true`: the host-side provisioning step creates and owns
     // these volumes before this stack ever starts — see
     // `infra/tenant/compose.ts`'s own comment on why Compose must never be
@@ -375,6 +489,12 @@ export function assertRuntimePosture(
     }
 
     const ports = Array.isArray(service.ports) ? service.ports : [];
+    if (name === VERDICT_HOST_SERVICE) {
+      // The verdict host end is reached over its network and its socket
+      // volume, never a published port.
+      if ('ports' in service) at('must publish no port: it has no `ports` key at all');
+      if ('expose' in service) at('must not set `expose`');
+    }
     for (const port of ports) {
       const parts = typeof port === 'string' ? port.split(':') : [];
       if (parts.length !== 3 || parts[0] !== expectedBindAddress) {
@@ -396,7 +516,9 @@ export function assertRuntimePosture(
     if (probe.kind === 'malformed') {
       at('declares a `healthcheck.test` that is not a string, `CMD` or `CMD-SHELL` form');
     }
-    if (probe.kind === 'ok' && !probe.sendsHeader) {
+    // The verdict host end is not Ghost: it serves no page, so the Ghost
+    // probe's header means nothing to it.
+    if (probe.kind === 'ok' && !probe.sendsHeader && name !== VERDICT_HOST_SERVICE) {
       at(
         `must bind \`${HEALTHCHECK_FORWARDED_PROTO}\` to \`--header\` in its healthcheck, or Ghost ` +
           `answers the probe with a 301 to HTTPS that it cannot follow`
@@ -413,9 +535,83 @@ export function assertRuntimePosture(
     }
   }
 
+  checkVerdictHostNetwork(document, services, problems);
+
   if (problems.length > 0) {
     throw new Error(
       `render(): rendered stack violates the runtime posture:\n- ${problems.join('\n- ')}`
     );
+  }
+}
+
+function asRecord(value: YamlValue | undefined): Record<string, YamlValue> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, YamlValue>)
+    : undefined;
+}
+
+/** The network names a service lists, whether as a list or a map; null when
+ * it lists none, which Compose reads as the stack's `default` network. */
+function serviceNetworkNames(service: Record<string, YamlValue>): string[] | null {
+  const networks = service.networks;
+  if (Array.isArray(networks)) {
+    return networks.filter((n): n is string => typeof n === 'string');
+  }
+  const record = asRecord(networks);
+  return record ? Object.keys(record) : null;
+}
+
+/**
+ * The verdict host end's network deny. It must list exactly one network, that
+ * network must be declared in this file, `internal: true`, not `external` and
+ * not IPv6, and no other service may join it. A network that is not internal
+ * gives the process a gateway, and "never dials out" would rest on code alone.
+ */
+function checkVerdictHostNetwork(
+  document: Record<string, YamlValue>,
+  services: Record<string, Record<string, YamlValue>>,
+  problems: string[]
+): void {
+  const sidecar = services[VERDICT_HOST_SERVICE];
+  if (sidecar === undefined) return;
+  const at = (message: string) => problems.push(`service "${VERDICT_HOST_SERVICE}": ${message}`);
+
+  const names = serviceNetworkNames(sidecar);
+  if (names === null || names.length !== 1) {
+    at(
+      'must list exactly one network, an `internal: true` one of its own; with none it joins ' +
+        'the default network, which has egress'
+    );
+    return;
+  }
+  const [network] = names;
+  const topLevel = asRecord(document.networks) ?? {};
+  const declared = asRecord(topLevel[network]);
+  if (declared === undefined) {
+    at(`joins network "${network}", which the file does not declare`);
+  } else {
+    if (declared.internal !== true) {
+      at(
+        `joins network "${network}", which is not \`internal: true\`: a network with a gateway ` +
+          'gives it a route off the host'
+      );
+    }
+    if (declared.external === true) {
+      at(
+        `network "${network}" must be owned by this file, or \`internal\` is not what Docker applies`
+      );
+    }
+    if (declared.enable_ipv6 !== undefined && declared.enable_ipv6 !== false) {
+      at(
+        `network "${network}" must not set \`enable_ipv6\`: it is a route the IPv4 reasoning misses`
+      );
+    }
+  }
+
+  for (const [name, service] of Object.entries(services)) {
+    if (name === VERDICT_HOST_SERVICE) continue;
+    if (serviceNetworkNames(service)?.includes(network)) {
+      problems.push(`service "${name}": must not join the verdict host's network "${network}"`);
+    }
   }
 }

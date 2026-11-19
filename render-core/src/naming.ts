@@ -192,3 +192,21 @@ export function metricsVolumeName(slug: Slug): string {
 export function verdictVolumeName(slug: Slug): string {
   return `ghost-${slug}-verdict`;
 }
+
+/**
+ * The verdict host end's own queue journal and metrics textfile. Its own
+ * volume per slot, mounted by the sidecar alone: Ghost never sees it. See
+ * compose.md#the-verdict-host-sidecar.
+ */
+export function verdictJournalVolumeName(slug: Slug): string {
+  return `ghost-${slug}-verdict-journal`;
+}
+
+/**
+ * The per-slot Docker network the verdict host end joins and nothing else
+ * does. Rendered `internal: true`, so it has no gateway and no NAT and an
+ * outbound connect has no route. See compose.md#the-verdict-host-sidecar.
+ */
+export function verdictNetworkName(slug: Slug): string {
+  return `ghost-${slug}-verdict-net`;
+}

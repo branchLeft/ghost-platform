@@ -104,7 +104,10 @@ describe('safety.verdictSource = "production" on a paying tenant', () => {
     const mountLine = `      - '${volume}:${MOUNT_PATH}:ro'`;
     expect(yaml.split('\n').filter((line) => line === mountLine)).toHaveLength(2);
     expect(yaml).toContain(`  ${volume}:\n    external: true`);
-    expect(yaml).not.toContain(`${volume}:${MOUNT_PATH}'`);
+    // The one read-write mount is the verdict host end's own, which creates
+    // the socket (compose.md#the-verdict-host-sidecar).
+    const readWrite = `      - '${volume}:${MOUNT_PATH}'`;
+    expect(yaml.split('\n').filter((line) => line === readWrite)).toHaveLength(1);
   });
 
   it('two slugs never share a verdict volume', () => {
@@ -240,12 +243,15 @@ describe('the verdict volume is read-only in Ghost', () => {
       mailNetwork: null,
       verdictVolume: volume,
     };
-    // RED: the read-write mount is rendered.
-    expect(sabotagedCompose.renderComposeStack(args)).toContain(`'${volume}:${MOUNT_PATH}'`);
-    // GREEN: the real module mounts it read-only only.
+    const readWrite = (yaml: string) =>
+      yaml.split('\n').filter((line) => line === `      - '${volume}:${MOUNT_PATH}'`).length;
+    // RED: both Ghost colours mount it read-write, beside the verdict host's own.
+    expect(readWrite(sabotagedCompose.renderComposeStack(args))).toBe(3);
+    // GREEN: the real module mounts it read-only in Ghost; only the verdict
+    // host end, which creates the socket, mounts it read-write.
     const { renderComposeStack } = await import('../src/compose.js');
     const real = renderComposeStack(args);
     expect(real).toContain(`'${volume}:${MOUNT_PATH}:ro'`);
-    expect(real).not.toContain(`'${volume}:${MOUNT_PATH}'`);
+    expect(readWrite(real)).toBe(1);
   });
 });

@@ -75,9 +75,50 @@ stops Ghost replacing the socket or writing anything beside it. One volume
 per slot, never shared, so one slot cannot ask or answer through another's
 channel.
 
-What runs the host end, and what creates the volume, are not in this
-module yet. With the switch off, nothing here changes and every golden is
-byte-identical.
+What runs the host end is the verdict host sidecar, below. What creates the
+volume is not in this module. With the switch off, nothing here changes and
+every golden is byte-identical.
+
+## The verdict host sidecar
+
+With the same switch on, the stack carries a third service, `verdict-host`,
+beside `ghost-a` and `ghost-b`, rendered whichever colours are (both colours
+use it, and a one-colour render must not remove it as an orphan). It runs the
+same digest-pinned `${IMAGE}` as Ghost, with its own `entrypoint`
+(`VERDICT_HOST_ENTRYPOINT`), because the image's own entrypoint starts Ghost.
+
+**The network deny.** The sidecar joins exactly one network,
+`ghost-<slug>-verdict-net` (`naming.ts#verdictNetworkName`), declared in this
+file as `internal: true`: Docker gives it no gateway and no NAT, so a connect
+to any address off the network has no route. The in-process egress guard
+(`adapters/scanning-storage/verdict-host/verdict-host.md`) is only a guard;
+this is the control that does not depend on the process's own code. The network
+is owned by this file, never `external` (so `internal` is what Docker applies)
+and never IPv6 (a route the IPv4 reasoning does not cover). No Ghost service
+joins it: Ghost reaches the host end by the unix socket on the verdict volume,
+not the network.
+
+**The rest of the posture.** No published port and no `expose`. `read_only`,
+`init`, `cap_drop: [ALL]`, `no-new-privileges`, a numeric `user`, a `/tmp`
+tmpfs, and limits of its own (`VERDICT_HOST_LIMITS`: a small queue process,
+not a Ghost) with swap bounded and logs bounded. The healthcheck asks whether
+the socket exists. `assertRuntimePosture` holds the sidecar to all of it, and
+refuses one with a port, with none or more than one network, on a network that
+is not `internal`, external or IPv6, or on a network a Ghost service also
+joins.
+
+**Volumes.** The verdict volume read-write (the host end creates the socket;
+Ghost still mounts it read-only) and a second external volume,
+`ghost-<slug>-verdict-journal`, for the queue journal and metrics textfile,
+that only the sidecar mounts.
+
+**Not here.** The sidecar runs as the slot's own uid for now; a uid of its own
+and a shared socket group are the per-slot socket identity's. The verify key
+file and the inbound port are the descriptor and edge route's, and the host end
+refuses to start without them. The image does not yet carry the host end at
+`VERDICT_HOST_ENTRYPOINT`. Until all three exist the sidecar does not start,
+which is why the descriptor switch stays off. The proof that an outbound
+connect fails is `test/verdict-host-network.test.ts`.
 
 ## The stop grace period
 
