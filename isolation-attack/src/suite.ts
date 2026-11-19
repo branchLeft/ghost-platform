@@ -71,6 +71,7 @@ function evilHandle(server: EvilServer): EvilHandle {
   return {
     origin,
     seen: server.seen,
+    aimAt: (target) => server.aimAt(target),
   };
 }
 

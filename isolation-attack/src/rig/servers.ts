@@ -94,15 +94,17 @@ export async function startPortalStub(options: PortalStubOptions): Promise<Porta
 
 export interface EvilServer extends Listening {
   readonly seen: string[];
+  /** Sets the URL the attacker's pages forge a request to. Held here, never read from a request. */
+  aimAt(target: string): void;
 }
 
 /** The attacker's site: a page that forges a POST to `target`, by form or by fetch. */
 export async function startEvilServer(): Promise<EvilServer> {
   const seen: string[] = [];
+  let target = '';
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://evil.invalid');
     seen.push(`${req.method ?? 'GET'} ${url.pathname}`);
-    const target = url.searchParams.get('target') ?? '';
     const escaped = JSON.stringify(target).replaceAll('<', '\\u003c');
     res.setHeader('content-type', 'text/html; charset=utf-8');
     if (url.pathname === '/form') {
@@ -121,5 +123,5 @@ export async function startEvilServer(): Promise<EvilServer> {
     res.end('not found');
   });
   const listening = await listen(server);
-  return { ...listening, seen };
+  return { ...listening, seen, aimAt: (value) => void (target = value) };
 }

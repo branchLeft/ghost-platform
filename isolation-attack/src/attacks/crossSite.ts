@@ -71,11 +71,12 @@ export async function attackCrossSite(world: World): Promise<CrossSiteObservatio
     await page.close();
   };
 
+  world.evil.aimAt(target);
   await run('forged form from the attacker site', 'cross-site', (c) =>
-    goto(c, `${world.evil.origin}/form?target=${encodeURIComponent(target)}`)
+    goto(c, `${world.evil.origin}/form`)
   );
   await run('forged opaque fetch from the attacker site', 'cross-site', (c) =>
-    goto(c, `${world.evil.origin}/fetch?target=${encodeURIComponent(target)}`)
+    goto(c, `${world.evil.origin}/fetch`)
   );
   await run('forged form on tenant B, clicked by the reader', 'same-site', async (c) => {
     const page = await c.newPage();

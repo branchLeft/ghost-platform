@@ -28,6 +28,7 @@ export interface EvilHandle {
   readonly origin: string;
   /** Requests the attacker's server received, newest last, for evidence only. */
   readonly seen: string[];
+  aimAt(target: string): void;
 }
 
 export interface UploadedFile {
