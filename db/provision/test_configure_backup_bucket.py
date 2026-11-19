@@ -1466,5 +1466,52 @@ class TheCheckerRequiresWhatTheGeneratorActuallyDenies(unittest.TestCase):
         cbb.assert_policy_fences_this_bucket(fence_policy(), BUCKET, OPERATOR_ARN)
 
 
+class MediaBucketRefusalTests(unittest.TestCase):
+    """This script writes current-version `Expiration` elements. Pointed at a
+    tenant's media bucket, that deletes live images with no other copy."""
+
+    MEDIA_BUCKETS = ("branchleft-media-blog", "Branchleft-Media-Blog", "gw-media-shard-a1")
+
+    def test_the_library_entry_refuses_before_any_request(self):
+        for bucket in self.MEDIA_BUCKETS:
+            with self.subTest(bucket=bucket):
+                calls = []
+                with self.assertRaises(cbb.BucketConfigError):
+                    cbb.configure_backup_bucket(
+                        bucket=bucket,
+                        endpoint="hel1.your-objectstorage.com",
+                        region="hel1",
+                        access_key="AK",
+                        secret_key="SECRET",
+                        policy_body=b"{}",
+                        db_expiration_days=10,
+                        media_expiration_days=28,
+                        put=lambda **kwargs: calls.append(kwargs),
+                    )
+                self.assertEqual(calls, [])
+
+    def test_the_command_line_refuses_first_and_names_the_reason(self):
+        import contextlib
+        import io
+
+        for bucket in self.MEDIA_BUCKETS:
+            with self.subTest(bucket=bucket):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    code = cbb.main(
+                        [
+                            "--bucket", bucket, "--endpoint", "hel1.your-objectstorage.com",
+                            "--region", "hel1", "--policy-file", "/nonexistent",
+                            "--engine-diagnostic-passed",
+                        ]
+                    )
+                self.assertEqual(code, 2)
+                self.assertIn("media bucket", stderr.getvalue())
+
+    def test_the_backup_buckets_names_are_not_refused(self):
+        for bucket in (BUCKET, "branchleft-tenant-backups"):
+            cbb.refuse_media_bucket(bucket)
+
+
 if __name__ == "__main__":
     unittest.main()
