@@ -10,6 +10,13 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { docker, pollHttp200, reservePort, runStep } from '../../test-support/image-harness.mjs';
+import {
+  BODY_SETTING,
+  fontThemeSettings,
+  HEADING_SETTING,
+  REUSED_BODY_SETTING,
+  REUSED_HEADING_SETTING,
+} from '../fetch.mjs';
 import { classifyFile, hostOf } from '../lib/origins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +72,10 @@ describe('the control: the rendered-page check fails on an outside origin', () =
     assert.deepEqual(outsideReferences(html), []);
   });
 });
+
+// Source ships nineteen theme settings of its own, so it offers the families through
+// its title and body font settings and not through two more (fetch.mjs).
+const REUSES_OWN_FONT_SETTINGS = new Set(['source']);
 
 describe('the built image', { skip: IMAGE ? false : 'IMAGE is not set' }, () => {
   let name;
@@ -190,6 +201,10 @@ describe('the built image', { skip: IMAGE ? false : 'IMAGE is not set' }, () => 
           [],
           `${theme.name} home page names an outside origin`
         );
+        assert.ok(
+          !html.includes('platform-fonts'),
+          `${theme.name}: on Theme default the page must not link the fonts stylesheet`
+        );
 
         const assets = linkedAssets(html);
         assert.ok(
@@ -202,6 +217,70 @@ describe('the built image', { skip: IMAGE ? false : 'IMAGE is not set' }, () => 
           assert.equal(res.status, 200, `${theme.name}: ${url} answered ${res.status}`);
           await res.arrayBuffer();
         }
+
+        // The font choice: the theme offers both settings, Theme default is where it
+        // starts, and choosing Space Grotesk for headings sets Ghost's variable and
+        // links the stylesheet from this origin, with still no outside origin.
+        const listed = await admin('GET', 'custom_theme_settings/');
+        assert.equal(listed.status, 200, JSON.stringify(listed.body));
+        const settingOf = (key) => listed.body.custom_theme_settings.find((s) => s.key === key);
+        const families = MANIFEST.fonts.map((f) => f.family);
+        const [headingKey, bodyKey] = REUSES_OWN_FONT_SETTINGS.has(theme.name)
+          ? [REUSED_HEADING_SETTING, REUSED_BODY_SETTING]
+          : [HEADING_SETTING, BODY_SETTING];
+        for (const key of [headingKey, bodyKey]) {
+          const found = settingOf(key);
+          assert.ok(found, `${theme.name}: setting ${key} is not offered`);
+          assert.deepEqual(found.options.slice(-families.length), families);
+          if (!REUSES_OWN_FONT_SETTINGS.has(theme.name)) {
+            assert.deepEqual(found.options, fontThemeSettings(MANIFEST)[key].options);
+            assert.equal(
+              found.value,
+              'Theme default',
+              `${theme.name}: ${key} must start on default`
+            );
+          }
+        }
+        const defaults = [settingOf(headingKey).default, settingOf(bodyKey).default];
+        const choose = async (heading, body) => {
+          const put = await admin('PUT', 'custom_theme_settings/', {
+            custom_theme_settings: [
+              { key: headingKey, value: heading },
+              { key: bodyKey, value: body },
+            ],
+          });
+          assert.equal(put.status, 200, JSON.stringify(put.body));
+          const page = await (await fetch(`${base}/`)).text();
+          assert.deepEqual(
+            outsideReferences(page).map((r) => r.url),
+            [],
+            `${theme.name}: a chosen font names an outside origin`
+          );
+          return page;
+        };
+        const chosen = await choose('Space Grotesk', 'Inter');
+        assert.ok(
+          chosen.includes('--gh-font-heading:"Space Grotesk",sans-serif'),
+          `${theme.name}: the heading font variable is not set`
+        );
+        assert.ok(
+          chosen.includes('--gh-font-body:"Inter",sans-serif'),
+          `${theme.name}: the body font variable is not set`
+        );
+        const fontsLink = linkedAssets(chosen).find((u) => u.includes('/assets/platform-fonts/'));
+        assert.ok(fontsLink, `${theme.name}: a chosen font must link platform-fonts/fonts.css`);
+        const linked = await fetch(
+          fontsLink.startsWith('/') ? `${base}${fontsLink}` : fontsLink.replace(SITE, base)
+        );
+        assert.equal(linked.status, 200, `${theme.name}: ${fontsLink} answered ${linked.status}`);
+        const bodyOnly = await choose(defaults[0], 'Lora');
+        assert.ok(bodyOnly.includes('--gh-font-body:"Lora",serif'));
+        assert.ok(
+          !bodyOnly.includes('--gh-font-heading'),
+          `${theme.name}: heading must stay default`
+        );
+        const reset = await choose(...defaults);
+        assert.ok(!reset.includes('platform-fonts'), `${theme.name}: default must link nothing`);
 
         // The fonts: the stylesheet and every font file, from this origin, under
         // the active theme's assets.

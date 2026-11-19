@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NO_FONT_CHOICE } from './lib/manifest.mjs';
 import { sha256File, treeSha256 } from './lib/treehash.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -91,6 +92,141 @@ export function fontsCss(manifest) {
     }
   }
   return `/* Generated from themes/manifest.json by themes/fetch.mjs. Relative URLs only: every font is served from this origin. */\n${rules.join('')}`;
+}
+
+// The two theme settings a tenant uses to pick a font, and the Ghost CSS
+// variables they set (the ones Ghost's own font picker sets, so a theme's
+// stylesheet already reads them). Ghost allows twenty theme settings in all.
+export const HEADING_SETTING = 'platform_heading_font';
+export const BODY_SETTING = 'platform_body_font';
+// A theme with no room for two more settings (Source has nineteen) offers the
+// families through its own title and body font selects instead.
+export const REUSED_HEADING_SETTING = 'title_font';
+export const REUSED_BODY_SETTING = 'body_font';
+const MAX_THEME_SETTINGS = 20;
+const PARTIAL_NAME = 'platform-fonts';
+const PARTIAL_INCLUDE = `{{> "${PARTIAL_NAME}"}}`;
+const HEAD_HELPER = '{{ghost_head}}';
+
+/** The `config.custom` entries added to a theme with room: one select per role. */
+export function fontThemeSettings(manifest) {
+  const options = [NO_FONT_CHOICE, ...manifest.fonts.map((f) => f.family)];
+  return {
+    [HEADING_SETTING]: {
+      type: 'select',
+      options,
+      default: NO_FONT_CHOICE,
+      description: 'Heading font, served from this site. Theme default keeps the theme font.',
+    },
+    [BODY_SETTING]: {
+      type: 'select',
+      options,
+      default: NO_FONT_CHOICE,
+      description: 'Body font, served from this site. Theme default keeps the theme font.',
+    },
+  };
+}
+
+const OWN_SETTINGS = { heading: HEADING_SETTING, body: BODY_SETTING };
+
+/**
+ * The partial a theme's default.hbs includes after the head helper. A family is
+ * chosen only when a setting equals its name, so any other value (Theme default,
+ * a theme's own option, nothing) emits nothing. A chosen font links the theme's
+ * own fonts.css (this origin) and sets Ghost's font variable; the element rule
+ * makes a theme that never reads the variable follow it too.
+ */
+export function platformFontsPartial(manifest, settings = OWN_SETTINGS) {
+  const chain = (branches) =>
+    branches
+      .map(
+        ({ setting, family, output }, i) =>
+          `{{${i === 0 ? '#' : 'else '}match @custom.${setting} "=" "${family}"}}${output}`
+      )
+      .join('') + '{{/match}}';
+  const link = '<link rel="stylesheet" href="{{asset "platform-fonts/fonts.css"}}">';
+  const style = (f, cssVariable, rule) =>
+    `<style>:root{${cssVariable}:"${f.family}",${f.fallback}}${rule}{font-family:var(${cssVariable})}</style>`;
+  const branches = (setting, output) =>
+    manifest.fonts.map((f) => ({ setting, family: f.family, output: output(f) }));
+  return [
+    '{{!-- Generated from themes/manifest.json by themes/fetch.mjs. Fonts come from this origin only. --}}',
+    chain([...branches(settings.heading, () => link), ...branches(settings.body, () => link)]),
+    chain(branches(settings.heading, (f) => style(f, '--gh-font-heading', 'h1,h2,h3,h4,h5,h6'))),
+    chain(branches(settings.body, (f) => style(f, '--gh-font-body', 'body'))),
+    '',
+  ].join('\n');
+}
+
+// The theme's `config.custom` after the font choice is added, and the two
+// settings the partial reads.
+function planThemeSettings(themeDir, custom, manifest) {
+  const added = fontThemeSettings(manifest);
+  for (const key of Object.keys(added)) {
+    if (key in custom) fail(`${themeDir}: theme setting ${key} already exists`);
+  }
+  if (Object.keys(custom).length + Object.keys(added).length <= MAX_THEME_SETTINGS) {
+    return { custom: { ...custom, ...added }, settings: OWN_SETTINGS };
+  }
+  const families = manifest.fonts.map((f) => f.family);
+  const extended = { ...custom };
+  for (const key of [REUSED_HEADING_SETTING, REUSED_BODY_SETTING]) {
+    const existing = custom[key];
+    if (existing?.type !== 'select' || !Array.isArray(existing.options)) {
+      fail(
+        `${themeDir}: ${Object.keys(custom).length} theme settings leave no room for two more, and it has no ${key} select to extend`
+      );
+    }
+    const clash = families.find((family) => existing.options.includes(family));
+    if (clash) fail(`${themeDir}: ${key} already offers ${clash}`);
+    extended[key] = { ...existing, options: [...existing.options, ...families] };
+  }
+  return {
+    custom: extended,
+    settings: { heading: REUSED_HEADING_SETTING, body: REUSED_BODY_SETTING },
+  };
+}
+
+// Where the head helper is used in a template: not where a comment names it
+// (Source's default.hbs does).
+function headHelperOffsets(hbs) {
+  const comments = [...hbs.matchAll(/\{\{!--[\s\S]*?--\}\}|\{\{![\s\S]*?\}\}/g)].map((m) => [
+    m.index,
+    m.index + m[0].length,
+  ]);
+  const offsets = [];
+  for (let at = hbs.indexOf(HEAD_HELPER); at !== -1; at = hbs.indexOf(HEAD_HELPER, at + 1)) {
+    if (!comments.some(([from, to]) => at >= from && at < to)) offsets.push(at);
+  }
+  return offsets;
+}
+
+/**
+ * Give one theme the font choice: the settings in package.json, the partial, and
+ * one include after its head helper. Fails, changing nothing, when the theme
+ * cannot take it (no or several head helpers, a clash, no room for settings).
+ */
+export function applyPlatformFonts(themeDir, manifest) {
+  const hbsPath = path.join(themeDir, 'default.hbs');
+  const pkgPath = path.join(themeDir, 'package.json');
+  const partialPath = path.join(themeDir, 'partials', `${PARTIAL_NAME}.hbs`);
+  const hbs = fs.readFileSync(hbsPath, 'utf8');
+  const heads = headHelperOffsets(hbs);
+  if (heads.length !== 1)
+    fail(`${themeDir}: default.hbs has ${heads.length} ${HEAD_HELPER}, expected exactly 1`);
+  if (hbs.includes(PARTIAL_INCLUDE)) fail(`${themeDir}: default.hbs already includes the partial`);
+  if (fs.existsSync(partialPath)) fail(`${themeDir}: partials/${PARTIAL_NAME}.hbs already exists`);
+
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  const plan = planThemeSettings(themeDir, pkg.config?.custom ?? {}, manifest);
+
+  pkg.config = { ...pkg.config, custom: plan.custom };
+  fs.writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`);
+  fs.mkdirSync(path.dirname(partialPath), { recursive: true });
+  fs.writeFileSync(partialPath, platformFontsPartial(manifest, plan.settings));
+  const end = heads[0] + HEAD_HELPER.length;
+  const indent = /[ \t]*$/.exec(hbs.slice(0, heads[0]))?.[0] ?? '';
+  fs.writeFileSync(hbsPath, `${hbs.slice(0, end)}\n${indent}${PARTIAL_INCLUDE}${hbs.slice(end)}`);
 }
 
 export async function materialise(manifest, out, { pin = false, baseThemes } = {}) {
@@ -208,6 +344,21 @@ export async function materialise(manifest, out, { pin = false, baseThemes } = {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
+  const fontsIdx = args.indexOf('--platform-fonts');
+  if (fontsIdx !== -1) {
+    const themeDir = args[fontsIdx + 1];
+    if (!themeDir) {
+      console.error('usage: node themes/fetch.mjs --platform-fonts THEME_DIR');
+      process.exit(2);
+    }
+    try {
+      applyPlatformFonts(path.resolve(themeDir), readManifest());
+    } catch (e) {
+      console.error(`ERROR: ${e.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
   const outIdx = args.indexOf('--out');
   if (outIdx === -1 || !args[outIdx + 1]) {
     console.error('usage: node themes/fetch.mjs --out DIR [--pin [--base-themes DIR]]');

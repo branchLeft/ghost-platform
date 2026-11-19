@@ -93,6 +93,7 @@ function build() {
       {
         family: 'Example',
         dir: 'example',
+        fallback: 'sans-serif',
         upstream: 'https://github.com/Example/Example',
         commit: SHA,
         licence: {

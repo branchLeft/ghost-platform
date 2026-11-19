@@ -8,7 +8,7 @@ The tenant Ghost image ships a set of open-source Ghost themes and a set of open
 
 Themes (Ghost-authored, MIT): Casper and Source (shipped in the digest-pinned Ghost base image, checked in place), London, Ruby, Edition, Digest, Bulletin, Journal, Headline, Solo, Episode, Starter.
 
-Fonts (SIL OFL 1.1): Inter, Lora, EB Garamond, Mulish, JetBrains Mono, Source Serif 4, IBM Plex Sans, IBM Plex Serif, IBM Plex Mono. Lora, Source Serif 4 and IBM Plex declare a Reserved Font Name, so their files are the upstream bytes, unmodified (no subsetting, no conversion). A modified file under a reserved name would have to be renamed; the manifest refuses an entry that says otherwise.
+Fonts (SIL OFL 1.1): Inter, Lora, EB Garamond, Mulish, JetBrains Mono, Source Serif 4, IBM Plex Sans, IBM Plex Serif, IBM Plex Mono, Space Grotesk. Lora, Source Serif 4 and IBM Plex declare a Reserved Font Name, so their files are the upstream bytes, unmodified (no subsetting, no conversion). A modified file under a reserved name would have to be renamed; the manifest refuses an entry that says otherwise.
 
 ## What is excluded, and why
 
@@ -62,9 +62,22 @@ To add a font family, fetch its licence with `curl -fsSL -o themes/licences/<fam
 
 ## How the fonts are served
 
-The build copies `fonts/` into each theme at `assets/platform-fonts/`, so a font is a file at `/assets/platform-fonts/<family>/<file>.woff2` and the generated stylesheet is `/assets/platform-fonts/fonts.css`. No theme file is changed. Ghost's own font picker (Design settings) writes a Bunny Fonts link (`fonts.bunny.net`, a third-party origin) into every page when a font is chosen; nothing here selects one, and it must stay on "Theme default" for tenants. The render core enforces that where a reconciler applies `ghost-settings.json`: it names `heading_font` and `body_font` as empty on every apply (`render-core/src/settings.md`). A site nothing reconciles (tenant zero today, whose settings were placed by hand) is cleared once in Ghost admin: Settings, Design & branding, Customise, Global, Heading font and Body font both set to "Theme default", then Save. Good looks like: a page load makes no request to `fonts.bunny.net` and the `<body>` has no `gh-font-heading-` or `gh-font-body-` class.
+The build copies `fonts/` into each theme at `assets/platform-fonts/`, so a font is a file at `/assets/platform-fonts/<family>/<file>.woff2` and the generated stylesheet is `/assets/platform-fonts/fonts.css`. Ghost's own font picker (Design settings) writes a Bunny Fonts link into every page when a font is chosen; the platform clears it on every apply (`render-core/src/settings.md`), and the tenant font choice below replaces it.
 
-Not done here: nothing yet links `fonts.css` into a tenant's pages. That is a per-site head setting (a site header injection of `<link rel="stylesheet" href="/assets/platform-fonts/fonts.css">`) and belongs with provisioning. Until it is set, the themes use their own font stacks.
+## How a tenant chooses a font
+
+Head code injection is blocked, so no site setting can link `fonts.css`. The theme does it instead. After the pins are verified, the image build gives every bundled theme (`fetch.mjs --platform-fonts`, run by the Dockerfile on each theme and failing the build on any):
+
+- two theme settings in `package.json` (`config.custom`): `platform_heading_font` and `platform_body_font`, each a select of `Theme default` and every family in `manifest.json`. They show in Ghost admin under Design, Customize, the theme's own settings. `Theme default` is the default, and nothing changes until a family is chosen;
+- `partials/platform-fonts.hbs`, generated from the manifest, and one `{{> "platform-fonts"}}` after `{{ghost_head}}` in `default.hbs`. A chosen family links the theme's own `fonts.css`, sets `--gh-font-heading` or `--gh-font-body` (the variables every bundled theme's stylesheet already reads, and the ones Ghost's picker set) and gives `h1`-`h6` or `body` that font, so a theme that never read the variable follows too. The page names only its own origin, and the content policy needs no change (`style-src` already allows the inline rule, `font-src` falls back to `'self'`).
+
+To get Space Grotesk headings, a tenant sets Heading font to Space Grotesk in Ghost admin and saves. Both fonts are chosen independently, and a font file is fetched only by a page that uses it.
+
+Source ships nineteen settings of its own and Ghost allows twenty, so for a theme with no room the build extends the theme's own `title_font` and `body_font` selects with the families instead (a theme with neither fails the build). In Source the heading choice is then "Title font" and the body choice "Body font". Source's own typography partial treats a title font that is neither Modern sans-serif nor Elegant serif as its mono option, so a chosen family also keeps Source's own mono font preloaded.
+
+The choice is Ghost data, not tenant-template data. A platform-applied default for a tenant (writing `custom_theme_settings` through the Admin API from the tenant descriptor) is not built: the reconciler writes Ghost settings only, and a theme setting exists only once its theme is active.
+
+To offer another family, add it to `manifest.json` (below) with a `fallback` of `sans-serif`, `serif` or `monospace`; the settings, the partial and the checks follow from the manifest.
 
 ## Adding or updating a theme or font
 
@@ -78,4 +91,3 @@ Not done here: nothing yet links `fonts.css` into a tenant's pages. That is a pe
 
 - Other open-source Ghost themes that are not Ghost-authored (the ruling asks for a sensible set). None is bundled yet; the exclusions above show the bar a candidate must clear.
 - A browser run of each theme (a real browser catches a URL built at runtime, which the static scan cannot).
-- Linking `fonts.css` into tenant pages (above).

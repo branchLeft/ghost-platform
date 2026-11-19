@@ -115,9 +115,11 @@ RUN rm -rf /tmp/kalotyp
 # full commit SHA and checked against a pinned content hash, with its licence
 # file and copyright kept. The fonts are the open-licence set, fetched the same
 # way and served from each theme's own assets/platform-fonts/, so a font is
-# always a file on the tenant's origin. verify.mjs fails the build if a theme or
-# font differs from its pin, lacks its licence, or references any outside
-# origin. Casper and Source ship in the base image (digest-pinned above) and
+# always a file on the tenant's origin. After the check, each theme gets the font
+# choice (fetch.mjs --platform-fonts): two theme settings and a partial that
+# links that theme's own fonts.css only when a font is chosen. verify.mjs fails
+# the build if a theme or font differs from its pin, lacks its licence, or
+# references any outside origin. Casper and Source ship in the base image (digest-pinned above) and
 # are checked in place. Fetching needs the network, like `apk add` above; the
 # Node already in the base image runs it and nothing is installed. Seeded into
 # the content directory by the base image's entrypoint, theme by theme.
@@ -129,9 +131,10 @@ RUN set -e \
     && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \
     && cp -R /tmp/themes-bundle/themes/. /var/lib/ghost/content.orig/themes/ \
     && for theme in /var/lib/ghost/content.orig/themes/*; do \
-         mkdir -p "$theme/assets/platform-fonts" \
-         && cp -R /tmp/themes-bundle/fonts/. "$theme/assets/platform-fonts/" \
-         && chown -R node:node "$theme/"; \
+         mkdir -p "$theme/assets/platform-fonts" || exit 1; \
+         cp -R /tmp/themes-bundle/fonts/. "$theme/assets/platform-fonts/" || exit 1; \
+         node /tmp/themes/fetch.mjs --platform-fonts "$theme" || exit 1; \
+         chown -R node:node "$theme/" || exit 1; \
        done \
     && rm -rf /tmp/themes /tmp/themes-bundle
 
