@@ -13,7 +13,10 @@ import {
   startRig,
   verdictFor,
 } from '../helpers/verdict-host-rig.mjs';
-import { pinOfPeerCertificate, tlsRequest } from '../helpers/verdict-host-tls-client.mjs';
+import {
+  pinOfPeerCertificate,
+  tlsRequest as tlsRequestPinned,
+} from '../helpers/verdict-host-tls-client.mjs';
 
 const require = createRequire(import.meta.url);
 const { startInbound } = require('../../verdict-host/inbound.js');
@@ -38,6 +41,10 @@ afterEach(async () => {
   fs.rmSync(directory, { recursive: true, force: true });
 });
 
+// Every request in this file is checked against the pin the host reports.
+const tlsRequest = (options) =>
+  tlsRequestPinned({ certFile: rig.certFile, pin: rig.host.tlsPin, ...options });
+
 async function startTlsRig(config = {}) {
   const rigDirectory = newTempDir();
   rig = await startRig({
@@ -49,6 +56,7 @@ async function startTlsRig(config = {}) {
     },
   });
   rig.port = rig.host.inbound.address.port;
+  rig.certFile = path.join(rigDirectory, 'tls.crt');
   rig.signed = (method, url, body = '') =>
     signHeaders(rig.keys.privateKey, method, url, body, { now: rig.clock.now() });
   return rig;

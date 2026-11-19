@@ -195,6 +195,26 @@ function requireDirectory(file) {
   }
 }
 
+// A key planted by another account is refused: the reported pin would cover a
+// key someone else chose. On platforms with no uid (Windows), the check is skipped.
+function ownedByRunningUser(stat) {
+  if (typeof process.getuid !== 'function') return true;
+  return stat.uid === process.getuid();
+}
+
+// An existing key is used only from a directory that group and others cannot
+// write to, so no other account can swap the key or certificate beside it.
+function requireKeyDirectoryPrivate(keyFile) {
+  const directory = path.dirname(keyFile);
+  const stat = fs.statSync(directory);
+  if ((stat.mode & 0o022) !== 0) {
+    throw new TlsIdentityError(
+      'key-directory-writable',
+      `the directory ${directory} of the TLS key ${keyFile} is writable by group or others; it must not be`
+    );
+  }
+}
+
 function openForReading(file, label) {
   try {
     return fs.openSync(file, READ_FLAGS);
@@ -222,6 +242,12 @@ function readExisting(file, label, { requirePrivate }) {
       throw new TlsIdentityError(
         'key-permissions',
         `the TLS key file ${file} is readable by group or others; it must be mode 0600`
+      );
+    }
+    if (requirePrivate && !ownedByRunningUser(stat)) {
+      throw new TlsIdentityError(
+        'key-owner',
+        `the TLS key file ${file} is not owned by the user running the host end; it will not be used`
       );
     }
     if (stat.size > MAX_FILE_BYTES) {
@@ -359,13 +385,15 @@ function makeIdentity({ certFile, keyFile, nowMs }) {
  * @param {{certFile: string, keyFile: string, now?: () => number}} options
  * @returns {{certificatePem: string, privateKeyPem: string, pin: string}}
  * @throws {TlsIdentityError} reasons: `missing-directory`, `certificate-without-key`,
- *   `not-regular-file`, `key-permissions`, `key-unreadable`, `key-type`,
+ *   `not-regular-file`, `key-permissions`, `key-owner`, `key-directory-writable`,
+ *   `key-unreadable`, `key-type`,
  *   `certificate-unreadable`, `key-mismatch`, `certificate-expired`, `write-failed`.
  */
 function ensureTlsIdentity({ certFile, keyFile, now = Date.now }) {
   requireDirectory(certFile);
   requireDirectory(keyFile);
   const existingKey = readExisting(keyFile, 'key', { requirePrivate: true });
+  if (existingKey !== null) requireKeyDirectoryPrivate(keyFile);
   const existingCertificate = readExisting(certFile, 'certificate', { requirePrivate: false });
   if (existingKey === null && existingCertificate !== null) {
     throw new TlsIdentityError(

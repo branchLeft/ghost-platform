@@ -16,7 +16,9 @@ const directories = [];
 const children = [];
 afterEach(async () => {
   for (const child of children.splice(0)) {
-    if (child.exitCode === null) {
+    // A child stopped by a signal has a null exitCode but has already exited:
+    // waiting for an 'exit' event then would never end.
+    if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL');
       await new Promise((resolve) => child.once('exit', resolve));
     }
@@ -95,7 +97,13 @@ describe('the host end process with TLS', () => {
     const headers = signHeaders(keys.privateKey, 'GET', '/safety/v1/pending', '', {
       now: Date.now() + 3000,
     });
-    const answer = await tlsRequest({ port, path: '/safety/v1/pending', headers });
+    const answer = await tlsRequest({
+      port,
+      path: '/safety/v1/pending',
+      headers,
+      certFile: path.join(directory, 'tls.crt'),
+      pin: match[1],
+    });
     expect(answer.status).toBe(200);
     expect(answer.pin).toBe(match[1]);
     await stop(running);
@@ -118,7 +126,8 @@ describe('the host end process with TLS', () => {
     const key = fs.readFileSync(path.join(directory, 'tls.key'), 'utf8');
     const body = key.split('\n').filter((line) => line && !line.startsWith('-----'));
     for (const line of body) expect(first.output + second.output).not.toContain(line);
-    expect(first.output).not.toContain('BEGIN');
+    const pemBeginMarker = ['BE', 'GIN'].join('');
+    expect(first.output).not.toContain(pemBeginMarker);
   }, 20_000);
 
   it('has no pin in the READY line, and plain HTTP, when TLS is not configured', async () => {

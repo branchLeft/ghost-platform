@@ -73,14 +73,16 @@ describe('the private key', () => {
     const keyFile = path.join(directory, 'tls.key');
     const secrets = secretsIn(fs.readFileSync(keyFile, 'utf8'));
     const { port } = rig.host.inbound.address;
+    const trust = { certFile: path.join(directory, 'tls.crt'), pin: rig.host.tlsPin };
     await tlsRequest({
       port,
       path: '/safety/v1/pending',
       headers: signHeaders(rig.keys.privateKey, 'GET', '/safety/v1/pending', '', {
         now: rig.clock.now(),
       }),
+      ...trust,
     });
-    await tlsRequest({ port, path: '/safety/v1/pending' });
+    await tlsRequest({ port, path: '/safety/v1/pending', ...trust });
     const junk = net.connect(port, '127.0.0.1');
     junk.on('error', () => {});
     await new Promise((resolve) => {

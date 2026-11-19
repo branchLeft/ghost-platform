@@ -125,7 +125,7 @@ describe('a first start', () => {
   it.skipIf(!hasOpenssl)('makes a certificate openssl reads, with the fields set', () => {
     const text = runOpenssl(['x509', '-text', '-noout'], ensure().certificatePem);
     expect(text).toContain('Signature Algorithm: ecdsa-with-SHA256');
-    expect(text).toContain('Subject: CN = verdict-host');
+    expect(text).toMatch(/Subject: CN ?= ?verdict-host/);
     expect(text).toContain('CA:FALSE');
     expect(text).toContain('Digital Signature');
     expect(text).toContain('Version: 3 (0x2)');
@@ -231,6 +231,36 @@ describe('refusals', () => {
     fs.chmodSync(keyFile, mode);
     const err = expectRefusal(() => ensure(), 'key-permissions');
     expect(err.message).toContain(keyFile);
+  });
+
+  it('refuses an existing key that another account owns, and does not use it', () => {
+    ensure();
+    const before = fs.readFileSync(keyFile, 'utf8');
+    const realUid = process.getuid();
+    vi.spyOn(process, 'getuid').mockReturnValue(realUid + 1);
+    expectRefusal(() => ensure(), 'key-owner');
+    vi.restoreAllMocks();
+    expect(fs.readFileSync(keyFile, 'utf8')).toBe(before);
+  });
+
+  it.each([0o777, 0o770, 0o707, 0o722])(
+    'refuses an existing key whose directory is mode %o, group or others writable',
+    (mode) => {
+      ensure();
+      fs.chmodSync(directory, mode);
+      try {
+        const err = expectRefusal(() => ensure(), 'key-directory-writable');
+        expect(err.message).toContain(directory);
+      } finally {
+        fs.chmodSync(directory, 0o700);
+      }
+    }
+  );
+
+  it('uses an existing key from a directory only its owner can write to', () => {
+    ensure();
+    fs.chmodSync(directory, 0o700);
+    expect(ensure().pin).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('refuses a key file that is a symbolic link, even to a good key', () => {

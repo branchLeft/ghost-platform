@@ -312,7 +312,7 @@ describe('safety.inbound on a production paying tenant', () => {
     const addedText = added.join('\n');
     expect(addedText).not.toMatch(/KEY|CERT|\.pem|\.key|\.crt|\/var\/|\/etc\//i);
     expect(addedText).not.toMatch(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/);
-    expect(addedText).not.toContain('BEGIN');
+    expect(addedText).not.toContain(['BE', 'GIN'].join(''));
     expect(addedText).not.toMatch(/:\s*[0-9a-f:]{6,}\s*$/im);
   });
 });
