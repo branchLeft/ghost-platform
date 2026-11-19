@@ -31,6 +31,7 @@ const BACKSTOPPED = [
   'identity-ci',
   'infra-hetzner-host-check-ci',
   'infra-provisioning-scripts-ci',
+  'isolation-attack-ci',
   'mail-collector-ci',
   'mailgun-shim-ci',
   'odask-ci',
