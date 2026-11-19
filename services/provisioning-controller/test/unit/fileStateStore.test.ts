@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   FileStateStore,
+  STEP_IDS,
   StateCorruptError,
   StateFileUnsafeError,
   StateStoreUnreadableError,
@@ -245,6 +246,6 @@ describe('FileStateStore', () => {
     for (const key of ranBefore.slice(0, result.skipped.length)) {
       expect(second.calls.map((c) => c.request.key)).not.toContain(key);
     }
-    expect(new Set(completedBefore).size).toBe(13);
+    expect(new Set(completedBefore).size).toBe(STEP_IDS.length);
   });
 });

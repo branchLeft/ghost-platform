@@ -1,0 +1,16 @@
+# A seeded fixture, never run: a provisioning step that puts the shared state
+# credential back into a tenant repository. The check must report it.
+name: Seeded fixture
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - name: Write the tenant repo's state credentials
+        run: |
+          printf '%s' "$AWS_ACCESS_KEY_ID" \
+            | gh secret set HETZNER_S3_ACCESS_KEY_ID --repo "$TENANT_REPO" --env production
+          printf '%s' "$AWS_SECRET_ACCESS_KEY" \
+            | gh secret set TENANT_STATE_S3_SECRET_ACCESS_KEY --repo "$TENANT_REPO" --env production
