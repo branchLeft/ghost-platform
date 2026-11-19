@@ -289,6 +289,7 @@ PORTAL_ISSUER_URL, PORTAL_PUBLIC_ORIGIN, PORTAL_OUTPUTS_FILE, PORTAL_DATABASE_UR
 CONSOLE_ISSUER_URL, CONSOLE_PUBLIC_ORIGIN, CONSOLE_OUTPUTS_FILE, CONSOLE_DATABASE_URL_FILE
 PORTAL_TRUSTED_PROXIES, CONSOLE_TRUSTED_PROXIES   optional: switch on the sign-in limit (below)
 CONSOLE_PROVISIONING_URL, CONSOLE_PROVISIONING_CREDENTIAL_FILE   optional together: the request queue (below)
+PORTAL_ALLOW_PLACEHOLDER_COPY   optional, 1 or 0: a ring under inspection may show unfilled copy (see "Why FirstPromoter and Transistor are off")
 ```
 
 `*_OUTPUTS_FILE` is the identity reconciler's `outputs.json`. The portal's
@@ -353,6 +354,43 @@ navigation entry.
 in-memory mock, served through its generated server, with the tenant approved
 through the same client. `test/tenantSiteSabotage.test.ts` breaks the page so it
 takes the tenant from the query string and shows the isolation check fail.
+
+### Why FirstPromoter and Transistor are off
+
+A tenant served with its own-origin widgets has FirstPromoter and Transistor
+switched off and locked in Ghost Admin. The tenant reads why in two places, both
+from `src/tenant/thirdPartyOff.ts`:
+
+- **The block** on `/site` (`data-slot="third-party-off"`): a heading, a body and,
+  once there is a route, a link to ask for one of the two back.
+- **The line** on `/essentials` (`data-slot="third-party-off-onboarding"`), the
+  step where a demo tenant learns what the site includes.
+
+The prose is the owner's. The five values in `THIRD_PARTY_OFF_COPY` are the slots
+`THIRD_PARTY_OFF_HEADING`, `THIRD_PARTY_OFF_BODY`, `THIRD_PARTY_OFF_LINK_LABEL`,
+`THIRD_PARTY_OFF_ONBOARDING_LINE` and `THIRD_PARTY_OFF_REQUEST_ROUTE`; the owner
+replaces them there and nowhere else. The request route is empty until the owner
+says how a tenant asks: a path of this portal, an `https:` address or a `mailto:`
+address, and while it is empty the block has no link.
+
+**An unfilled placeholder is never shown to a tenant.** A value that is empty or
+made only of capitals, digits, underscores and spaces is unfilled. The block is
+left out unless its heading and body are filled (and its link label too, once there
+is a route; a route that is set but is not a route also leaves it out). The line
+is left out unless it is filled. Both checks are in `createThirdPartyOff`, the one
+place the slots become markup, so no screen can show a slot by forgetting one. The
+screen around the block is unchanged. At start the process writes one stderr line,
+`portal.copy_withheld`, naming each withheld slot and no value.
+
+A ring under inspection can ask to see the placeholders: `PORTAL_ALLOW_PLACEHOLDER_COPY=1`
+(`0` or unset is off; any other value stops the process). Set it only where nobody
+who is paying signs in. The browser journey sets it, so its screenshots of
+`ask-for-essentials` and `essentials-site` show the slots; its control run leaves
+it out and shows that neither appears.
+
+`test/thirdPartyOff.test.ts` covers the guard, the two screens with and without
+the allowance, and filled copy. `test/thirdPartyOffSabotage.test.ts` removes each
+guard in turn and shows the placeholder reach a tenant.
 
 ## Limiting sign-in per client
 
