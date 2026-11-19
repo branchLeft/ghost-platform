@@ -20,6 +20,8 @@ message naming the variable.
 | Variable | Meaning |
 | --- | --- |
 | `VERDICT_HOST_SOCKET` | Absolute path of the local unix socket. |
+| `VERDICT_HOST_SOCKET_UID` | Required. The slot's own numeric user id, 1 or more. The process must run as it. |
+| `VERDICT_HOST_SOCKET_GID` | Required. The slot's own numeric group id, 1 or more. The process must run as it. |
 | `VERDICT_HOST_SOCKET_MODE` | Three octal digits, default `600`. |
 | `VERDICT_HOST_JOURNAL` | Absolute path of the queue journal. |
 | `VERDICT_HOST_VERIFY_KEY_FILE` | Absolute path of the service's public key: base64 of 32 bytes, the form the channel key role prints. |
@@ -29,6 +31,19 @@ message naming the variable.
 | `..._HOLD_MS`, `..._LEASE_MS`, `..._REOFFER_DELAY_MS`, `..._VERDICT_TTL_MS`, `..._ASK_WAIT_MS`, `..._MAX_QUEUED`, `..._REPLAY_WINDOW_SECONDS` | Limits, defaults below. |
 
 ## The local socket
+
+Owned by the slot's own uid and gid, and by nobody else. A process makes its
+socket as itself, so the unit (a container's `user: "<uid>:<gid>"`) sets who
+that is, and `VERDICT_HOST_SOCKET_UID` and `_GID` say who it must be: the host
+end refuses to start as any other user or group, and reads the socket file back
+after it binds, refusing and removing it if the owner is not exactly that (a
+directory that hands new files to another group would do it). The scanning
+decorator of the same slot runs as the same uid and gid, so it can dial the
+socket; no other slot's does. Nothing here changes an owner: the process holds
+no privilege to, and none is needed. The role that delivers a slot's stack
+refuses one whose host end is not given its own uid and gid
+(`tenant_compose_check`, `ansible/roles/tenant_compose` in `shared-infra`).
+Tests: `test/unit/verdict-host-channel.test.mjs`, "the socket's owner".
 
 Created `0600` from the instant it exists, then set to the configured mode. A
 stale socket from a run that was killed is replaced; anything at the path that

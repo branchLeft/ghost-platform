@@ -34,6 +34,8 @@ async function startVerdictHost(config, { logger = console, now = Date.now, egre
     queue,
     socketPath: config.socketPath,
     socketMode: config.socketMode,
+    socketUid: config.socketUid,
+    socketGid: config.socketGid,
     askWaitMs: config.askWaitMs,
     onAsk: (result) => metrics.count('asks', result),
   });

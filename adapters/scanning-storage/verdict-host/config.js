@@ -27,6 +27,21 @@ function wholeNumber(env, name, fallback, { min = 1, max = 2 ** 31 - 1 } = {}) {
   return Number(raw);
 }
 
+// The slot's own numeric identity. Never defaulted and never root: an
+// unconfigured host end must not run, and a socket made as root is every
+// slot's. The name is in the message so a unit that forgot it is found at once.
+function requireIdentity(env, name) {
+  const value = env[name];
+  if (
+    typeof value !== 'string' ||
+    !/^[1-9][0-9]{0,9}$/.test(value) ||
+    Number(value) > 2 ** 31 - 1
+  ) {
+    throw new Error(`${name} is required: a whole number of 1 or more, the slot's own id`);
+  }
+  return Number(value);
+}
+
 // Plain HTTP is served on a loopback address only. The safety service accepts
 // plain http only for loopback and https for everything else, so anything
 // reachable from another machine is TLS terminated in front of this process.
@@ -48,6 +63,8 @@ function readConfig(env) {
   return {
     socketPath: requireAbsolutePath(env, 'VERDICT_HOST_SOCKET'),
     socketMode: parseInt(mode, 8),
+    socketUid: requireIdentity(env, 'VERDICT_HOST_SOCKET_UID'),
+    socketGid: requireIdentity(env, 'VERDICT_HOST_SOCKET_GID'),
     journalFile: requireAbsolutePath(env, 'VERDICT_HOST_JOURNAL'),
     verifyKeyFile: requireAbsolutePath(env, 'VERDICT_HOST_VERIFY_KEY_FILE'),
     metricsFile: requireAbsolutePath(env, 'VERDICT_HOST_METRICS_FILE', '.prom'),

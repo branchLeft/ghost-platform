@@ -2,7 +2,7 @@
 // the unix-socket transport, the host end's local socket and queue, and a
 // stand-in for the safety service on the inbound side. No part of the path
 // between the client and the queue is a fake.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -241,6 +241,8 @@ describe('the socket file', () => {
       queue: rig.host.queue,
       socketPath: rig.config.socketPath,
       socketMode: 0o660,
+      socketUid: rig.config.socketUid,
+      socketGid: rig.config.socketGid,
     });
     expect(fs.statSync(rig.config.socketPath).mode & 0o777).toBe(0o660);
     await again.close();
@@ -253,12 +255,84 @@ describe('the socket file', () => {
     const { startLocalSocket } = require('../../verdict-host/local-socket');
     const file = path.join(rig.directory, 'regular');
     fs.writeFileSync(file, 'keep me');
-    await expect(startLocalSocket({ queue: rig.host.queue, socketPath: file })).rejects.toThrow(
-      'not a socket'
-    );
+    await expect(
+      startLocalSocket({
+        queue: rig.host.queue,
+        socketPath: file,
+        socketUid: rig.config.socketUid,
+        socketGid: rig.config.socketGid,
+      })
+    ).rejects.toThrow('not a socket');
     expect(fs.readFileSync(file, 'utf8')).toBe('keep me');
     expect(() => startLocalSocket({ queue: rig.host.queue, socketPath: 'relative.sock' })).toThrow(
       'absolute'
     );
+  });
+});
+
+// Issue branchLeft/workspace#3197. Each slot's host end makes its socket as the
+// slot's own uid and gid, so the decorator in the same slot (that identity) can
+// dial it and no other slot's can. The unit or role names the identity; the host
+// end refuses to run unless the file it made carries exactly that.
+describe("the socket's owner", () => {
+  const { startLocalSocket } = require('../../verdict-host/local-socket');
+  const slot = () => ({
+    queue: rig.host.queue,
+    socketPath: path.join(rig.directory, 'second.sock'),
+    socketUid: rig.config.socketUid,
+    socketGid: rig.config.socketGid,
+  });
+
+  it("carries the slot's uid and gid, read from the socket file itself", async () => {
+    rig = await startRig();
+    const stat = fs.lstatSync(rig.config.socketPath);
+    expect(stat.isSocket()).toBe(true);
+    expect({ uid: stat.uid, gid: stat.gid }).toEqual({
+      uid: rig.config.socketUid,
+      gid: rig.config.socketGid,
+    });
+  });
+
+  it.each([
+    ['a uid that is not the one the host end runs as', { socketUid: process.geteuid() + 1 }],
+    ['a gid that is not the one the host end runs as', { socketGid: process.getegid() + 1 }],
+  ])('refuses %s, and makes no socket', async (_name, change) => {
+    rig = await startRig();
+    const options = { ...slot(), ...change };
+    await expect(startLocalSocket(options)).rejects.toThrow('must run as uid');
+    expect(fs.existsSync(options.socketPath)).toBe(false);
+  });
+
+  it.each([
+    ['no uid', { socketUid: undefined }],
+    ['no gid', { socketGid: undefined }],
+    ['a uid of root', { socketUid: 0 }],
+    ['a gid of root', { socketGid: 0 }],
+    ['a uid that is not a whole number', { socketUid: '30001' }],
+  ])('refuses %s before it binds anything', async (_name, change) => {
+    rig = await startRig();
+    const options = { ...slot(), ...change };
+    expect(() => startLocalSocket(options)).toThrow('socket');
+    expect(fs.existsSync(options.socketPath)).toBe(false);
+  });
+
+  it('closes and removes a socket whose file turns out to be owned by someone else', async () => {
+    rig = await startRig();
+    const options = slot();
+    const real = fs.lstatSync;
+    // The file system reports a different owner for the socket once it exists,
+    // as a directory that hands new files to another group would.
+    const spy = vi.spyOn(fs, 'lstatSync').mockImplementation((file, ...rest) => {
+      const stat = real(file, ...rest);
+      return file === options.socketPath && stat.isSocket()
+        ? { isSocket: () => true, uid: stat.uid, gid: stat.gid + 1, mode: stat.mode }
+        : stat;
+    });
+    try {
+      await expect(startLocalSocket(options)).rejects.toThrow('is owned by uid');
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.existsSync(options.socketPath)).toBe(false);
   });
 });
