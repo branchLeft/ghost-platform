@@ -82,6 +82,25 @@ export const EXTRAS: readonly Tamper[] = [
     expect: /extra M07: UPDATE on column portal.tenant_register.zitadel_org_id to portal_owner/,
   },
   {
+    id: 'M07',
+    title: "the provisioner's INSERT on a register timestamp (a column the manifest leaves out)",
+    apply: [[P, 'GRANT INSERT (allocated_at) ON portal.hostname_register TO portal_provisioner']],
+    undo: [[P, 'REVOKE INSERT (allocated_at) ON portal.hostname_register FROM portal_provisioner']],
+    expect:
+      /extra M07: INSERT on column portal.hostname_register.allocated_at to portal_provisioner/,
+  },
+  {
+    id: 'M06',
+    title: "the provisioner's INSERT on the whole register, which would cover its timestamp",
+    apply: [[P, 'GRANT INSERT ON portal.hostname_register TO portal_provisioner']],
+    // Revoking the table-wide privilege takes the column ones with it: put them back.
+    undo: [
+      [P, 'REVOKE INSERT ON portal.hostname_register FROM portal_provisioner'],
+      [P, 'GRANT INSERT (label, demo_id) ON portal.hostname_register TO portal_provisioner'],
+    ],
+    expect: /extra M06: INSERT on table portal.hostname_register to portal_provisioner/,
+  },
+  {
     id: 'M08',
     title: 'row-level policies switched off on the register',
     apply: [[P, 'ALTER TABLE portal.tenant_register DISABLE ROW LEVEL SECURITY']],
@@ -816,6 +835,13 @@ export const MISSING: readonly Tamper[] = [
     apply: [[P, 'REVOKE INSERT ON portal.health_reading FROM portal_owner']],
     undo: [[P, 'GRANT INSERT ON portal.health_reading TO portal_owner']],
     expect: /missing M06: INSERT on table portal.health_reading to portal_owner/,
+  },
+  {
+    id: 'M07',
+    title: "the provisioner's INSERT on a register column the manifest grants",
+    apply: [[P, 'REVOKE INSERT (label) ON portal.hostname_register FROM portal_provisioner']],
+    undo: [[P, 'GRANT INSERT (label) ON portal.hostname_register TO portal_provisioner']],
+    expect: /missing M07: INSERT on column portal.hostname_register.label to portal_provisioner/,
   },
   {
     id: 'M09',

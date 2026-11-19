@@ -95,6 +95,13 @@ export type ObjectKind = 'database' | 'schema' | 'table' | 'sequence' | 'functio
 export interface Grant {
   grantee: Grantee;
   privileges: readonly string[];
+  /**
+   * Limits the privileges to these columns of a table: a column-level grant.
+   * The grantee then holds them on no other column, and a statement that
+   * names a left-out column, even to write its DEFAULT, is refused. Left out,
+   * the grant is the whole table's.
+   */
+  columns?: readonly string[];
 }
 
 /**
@@ -326,34 +333,55 @@ export function manifest(major: number, database: string): readonly ManifestObje
     // ProvisionerDb appends events and reads the latest to decide the next;
     // OwnerDb.listDemos and demoHistory read. No role updates or deletes an
     // event: the history is the record, and the tenant role holds nothing.
+    // The provisioner's INSERT is by column and leaves out recorded_at, so the
+    // database's clock stamps every event and a raw-SQL writer cannot backdate
+    // one (the term_set check ties the term it issues to that stamp).
     {
       kind: 'table',
       identity: 'portal.demo_state_event',
       since: DEMO_LIFECYCLE,
       grants: [
-        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        {
+          grantee: 'provisionerRole',
+          privileges: ['INSERT'],
+          columns: [
+            'demo_id',
+            'sequence',
+            'previous_sequence',
+            'from_state',
+            'to_state',
+            'lease_issued_at',
+            'lease_ends_at',
+            'extension_days',
+          ],
+        },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
     // ProvisionerDb.allocateHostname inserts; OwnerDb.listHostnames reads. The
     // register is append-only by grant: no role may update or delete a row.
+    // INSERT is by column and leaves out allocated_at, which the database sets.
     {
       kind: 'table',
       identity: 'portal.hostname_register',
       since: DEMO_LIFECYCLE,
       grants: [
-        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['INSERT'], columns: ['demo_id', 'label'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
     // ProvisionerDb.retireHostname inserts; a retirement is a row, never an
-    // edit of the register. OwnerDb.listHostnames reads.
+    // edit of the register. OwnerDb.listHostnames reads. INSERT is by column and
+    // leaves out retired_at, which the database sets.
     {
       kind: 'table',
       identity: 'portal.hostname_retirement',
       since: DEMO_LIFECYCLE,
       grants: [
-        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['INSERT'], columns: ['label'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },

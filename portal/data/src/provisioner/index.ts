@@ -1,7 +1,12 @@
-import { and, count, eq, gt, sql, type SQL } from 'drizzle-orm';
+import { and, count, eq, getTableColumns, gt, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import {
+  demoStateEventInsert,
+  hostnameRegisterInsert,
+  hostnameRetirementInsert,
+} from './insertShapes.js';
 import { FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
 import {
   ConcurrentTransitionError,
@@ -24,7 +29,7 @@ import {
 } from '../demoLifecycle.js';
 import { eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
-import { demoStateEvent, hostnameRegister, hostnameRetirement } from '../schema.js';
+import { demoStateEvent } from '../schema.js';
 
 export * from '../demoLifecycle.js';
 
@@ -73,9 +78,9 @@ export class ProvisionerDb {
     return this.run(async (tx) => {
       try {
         const [row] = await tx
-          .insert(demoStateEvent)
+          .insert(demoStateEventInsert)
           .values({ demoId: id, sequence: 1, toState: 'VERIFIED' })
-          .returning();
+          .returning(getTableColumns(demoStateEvent));
         return deriveEventView(row!);
       } catch (error) {
         if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) throw new DemoExistsError(id);
@@ -146,7 +151,7 @@ export class ProvisionerDb {
       }
       const label = this.newLabel();
       try {
-        await tx.insert(hostnameRegister).values({ label, demoId });
+        await tx.insert(hostnameRegisterInsert).values({ label, demoId });
       } catch (error) {
         const found = readDatabaseError(error);
         if (found?.code === UNIQUE_VIOLATION && found.constraint === 'hostname_register_pkey') {
@@ -169,7 +174,7 @@ export class ProvisionerDb {
   async retireHostname(label: string): Promise<void> {
     await this.run(async (tx) => {
       try {
-        await tx.insert(hostnameRetirement).values({ label });
+        await tx.insert(hostnameRetirementInsert).values({ label });
       } catch (error) {
         const found = readDatabaseError(error);
         if (found?.code === FOREIGN_KEY_VIOLATION) throw new UnknownHostnameError(label);
@@ -212,7 +217,7 @@ export class ProvisionerDb {
   ): Promise<DemoEventView> {
     try {
       const [row] = await tx
-        .insert(demoStateEvent)
+        .insert(demoStateEventInsert)
         .values({
           demoId: latest.demoId,
           sequence: latest.sequence + 1,
@@ -223,7 +228,7 @@ export class ProvisionerDb {
           leaseEndsAt: term.endsAt,
           extensionDays,
         })
-        .returning();
+        .returning(getTableColumns(demoStateEvent));
       return deriveEventView(row!);
     } catch (error) {
       if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) {
