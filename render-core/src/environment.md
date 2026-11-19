@@ -85,6 +85,24 @@ they wrap; only `STATIC_FILE_URL_PREFIX` differs between them, because
 `S3Storage` does not infer its own URL segment from the feature it was
 constructed for.
 
+## Gateway media environment
+
+A `gateway` tenant's three features wrap `S3Storage` exactly as an `s3`
+tenant's do, with these wrapped-config values instead:
+
+| Key | Value |
+|---|---|
+| `endpoint` | `media.endpoint`, the gateway's https origin |
+| `forcePathStyle` | `true`: the gateway admits path-style requests only |
+| `bucket` | `media.shard` |
+| `tenantPrefix` | `media.folder`, the tenant's opaque folder, never the slug |
+| `cdnUrl` | `zones.mediaOrigin`, the platform's own media address |
+| `accessKeyId`, `secretAccessKey` | `${GHOST_STORAGE_GATEWAY_KEY_ID:?…}`, `${GHOST_STORAGE_GATEWAY_SECRET:?…}` |
+
+The folder and shard are re-checked here, so a descriptor that skipped
+`validate()` still cannot put a slug into a published URL. See
+media.md#the-tenant-folder and media.md#the-media-address.
+
 ## Break-glass environment
 
 The three `adapters__sso__BreakGlassSSO__*` keys `adapters/sso/README.md`
