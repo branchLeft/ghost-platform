@@ -15,6 +15,7 @@ import * as schema from '../src/schema.js';
 import { tenantBilling } from '../src/schema.js';
 import { TenantDb, bindTenant } from '../src/tenant/index.js';
 import { TENANT_A, TENANT_B, createFixture, type Fixture } from './helpers.js';
+import { columnsOf } from './supportAccessAdmin.js';
 
 // TENANT_A is a real tenant and TENANT_B a demo slot in the fixture. Two more
 // real tenants are registered here, so a control case has a neighbour.
@@ -320,11 +321,8 @@ describe('the table refuses what the code would, when the code is skipped', () =
 
 describe('what the table holds', () => {
   it('has exactly the four columns: no card, bank, name, address or free text', async () => {
-    const result = await fixture.admin.query(
-      `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'portal' AND table_name = 'tenant_billing' ORDER BY column_name`
-    );
-    expect(result.rows.map((row: { column_name: string }) => row.column_name)).toEqual([
+    const columns = await columnsOf(fixture, 'tenant_billing');
+    expect(columns.map((row) => row.column_name)).toEqual([
       'billing_reference',
       'payment_state',
       'state_changed_at',
