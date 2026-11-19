@@ -270,9 +270,8 @@ describe('the socket file', () => {
   });
 });
 
-// Issue branchLeft/workspace#3197. Each slot's host end makes its socket as the
-// slot's own uid and gid, so the decorator in the same slot (that identity) can
-// dial it and no other slot's can. The unit or role names the identity; the host
+// Each slot's host end makes its socket as the slot's own uid and gid, so the
+// decorator in the same slot (that identity) can dial it and no other slot's can. The unit or role names the identity; the host
 // end refuses to run unless the file it made carries exactly that.
 describe("the socket's owner", () => {
   const { startLocalSocket } = require('../../verdict-host/local-socket');
