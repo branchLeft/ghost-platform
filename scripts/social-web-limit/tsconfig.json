@@ -1,0 +1,26 @@
+{
+  // The strict floor written inline (TS-1 allows it): this directory is not a
+  // package and installs nothing, so the shared preset is not reachable. The
+  // shared Docker helpers are plain JavaScript, read for types and not checked.
+  // Run: tsc -p scripts/social-web-limit (needs typescript and @types/node).
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "allowJs": true,
+    "checkJs": false,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["*.ts"]
+}
