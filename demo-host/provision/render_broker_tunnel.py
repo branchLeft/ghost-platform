@@ -101,8 +101,8 @@ def render_authorized_keys(public_key: str) -> str:
 def render_sshd_dropin() -> str:
     """The Match block that sets every restriction a second time, in sshd."""
     lines = [
-        "# Rendered by ghost-platform demo-host/provision/render_broker_tunnel.py. Do not edit by hand.",
-        "# The broker tunnel account may hold one -L forward, to the broker, and run nothing.",
+        "# The broker tunnel account (ghost-platform demo-host/provision/render_broker_tunnel.md).",
+        "# It may hold one -L forward, to the broker, and run nothing. Do not edit by hand.",
         f"Match User {ACCOUNT}",
         f"    AuthorizedKeysFile {AUTHORIZED_KEYS}",
         "    AuthenticationMethods publickey",
