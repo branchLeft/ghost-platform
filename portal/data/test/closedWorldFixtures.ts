@@ -511,6 +511,52 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     expect: /missing M21: portal.tenant_billing constraint tenant_billing_reference_not_card_like/,
   },
   {
+    id: 'M06',
+    title: 'SELECT on the extension requests given to the front door role',
+    apply: [[P, 'GRANT SELECT ON portal.demo_extension_request TO portal_prospect']],
+    undo: [[P, 'REVOKE SELECT ON portal.demo_extension_request FROM portal_prospect']],
+    expect: /extra M06: SELECT on table portal.demo_extension_request to portal_prospect/,
+  },
+  {
+    id: 'M06',
+    title: 'UPDATE on the extension requests given to the lifecycle role',
+    apply: [[P, 'GRANT UPDATE ON portal.demo_extension_request TO portal_provisioner']],
+    undo: [[P, 'REVOKE UPDATE ON portal.demo_extension_request FROM portal_provisioner']],
+    expect: /extra M06: UPDATE on table portal.demo_extension_request to portal_provisioner/,
+  },
+  {
+    id: 'M20',
+    title: 'the extension insert policy opened to every demo',
+    apply: [
+      [P, 'ALTER POLICY extension_insert ON portal.demo_extension_request WITH CHECK (true)'],
+    ],
+    undo: [
+      [
+        P,
+        'ALTER POLICY extension_insert ON portal.demo_extension_request WITH CHECK (EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = demo_extension_request.demo_id AND demo_request.verified_address = public.bound_address()))',
+      ],
+    ],
+    expect: /extra M20: policy extension_insert on portal.demo_extension_request/,
+  },
+  {
+    id: 'M21',
+    title: 'the consent-wording check dropped from the extension requests',
+    apply: [
+      [
+        P,
+        'ALTER TABLE portal.demo_extension_request DROP CONSTRAINT demo_extension_request_consent_wording_length',
+      ],
+    ],
+    undo: [
+      [
+        P,
+        'ALTER TABLE portal.demo_extension_request ADD CONSTRAINT demo_extension_request_consent_wording_length CHECK (char_length(consent_wording) BETWEEN 1 AND 2000)',
+      ],
+    ],
+    expect:
+      /missing M21: portal.demo_extension_request constraint demo_extension_request_consent_wording_length/,
+  },
+  {
     id: 'M21',
     title: 'a free-text column added to the billing records',
     apply: [[P, 'ALTER TABLE portal.tenant_billing ADD COLUMN note text']],

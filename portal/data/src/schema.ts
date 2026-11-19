@@ -28,6 +28,7 @@ import {
   STATES_BEFORE_LEASE,
   STATES_WITH_LEASE,
 } from './demoStates.js';
+import { EVALUATING_MAX, MISSING_MAX } from './demoExtension.js';
 import {
   ADDRESS_MAX,
   ADDRESS_PATTERN,
@@ -691,6 +692,67 @@ export const demoRequest = portal
         for: 'select',
         to: portalProspect,
         using: sql`${table.verifiedAddress} = public.bound_address()`,
+      }),
+      pgPolicy('provisioner_read', {
+        as: 'permissive',
+        for: 'select',
+        to: portalProvisioner,
+        using: sql`true`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A prospect's request to extend the demo it runs: the answers, the consent to
+ * be contacted with the exact wording shown, and the database's own time. One
+ * row per demo for all time (the demo's one self-service extension is the only
+ * one there is), append-only by grant: the front door's role may insert, and
+ * only for a demo whose request carries the address its transaction bound; the
+ * lifecycle worker reads. Nothing updates or deletes a row, so consent once
+ * recorded cannot be altered. Every rule in `demoExtension.ts` is repeated
+ * here as a check.
+ */
+export const demoExtensionRequest = portal
+  .table(
+    'demo_extension_request',
+    {
+      demoId: uuid('demo_id')
+        .primaryKey()
+        .references(() => demoRequest.demoId),
+      stillEvaluating: text('still_evaluating').notNull(),
+      whatIsMissing: text('what_is_missing'),
+      audienceSize: text('audience_size').notNull(),
+      chargesReaders: boolean('charges_readers').notNull(),
+      moveWhen: text('move_when').notNull(),
+      consentWording: text('consent_wording').notNull(),
+      consentedAt: timestamp('consented_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      check(
+        'demo_extension_request_evaluating_length',
+        sql`char_length(${table.stillEvaluating}) BETWEEN 1 AND ${sql.raw(String(EVALUATING_MAX))}`
+      ),
+      check(
+        'demo_extension_request_missing_length',
+        sql`${table.whatIsMissing} IS NULL OR char_length(${table.whatIsMissing}) BETWEEN 1 AND ${sql.raw(String(MISSING_MAX))}`
+      ),
+      check(
+        'demo_extension_request_choices_shape',
+        sql`${table.audienceSize} ~ ${sql.raw(`'${SLUG_PATTERN}'`)} AND ${table.moveWhen} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}`
+      ),
+      check(
+        'demo_extension_request_consent_wording_length',
+        sql`char_length(${table.consentWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))}`
+      ),
+      // The front door files a request only for the demo whose own request
+      // holds the address its transaction bound: the subquery runs as the
+      // front door, so the request table's own-row policy narrows it too.
+      pgPolicy('extension_insert', {
+        as: 'permissive',
+        for: 'insert',
+        to: portalProspect,
+        withCheck: sql`EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = ${table.demoId} AND demo_request.verified_address = public.bound_address())`,
       }),
       pgPolicy('provisioner_read', {
         as: 'permissive',
