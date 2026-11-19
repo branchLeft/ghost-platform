@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
 import {
+  AdmissionRefusedError,
   ConcurrentTransitionError,
   DemoExistsError,
   DemoHostnameExistsError,
@@ -12,6 +13,8 @@ import {
   HostnameRetiredError,
   HostnameReusedError,
   LEASE_DAYS,
+  SLOT_COUNT,
+  SLOT_HOLDING_STATES,
   UnknownDemoError,
   UnknownHostnameError,
   assertExtensionAllowed,
@@ -19,14 +22,23 @@ import {
   deriveEventView,
   generateLabel,
   parseDemoId,
+  type Admission,
   type DemoEventView,
   type DemoState,
 } from '../demoLifecycle.js';
-import { eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
+import { countDemosIn, eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
 import { demoStateEvent, hostnameRegister, hostnameRetirement } from '../schema.js';
 
 export * from '../demoLifecycle.js';
+
+/**
+ * The advisory lock every admission takes, so that two requests cannot both
+ * see a free slot and take the last one. The value is arbitrary: it only has to
+ * be the same everywhere admission is decided. The lock is scoped to the
+ * database and held to the end of the transaction.
+ */
+const ADMISSION_LOCK_KEY = 4_172_906_385;
 
 /** The two columns of a term: what is written to them, as SQL the database evaluates. */
 interface Term {
@@ -81,6 +93,39 @@ export class ProvisionerDb {
         if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) throw new DemoExistsError(id);
         throw error;
       }
+    });
+  }
+
+  /**
+   * Decides, for a demo at VERIFIED whose request is recorded, whether the
+   * request gets a slot or goes onto the waiting list, and records that as
+   * its next state. A full house is an outcome, never an error: a request
+   * that finds every slot held is a lead on the list, with the contact
+   * details its recorded request already carries.
+   *
+   * It is CLAIMED only when fewer than `SLOT_COUNT` demos hold a slot and
+   * nobody is waiting, so a later request never passes an earlier one. The
+   * decision is made under one advisory lock held to the end of the
+   * transaction, so concurrent requests are decided one at a time: the
+   * seventh can never also be given the sixth slot.
+   *
+   * @throws InvalidDemoIdError
+   * @throws UnknownDemoError
+   * @throws AdmissionRefusedError
+   * @throws ConcurrentTransitionError
+   */
+  async admit(demoId: string): Promise<Admission> {
+    const id = parseDemoId(demoId);
+    return this.run(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${ADMISSION_LOCK_KEY})`);
+      const latest = await this.latestOrThrow(tx, id);
+      if (latest.toState !== 'VERIFIED') throw new AdmissionRefusedError(id, 'state');
+      if ((await requestOf(tx, id)) === undefined) throw new AdmissionRefusedError(id, 'request');
+      const holding = await countDemosIn(tx, SLOT_HOLDING_STATES);
+      const waiting = await countDemosIn(tx, ['WAITING']);
+      const state = holding < SLOT_COUNT && waiting === 0 ? 'CLAIMED' : 'WAITING';
+      const event = await this.append(tx, latest, state, carried(tx, latest), 0);
+      return { event, state, queuePosition: state === 'WAITING' ? waiting + 1 : null };
     });
   }
 

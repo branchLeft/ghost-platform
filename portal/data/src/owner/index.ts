@@ -12,6 +12,7 @@ import {
   type SubprocessorEntry,
 } from '../documents.js';
 import {
+  countDemosIn,
   eventsOf,
   hostnameOf,
   listDemos,
@@ -274,6 +275,11 @@ export class OwnerDb {
   /** Every demo with its current state, term and hostname: the console's read. It writes nothing. */
   listDemos(): Promise<DemoSummary[]> {
     return this.run(listDemos);
+  }
+
+  /** How many demos are on the waiting list now: a read, it writes nothing. */
+  waitingCount(): Promise<number> {
+    return this.run((tx) => countDemosIn(tx, ['WAITING']));
   }
 
   /** One demo's history, oldest transition first. */
