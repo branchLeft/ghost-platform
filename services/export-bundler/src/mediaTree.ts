@@ -5,31 +5,21 @@ import type { MediaTreeSource } from './mediaSource.js';
 import type { ManifestMediaFile, MediaFilesListing } from './manifest.js';
 
 /**
- * The media half of a demo's export: the originals Ghost's local storage
- * holds under `images`, `media` and `files` of the content directory, carried
- * in the encrypted bundle so a promotion has the bytes to import (the import
- * goes through the tenant's own Ghost and its storage adapters, never as
- * copied files).
+ * The media half of a demo's export: the originals the content references
+ * under `images` and `files`, carried in the encrypted bundle so a promotion
+ * has the bytes to import (through the tenant's own Ghost and its storage
+ * adapters, never as copied files).
  *
- * What is carried is the originals the content references under `images` and
- * `files`, and nothing else:
+ * - An original no content references is counted and left out; its path is
+ *   named in the manifest inside the archive only.
+ * - A file under `media` is listed with its size and checksum, never sent.
+ * - Resized variants (`images/size/...`), the quarantine directory and
+ *   anything a hold has not released are never carried; a non-file refuses
+ *   the export by name.
  *
- * - an original no content references is counted and left out (its path is
- *   named in the manifest inside the archive only);
- * - a file under `media` is listed with its size and checksum and never sent:
- *   a demo refuses video and audio;
- * - resized variants (`images/size/...`) are never carried: Ghost makes them
- *   again on first request;
- * - the scanning decorator's quarantine directory and anything a hold has not
- *   released sit beside the three trees, not in them, so the read never
- *   enters them;
- * - anything that is not a regular file refuses the export by name.
- *
- * The tree is read by `mediaSource.ts`, from a throwaway container that
- * mounts the volume read-only, never by this process walking host paths. The
- * live demo's Ghost can write to the volume while it is read, so what is read
- * is a snapshot of a tree that may still change: a file added or removed
- * during the read can be missing from it, and the manifest lists what was read.
+ * The tree is read by `mediaSource.ts` in a throwaway read-only container and
+ * is a snapshot: the live demo can still write to the volume, so a file
+ * added or removed during the read can be missing. The README has the rest.
  */
 
 /** The destination tier's default upload ceiling: 128 MiB. */
