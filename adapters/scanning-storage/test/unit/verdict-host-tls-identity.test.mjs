@@ -82,6 +82,16 @@ describe('a first start', () => {
     expect(fs.statSync(certFile).mode & 0o777).toBe(0o644);
   });
 
+  it('makes the key exactly 0600 under a umask that would have made it 0400', () => {
+    const before = process.umask(0o277);
+    try {
+      ensure();
+    } finally {
+      process.umask(before);
+    }
+    expect(fs.statSync(keyFile).mode & 0o777).toBe(0o600);
+  });
+
   it('makes a self-signed certificate that parses and verifies, for the key it made', () => {
     const { certificatePem, privateKeyPem, pin } = ensure();
     const certificate = new crypto.X509Certificate(certificatePem);
