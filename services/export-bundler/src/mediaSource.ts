@@ -335,6 +335,22 @@ export interface MediaContainerSpec {
   readonly volume: string;
 }
 
+/** The stack's user is root: the reader must never run as it, whatever the volume's owner. */
+export class MediaReaderRootError extends Error {
+  constructor() {
+    super(
+      "refused: the stack's user is root (uid 0), and the media reader container must run unprivileged"
+    );
+    this.name = 'MediaReaderRootError';
+  }
+}
+
+/** `0`, `00`, `root`, and any of them with a group (`0:0`, `root:node`). */
+export function isRootUser(user: string): boolean {
+  const name = user.split(':')[0]?.trim().toLowerCase() ?? '';
+  return name === 'root' || /^0+$/.test(name);
+}
+
 export function mediaReadName(runId: string): string {
   return `${runId}-media`;
 }
@@ -348,6 +364,7 @@ export function buildMediaReadArgs(
   spec: MediaContainerSpec,
   limits: MediaReadLimits
 ): readonly string[] {
+  if (spec.user !== null && isRootUser(spec.user)) throw new MediaReaderRootError();
   return [
     'run',
     '--rm',
@@ -387,12 +404,14 @@ export function createContainerMediaSource(
   const registry = options.registry ?? processCleanup;
   return {
     async read(limits) {
+      // First: a root stack user refuses before a container or a remover exists.
+      const args = buildMediaReadArgs(spec, limits);
       const name = mediaReadName(spec.runId);
       const unregister = registry.register(`media reader ${name}`, () => {
         dockerRemoveUntilGoneSync(name, docker, registry);
       });
       try {
-        return await readFrames(docker, buildMediaReadArgs(spec, limits), limits, registry);
+        return await readFrames(docker, args, limits, registry);
       } finally {
         dockerRemoveUntilGoneSync(name, docker, registry);
         unregister();

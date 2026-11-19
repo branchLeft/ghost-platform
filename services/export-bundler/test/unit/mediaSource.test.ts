@@ -7,7 +7,9 @@ import {
   buildMediaReadArgs,
   createContainerMediaSource,
   MEDIA_READ_SCRIPT,
+  isRootUser,
   MediaFrameParser,
+  MediaReaderRootError,
   MediaReadError,
   readFrames,
   type MediaContainerSpec,
@@ -131,6 +133,32 @@ describe('buildMediaReadArgs', () => {
   it('never runs as root: a stack with no user falls back to the image user, not 0', () => {
     const noUser = buildMediaReadArgs({ ...spec, user: null }, LIMITS);
     expect(noUser[noUser.indexOf('--user') + 1]).toBe('node');
+  });
+
+  it.each([['0'], ['00'], ['0:0'], ['0:1001'], ['root'], ['root:node'], ['ROOT'], [' 0 ']])(
+    'REFUSES to run the reader as root: the stack user %j',
+    (user) => {
+      expect(() => buildMediaReadArgs({ ...spec, user }, LIMITS)).toThrow(MediaReaderRootError);
+    }
+  );
+
+  it.each([['1001:1001'], ['1000'], ['node'], ['node:node'], ['10:0'], ['100']])(
+    'runs the reader for the unprivileged user %j',
+    (user) => {
+      expect(isRootUser(user)).toBe(false);
+      expect(() => buildMediaReadArgs({ ...spec, user }, LIMITS)).not.toThrow();
+    }
+  );
+
+  it('the container source refuses a root stack user before any docker is run', async () => {
+    const registry = new CleanupRegistry();
+    await expect(
+      createContainerMediaSource(
+        { ...spec, user: '0:0' },
+        { dockerCommand: '/nonexistent/docker', registry }
+      ).read(LIMITS)
+    ).rejects.toBeInstanceOf(MediaReaderRootError);
+    expect(registry.labels).toEqual([]);
   });
 
   it('runs the reader script on the mounted directory with the upload ceiling', () => {

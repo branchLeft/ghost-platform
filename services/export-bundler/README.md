@@ -118,7 +118,8 @@ and the audit record carries the same `complete` flag.
   slot's content volume (the one the rendered stack mounts at
   `/var/lib/ghost/content`) from a throwaway container of the tenant's own image:
   the volume mounted **read-only**, as the tenant's unprivileged user, with no
-  network, no capability, a read-only root and no log. Nothing on the host ever
+  network, no capability, a read-only root and no log; a stack whose user is root
+  (uid 0, `root`) refuses the export before any container runs. Nothing on the host ever
   opens a path inside the tree. The demo's own Ghost keeps writing to that volume,
   and a tenant can plant a link in it, so the container's script reaches every
   directory through the descriptor of its parent (`/proc/self/fd/<n>/<name>`, the
