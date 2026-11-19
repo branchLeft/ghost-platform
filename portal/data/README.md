@@ -369,9 +369,17 @@ allocated again, and a label not in the register or already retired is refused
 **Who writes them.** `portal_provisioner`, a third role, used only by the
 control-plane lifecycle worker (not built here) through
 the `./provisioner` export (`ProvisionerDb`). It can
-`INSERT` and `SELECT` the three tables and can neither `UPDATE` nor `DELETE` any
-of them: refused at the permission level, SQLSTATE `42501`, which the provisioning
-command's own check (M06) and smoke test both hold. The owner role may only
+`SELECT` the three tables and `INSERT` into them by column, and can neither
+`UPDATE` nor `DELETE` any of them: refused at the permission level, SQLSTATE
+`42501`, which the provisioning command's own check (M06, M07) and smoke test
+both hold. The `INSERT` leaves out the one timestamp each table has
+(`recorded_at`, `allocated_at`, `retired_at`), so the database's clock stamps
+every row and a raw-SQL writer holding the role cannot backdate a demo's term
+or a hostname's allocation: an insert that names one, even as `DEFAULT`, is
+refused with `42501`. `ProvisionerDb` therefore inserts through the narrowed
+shapes in `src/provisioner/insertShapes.ts`, which a test holds to the schema
+and to the manifest's column grant. The manifest's grants take a `columns`
+list for this (rendered as `GRANT INSERT (...) ON TABLE ...`, checked by M07). The owner role may only
 `SELECT` them (`OwnerDb.listDemos`, `demoHistory`, `demoHostname`,
 `listHostnames`); the tenant role holds nothing on them. The internet-facing
 prospect path is a separate role, `portal_prospect`, below.
