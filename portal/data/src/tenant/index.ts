@@ -63,3 +63,17 @@ export {
   type SupportAccessView,
   type SupportRequestStatus,
 } from '../supportAccess.js';
+export {
+  InvalidQueueItemError,
+  ITEM_STATUSES,
+  SUBJECT_KINDS,
+  type ContentRef,
+  type ContentSource,
+  type HoldRequest,
+  type ItemStatus,
+  type LiveContent,
+  type OpenedItem,
+  type QueueItemView,
+  type StoredClassifier,
+  type SubjectKind,
+} from '../moderationQueue.js';

@@ -141,6 +141,7 @@ const CUSTOM_DOMAIN = '0009_custom_domain';
 const DEMO_REQUEST = '0010_demo_request';
 const SUPPORT_ACCESS = '0011_support_access';
 export const STATUS_READ = '0012_demo_request_status_read';
+const QUEUE = '0013_moderation_item';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -304,6 +305,15 @@ export function manifest(major: number, database: string): readonly ManifestObje
       since: MODERATION,
       grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
     },
+    // TenantDb.holdItem inserts, and holdItem, moderationItems and
+    // moderationItem read, the tenant's own queue items. Nothing updates or
+    // deletes an item yet, and the owner role reads nothing here.
+    {
+      kind: 'table',
+      identity: 'portal.moderation_item',
+      since: QUEUE,
+      grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] }],
+    },
     // TenantDb.requestCustomDomain inserts and reads the tenant's own requests,
     // connectCustomDomain deletes the request it turns into a connection and
     // removeCustomDomain deletes one. Nothing updates a request. The owner role
@@ -399,6 +409,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
+  'portal.moderation_item': { enabled: true, forced: false },
   'portal.custom_domain_request': { enabled: true, forced: false },
   'portal.connected_domain': { enabled: true, forced: false },
   'portal.demo_state_event': { enabled: false, forced: false },
@@ -542,6 +553,7 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`,
     `(${BOUND})`
   ),
+  policy('portal.moderation_item', 'tenant_isolation', QUEUE, '*', `(${BOUND})`, `(${BOUND})`),
   policy(
     'portal.custom_domain_request',
     'tenant_isolation',
@@ -788,6 +800,36 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
         'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
         'USING btree (tenant_id, check_id)',
+    ],
+  },
+  'portal.moderation_item': {
+    since: QUEUE,
+    lines: [
+      `column id uuid notnull=true ${PLAIN}`,
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column subject_kind text notnull=true ${PLAIN}`,
+      `column subject_id text notnull=true ${PLAIN}`,
+      `column member_id text notnull=true ${PLAIN}`,
+      `column classifiers jsonb notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
+      `column decided_by text notnull=true ${PLAIN}`,
+      `column decided_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default id gen_random_uuid()',
+      "constraint moderation_item_classifiers_array CHECK ((jsonb_typeof(classifiers) = 'array'::text))",
+      'constraint moderation_item_pkey PRIMARY KEY (id)',
+      "constraint moderation_item_references_bounded CHECK (((subject_id ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) " +
+        "AND (member_id ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) AND (decided_by ~ '^[A-Za-z0-9_.:-]{1,64}$'::text)))",
+      "constraint moderation_item_status_known CHECK ((status = ANY (ARRAY['held'::text, " +
+        "'released'::text, 'removed'::text, 'expired'::text])))",
+      "constraint moderation_item_subject_kind_known CHECK ((subject_kind = ANY (ARRAY['comment'::text, " +
+        "'post'::text])))",
+      'constraint moderation_item_subject_unique UNIQUE (tenant_id, subject_kind, subject_id)',
+      'constraint moderation_item_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.moderation_item_pkey CREATE UNIQUE INDEX moderation_item_pkey ' +
+        'ON portal.moderation_item USING btree (id)',
+      'index portal.moderation_item_subject_unique CREATE UNIQUE INDEX moderation_item_subject_unique ' +
+        'ON portal.moderation_item USING btree (tenant_id, subject_kind, subject_id)',
     ],
   },
   'portal.custom_domain_request': {
