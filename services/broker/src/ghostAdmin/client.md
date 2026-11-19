@@ -47,6 +47,17 @@ regenerated it, configure throws `AdminAccessLostError`. A swap catches
 that, leaves the demo on its current colour and answers `503` with the
 reason; the reason is also in the journal.
 
+### The owner as a reader
+
+After the settings, every configure makes sure the platform owner is a Ghost
+member of the demo (`POST members/` with the staff token; a lookup first, so a
+swap or retry adds nothing twice). A member is a reader of the site: no staff
+role, no invite, no admin. Nothing in this path touches `users/` or
+`invites/`, and a test fails if it does. The address is the
+`OWNER_DUE_DILIGENCE_EMAIL` setting (`ownerDueDiligence.ts`); the client
+refuses to be built without it, and no error or log line carries it. A demo's
+reset wipes the member with the rest of the slot's data.
+
 ### The settings
 
 `render-core`'s `renderSettings`: both code-injection boxes (always named,
