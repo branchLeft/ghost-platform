@@ -27,6 +27,7 @@ const NEW = {
   keyId: KEY,
   folder: 'f0f0f0f0f0f0f0f0f0f0',
   bucket: 'shard-one',
+  profile: 'media' as const,
   createdAt: '2026-10-06T00:00:00.000Z',
 };
 const DISABLED_AT = '2026-10-08T00:00:00.000Z';
@@ -247,6 +248,41 @@ describe('SqliteCredentialStore', () => {
     expect(store.listByFolder(NEW.folder)).toEqual([
       { ...NEW, state: 'active', disabledAt: null, uploadCeilingMib: 5 },
     ]);
+  });
+
+  it('stores a state profile, reads it back, and keeps one active credential per folder across profiles', () => {
+    expect(store.insert({ ...NEW, profile: 'state' })).toMatchObject({
+      ok: true,
+      credential: { profile: 'state', folder: NEW.folder },
+    });
+    expect(store.get(KEY)).toMatchObject({ profile: 'state' });
+    // A media credential on the same folder name is refused: the two namespaces never share an active name.
+    expect(store.insert({ ...NEW, keyId: 'GWBBBBBBBBBBBBBBBBBBBBBBBB', profile: 'media' })).toEqual(
+      {
+        ok: false,
+        reason: 'folder-has-active-credential',
+      }
+    );
+  });
+
+  it('defaults an insert with no profile to media', () => {
+    const { profile: _unused, ...bare } = NEW;
+    expect(store.insert(bare)).toMatchObject({ ok: true, credential: { profile: 'media' } });
+  });
+
+  it('refuses a profile that is neither media nor state, even on a direct write', () => {
+    const raw = new Database(path);
+    try {
+      expect(() =>
+        raw
+          .prepare(
+            "INSERT INTO credentials (key_id, folder, bucket, state, profile, created_at) VALUES ('GWCCCCCCCCCCCCCCCCCCCCCCCC', 'f', 'b', 'active', 'admin', 'x')"
+          )
+          .run()
+      ).toThrow(/credentials_profile_known/);
+    } finally {
+      raw.close();
+    }
   });
 
   it('omits uploadCeilingMib, rather than carrying null, when no ceiling was stored', async () => {

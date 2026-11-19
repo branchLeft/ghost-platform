@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { admit } from '../../src/admit.js';
+import { admitState } from '../../src/state-profile.js';
 import { createSigningSecretSource } from '../../src/credentials/secretSource.js';
 import { ADMIN_PERMISSIONS, createAdminInterface, newKeyId } from '../../src/credentials/admin.js';
 import type { AdminLogEntry, AdminLogger } from '../../src/credentials/admin.js';
@@ -130,6 +131,7 @@ describe('the admin interface', () => {
         keyId: 'GWFIRST0000000000000000000',
         folder: BODY.folder,
         bucket: BODY.bucket,
+        profile: 'media',
         state: 'active',
         createdAt: new Date(NOW_MS).toISOString(),
         uploadCeilingMib: 5,
@@ -869,6 +871,7 @@ describe('the admin interface', () => {
           keyId: FIRST_KEY,
           folder: BODY.folder,
           bucket: BODY.bucket,
+          profile: 'media',
           state: 'active',
           createdAt: AT,
           uploadCeilingMib: BODY.uploadCeilingMib,
@@ -884,6 +887,7 @@ describe('the admin interface', () => {
           keyId: FIRST_KEY,
           folder: BODY.folder,
           bucket: BODY.bucket,
+          profile: 'media',
           state: 'disabled',
           createdAt: AT,
           uploadCeilingMib: BODY.uploadCeilingMib,
@@ -1100,5 +1104,145 @@ describe('newKeyId', () => {
     const ids = new Set(Array.from({ length: 200 }, () => newKeyId()));
     expect(ids.size).toBe(200);
     for (const id of ids) expect(id).toMatch(/^GW[A-Z2-7]{24}$/);
+  });
+});
+
+describe('the state admin interface', () => {
+  const STATE_MASTER = MasterSecret.fromBytes(Buffer.alloc(32, 0x24));
+  const STATE_BUCKET = 'state-shard-one';
+  const PREFIX = 'statepref0000000001';
+  const FIRST_KEY = 'GWSTATE0000000000000000001';
+  let dir: string;
+  let store: SqliteCredentialStore;
+  let admin: ReturnType<typeof createAdminInterface>;
+
+  const mintState = (body: object = { folder: PREFIX }) =>
+    admin.handle(
+      signed('provisioning-controller', controller.privateKey, 'POST', '/credentials', body)
+    );
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'gw-state-admin-'));
+    store = SqliteCredentialStore.open(join(dir, 'credentials.sqlite'));
+    entries.length = 0;
+    const ids = [FIRST_KEY, 'GWSTATE0000000000000000002'];
+    admin = createAdminInterface({
+      auth: authDeps(),
+      store,
+      master: STATE_MASTER,
+      profile: 'state',
+      stateBucket: STATE_BUCKET,
+      logger,
+      newKeyId: () => ids.shift() ?? 'GWEXHAUSTED000000000000000',
+    });
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('mints a state credential bound to its own prefix and the shard bucket, with no ceiling', () => {
+    const response = mintState();
+    expect(response.status).toBe(201);
+    expect(json(response)).toEqual({
+      keyId: FIRST_KEY,
+      folder: PREFIX,
+      bucket: STATE_BUCKET,
+      profile: 'state',
+      state: 'active',
+      createdAt: new Date(NOW_MS).toISOString(),
+      secret: deriveTenantSecret(STATE_MASTER, FIRST_KEY, 'state'),
+    });
+    expect(store.get(FIRST_KEY)).toMatchObject({ profile: 'state', folder: PREFIX });
+    expect(store.get(FIRST_KEY)).not.toHaveProperty('uploadCeilingMib');
+    expect(entries).toEqual([
+      expect.objectContaining({ operation: 'mint', keyId: FIRST_KEY, folder: PREFIX }),
+    ]);
+  });
+
+  it('gives a secret that is not the one the media derivation gives for the same key id and master', () => {
+    const secret = json(mintState()).secret;
+    expect(secret).not.toBe(deriveTenantSecret(STATE_MASTER, FIRST_KEY));
+    expect(secret).not.toBe(deriveTenantSecret(MASTER, FIRST_KEY, 'state'));
+  });
+
+  it('accepts a body that names the shard bucket and refuses every other body, storing nothing', () => {
+    expect(mintState({ folder: PREFIX, bucket: STATE_BUCKET }).status).toBe(201);
+    admin = createAdminInterface({
+      auth: authDeps(),
+      store,
+      master: STATE_MASTER,
+      profile: 'state',
+      stateBucket: STATE_BUCKET,
+      logger,
+      newKeyId: () => 'GWSTATE0000000000000000009',
+    });
+    for (const body of [
+      { folder: 'otherpref0000000002', bucket: 'media-shard-one' },
+      { folder: 'otherpref0000000002', uploadCeilingMib: 5 },
+      { folder: 'otherpref0000000002', profile: 'media' },
+      { folder: 'short' },
+      { folder: 'has/slash/0000000000' },
+      { bucket: STATE_BUCKET },
+      ['otherpref0000000002'],
+    ]) {
+      expect(mintState(body).status, JSON.stringify(body)).toBe(400);
+    }
+    expect(store.listByFolder('otherpref0000000002')).toEqual([]);
+  });
+
+  it('refuses a second active credential on the same prefix', () => {
+    expect(mintState().status).toBe(201);
+    expect(mintState().status).toBe(409);
+  });
+
+  it('is built only with the shard bucket, and only a state instance takes one', () => {
+    const base = { auth: authDeps(), store, master: STATE_MASTER, logger };
+    expect(() => createAdminInterface({ ...base, profile: 'state' })).toThrow(RangeError);
+    expect(() =>
+      createAdminInterface({ ...base, profile: 'state', stateBucket: 'Not_A_Bucket' })
+    ).toThrow(RangeError);
+    expect(() => createAdminInterface({ ...base, stateBucket: STATE_BUCKET })).toThrow(RangeError);
+  });
+
+  it('answers a state read with the profile and never a secret', () => {
+    const minted = json(mintState());
+    const read = admin.handle(
+      signed('erasure-job', erasure.privateKey, 'GET', `/credentials/${String(minted.keyId)}`)
+    );
+    expect(json(read)).toMatchObject({ profile: 'state', folder: PREFIX, bucket: STATE_BUCKET });
+    expect(read.body).not.toContain(String(minted.secret));
+  });
+
+  it('mints a credential only the state listener admits, and only the state secret source signs for', async () => {
+    const minted = json(mintState());
+    const keyId = String(minted.keyId);
+    const deps = {
+      verifier: { verify: async () => ({ ok: true as const, keyId }) },
+      credentials: store,
+      logger: { refusal: () => undefined },
+    };
+    const own = {
+      method: 'GET',
+      rawTarget: `/${STATE_BUCKET}/${PREFIX}/.pulumi/meta.yaml`,
+      headers: {},
+    };
+    await expect(admitState(own, deps)).resolves.toMatchObject({ ok: true });
+    await expect(admit(own, deps)).resolves.toMatchObject({
+      ok: false,
+      refusal: { code: 'profile-not-allowed' },
+    });
+    await expect(
+      admitState(
+        { ...own, rawTarget: `/${STATE_BUCKET}/otherpref0000000002/.pulumi/meta.yaml` },
+        deps
+      )
+    ).resolves.toMatchObject({ ok: false, refusal: { code: 'key-outside-folder' } });
+
+    const stateSource = createSigningSecretSource(store, STATE_MASTER, 'state');
+    await expect(stateSource.signingSecret(keyId)).resolves.toBe(minted.secret);
+    // A media-profile source over the same store gives a state key no secret at all.
+    const mediaSource = createSigningSecretSource(store, STATE_MASTER);
+    await expect(mediaSource.signingSecret(keyId)).resolves.toBeUndefined();
   });
 });

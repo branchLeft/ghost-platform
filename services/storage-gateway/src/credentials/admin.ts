@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { resolveBodyCeiling } from '../body.js';
-import type { CredentialRecord } from '../contracts.js';
+import { credentialProfile, type CredentialProfile, type CredentialRecord } from '../contracts.js';
 import { authenticateAdmin, type AdminAuthDeps, type AdminCaller } from './adminAuth.js';
 import { deriveTenantSecret } from './derive.js';
 import type { MasterSecret } from './masterSecret.js';
@@ -71,6 +71,16 @@ export interface AdminDeps {
     'insert' | 'disable' | 'get' | 'disableFolder' | 'listByFolder'
   >;
   readonly master: MasterSecret;
+  /**
+   * Which credentials this instance mints. `media` (the default) mints the
+   * media credentials the media process serves. `state` mints a tenant's
+   * state credential, which names only its own prefix: the instance is the
+   * state process's, and its `master` is the state master secret, never the
+   * media one.
+   */
+  readonly profile?: CredentialProfile;
+  /** The state shard's bucket, which every state credential names. Required when `profile` is `state`, and refused otherwise. */
+  readonly stateBucket?: string;
   readonly logger: AdminLogger;
   /** Defaults to {@link newKeyId}; injected by tests. */
   readonly newKeyId?: () => string;
@@ -109,6 +119,7 @@ function describe(credential: StoredCredential): object {
     keyId: credential.keyId,
     folder: credential.folder,
     bucket: credential.bucket,
+    profile: credentialProfile(credential) ?? 'media',
     state: credential.state,
     createdAt: credential.createdAt,
     ...(credential.uploadCeilingMib === undefined
@@ -138,7 +149,8 @@ function route(method: string, path: string): Routed {
 interface MintBody {
   readonly folder: string;
   readonly bucket: string;
-  readonly uploadCeilingMib: number;
+  /** Absent for a state credential. */
+  readonly uploadCeilingMib?: number;
 }
 
 /**
@@ -174,6 +186,30 @@ function parseMintBody(rawBody: Buffer): MintBody | undefined {
 }
 
 /**
+ * Reads a state mint request: the tenant's opaque prefix and nothing else. The
+ * bucket is the state shard's, fixed by the instance, so a request that names
+ * another bucket (or any field this reads not) is refused rather than
+ * ignored. There is no upload ceiling: the state process holds one body cap
+ * for every state credential, so no per-tenant value is guessed here.
+ */
+function parseStateMintBody(rawBody: Buffer, stateBucket: string): MintBody | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+  const fields = parsed as Record<string, unknown>;
+  for (const name of Object.keys(fields))
+    if (name !== 'folder' && name !== 'bucket') return undefined;
+  const { folder, bucket } = fields;
+  if (typeof folder !== 'string' || !FOLDER_PATTERN.test(folder)) return undefined;
+  if (bucket !== undefined && bucket !== stateBucket) return undefined;
+  return { folder, bucket: stateBucket };
+}
+
+/**
  * The admin interface: mint, disable and report state. Authentication runs
  * before routing, so an unauthenticated caller learns nothing about which
  * paths exist. A secret appears in exactly one answer, the mint that created
@@ -181,6 +217,15 @@ function parseMintBody(rawBody: Buffer): MintBody | undefined {
  */
 export function createAdminInterface(deps: AdminDeps) {
   const mintKeyId = deps.newKeyId ?? newKeyId;
+  const profile: CredentialProfile = deps.profile ?? 'media';
+  const stateBucket = deps.stateBucket;
+  if (profile === 'state') {
+    if (stateBucket === undefined || !BUCKET_PATTERN.test(stateBucket)) {
+      throw new RangeError('a state admin interface needs the state shard bucket');
+    }
+  } else if (stateBucket !== undefined) {
+    throw new RangeError('only a state admin interface names a state shard bucket');
+  }
 
   // The change has already committed when this runs, so a failing logger must
   // not turn the answer into a 503; the loss is reported on stderr instead.
@@ -200,16 +245,26 @@ export function createAdminInterface(deps: AdminDeps) {
   }
 
   function mint(caller: AdminCaller, rawBody: Buffer): AdminResponse {
-    const body = parseMintBody(rawBody);
-    if (body === undefined)
-      return respond(400, { error: 'body must name a valid folder, bucket and upload ceiling' });
+    const body =
+      profile === 'state' && stateBucket !== undefined
+        ? parseStateMintBody(rawBody, stateBucket)
+        : parseMintBody(rawBody);
+    if (body === undefined) {
+      return respond(400, {
+        error:
+          profile === 'state'
+            ? 'body must name a valid state prefix as its folder'
+            : 'body must name a valid folder, bucket and upload ceiling',
+      });
+    }
     const at = new Date(deps.auth.nowMs()).toISOString();
     const inserted = deps.store.insert({
       keyId: mintKeyId(),
       folder: body.folder,
       bucket: body.bucket,
+      profile,
       createdAt: at,
-      uploadCeilingMib: body.uploadCeilingMib,
+      ...(body.uploadCeilingMib === undefined ? {} : { uploadCeilingMib: body.uploadCeilingMib }),
     });
     if (!inserted.ok) {
       return inserted.reason === 'key-id-taken'
@@ -219,7 +274,7 @@ export function createAdminInterface(deps: AdminDeps) {
     const credential = inserted.credential;
     const response = respond(201, {
       ...describe(credential),
-      secret: deriveTenantSecret(deps.master, credential.keyId),
+      secret: deriveTenantSecret(deps.master, credential.keyId, profile),
     });
     logOperation({
       event: 'admin-operation',
