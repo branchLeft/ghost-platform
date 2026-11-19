@@ -125,11 +125,19 @@ describe('parseDescriptorFacts', () => {
     ).toBeNull();
   });
 
+  it('reads backup.kind none, which every demo has, as a descriptor with no recipient', () => {
+    expect(parseDescriptorFacts(descriptor({ backup: { kind: 'none' } }))).toEqual({
+      slug: 'acme',
+      ageRecipient: null,
+      supportIdentity: null,
+    });
+  });
+
   it.each([
     ['not an object', null],
     ['no slug', { backup: descriptor().backup }],
-    ['backup.kind none', descriptor({ backup: { kind: 'none' } })],
     ['no backup', descriptor({ backup: undefined })],
+    ['an unknown backup.kind', descriptor({ backup: { kind: 'tape' } })],
     [
       'a malformed recipient',
       descriptor({ backup: { kind: 'bucket-native', encryptionRecipient: 'age1nope' } }),
@@ -171,6 +179,67 @@ describe('bindTenant', () => {
     expect(
       bindTenant({ ...facts, supportIdentity: 'support@acme.example' }, runtime, RECIPIENT)
     ).toBe(RECIPIENT);
+  });
+});
+
+describe('bindTenant for a promotion: a demo has no backup recipient', () => {
+  const demo: DescriptorFacts = { slug: 'acme', ageRecipient: null, supportIdentity: null };
+  const runtime: TenantRuntime = parseComposeConfig(composeConfig());
+  const promotion = { recipient: RECIPIENT, grantLane: 'consented' } as const;
+
+  it("returns the promotion's recipient for a descriptor with none, under a consented grant, when the operator states the same one", () => {
+    expect(bindTenant(demo, runtime, RECIPIENT, promotion)).toBe(RECIPIENT);
+  });
+
+  it('REFUSES a descriptor with no recipient and no promotion recipient: the archive is never written without a key', () => {
+    expect(() => bindTenant(demo, runtime, RECIPIENT)).toThrow(TenantConfigError);
+    expect(() => bindTenant(demo, runtime, RECIPIENT, null)).toThrow(/no promotion recipient/);
+  });
+
+  it("REFUSES an operator recipient that is not the promotion's -- RecipientMismatchError", () => {
+    expect(() => bindTenant(demo, runtime, OTHER_RECIPIENT, promotion)).toThrow(
+      RecipientMismatchError
+    );
+    expect(() => bindTenant(demo, runtime, OTHER_RECIPIENT, promotion)).toThrow(
+      /the promotion's recipient/
+    );
+  });
+
+  it('REFUSES a promotion recipient under the incident lane', () => {
+    expect(() =>
+      bindTenant(demo, runtime, RECIPIENT, { recipient: RECIPIENT, grantLane: 'incident' })
+    ).toThrow(/only under a consented support grant/);
+  });
+
+  it("REFUSES a promotion recipient for a tenant that has its own: the tenant's recipient is never replaced", () => {
+    const paid: DescriptorFacts = { ...demo, ageRecipient: OTHER_RECIPIENT };
+    expect(() => bindTenant(paid, runtime, RECIPIENT, promotion)).toThrow(
+      /only for a descriptor with no backup recipient/
+    );
+    expect(() => bindTenant(paid, runtime, OTHER_RECIPIENT, promotion)).toThrow(TenantConfigError);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['a private half', 'AGE-SECRET-KEY-1' + 'Q'.repeat(58)],
+    ['two recipients', `${RECIPIENT},${OTHER_RECIPIENT}`],
+    ['a passphrase marker', '-p'],
+    ['truncated', RECIPIENT.slice(0, -1)],
+  ])('REFUSES a promotion recipient that is %s, and never repeats it', (_label, value) => {
+    let raised: unknown;
+    try {
+      bindTenant(demo, runtime, value, { recipient: value, grantLane: 'consented' });
+    } catch (err) {
+      raised = err;
+    }
+    expect(raised).toBeInstanceOf(TenantConfigError);
+    if (value !== '') expect((raised as Error).message).not.toContain(value);
+  });
+
+  it("still checks the stack against the descriptor first, so a promotion cannot bind another tenant's stack", () => {
+    expect(() => bindTenant({ ...demo, slug: 'other' }, runtime, RECIPIENT, promotion)).toThrow(
+      /compose stack is "acme", not the descriptor's "other"/
+    );
   });
 });
 

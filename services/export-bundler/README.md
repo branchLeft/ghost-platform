@@ -55,10 +55,22 @@ None of these is a flag:
   adapter is configured with. When the descriptor carries
   `breakGlass.supportIdentity`, the two must agree.
 - **The recipient** is the descriptor's `backup.encryptionRecipient`, the
-  tenant's one backup recipient (render-core `BackupSpec`). A descriptor
-  with `backup.kind: none` is refused. The operator also states the
-  recipient (`--age-recipient`); a mismatch is refused with
+  tenant's one backup recipient (render-core `BackupSpec`). The operator also
+  states the recipient (`--age-recipient`); a mismatch is refused with
   `RecipientMismatchError`.
+- **A demo's recipient** (`backup.kind: none`, which every demo has: a demo is
+  never backed up) is the one a promotion supplies with
+  `--promotion-recipient <age1...>`, the public half of a per-promotion key
+  the controller made on `ops1`. It is accepted only for a descriptor with no
+  backup recipient (a tenant's own is never replaced), only under
+  `--grant-lane consented`, and only when it is a plain `age1` X25519
+  recipient (a private half is refused, and never repeated in the error).
+  `--age-recipient` must state the same value. A descriptor with no
+  recipient and no promotion recipient is refused, so no archive is ever
+  written without a key. The private half never reaches the demo host: the
+  bundler is given the public half only. The fingerprint goes to the manifest
+  and the audit record as for any recipient. Removing the ciphertext once `ops1`
+  has pulled it is the promotion's step; the bundler has no code that deletes it.
 
 The descriptor's slug must match the stack's name and the adapter's tenant
 audience.
@@ -391,6 +403,7 @@ node dist/cli.js \
   --audit-log <path to the audit JSONL file> \
   --loopback-port <an unused local port> \
   --erasure-date <YYYY-MM-DD, the day the tenant's media addresses stop working> \
+  [--promotion-recipient <a demo's per-promotion age recipient; consented lane only>] \
   [--stack-dir /opt/branchleft/<slug>] \
   [--secrets-env /etc/branchleft/<slug>.env] \
   [--image-env /etc/branchleft/<slug>.image.env]
