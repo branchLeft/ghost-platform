@@ -98,6 +98,47 @@ describe('concurrency and recycle-contract regressions', () => {
     expect(lease.hashId).toBeDefined();
   });
 
+  // The control plane tells "an earlier send is still running" (retry later)
+  // from a refusal by `reason`, not by reading the prose in `error`.
+  it('a second reconcile met by the held slot lock is a 409 with reason locked; an occupied-slot 409 carries none', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    broker = await startTestBroker({
+      wrapDeps: (deps) => ({
+        ...deps,
+        renderer: {
+          render: async (descriptor) => {
+            await held;
+            return deps.renderer.render(descriptor);
+          },
+        },
+      }),
+    });
+    const first = broker.signedFetch('POST', '/reconcile', {
+      slot: '5',
+      descriptor: descFor('ddd-four', 'D', '5'),
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await broker.signedFetch('POST', '/reconcile', {
+      slot: '5',
+      descriptor: descFor('ddd-four', 'D', '5'),
+    });
+    expect(second.status).toBe(409);
+    expect(((await second.json()) as { reason?: string }).reason).toBe('locked');
+
+    release();
+    expect((await first).status).toBe(200);
+    // Another tenancy's host on the now-running slot is refused for a different cause.
+    const other = await broker.signedFetch('POST', '/reconcile', {
+      slot: '5',
+      descriptor: descFor('eee-five', 'E', '5'),
+    });
+    expect(other.status).toBe(409);
+    expect(((await other.json()) as { reason?: string }).reason).toBeUndefined();
+  });
+
   // F1: a reset racing an in-flight reconcile must never leave the slot
   // `free` while the tenancy's hash and lease stay live.
   it('a reset racing an in-flight reconcile leaves no live lease/hash if the slot reads free', async () => {

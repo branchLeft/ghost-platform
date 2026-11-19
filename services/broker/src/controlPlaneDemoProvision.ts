@@ -9,7 +9,7 @@
  * failure, never an endless wait. See controlPlaneDemoProvision.md.
  */
 import type { SlotName, TenantDescriptor } from '@branchleft/ghost-platform-render-core';
-import type { DemoBroker } from './controlPlaneDemoBroker.js';
+import type { DemoBroker, ResetReply } from './controlPlaneDemoBroker.js';
 import { buildDemoDescriptor, type DemoEstate } from './controlPlaneDemoDescriptor.js';
 import type { GateIssuer } from './controlPlaneDemoGate.js';
 import type { Colour } from './literals.js';
@@ -38,6 +38,18 @@ export interface LifecycleStore {
   retireHostname(label: string): Promise<void>;
 }
 
+/** What the arrival mail is built from. Nothing here is ever logged. */
+export interface Arrival {
+  /** The prospect's verified address. */
+  readonly address: string;
+  /** The demo's hostname label. */
+  readonly hostname: string;
+  /** The gate's passphrase, once. The mail is the only place it goes. */
+  readonly passphrase: string;
+  /** The end of the term. */
+  readonly expiresAt: Date;
+}
+
 export interface ProvisionDeps {
   readonly store: LifecycleStore;
   readonly broker: DemoBroker;
@@ -52,6 +64,14 @@ export interface ProvisionDeps {
   readonly provisionTimeoutMs: number;
   /** How many times an unanswered reconcile is sent again, unchanged, before the attempt counts as failed. */
   readonly resendLimit: number;
+  /**
+   * Sends the arrival mail (the owner's copy first, then the prospect's: see
+   * controlPlaneDemoOwnerCopy.md) and resolves only once it has gone. It is
+   * called once per attempt, on a slot that answered healthy, and BEFORE LIVE
+   * is recorded: a demo is never LIVE with a passphrase nobody was sent. It
+   * throws when the mail was not sent, and the attempt then fails.
+   */
+  readonly sendArrival: (arrival: Arrival) => Promise<void>;
   /** Reason codes only: never a passphrase, hash, address or response body. */
   readonly log: (line: string) => void;
 }
@@ -68,7 +88,12 @@ export type FailureReason =
   | 'unanswered'
   /** The reset between the two attempts did not free the slot. */
   | 'reset-failed'
-  /** This worker could not build or sign the descriptor. Nothing was sent. */
+  /** The slot was healthy but the arrival mail could not be sent, so nobody could enter it. */
+  | 'mail'
+  /**
+   * This worker could not build or sign the descriptor (nothing was sent), or
+   * it threw after PROVISIONING was recorded: the slot's state is unknown.
+   */
   | 'internal';
 
 export type ProvisionOutcome =
@@ -79,8 +104,6 @@ export type ProvisionOutcome =
       readonly colour: Colour;
       readonly attempts: 1 | 2;
       readonly expiresAt: Date;
-      /** For the arrival mail, once. Held nowhere else. */
-      readonly passphrase: string;
     }
   | {
       readonly state: 'FAILED';
@@ -88,7 +111,11 @@ export type ProvisionOutcome =
       readonly hostname: string;
       readonly attempts: 1 | 2;
       readonly reason: FailureReason;
-      /** The final reset did not free the slot: it needs a person. */
+      /**
+       * The slot was not freed, or its state is unknown: it needs a person.
+       * Its hostname is then left unretired, which is what keeps the slot
+       * counted as held (the data layer's `admit`) until the person has acted.
+       */
       readonly slotNeedsAttention: boolean;
       readonly hostnameRetired: boolean;
     };
@@ -116,7 +143,7 @@ export class DemoRecordMissingError extends Error {
 }
 
 type AttemptResult =
-  | { readonly ok: true; readonly colour: Colour; readonly passphrase: string }
+  | { readonly ok: true; readonly colour: Colour }
   | {
       readonly ok: false;
       readonly reason: FailureReason;
@@ -152,16 +179,31 @@ async function attemptOnce(
     return { ok: false, reason: 'internal', retryable: false, ours: false };
   }
 
+  // An unanswered reconcile is sent again, unchanged, up to `resendLimit`. A
+  // `locked` answer means an earlier send is still running (the broker holds
+  // the slot lock for all of a reconcile, which can outlast the call's own
+  // deadline): wait and send again until `provisionTimeoutMs` has passed. The
+  // resend is never a refusal and never a reset: the slot is ours and busy.
+  const lockedUntil = deps.nowMs() + deps.provisionTimeoutMs;
+  let resent = 0;
   let reply = await deps.broker.reconcile(slot, descriptor);
-  for (let sent = 0; reply.kind === 'unanswered' && sent < deps.resendLimit; sent++) {
-    deps.log(`provision slot ${slot}: reconcile unanswered, sending it again unchanged`);
+  for (;;) {
+    if (reply.kind === 'unanswered' && resent < deps.resendLimit) {
+      resent += 1;
+      deps.log(`provision slot ${slot}: reconcile unanswered, sending it again unchanged`);
+    } else if (reply.kind === 'locked' && deps.nowMs() < lockedUntil) {
+      deps.log(`provision slot ${slot}: reconcile still running, sending it again later`);
+      await deps.sleep(deps.pollIntervalMs);
+    } else {
+      break;
+    }
     reply = await deps.broker.reconcile(slot, descriptor);
   }
   if (reply.kind === 'refused') {
     deps.log(`provision slot ${slot}: reconcile refused (${reply.status})`);
     return { ok: false, reason: 'refused', retryable: false, ours: false };
   }
-  if (reply.kind === 'unanswered') {
+  if (reply.kind === 'unanswered' || reply.kind === 'locked') {
     return { ok: false, reason: 'unanswered', retryable: true, ours: true };
   }
   if (reply.kind === 'failed') {
@@ -169,8 +211,31 @@ async function attemptOnce(
   }
 
   const verdict = await pollUntilHealthy(deps, slot);
-  if (verdict === 'healthy') return { ok: true, colour: reply.colour, passphrase };
-  return { ok: false, reason: 'unhealthy', retryable: true, ours: true };
+  if (verdict !== 'healthy') return { ok: false, reason: 'unhealthy', retryable: true, ours: true };
+
+  // The mail goes before LIVE is recorded: the passphrase is held nowhere
+  // else, so a LIVE demo whose mail never went would have an unrecoverable gate.
+  try {
+    await deps.sendArrival({ address: ownerEmail, hostname: label, passphrase, expiresAt });
+  } catch (error) {
+    deps.log(`provision slot ${slot}: arrival mail not sent (${(error as Error).name})`);
+    return { ok: false, reason: 'mail', retryable: true, ours: true };
+  }
+  return { ok: true, colour: reply.colour };
+}
+
+/**
+ * A reset, tried again while the broker answers `locked` (a reconcile still
+ * running) until `provisionTimeoutMs` has passed. Any other answer is final.
+ */
+async function resetSlot(deps: ProvisionDeps, slot: SlotName): Promise<ResetReply> {
+  const until = deps.nowMs() + deps.provisionTimeoutMs;
+  for (;;) {
+    const reply = await deps.broker.reset(slot);
+    if (reply !== 'locked' || deps.nowMs() >= until) return reply;
+    deps.log(`provision slot ${slot}: reset found the slot locked, trying again later`);
+    await deps.sleep(deps.pollIntervalMs);
+  }
 }
 
 /**
@@ -199,9 +264,10 @@ async function pollUntilHealthy(
  * Provisions one CLAIMED demo onto the slot the claim named, and leaves it
  * LIVE or FAILED: never PROVISIONING. The hostname is allocated before the
  * descriptor is signed (a crash between the two leaves a name never served,
- * never one served and unrecorded) and retired if the demo fails. Entering
- * PROVISIONING issues the term; the descriptor's expiry is that term's end as
- * the database recorded it.
+ * never one served and unrecorded) and retired if the demo fails and its slot
+ * was freed. Entering PROVISIONING issues the term; the descriptor's expiry is
+ * that term's end as the database recorded it. A throw after PROVISIONING is
+ * recorded is caught and ends FAILED with the slot flagged for a person.
  *
  * @throws DemoNotClaimedError when the demo is not CLAIMED
  * @throws DemoRecordMissingError when there is no request or no term to build from
@@ -220,10 +286,70 @@ export async function provisionDemo(
   const label = (await store.hostname(demoId)) ?? (await store.allocateHostname(demoId));
   const entered = await store.transition(demoId, 'PROVISIONING');
   if (entered.leaseEndsAt === null) throw new DemoRecordMissingError(demoId, 'term');
-  const expiresAt = entered.leaseEndsAt;
 
-  let attempts: 1 | 2 = 1;
-  let result = await attemptOnce(deps, slot, label, request.verifiedAddress, expiresAt);
+  const progress = { attempts: 1 as 1 | 2 };
+  try {
+    return await runAttempts(
+      deps,
+      demoId,
+      slot,
+      label,
+      request.verifiedAddress,
+      entered.leaseEndsAt,
+      progress
+    );
+  } catch (error) {
+    return await failAfterThrow(deps, demoId, slot, label, progress.attempts, error);
+  }
+}
+
+/**
+ * A throw after PROVISIONING: a bad signing key, a database error, anything
+ * unforeseen. The demo is moved to FAILED so the page stops waiting, unless it
+ * already is; the slot's state is unknown, so it is flagged for a person and
+ * the hostname is left unretired, which keeps the slot held. If the store
+ * cannot record FAILED either, the original error is thrown: nothing more can
+ * be done from here, and the demo stays PROVISIONING.
+ */
+async function failAfterThrow(
+  deps: ProvisionDeps,
+  demoId: string,
+  slot: SlotName,
+  label: string,
+  attempts: 1 | 2,
+  error: unknown
+): Promise<ProvisionOutcome> {
+  try {
+    const latest = await deps.store.currentState(demoId);
+    if (latest?.toState === 'PROVISIONING') await deps.store.transition(demoId, 'FAILED');
+  } catch {
+    throw error;
+  }
+  deps.log(
+    `provision slot ${slot}: threw (${(error as Error).name}), recorded FAILED, slot needs attention`
+  );
+  return {
+    state: 'FAILED',
+    slot,
+    hostname: label,
+    attempts,
+    reason: 'internal',
+    slotNeedsAttention: true,
+    hostnameRetired: false,
+  };
+}
+
+async function runAttempts(
+  deps: ProvisionDeps,
+  demoId: string,
+  slot: SlotName,
+  label: string,
+  ownerEmail: string,
+  expiresAt: Date,
+  progress: { attempts: 1 | 2 }
+): Promise<ProvisionOutcome> {
+  const { store } = deps;
+  let result = await attemptOnce(deps, slot, label, ownerEmail, expiresAt);
   let slotNeedsAttention = false;
 
   if (!result.ok && result.retryable) {
@@ -232,14 +358,15 @@ export async function provisionDemo(
     deps.log(
       `provision slot ${slot}: attempt 1 failed (${result.reason}), resetting for one retry`
     );
-    if ((await deps.broker.reset(slot)) === 'free') {
-      attempts = 2;
-      result = await attemptOnce(deps, slot, label, request.verifiedAddress, expiresAt);
+    if ((await resetSlot(deps, slot)) === 'free') {
+      progress.attempts = 2;
+      result = await attemptOnce(deps, slot, label, ownerEmail, expiresAt);
     } else {
       result = { ok: false, reason: 'reset-failed', retryable: false, ours: true };
       slotNeedsAttention = true;
     }
   }
+  const attempts = progress.attempts;
 
   if (result.ok) {
     await store.transition(demoId, 'LIVE');
@@ -251,7 +378,6 @@ export async function provisionDemo(
       colour: result.colour,
       attempts,
       expiresAt,
-      passphrase: result.passphrase,
     };
   }
 
@@ -259,15 +385,23 @@ export async function provisionDemo(
   // truth; then the slot is freed, but only if it is ours: a refusal means the
   // broker found the slot held by something else, and that is left alone.
   await store.transition(demoId, 'FAILED');
-  if (result.ours && !slotNeedsAttention && (await deps.broker.reset(slot)) !== 'free') {
+  if (result.ours && !slotNeedsAttention && (await resetSlot(deps, slot)) !== 'free') {
     slotNeedsAttention = true;
   }
+  // A slot that needs a person stays held: its hostname is not retired, and a
+  // FAILED demo with an unretired hostname counts against the slots the claim
+  // step may offer (ProvisionerDb.admit). The person frees the slot, then
+  // retires the hostname.
   let hostnameRetired = false;
-  try {
-    await store.retireHostname(label);
-    hostnameRetired = true;
-  } catch (error) {
-    deps.log(`provision slot ${slot}: hostname not retired (${(error as Error).name})`);
+  if (slotNeedsAttention) {
+    deps.log(`provision slot ${slot}: hostname kept, the slot stays held until a person frees it`);
+  } else {
+    try {
+      await store.retireHostname(label);
+      hostnameRetired = true;
+    } catch (error) {
+      deps.log(`provision slot ${slot}: hostname not retired (${(error as Error).name})`);
+    }
   }
   deps.log(`provision slot ${slot}: failed (${result.reason}) after ${attempts} attempt(s)`);
   return {

@@ -26,7 +26,14 @@ import {
   type DemoEventView,
   type DemoState,
 } from '../demoLifecycle.js';
-import { countDemosIn, eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
+import {
+  countDemosIn,
+  countFailedHoldingSlot,
+  eventsOf,
+  hostnameOf,
+  latestEvent,
+  requestOf,
+} from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
 import { demoStateEvent, hostnameRegister, hostnameRetirement } from '../schema.js';
 
@@ -103,8 +110,9 @@ export class ProvisionerDb {
    * that finds every slot held is a lead on the list, with the contact
    * details its recorded request already carries.
    *
-   * It is CLAIMED only when fewer than `SLOT_COUNT` demos hold a slot and
-   * nobody is waiting, so a later request never passes an earlier one. The
+   * It is CLAIMED only when fewer than `SLOT_COUNT` demos hold a slot (a
+   * demo in a slot-holding state, or one FAILED whose hostname is not yet
+   * retired: its slot has not been freed) and nobody is waiting, so a later request never passes an earlier one. The
    * decision is made under one advisory lock held to the end of the
    * transaction, so concurrent requests are decided one at a time: the
    * seventh can never also be given the sixth slot.
@@ -121,7 +129,10 @@ export class ProvisionerDb {
       const latest = await this.latestOrThrow(tx, id);
       if (latest.toState !== 'VERIFIED') throw new AdmissionRefusedError(id, 'state');
       if ((await requestOf(tx, id)) === undefined) throw new AdmissionRefusedError(id, 'request');
-      const holding = await countDemosIn(tx, SLOT_HOLDING_STATES);
+      // A demo that FAILED with its slot not yet freed still holds it: the
+      // worker retires the hostname only once the slot is free.
+      const holding =
+        (await countDemosIn(tx, SLOT_HOLDING_STATES)) + (await countFailedHoldingSlot(tx));
       const waiting = await countDemosIn(tx, ['WAITING']);
       const state = holding < SLOT_COUNT && waiting === 0 ? 'CLAIMED' : 'WAITING';
       const event = await this.append(tx, latest, state, carried(tx, latest), 0);

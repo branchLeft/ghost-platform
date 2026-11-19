@@ -18,13 +18,19 @@ export type ReconcileReply =
   | { readonly kind: 'running'; readonly colour: Colour }
   /** 503: the broker's own reset-and-retry-once is spent and the slot is left `error`. */
   | { readonly kind: 'failed' }
+  /**
+   * 409 with reason `locked`: the broker holds the slot lock for the whole of
+   * a reconcile, so an earlier send of this one is still running. Retry later;
+   * it is not a refusal.
+   */
+  | { readonly kind: 'locked' }
   /** Any other answer: the broker refused. A refusal is final and its slot is not ours to touch. */
   | { readonly kind: 'refused'; readonly status: number }
   /** No answer inside the deadline: the request may or may not have run. Sending it again is safe. */
   | { readonly kind: 'unanswered' };
 
-/** What `/reset` said. */
-export type ResetReply = 'free' | 'refused' | 'unanswered';
+/** What `/reset` said. `locked` (409, reason `locked`) is a reconcile still running: retry later. */
+export type ResetReply = 'free' | 'refused' | 'locked' | 'unanswered';
 
 /** `GET /status/{slot}`, reduced to the two facts provisioning is judged on. */
 export interface SlotReading {
@@ -90,6 +96,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/** A 409 the broker marked `locked`: the machine-readable reason, never the prose beside it. */
+function isLockedConflict(status: number, body: unknown): boolean {
+  return status === 409 && isRecord(body) && body['reason'] === 'locked';
+}
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -145,13 +156,15 @@ export function createTunnelBroker(options: TunnelBrokerOptions): DemoBroker {
       if (response.status === 503 && isRecord(body) && body['phase'] === 'error') {
         return { kind: 'failed' };
       }
+      if (isLockedConflict(response.status, body)) return { kind: 'locked' };
       return { kind: 'refused', status: response.status };
     },
 
     async reset(slot) {
       const response = await signedPost('/reset', { slot });
       if (response === undefined) return 'unanswered';
-      return response.status === 200 ? 'free' : 'refused';
+      if (response.status === 200) return 'free';
+      return isLockedConflict(response.status, await readJson(response)) ? 'locked' : 'refused';
     },
 
     async status(slot) {

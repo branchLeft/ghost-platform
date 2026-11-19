@@ -2,7 +2,7 @@
 
 ## copyPassphraseToOwner
 
-Sends the owner the viewing passphrase of a LIVE demo, with its hostname, slot
+Sends the owner the viewing passphrase of a demo whose slot is healthy and about to go LIVE, with its hostname, slot
 and expiry, to the address in `OWNER_DUE_DILIGENCE_EMAIL`.
 
 Order matters: the provisioning step calls this before it sends the prospect's
