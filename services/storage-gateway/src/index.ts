@@ -18,3 +18,4 @@ export * from './usage/recorder.js';
 export * from './limits/index.js';
 export * from './upstream.js';
 export * from './body.js';
+export * from './state-profile.js';
