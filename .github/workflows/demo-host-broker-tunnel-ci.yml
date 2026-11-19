@@ -1,0 +1,64 @@
+name: Demo host broker tunnel CI
+
+# Proves what the unit tests of render_broker_tunnel.py cannot: that a real
+# OpenSSH server, given the rendered authorized key and sshd drop-in, lets the
+# tunnel key forward to the broker's 127.0.0.1:8090 and refuses a forward to
+# any other port, a shell and a reverse forward. Then it widens permitopen on
+# the key, in sshd, and in both, and requires the probes to go red exactly
+# where they should (prove_broker_tunnel.py prints each case).
+#
+# Runs inside a throwaway Debian container, because the proof creates a system
+# account and runs sshd as root; neither belongs on the runner.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'demo-host/provision/render_broker_tunnel.py'
+      - 'demo-host/provision/prove_broker_tunnel.py'
+      - '.github/workflows/demo-host-broker-tunnel-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'demo-host/provision/render_broker_tunnel.py'
+      - 'demo-host/provision/prove_broker_tunnel.py'
+      - '.github/workflows/demo-host-broker-tunnel-ci.yml'
+  # A weekly run is the backstop for a change to the Debian packages the
+  # proof installs.
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  real-sshd-proof:
+    name: real sshd holds the broker tunnel grant, and the sabotages go red
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The same Debian release as the estate, by digest. The checkout is
+      # mounted read-only: the proof reads the renderer and writes nothing back.
+      - name: Install the rendered grant on a real sshd and probe it
+        run: |
+          docker run --rm -v "$PWD/demo-host/provision":/proof:ro \
+            debian:trixie@sha256:34cd9e9fd437c0a095ec39cb2e73422c9f30821b0d0848ed74fd0d43bae4d958 \
+            bash -c '
+              set -e
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                openssh-server openssh-client python3 >/dev/null
+              python3 /proof/prove_broker_tunnel.py
+            '
