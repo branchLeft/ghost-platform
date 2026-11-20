@@ -215,7 +215,7 @@ for (const { id, bin } of TOOL_HOOKS) {
       const result = runHook(id, tree, stubDir);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(fs.existsSync(marker), true, 'node runs');
-      assert.match(fs.readFileSync(marker, 'utf8'), new RegExp(bin.replace(/[./]/g, '\\$&')));
+      assert.ok(fs.readFileSync(marker, 'utf8').includes(bin), `node is given ${bin}`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
