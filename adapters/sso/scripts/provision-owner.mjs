@@ -159,6 +159,7 @@ async function main() {
     if (!existing || existing.toLowerCase() !== owner.email.toLowerCase()) {
       refuse('this Ghost is already set up with a different owner: it was claimed by someone else');
     }
+    await withKnex((knex) => clearSeededDefaults(knex, false));
     console.log(JSON.stringify({ created: false, alreadySetUp: true }));
     return;
   }
@@ -171,6 +172,7 @@ async function main() {
     }],
   });
   if (created.status !== 201) refuse('setup answered ' + created.status + ' ' + created.text.slice(0, 300));
+  await withKnex((knex) => clearSeededDefaults(knex, true));
   const link = await call('POST', '/ghost/api/admin/authentication/password_reset/', {
     password_reset: [{ email: owner.email }],
   });
