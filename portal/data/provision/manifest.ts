@@ -148,6 +148,15 @@ const CUSTOM_DOMAIN = '0009_custom_domain';
 const DEMO_REQUEST = '0010_demo_request';
 const SUPPORT_ACCESS = '0011_support_access';
 export const STATUS_READ = '0012_demo_request_status_read';
+/**
+ * The columns the front door may read of a request (M07): the demo id, the
+ * publication name and the time it was recorded, which is what a status page
+ * shows. Every other column stays out of its reach.
+ */
+export const STATUS_COLUMNS = {
+  privileges: ['SELECT'],
+  columns: ['demo_id', 'publication_name', 'submitted_at'],
+} as const;
 const QUEUE = '0013_moderation_item';
 const TENANT_BILLING = '0014_tenant_billing';
 
@@ -411,9 +420,14 @@ export function manifest(major: number, database: string): readonly ManifestObje
       ],
     },
     // ProspectDb.submit inserts. ProspectDb.ownRequest reads once the status
-    // migration has given the front door SELECT, and the table's row policy
-    // shows it only the row whose address the transaction bound; it cannot
-    // change a request or remove one. ProvisionerDb.request and
+    // migration has given the front door SELECT on the three columns a status
+    // page shows, and the table's row policy shows it only the row whose
+    // address the transaction bound; it cannot change a request or remove one.
+    // The grant is by column because a session on the front door's connection
+    // can set the address the policy reads: a compromised front door could
+    // then read any row it can name an address for, and the columns it holds
+    // are all it could read from it. The address, the subject, the wording and
+    // the answers are not among them. ProvisionerDb.request and
     // OwnerDb.listRequests read. No role updates or deletes a request.
     {
       kind: 'table',
@@ -424,9 +438,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'provisionerRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
-      added: [
-        { since: STATUS_READ, grants: [{ grantee: 'prospectRole', privileges: ['SELECT'] }] },
-      ],
+      added: [{ since: STATUS_READ, grants: [{ grantee: 'prospectRole', ...STATUS_COLUMNS }] }],
     },
   ];
 }

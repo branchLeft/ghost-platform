@@ -330,7 +330,8 @@ describe('--migrate-only on a real server', () => {
     expect(held.err).toEqual([]);
     expect(held.code).toBe(0);
     const state = `SELECT has_table_privilege('portal_prospect', 'portal.demo_request', 'INSERT') AS i,
-              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
+              has_any_column_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
+              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS w,
               has_table_privilege('portal_provisioner', 'portal.demo_request', 'SELECT') AS p,
               (SELECT relrowsecurity FROM pg_class WHERE oid = 'portal.demo_request'::regclass) AS rls,
               to_regprocedure('public.bound_address()') IS NOT NULL AS fn,
@@ -338,6 +339,7 @@ describe('--migrate-only on a real server', () => {
     expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
       i: true,
       s: false,
+      w: false,
       p: true,
       rls: false,
       fn: false,
@@ -351,6 +353,7 @@ describe('--migrate-only on a real server', () => {
     expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
       i: true,
       s: true,
+      w: false,
       p: true,
       rls: true,
       fn: true,
