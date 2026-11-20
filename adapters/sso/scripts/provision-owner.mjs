@@ -227,7 +227,7 @@ export function provisionOwner(
  * Ghost answers 503 while it is still starting, and that is not ready.
  */
 export function readyProbeScript(listen) {
-  return `require('node:http').get('http://${listen}/ghost/api/admin/authentication/setup/', (res) => { res.resume(); if (true) { console.log('up'); } else { process.exit(1); } }).on('error', () => process.exit(1));`;
+  return `require('node:http').get('http://${listen}/ghost/api/admin/authentication/setup/', (res) => { res.resume(); if (res.statusCode === 200) { console.log('up'); } else { process.exit(1); } }).on('error', () => process.exit(1));`;
 }
 const READY_PROBE = readyProbeScript(GHOST_LISTEN);
 
