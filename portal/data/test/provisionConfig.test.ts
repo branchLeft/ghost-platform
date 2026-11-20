@@ -501,6 +501,71 @@ describe('the statements the command writes', () => {
     expect(addedGrantStatements(withPublic, status, names)).toEqual([]);
   });
 
+  it('renders a column grant as column-level privileges, in the same statement shape', () => {
+    const table = {
+      ...manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!,
+      grants: [
+        { grantee: 'ownerRole' as const, privileges: ['SELECT'] },
+        { grantee: 'ownerRole' as const, privileges: ['INSERT', 'UPDATE'], columns: ['a', 'b_c'] },
+      ],
+      added: [
+        {
+          since: 'later',
+          grants: [{ grantee: 'tenantRole' as const, privileges: ['SELECT'], columns: ['a'] }],
+        },
+      ],
+    };
+    expect(grantStatements(table, names, 14)).toEqual([
+      'GRANT SELECT ON TABLE portal.tenant_register TO "portal_owner"',
+      'GRANT INSERT ("a", "b_c"), UPDATE ("a", "b_c") ON TABLE portal.tenant_register TO "portal_owner"',
+    ]);
+    expect(addedGrantStatements(table, 'later', names)).toEqual([
+      'GRANT SELECT ("a") ON TABLE portal.tenant_register TO "portal_tenant"',
+    ]);
+  });
+
+  it('refuses a column grant on anything but a table, with no column, or of a privilege no column holds', () => {
+    const table = manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!;
+    const withGrant = (grant: { privileges: string[]; columns: string[] }): typeof table => ({
+      ...table,
+      grants: [{ grantee: 'ownerRole', ...grant }],
+    });
+    expect(() =>
+      grantStatements(
+        { ...withGrant({ privileges: ['USAGE'], columns: ['a'] }), kind: 'schema' },
+        names,
+        14
+      )
+    ).toThrow("a column grant is a table's alone");
+    expect(() =>
+      grantStatements(withGrant({ privileges: ['INSERT'], columns: [] }), names, 14)
+    ).toThrow('names no column');
+    expect(() =>
+      grantStatements(withGrant({ privileges: ['DELETE'], columns: ['a'] }), names, 14)
+    ).toThrow('not a column privilege: DELETE');
+    expect(() =>
+      grantStatements(withGrant({ privileges: ['INSERT'], columns: ['a"; DROP'] }), names, 14)
+    ).toThrow('not a plain identifier');
+  });
+
+  it('gives the provisioner INSERT by column, leaving out each stamp the database sets', () => {
+    const all = manifest(14, 'portal').flatMap((o) => grantStatements(o, names, 14));
+    const provisioner = all.filter((s) => s.endsWith('TO "portal_provisioner"'));
+    expect(provisioner).toEqual([
+      'GRANT USAGE ON SCHEMA portal TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_state_event TO "portal_provisioner"',
+      'GRANT INSERT ("demo_id", "sequence", "previous_sequence", "from_state", "to_state", "lease_issued_at", "lease_ends_at", "extension_days") ON TABLE portal.demo_state_event TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.hostname_register TO "portal_provisioner"',
+      'GRANT INSERT ("demo_id", "label") ON TABLE portal.hostname_register TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.hostname_retirement TO "portal_provisioner"',
+      'GRANT INSERT ("label") ON TABLE portal.hostname_retirement TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_request TO "portal_provisioner"',
+    ]);
+    for (const stamp of ['recorded_at', 'allocated_at', 'retired_at']) {
+      expect(all.filter((s) => s.includes(stamp))).toEqual([]);
+    }
+  });
+
   it('expects an added grant and row security only once the migration that makes them is applied', () => {
     const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
     const status = '0012_demo_request_status_read';
@@ -529,6 +594,7 @@ describe('the statements the command writes', () => {
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.health_reading TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.support_access_reading TO "portal_owner"',
       'GRANT SELECT, UPDATE ON TABLE portal.support_access_request TO "portal_owner"',
+      'GRANT INSERT, SELECT, UPDATE ON TABLE portal.tenant_billing TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.moderation_setting TO "portal_tenant"',
     ]);
   });

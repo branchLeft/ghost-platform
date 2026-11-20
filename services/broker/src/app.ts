@@ -210,7 +210,12 @@ async function handleReconcile(deps: BrokerDeps, body: ReconcileBody): Promise<R
   // `/reconcile`) racing this one sees an occupied slot for the whole
   // attempt, not only after it finishes.
   if (!deps.slotLock.claim(slot)) {
-    return reply(409, { error: `slot "${slot}" is locked by a concurrent request` });
+    // `reason` is what lets the control plane tell "an earlier send of this
+    // reconcile is still running" (retry later) from a refusal, as on /reset.
+    return reply(409, {
+      error: `slot "${slot}" is locked by a concurrent request`,
+      reason: 'locked',
+    });
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);

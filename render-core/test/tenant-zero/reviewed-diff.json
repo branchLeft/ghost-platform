@@ -76,6 +76,12 @@
     "reason": "Locks Ghost's social web off for every tenant; the 5.0.0 render did not set it, so confirm the blog's own setting is already off."
   },
   {
+    "id": "gravatar-off",
+    "status": "intended",
+    "paths": ["compose.services.ghost-a.environment.privacy__useGravatar"],
+    "reason": "Turns Ghost's Gravatar lookup off for every tenant; the 5.0.0 render did not set it, so the blog's members saw a Gravatar picture built from a hash of their address, and now see Ghost's initial avatar."
+  },
+  {
     "id": "owner-address-secret",
     "status": "intended",
     "paths": ["secrets.GHOST_OWNER_EMAIL"],
@@ -118,9 +124,11 @@
       "settings.codeinjection_head",
       "settings.codeinjection_foot",
       "settings.codeInjectionExplainer",
+      "settings.heading_font",
+      "settings.body_font",
       "settings.social_web"
     ],
-    "reason": "Ghost settings the render core pins (code injection blocked and empty, social web off); 5.0.0 rendered no settings file, so the running values can only be read from Ghost admin."
+    "reason": "Ghost settings the render core pins (code injection blocked and empty, fonts on Theme default so no page requests a third-party font host, social web off); 5.0.0 rendered no settings file, so the running values can only be read from Ghost admin."
   },
   {
     "id": "stop-grace-period",

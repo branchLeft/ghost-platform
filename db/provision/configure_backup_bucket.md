@@ -208,3 +208,16 @@ first PUT was -- so it returns 2xx whether the lockout landed or not, and
 an operator who reads that 2xx as confirmation walks away from a bucket
 that locks itself out seconds later. `_await_engine_catchup` is what
 makes the second PUT mean anything.
+
+## Refusing a media bucket
+
+`refuse_media_bucket` refuses any `--bucket` whose name contains `media`,
+before a credential is read or a request is made, and again at the head of
+`configure_backup_bucket`. This script replaces a bucket's whole lifecycle and
+can write a current-version `Expiration`, which deletes live objects; a tenant's
+media is the asset with no other copy, and its own bucket carries a
+noncurrent-only rule on purpose. The same check is in
+`infra/provisioning/scripts/configure_state_bucket.py`; this directory ships
+standalone to db1, so it cannot import that one. The shared-media and
+per-tenant renderers' tests assert the other half: no rule they render carries
+anything but the noncurrent and multipart elements.

@@ -112,6 +112,17 @@ export function parseTrustedProxyList(
   }
 }
 
+/**
+ * Whether a URL to a service the application calls may be plain HTTP: loopback, or one
+ * bare name with no dot, which is a service on the same private network as the
+ * application (the control-plane stack names the provisioning API `provisioning`).
+ * A name with a dot, an address that is not loopback and anything on the internet must
+ * be https, because the call carries a credential in a header.
+ */
+export function allowsPlainHttp(url: URL): boolean {
+  return /^[a-z][a-z0-9-]*$/.test(url.hostname) || url.hostname === '127.0.0.1';
+}
+
 export const readText: FileReader = (path) => readFileSync(path, 'utf8');
 
 export function parsePort(value: string | undefined, fallback: number): number {

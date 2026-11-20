@@ -11,6 +11,7 @@ export {
 export { assertTenantTablesIsolated, UnisolatedTableError } from '../isolation.js';
 export type { Tx } from '../db.js';
 export type { HealthView } from '../reading.js';
+export { PAYMENT_STATES, type BillingView, type PaymentState } from '../billing.js';
 export {
   COMMENT_CHECKS,
   InvalidSettingError,
@@ -63,3 +64,17 @@ export {
   type SupportAccessView,
   type SupportRequestStatus,
 } from '../supportAccess.js';
+export {
+  InvalidQueueItemError,
+  ITEM_STATUSES,
+  SUBJECT_KINDS,
+  type ContentRef,
+  type ContentSource,
+  type HoldRequest,
+  type ItemStatus,
+  type LiveContent,
+  type OpenedItem,
+  type QueueItemView,
+  type StoredClassifier,
+  type SubjectKind,
+} from '../moderationQueue.js';

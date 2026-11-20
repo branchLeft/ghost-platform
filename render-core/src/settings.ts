@@ -26,6 +26,10 @@ export const CODE_INJECTION_EXPLAINER = 'ALL_CAPS_PLACEHOLDER: code injection ex
 export interface GhostSettings extends CodeInjectionSettings {
   readonly codeInjectionExplainer: string;
   readonly members_support_address: string;
+  /** Always `''` (Ghost's "Theme default"): see settings.md. */
+  readonly heading_font: string;
+  /** Always `''` (Ghost's "Theme default"): see settings.md. */
+  readonly body_font: string;
   /** Always `false`: see `environment.ts`, where the same feature is locked. */
   readonly social_web: boolean;
 }
@@ -48,6 +52,8 @@ export function renderSettings(
     ...codeInjectionSettings(descriptor.codeInjection),
     codeInjectionExplainer: CODE_INJECTION_EXPLAINER,
     members_support_address: renderSendingAddress(descriptor.mail.identity, zones),
+    heading_font: '',
+    body_font: '',
     social_web: false,
   };
 }

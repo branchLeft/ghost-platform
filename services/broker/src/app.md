@@ -173,6 +173,8 @@ and never deletes. A test pins that `app.ts` holds the only call of
 `releaseHeldEvidence`. What triggers `/freeze` is the control estate's, not
 this service's (the broker never initiates).
 
-`/reset` and `/freeze` 409s carry a machine-readable `reason` beside `error`
-(`locked` is retry-later, `held-evidence` is never-retry), so a caller never
-parses prose to tell a busy slot from held evidence.
+The 409 for a held slot lock on `/reconcile`, `/reset` and `/freeze`, and the
+`/reset` and `/freeze` 409s for held evidence, carry a machine-readable
+`reason` beside `error` (`locked` is retry-later, `held-evidence` is
+never-retry), so a caller never parses prose to tell a busy slot from held
+evidence. A `/reconcile` 409 for any other cause carries no `reason`.

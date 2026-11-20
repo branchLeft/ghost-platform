@@ -51,6 +51,16 @@ class ConfigureStateBucketTest(unittest.TestCase):
         self.assertEqual(got["versioning"], "Enabled")
         self.assertEqual(got["noncurrent_days"], 46)
 
+    def test_a_media_bucket_is_refused_before_any_request(self):
+        for bucket in ("branchleft-media-blog", "Branchleft-Media-Blog", "gw-media-shard-a1"):
+            with self.subTest(bucket=bucket):
+                provider = FakeProvider()
+                with self.assertRaises(csb.StateBucketError):
+                    csb.configure(bucket=bucket, endpoint="e.test", region="r", access_key="A" * 20,
+                                  secret_key="S", transport=provider)
+                self.assertFalse(provider.created)
+                self.assertIsNone(provider.lifecycle)
+
     def test_the_default_expiry_is_the_46_day_erasure_window(self):
         self.assertEqual(csb.NONCURRENT_EXPIRY_DAYS, 46)
         self.assertIn(b"<NoncurrentDays>46</NoncurrentDays>", csb.lifecycle_document())
