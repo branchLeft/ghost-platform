@@ -125,7 +125,7 @@ def _self_test() -> None:
     assert not missing and not shadowed, (
         "expected a pass with HETZNER_S3_* at the repository level and "
         "TENANT_STATE_S3_* environment-scoped -- this is the exact case "
-        "branchLeft/workspace#284 could not construct before the rename"
+        "that could not be constructed before the rename"
     )
 
     # MISSING: nothing has been scoped to the environment yet.

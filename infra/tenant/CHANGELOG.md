@@ -251,7 +251,7 @@ before fixing it, not assumed from the report.
   with `pulumi preview --json --show-sames`: without that flag Pulumi omits a
   genuinely unchanged component from `steps` entirely, indistinguishable from
   the original defect, and the new check refuses the plan unconditionally.
-  **branchLeft/workspace#290 tracks adding `--show-sames` to both current
+  **Tracked separately: adding `--show-sames` to both current
   callers (`ghost-platform-tenant-template` and `ghost-tenant-blog`) and must
   land in both before either repo's pin moves to `3.0.0`.** Nothing is broken
   today — both pin an exact version and neither has Dependabot watching
@@ -286,7 +286,7 @@ before fixing it, not assumed from the report.
 
 **Breaking: each tenant's media moves to its own Object Storage bucket, and the
 component derives where that is instead of taking it as config.** This is
-doc 14 §6 candidate (a), decided on 2026-08-25 (branchLeft/workspace#282), and
+doc 14 §6 candidate (a), decided on 2026-08-25, and
 it replaces one shared bucket with a per-tenant key prefix.
 
 - `GhostTenantMediaArgs` loses `bucket`, `publicBaseUrl` and `tenantPrefix`. It

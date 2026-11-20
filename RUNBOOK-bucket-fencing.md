@@ -401,7 +401,7 @@ Add `--dry-run` to that command to print the three documents it would send,
 sending nothing and reading no credential.
 
 **Copy the whole output — the `RAW EVIDENCE` block included — onto
-branchLeft/workspace#301.** Access key ids are printed by their last four
+the tracking issue for this work.** Access key ids are printed by their last four
 characters only, so the block names no identifier and is safe to paste
 anywhere. This is a question about the account that gets asked once; the run
 that is not recorded is a run that gets repeated against a production bucket.
@@ -609,7 +609,7 @@ evaluator asks who can actually do what rather than what the document says.
 > grant to another project's key sits on this bucket.
 
 **Copy the whole output — the `RAW EVIDENCE` block included — onto
-[branchLeft/workspace#304](https://github.com/branchLeft/workspace/issues/304).**
+the tracking issue for this work.**
 Access key ids are printed by their last four characters only, so the block names
 no identifier and is safe to paste anywhere. Recording it is what closes the
 issue; there is no PR to carry a trailer.
