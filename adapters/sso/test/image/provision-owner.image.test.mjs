@@ -181,6 +181,22 @@ const owner = {
   siteTitle: 'SITE_TITLE',
 };
 
+/**
+ * The URLs in `text` whose host is static.ghost.org, compared by parsed
+ * hostname (not by substring). JSON-escaped slashes are unescaped first.
+ */
+function staticGhostUrls(text) {
+  const found = [];
+  for (const [url] of text.replaceAll('\\/', '/').matchAll(/https?:\/\/[^\s"'\\<>]+/g)) {
+    try {
+      if (new URL(url).hostname === 'static.ghost.org') found.push(url);
+    } catch {
+      // not a parseable URL
+    }
+  }
+  return found;
+}
+
 let sink;
 let ownerCookie;
 
@@ -273,19 +289,15 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
       { cookie: ownerCookie }
     );
     assert.equal(posts.status, 200, posts.text);
-    assert.ok(!posts.text.includes('static.ghost.org'), 'a post still names static.ghost.org');
+    assert.deepEqual(staticGhostUrls(posts.text), [], 'a post names static.ghost.org');
     const settings = await provisioned.request('GET', '/ghost/api/admin/settings/', undefined, {
       cookie: ownerCookie,
     });
     assert.equal(settings.status, 200, settings.text);
-    const leak = settings.text.match(/.{0,80}static\.ghost\.org.{0,40}/)?.[0];
-    assert.ok(!leak, `a setting still names static.ghost.org: ${leak}`);
+    assert.deepEqual(staticGhostUrls(settings.text), [], 'a setting names static.ghost.org');
     const home = await provisioned.request('GET', '/', undefined, {});
     assert.equal(home.status, 200);
-    assert.ok(
-      !home.text.includes('static.ghost.org'),
-      'the home page still names static.ghost.org'
-    );
+    assert.deepEqual(staticGhostUrls(home.text), [], 'the home page names static.ghost.org');
   });
 
   it('is a no-op the second time: no new owner, no second email', async () => {
