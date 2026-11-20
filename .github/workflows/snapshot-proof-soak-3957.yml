@@ -1,0 +1,45 @@
+name: Percona proof soak (temporary)
+
+# Temporary: runs the un-sabotaged Percona proof on fresh runners to show the
+# tmpfs source clears the control 2 flake. Removed before merge.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/snapshot-proof-soak-3957.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: Soak ${{ matrix.n }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Pull the pinned images
+        run: |
+          docker pull "percona/percona-server@$(python3 db/provision/percona_pin.py index)"
+
+      - name: Run the Percona proof, un-sabotaged
+        run: db/provision/prove-percona-snapshot.sh
