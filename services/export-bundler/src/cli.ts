@@ -4,7 +4,14 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFileDrainFlag } from './drainFlag.js';
 import { createDrainFlagStore, flagPathFor } from './drainFlagStore.js';
-import { createDockerContainerRunner, startup, type VolumeMount } from './containerRunner.js';
+import {
+  createDockerContainerRunner,
+  GHOST_CONTENT_DIR,
+  startup,
+  type VolumeMount,
+} from './containerRunner.js';
+import { createContainerMediaSource } from './mediaSource.js';
+import { DEFAULT_UPLOAD_CEILING_BYTES } from './mediaTree.js';
 import { createHttpMediaProbe } from './mediaManifest.js';
 import { createHttpGhostExportClient } from './ghostExportClient.js';
 import { createHttpGhostProbe } from './ghostProbe.js';
@@ -50,6 +57,12 @@ export interface CliOptions {
   readonly imageEnv: string | undefined;
   /** The operator's statement of the recipient; refused unless it is the descriptor's. */
   readonly ageRecipient: string;
+  /**
+   * The public `age` recipient a promotion supplies for a demo, whose
+   * descriptor has no backup recipient. Must equal `ageRecipient`, and is
+   * accepted only under a consented grant and only for such a descriptor.
+   */
+  readonly promotionRecipient: string | undefined;
   readonly requestedBy: string;
   readonly deliveredTo: string;
   readonly destDir: string;
@@ -58,6 +71,13 @@ export interface CliOptions {
   readonly loopbackPort: number;
   /** The day after which the tenant's public media addresses stop working, YYYY-MM-DD. */
   readonly erasureDate: string;
+  /**
+   * A demo slot: also carry the originals in the content volume's `images`,
+   * `media` and `files`, which a promotion imports through the tenant's own Ghost.
+   */
+  readonly carryMediaFiles: boolean;
+  /** The destination tier's upload ceiling; a larger file is listed, not carried. */
+  readonly uploadCeilingBytes: number;
 }
 
 const RETIRED_FLAGS = [
@@ -80,6 +100,14 @@ function requireFlag(argv: readonly string[], name: string): string {
   return value;
 }
 
+function parseCeiling(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_UPLOAD_CEILING_BYTES;
+  if (!/^[1-9][0-9]{0,15}$/.test(value)) {
+    throw new Error('--upload-ceiling-bytes must be a positive whole number');
+  }
+  return Number(value);
+}
+
 export function parseArgs(argv: readonly string[]): CliOptions {
   // First, so a missing grant is refused before any other flag is read.
   const grant = parseSupportGrant(
@@ -93,6 +121,15 @@ export function parseArgs(argv: readonly string[]): CliOptions {
         `identity come from its own rendered stack`
     );
   }
+  // A flag with no value is refused, never read as absent: absent would fall
+  // back to the descriptor's own recipient.
+  const promotionRecipient = flagValue(argv, 'promotion-recipient');
+  if (
+    argv.includes('--promotion-recipient') &&
+    (promotionRecipient === undefined || promotionRecipient.startsWith('--'))
+  ) {
+    throw new TenantConfigError('--promotion-recipient has no value');
+  }
   return {
     grant,
     descriptorPath: requireFlag(argv, 'descriptor'),
@@ -100,6 +137,7 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     secretsEnv: flagValue(argv, 'secrets-env'),
     imageEnv: flagValue(argv, 'image-env'),
     ageRecipient: requireFlag(argv, 'age-recipient'),
+    promotionRecipient,
     requestedBy: requireFlag(argv, 'requested-by'),
     deliveredTo: requireFlag(argv, 'delivered-to'),
     destDir: requireFlag(argv, 'dest-dir'),
@@ -107,6 +145,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     auditLogPath: requireFlag(argv, 'audit-log'),
     loopbackPort: Number(requireFlag(argv, 'loopback-port')),
     erasureDate: requireFlag(argv, 'erasure-date'),
+    carryMediaFiles: argv.includes('--carry-media-files'),
+    uploadCeilingBytes: parseCeiling(flagValue(argv, 'upload-ceiling-bytes')),
   };
 }
 
@@ -145,7 +185,14 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
       dockerCommand
     )
   );
-  const ageRecipient = bindTenant(descriptor, runtime, opts.ageRecipient);
+  const ageRecipient = bindTenant(
+    descriptor,
+    runtime,
+    opts.ageRecipient,
+    opts.promotionRecipient === undefined
+      ? null
+      : { recipient: opts.promotionRecipient, grantLane: opts.grant.lane }
+  );
 
   const colourId = `${slug}-export-${process.pid}`;
   // runExport clears the flag itself on every normal exit; this covers a signal.
@@ -184,6 +231,20 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
         );
 
   const container = { user: runtime.user, volumes };
+  let mediaTree;
+  if (opts.carryMediaFiles) {
+    const content = volumes.find((v) => v.mountPath === GHOST_CONTENT_DIR);
+    if (content === undefined) {
+      throw new TenantConfigError(`the rendered stack mounts no volume at ${GHOST_CONTENT_DIR}`);
+    }
+    mediaTree = {
+      source: createContainerMediaSource(
+        { runId: colourId, image: runtime.image, user: runtime.user, volume: content.volume },
+        { dockerCommand }
+      ),
+      uploadCeilingBytes: opts.uploadCeilingBytes,
+    };
+  }
   const result = await runExport(
     {
       drainFlags: createDrainFlagStore(opts.flagDir),
@@ -236,6 +297,7 @@ export async function main(argv: readonly string[], deps: MainDeps = {}): Promis
         baseUrl: mediaBaseUrlOf(runtime.env),
         erasureDate: opts.erasureDate,
       },
+      ...(mediaTree === undefined ? {} : { mediaTree }),
     }
   );
 

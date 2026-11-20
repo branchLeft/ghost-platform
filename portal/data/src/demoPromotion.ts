@@ -1,4 +1,5 @@
 import { assertTransitionAllowed, type DemoPosition, type DemoState } from './demoLifecycle.js';
+import { TermsNotAcceptedError } from './documents.js';
 
 /**
  * The fields a promotion must supply by name. Each is tier-differentiated, so
@@ -56,6 +57,13 @@ export interface PromotionEffects {
   /** Whether the demo's drain flag is set. An unreadable flag answers true or throws, never false. */
   isDrained(demoId: string): Promise<boolean>;
   gateVerdict(demoId: string): Promise<GateVerdict>;
+  /**
+   * The documents gate: resolves when the demo's owner has accepted the current
+   * version of each document (terms, privacy, DPA), and throws
+   * `TermsNotAcceptedError` otherwise. A caller wires it to the data layer's
+   * `assertAccepted`. Any other failure also refuses the promotion.
+   */
+  assertDocumentsAccepted(demoId: string): Promise<void>;
   /** Records a transition of the demo's state history. */
   transition(demoId: string, to: DemoState): Promise<void>;
   /** Re-points the record to the tenant's descriptor, atomically: it commits whole or not at all. */
@@ -81,7 +89,7 @@ export interface PromotionRequest {
 }
 
 export type PromotionPrecondition =
-  'approval' | 'consent' | 'export' | 'drain' | 'gate' | 'targets';
+  'approval' | 'consent' | 'documents' | 'export' | 'drain' | 'gate' | 'targets';
 
 /** A precondition did not hold. Nothing was changed: the check runs before the first write. */
 export class PromotionRefusedError extends Error {
@@ -129,9 +137,22 @@ function missingTargets(targets: PromotionTargets): PromotionTargetField[] {
   });
 }
 
+/** Refuses a demo whose owner has not accepted the current documents, naming the pending ones. */
+async function assertDocumentsAccepted(demoId: string, effects: PromotionEffects): Promise<void> {
+  try {
+    await effects.assertDocumentsAccepted(demoId);
+  } catch (error) {
+    if (error instanceof TermsNotAcceptedError) {
+      throw new PromotionRefusedError('documents', error.message);
+    }
+    const why = `acceptance could not be read (${reasonOf(error)})`;
+    throw new PromotionRefusedError('documents', why);
+  }
+}
+
 /**
  * Refuses unless every precondition holds, before any write. The order is
- * state, approval, consent, targets, export, drain, gate.
+ * state, approval, consent, targets, export, documents, drain, gate.
  *
  * @throws ForbiddenTransitionError
  * @throws PromotionRefusedError
@@ -152,6 +173,7 @@ async function assertPreconditions(
   if (request.exportDone === null || request.exportDone.archiveReference === '') {
     throw new PromotionRefusedError('export', 'the export of the demo content is not done');
   }
+  await assertDocumentsAccepted(request.demoId, effects);
   if (!(await effects.isDrained(request.demoId))) {
     throw new PromotionRefusedError('drain', 'the demo is not drained');
   }

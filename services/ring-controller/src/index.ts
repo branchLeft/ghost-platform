@@ -7,6 +7,8 @@ export type {
   PersistSnapshot,
   RecoveredBumpState,
 } from './bumpStateMachine.js';
+export { createVerifiedBackup, judgeDump } from './verifiedBackup.js';
+export type { TakeTenantDump, TenantDumpResult } from './verifiedBackup.js';
 export { createApplyLock } from './applyLock.js';
 export type { ApplyLock } from './applyLock.js';
 export {

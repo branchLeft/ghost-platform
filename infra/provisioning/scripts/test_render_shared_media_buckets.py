@@ -9,6 +9,7 @@ applies only to the operator's key, so this file decides with its own evaluator.
 import contextlib
 import importlib.util
 import io
+import json
 import pathlib
 import re
 import unittest
@@ -114,6 +115,19 @@ class TestEachBucketIsRenderedWhole(unittest.TestCase):
         self.assertIn('"NoncurrentDays": 30', text)
         self.assertIn('"DaysAfterInitiation": 7', text)
         self.assertIn("Status=Enabled", text)
+
+    def test_no_lifecycle_rule_expires_a_current_version(self):
+        # A current-version `Expiration` (Days or Date) deletes live media, which
+        # has no other copy. Only the noncurrent and multipart elements may appear.
+        text = renderer.render_commands(BUCKETS, LOCATION, keys())
+        documents = re.findall(r"<<'LIFECYCLE'\n(.*?)\nLIFECYCLE", text, flags=re.S)
+        self.assertEqual(len(documents), len(BUCKETS))
+        for body in documents:
+            for rule in json.loads(body)["Rules"]:
+                self.assertEqual(
+                    set(rule) - {"ID", "Status", "Filter"},
+                    {"NoncurrentVersionExpiration", "AbortIncompleteMultipartUpload"},
+                )
 
     def test_the_location_is_the_one_passed_in(self):
         text = renderer.render_commands(BUCKETS, "nbg1", keys())

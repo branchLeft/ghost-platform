@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import nodemailer, { type Transporter } from 'nodemailer';
 import type { DeliveryClient } from './deliveryClient.js';
 import type { WireMessage } from './drainClient.js';
+import { outcomeIdFor } from './sentJournal.js';
 import { SweegoSubmissionError, classifySweegoError } from './sweegoFailure.js';
 
 export interface SweegoTransportOptions {
@@ -32,6 +33,13 @@ export interface SweegoDeliveryClientOptions {
    * offers no TLS turns it off.
    */
   requireTls?: boolean;
+  /**
+   * Name of the header that carries the message's correlation value
+   * (`outcomeIdFor`), which a complaint echoes back. Any header of that name the
+   * message already carries is removed first: a value the message's author chose
+   * must never be able to name another message. Unset, no header is added.
+   */
+  outcomeHeader?: string;
   transporterFactory?: (options: SweegoTransportOptions) => Transporter;
 }
 
@@ -48,6 +56,15 @@ function readCredential(passFile: string): string {
     throw new SweegoSubmissionError('credential');
   }
   return credential;
+}
+
+function withOutcomeHeader(message: WireMessage, name: string | undefined): Record<string, string> {
+  if (name === undefined) {
+    return message.headers;
+  }
+  const wanted = name.toLowerCase();
+  const kept = Object.entries(message.headers).filter(([key]) => key.toLowerCase() !== wanted);
+  return { ...Object.fromEntries(kept), [name]: outcomeIdFor(message) };
 }
 
 /**
@@ -77,6 +94,7 @@ export function createSweegoDeliveryClient(opts: SweegoDeliveryClientOptions): D
       logger: false,
       debug: false,
     });
+    const headers = withOutcomeHeader(message, opts.outcomeHeader);
     try {
       await transporter.sendMail({
         from: message.from,
@@ -85,7 +103,7 @@ export function createSweegoDeliveryClient(opts: SweegoDeliveryClientOptions): D
         subject: message.subject,
         html: message.html,
         text: message.text,
-        headers: message.headers,
+        headers,
       });
     } catch (error) {
       throw classifySweegoError(error);

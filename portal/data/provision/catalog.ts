@@ -326,6 +326,8 @@ function expectedAcl(
     );
   }
   for (const grant of grants) {
+    // A column grant is not on the object's own ACL: M07 holds it.
+    if (grant.columns !== undefined) continue;
     if (grant.grantee !== 'PUBLIC' && !checkpoint.present.has(grant.grantee)) continue;
     const grantee = grant.grantee === 'PUBLIC' ? 'PUBLIC' : checkpoint.names[grant.grantee];
     for (const privilege of grant.privileges) {
@@ -714,9 +716,22 @@ async function mentions(
       checkpoint.databaseState === 'created-empty' && object.since === INIT
         ? []
         : grantsAt(object, checkpoint.applied);
+    // A table's own ACL is one dependency on the role, however many
+    // privileges it holds, and each column with an ACL entry is another.
+    const seen = new Set<string>();
     for (const grant of grants) {
       if (grant.grantee === 'PUBLIC' || !checkpoint.present.has(grant.grantee)) continue;
-      expected.push(`a ${object.kind} ${object.identity} -> ${checkpoint.names[grant.grantee]}`);
+      const role = checkpoint.names[grant.grantee];
+      for (const column of grant.columns ?? [undefined]) {
+        const what =
+          column === undefined
+            ? `${object.kind} ${object.identity}`
+            : `${object.kind} column ${object.identity}.${column}`;
+        const line = `a ${what} -> ${role}`;
+        if (seen.has(line)) continue;
+        seen.add(line);
+        expected.push(line);
+      }
     }
   }
   if (inDatabase) {
@@ -812,7 +827,36 @@ function manifestRelations(checkpoint: Checkpoint): string[] {
     .map((o) => o.identity);
 }
 
-async function columnAcls(client: ClientBase, checkpoint: Checkpoint): Promise<Observation> {
+/** The column ACL entries the manifest's column grants give, as `aclText` prints them. */
+function expectedColumnAcls(checkpoint: Checkpoint, scope: Scope): string[] {
+  const out: string[] = [];
+  for (const object of expectedObjects(checkpoint)) {
+    const owner = ownerOf(object, scope, checkpoint);
+    for (const grant of grantsAt(object, checkpoint.applied)) {
+      if (grant.columns === undefined || grant.grantee === 'PUBLIC') continue;
+      if (!checkpoint.present.has(grant.grantee)) continue;
+      for (const column of grant.columns) {
+        for (const privilege of grant.privileges) {
+          out.push(
+            aclText('column', `${object.identity}.${column}`, {
+              grantor: owner,
+              grantee: checkpoint.names[grant.grantee],
+              privilege,
+              grantable: false,
+            })
+          );
+        }
+      }
+    }
+  }
+  return out;
+}
+
+async function columnAcls(
+  client: ClientBase,
+  checkpoint: Checkpoint,
+  scope: Scope
+): Promise<Observation> {
   const found = await rows<AclRow & { identity: string }>(
     client,
     `SELECT c.oid::regclass::text || '.' || a.attname AS identity, ${ACL_COLUMNS}
@@ -824,7 +868,7 @@ async function columnAcls(client: ClientBase, checkpoint: Checkpoint): Promise<O
   return {
     mechanism: 'M07',
     actual: found.map((r) => aclText('column', r.identity, r)),
-    expected: [],
+    expected: expectedColumnAcls(checkpoint, scope),
   };
 }
 
@@ -1214,7 +1258,7 @@ async function databaseObservations(
   scope: Scope
 ): Promise<Observation[]> {
   return [
-    await columnAcls(client, checkpoint),
+    await columnAcls(client, checkpoint, scope),
     await rowSecurity(client, checkpoint),
     ...(await functionDefinitions(client, checkpoint)),
     await typeAcls(client, checkpoint),
