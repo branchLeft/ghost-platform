@@ -300,6 +300,12 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
     assert.deepEqual(staticGhostUrls(home.text), [], 'the home page names static.ghost.org');
   });
 
+  it("serves the About link's page on a fresh site, so the default navigation is not a 404", async () => {
+    // Ghost's default navigation links to /about/ (default-settings.json).
+    const about = await provisioned.request('GET', '/about/', undefined, {});
+    assert.equal(about.status, 200, `the About link answered ${about.status}`);
+  });
+
   it('is a no-op the second time: no new owner, no second email', async () => {
     const before = sink.messages.length;
     const result = provisionOwner({ container: provisioned.name, ...owner });
