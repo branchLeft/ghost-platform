@@ -1,6 +1,7 @@
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { encryptToFile } from './ageEncryption.js';
+import { isSafeEntryName, splitUstarName } from './entryNames.js';
 
 export interface ArchiveFile {
   readonly name: string;
@@ -17,7 +18,6 @@ export class ArchiveEntryError extends Error {
 const BLOCK = 512;
 // ustar's size field is 11 octal digits.
 const MAX_ENTRY_BYTES = 8 ** 11 - 1;
-const SAFE_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 
 function writeOctal(header: Buffer, value: number, offset: number, width: number): void {
   header.write(value.toString(8).padStart(width - 1, '0') + '\0', offset, width, 'ascii');
@@ -25,7 +25,10 @@ function writeOctal(header: Buffer, value: number, offset: number, width: number
 
 function ustarHeader(name: string, size: number, mtimeSeconds: number): Buffer {
   const header = Buffer.alloc(BLOCK);
-  header.write(name, 0, 100, 'ascii');
+  const split = splitUstarName(name);
+  if (split === null) throw new ArchiveEntryError(`archive entry name does not fit ustar: ${name}`);
+  header.write(split.name, 0, 100, 'ascii');
+  header.write(split.prefix, 345, 155, 'ascii');
   writeOctal(header, 0o600, 100, 8);
   writeOctal(header, 0, 108, 8);
   writeOctal(header, 0, 116, 8);
@@ -43,15 +46,17 @@ function ustarHeader(name: string, size: number, mtimeSeconds: number): Buffer {
 
 /**
  * A plain ustar archive, built in memory so that the only thing that ever
- * reaches disk is `age`'s ciphertext of it. Entry names are the fixed,
- * short names this package chooses, never a filename Ghost supplied, so no
- * long-name extension is needed.
+ * reaches disk is `age`'s ciphertext of it. An entry name is one of the two
+ * forms `entryNames.ts` allows: a fixed flat name this package chooses, or a
+ * media path under `content/images|media|files/` whose every segment is from
+ * the safe set. Nothing else is written, so the reader never has to decide
+ * what an odd name means.
  */
 export function buildTar(files: readonly ArchiveFile[], mtimeSeconds: number): Buffer {
   const parts: Buffer[] = [];
   const seen = new Set<string>();
   for (const file of files) {
-    if (!SAFE_NAME.test(file.name) || file.name === '.' || file.name === '..') {
+    if (!isSafeEntryName(file.name)) {
       throw new ArchiveEntryError(`unsafe archive entry name: ${JSON.stringify(file.name)}`);
     }
     if (seen.has(file.name)) {

@@ -92,6 +92,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0011_support_access',
       'applied migration 0012_demo_request_status_read',
       'applied migration 0013_moderation_item',
+      'applied migration 0014_tenant_billing',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),
@@ -183,13 +184,26 @@ describe('the provisioning lifecycle', () => {
       }
     }
     // The provisioner role appends and reads the register and the events; it
-    // changes and removes nothing, and no other role writes them.
-    for (const table of [
-      'portal.demo_state_event',
-      'portal.hostname_register',
-      'portal.hostname_retirement',
-    ]) {
-      expect(await privilege('portal_provisioner', table, 'INSERT')).toBe(true);
+    // changes and removes nothing, and no other role writes them. It inserts by
+    // column, so it holds no table-wide INSERT and none on the timestamp the
+    // database sets for each table.
+    const stamps: Record<string, string> = {
+      'portal.demo_state_event': 'recorded_at',
+      'portal.hostname_register': 'allocated_at',
+      'portal.hostname_retirement': 'retired_at',
+    };
+    for (const [table, stamp] of Object.entries(stamps)) {
+      expect(await privilege('portal_provisioner', table, 'INSERT')).toBe(false);
+      const [granted] = await admin(
+        PROV_DB,
+        `SELECT a.attname AS name, has_column_privilege('portal_provisioner', '${table}', a.attname, 'INSERT') AS p
+           FROM pg_attribute a WHERE a.attrelid = '${table}'::regclass AND a.attnum > 0 AND NOT a.attisdropped`
+      );
+      const insertable = new Map<string, boolean>(
+        granted!.rows.map((row: { name: string; p: boolean }) => [row.name, row.p])
+      );
+      expect(insertable.get(stamp)).toBe(false);
+      expect([...insertable.values()].filter(Boolean).length).toBe(insertable.size - 1);
       expect(await privilege('portal_provisioner', table, 'SELECT')).toBe(true);
       expect(await privilege('portal_provisioner', table, 'UPDATE')).toBe(false);
       expect(await privilege('portal_provisioner', table, 'DELETE')).toBe(false);
@@ -335,7 +349,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 15 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 16 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 

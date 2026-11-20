@@ -14,6 +14,10 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DESCRIPTOR_REFRESH_MS` | no (default `5000`) | How often the descriptor directory is re-read. |
 | `COLLECTOR_DESCRIPTOR_MAX_STALENESS_MS` | no (default `60000`) | Past this age, the drain list is treated as empty rather than as its last good read. |
 | `COLLECTOR_DEMO_MAIL_DOMAIN` | for a demo host | The platform's shared demo mail domain: the one domain a demo host's header From may carry (a demo descriptor holds a local part only). Unset, the mail of every demo host is held, unsent and unacked, and the collector logs `demo_mail_domain_not_set` at start-up. See the header From scope section. |
+| `COLLECTOR_DEMO_SLOT_CEILING` | no (default `20`) | A demo slot's own ceiling, in messages per window, when its descriptor's `mail.ceiling` names none. See Demo mail containment. |
+| `COLLECTOR_DEMO_ESTATE_CEILING` | no (default `200`) | The hard cap every demo slot shares, in messages per window. |
+| `COLLECTOR_DEMO_CEILING_WINDOW_MS` | no (default `86400000`, one day) | The rolling window both demo ceilings count in. |
+| `COLLECTOR_DEMO_CEILING_STATE_PATH` | no (beside `COLLECTOR_DEDUPE_STATE_PATH`, as `demo-ceilings.json`) | File the counted places are kept in, so a restart does not hand every demo slot a fresh ceiling. With neither this nor the dedupe path set, a restart forgets them and the collector logs `demo_ceilings_not_persistent` at start-up. |
 | `COLLECTOR_SHIM_PORT` | no (default `8080`) | The HTTP port every host's mailgun-shim listens on for its drain surface — a deployment convention, combined with the descriptor's own `appHostIp`. |
 | `COLLECTOR_DRAIN_TOKEN` | yes | The drain endpoint's shared bearer credential. One value across every host. |
 | `COLLECTOR_DRAIN_TIMEOUT_MS` | no (default `40000`) | Client-side timeout for one `GET /drain` call. Must exceed the target shim's own `SHIM_DRAIN_HOLD_MS`. |
@@ -54,6 +58,16 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_IP2_COUNTER_PATH` | with the state path | File, on a volume that outlives the container and is writable by the `node` user, the day's count is kept in, a different file from the state file. Set without the state path it fails start-up. |
 | `COLLECTOR_OUTCOMES_DSN_DIR` | no (off) | Directory the notifications arrive in, one `.eml` file each. Handled files move to `processed/` beside them, never deleted. With the lane return paths set it and `COLLECTOR_OUTCOMES_MESSAGE_ID_KEY` turn the outcome path on; otherwise it needs `COLLECTOR_OUTCOMES_RETURN_PATH` and the key. |
 | `COLLECTOR_OUTCOMES_POLL_MS` | no (default `30000`) | How often the directory is read. |
+| `COLLECTOR_COMPLAINTS_URL` | no (off) | The Sweego complaint receiver's private drain address, e.g. `http://RECEIVER_PRIVATE_ADDRESS:PORT` (`WEBHOOK_DRAIN_HOST`/`PORT` there). We dial it; it never dials us. `http` or `https`, no credentials. Set together with `COLLECTOR_COMPLAINTS_TOKEN_FILE` and `COLLECTOR_SENT_JOURNAL_PATH`, and only with `COLLECTOR_SWEEGO_SMTP_HOST`, or start-up fails. See the Sweego complaints section. |
+| `COLLECTOR_COMPLAINTS_TOKEN_FILE` | with the URL | Path of the file holding the receiver's drain bearer token (`WEBHOOK_DRAIN_TOKEN_FILE` there), and nothing else but an optional trailing newline. Read for each call, so a rotation needs no restart. The value is never an environment variable: `COLLECTOR_COMPLAINTS_TOKEN` is refused. **The drain port speaks plain HTTP: the firewall rule limiting it to this host must be in place before the token is placed here.** |
+| `COLLECTOR_SENT_JOURNAL_PATH` | with the URL | File, on a volume that outlives the container and is writable by the `node` user, the sent-id journal is kept in. Holds a message id, its generation and its spool id for each Sweego attempt: no address, subject or body. |
+| `COLLECTOR_SENT_JOURNAL_TTL_MS` | no (default `3024000000`, 35 days) | How long after a send a complaint can still be placed. |
+| `COLLECTOR_COMPLAINTS_OUTCOME_HEADER` | no (default `x-branchleft-outcome`) | Name of the header every Sweego message carries with its correlation value. The receiver's `WEBHOOK_OUTCOME_HEADER` must be the same, or nothing matches. |
+| `COLLECTOR_COMPLAINTS_POLL_MS` | no (default `30000`) | Wait between passes over the receiver's queue. |
+| `COLLECTOR_COMPLAINTS_RETRY_BACKOFF_MS` / `COLLECTOR_COMPLAINTS_MAX_BACKOFF_MS` | no (`5000` / `300000`) | Wait after a failed pass, doubling on each failure in a row up to the ceiling. |
+| `COLLECTOR_COMPLAINTS_TIMEOUT_MS` | no (default `10000`) | Timeout for one call to the receiver. |
+| `COLLECTOR_COMPLAINTS_PER_TENANT_PER_HOUR` | no (default `50`) | The most complaints reported to one tenant's spool in a rolling hour. The rest are dropped, counted (`capped`) and alerted (`complaint_cap_reached`, once per tenant per hour). |
+| `COLLECTOR_COMPLAINTS_GIVE_UP_MS` | no (default `86400000`, one day) | A complaint that cannot be reported this long after the receiver got it (its spool left the descriptor, or never opted in) is given up on (`abandoned`) so it cannot hold the receiver's queue. |
 
 ## Design
 
@@ -134,6 +148,44 @@ mx1 honours the DSN request at all, is the mx1-side half.
 A feedback-loop complaint (an RFC 5965 abuse report) arriving in the same
 directory can be read as a `complained` outcome by an opt-in reader that is off
 by default: see [src/arf/README.md](src/arf/README.md).
+
+## Demo mail containment
+
+A demo slot sends real mail as an accepted risk, so the design owes
+containment rather than prevention (LLD-6 section 05). The visitor is an
+administrator in the slot's Ghost, so none of it is left to the slot or its
+host: it is enforced here, on the draining side, where a compromised demo host
+cannot lift it. `demoContainment.ts` decides each drained demo message, after
+the header From check and before any target sees it:
+
+1. **The sender is the slot's own.** The From the message leaves with is the
+   descriptor's `mail.identity.localPart` on the demo mail domain, whatever
+   the slot's Ghost asked for. A From outside the demo domain is still refused
+   by the header From check. A slot with no well-formed local part, or no demo
+   mail domain configured, has its mail held, unsent and unacked.
+2. **The recipient is in the verified-address record.** The record is an
+   interface (`VerifiedRecipients`). Today it is the descriptor's `ownerEmail`,
+   the prospect's own claimed address and nothing else: compared exactly after
+   lower-casing, so a plus-tagged variant, a list or a display name never
+   matches. A slot whose descriptor carries no usable `ownerEmail` has no
+   verified recipient. A refused recipient is acked, never sent, and reported
+   to its spool as a permanent failure (the existing outcome route), so Ghost
+   shows it instead of the message vanishing. It takes no place under a ceiling.
+3. **Two ceilings, not one** (`demoCeilings.ts`). Per slot: the descriptor's
+   `mail.ceiling`, or `COLLECTOR_DEMO_SLOT_CEILING` when it names none. Per
+   estate: `COLLECTOR_DEMO_ESTATE_CEILING`, shared by every demo slot. Both
+   count messages in a rolling window and both are keyed on the slot's
+   descriptor slug, never on a client address, so there is no address-keyed
+   path to reach over IPv6. One slot filling its ceiling stops no other slot;
+   the estate ceiling stops all of them. A message that finds a ceiling full is
+   acked, never sent, and reported to its spool as a temporary failure, so the
+   owner's own address is never suppressed for it. A message id that already
+   holds a place takes no second one, so a re-offer after a lost ack or an mx1
+   failure never spends the ceiling twice.
+
+A demo's mail is held, never sent, when the loop is built without the
+containment. Logs name a reason and a message id only: no address, subject or
+domain. A tenant's mail is untouched by all of it.
 
 ## Source notes
 
@@ -666,6 +718,64 @@ new install, with nothing in either place, starts at zero.
 Limits: the witness records that a file was written, not what was in it, so a volume
 restored from an old copy (marker and witness both present) is not caught. Unset, only
 the markers guard the files and the collector logs `state_witness_not_configured`.
+
+### Sweego complaints pulled from the receiver
+
+A recipient's complaint about a Sweego message reaches the Sweego complaint
+receiver (`services/sweego-webhook-receiver`) as a signed webhook. The receiver
+never dials out and cannot tell a complaint about our mail from one a holder of
+its secret invented, so the collector, which alone knows what it sent, does.
+
+- **Sent-id journal (`sentJournal.ts`).** Before each attempt at Sweego the
+  collector writes down the message id, its claim generation and the spool it
+  was drained from, in an append-only, fsynced file (`COLLECTOR_SENT_JOURNAL_PATH`).
+  It is written before the attempt, as the pin is: an attempt that times out may
+  still have been taken. A journal that cannot keep an entry (full, or file
+  unwritable) is logged (`sent_journal_not_recorded`) and the message is sent
+  anyway; a complaint about it will then not match. It is a separate record from
+  the poll-state journal in `src/sweegoOutcomes`, which is memory-only and not
+  wired to anything.
+- **The correlation header.** Every Sweego message carries
+  `COLLECTOR_COMPLAINTS_OUTCOME_HEADER: <message id>.<generation>`. Any header of that
+  name the message already had is removed first, so a message's author cannot
+  name another message.
+- **One pass (`complaints/complaintPuller.ts`).** `GET /drain` on the receiver
+  with the bearer token read from its file; for each record: an outcome id the
+  journal does not hold is dropped and counted (`unmatched`), a repeat is dropped
+  (`duplicates`), a tenant over its hourly cap is dropped and alerted (`capped`),
+  and the rest are reported to the spool the **journal** names, never one the
+  complaint names, as `{ id, drainCount, outcome: "complained" }` on
+  `POST /drain/outcomes`, the route the mx1 outcome path and the dropped-recipient
+  report already use. The spool answering `unknown` ends it (`unknown`): a
+  complaint arrives long after the send and its ack, so it will not be learnt later.
+- **Ack after handling.** `POST /drain/ack` goes through the last complaint of the
+  unbroken run, from the front, that is handled (reported, or dropped for one of the
+  reasons above). A complaint whose report failed is not acknowledged and nor is
+  anything after it; those after it that were handled are remembered, so the retry
+  neither reports nor counts them twice. A lost ack is only repeated.
+- **Backoff.** A failed pull, report or ack doubles the wait from
+  `COLLECTOR_COMPLAINTS_RETRY_BACKOFF_MS` up to `COLLECTOR_COMPLAINTS_MAX_BACKOFF_MS`;
+  a clean pass resets it. A full, acknowledged page is followed at once by another.
+  Nothing is lost while the receiver is down: its queue is only released by an ack.
+- **Give up.** A complaint older than `COLLECTOR_COMPLAINTS_GIVE_UP_MS` that still
+  cannot be reported is dropped and counted (`abandoned`).
+- **Counters** (`puller.counts()`): pulled, reported, unmatched, duplicates, capped,
+  unknown, abandoned, and pull, report and ack failures. Log lines carry a sequence
+  number, a spool id and an error class; never an outcome id, token or address.
+
+The spool serves the route only when opted in (`SHIM_DRAIN_OUTCOMES=true`) and must
+accept a `complained` outcome: until it does, every report answers 404, is retried
+with backoff and is given up on after a day.
+
+Known gaps and unproven points: the hourly cap and the remembered-repeats set are
+in memory, so a restart resets them (the spool's own `alreadyHandled` still stops a
+second event); a volume replaced by an empty one empties the journal and every
+complaint is then dropped as `unmatched`; whether Sweego echoes our custom header in
+its complaint payload (rather than only its own `swg_uid`) is unproven, and if it does
+not, every complaint is dropped as `unmatched` and counted, never reported.
+Records are read one page (500) at a time from the front of the receiver's queue,
+so more than 500 complaints held behind one unreportable spool wait for it or for the
+give-up age.
 
 ### a dropped recipient reported back to the spool
 
