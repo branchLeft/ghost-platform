@@ -1,0 +1,13 @@
+# Runs the collector 60 seconds after the last run finished, so runs never overlap.
+# Not Persistent: a minute missed while the host was down is not replayed. Each
+# reading replaces the last, so a replayed run would add nothing.
+[Unit]
+Description=Carry each tenant's site health and version into the portal, every minute
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
