@@ -35,7 +35,7 @@ bound returns only A's rows.
   security and a `tenant_isolation` policy that is permissive, `FOR ALL`,
   explicitly `TO portal_tenant`, whose `USING` and `WITH CHECK` both render
   (whitespace and quoting aside) to `<schema>.<table>.tenant_id =
-public.bound_tenant()`. A policy of `true`, another column or function, an
+  public.bound_tenant()`. A policy of `true`, another column or function, an
   `OR true`, a missing `WITH CHECK` or a parameter is refused with
   `UnisolatedTableError` naming the table. Other policies on a table are not
   judged here: the provisioning command's live check (M20) pins the deployed
@@ -517,6 +517,26 @@ deletes an item yet, and the owner role has no grant. The Ghost-facing
 Tenant-facing code imports the first only; a test fails if anything under
 `src/tenant` imports the owner path, the provisioner path or the migrator. The owner pool connects as a login that is a member
 of `portal_owner` alone, so the tenant-facing connection cannot assume that role.
+
+## Recovering from a stopped first run
+
+A full run that stops after it has created roles (steps 2 to 4) leaves them
+holding no grants. The next run refuses, naming each missing grant, for example
+`missing M05: USAGE on schema portal to portal_prospect`. The command never
+repairs this itself: a stopped run and a tampered role look the same, so both
+are refused.
+
+If the refusal names roles with no grants, and you know the failed run created
+them, drop those roles on the database host as the administrator, then re-run
+the full command. Drop only the roles the refusal names:
+
+```sh
+psql "$(cat "$PORTAL_ADMIN_URL_FILE")" -c 'DROP ROLE portal_prospect_login' -c 'DROP ROLE portal_prospect'
+```
+
+Use your configured login names if they differ from the defaults in the table
+above. A refusal naming a role with no grants means exactly this, or that
+privileges were removed by hand: investigate before dropping anything.
 
 ## Running the tests
 

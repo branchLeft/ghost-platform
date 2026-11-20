@@ -1148,6 +1148,10 @@ export async function provisionPortal(
         : config.prospectPassword,
       migratorLogin: config.migratorPassword,
     };
+    // The prospect password, when none is named, is made here and held only in
+    // memory: every line from this point passes through `redact` with it.
+    const say = (line: string): void =>
+      log(redact(line, { prospectPassword: passwords['prospectLogin'] }));
     prospectProbe = prospectKept ? '' : passwords['prospectLogin']!;
     const rotated = LOGINS.filter(
       (p) => !created.has(p) && !(p === 'prospectLogin' && prospectKept)
@@ -1162,13 +1166,13 @@ export async function provisionPortal(
       }
       await grantMemberships(lock, names, created);
     });
-    log(
+    say(
       created.size > 0
         ? `created ${[...created].map((p) => names[p]).join(', ')}`
         : 'passwords rotated'
     );
     if (prospectUnset) {
-      log(
+      say(
         created.has('prospectLogin')
           ? `${names.prospectLogin} created with a password no one holds: PORTAL_PROSPECT_PASSWORD_FILE was not named; name it in a later full run to set one`
           : `${names.prospectLogin} password left as it is: PORTAL_PROSPECT_PASSWORD_FILE was not named`
@@ -1186,7 +1190,7 @@ export async function provisionPortal(
       await lock.query(
         `CREATE DATABASE ${ident(config.database)} OWNER ${ident(names.migratorLogin)}`
       );
-      log(`created database ${config.database}`);
+      say(`created database ${config.database}`);
       done.push(`created database ${config.database} (empty)`);
     }
     // Before PostgreSQL 15, schema `public` is still the bootstrap superuser's.
@@ -1224,8 +1228,8 @@ export async function provisionPortal(
     }
 
     // 5. In the portal database, one transaction: check again, create, check all.
-    await applyInPortal(config, names, major, migrations, created, log);
-    log('post-check passed: the server matches the manifest');
+    await applyInPortal(config, names, major, migrations, created, say);
+    say('post-check passed: the server matches the manifest');
   } finally {
     await lock.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
     lock.release();
