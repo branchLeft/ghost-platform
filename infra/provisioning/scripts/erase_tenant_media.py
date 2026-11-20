@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
@@ -37,7 +38,8 @@ EXIT_USAGE = 2
 EXIT_RED = 3
 
 # The gateway's own rule for a folder name (services/storage-gateway admin).
-FOLDER_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+# Matched with fullmatch: a trailing newline must not pass as the folder's end.
+FOLDER_PATTERN = re.compile(r"[A-Za-z0-9_-]{16,128}")
 
 # Hetzner admits 750 requests a second per source address and, separately, per
 # bucket, and neither can be raised. Live readers and writers share the shard,
@@ -184,7 +186,7 @@ def resolve_tenant(register: Sequence[RegisteredTenant], folder: str, bucket: st
     """The one registered tenant whose folder is exactly `folder` in `bucket`.
     A folder that is only the start of another tenant's folder is refused by
     name, so a truncated paste can never reach a neighbour."""
-    if not FOLDER_PATTERN.match(folder):
+    if not FOLDER_PATTERN.fullmatch(folder):
         raise Refusal("the folder is not a valid folder name; nothing changed")
     exact = [entry for entry in register if entry.folder == folder]
     if not exact:
@@ -223,7 +225,9 @@ class SqliteLedgerReader:
     def __init__(self, path: str) -> None:
         if not os.path.isfile(path):
             raise Refusal("the write ledger file does not exist; nothing changed")
-        self._uri = f"file:{path}?mode=ro"
+        # Percent-encoded, so a '?' or '#' in the operator's path is part of the
+        # path and not read as the start of a query or fragment.
+        self._uri = f"file:{urllib.parse.quote(path)}?mode=ro"
 
     def object_keys(self, folder: str) -> set[str]:
         try:
@@ -586,7 +590,14 @@ def disable_credentials(admin: GatewayAdmin, tenant: RegisteredTenant) -> None:
     _say(f"{tenant.tenant_id}: {len(credentials)} gateway credential(s) disabled")
 
 
-def delete_everything(store: PacedStore, folder: str, report: Report, seen: set[str], journal_dir: str) -> None:
+def delete_everything(
+    store: PacedStore,
+    ledger: WriteLedger,
+    folder: str,
+    report: Report,
+    seen: set[str],
+    journal_dir: str,
+) -> None:
     """Step 2. Deletes every version and delete marker under the folder, and
     lists again, until a listing shows none."""
     prefix = folder_prefix(folder)
@@ -594,10 +605,23 @@ def delete_everything(store: PacedStore, folder: str, report: Report, seen: set[
         listed = store.list_versions(prefix)
         if not listed:
             return
-        report.rounds += 1
         outside = [version for version in listed if not version.key.startswith(prefix)]
         if outside:
             raise RedCheck("the shard listed an object outside the folder; nothing further was deleted")
+        dotted = [version for version in listed if any(part in (".", "..") for part in version.key.split("/"))]
+        if dotted:
+            raise RedCheck("the shard listed a key with a dot path segment; nothing further was deleted")
+        if report.rounds == 0:
+            # Before the first delete: every name on the shard, and every name an
+            # earlier run saw, must already be in the ledger. A short ledger
+            # stops the run here, with nothing deleted.
+            recorded = ledger.object_keys(folder)
+            missing = (seen | {version.key for version in listed}) - recorded
+            if missing:
+                raise RedCheck(
+                    f"{len(missing)} object name(s) on the shard are not in the ledger; nothing was deleted"
+                )
+        report.rounds += 1
         # Recorded before the first delete: a run that dies half way is still checked.
         seen.update(version.key for version in listed)
         write_journal(journal_dir, folder, seen)
@@ -661,7 +685,7 @@ def erase_media(
     started = clock()
 
     disable_credentials(admin, tenant)
-    delete_everything(paced, folder, report, seen, journal_dir)
+    delete_everything(paced, ledger, folder, report, seen, journal_dir)
     check_result(paced, ledger, folder, seen)
     report.object_names = len(seen)
     _say(f"{tenant.tenant_id}: completeness check green: {len(seen)} object name(s) match the ledger")
