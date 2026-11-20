@@ -360,6 +360,13 @@ export function sqlState(error: unknown): string | undefined {
 class ProbeRolledBack extends Error {}
 
 /**
+ * Thrown by a probe that saw what it should not have. Its message says what it
+ * saw, and the outcome carries it, so a failure for any other reason is not
+ * mistaken for this one.
+ */
+class ProbeFailed extends Error {}
+
+/**
  * What the work did: `ok`, or the SQLSTATE of the error that stopped it. With
  * `rollBack` the work's transaction is rolled back even when it succeeds.
  */
@@ -376,6 +383,7 @@ async function outcome(
     return 'ok';
   } catch (error) {
     if (error instanceof ProbeRolledBack) return 'ok';
+    if (error instanceof ProbeFailed) return `probe failed: ${error.message}`;
     return (
       sqlState(error) ??
       `error without a SQLSTATE: ${error instanceof Error ? error.name : 'unknown'}`
@@ -728,7 +736,7 @@ const PROSPECT_TABLES: Record<string, ProspectProbe> = {
       ] as const;
       for (const [when, got, want] of seen) {
         if (got !== want)
-          throw new Error(`the front door saw ${got} requests, want ${want}, with ${when}`);
+          throw new ProbeFailed(`the front door saw ${got} requests, want ${want}, with ${when}`);
       }
     },
     readBeforeStatus: (tx) => tx.select({ demoId: demoRequest.demoId }).from(demoRequest),

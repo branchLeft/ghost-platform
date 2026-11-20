@@ -445,8 +445,20 @@ others; `request_insert` lets it `INSERT`; `provisioner_read` lets
 bound, so an unbound statement sees no request. It returns the request's demo
 id, the publication name and the time it was recorded, which is what a status
 page needs; the lifecycle state is not here, because the front door cannot read
-it. The `SELECT` privilege is table-wide, so the policy is what narrows it: a
-statement that skips the typed read still sees one row at most.
+it. The `SELECT` privilege is by column, on those three columns alone
+(`demo_id`, `publication_name`, `submitted_at`), and the policy narrows the
+rows: a statement that skips the typed read still sees one row at most, and a
+statement that names any other column, or `*`, is refused with `42501`.
+
+*Why by column.* A session on the front door's connection can set
+`portal.prospect_address` to any value, so the row policy alone does not stop a
+compromised front door reading the row of an address it can guess. The column
+grant caps that: the address, the subject, the consent wording and the answers
+are out of its reach whatever it binds. The manifest records the grant with
+`columns`, and the provisioning check (M07) pins it exactly, so a table-wide
+grant (M06) or a grant on a fourth column (M07) is refused. The tenant binding
+(`portal.tenant_id`) has the same property and is the isolation the tenant
+tables rest on; it is not changed here.
 
 **One request per verified address.** The verified address is unique over all
 time: a second submission for an address is refused by the table

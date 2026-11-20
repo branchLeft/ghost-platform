@@ -55,6 +55,14 @@ async function privilege(role: string, table: string, what: string): Promise<boo
   return Boolean(result!.rows[0].p);
 }
 
+async function columnPrivilege(role: string, column: string): Promise<boolean> {
+  const [result] = await admin(
+    PROV_DB,
+    `SELECT has_column_privilege('${role}', 'portal.demo_request', '${column}', 'SELECT') AS p`
+  );
+  return Boolean(result!.rows[0].p);
+}
+
 describe('the provisioning lifecycle', () => {
   if (ADMIN_URL === undefined) {
     it('needs PORTAL_TEST_DATABASE_URL', () => {
@@ -216,8 +224,14 @@ describe('the provisioning lifecycle', () => {
     // on the address it binds: it cannot change one or remove one. The
     // lifecycle worker and the owner console read what it wrote and write
     // nothing to it.
-    for (const what of ['INSERT', 'SELECT']) {
-      expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(true);
+    expect(await privilege('portal_prospect', 'portal.demo_request', 'INSERT')).toBe(true);
+    // It reads three columns of the table, not the table.
+    expect(await privilege('portal_prospect', 'portal.demo_request', 'SELECT')).toBe(false);
+    for (const column of ['demo_id', 'publication_name', 'submitted_at']) {
+      expect(await columnPrivilege('portal_prospect', column)).toBe(true);
+    }
+    for (const column of ['verified_subject', 'verified_address', 'consent_wording']) {
+      expect(await columnPrivilege('portal_prospect', column)).toBe(false);
     }
     for (const what of ['UPDATE', 'DELETE']) {
       expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(false);
@@ -537,7 +551,7 @@ describe('the provisioning lifecycle', () => {
       await admin(PROV_DB, sabotage);
       try {
         await expect(verifyBoundary(provConfig())).rejects.toThrow(
-          /prospect reads only its own row of portal\.demo_request: expected ok, got error without a SQLSTATE: Error/
+          /prospect reads only its own row of portal\.demo_request: expected ok, got probe failed: the front door saw \d+ requests, want 0, with nothing bound/
         );
       } finally {
         await admin(PROV_DB, restore);
@@ -547,13 +561,14 @@ describe('the provisioning lifecycle', () => {
 
   it('the boundary smoke test fails when the prospect role could no longer read its own request', async () => {
     expect((await run()).code).toBe(0);
-    await admin(PROV_DB, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect');
+    const columns = '(demo_id, publication_name, submitted_at)';
+    await admin(PROV_DB, `REVOKE SELECT ${columns} ON portal.demo_request FROM portal_prospect`);
     try {
       await expect(verifyBoundary(provConfig())).rejects.toThrow(
         'prospect reads only its own row of portal.demo_request: expected ok, got 42501'
       );
     } finally {
-      await admin(PROV_DB, 'GRANT SELECT ON portal.demo_request TO portal_prospect');
+      await admin(PROV_DB, `GRANT SELECT ${columns} ON portal.demo_request TO portal_prospect`);
     }
   });
 
