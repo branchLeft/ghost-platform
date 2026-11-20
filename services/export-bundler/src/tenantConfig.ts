@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { assertAgeRecipient } from './ageEncryption.js';
+import type { GrantLane } from './supportGrant.js';
 
 /**
  * Everything that decides whose data is exported, as whom, and to which
@@ -16,10 +17,8 @@ export class TenantConfigError extends Error {
 }
 
 export class RecipientMismatchError extends Error {
-  constructor() {
-    super(
-      "refused: --age-recipient is not this tenant's backup.encryptionRecipient; nothing was started"
-    );
+  constructor(of = "this tenant's backup.encryptionRecipient") {
+    super(`refused: --age-recipient is not ${of}; nothing was started`);
     this.name = 'RecipientMismatchError';
   }
 }
@@ -46,7 +45,12 @@ export interface TenantRuntime {
 
 export interface DescriptorFacts {
   readonly slug: string;
-  readonly ageRecipient: string;
+  /**
+   * The descriptor's backup recipient. Null for `backup.kind: none`, which
+   * every demo has: such an archive can be encrypted only to a recipient a
+   * promotion supplies (`PromotionRecipient`).
+   */
+  readonly ageRecipient: string | null;
   /** Present once the descriptor carries a break-glass triple. */
   readonly supportIdentity: string | null;
 }
@@ -109,18 +113,24 @@ export function parseDescriptorFacts(descriptor: unknown): DescriptorFacts {
   if (!isRecord(descriptor)) throw new TenantConfigError('the descriptor is not an object');
   const slug = stringField(descriptor, 'slug', 'descriptor');
   const backup = descriptor.backup;
-  if (!isRecord(backup) || backup.kind !== 'bucket-native') {
+  let ageRecipient: string | null = null;
+  // Only an explicit `none` is a descriptor without a recipient; a missing or
+  // unknown backup stays refused, so a malformed descriptor cannot fall
+  // through to the promotion path.
+  if (!isRecord(backup) || (backup.kind !== 'bucket-native' && backup.kind !== 'none')) {
     throw new TenantConfigError(
-      "the descriptor's backup.kind is not bucket-native, so the tenant has no encryption recipient"
+      "the descriptor's backup.kind is neither bucket-native nor none, so the tenant has no encryption recipient"
     );
   }
-  const ageRecipient = stringField(backup, 'encryptionRecipient', 'descriptor.backup');
-  try {
-    assertAgeRecipient(ageRecipient);
-  } catch {
-    throw new TenantConfigError(
-      "the descriptor's backup.encryptionRecipient is not an age recipient"
-    );
+  if (backup.kind === 'bucket-native') {
+    ageRecipient = stringField(backup, 'encryptionRecipient', 'descriptor.backup');
+    try {
+      assertAgeRecipient(ageRecipient);
+    } catch {
+      throw new TenantConfigError(
+        "the descriptor's backup.encryptionRecipient is not an age recipient"
+      );
+    }
   }
   let supportIdentity: string | null = null;
   const breakGlass = descriptor.breakGlass;
@@ -131,13 +141,29 @@ export function parseDescriptorFacts(descriptor: unknown): DescriptorFacts {
 }
 
 /**
+ * The public `age` recipient a promotion supplies for a demo, which has no
+ * backup recipient of its own. The controller keeps the private half on
+ * `ops1`; only this half reaches the demo host.
+ */
+export interface PromotionRecipient {
+  readonly recipient: string;
+  /** The grant lane the export runs under; a promotion's is always the consented one. */
+  readonly grantLane: GrantLane;
+}
+
+/**
  * Cross-checks the descriptor, the rendered stack and the operator's
- * stated recipient, and returns the recipient the archive is encrypted to.
+ * stated recipient, and returns the one recipient the archive is encrypted to.
+ *
+ * That recipient is the descriptor's backup recipient, or, only for a
+ * descriptor with none and only under a consented grant, the promotion's.
+ * Never both, never neither, and always the one the operator stated.
  */
 export function bindTenant(
   descriptor: DescriptorFacts,
   runtime: TenantRuntime,
-  operatorRecipient: string
+  operatorRecipient: string,
+  promotion: PromotionRecipient | null = null
 ): string {
   if (runtime.stackName !== descriptor.slug) {
     throw new TenantConfigError(
@@ -156,6 +182,33 @@ export function bindTenant(
   ) {
     throw new TenantConfigError(
       "the rendered support identity is not the descriptor's breakGlass.supportIdentity"
+    );
+  }
+  if (descriptor.ageRecipient === null) {
+    if (promotion === null) {
+      throw new TenantConfigError(
+        'the descriptor has no backup recipient (backup.kind none) and no promotion recipient was given'
+      );
+    }
+    if (promotion.grantLane !== 'consented') {
+      throw new TenantConfigError(
+        'a promotion recipient is accepted only under a consented support grant'
+      );
+    }
+    try {
+      assertAgeRecipient(promotion.recipient);
+    } catch {
+      // The value is not repeated: a private half pasted here must not reach a log.
+      throw new TenantConfigError('the promotion recipient is not an age recipient');
+    }
+    if (operatorRecipient !== promotion.recipient) {
+      throw new RecipientMismatchError("the promotion's recipient");
+    }
+    return promotion.recipient;
+  }
+  if (promotion !== null) {
+    throw new TenantConfigError(
+      "a promotion recipient is accepted only for a descriptor with no backup recipient; this tenant's own backup recipient is never replaced"
     );
   }
   if (operatorRecipient !== descriptor.ageRecipient) throw new RecipientMismatchError();

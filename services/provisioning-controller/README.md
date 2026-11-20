@@ -13,6 +13,11 @@ standard error.
 onboarding step from one recorded owner approval and the tenant register. It
 executes nothing and writes nothing.
 
+- A tenant's owner account is created before its hostname is published: the
+  edge step (`publish-hostnames`) depends on `create-owner-account`, which
+  depends on the first deploy, so a fresh Ghost's setup route is never
+  reachable at a published hostname by a first visitor. A failed owner step
+  stops the run before the edge is asked to publish anything.
 - The approval id is the only trigger; the tenant comes from the recorded
   approval and every input from the register. No approval, or one that does not
   cover setup, the web address and the first deploy, yields no plan.

@@ -1,4 +1,7 @@
 import type { ArchiveFile } from './archive.js';
+import { createHash } from 'node:crypto';
+import { isMediaEntryName, isSafeEntryName } from './entryNames.js';
+import type { ManifestMediaFile } from './manifest.js';
 import { MEMBERS_CSV_ENTRY, MEMBERS_ENTRY } from './extensions.js';
 
 /**
@@ -27,7 +30,6 @@ export const CONTENT_ENTRY = 'content_and_settings.json';
 export const MANIFEST_ENTRY = 'manifest.json';
 
 const BLOCK = 512;
-const SAFE_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 
 function isZeroBlock(block: Buffer): boolean {
   for (const byte of block) if (byte !== 0) return false;
@@ -57,8 +59,8 @@ function checksumOk(header: Buffer): boolean {
 }
 
 /**
- * Reads exactly what `buildTar` writes: plain ustar, regular files, short
- * names from the safe set. Anything else is refused rather than skipped, so a
+ * Reads exactly what `buildTar` writes: plain ustar, regular files, names
+ * from the safe set (flat, or a media path split across ustar's prefix). Anything else is refused rather than skipped, so a
  * crafted or damaged archive cannot hide an entry or reach outside the bundle.
  */
 export function readTar(tar: Buffer): ArchiveFile[] {
@@ -76,12 +78,12 @@ export function readTar(tar: Buffer): ArchiveFile[] {
       return files;
     }
     if (!checksumOk(header)) throw new BundleReadError('tar header checksum does not match');
-    const name = cString(header, 0, 100);
-    if (!SAFE_NAME.test(name) || name === '.' || name === '..') {
+    const prefix = cString(header, 345, 155);
+    const name = prefix === '' ? cString(header, 0, 100) : `${prefix}/${cString(header, 0, 100)}`;
+    // One check for the flat names and the media paths alike: anything that
+    // could leave the bundle, or that this package would never have written.
+    if (!isSafeEntryName(name)) {
       throw new BundleReadError(`unsafe tar entry name: ${JSON.stringify(name)}`);
-    }
-    if (cString(header, 345, 155) !== '') {
-      throw new BundleReadError(`tar entry ${name} uses a path prefix`);
     }
     const kind = String.fromCharCode(header[156]!);
     if (kind !== '0' && kind !== '\0') {
@@ -153,6 +155,12 @@ export interface ExportBundle {
   /** What the bundle itself holds: the figures the destination is checked against. */
   readonly counts: ContentCounts;
   readonly memberTiers: readonly ExpectedMemberTiers[];
+  /** The media files the bundle carries, each checked against the manifest's path, size and checksum. */
+  readonly mediaFiles: readonly CarriedMediaFile[];
+}
+
+export interface CarriedMediaFile extends ManifestMediaFile {
+  readonly data: Buffer;
 }
 
 type Row = Record<string, unknown>;
@@ -216,11 +224,52 @@ function tierSlugsOf(row: Row): string[] {
 }
 
 /**
+ * The media entries of the tar and the manifest's list of them must be the same
+ * files: every carried entry is listed with its own size and checksum, and every
+ * listed carried file is there. A bundle that disagrees is refused before
+ * anything is imported.
+ */
+export function verifyMediaEntries(
+  files: readonly ArchiveFile[],
+  manifest: { mediaFiles?: { files?: unknown } }
+): CarriedMediaFile[] {
+  const listed = Array.isArray(manifest.mediaFiles?.files)
+    ? (manifest.mediaFiles.files as ManifestMediaFile[])
+    : [];
+  const carriedListed = new Map(
+    listed.filter((f) => f.status === 'carried').map((f) => [f.path, f])
+  );
+  const out: CarriedMediaFile[] = [];
+  for (const file of files) {
+    if (!isMediaEntryName(file.name)) continue;
+    const data = typeof file.data === 'string' ? Buffer.from(file.data, 'utf8') : file.data;
+    const expected = carriedListed.get(file.name);
+    if (
+      expected === undefined ||
+      expected.size !== data.length ||
+      expected.sha256 !== createHash('sha256').update(data).digest('hex')
+    ) {
+      throw new BundleRefusedError(
+        `media entry ${file.name} is not in the manifest, or is not the file it lists`
+      );
+    }
+    carriedListed.delete(file.name);
+    out.push({ ...expected, data });
+  }
+  if (carriedListed.size > 0) {
+    throw new BundleRefusedError(
+      `the manifest lists ${carriedListed.size} carried media files the bundle does not hold`
+    );
+  }
+  return out;
+}
+
+/**
  * Takes the bundle's entries and works out what it holds, refusing a bundle
  * that does not agree with itself: the members the import will copy (the CSV)
  * must be the members the export read (members.json), and the manifest must
- * say members were read in full. Comments and media are other stories and do
- * not make a bundle unimportable. Refusal happens before anything is copied.
+ * say members were read in full. Comments do not make a bundle unimportable; media entries must
+ * match the manifest's list of them. Refusal happens before anything is copied.
  */
 export function openBundle(files: readonly ArchiveFile[]): ExportBundle {
   const contentJson = entry(files, CONTENT_ENTRY);
@@ -228,6 +277,7 @@ export function openBundle(files: readonly ArchiveFile[]): ExportBundle {
   const members = memberRows(entry(files, MEMBERS_ENTRY));
   const manifest = parseJson(entry(files, MANIFEST_ENTRY), MANIFEST_ENTRY) as {
     extensions?: { name?: unknown; status?: unknown; expected?: unknown; present?: unknown }[];
+    mediaFiles?: { files?: unknown };
   };
   const report = manifest?.extensions?.find((e) => e.name === 'members_and_subscriptions');
   if (
@@ -261,5 +311,6 @@ export function openBundle(files: readonly ArchiveFile[]): ExportBundle {
     membersCsv,
     counts: { ...contentRows(contentJson), members: members.length },
     memberTiers,
+    mediaFiles: verifyMediaEntries(files, manifest),
   };
 }

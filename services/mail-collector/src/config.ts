@@ -1,5 +1,11 @@
 import { dirname, join } from 'node:path';
 import {
+  IP2_COUNTER_PATH_ENV,
+  IP2_STATE_PATH_ENV,
+  parseIp2Paths,
+  type Ip2Paths,
+} from './ip2Lane.js';
+import {
   MX1_NL_RETURN_PATH_ENV,
   MX1_TX_RETURN_PATH_ENV,
   parseLaneReturnPaths,
@@ -55,6 +61,21 @@ export interface CollectorConfig {
    * mail of every demo host is held, never sent.
    */
   demoMailDomain?: string;
+  /**
+   * The demo mail ceilings (LLD-6 section 05), counted here so a compromised
+   * demo host cannot lift them. Both count messages in a rolling window and
+   * are keyed on the slot, never on an address.
+   */
+  demoCeilings: {
+    /** A demo slot's own ceiling when its descriptor names none (`mail.ceiling`). */
+    slotCeiling: number;
+    /** What every demo slot together may send in one window: the hard cap they share. */
+    estateCeiling: number;
+    /** The rolling window both count in. */
+    windowMs: number;
+    /** File the counted places are kept in, so a restart does not reset them. Defaults to a file beside `dedupeStatePath`; with neither set, a restart forgets them. */
+    statePath?: string;
+  };
   /** Client-side timeout for one GET /drain call -- must exceed the shim's own holdMs (~30s) or every long-poll would be treated as a failure. */
   drainTimeoutMs: number;
   /** How long to back off after a failed GET/POST to a target before retrying it. */
@@ -168,6 +189,13 @@ export interface CollectorConfig {
    */
   mx1Lanes?: Mx1LaneReturnPaths;
   /**
+   * The second sending IP's warm-up caps: the operator-written state file and
+   * the day counter. Absent unless COLLECTOR_IP2_STATE_PATH is set (the counter
+   * path is then required, and so are the lane return paths: the newsletter
+   * lane has no meaning without them). Absent, nothing is capped here.
+   */
+  ip2?: Ip2Paths;
+  /**
    * Opt-in outcome path; absent unless COLLECTOR_OUTCOMES_RETURN_PATH,
    * COLLECTOR_OUTCOMES_DSN_DIR and COLLECTOR_OUTCOMES_MESSAGE_ID_KEY are all
    * set (a partial set throws). With `mx1Lanes` set, the return path is not
@@ -175,6 +203,12 @@ export interface CollectorConfig {
    * directory and the Message-ID key together turn it on.
    * Absent, submissions and the drain loop are exactly as before.
    */
+  /**
+   * Opt-in Sweego complaint path; absent unless COLLECTOR_COMPLAINTS_URL,
+   * COLLECTOR_COMPLAINTS_TOKEN_FILE and COLLECTOR_SENT_JOURNAL_PATH are all set
+   * (a partial set throws), and then only beside the Sweego relay.
+   */
+  complaints?: ComplaintsConfig;
   outcomes?: {
     /**
      * The one envelope sender mx1 returns delivery status notifications to,
@@ -188,6 +222,24 @@ export interface CollectorConfig {
     messageIdKey: string;
     pollMs: number;
   };
+}
+
+export interface ComplaintsConfig {
+  /** The receiver's private drain address. We dial it; it never dials us. */
+  receiverUrl: string;
+  /** Path of the file holding the receiver's drain bearer token. The value is never in config. */
+  tokenFile: string;
+  /** File the sent-id journal is kept in, on a volume that outlives the container. */
+  sentJournalPath: string;
+  sentJournalTtlMs: number;
+  /** Lower-case name of the correlation header sent on every Sweego message; the receiver's `WEBHOOK_OUTCOME_HEADER` must be the same. */
+  outcomeHeader: string;
+  pollMs: number;
+  retryBackoffMs: number;
+  maxBackoffMs: number;
+  timeoutMs: number;
+  perTenantPerHour: number;
+  giveUpMs: number;
 }
 
 export type CollectorEnv = Record<string, string | undefined>;
@@ -218,6 +270,20 @@ const DEFAULT_OUTCOMES_POLL_MS = 30_000;
 const DEFAULT_SHIM_SCHEME = 'http';
 const DEFAULT_BULK_DEFERRAL_STATE_FILE = 'bulk-deferral.json';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
+// Enough to try sign-up and a test send, no more.
+const DEFAULT_DEMO_SLOT_CEILING = 20;
+const DEFAULT_DEMO_ESTATE_CEILING = 200;
+const DEFAULT_DEMO_CEILING_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_DEMO_CEILING_STATE_FILE = 'demo-ceilings.json';
+
+function demoCeilingStatePathEnv(env: CollectorEnv): string | undefined {
+  if (env.COLLECTOR_DEMO_CEILING_STATE_PATH) {
+    return env.COLLECTOR_DEMO_CEILING_STATE_PATH;
+  }
+  return env.COLLECTOR_DEDUPE_STATE_PATH
+    ? join(dirname(env.COLLECTOR_DEDUPE_STATE_PATH), DEFAULT_DEMO_CEILING_STATE_FILE)
+    : undefined;
+}
 
 function shimSchemeEnv(env: CollectorEnv): string {
   const raw = env.COLLECTOR_SHIM_SCHEME;
@@ -304,6 +370,18 @@ function outcomesEnv(
     messageIdKey,
     pollMs: positiveIntEnv(env, 'COLLECTOR_OUTCOMES_POLL_MS', DEFAULT_OUTCOMES_POLL_MS),
   };
+}
+
+function ip2Env(env: CollectorEnv, mx1Lanes: Mx1LaneReturnPaths | undefined): Ip2Paths | undefined {
+  const paths = parseIp2Paths(env[IP2_STATE_PATH_ENV], env[IP2_COUNTER_PATH_ENV]);
+  if (paths && !mx1Lanes) {
+    // Without lane return paths nothing is told apart by lane: the caps would
+    // count mail that does not leave from the second IP.
+    throw new Error(
+      `${IP2_STATE_PATH_ENV} needs ${MX1_TX_RETURN_PATH_ENV} and ${MX1_NL_RETURN_PATH_ENV}: the newsletter lane is the envelope sender's domain`
+    );
+  }
+  return paths;
 }
 
 function bulkDeferralStatePathEnv(env: CollectorEnv): string | undefined {
@@ -428,6 +506,90 @@ function sweegoEnv(env: CollectorEnv): CollectorConfig['sweego'] {
   };
 }
 
+const COMPLAINTS_PARTNERS = [
+  'COLLECTOR_COMPLAINTS_URL',
+  'COLLECTOR_COMPLAINTS_TOKEN_FILE',
+  'COLLECTOR_SENT_JOURNAL_PATH',
+] as const;
+const DEFAULT_COMPLAINTS_POLL_MS = 30_000;
+const DEFAULT_COMPLAINTS_RETRY_BACKOFF_MS = 5_000;
+const DEFAULT_COMPLAINTS_MAX_BACKOFF_MS = 5 * 60 * 1000;
+const DEFAULT_COMPLAINTS_TIMEOUT_MS = 10_000;
+const DEFAULT_COMPLAINTS_PER_TENANT_PER_HOUR = 50;
+const DEFAULT_COMPLAINTS_GIVE_UP_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SENT_JOURNAL_TTL_MS = 35 * 24 * 60 * 60 * 1000;
+const DEFAULT_OUTCOME_HEADER = 'x-branchleft-outcome';
+const HEADER_NAME = /^[a-z][a-z0-9-]{0,62}$/;
+
+function complaintsEnv(env: CollectorEnv): ComplaintsConfig | undefined {
+  const [url, tokenFile, journalPath] = COMPLAINTS_PARTNERS.map((name) => env[name]);
+  if (!url && !tokenFile && !journalPath) {
+    return undefined;
+  }
+  if (!url || !tokenFile || !journalPath) {
+    throw new Error(`${COMPLAINTS_PARTNERS.join(', ')} must be set together`);
+  }
+  if (env.COLLECTOR_COMPLAINTS_TOKEN !== undefined) {
+    throw new Error(
+      'The receiver token is read from a file: set COLLECTOR_COMPLAINTS_TOKEN_FILE to its path, never the value'
+    );
+  }
+  if (!env.COLLECTOR_SWEEGO_SMTP_HOST) {
+    throw new Error('COLLECTOR_COMPLAINTS_URL is set but COLLECTOR_SWEEGO_SMTP_HOST is not');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('COLLECTOR_COMPLAINTS_URL is not a URL');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('COLLECTOR_COMPLAINTS_URL must be http or https');
+  }
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new Error('COLLECTOR_COMPLAINTS_URL must not carry credentials');
+  }
+  const outcomeHeader = (
+    env.COLLECTOR_COMPLAINTS_OUTCOME_HEADER || DEFAULT_OUTCOME_HEADER
+  ).toLowerCase();
+  if (!HEADER_NAME.test(outcomeHeader)) {
+    throw new Error('COLLECTOR_COMPLAINTS_OUTCOME_HEADER is not a header name');
+  }
+  return {
+    receiverUrl: url.replace(/\/+$/, ''),
+    tokenFile,
+    sentJournalPath: journalPath,
+    sentJournalTtlMs: positiveIntEnv(
+      env,
+      'COLLECTOR_SENT_JOURNAL_TTL_MS',
+      DEFAULT_SENT_JOURNAL_TTL_MS
+    ),
+    outcomeHeader,
+    pollMs: positiveIntEnv(env, 'COLLECTOR_COMPLAINTS_POLL_MS', DEFAULT_COMPLAINTS_POLL_MS),
+    retryBackoffMs: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_RETRY_BACKOFF_MS',
+      DEFAULT_COMPLAINTS_RETRY_BACKOFF_MS
+    ),
+    maxBackoffMs: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_MAX_BACKOFF_MS',
+      DEFAULT_COMPLAINTS_MAX_BACKOFF_MS
+    ),
+    timeoutMs: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_TIMEOUT_MS',
+      DEFAULT_COMPLAINTS_TIMEOUT_MS
+    ),
+    perTenantPerHour: positiveIntEnv(
+      env,
+      'COLLECTOR_COMPLAINTS_PER_TENANT_PER_HOUR',
+      DEFAULT_COMPLAINTS_PER_TENANT_PER_HOUR
+    ),
+    giveUpMs: positiveIntEnv(env, 'COLLECTOR_COMPLAINTS_GIVE_UP_MS', DEFAULT_COMPLAINTS_GIVE_UP_MS),
+  };
+}
+
 export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
   const mx1Lanes = parseLaneReturnPaths(env[MX1_TX_RETURN_PATH_ENV], env[MX1_NL_RETURN_PATH_ENV]);
   return {
@@ -445,6 +607,20 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     ),
     shimScheme: shimSchemeEnv(env),
     demoMailDomain: env.COLLECTOR_DEMO_MAIL_DOMAIN || undefined,
+    demoCeilings: {
+      slotCeiling: positiveIntEnv(env, 'COLLECTOR_DEMO_SLOT_CEILING', DEFAULT_DEMO_SLOT_CEILING),
+      estateCeiling: positiveIntEnv(
+        env,
+        'COLLECTOR_DEMO_ESTATE_CEILING',
+        DEFAULT_DEMO_ESTATE_CEILING
+      ),
+      windowMs: positiveIntEnv(
+        env,
+        'COLLECTOR_DEMO_CEILING_WINDOW_MS',
+        DEFAULT_DEMO_CEILING_WINDOW_MS
+      ),
+      statePath: demoCeilingStatePathEnv(env),
+    },
     shimPort: positiveIntEnv(env, 'COLLECTOR_SHIM_PORT', DEFAULT_SHIM_PORT),
     // No default: an empty or guessable token defeats the drain endpoint's
     // one credential check, the same reasoning as the shim's own
@@ -490,6 +666,8 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
       DEFAULT_HEARTBEAT_FAILURE_THRESHOLD
     ),
     mx1Lanes,
+    ip2: ip2Env(env, mx1Lanes),
     outcomes: outcomesEnv(env, mx1Lanes),
+    complaints: complaintsEnv(env),
   };
 }

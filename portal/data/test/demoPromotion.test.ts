@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ForbiddenTransitionError, type DemoState } from '../src/demoLifecycle.js';
+import { TermsNotAcceptedError, type DocumentView } from '../src/documents.js';
 import {
   PROMOTION_TARGET_FIELDS,
   PromotionRefusedError,
@@ -28,6 +29,8 @@ interface Fake {
 interface Behaviour {
   drained?: boolean | (() => boolean);
   gate?: GateVerdict;
+  /** Document kinds the owner has not accepted; an unreadable answer is an `Error` instead. */
+  pending?: readonly string[] | Error;
   content?: ContentVerification;
   failing?: string[];
   dumpReference?: string;
@@ -48,6 +51,16 @@ function fake(behaviour: Behaviour = {}): Fake {
   const effects: PromotionEffects = {
     isDrained: () => run('isDrained', drained()),
     gateVerdict: () => run('gateVerdict', behaviour.gate ?? 'PROMOTE'),
+    assertDocumentsAccepted: async () => {
+      calls.push('assertDocumentsAccepted');
+      const { pending = [] } = behaviour;
+      if (pending instanceof Error) throw pending;
+      if (pending.length > 0) {
+        throw new TermsNotAcceptedError(
+          pending.map((kind) => ({ kind, version: 2 }) as unknown as DocumentView)
+        );
+      }
+    },
     transition: (_id, to) => run(`transition:${to}`, undefined),
     commitSwap: () => run('commitSwap', undefined),
     rollbackSwap: () => run('rollbackSwap', undefined),
@@ -87,6 +100,7 @@ describe('promoteDemo, the whole path', () => {
     const { effects, calls } = fake();
     const outcome = await promoteDemo(request(), effects);
     expect(calls).toEqual([
+      'assertDocumentsAccepted',
       'isDrained',
       'gateVerdict',
       'transition:PROMOTING',
@@ -118,6 +132,32 @@ describe('promoteDemo, the whole path', () => {
 });
 
 describe('promoteDemo, preconditions are enforced before any write', () => {
+  it('refuses a demo whose owner has not accepted the current documents, naming them', async () => {
+    const { effects, calls } = fake({ pending: ['terms', 'dpa'] });
+    const refused = promoteDemo(request(), effects);
+    await expect(refused).rejects.toBeInstanceOf(PromotionRefusedError);
+    await expect(refused).rejects.toMatchObject({ precondition: 'documents' });
+    await expect(refused).rejects.toThrow('not accepted: terms v2, dpa v2');
+    expect(calls).toContain('assertDocumentsAccepted');
+    expect(mutations(calls)).toEqual([]);
+  });
+
+  it('refuses, and writes nothing, when acceptance cannot be read', async () => {
+    const { effects, calls } = fake({ pending: new Error('DB_DOWN') });
+    await expect(promoteDemo(request(), effects)).rejects.toMatchObject({
+      precondition: 'documents',
+    });
+    expect(mutations(calls)).toEqual([]);
+  });
+
+  it('goes through for an owner who has accepted every current document', async () => {
+    const { effects, calls } = fake({ pending: [] });
+    const outcome = await promoteDemo(request(), effects);
+    expect(outcome.status).toBe('promoted');
+    expect(calls[0]).toBe('assertDocumentsAccepted');
+    expect(mutations(calls)).toContain('transition:PROMOTING');
+  });
+
   it('refuses a gate that does not say PROMOTE', async () => {
     for (const verdict of ['WAIT', 'ABANDON'] as GateVerdict[]) {
       const { effects, calls } = fake({ gate: verdict });

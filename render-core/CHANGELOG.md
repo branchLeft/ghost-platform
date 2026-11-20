@@ -2,6 +2,34 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
+## Unreleased
+
+- **Additive: storage gateway media.** `media.kind: "gateway"` (`endpoint`, `region`, `shard`,
+  `folder`, `resize`, `srcsets`) renders Ghost's `S3Storage` against the storage gateway:
+  `endpoint` the gateway, `forcePathStyle: true`, `bucket` the shard, `tenantPrefix` the tenant's
+  opaque folder and `cdnUrl` the new `zones.mediaOrigin`, the platform's own media address. The
+  secrets template names `GHOST_STORAGE_GATEWAY_KEY_ID` and `GHOST_STORAGE_GATEWAY_SECRET`, never a
+  `GHOST_S3_*` key. A folder that equals or contains the slug, a missing folder, a per-tenant or
+  slug-bearing shard, and a gateway descriptor with no `zones.mediaOrigin` are refused. The rendered
+  identity gains `mediaFolder` for a gateway descriptor only. New exports
+  `GATEWAY_FOLDER_PATTERN`, `bareHttpsOrigin`, `validateMediaFolder`, `validateMediaShard`. Every
+  `local` and `s3` artefact is byte-identical (the goldens are unchanged). See
+  src/media.md#the-tenant-folder.
+- **Rollout:** `s3` stays for the demo-tenant slot until the gateway is live; the descriptor's
+  `media.kind` is the switch. Do not set `gateway` on a descriptor until the gateway answers on
+  `media.endpoint`, the tenant's folder has a minted credential, and the edge serves
+  `zones.mediaOrigin`, or uploads fail and published images do not load.
+
+- **Additive:** `tenantEnvironment()` renders `privacy__useGravatar: false` for every tenant, so
+  Ghost no longer builds a Gravatar address from a hash of a member's email and Portal's account
+  page sends nothing about a reader to Gravatar. Every compose golden gains the one line; no other
+  artefact changes. Ghost changes the avatar a member sees from a Gravatar picture to its initial.
+- **Additive:** `renderSettings()` names `heading_font` and `body_font` as `''` (Ghost's
+  "Theme default") in `ghost-settings.json`, so a reconciler that applies the artefact clears a
+  font chosen in Ghost's Design settings, which would otherwise make Ghost link a stylesheet from
+  `fonts.bunny.net` into every page. Both keys are in Ghost's Admin API settings allowlist. The
+  `ghost-settings.json` goldens gain the two keys; no other artefact changes.
+
 ## 0.6.0
 
 0.5.0 was never published, so 0.6.0 is the first release that carries the 0.5.0 changes too.

@@ -248,6 +248,19 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
     expect(settings.social_web).toBe(false);
   });
 
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+  ] as const)(
+    'names both Design-settings fonts as the empty Theme default for a %s, so Ghost links no font host',
+    (_label, fixture) => {
+      const settings = renderSettings(validate(fixture(), TEST_ZONES), TEST_ZONES);
+      expect(settings.heading_font).toBe('');
+      expect(settings.body_font).toBe('');
+    }
+  );
+
   it("sets members_support_address to the slot's own sending address", () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
     const settings = renderSettings(descriptor, TEST_ZONES);
@@ -313,6 +326,7 @@ describe('demo/entry-tenant/professional-tenant compose sanity', () => {
     expect(compose).toContain('storage__images__wrappedConfig__forcePathStyle: true');
     expect(compose).not.toContain("storage__active: 'S3Storage'");
     expect(compose).toContain('privacy__useUpdateCheck: false');
+    expect(compose).toContain('privacy__useGravatar: false');
     expect(compose).toContain('security__allowWebhookInternalIPs: false');
   });
 });
