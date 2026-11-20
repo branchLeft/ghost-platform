@@ -220,7 +220,7 @@ function recordFor(verdict, tier, existing, nowIso) {
   };
   if (existing && existing.frozenAt) record.frozenAt = existing.frozenAt;
   if (tier === TIER_TWO) record.sealedAt = (existing && existing.sealedAt) || nowIso;
-  else record.frozenAt = (existing && existing.frozenAt) || nowIso;
+  else record.frozenAt = nowIso;
   return record;
 }
 

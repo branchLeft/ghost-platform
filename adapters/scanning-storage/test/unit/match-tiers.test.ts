@@ -236,6 +236,34 @@ describe('the refusal record', () => {
     expect(readRefusal(quarantinePath, digest)?.tier).toBe('one');
   });
 
+  it('reads a legacy record that names no match as tier two, so nothing lifts it', async () => {
+    await fs.mkdir(quarantinePath, { recursive: true });
+    await fs.writeFile(
+      path.join(quarantinePath, `${digest}.refused.json`),
+      JSON.stringify({ classification: 'no-known-match' })
+    );
+    expect(readRefusal(quarantinePath, digest)?.tier).toBe('two');
+    expect(liftFreeze(quarantinePath, digest)).toBe('sealed');
+  });
+
+  it('records a refusal for a verdict no tier names as the reversible one', async () => {
+    await sealRefusal(
+      quarantinePath,
+      digest,
+      bytes,
+      { classification: 'no-known-match' },
+      digestBytes
+    );
+    expect(readRefusal(quarantinePath, digest)).toMatchObject({ tier: 'one', action: 'freeze' });
+  });
+
+  it('ignores a tier the metrics do not know', () => {
+    const metrics = new ScannerMetrics({ tenant: null });
+    metrics.recordMatch('three');
+    expect(metrics.render()).not.toMatch(/tier="three"/);
+    expect(metrics.render()).toMatch(/matches_total\{tier="one"\} 0/);
+  });
+
   it('lifts a freeze and nothing else: a seal, an unreadable record and a missing one stay as they are', async () => {
     await sealRefusal(quarantinePath, digest, bytes, NEAR_CSAM, digestBytes);
     expect(liftFreeze(quarantinePath, digest)).toBe('lifted');
