@@ -278,10 +278,8 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
       cookie: ownerCookie,
     });
     assert.equal(settings.status, 200, settings.text);
-    assert.ok(
-      !settings.text.includes('static.ghost.org'),
-      'a setting still names static.ghost.org'
-    );
+    const leak = settings.text.match(/.{0,80}static\.ghost\.org.{0,40}/)?.[0];
+    assert.ok(!leak, `a setting still names static.ghost.org: ${leak}`);
     const home = await provisioned.request('GET', '/', undefined, {});
     assert.equal(home.status, 200);
     assert.ok(
