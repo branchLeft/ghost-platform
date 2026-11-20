@@ -38,7 +38,7 @@ repos:
       # Runs prettier straight from node_modules, not through `pnpm run format`.
       # pnpm 11 (packageManager in package.json) needs node >=22.13, and on a
       # workstation whose node is 20.x the `pnpm` on PATH is a corepack shim that
-      # dies with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING (branchLeft/workspace#3996).
+      # dies with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING.
       # The command is the `format` script's command with the same ignore paths.
       # This hook does not install: a tree with no node_modules stops and says so.
       # A node_modules that is a symlink (a worktree sharing another clone's install)
@@ -52,9 +52,11 @@ repos:
 
   - repo: local
     hooks:
+      # Same shape as the prettier hook above, for the same reason: eslint runs
+      # from node_modules with the `lint` script's command, not through pnpm.
       - id: eslint
         name: eslint
-        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; pnpm_config_ignore_scripts=true pnpm run lint'
+        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; if [ ! -f node_modules/eslint/bin/eslint.js ]; then echo "pre-commit stopped, node_modules has no eslint. In this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; node node_modules/eslint/bin/eslint.js infra services render-core --ext .ts --fix'
         language: system
         files: '\.(js|ts)$'
         pass_filenames: false
