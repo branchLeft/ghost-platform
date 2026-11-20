@@ -52,9 +52,12 @@ function must(id: AssertionId, ok: boolean, detail: string): void {
   registry.passed.add(id);
 }
 
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function until(check: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> {
+export async function until(
+  check: () => boolean | Promise<boolean>,
+  timeoutMs: number
+): Promise<boolean> {
   for (let waited = 0; waited <= timeoutMs; waited += 20) {
     if (await check()) return true;
     await wait(20);
@@ -77,8 +80,9 @@ export const FIXTURES = {
 // The key each fixture is asked about is its real PDQ hash, computed by the
 // same function the adapter calls: nothing in the adapter's hash stage is
 // replaced. The stand-in service answers on these keys.
-const { pdqHashOfImage } = require('../../src/pdq.js') as {
+const { pdqHashOfImage, digestBytes } = require('../../src/pdq.js') as {
   pdqHashOfImage: (buffer: Buffer) => Promise<{ hash: string | null; reason: string | null }>;
+  digestBytes: (buffer: Buffer) => string;
 };
 const FIXTURE_KEYS = new Map<string, string>();
 for (const picture of Object.values(FIXTURES)) {
@@ -87,6 +91,11 @@ for (const picture of Object.values(FIXTURES)) {
   FIXTURE_KEYS.set(picture.toString('hex'), hash);
 }
 export const keyOf = (bytes: Buffer): string => FIXTURE_KEYS.get(bytes.toString('hex')) ?? '';
+
+// The content digest (SHA-256) of the bytes: the name the hold registry files a
+// held upload under, so `hold.isPending` is asked with this and never with the
+// verdict key. The verdict key (`keyOf`) is only what the service is asked about.
+export const digestOf = (bytes: Buffer): string => digestBytes(bytes);
 
 export interface EntryAdapterInstance {
   wrapped: FakeWrappedAdapter;
@@ -105,14 +114,19 @@ export interface Loaded {
 
 // Loads Ghost's entry file with the two things Ghost's image would supply
 // resolved to the suite's doubles (the storage base class and the wrapped
-// local adapter). The hash stage is the shipped one.
-export function loadEntryAdapter(srcDir: string): Loaded {
+// local adapter). The hash stage is the shipped one. `alsoWraps` names further
+// adapters a slot may wrap by name (the tenant tier's `S3Storage` double, see
+// tenant-tier-gates.md).
+export function loadEntryAdapter(srcDir: string, alsoWraps: Record<string, unknown> = {}): Loaded {
   const NodeModule = require('node:module');
   const originalLoad = NodeModule._load;
   const wrappedPath = path.join(srcDir, 'FakeAdapter');
   NodeModule._load = function patchedLoad(request: string, ...rest: unknown[]) {
     if (request === 'ghost-storage-base') return { StorageBase: FakeStorageBase };
     if (request === wrappedPath) return FakeWrappedAdapter;
+    for (const [name, adapterClass] of Object.entries(alsoWraps)) {
+      if (request === path.join(srcDir, name)) return adapterClass;
+    }
     return originalLoad.call(this, request, ...rest);
   };
   const entryFile = path.join(srcDir, 'ScanningStorageAdapter.js');
@@ -358,7 +372,7 @@ export async function assertRefusal(
   const key = keyOf(bytes);
   const first = await slot.upload('first.png', bytes);
   if (first.accepted) await service.drain(key, 1500);
-  await until(() => !slot.adapter.hold.isPending(key), 4000);
+  await until(() => !slot.adapter.hold.isPending(digestOf(bytes)), 4000);
   await interfere('after-answer');
 
   const second = await slot.upload('second.png', bytes);
