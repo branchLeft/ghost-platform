@@ -1,4 +1,4 @@
-import { and, count, eq, getTableColumns, gt, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, gt, lt, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
@@ -165,6 +165,46 @@ export class ProvisionerDb {
   }
 
   /**
+   * Sweeps demos left in PROVISIONING by a process killed before it could
+   * record FAILED. Each demo whose PROVISIONING row was recorded more than
+   * `staleAfterSeconds` ago, by the database's clock, is moved to FAILED. The
+   * caller passes the provision timeout plus a margin. The hostname is left
+   * unretired: the slot is not known to be free, so `admit` keeps counting it
+   * until a person frees it. Each demo is decided in its own transaction,
+   * which re-reads its latest row, so a demo that moved on meanwhile is left
+   * alone. The loop that calls this is not built here.
+   *
+   * @returns the ids of the demos moved to FAILED
+   * @throws RangeError when `staleAfterSeconds` is not a finite number of at least zero
+   */
+  async sweepStaleProvisioning(staleAfterSeconds: number): Promise<string[]> {
+    if (!Number.isFinite(staleAfterSeconds) || staleAfterSeconds < 0) {
+      throw new RangeError('staleAfterSeconds must be a finite number of at least zero');
+    }
+    const candidates = await this.run((tx) => staleProvisioningIds(tx, staleAfterSeconds));
+    const swept: string[] = [];
+    for (const demoId of candidates) {
+      try {
+        const done = await this.run(async (tx) => {
+          if (!(await staleProvisioningIds(tx, staleAfterSeconds, demoId)).includes(demoId)) {
+            return false;
+          }
+          const latest = await this.latestOrThrow(tx, demoId);
+          assertTransitionAllowed({ state: latest.toState, origin: latest.fromState }, 'FAILED');
+          await this.append(tx, latest, 'FAILED', carried(tx, latest), 0);
+          return true;
+        });
+        if (done) swept.push(demoId);
+      } catch (error) {
+        // A demo that moved on between the read and the append is not ours to fail.
+        if (error instanceof ConcurrentTransitionError) continue;
+        throw error;
+      }
+    }
+    return swept;
+  }
+
+  /**
    * The one self-service extension: LIVE or EXPIRING to EXTENDED, with the end
    * of the term moved on by 14 days and nothing else about the term changed.
    *
@@ -293,6 +333,38 @@ export class ProvisionerDb {
       throw error;
     }
   }
+}
+
+/**
+ * The demos whose latest row is PROVISIONING and was recorded more than
+ * `staleAfterSeconds` ago by the database's clock; all of them, or only
+ * `demoId` when given. Read inside the caller's transaction.
+ */
+async function staleProvisioningIds(
+  tx: Tx,
+  staleAfterSeconds: number,
+  demoId?: string
+): Promise<string[]> {
+  const latest = tx
+    .selectDistinctOn([demoStateEvent.demoId], {
+      demoId: demoStateEvent.demoId,
+      toState: demoStateEvent.toState,
+      recordedAt: demoStateEvent.recordedAt,
+    })
+    .from(demoStateEvent)
+    .orderBy(asc(demoStateEvent.demoId), desc(demoStateEvent.sequence))
+    .as('latest');
+  const rows = await tx
+    .select({ demoId: latest.demoId })
+    .from(latest)
+    .where(
+      and(
+        eq(latest.toState, 'PROVISIONING'),
+        lt(latest.recordedAt, sql`now() - make_interval(secs => ${staleAfterSeconds})`),
+        demoId === undefined ? undefined : eq(latest.demoId, demoId)
+      )
+    );
+  return rows.map((row) => row.demoId);
 }
 
 /** A new term: starts at the database's clock and runs the seven days. */

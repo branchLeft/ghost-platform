@@ -19,6 +19,7 @@ import {
   OWNER,
   PROV_DB,
   PROSPECT,
+  PROSPECT_PW,
   PROVISIONER,
   TENANT,
   TENANT_PW,
@@ -273,6 +274,59 @@ describe('the provisioning lifecycle', () => {
     await expect(connectAs(TENANT, TENANT_PW)).rejects.toThrow();
     await connectAs(MIGRATOR, 'rotated-migrator-1');
     await expect(connectAs(MIGRATOR, MIGRATOR_PW)).rejects.toThrow();
+  });
+
+  async function prospectVerifier(): Promise<string> {
+    const [result] = await admin(
+      'postgres',
+      `SELECT coalesce(rolpassword, '-') AS v FROM pg_authid WHERE rolname = '${PROSPECT}'`
+    );
+    return result!.rows[0].v as string;
+  }
+
+  it('needs no prospect password file: it creates the login with a password no one holds, leaves it on a second run, and sets it when the file is named', async () => {
+    const first = await run({}, { prospect: null });
+    expect(first.err).toEqual([]);
+    expect(first.code).toBe(0);
+    expect(first.out).toContain(
+      `${PROSPECT} created with a password no one holds: PORTAL_PROSPECT_PASSWORD_FILE was not named; name it in a later full run to set one`
+    );
+    // The run held the password it made, so the boundary test covered the login.
+    expect(first.out).not.toContain(
+      'prospect login not smoke-tested: this run holds no password for it'
+    );
+    expect(first.out).toContain('boundary verified');
+    const made = await prospectVerifier();
+    expect(made).toMatch(/^SCRAM-SHA-256\$/);
+    // Nothing the operator holds opens it: not the test fixture's, not an empty one.
+    await expect(connectAs(PROSPECT, PROSPECT_PW)).rejects.toThrow();
+    await expect(connectAs(PROSPECT, '')).rejects.toThrow();
+    const state = await stateSnapshot();
+
+    const second = await run({}, { prospect: null });
+    expect(second.err).toEqual([]);
+    expect(second.code).toBe(0);
+    expect(second.out).toContain(
+      `${PROSPECT} password left as it is: PORTAL_PROSPECT_PASSWORD_FILE was not named`
+    );
+    expect(second.out).toContain(
+      'prospect login not smoke-tested: this run holds no password for it'
+    );
+    expect(await prospectVerifier()).toBe(made);
+    const strip = (lines: string[]): string[] =>
+      lines.filter(
+        (line) =>
+          ![TENANT, OWNER, PROVISIONER, PROSPECT, MIGRATOR].some((login) =>
+            line.startsWith(`${login} `)
+          )
+      );
+    expect(strip(await stateSnapshot())).toEqual(strip(state));
+
+    const third = await run();
+    expect(third.err).toEqual([]);
+    expect(third.code).toBe(0);
+    expect(await prospectVerifier()).not.toBe(made);
+    await connectAs(PROSPECT, PROSPECT_PW);
   });
 
   it('applies a pending migration and grants what it made, in one transaction', async () => {

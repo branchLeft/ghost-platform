@@ -35,7 +35,7 @@ bound returns only A's rows.
   security and a `tenant_isolation` policy that is permissive, `FOR ALL`,
   explicitly `TO portal_tenant`, whose `USING` and `WITH CHECK` both render
   (whitespace and quoting aside) to `<schema>.<table>.tenant_id =
-  public.bound_tenant()`. A policy of `true`, another column or function, an
+public.bound_tenant()`. A policy of `true`, another column or function, an
   `OR true`, a missing `WITH CHECK` or a parameter is refused with
   `UnisolatedTableError` naming the table. Other policies on a table are not
   judged here: the provisioning command's live check (M20) pins the deployed
@@ -546,25 +546,35 @@ node dist/provision/provisionMain.js   # or: pnpm run provision
 Every input is a file named by an environment variable; a secret in argv or in
 the variable itself is refused.
 
-| Variable                      | Holds                                                 |
-| ----------------------------- | ----------------------------------------------------- |
-| `PORTAL_ADMIN_URL_FILE`       | administrator connection URL (host and user required) |
-| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
-| `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
-| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII) |
-| `PORTAL_PROSPECT_PASSWORD_FILE` | password for the prospect login (printable ASCII)   |
-| `PORTAL_MIGRATOR_PASSWORD_FILE` | password for the migrator login (printable ASCII) |
-| `PORTAL_MIGRATOR_URL_FILE`    | `--migrate-only` only: the migrator login's connection URL, password included |
-| `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
-| `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
-| `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
-| `PORTAL_PROVISIONER_LOGIN`    | optional, default `portal_provisioner_login`          |
-| `PORTAL_PROSPECT_LOGIN`       | optional, default `portal_prospect_login`             |
-| `PORTAL_MIGRATOR_LOGIN`       | optional, default `portal_migrator_login`             |
+| Variable                           | Holds                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------- |
+| `PORTAL_ADMIN_URL_FILE`            | administrator connection URL (host and user required)                         |
+| `PORTAL_TENANT_PASSWORD_FILE`      | password for the tenant login (printable ASCII)                               |
+| `PORTAL_OWNER_PASSWORD_FILE`       | password for the owner login (printable ASCII)                                |
+| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII)                          |
+| `PORTAL_PROSPECT_PASSWORD_FILE`    | optional: password for the prospect login (printable ASCII); see below        |
+| `PORTAL_MIGRATOR_PASSWORD_FILE`    | password for the migrator login (printable ASCII)                             |
+| `PORTAL_MIGRATOR_URL_FILE`         | `--migrate-only` only: the migrator login's connection URL, password included |
+| `PORTAL_DATABASE_NAME`             | optional, default `portal`                                                    |
+| `PORTAL_TENANT_LOGIN`              | optional, default `portal_tenant_login`                                       |
+| `PORTAL_OWNER_LOGIN`               | optional, default `portal_owner_login`                                        |
+| `PORTAL_PROVISIONER_LOGIN`         | optional, default `portal_provisioner_login`                                  |
+| `PORTAL_PROSPECT_LOGIN`            | optional, default `portal_prospect_login`                                     |
+| `PORTAL_MIGRATOR_LOGIN`            | optional, default `portal_migrator_login`                                     |
 
-The five logins must differ and their passwords come from five files. A full
-run needs all five password files: the manifest is closed, so a run without
-one is refused rather than provisioning four of five.
+The five logins must differ. A full run needs the tenant, owner, provisioner
+and migrator password files: a run without one is refused rather than
+provisioning the others alone. The prospect password file is the one optional
+file, because the front door that will use the prospect login is not built yet
+and nothing holds its password. Without the file, a run that creates the login
+gives it a random password made in memory, used for that run's probes and
+written nowhere, so no one holds it; a run that finds the login already there
+leaves its password as it is, probes the other databases with a wrong one and
+skips the prospect login's smoke test, and says so in its output. Naming the
+file in a later full run sets the password. So a server provisioned before the
+prospect login existed reaches the newest migrations with no secret typed for
+it: the full run creates the role and login, gives them what the manifest grants
+on what is already there, and applies the pending migrations.
 
 The command creates what is absent, checks everything, and repairs nothing.
 `provision/manifest.ts` is the closed manifest: the four roles and five logins
@@ -654,8 +664,8 @@ created-empty, not provisioned` when the full provision has not run, and with
 `migrate refused: cannot connect ... as <migrator>` when the migrator or the
 database does not exist. A server last provisioned before `portal_provisioner`,
 `portal_prospect` or the migrator existed is such a case: `--migrate-only` refuses, and the full
-run (with every password file) comes first, then `--migrate-only` for later
-migrations. It skips step 5, which needs the other logins' passwords. Run again
+run (with the password files it needs; the prospect's is optional) comes first, then
+`--migrate-only` for later migrations. It skips step 5, which needs the other logins' passwords. Run again
 with nothing pending, it applies nothing and prints `no pending migrations`.
 
 **What the routine path does not observe.** A superuser reads catalogs the
