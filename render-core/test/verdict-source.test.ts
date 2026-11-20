@@ -245,8 +245,11 @@ describe('the verdict volume is read-only in Ghost', () => {
     };
     const readWrite = (yaml: string) =>
       yaml.split('\n').filter((line) => line === `      - '${volume}:${MOUNT_PATH}'`).length;
-    // RED: both Ghost colours mount it read-write, beside the verdict host's own.
-    expect(readWrite(sabotagedCompose.renderComposeStack(args))).toBe(3);
+    // RED: both Ghost colours would mount it read-write, beside the verdict
+    // host's own, and the posture check refuses the stack for it.
+    expect(() => sabotagedCompose.renderComposeStack(args)).toThrow(
+      /service "ghost-a": must mount the verdict volume read-only/
+    );
     // GREEN: the real module mounts it read-only in Ghost; only the verdict
     // host end, which creates the socket, mounts it read-write.
     const { renderComposeStack } = await import('../src/compose.js');

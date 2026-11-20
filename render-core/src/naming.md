@@ -56,10 +56,9 @@ slot's local verdict socket, rendered only when its descriptor names the
 production verdict source (compose.md#the-verdict-volume). One per slot,
 never shared between slots. It holds a socket, not tenant data.
 
-## Verdict host volume and network
+## Verdict host volume
 
 `verdictJournalVolumeName` is `ghost-<slug>-verdict-journal`: the verdict host
-end's queue journal and metrics textfile, mounted by the sidecar alone.
-`verdictNetworkName` is `ghost-<slug>-verdict-net`: the per-slot network the
-sidecar joins and nothing else does, rendered `internal: true`
-(compose.md#the-verdict-host-sidecar). Both are per slot and never shared.
+end's queue journal and metrics textfile, mounted by the sidecar alone, per slot
+and never shared. The sidecar has no network, so there is no network name
+(compose.md#the-verdict-host-sidecar).
