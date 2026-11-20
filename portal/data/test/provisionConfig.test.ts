@@ -106,12 +106,32 @@ describe('loadConfig', () => {
     'PORTAL_TENANT_PASSWORD_FILE',
     'PORTAL_OWNER_PASSWORD_FILE',
     'PORTAL_PROVISIONER_PASSWORD_FILE',
-    'PORTAL_PROSPECT_PASSWORD_FILE',
     'PORTAL_MIGRATOR_PASSWORD_FILE',
   ])('refuses with a clear error when %s is missing', (name) => {
     const { dir, env } = files(GOOD);
     delete env[name];
     expect(() => loadConfig(env, [])).toThrow(new RegExp(`${name} must name a file`));
+    rmSync(dir, { recursive: true });
+  });
+
+  it('needs no prospect password file: the login has no user yet, so the full run asks for no typed secret', () => {
+    const { dir, env } = files(GOOD);
+    delete env['PORTAL_PROSPECT_PASSWORD_FILE'];
+    const config = loadConfig(env, []);
+    expect(config.prospectPassword).toBe('');
+    expect(config.tenantPassword).toBe(TENANT_PW);
+    env['PORTAL_PROSPECT_PASSWORD_FILE'] = '';
+    expect(loadConfig(env, []).prospectPassword).toBe('');
+    rmSync(dir, { recursive: true });
+  });
+
+  it('still refuses a prospect password file that is named but unreadable or empty', () => {
+    const { dir, env } = files({ ...GOOD, PORTAL_PROSPECT_PASSWORD_FILE: '\n' });
+    expect(() => loadConfig(env, [])).toThrow(/PORTAL_PROSPECT_PASSWORD_FILE: .* is empty/);
+    env['PORTAL_PROSPECT_PASSWORD_FILE'] = join(dir, 'absent');
+    expect(() => loadConfig(env, [])).toThrow(
+      /PORTAL_PROSPECT_PASSWORD_FILE: cannot read the file at/
+    );
     rmSync(dir, { recursive: true });
   });
 
