@@ -10,7 +10,7 @@
 # a bare major tag) so a rebuild is reproducible and a base-image swap is
 # always a visible, reviewed diff. Verified locally: `docker pull
 # ghost:6.76.0-alpine` resolves to this digest as of 2026-11-11.
-FROM ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
+FROM ghost:6.78.0-alpine@sha256:baa6dbff91a28ba36c526d1f6e761deb2efe3c238c630c3f318b62f258c2d76e
 
 # Ghost's built-in S3Storage adapter (core/server/adapters/storage/S3Storage.js)
 # and its dependency, @aws-sdk/client-s3, already ship inside every official
