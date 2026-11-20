@@ -298,6 +298,9 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
     const home = await provisioned.request('GET', '/', undefined, {});
     assert.equal(home.status, 200);
     assert.deepEqual(staticGhostUrls(home.text), [], 'the home page names static.ghost.org');
+    const about = await provisioned.request('GET', '/about/', undefined, {});
+    assert.equal(about.status, 200, `the About page answered ${about.status}`);
+    assert.deepEqual(staticGhostUrls(about.text), [], 'the About page names static.ghost.org');
   });
 
   it("serves the About link's page on a fresh site, so the default navigation is not a 404", async () => {

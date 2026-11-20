@@ -156,7 +156,7 @@ async function clearSeededDefaults(knex, removeFixturePosts) {
       title: ABOUT_PAGE_TITLE,
       lexical: aboutLexical(),
       mobiledoc: null,
-      html: '<p>' + ABOUT_PAGE_BODY + '</p>',
+      html: '<p>' + ABOUT_PAGE_BODY + '</p><img src="https://static.ghost.org/v4.0.0/images/feature-image.jpg">',
       feature_image: null,
     });
   }
