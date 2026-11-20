@@ -990,7 +990,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // not to the design.
     #urlForTargetPath(targetPath) {
       const normalized = targetPath.split(path.sep).join('/');
-      const { cdnUrl, endpoint, bucket } = this.wrappedConfig;
+      const { cdnUrl, endpoint, bucket, tenantPrefix } = this.wrappedConfig;
       if (bucket) {
         const base = cdnUrl || (endpoint ? `${endpoint.replace(/\/$/, '')}/${bucket}` : null);
         if (!base) {
@@ -998,7 +998,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
             'ScanningStorageAdapter: an object-storage hold needs wrappedConfig.cdnUrl, or .endpoint and .bucket, to build a URL'
           );
         }
-        return `${base.replace(/\/$/, '')}/${normalized}`;
+        // Ghost stores a tenant's keys under tenantPrefix when it is set, so
+        // the served URL carries the same segment: <base>/<prefix>/<path>.
+        const prefix =
+          typeof tenantPrefix === 'string' ? tenantPrefix.replace(/^\/+|\/+$/g, '') : '';
+        const key = prefix ? `${prefix}/${normalized}` : normalized;
+        return `${base.replace(/\/$/, '')}/${key}`;
       }
       const feature =
         typeof this.wrapped.storagePath === 'string'
