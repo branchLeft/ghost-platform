@@ -41,7 +41,8 @@ export type DatabaseSpec =
 /**
  * Where uploaded media lives, and Ghost's own image-optimisation behaviour
  * for it: resizing on upload and generating responsive derivatives on
- * demand. `Local` is demo-only; a paying tenant is `S3`. Optimisation is
+ * demand. `Local` is demo-only; a paying tenant is `S3` (its own bucket,
+ * kept until the storage gateway is live) or `Gateway`. Optimisation is
  * configuration rather than a Ghost default because whether derivatives are
  * generated is a tenancy property, not an implementation detail — off for a
  * demo means one copy per upload instead of an unbounded set of them.
@@ -58,6 +59,24 @@ export type MediaSpec =
       readonly endpoint: string;
       readonly region: string;
       readonly bucket: string;
+      readonly resize: boolean;
+      readonly srcsets: boolean;
+    }
+  | {
+      /** One folder in a shared shard bucket, reached only through the
+       * storage gateway with a gateway-minted key. Replaces `s3` (a bucket
+       * and a Hetzner key per tenant) once the gateway is live. See
+       * descriptor.md#gateway-media. */
+      readonly kind: 'gateway';
+      /** The gateway's https origin, which Ghost signs its requests to. */
+      readonly endpoint: string;
+      readonly region: string;
+      /** The shared shard bucket the tenant's folder was assigned to:
+       * recorded at provisioning, never computed. */
+      readonly shard: string;
+      /** The tenant's opaque random folder, Ghost's `tenantPrefix`. Never
+       * the slug: it is in every published media URL. */
+      readonly folder: string;
       readonly resize: boolean;
       readonly srcsets: boolean;
     };

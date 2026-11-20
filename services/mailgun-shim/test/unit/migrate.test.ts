@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
-import { getTableConfig, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { getTableConfig, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { failureReason, MIGRATIONS_FOLDER, migrateStore } from '../../src/migrate.js';
 import * as schema from '../../src/schema.js';
@@ -19,6 +19,17 @@ import {
 
 const MIGRATIONS = readMigrationFiles({ migrationsFolder: MIGRATIONS_FOLDER });
 const DOMAIN = 'tenant.example.com';
+
+// queue_batches as every release before the replay-dedupe index wrote it.
+const queueBatchesWithoutReplayIndex = sqliteTable('queue_batches', {
+  batchId: text('batch_id').primaryKey(),
+  domain: text('domain').notNull(),
+  emailId: text('email_id'),
+  payload: text('payload').notNull(),
+  createdAt: real('created_at').notNull(),
+  completedAt: real('completed_at'),
+});
+const releaseBeforeReplayIndex = { ...schema, queueBatches: queueBatchesWithoutReplayIndex };
 
 describe('migrateStore — databases older than the ledger, written by a drain-era release', () => {
   let dir: string;
@@ -62,7 +73,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
 
   it('drain-shaped without sender_domain: records the first two migrations and applies only the third', async () => {
     // The shape every image between the drain handover and this store ran.
-    await seed({ ...schema, tenants: preDrain.tenants });
+    await seed({ ...releaseBeforeReplayIndex, tenants: preDrain.tenants });
 
     createSqliteStore(dbPath).close();
 
@@ -83,7 +94,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
   });
 
   it('already fully current: records every migration and runs none', async () => {
-    await seed(schema);
+    await seed(releaseBeforeReplayIndex);
     const columnsBefore = columnNames(dbPath, 'tenants');
 
     createSqliteStore(dbPath).close();
@@ -130,7 +141,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
     });
     const { client, db } = openFixture(dbPath);
     try {
-      await createTables(db, { ...schema, tenants: previousTenants });
+      await createTables(db, { ...releaseBeforeReplayIndex, tenants: previousTenants });
       db.insert(previousTenants)
         .values({
           domain: DOMAIN,
@@ -184,7 +195,7 @@ describe('failureReason', () => {
 
 describe('schema.ts', () => {
   it('declares exactly the indexes the migrations create', () => {
-    const declared = [schema.events, schema.queueRecipients]
+    const declared = [schema.events, schema.queueBatches, schema.queueRecipients]
       .flatMap((table) => getTableConfig(table).indexes.map((i) => i.config.name))
       .sort();
     const dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-schema-test-'));
@@ -194,6 +205,10 @@ describe('schema.ts', () => {
       const created = withFixture(dbPath, ({ client }) =>
         [
           ...(client.pragma('index_list(events)') as Array<{ name: string; origin: string }>),
+          ...(client.pragma('index_list(queue_batches)') as Array<{
+            name: string;
+            origin: string;
+          }>),
           ...(client.pragma('index_list(queue_recipients)') as Array<{
             name: string;
             origin: string;

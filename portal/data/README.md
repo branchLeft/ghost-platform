@@ -176,6 +176,46 @@ manifest's grants, policies and shapes (`provision/manifest.ts`) pin them, and
 `test/supportAccess.test.ts` loosens each control in turn to show its probe
 goes red.
 
+## Billing reference and payment state
+
+`portal.tenant_billing` holds one row per paying tenant: an opaque
+`billing_reference` (nullable) into whatever invoicing tool the owner uses, a
+`payment_state` (`unpaid`, `paid` or `overdue`, no default, held by a CHECK) and
+`state_changed_at`, the database's clock, which moves only when the state does.
+It is the tenant record's billing half: one row per `tenant_register` row, kept
+apart so the register stays insert-only and a tenant can read its own payment
+state without the register being widened.
+
+**What it never holds.** No card number, bank detail, name, address, e-mail
+address, provider key or token, and no column that could hold free text: the
+table has the four columns above and the manifest pins them (a fifth is an
+extra). The reference is a token of 3 to 64 letters, digits and `_ . : -`
+(`BILLING_REFERENCE_PATTERN`), so a space, an `@` or a URL cannot be stored; one
+that is twelve or more digits (`4242-4242-4242-4242` and `4242424242424242`
+alike, `CARD_NUMBER_LIKE_PATTERN`) is refused as a mistaken paste. Both rules are
+a CHECK on the table as well as in `parseBillingReference`, so a statement that
+skips the code is refused too. The card rule is a backstop, not a detector: the
+control is that the platform stores a reference and the owner's invoicing tool
+holds everything else. The platform makes no call to any payment provider.
+
+**Who writes.** The tenant role holds `SELECT` alone (its own row, by the
+`tenant_isolation` policy), so a tenant cannot mark itself paid. The owner role
+holds `SELECT, INSERT, UPDATE`; no role deletes a record. `OwnerDb`:
+
+- `setPaymentState(tenantId, state)` creates the record with no reference if
+  there is none; repeating the state a tenant already has leaves the clock alone.
+- `setBillingReference(tenantId, reference | null)` records, replaces or clears
+  the reference; a tenant with no record gets one as `unpaid`, and an existing
+  record keeps its state.
+- `billingOf`, `listBilling` and `listOverdue` (the longest overdue first) are the
+  console's reads. `TenantDb.ownBilling(scope)` is the tenant's read of its own.
+
+Both writes refuse a tenant that is not registered (`TenantNotRegisteredError`)
+and a demo slot (`TenantNotBillableError`): only a real tenant is billed. The
+console screen, suspension and any provider integration are separate stories.
+`test/billing.test.ts` holds the tests; the manifest's grants, policy and shape
+(`provision/manifest.ts`) and the closed-world tampers pin the table.
+
 ## Versioned documents and acceptance
 
 `document_version` has no row-level policy: it holds no tenant's data, and a
@@ -329,12 +369,41 @@ allocated again, and a label not in the register or already retired is refused
 **Who writes them.** `portal_provisioner`, a third role, used only by the
 control-plane lifecycle worker (not built here) through
 the `./provisioner` export (`ProvisionerDb`). It can
-`INSERT` and `SELECT` the three tables and can neither `UPDATE` nor `DELETE` any
-of them: refused at the permission level, SQLSTATE `42501`, which the provisioning
-command's own check (M06) and smoke test both hold. The owner role may only
+`SELECT` the three tables and `INSERT` into them by column, and can neither
+`UPDATE` nor `DELETE` any of them: refused at the permission level, SQLSTATE
+`42501`, which the provisioning command's own check (M06, M07) and smoke test
+both hold. The `INSERT` leaves out the one timestamp each table has
+(`recorded_at`, `allocated_at`, `retired_at`), so the database's clock stamps
+every row and a raw-SQL writer holding the role cannot backdate a demo's term
+or a hostname's allocation: an insert that names one, even as `DEFAULT`, is
+refused with `42501`. `ProvisionerDb` therefore inserts through the narrowed
+shapes in `src/provisioner/insertShapes.ts`, which a test holds to the schema
+and to the manifest's column grant. The manifest's grants take a `columns`
+list for this (rendered as `GRANT INSERT (...) ON TABLE ...`, checked by M07). The owner role may only
 `SELECT` them (`OwnerDb.listDemos`, `demoHistory`, `demoHostname`,
 `listHostnames`); the tenant role holds nothing on them. The internet-facing
 prospect path is a separate role, `portal_prospect`, below.
+
+**The waiting list.** Six slots are offered (`SLOT_COUNT`). A demo holds one
+from `CLAIMED` to `PROMOTING`; `ProvisionerDb.admit` decides, for a demo at
+`VERIFIED` whose request is recorded, whether it is `CLAIMED` or `WAITING`. A
+full house is an outcome and never an error: the request goes onto the list as
+`WAITING`, keeps the request row the front door wrote (the same contact details,
+consent and explainer wording, read through `ProvisionerDb.request` and
+`OwnerDb.demoRequest`), holds no term and no hostname, and comes back with its
+place in the queue. A request is `CLAIMED` only when fewer than six demos hold a
+slot and nobody is waiting (a demo holds one in a state from `CLAIMED` to
+`PROMOTING`, and also when it is `FAILED` with its hostname not yet retired:
+the worker retires a failed demo's hostname only once its slot is free, so an
+unretired hostname on a `FAILED` demo is the record that the slot still needs a
+reset or a person), so a later request never passes an earlier one; a
+slot that frees while someone waits is for the front of the list, offered by a
+later step that is not built here (the move is `WAITING` to `CLAIMED`). The
+decision is made under one advisory lock held to the end of the transaction, so
+simultaneous requests are decided one at a time and the seventh can never also
+take the sixth slot. A demo that is not at `VERIFIED`, or that has no recorded
+request, is refused (`AdmissionRefusedError`) and nothing is written.
+`OwnerDb.waitingCount` is the console's count of demos on the list.
 
 Control cases (each is a test that fails if the mechanism is removed): the
 full 14 by 14 matrix of states, through the operation and straight at the

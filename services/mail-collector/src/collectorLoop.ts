@@ -2,8 +2,9 @@ import { createSubmittedTracker, type SubmittedTracker } from './dedupe.js';
 import type { DrainClient, WireMessage } from './drainClient.js';
 import type { DeadMansSwitch } from '@branchleft/ghost-platform-deadmans-switch';
 import type { DeliveryClient } from './deliveryClient.js';
+import type { DemoContainment } from './demoContainment.js';
 import type { DrainTarget, TargetStore } from './descriptorTargets.js';
-import type { DroppedOutcomes } from './droppedOutcomes.js';
+import type { DropDetail, DroppedOutcomes } from './droppedOutcomes.js';
 import type { HealthState } from './health.js';
 import { isDefiniteNonAcceptance, type Ip2Lane, type Ip2Slot } from './ip2Lane.js';
 import { isBulkDeferral, laneOf, type BulkCap, type Lane } from './lanes.js';
@@ -11,6 +12,8 @@ import { mx1Lane } from './mx1Lane.js';
 import { checkHeaderFrom } from './headerFromScope.js';
 import type { Logger } from './log.js';
 import type { OutcomeRunner } from './outcomeRunner.js';
+import type { ComplaintPuller } from './complaints/complaintPuller.js';
+import type { SentJournal } from './sentJournal.js';
 import {
   QUOTA_UNKNOWN,
   failureKindOf,
@@ -73,6 +76,13 @@ export interface CollectorLoopDeps {
    * See ../README.md#header-from-scope.
    */
   enforceHeaderFrom?: boolean;
+  /**
+   * Contains a demo host's mail on this side of the drain, where a compromised
+   * host cannot lift it: the slot's own sender, a verified recipient, and the
+   * per-slot and estate ceilings. `server.ts` always sets it. A demo's mail is
+   * held, never sent, while it is unset. See ../README.md#demo-mail-containment.
+   */
+  demoContainment?: DemoContainment;
   /** The bulk lane's bucket. Login mail uses it only when `loginThrottle` is absent. */
   throttle: Throttle;
   /** Optional login lane: its own bucket, so sign-in mail never spends bulk tokens. */
@@ -101,6 +111,23 @@ export interface CollectorLoopDeps {
   dedupeSweepMs?: number;
   /** Optional, off unless supplied: carries mx1's outcomes back to the spools on a timer. */
   outcomes?: { runner: OutcomeRunner; intervalMs: number };
+  /**
+   * Written down, before each attempt at Sweego, which message it was and which
+   * spool it came from, so a complaint about it can be placed later. Unset, no
+   * Sweego message is recorded and no complaint can match.
+   */
+  sentJournal?: SentJournal;
+  /**
+   * Off unless supplied: pulls the Sweego complaint receiver and reports each
+   * complaint the sent-id journal places. Each pass names its own wait, so a
+   * failure backs off and a full page runs again at once.
+   */
+  complaints?: { puller: ComplaintPuller; firstDelayMs: number };
+}
+
+/** A demo message the containment refused for good: acked, never sent, and the spool is told why. */
+interface DemoRefusal {
+  readonly demoRefused: DropDetail;
 }
 
 export interface CollectorRuntime {
@@ -128,6 +155,8 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
   let outcomeTimer: ReturnType<typeof setTimeout> | undefined;
   let outcomeInFlight: Promise<unknown> = Promise.resolve();
   let outcomeRunning = false;
+  let complaintTimer: ReturnType<typeof setTimeout> | undefined;
+  let complaintInFlight: Promise<unknown> = Promise.resolve();
   const mx1Pins = deps.mx1Pins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const sweegoPins = deps.sweegoPins ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
   const sweegoAmbiguous = deps.sweegoAmbiguous ?? createSubmittedTracker(DEFAULT_PIN_TTL_MS);
@@ -144,7 +173,9 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
    * the message is acked and counted, never retried. `refused`: its header From
    * is not in its host's scope, so it is acked and counted the same way but
    * never reported to the spool as a bounce (that would suppress an innocent
-   * recipient). `held`: left unacked for
+   * recipient). `demoRefused`: a demo's containment refused it (a recipient
+   * outside the verified record, or a full ceiling), so it is acked, never
+   * sent, and the spool is told it failed. `held`: left unacked for
    * the shim to re-offer, and the rest of the batch carries on (Sweego said
    * no, mx1 was not tried). `stop`: mx1 failed, so the rest of the batch is
    * left too, as it always was. Sweego mail spends Sweego's own throttle,
@@ -152,9 +183,12 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
    * exactly what it did before a second target existed.
    */
   async function submit(
-    message: WireMessage,
+    inbound: WireMessage,
     target: DrainTarget
-  ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop'> {
+  ): Promise<'submitted' | 'dropped' | 'refused' | 'held' | 'stop' | DemoRefusal> {
+    // What every target below is given. For a demo the sender is rewritten to
+    // the slot's own; everything else is as drained.
+    let message = inbound;
     // Asked afresh on every offer: only a message the latest offer left held at
     // the cap is protected from the pin sweep.
     heldAtCapIds.delete(message.id);
@@ -175,6 +209,33 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         deps.dedupe.markSubmitted(message.id, true);
         return 'refused';
       }
+    }
+    if (target.demo === true) {
+      const gate = deps.demoContainment;
+      if (gate === undefined) {
+        // Unreachable from server.ts, which always sets it. A demo's mail is
+        // never sent without the containment.
+        deps.log.warn('demo_containment_missing', { target: target.id, message: message.id });
+        return 'held';
+      }
+      const verdict = gate.admit(target, message);
+      if (!verdict.ok) {
+        // The line names a reason and a message id only: no host, address,
+        // subject or domain.
+        deps.log.warn('demo_mail_refused', {
+          target: target.id,
+          message: message.id,
+          reason: verdict.reason,
+        });
+        if (verdict.action === 'hold') {
+          return 'held';
+        }
+        // Permanent, and the same ending as a dropped recipient: marked so a
+        // lost ack is only re-acked on the next offer, never sent or retried.
+        deps.dedupe.markSubmitted(message.id, true);
+        return { demoRefused: verdict.detail };
+      }
+      message = { ...message, from: verdict.from };
     }
     const lane = laneOf(message);
     const sweego = deps.sweegoDeliveryClient;
@@ -275,6 +336,19 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       // Before the attempt, not after the accept: an attempt that times out
       // may still have been taken.
       sweegoPins.markSubmitted(message.id);
+      // Written down before the attempt, as the pin is: an attempt that times
+      // out may still have been taken, and its complaint must still match. A
+      // journal that cannot keep it does not stop the mail.
+      if (
+        deps.sentJournal?.record({
+          targetId: target.id,
+          id: message.id,
+          drainCount: message.drainCount,
+          atMs: Date.now(),
+        }) === false
+      ) {
+        deps.log.warn('sent_journal_not_recorded', { target: target.id, message: message.id });
+      }
       let accepted = false;
       try {
         await sweego.deliver(message, target.id);
@@ -509,6 +583,13 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
           }
           if (result === 'dropped') {
             deps.droppedOutcomes?.dropped(target.id, message.id, message.drainCount);
+          } else if (typeof result === 'object') {
+            deps.droppedOutcomes?.dropped(
+              target.id,
+              message.id,
+              message.drainCount,
+              result.demoRefused
+            );
           }
         } else {
           deps.log.info('resubmission_skipped', {
@@ -567,6 +648,7 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         mx1Pins.sweep();
         sweegoPins.sweep(isHeldAtCap);
         sweegoAmbiguous.sweep(isHeldAtCap);
+        deps.sentJournal?.sweep();
       }, deps.dedupeSweepMs ?? DEFAULT_DEDUPE_SWEEP_MS);
       sweepTimer.unref?.();
 
@@ -583,6 +665,29 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
         }, outcomes.intervalMs);
         outcomeTimer.unref?.();
       }
+
+      const complaints = deps.complaints;
+      if (complaints) {
+        // One pass at a time: the next is scheduled only once this one has said how long to wait.
+        const schedule = (delayMs: number): void => {
+          complaintTimer = setTimeout(() => {
+            if (globalStop) {
+              return;
+            }
+            complaintInFlight = complaints.puller
+              .runOnce()
+              .then((summary) => summary.nextDelayMs)
+              .catch(() => complaints.firstDelayMs)
+              .then((next) => {
+                if (!globalStop) {
+                  schedule(next);
+                }
+              });
+          }, delayMs);
+          complaintTimer.unref?.();
+        };
+        schedule(complaints.firstDelayMs);
+      }
     },
     async stop(): Promise<void> {
       globalStop = true;
@@ -595,11 +700,14 @@ export function createCollectorRuntime(deps: CollectorLoopDeps): CollectorRuntim
       if (outcomeTimer) {
         clearInterval(outcomeTimer);
       }
+      if (complaintTimer) {
+        clearTimeout(complaintTimer);
+      }
       for (const state of running.values()) {
         state.stopped = true;
       }
       await Promise.allSettled([...running.values()].map((s) => s.done));
-      await Promise.allSettled([outcomeInFlight]);
+      await Promise.allSettled([outcomeInFlight, complaintInFlight]);
     },
   };
 }

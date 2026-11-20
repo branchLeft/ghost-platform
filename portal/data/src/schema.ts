@@ -17,6 +17,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { SUPPORT_ACCESS_STATES, SUPPORT_LANES, SUPPORT_REQUEST_STATUSES } from './supportAccess.js';
 import { TENANT_KINDS } from './tenantKind.js';
+import { BILLING_REFERENCE_PATTERN, CARD_NUMBER_LIKE_PATTERN, PAYMENT_STATES } from './billing.js';
 import { TENANT_NAME_PATTERN } from './tenantName.js';
 import { CUSTOM_DOMAIN_FQDN_PATTERN, VERIFICATION_TOKEN_PATTERN } from './customDomain.js';
 import {
@@ -170,6 +171,52 @@ export const supportAccessReading = portal
       check(
         'support_access_reading_lane_known',
         sql`${table.lane} IN (${sql.raw(sqlList(SUPPORT_LANES))})`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A paying tenant's billing record: an opaque reference into the owner's
+ * invoicing tool and a payment state (`unpaid`, `paid`, `overdue`), one row per
+ * tenant. Nothing else about payment is held: no card or bank detail, no name
+ * or address, no provider key, and no column that holds free text. The
+ * reference is checked for shape, and one that reads as a card number is
+ * refused (`billing.ts`). The state has no default: a row that names none is
+ * refused, never guessed. `state_changed_at` is the database's clock and moves
+ * only when the state does. The owner role writes; the tenant role reads its
+ * own row and holds no write privilege, so it cannot mark itself paid.
+ */
+export const tenantBilling = portal
+  .table(
+    'tenant_billing',
+    {
+      tenantId: uuid('tenant_id')
+        .primaryKey()
+        .references(() => tenantRegister.tenantId),
+      billingReference: text('billing_reference'),
+      paymentState: text('payment_state').notNull(),
+      stateChangedAt: timestamp('state_changed_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      check(
+        'tenant_billing_payment_state_known',
+        sql`${table.paymentState} IN (${sql.raw(sqlList(PAYMENT_STATES))})`
+      ),
+      check(
+        'tenant_billing_reference_shape',
+        sql`${table.billingReference} ~ ${sql.raw(`'${BILLING_REFERENCE_PATTERN}'`)}`
+      ),
+      check(
+        'tenant_billing_reference_not_card_like',
+        sql`${table.billingReference} !~ ${sql.raw(`'${CARD_NUMBER_LIKE_PATTERN}'`)}`
       ),
       pgPolicy('tenant_isolation', {
         as: 'permissive',

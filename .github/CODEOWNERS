@@ -255,6 +255,7 @@
 # --- Criterion 8 and the rules themselves win over the releases above ---
 /LICENSE                                         @branchLeft/branchleft-admin
 /render-core/LICENSE                             @branchLeft/branchleft-admin
+/services/ring-controller/LICENSE                @branchLeft/branchleft-admin
 /infra/tenant/LICENSE                            @branchLeft/branchleft-admin
 /portal/apps/src/tenant/explainerPages.ts        @branchLeft/branchleft-admin
 **/CLAUDE.md                                     @branchLeft/branchleft-admin
