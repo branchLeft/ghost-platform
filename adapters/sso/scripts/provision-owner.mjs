@@ -136,7 +136,8 @@ async function clearSeededDefaults(knex, removeFixturePosts) {
     }
   }
   await knex('posts').whereRaw('feature_image LIKE ?', [STATIC_GHOST + '%']).update({ feature_image: null });
-  await knex('settings').where('key', 'cover_image').whereRaw('value LIKE ?', [STATIC_GHOST + '%']).update({ value: null });
+  const cover = await knex('settings').where('key', 'cover_image').whereRaw('value LIKE ?', [STATIC_GHOST + '%']).update({ value: null });
+  return cover > 0;
 }
 async function main() {
   const owner = await readOwner();
@@ -150,14 +151,14 @@ async function main() {
   const state = await call('GET', '/ghost/api/admin/authentication/setup/');
   if (state.status !== 200) refuse('setup status answered ' + state.status + ' ' + state.text.slice(0, 300));
   if (JSON.parse(state.text).setup[0].status === true) {
-    await withKnex(async (knex) => {
+    const settingsCleared = await withKnex(async (knex) => {
       const existing = await ownerEmail(knex);
       if (!existing || existing.toLowerCase() !== owner.email.toLowerCase()) {
         refuse('this Ghost is already set up with a different owner: it was claimed by someone else');
       }
-      await clearSeededDefaults(knex, false);
+      return clearSeededDefaults(knex, false);
     });
-    console.log(JSON.stringify({ created: false, alreadySetUp: true }));
+    console.log(JSON.stringify({ created: false, alreadySetUp: true, settingsCleared }));
     return;
   }
   const created = await call('POST', '/ghost/api/admin/authentication/setup/', {
@@ -169,12 +170,12 @@ async function main() {
     }],
   });
   if (created.status !== 201) refuse('setup answered ' + created.status + ' ' + created.text.slice(0, 300));
-  await withKnex((knex) => clearSeededDefaults(knex, true));
+  const settingsCleared = await withKnex((knex) => clearSeededDefaults(knex, true));
   const link = await call('POST', '/ghost/api/admin/authentication/password_reset/', {
     password_reset: [{ email: owner.email }],
   });
   if (link.status !== 200) refuse('the owner exists but the sign-in link request answered ' + link.status + ' ' + link.text.slice(0, 300));
-  console.log(JSON.stringify({ created: true, alreadySetUp: false, linkRequested: true }));
+  console.log(JSON.stringify({ created: true, alreadySetUp: false, linkRequested: true, settingsCleared }));
 }
 main().catch((error) => {
   console.error(error.stack || String(error));
@@ -213,7 +214,32 @@ export function provisionOwner(
     }
     throw error;
   }
-  return JSON.parse(output.trim().split('\n').pop());
+  const { settingsCleared, ...result } = JSON.parse(output.trim().split('\n').pop());
+  // Ghost reads settings into an in-memory cache at boot, and this step runs in
+  // another process, so a cleared cover_image only reaches the site on restart.
+  // Provisioning has no admin session to clear it through Ghost's own API.
+  if (settingsCleared) restartAndWait(container, execFile);
+  return result;
+}
+
+const READY_PROBE = `require('node:http').get('http://${GHOST_LISTEN}/ghost/api/admin/authentication/setup/', (res) => { console.log('up'); res.resume(); }).on('error', () => process.exit(1));`;
+
+/** Restarts the tenant container and waits until Ghost answers again. */
+function restartAndWait(container, execFile) {
+  execFile('docker', ['restart', container], { encoding: 'utf8' });
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    try {
+      const out = execFile('docker', ['exec', container, 'node', '-e', READY_PROBE], {
+        encoding: 'utf8',
+      });
+      if (out.trim() === 'up') return;
+    } catch {
+      // not answering yet
+    }
+    Atomics.wait(pause, 0, 0, 1000);
+  }
+  throw new Error('the tenant container did not answer after its restart');
 }
 
 function main() {
