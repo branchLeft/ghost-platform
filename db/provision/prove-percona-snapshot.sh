@@ -129,6 +129,8 @@ wait_ready() {
         fi
         sleep 1
     done
+    # The server's own last words: a start that fails is otherwise silent.
+    docker logs --tail 60 "$1" >&2 2>&1 || true
     fail "$1 never answered a real query"
 }
 
