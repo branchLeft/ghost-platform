@@ -2,6 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
 import { TenantDb, bindTenant } from 'ghost-platform-portal-data/tenant';
 import { createFixture, TENANT_A, TENANT_B, type Fixture } from '../../data/test/helpers.js';
+import { deleteReadings, readingCount } from '../../data/test/healthAdmin.js';
+import { nameTenant } from '../../data/test/supportAccessAdmin.js';
 import { collectHealth } from '../src/collector/healthCollect.js';
 import {
   DRAINED,
@@ -26,15 +28,8 @@ beforeAll(async () => {
   fixture = await createFixture();
   owner = new OwnerDb(fixture.owner);
   tenant = new TenantDb(fixture.tenant);
-  for (const [id, name] of [
-    [TENANT_A, NAME_A],
-    [TENANT_B, NAME_B],
-  ] as const) {
-    await fixture.admin.query(
-      'UPDATE portal.tenant_register SET tenant_name = $1 WHERE tenant_id = $2',
-      [name, id]
-    );
-  }
+  await nameTenant(fixture, TENANT_A, NAME_A);
+  await nameTenant(fixture, TENANT_B, NAME_B);
 });
 
 afterAll(async () => {
@@ -42,7 +37,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await fixture.admin.query('DELETE FROM portal.health_reading');
+  await deleteReadings(fixture);
 });
 
 const lines: string[] = [];
@@ -96,8 +91,7 @@ describe('a report written through the owner role, read back as the tenant page 
   it('writes nothing for a stranger or a report that is not the contract', async () => {
     await collect(report([['placeholder-stranger', [UNDRAINED_MATCHING]]]));
     await collect('not json');
-    const rows = await fixture.admin.query('SELECT 1 FROM portal.health_reading');
-    expect(rows.rowCount).toBe(0);
+    expect(await readingCount(fixture)).toBe(0);
   });
 
   it('keeps the log to the tenant name and the outcome', async () => {
