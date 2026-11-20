@@ -565,6 +565,16 @@ file`, then the name and the age. A temp file holds no verdict and is never
 served, so nothing else is checked. Every other dotfile, and every byte,
 sidecar, refusal record and aside copy, is untouched by this rule.
 
+## What a match does
+
+A match has two tiers, and only exact + csam is irreversible: it is sealed and
+reported, where every other match is a freeze. The freeze reaches every copy
+Ghost made of the upload and stops further generation, and a tier-one freeze
+can be lifted from the digest alone. `src/policy.md` has the table, the refusal
+record, the copy ledger and what happens when a bucket will not let a copy go.
+What happens to a demo slot on a tier-two match is the control plane's
+(`services/broker/src/matchAction.md`).
+
 ## Icon size variants (size-variants)
 
 On object storage Ghost core rewrites a stored image's absolute bucket URL

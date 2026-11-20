@@ -5,6 +5,8 @@ const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+const { tierOf, TIER_ONE, TIER_TWO } = require('./policy');
+
 // A refusal record sits next to the refused bytes. Its presence is what
 // makes a digest refused for every feature sharing this quarantine
 // directory, for good: positive verdicts never expire, so nothing that
@@ -15,6 +17,10 @@ const REFUSED_SUFFIX = '.refused.json';
 // refusal -- both live at `<quarantinePath>/<digest>`, but only a hold has
 // one of these next to it.
 const HOLDS_SUFFIX = '.holds.json';
+// Sidecar suffix for a family's copy ledger: which stored paths one upload
+// made (the processed image, its `_o` original, any responsive derivative),
+// so a freeze can reach every one of them. See recordCopy().
+const COPIES_SUFFIX = '.copies.json';
 // Every orphan the sweep removes is logged with this prefix, so a log search
 // or alert has one fixed string to match.
 const ORPHAN_LOG_PREFIX = 'ScanningStorageAdapter: orphaned quarantine bytes';
@@ -174,7 +180,9 @@ function hasHoldSidecar(quarantinePath, digest) {
 // Returns the verdict a refusal was recorded with, or null when the digest
 // was never refused. A record that exists but cannot be parsed is still a
 // refusal: it reads back as one with no classification, which the refusal
-// error words generically.
+// error words generically. `tier` is what the record says, or what the
+// verdict derives when an older release wrote it without one; a record that
+// cannot be read is tier two, so nothing ever lifts it.
 function readRefusal(quarantinePath, digest) {
   let raw;
   try {
@@ -186,33 +194,58 @@ function readRefusal(quarantinePath, digest) {
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return { ...parsed, evidence: digest };
+      const tier =
+        parsed.tier === TIER_ONE || parsed.tier === TIER_TWO
+          ? parsed.tier
+          : (tierOf(parsed) ?? TIER_TWO);
+      return { ...parsed, tier, evidence: digest };
     }
   } catch {
     // fall through
   }
-  return { classification: 'csam', evidence: digest };
+  return { classification: 'csam', tier: TIER_TWO, evidence: digest };
+}
+
+// The record a match is sealed with. The tier says what was done: a tier-two
+// match is a seal (`sealedAt` is when the reporting clock started), a tier-one
+// match a freeze (`frozenAt`). Neither carries anything but the verdict's own
+// fields and a time, so the record itself is safe to hand to a reviewer.
+function recordFor(verdict, tier, existing, nowIso) {
+  const record = {
+    classification: verdict && verdict.classification,
+    matchType: verdict && verdict.matchType,
+    source: verdict && verdict.source,
+    tier,
+    action: tier === TIER_TWO ? 'seal' : 'freeze',
+  };
+  if (existing && existing.frozenAt) record.frozenAt = existing.frozenAt;
+  if (tier === TIER_TWO) record.sealedAt = (existing && existing.sealedAt) || nowIso;
+  else record.frozenAt = (existing && existing.frozenAt) || nowIso;
+  return record;
 }
 
 // Record first, bytes second: see the README's "Sealing order", which also
 // covers releaseBytes. `onRecordWritten` is a test seam between the steps.
+// A refused digest is never downgraded: a tier-one freeze is replaced by a
+// tier-two seal when a later verdict says exact, and a seal is never
+// replaced by anything. `now` is a test seam for the clock the seal starts.
 async function sealRefusal(
   quarantinePath,
   digest,
   buffer,
   verdict,
   computeDigest,
-  { onRecordWritten } = {}
+  { onRecordWritten, now = () => new Date().toISOString() } = {}
 ) {
-  if (!isRefused(quarantinePath, digest)) {
+  // A refused digest that no policy tier names (a caller passing a bare
+  // verdict) is a freeze, the reversible one.
+  const tier = tierOf(verdict) ?? TIER_ONE;
+  const existing = isRefused(quarantinePath, digest) ? readRefusal(quarantinePath, digest) : null;
+  if (!existing || (existing.tier === TIER_ONE && tier === TIER_TWO)) {
     await fs.mkdir(quarantinePath, { recursive: true });
     await writeFileAtomic(
       refusalPath(quarantinePath, digest),
-      JSON.stringify({
-        classification: verdict && verdict.classification,
-        matchType: verdict && verdict.matchType,
-        source: verdict && verdict.source,
-      })
+      JSON.stringify(recordFor(verdict, tier, existing, now()))
     );
   }
   if (onRecordWritten) await onRecordWritten();
@@ -324,6 +357,7 @@ function isOrphanCandidateName(name) {
     name.startsWith('.') ||
     name.includes(RELEASING_INFIX) ||
     name.endsWith(HOLDS_SUFFIX) ||
+    name.endsWith(COPIES_SUFFIX) ||
     name.endsWith(REFUSED_SUFFIX)
   );
 }
@@ -420,7 +454,151 @@ function sweepOrphans(quarantinePath, { minAgeMs, now = Date.now, logger, onMove
   return removed;
 }
 
+// A refusal that is a tier-one freeze can be lifted, and nothing else can:
+// the record goes, so the digest is no longer refused, and the caller puts
+// back what the freeze withheld. A seal (tier two) and a record that cannot
+// be read are never lifted. Returns 'lifted', 'not-refused' or 'sealed'.
+function liftFreeze(quarantinePath, digest) {
+  const record = readRefusal(quarantinePath, digest);
+  if (record === null) return 'not-refused';
+  if (record.tier !== TIER_ONE) return 'sealed';
+  fsSync.rmSync(refusalPath(quarantinePath, digest), { force: true });
+  return 'lifted';
+}
+
+// ---- The copy ledger -------------------------------------------------------
+//
+// One upload becomes several objects: Ghost stores the processed image and an
+// untouched `_o` original, and later (or at once, on a bucket) a responsive
+// derivative per size and format. They share a name and nothing else: their
+// bytes, so their digests, differ. A freeze that reached only the bytes a
+// verdict named would leave the others served, so every write is recorded
+// here under a family key built from its path alone.
+
+const SIZE_DIR = /^size\/[^/]+\//;
+const FORMAT_DIR = /^format\/[^/]+\//;
+
+// The path an object sits at, relative to the storage root, with the parts
+// that tell copies of one upload apart taken off: the root, the `size/<w>/`
+// and `format/<f>/` directories a derivative sits under, and the `_o` before
+// the extension an original carries.
+function familyKeyOf(storedPath, storageRoot) {
+  let relative = String(storedPath).split(path.sep).join('/').replace(/^\/+/, '');
+  const root = String(storageRoot ?? '')
+    .split(path.sep)
+    .join('/')
+    .replace(/^\/+|\/+$/g, '');
+  if (root !== '' && relative.startsWith(`${root}/`)) relative = relative.slice(root.length + 1);
+  relative = relative.replace(SIZE_DIR, '').replace(FORMAT_DIR, '');
+  const ext = path.posix.extname(relative);
+  const stem = relative.slice(0, relative.length - ext.length).replace(/_o$/, '');
+  return `${stem}${ext}`;
+}
+
+function ledgerPath(quarantinePath, owner, familyKey) {
+  const id = crypto.createHash('sha256').update(`${owner}\0${familyKey}`).digest('hex');
+  return path.join(quarantinePath, `${id}${COPIES_SUFFIX}`);
+}
+
+function readLedger(file) {
+  let raw;
+  try {
+    raw = fsSync.readFileSync(file, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.copies)) return parsed;
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+// Remembers that `storedPath` now holds the bytes named `digest`. Synchronous
+// from read to write, so two writers in one process cannot lose each other's
+// entry; the rename inside writeFileAtomicSync covers a reader in another.
+function recordCopy(quarantinePath, owner, storageRoot, storedPath, digest) {
+  const family = familyKeyOf(storedPath, storageRoot);
+  const file = ledgerPath(quarantinePath, owner, family);
+  fsSync.mkdirSync(quarantinePath, { recursive: true });
+  const ledger = readLedger(file) ?? { owner, family, copies: [] };
+  const known = ledger.copies.find((c) => c.path === storedPath);
+  if (known) known.digest = digest;
+  else ledger.copies.push({ path: storedPath, digest });
+  writeFileAtomicSync(file, JSON.stringify(ledger));
+  return family;
+}
+
+// Every ledger of this owner that holds a copy named `digest`, or that is
+// `family`'s own. A directory that cannot be listed is empty, so a freeze on a
+// host that never stored anything finds nothing and does not throw.
+function familiesToFreeze(quarantinePath, owner, { digest, family }) {
+  const found = [];
+  for (const name of listEntries(quarantinePath).filter((n) => n.endsWith(COPIES_SUFFIX))) {
+    const file = path.join(quarantinePath, name);
+    const ledger = readLedger(file);
+    if (ledger === null || ledger.owner !== owner) continue;
+    if (ledger.family === family || ledger.copies.some((c) => c.digest === digest)) {
+      found.push({ file, ledger });
+    }
+  }
+  return found;
+}
+
+// Writes a ledger back, whole and atomically.
+function writeLedger(file, ledger) {
+  writeFileAtomicSync(file, JSON.stringify(ledger));
+}
+
+// A family is frozen once any of its copies matched. Recorded in the ledger so
+// a restart still answers absent for every path in it. A seal is never
+// replaced by a freeze.
+function markFamilyFrozen(file, ledger, tier, classification) {
+  const already = ledger.frozen;
+  const next = {
+    ...ledger,
+    frozen:
+      already && already.tier === TIER_TWO
+        ? already
+        : { tier, classification: classification ?? null },
+  };
+  writeLedger(file, next);
+  return next;
+}
+
+// Takes the freeze off a family and says each copy is back where it was. Only
+// ever called after liftFreeze() has agreed every record is tier one.
+function unfreezeFamily(file, ledger) {
+  const { frozen: _frozen, ...rest } = ledger;
+  writeLedger(file, {
+    ...rest,
+    copies: ledger.copies.map(({ withheld: _withheld, ...copy }) => copy),
+  });
+}
+
+// What froze the family `storedPath` belongs to, or null when nothing did.
+// Throws on a ledger that cannot be read, so the caller decides what an
+// unreadable answer means.
+function frozenOf(quarantinePath, owner, storageRoot, storedPath) {
+  const ledger = readLedger(
+    ledgerPath(quarantinePath, owner, familyKeyOf(storedPath, storageRoot))
+  );
+  return ledger !== null && ledger.frozen ? ledger.frozen : null;
+}
+
 module.exports = {
+  COPIES_SUFFIX,
+  familyKeyOf,
+  recordCopy,
+  familiesToFreeze,
+  markFamilyFrozen,
+  writeLedger,
+  unfreezeFamily,
+  frozenOf,
+  liftFreeze,
   REFUSED_SUFFIX,
   HOLDS_SUFFIX,
   SPLIT_ASIDE_NAME,
