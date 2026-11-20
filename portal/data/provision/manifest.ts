@@ -150,6 +150,7 @@ const SUPPORT_ACCESS = '0011_support_access';
 export const STATUS_READ = '0012_demo_request_status_read';
 const QUEUE = '0013_moderation_item';
 const TENANT_BILLING = '0014_tenant_billing';
+const TENANT_ERASURE = '0015_tenant_erasure_request';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -293,6 +294,21 @@ export function manifest(major: number, database: string): readonly ManifestObje
       grants: [
         { grantee: 'tenantRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
+      ],
+    },
+    // TenantDb.requestOwnErasure inserts the tenant's one row (its primary key
+    // is the tenant, so a second request records nothing) and ownErasure reads
+    // it; OwnerDb.listErasureRequests reads and recordKeyDestroyed updates the
+    // status. The tenant role holds no UPDATE, so it cannot mark its own key
+    // destroyed. Nothing deletes a request, and the table has no column that
+    // holds text.
+    {
+      kind: 'table',
+      identity: 'portal.tenant_erasure_request',
+      since: TENANT_ERASURE,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
       ],
     },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
@@ -450,6 +466,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
   'portal.tenant_billing': { enabled: true, forced: false },
+  'portal.tenant_erasure_request': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
@@ -568,6 +585,26 @@ export const POLICIES: readonly PolicyEntry[] = [
     '*',
     `(${BOUND})`,
     `(${BOUND})`
+  ),
+  policy(
+    'portal.tenant_erasure_request',
+    'tenant_isolation',
+    TENANT_ERASURE,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  // The restrictive half: whatever else lets a tenant insert, the row it files
+  // is a plain request. Only the owner role's UPDATE records a destroyed key.
+  policy(
+    'portal.tenant_erasure_request',
+    'tenant_insert_requested',
+    TENANT_ERASURE,
+    'a',
+    'null',
+    "((status = 'requested'::text) AND (key_destroyed_at IS NULL))",
+    'tenantRole',
+    false
   ),
   policy(
     'portal.support_access_request',
@@ -802,6 +839,26 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         "(tenant_id) WHERE (status = 'open'::text)",
       'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +
         'ON portal.support_access_request USING btree (request_id)',
+    ],
+  },
+  'portal.tenant_erasure_request': {
+    since: TENANT_ERASURE,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
+      `column key_destroyed_at timestamp with time zone notnull=false ${PLAIN}`,
+      'default requested_at now()',
+      "default status 'requested'::text",
+      "constraint tenant_erasure_request_destroyed_moment CHECK ((((status = 'requested'::text) AND " +
+        "(key_destroyed_at IS NULL)) OR ((status = 'key_destroyed'::text) AND (key_destroyed_at IS NOT NULL))))",
+      'constraint tenant_erasure_request_pkey PRIMARY KEY (tenant_id)',
+      "constraint tenant_erasure_request_status_known CHECK ((status = ANY (ARRAY['requested'::text, " +
+        "'key_destroyed'::text])))",
+      'constraint tenant_erasure_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.tenant_erasure_request_pkey CREATE UNIQUE INDEX tenant_erasure_request_pkey ' +
+        'ON portal.tenant_erasure_request USING btree (tenant_id)',
     ],
   },
   'portal.document_version': {

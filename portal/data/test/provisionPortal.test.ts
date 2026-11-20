@@ -93,6 +93,7 @@ describe('the provisioning lifecycle', () => {
       'applied migration 0012_demo_request_status_read',
       'applied migration 0013_moderation_item',
       'applied migration 0014_tenant_billing',
+      'applied migration 0015_tenant_erasure_request',
       // The post-check ran as the migrator, which cannot read everything: it
       // names, per mechanism, what it did not observe.
       expect.stringMatching(new RegExp(`^not observed as ${MIGRATOR}, M01: `)),
@@ -349,7 +350,7 @@ describe('the provisioning lifecycle', () => {
     const before = await stateSnapshot();
     const result = await run();
     expect(result.code).toBe(1);
-    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 16 \(f00d\)/);
+    expect(result.err.join('\n')).toMatch(/extra M25: migration history row 17 \(f00d\)/);
     expect(await stateSnapshot()).toEqual(before);
   });
 
