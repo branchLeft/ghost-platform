@@ -14,6 +14,7 @@ import pathlib
 import re
 import subprocess
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -643,7 +644,99 @@ class ImagePinTests(unittest.TestCase):
             self.assertIn(f"--{name}={want}", _WRAPPER_TEXT)
         # One function starts both containers, and it passes the flags.
         self.assertEqual(len(re.findall(r'"\$\{GTID_FLAGS\[@\]\}"', _WRAPPER_TEXT)), 1)
-        self.assertEqual(len(re.findall(r'^start_server "\$(?:SOURCE|REPLICA)_IMAGE"', _WRAPPER_TEXT, re.M)), 2)
+        self.assertEqual(len(re.findall(r'^(?:DATADIR_TMPFS="\$SOURCE_DATADIR_TMPFS" )?start_server "\$(?:SOURCE|REPLICA)_IMAGE"', _WRAPPER_TEXT, re.M)), 2)
+
+
+_MOUNTS = "overlay / overlay rw,relatime 0 0\ntmpfs /var/lib/mysql tmpfs rw,nosuid,nodev,size=2097152k 0 0\n"
+
+
+class _FakeServer:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def query(self, sql: str, **_: object) -> list[list[str]]:
+        assert sql == "SELECT @@datadir;", sql
+        return [["/var/lib/mysql/"]]
+
+    def exec_argv(self, inner: list[str], **_: object) -> list[str]:
+        return ["docker", "exec", self.name, *inner]
+
+
+class SourceOnTmpfsTests(unittest.TestCase):
+    """Control 2 is judged on a source whose datadir is on tmpfs: the runner's
+    disk stalls every tenant's commit at once, which the control read as the
+    candidate's. The probe refuses to run on a source that is not on tmpfs."""
+
+    @staticmethod
+    def _mounts(text: str, code: int = 0) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess([], code, text, "")
+
+    def test_a_source_on_tmpfs_is_accepted_and_the_log_says_what_it_does_not_cover(self) -> None:
+        with mock.patch.object(sp.subprocess, "run", return_value=self._mounts(_MOUNTS)):
+            line = psp.source_datadir_note(_FakeServer("snapshot-proof-source-1"))  # type: ignore[arg-type]
+        self.assertIn("/var/lib/mysql/ on tmpfs", line)
+        self.assertIn("not the runner's disk", line)
+        self.assertIn("coordinate read is not covered", line)
+
+    def test_a_source_that_fell_back_to_the_disk_is_refused(self) -> None:
+        with mock.patch.object(sp.subprocess, "run", return_value=self._mounts("overlay / overlay rw 0 0\n")):
+            with self.assertRaises(sp.ProofError) as caught:
+                psp.source_datadir_note(_FakeServer("snapshot-proof-source-1"))  # type: ignore[arg-type]
+        self.assertIn("not tmpfs", str(caught.exception))
+        self.assertIn("overlay", str(caught.exception))
+
+    def test_a_mount_table_that_cannot_be_read_is_refused_not_assumed_fine(self) -> None:
+        with mock.patch.object(sp.subprocess, "run", return_value=self._mounts("", 1)):
+            with self.assertRaises(sp.ProofError):
+                psp.source_datadir_note(_FakeServer("snapshot-proof-source-1"))  # type: ignore[arg-type]
+
+    def test_control_2_reports_the_source_it_ran_on(self) -> None:
+        scenario = psp.Scenario()
+        for number in range(1, len(psp.PLANS[None]) + 1):
+            psp.record_round_baseline(scenario, number, {"t1": 0.01, "t2": 0.01, "t3": 0.01})
+            psp.record_round_latencies(scenario, number, {tenant: [0.004, 0.01] for tenant in psp.TENANTS})
+            psp.record_round_attribution(scenario, number, {tenant: [] for tenant in psp.TENANTS}, {tenant: [psp.DumpWindow(1, 2.0, 2.1)] for tenant in psp.TENANTS})
+        note = "source datadir /var/lib/mysql/ on tmpfs: control 2 measures lock and wait stalls"
+        result = psp.control_2(types.SimpleNamespace(failure=None, scenario=scenario, source_note=note))  # type: ignore[arg-type]
+        self.assertEqual(result.numbers[0], note)
+
+
+class SourceStartTests(unittest.TestCase):
+    """prove-percona-snapshot.sh starts the source with a tmpfs datadir and the
+    replica without: read from the `docker run` lines a fake Docker was given."""
+
+    _DOCKER = """#!/bin/sh
+echo "$*" >> "$FAKE_DOCKER_LOG"
+case "$1" in
+context) echo default ;;
+run) n=$(cat "$FAKE_DOCKER_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_DOCKER_COUNT"; [ "$n" -lt 2 ] || exit 1 ;;
+esac
+exit 0
+"""
+
+    def _docker_runs(self) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = pathlib.Path(tmp) / "docker"
+            fake.write_text(self._DOCKER, encoding="utf-8")
+            fake.chmod(0o755)
+            log = pathlib.Path(tmp) / "calls.log"
+            env = {key: value for key, value in os.environ.items() if key not in ("DOCKER_HOST", "DATADIR_TMPFS")}
+            env.update(PATH=f"{tmp}{os.pathsep}{os.environ.get('PATH', '')}", FAKE_DOCKER_LOG=str(log), FAKE_DOCKER_COUNT=str(pathlib.Path(tmp) / "count"))
+            subprocess.run(["bash", str(_WRAPPER)], env=env, capture_output=True, text=True, check=False, timeout=120)
+            return [line for line in log.read_text(encoding="utf-8").splitlines() if line.startswith("run ")]
+
+    def test_the_source_has_a_tmpfs_datadir_and_the_replica_keeps_the_disk(self) -> None:
+        runs = self._docker_runs()
+        self.assertEqual(len(runs), 2, runs)
+        source, replica = runs
+        self.assertIn("--name snapshot-proof-source-", source)
+        self.assertIn("--tmpfs /var/lib/mysql:rw,size=2g", source)
+        self.assertIn("--name snapshot-proof-replica-", replica)
+        self.assertNotIn("--tmpfs", replica)
+
+    def test_the_location_is_named_once_and_an_ambient_value_is_never_trusted(self) -> None:
+        self.assertEqual(_WRAPPER_TEXT.count('SOURCE_DATADIR_TMPFS="/var/lib/mysql'), 1)
+        self.assertIn("unset DATADIR_TMPFS", _WRAPPER_TEXT)
 
 
 class WrapperTests(unittest.TestCase):

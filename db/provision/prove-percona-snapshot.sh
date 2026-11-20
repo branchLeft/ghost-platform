@@ -95,12 +95,27 @@ export MYSQL_ROOT_PASSWORD
 # percona_snapshot_probe.py checks these two settings on the source.
 GTID_FLAGS=(--gtid_mode=ON --enforce_gtid_consistency=ON)
 
+# The source's datadir is on tmpfs; this is the one place the location is
+# named (the probe checks it is really tmpfs and refuses to run otherwise). A
+# hosted runner's disk sometimes stalls every tenant's commit for 150 to 570 ms
+# with no dump running, which control 2 read as the candidate's. What it costs:
+# percona_snapshot_probe.md, "Control 2's source". The replica keeps the disk.
+SOURCE_DATADIR_TMPFS="/var/lib/mysql:rw,size=2g"
+unset DATADIR_TMPFS
+
 # Image, config mount point, name, then mysqld flags. The config is mounted
 # unchanged; only the bind address (db1's private address) and GTID mode are
-# set on the command line.
+# set on the command line. With DATADIR_TMPFS set (for one call, never from
+# outside) the datadir is that tmpfs mount instead of the container's own
+# filesystem.
 start_server() {
+    local tmpfs=()
+    if [ -n "${DATADIR_TMPFS:-}" ]; then
+        tmpfs=(--tmpfs "$DATADIR_TMPFS")
+    fi
     docker run -d --platform "$PLATFORM" --name "$3" --network "$NET" -e MYSQL_ROOT_PASSWORD \
         -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:$2:ro" \
+        ${tmpfs[@]+"${tmpfs[@]}"} \
         "$1" --bind-address=0.0.0.0 "${GTID_FLAGS[@]}" "${@:4}" >/dev/null
 }
 
@@ -119,7 +134,7 @@ wait_ready() {
 
 echo "== setup: source $SOURCE_KIND, replica percona, on $PLATFORM"
 docker network create "$NET" >/dev/null
-start_server "$SOURCE_IMAGE" "$SOURCE_CNF" "$SRC"
+DATADIR_TMPFS="$SOURCE_DATADIR_TMPFS" start_server "$SOURCE_IMAGE" "$SOURCE_CNF" "$SRC"
 start_server "$REPLICA_IMAGE" "$REPLICA_CNF" "$REP" --server-id=2
 wait_ready "$SRC"
 wait_ready "$REP"
