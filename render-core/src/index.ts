@@ -96,8 +96,8 @@ export {
   THEME_CSP_UNAVAILABLE,
   PAYMENTS_CSP_NONE,
 } from './edge.js';
-export type { GhostSettings, CodeInjectionSettings } from './settings.js';
-export { CODE_INJECTION_EXPLAINER } from './settings.js';
+export type { GhostSettings, CodeInjectionSettings, FooterCreditSettings } from './settings.js';
+export { CODE_INJECTION_EXPLAINER, FOOTER_CREDIT_TEXT, FOOTER_CREDIT_URL } from './settings.js';
 export type { TenantIdentity } from './identity.js';
 
 export {
