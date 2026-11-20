@@ -329,6 +329,23 @@ describe('the provisioning lifecycle', () => {
     await connectAs(PROSPECT, PROSPECT_PW);
   });
 
+  it('never prints the password it makes for a new prospect login', async () => {
+    const seen: string[] = [];
+    const result = await run(
+      {
+        attempt: async (_database, login, password) => {
+          if (login === PROSPECT) seen.push(password);
+          return '28000';
+        },
+      },
+      { prospect: null }
+    );
+    expect(result.code).toBe(0);
+    expect(seen.length).toBeGreaterThan(0);
+    const printed = [...result.out, ...result.err].join('\n');
+    for (const password of seen) expect(printed).not.toContain(password);
+  });
+
   it('applies a pending migration and grants what it made, in one transaction', async () => {
     const all = readMigrations();
     const older = await run({ migrations: all.slice(0, 2) });

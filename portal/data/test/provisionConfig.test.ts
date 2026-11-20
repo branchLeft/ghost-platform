@@ -14,6 +14,7 @@ import {
 } from '../provision/provisionPortal.js';
 import {
   addedGrantStatements,
+  catchUpGrantStatements,
   createPrincipal,
   grantStatements,
   ident,
@@ -26,6 +27,7 @@ import {
   principalNames,
   rowSecurityEnabled,
 } from '../provision/manifest.js';
+import type { Principal } from '../provision/manifest.js';
 import { scramVerifier } from '../provision/scram.js';
 
 // The command's inputs, its redaction and its connections, without a server.
@@ -471,6 +473,28 @@ describe('the statements the command writes', () => {
       'GRANT CONNECT ON DATABASE "portal" TO "v_login"',
       'GRANT CONNECT ON DATABASE "portal" TO "q_login"',
     ]);
+  });
+
+  it('the catch-up gives a new principal exactly the manifest grants, as plain GRANTs', () => {
+    const fn = manifest(14, 'portal').find((o) => o.identity === 'public.bound_address()')!;
+    const applied = [fn.since];
+    expect(
+      catchUpGrantStatements(fn, applied, new Set<Principal>(['prospectRole']), names)
+    ).toEqual(['GRANT EXECUTE ON FUNCTION public.bound_address() TO "portal_prospect"']);
+    expect(catchUpGrantStatements(fn, applied, new Set<Principal>(['tenantRole']), names)).toEqual(
+      []
+    );
+  });
+
+  it('the catch-up never emits ALL, WITH GRANT OPTION or PUBLIC, for any object or tag', () => {
+    const everyTag = [...new Set(manifest(14, 'portal').map((o) => o.since))];
+    const everyone = new Set(Object.keys(names) as Principal[]);
+    for (const object of manifest(14, 'portal')) {
+      for (const statement of catchUpGrantStatements(object, everyTag, everyone, names)) {
+        expect(statement).toMatch(/^GRANT /);
+        expect(statement).not.toMatch(/\bALL\b|WITH GRANT OPTION|PUBLIC/);
+      }
+    }
   });
 
   it('revokes CREATE on schema public before PostgreSQL 15 only', () => {
