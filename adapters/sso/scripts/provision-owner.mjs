@@ -73,7 +73,16 @@ export function parseArgs(argv) {
  * through argv or env, so nothing outside this process ever holds it. The
  * owner gets a reset link by email and chooses their own.
  */
+/**
+ * The About page a fresh site starts with. This is product prose, owned by the
+ * owner: the ALL_CAPS values are placeholders until the owner fills them in.
+ */
+export const ABOUT_PAGE_TITLE = 'ABOUT_PAGE_TITLE';
+export const ABOUT_PAGE_BODY = 'ABOUT_PAGE_BODY';
+
 const INNER_SCRIPT = `
+const ABOUT_PAGE_TITLE = ${JSON.stringify(ABOUT_PAGE_TITLE)};
+const ABOUT_PAGE_BODY = ${JSON.stringify(ABOUT_PAGE_BODY)};
 const http = require('node:http');
 const crypto = require('node:crypto');
 const [host, port] = '${GHOST_LISTEN}'.split(':');
@@ -110,11 +119,19 @@ async function ownerEmail(knex) {
     .first('users.email');
   return row ? row.email : null;
 }
-// Ghost seeds two fixture posts ("coming-soon", "about") into every fresh
-// database, and its default cover image is hosted on static.ghost.org. A
-// fresh tenant makes no third-party request it did not choose, so both go.
-const SEEDED_SLUGS = ['coming-soon', 'about'];
+// Ghost seeds two fixture posts into every fresh database: "coming-soon", which
+// is deleted, and "about", which the default navigation links to (/about/), so
+// it stays and is replaced by ABOUT_PAGE_TITLE and ABOUT_PAGE_BODY. Its default
+// cover image is hosted on static.ghost.org; a fresh tenant makes no third-party
+// request it did not choose.
+const DELETED_FIXTURE_SLUGS = ['coming-soon'];
+const ABOUT_SLUG = 'about';
 const STATIC_GHOST = 'https://static.ghost.org/';
+function aboutLexical() {
+  const text = (value) => ({ detail: 0, format: 0, mode: 'normal', style: '', text: value, type: 'text', version: 1 });
+  const paragraph = (value) => ({ children: [text(value)], direction: 'ltr', format: '', indent: 0, type: 'paragraph', version: 1 });
+  return JSON.stringify({ root: { children: [paragraph(ABOUT_PAGE_BODY)], direction: 'ltr', format: '', indent: 0, type: 'root', version: 1 } });
+}
 async function withKnex(fn) {
   const knex = require('/var/lib/ghost/current/core/server/data/db/connection.js');
   try {
@@ -128,12 +145,20 @@ async function withKnex(fn) {
 // setup route is the only path that gets here fresh; re-runs only null links.
 async function clearSeededDefaults(knex, removeFixturePosts) {
   if (removeFixturePosts) {
-    const ids = await knex('posts').whereIn('slug', SEEDED_SLUGS).pluck('id');
+    const ids = await knex('posts').whereIn('slug', DELETED_FIXTURE_SLUGS).pluck('id');
     if (ids.length) {
       await knex('posts_authors').whereIn('post_id', ids).del();
       await knex('posts_tags').whereIn('post_id', ids).del();
       await knex('posts').whereIn('id', ids).del();
     }
+    // The About page keeps its slug, so the default navigation's link is not a 404.
+    await knex('posts').where('slug', ABOUT_SLUG).update({
+      title: ABOUT_PAGE_TITLE,
+      lexical: aboutLexical(),
+      mobiledoc: null,
+      html: '<p>' + ABOUT_PAGE_BODY + '</p>',
+      feature_image: null,
+    });
   }
   await knex('posts').whereRaw('feature_image LIKE ?', [STATIC_GHOST + '%']).update({ feature_image: null });
   const cover = await knex('settings').where('key', 'cover_image').whereRaw('value LIKE ?', [STATIC_GHOST + '%']).update({ value: null });
