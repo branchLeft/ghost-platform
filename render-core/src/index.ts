@@ -155,6 +155,8 @@ export {
   contentVolumeName,
   databaseAndUserName,
   metricsVolumeName,
+  verdictJournalVolumeName,
+  verdictNetworkName,
   verdictVolumeName,
   secretsEnvPath,
   sqlIdentifier,

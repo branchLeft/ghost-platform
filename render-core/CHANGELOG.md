@@ -4,6 +4,21 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Additive:** a descriptor that names `safety.verdictSource: "production"` now also renders a
+  `verdict-host` service in the slot's stack, from the same `${IMAGE}` as Ghost, joined only to a
+  per-slot network `ghost-<slug>-verdict-net` declared `internal: true` (no gateway, no NAT, so an
+  outbound connect has no route). It publishes no port, and carries `read_only`, `cap_drop: ALL`,
+  `no-new-privileges` and its own limits. It mounts the verdict volume read-write (Ghost keeps it
+  read-only) and a second external volume, `ghost-<slug>-verdict-journal`. `assertRuntimePosture`
+  refuses a sidecar that has a published port, more than one network, a network that is not
+  `internal`, external or IPv6, or that a Ghost service shares. New exports `verdictNetworkName` and
+  `verdictJournalVolumeName`. Absent or `"none"`, every artefact is byte-identical to before.
+  See src/compose.md#the-verdict-host-sidecar.
+- **Rollout:** with the switch on, the stack needs the journal volume to exist, and an image that
+  carries the host end at `/opt/branchleft/scanning-storage/verdict-host/main.js` (the image does not
+  yet), a verify key and an inbound port. Until then the sidecar does not start, and every upload is
+  held, never served. Do not set the switch on a descriptor before they exist.
+
 - **Additive: storage gateway media.** `media.kind: "gateway"` (`endpoint`, `region`, `shard`,
   `folder`, `resize`, `srcsets`) renders Ghost's `S3Storage` against the storage gateway:
   `endpoint` the gateway, `forcePathStyle: true`, `bucket` the shard, `tenantPrefix` the tenant's
