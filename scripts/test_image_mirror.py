@@ -905,6 +905,89 @@ class DigestOnlyTests(unittest.TestCase):
         self.assertEqual(found({"c.yml": text}), [])
 
 
+PUBLISH_WORKFLOW = (
+    "jobs:\n"
+    "  push:\n"
+    "    outputs:\n"
+    "      image: ${{ steps.digest.outputs.image }}\n"
+    "    env:\n"
+    "      IMAGE: ghcr.io/branchleft/thing\n"
+    "    steps:\n"
+    "      - name: Read and verify the pushed digest\n"
+    "        id: digest\n"
+    "        run: |\n"
+    "          digest=\"${reference#*@}\"\n"
+    "          printf '%s' \"$digest\" | grep -Eq '^sha256:[0-9a-f]{64}$'\n"
+    '          echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"\n'
+    "      - name: Summary\n"
+    "        env:\n"
+    "          PINNED_IMAGE: ${{ steps.digest.outputs.image }}\n"
+    "        run: echo \"$PINNED_IMAGE\"\n"
+    "  scan:\n"
+    "    needs: push\n"
+    "    uses: org/repo/.github/workflows/scan.yml@v1\n"
+    "    with:\n"
+    "      image: ${{ needs.push.outputs.image }}\n"
+    "  attest:\n"
+    "    needs: push\n"
+    "    env:\n"
+    "      IMAGE: ghcr.io/branchleft/thing\n"
+    "    steps:\n"
+    "      - uses: org/repo/.github/actions/attest@v1\n"
+    "        with:\n"
+    "          image: ${{ env.IMAGE }}\n"
+    "          digest: ${{ needs.push.outputs.digest }}\n"
+)
+
+
+class DigestOutputTests(unittest.TestCase):
+    """A workflow expression is accepted only where the file shows it can be one of our own images with a
+    verified digest. Each sabotage below breaks one link of that chain and must go red."""
+
+    def kinds(self, text):
+        return [(line, kind) for _, line, kind in found({WORKFLOW: text})]
+
+    def test_the_publish_chain_is_clean(self):
+        self.assertEqual(self.kinds(PUBLISH_WORKFLOW), [])
+
+    def sabotage(self, old, new):
+        self.assertIn(old, PUBLISH_WORKFLOW)
+        return self.kinds(PUBLISH_WORKFLOW.replace(old, new, 1))
+
+    def test_no_digest_shape_check_in_the_producing_step(self):
+        got = self.sabotage("grep -Eq '^sha256:[0-9a-f]{64}$'", "true")
+        self.assertEqual([k for _, k in got], ["unresolved"] * 2)
+
+    def test_a_foreign_repository_is_not_ours(self):
+        got = self.sabotage("IMAGE: ghcr.io/branchleft/thing\n    steps", "IMAGE: ghcr.io/evil/thing\n    steps")
+        self.assertEqual({k for _, k in got}, {"unresolved"})
+        self.assertTrue(got)
+
+    def test_the_mirror_namespace_is_not_an_own_image(self):
+        got = self.sabotage("IMAGE: ghcr.io/branchleft/thing\n    steps", "IMAGE: ghcr.io/branchleft/mirror-private2/thing\n    steps")
+        self.assertTrue(got)
+
+    def test_an_output_that_is_not_repository_at_digest_is_not_accepted(self):
+        got = self.sabotage('echo "image=$IMAGE@$digest"', 'echo "image=$IMAGE:$digest"')
+        self.assertEqual([k for _, k in got], ["unresolved"] * 2)
+
+    def test_a_job_output_that_names_another_step_is_not_accepted(self):
+        got = self.sabotage("image: ${{ steps.digest.outputs.image }}\n    env", "image: ${{ steps.other.outputs.image }}\n    env")
+        self.assertEqual([k for _, k in got], ["unresolved"])
+
+    def test_an_image_key_with_no_digest_beside_it_is_not_accepted(self):
+        got = self.sabotage("          digest: ${{ needs.push.outputs.digest }}\n", "")
+        self.assertEqual([k for _, k in got], ["unresolved"])
+
+    def test_a_step_output_of_another_job_is_not_followed(self):
+        text = PUBLISH_WORKFLOW + "  other:\n    env:\n      PINNED_IMAGE: ${{ steps.digest.outputs.image }}\n"
+        self.assertEqual([k for _, k in self.kinds(text)], ["unresolved"])
+
+    def test_the_rule_is_for_workflows_only(self):
+        files = {"tool.yml": PUBLISH_WORKFLOW}
+        self.assertEqual([k for _, _, k in found(files)], [])
+
+
 class SourceTests(unittest.TestCase):
     def test_the_mirror_script_parses_on_python_3_11(self):
         """A f-string that reuses its own quote is valid from 3.12 only; CI is 3.12, a laptop may not be."""

@@ -1,9 +1,15 @@
-import { and, count, eq, gt, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, getTableColumns, gt, lt, sql, type SQL } from 'drizzle-orm';
 import type { PgColumn } from 'drizzle-orm/pg-core';
 import type { Pool } from 'pg';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import {
+  demoStateEventInsert,
+  hostnameRegisterInsert,
+  hostnameRetirementInsert,
+} from './insertShapes.js';
 import { FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
 import {
+  AdmissionRefusedError,
   ConcurrentTransitionError,
   DemoExistsError,
   DemoHostnameExistsError,
@@ -12,6 +18,8 @@ import {
   HostnameRetiredError,
   HostnameReusedError,
   LEASE_DAYS,
+  SLOT_COUNT,
+  SLOT_HOLDING_STATES,
   UnknownDemoError,
   UnknownHostnameError,
   assertExtensionAllowed,
@@ -19,14 +27,30 @@ import {
   deriveEventView,
   generateLabel,
   parseDemoId,
+  type Admission,
   type DemoEventView,
   type DemoState,
 } from '../demoLifecycle.js';
-import { eventsOf, hostnameOf, latestEvent, requestOf } from '../demoReads.js';
+import {
+  countDemosIn,
+  countFailedHoldingSlot,
+  eventsOf,
+  hostnameOf,
+  latestEvent,
+  requestOf,
+} from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
-import { demoStateEvent, hostnameRegister, hostnameRetirement } from '../schema.js';
+import { demoStateEvent } from '../schema.js';
 
 export * from '../demoLifecycle.js';
+
+/**
+ * The advisory lock every admission takes, so that two requests cannot both
+ * see a free slot and take the last one. The value is arbitrary: it only has to
+ * be the same everywhere admission is decided. The lock is scoped to the
+ * database and held to the end of the transaction.
+ */
+const ADMISSION_LOCK_KEY = 4_172_906_385;
 
 /** The two columns of a term: what is written to them, as SQL the database evaluates. */
 interface Term {
@@ -73,14 +97,51 @@ export class ProvisionerDb {
     return this.run(async (tx) => {
       try {
         const [row] = await tx
-          .insert(demoStateEvent)
+          .insert(demoStateEventInsert)
           .values({ demoId: id, sequence: 1, toState: 'VERIFIED' })
-          .returning();
+          .returning(getTableColumns(demoStateEvent));
         return deriveEventView(row!);
       } catch (error) {
         if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) throw new DemoExistsError(id);
         throw error;
       }
+    });
+  }
+
+  /**
+   * Decides, for a demo at VERIFIED whose request is recorded, whether the
+   * request gets a slot or goes onto the waiting list, and records that as
+   * its next state. A full house is an outcome, never an error: a request
+   * that finds every slot held is a lead on the list, with the contact
+   * details its recorded request already carries.
+   *
+   * It is CLAIMED only when fewer than `SLOT_COUNT` demos hold a slot (a
+   * demo in a slot-holding state, or one FAILED whose hostname is not yet
+   * retired: its slot has not been freed) and nobody is waiting, so a later request never passes an earlier one. The
+   * decision is made under one advisory lock held to the end of the
+   * transaction, so concurrent requests are decided one at a time: the
+   * seventh can never also be given the sixth slot.
+   *
+   * @throws InvalidDemoIdError
+   * @throws UnknownDemoError
+   * @throws AdmissionRefusedError
+   * @throws ConcurrentTransitionError
+   */
+  async admit(demoId: string): Promise<Admission> {
+    const id = parseDemoId(demoId);
+    return this.run(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${ADMISSION_LOCK_KEY})`);
+      const latest = await this.latestOrThrow(tx, id);
+      if (latest.toState !== 'VERIFIED') throw new AdmissionRefusedError(id, 'state');
+      if ((await requestOf(tx, id)) === undefined) throw new AdmissionRefusedError(id, 'request');
+      // A demo that FAILED with its slot not yet freed still holds it: the
+      // worker retires the hostname only once the slot is free.
+      const holding =
+        (await countDemosIn(tx, SLOT_HOLDING_STATES)) + (await countFailedHoldingSlot(tx));
+      const waiting = await countDemosIn(tx, ['WAITING']);
+      const state = holding < SLOT_COUNT && waiting === 0 ? 'CLAIMED' : 'WAITING';
+      const event = await this.append(tx, latest, state, carried(tx, latest), 0);
+      return { event, state, queuePosition: state === 'WAITING' ? waiting + 1 : null };
     });
   }
 
@@ -101,6 +162,46 @@ export class ProvisionerDb {
       const term = to === 'PROVISIONING' ? issuedNow() : carried(tx, latest);
       return this.append(tx, latest, to, term, 0);
     });
+  }
+
+  /**
+   * Sweeps demos left in PROVISIONING by a process killed before it could
+   * record FAILED. Each demo whose PROVISIONING row was recorded more than
+   * `staleAfterSeconds` ago, by the database's clock, is moved to FAILED. The
+   * caller passes the provision timeout plus a margin. The hostname is left
+   * unretired: the slot is not known to be free, so `admit` keeps counting it
+   * until a person frees it. Each demo is decided in its own transaction,
+   * which re-reads its latest row, so a demo that moved on meanwhile is left
+   * alone. The loop that calls this is not built here.
+   *
+   * @returns the ids of the demos moved to FAILED
+   * @throws RangeError when `staleAfterSeconds` is not a finite number of at least zero
+   */
+  async sweepStaleProvisioning(staleAfterSeconds: number): Promise<string[]> {
+    if (!Number.isFinite(staleAfterSeconds) || staleAfterSeconds < 0) {
+      throw new RangeError('staleAfterSeconds must be a finite number of at least zero');
+    }
+    const candidates = await this.run((tx) => staleProvisioningIds(tx, staleAfterSeconds));
+    const swept: string[] = [];
+    for (const demoId of candidates) {
+      try {
+        const done = await this.run(async (tx) => {
+          if (!(await staleProvisioningIds(tx, staleAfterSeconds, demoId)).includes(demoId)) {
+            return false;
+          }
+          const latest = await this.latestOrThrow(tx, demoId);
+          assertTransitionAllowed({ state: latest.toState, origin: latest.fromState }, 'FAILED');
+          await this.append(tx, latest, 'FAILED', carried(tx, latest), 0);
+          return true;
+        });
+        if (done) swept.push(demoId);
+      } catch (error) {
+        // A demo that moved on between the read and the append is not ours to fail.
+        if (error instanceof ConcurrentTransitionError) continue;
+        throw error;
+      }
+    }
+    return swept;
   }
 
   /**
@@ -146,7 +247,7 @@ export class ProvisionerDb {
       }
       const label = this.newLabel();
       try {
-        await tx.insert(hostnameRegister).values({ label, demoId });
+        await tx.insert(hostnameRegisterInsert).values({ label, demoId });
       } catch (error) {
         const found = readDatabaseError(error);
         if (found?.code === UNIQUE_VIOLATION && found.constraint === 'hostname_register_pkey') {
@@ -169,7 +270,7 @@ export class ProvisionerDb {
   async retireHostname(label: string): Promise<void> {
     await this.run(async (tx) => {
       try {
-        await tx.insert(hostnameRetirement).values({ label });
+        await tx.insert(hostnameRetirementInsert).values({ label });
       } catch (error) {
         const found = readDatabaseError(error);
         if (found?.code === FOREIGN_KEY_VIOLATION) throw new UnknownHostnameError(label);
@@ -212,7 +313,7 @@ export class ProvisionerDb {
   ): Promise<DemoEventView> {
     try {
       const [row] = await tx
-        .insert(demoStateEvent)
+        .insert(demoStateEventInsert)
         .values({
           demoId: latest.demoId,
           sequence: latest.sequence + 1,
@@ -223,7 +324,7 @@ export class ProvisionerDb {
           leaseEndsAt: term.endsAt,
           extensionDays,
         })
-        .returning();
+        .returning(getTableColumns(demoStateEvent));
       return deriveEventView(row!);
     } catch (error) {
       if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) {
@@ -232,6 +333,38 @@ export class ProvisionerDb {
       throw error;
     }
   }
+}
+
+/**
+ * The demos whose latest row is PROVISIONING and was recorded more than
+ * `staleAfterSeconds` ago by the database's clock; all of them, or only
+ * `demoId` when given. Read inside the caller's transaction.
+ */
+async function staleProvisioningIds(
+  tx: Tx,
+  staleAfterSeconds: number,
+  demoId?: string
+): Promise<string[]> {
+  const latest = tx
+    .selectDistinctOn([demoStateEvent.demoId], {
+      demoId: demoStateEvent.demoId,
+      toState: demoStateEvent.toState,
+      recordedAt: demoStateEvent.recordedAt,
+    })
+    .from(demoStateEvent)
+    .orderBy(asc(demoStateEvent.demoId), desc(demoStateEvent.sequence))
+    .as('latest');
+  const rows = await tx
+    .select({ demoId: latest.demoId })
+    .from(latest)
+    .where(
+      and(
+        eq(latest.toState, 'PROVISIONING'),
+        lt(latest.recordedAt, sql`now() - make_interval(secs => ${staleAfterSeconds})`),
+        demoId === undefined ? undefined : eq(latest.demoId, demoId)
+      )
+    );
+  return rows.map((row) => row.demoId);
 }
 
 /** A new term: starts at the database's clock and runs the seven days. */

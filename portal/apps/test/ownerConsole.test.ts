@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CALLBACK_PATH } from 'ghost-platform-identity/dist/index.js';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
@@ -9,7 +10,8 @@ import {
   TENANT_B,
   type Fixture,
 } from '../../data/test/helpers.js';
-import { supportAccessRequest } from '../../data/src/schema.js';
+import { demoStateEvent, supportAccessRequest } from '../../data/src/schema.js';
+import { ProvisionerDb } from 'ghost-platform-portal-data/provisioner';
 import { createOwnerConsole } from '../src/console/app.js';
 import { Browser, serve, type Running } from './browser.js';
 import {
@@ -66,6 +68,7 @@ beforeAll(async () => {
       db: {
         listHealth: () => (failing ? Promise.reject(new Error('down')) : db.listHealth()),
         listSupportRequests: () => db.listSupportRequests(),
+        waitingCount: () => db.waitingCount(),
         markSupportRequestDealtWith: (tenantId: string) => db.markSupportRequestDealtWith(tenantId),
       } as OwnerDb,
       secureCookies: false,
@@ -128,6 +131,29 @@ describe('the owner console', () => {
       expect(await ownerData.listSupportRequests()).toHaveLength(2);
     } finally {
       await fixture.adminDb.delete(supportAccessRequest);
+    }
+  });
+
+  it('shows how many demo requests are on the waiting list, and the count rises by one', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    expect((await browser.request('/')).body).toContain('DEMOS_WAITING 0');
+    const provisioner = new ProvisionerDb(fixture.provisioner);
+    try {
+      for (const expected of [1, 2]) {
+        const demoId = randomUUID();
+        await provisioner.beginDemo(demoId);
+        await provisioner.transition(demoId, 'WAITING');
+        expect((await browser.request('/')).body).toContain(`DEMOS_WAITING ${expected}`);
+      }
+      // A demo that is served leaves the count.
+      const [first] = await provisioner.run((tx) =>
+        tx.select({ demoId: demoStateEvent.demoId }).from(demoStateEvent)
+      );
+      await provisioner.transition(first!.demoId, 'CLAIMED');
+      expect((await browser.request('/')).body).toContain('DEMOS_WAITING 1');
+    } finally {
+      await fixture.adminDb.delete(demoStateEvent);
     }
   });
 

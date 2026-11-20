@@ -57,6 +57,12 @@ const GATEWAY_OWNED_HEADER: ReadonlySet<string> = new Set([
  * upload whose answer never arrived committed these exact bytes.
  */
 const DIGEST_METADATA = 'x-amz-meta-gateway-sha256';
+/** The most of a complete's part list read back to compute the ETag it should produce. */
+const MAX_COMPLETE_BODY_BYTES = 2 * 1024 * 1024;
+/** S3's own ceiling on the parts of one upload. */
+const MAX_COMPLETE_PARTS = 10_000;
+/** A real `<Part>` element is about 100 bytes; one this long is not a part list worth reading. */
+const MAX_PART_ELEMENT_BYTES = 4096;
 const DEFAULT_CONFIRM_CAP_MS = 15_000;
 const DEFAULT_CONFIRM_INTERVAL_MS = 1000;
 /** The headers of a confirmed upload's answer: what the service would have sent for the PUT. */
@@ -186,7 +192,7 @@ export interface UpstreamOptions {
   /** Silence allowed in a streamed response body before it is cut. Defaults to the deadline. */
   readonly idleTimeoutMs?: number;
   /**
-   * Time allowed, after a `PutObject` the service took but never answered, to
+   * Time allowed, after a `PutObject` or `CompleteMultipartUpload` the service took but never answered, to
    * learn whether it committed before the gateway answers a failure. Defaults
    * to the deadline, capped at 15 seconds.
    */
@@ -337,6 +343,98 @@ async function readCapped(stream: Readable, signal: AbortSignal): Promise<string
     signal.removeEventListener('abort', onAbort);
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+function firstValue(raw: string | readonly string[] | undefined): string | undefined {
+  return typeof raw === 'string' ? raw : raw?.[0];
+}
+
+/** An ETag without quotes or a weak marker, in lower case. */
+function normalisedEtag(raw: string | undefined): string | undefined {
+  return raw?.replace(/^W\//, '').replaceAll('"', '').trim().toLowerCase();
+}
+
+/**
+ * The text of a request body the gateway already holds, up to the cap;
+ * `undefined` when it is larger, so a check is skipped rather than guessed.
+ */
+async function readBodyText(body: UpstreamBody): Promise<string | undefined> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let stream: Readable | undefined;
+  try {
+    stream = body.open();
+    for await (const chunk of stream) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+      total += buf.length;
+      if (total > MAX_COMPLETE_BODY_BYTES) return undefined;
+      chunks.push(buf);
+    }
+  } catch {
+    return undefined;
+  } finally {
+    stream?.destroy();
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * The ETag a finished multipart object carries when the client's part list is
+ * honoured: the MD5 of the parts' binary MD5s, then `-` and the part count.
+ * `undefined` when any part's ETag is not a plain MD5 (for example an
+ * encrypted part), because then it cannot be computed and no claim is made.
+ *
+ * The document is the client's, so it is read in one forward pass with
+ * `indexOf` and never with a pattern that can backtrack: each search starts
+ * where the last ended, the count of parts and the length of each are capped,
+ * and anything unclosed or oversized gives `undefined` at once.
+ */
+export function compositeEtagFromCompleteBody(document: string): string | undefined {
+  const OPEN = '<Part>';
+  const CLOSE = '</Part>';
+  const etags: Buffer[] = [];
+  let at = 0;
+  for (;;) {
+    const open = document.indexOf(OPEN, at);
+    if (open === -1) break;
+    const close = document.indexOf(CLOSE, open + OPEN.length);
+    if (close === -1 || close - open > MAX_PART_ELEMENT_BYTES) return undefined;
+    if (etags.length >= MAX_COMPLETE_PARTS) return undefined;
+    const part = document.slice(open + OPEN.length, close);
+    const from = part.indexOf('<ETag>');
+    const to = from === -1 ? -1 : part.indexOf('</ETag>', from + 6);
+    if (to === -1) return undefined;
+    const etag = normalisedEtag(decodeEntities(part.slice(from + 6, to)));
+    if (etag === undefined || !/^[0-9a-f]{32}$/.test(etag)) return undefined;
+    etags.push(Buffer.from(etag, 'hex'));
+    at = close + CLOSE.length;
+  }
+  if (etags.length === 0) return undefined;
+  const digest = createHash('md5').update(Buffer.concat(etags)).digest('hex');
+  return `${digest}-${etags.length}`;
+}
+
+async function compositeEtagOf(body: UpstreamBody): Promise<string | undefined> {
+  const document = await readBodyText(body);
+  return document === undefined ? undefined : compositeEtagFromCompleteBody(document);
+}
+
+function escapeXml(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
+
+/** The success document a complete answers with, written by the gateway after it found the object. */
+function completeResultBody(bucket: string, key: string, etag: string): string {
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?>' +
+    '<CompleteMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">' +
+    `<Bucket>${escapeXml(bucket)}</Bucket><Key>${escapeXml(key)}</Key>` +
+    `<ETag>${escapeXml(etag)}</ETag></CompleteMultipartUploadResult>`
+  );
 }
 
 function decodeEntities(text: string): string {
@@ -554,9 +652,24 @@ export function createUpstream(options: UpstreamOptions): Upstream {
      * check the key, inside a window of its own, for the digest this upload
      * wrote. A match is the success the service never sent; anything else
      * leaves the failure standing.
+     *
+     * A `CompleteMultipartUpload` is checked the same way, for the ETag its own
+     * part list makes: the MD5 of the parts' MD5s and the part count.
      */
     async function confirmCommitted(): Promise<UpstreamAnswer | undefined> {
-      if (route.operation !== 'PutObject' || input.signal?.aborted === true) return undefined;
+      if (input.signal?.aborted === true) return undefined;
+      let isOurs: ((headers: UpstreamTransportResponse['headers']) => boolean) | undefined;
+      if (route.operation === 'PutObject') {
+        isOurs = (headers) => firstValue(headers[DIGEST_METADATA]) === payloadHash;
+      } else if (route.operation === 'CompleteMultipartUpload' && body !== undefined) {
+        // The part list the client sent fixes the composite ETag the finished
+        // object must carry; another object at the key does not carry it.
+        const expected = await compositeEtagOf(body);
+        if (expected !== undefined) {
+          isOurs = (headers) => normalisedEtag(firstValue(headers.etag)) === expected;
+        }
+      }
+      if (isOurs === undefined) return undefined;
       const window = new AbortController();
       const closeWindow = (): void => window.abort();
       const windowTimer = setTimeout(closeWindow, confirmWindowMs);
@@ -577,9 +690,7 @@ export function createUpstream(options: UpstreamOptions): Upstream {
             return undefined;
           }
           response.body.resume();
-          const raw = response.headers[DIGEST_METADATA];
-          const digest = typeof raw === 'string' ? raw : raw?.[0];
-          if (response.status === 200 && digest === payloadHash) {
+          if (response.status === 200 && isOurs(response.headers)) {
             const headers: Record<string, string> = {};
             for (const [name, value] of Object.entries(
               relayHeaders(response.headers, { keepLength: false })
@@ -587,7 +698,19 @@ export function createUpstream(options: UpstreamOptions): Upstream {
               if (CONFIRMED_HEADER.has(name)) headers[name] = value;
             }
             log('committed-unanswered', 200);
-            return { status: 200, headers };
+            if (route.operation !== 'CompleteMultipartUpload') return { status: 200, headers };
+            if (route.uploadId !== undefined) uploads?.release(route.uploadId);
+            const etag = firstValue(response.headers.etag) ?? '';
+            return {
+              status: 200,
+              headers: {
+                ...XML_HEADERS,
+                ...(headers['x-amz-version-id'] === undefined
+                  ? {}
+                  : { 'x-amz-version-id': headers['x-amz-version-id'] }),
+              },
+              body: completeResultBody(tenant.bucket, route.key, etag),
+            };
           }
           // Not there yet, or another write's bytes: the commit may still land.
           await sleep(confirmIntervalMs, window.signal);
@@ -703,7 +826,13 @@ export function createUpstream(options: UpstreamOptions): Upstream {
           try {
             document = await readCapped(response.body, controller.signal);
           } catch {
-            if (controller.signal.aborted) return stopped();
+            // The service answered but the answer never finished arriving: a
+            // complete may have committed all the same.
+            const timedOut = deadlineHit;
+            if (controller.signal.aborted && !timedOut) return stopped();
+            const committed = await confirmCommitted();
+            if (committed !== undefined) return committed;
+            if (timedOut) return stopped();
             log('unreachable');
             return unavailableAnswer();
           }

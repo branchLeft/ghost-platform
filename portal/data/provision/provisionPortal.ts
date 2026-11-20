@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
@@ -29,6 +30,7 @@ import {
 } from './migrations.js';
 import {
   addedGrantStatements,
+  catchUpGrantStatements,
   createPrincipal,
   grantMemberships,
   grantStatements,
@@ -58,6 +60,12 @@ export interface ProvisionConfig {
   provisionerLogin: string;
   provisionerPassword: string;
   prospectLogin: string;
+  /**
+   * The prospect login's password. Empty when no file was named: the front door
+   * that will use the login is not built yet, so a full run without the file
+   * creates the login with a password no one holds and leaves an existing one
+   * as it is (see `provisionPortal`). Always empty for `--migrate-only`.
+   */
   prospectPassword: string;
   /** The login that owns the portal database and applies the migrations. */
   migratorLogin: string;
@@ -103,7 +111,7 @@ function connectionUrl(value: string, name: string): URL {
 /**
  * Reads the connection and the passwords from files named by the environment.
  * The full provision reads the administrator connection and the five login
- * passwords. `--migrate-only` (`migrateOnly`) reads the migrator's own
+ * passwords; the prospect password's file is optional. `--migrate-only` (`migrateOnly`) reads the migrator's own
  * connection URL alone: no administrator file, and no password file, because it
  * sets no password. The environment holds paths only; a secret passed as an
  * argument or a variable is refused, because both are visible in `ps` and in
@@ -201,13 +209,18 @@ export function loadConfig(
   const tenantPassword = secretFile(env, 'PORTAL_TENANT_PASSWORD_FILE', read);
   const ownerPassword = secretFile(env, 'PORTAL_OWNER_PASSWORD_FILE', read);
   const provisionerPassword = secretFile(env, 'PORTAL_PROVISIONER_PASSWORD_FILE', read);
-  const prospectPassword = secretFile(env, 'PORTAL_PROSPECT_PASSWORD_FILE', read);
+  // The one optional file: the prospect login has no user yet, so the run needs
+  // no typed secret for it. Naming the file still sets the password.
+  const prospectPassword =
+    (env['PORTAL_PROSPECT_PASSWORD_FILE'] ?? '') === ''
+      ? ''
+      : secretFile(env, 'PORTAL_PROSPECT_PASSWORD_FILE', read);
   const migratorPassword = secretFile(env, 'PORTAL_MIGRATOR_PASSWORD_FILE', read);
   for (const password of [
     tenantPassword,
     ownerPassword,
     provisionerPassword,
-    prospectPassword,
+    ...(prospectPassword === '' ? [] : [prospectPassword]),
     migratorPassword,
   ]) {
     scramVerifier(password);
@@ -515,6 +528,18 @@ export async function verifyBoundary(
     },
     config.provisionerPassword
   );
+  // A run that holds no password for the prospect login cannot connect as it.
+  if (config.prospectPassword !== '') {
+    await verifyProspectLogin(config, submitted, readsOwnRow);
+  }
+  await verifyMigratorLogin(config);
+}
+
+async function verifyProspectLogin(
+  config: ProvisionConfig,
+  submitted: readonly string[],
+  readsOwnRow: boolean
+): Promise<void> {
   await withPool(
     urlFor(config, config.database, config.prospectLogin),
     async (pool) => {
@@ -575,6 +600,9 @@ export async function verifyBoundary(
     },
     config.prospectPassword
   );
+}
+
+async function verifyMigratorLogin(config: ProvisionConfig): Promise<void> {
   // The migrator reaches no portal role and, with no superuser and no
   // CREATEROLE, can make no role either.
   await withPool(
@@ -971,6 +999,22 @@ async function applyInPortal(
         await inTransaction(client, '', async () => {
           await client.query('SELECT pg_advisory_xact_lock($1)', [LOCK_KEY]);
           const state = await readState(client, config, names, major, migrations, true);
+          // A principal this run created on a database that was provisioned
+          // without it (the prospect login, on a server from before it existed)
+          // holds nothing yet: give it what the manifest gives it on what is
+          // already there, so the check below sees a complete server.
+          if (state.checkpoint.databaseState === 'initialised' && created.size > 0) {
+            for (const object of manifest(major, config.database)) {
+              for (const statement of catchUpGrantStatements(
+                object,
+                state.checkpoint.applied,
+                created,
+                names
+              )) {
+                await client.query(statement);
+              }
+            }
+          }
           const first = await checkSeen(client, state, true);
           const again = [...(await migratorConnectionProblems(client, names)), ...first.lines];
           if (again.length > 0) throw new ProvisionRefused(again);
@@ -1049,6 +1093,8 @@ export async function provisionPortal(
   );
   const maintenance = poolFor(urlFor(config, maintenanceDatabase(config)));
   const lock = await pinned(maintenance);
+  // The prospect password the boundary test may use: empty when this run holds none.
+  let prospectProbe = config.prospectPassword;
   try {
     await lock.query('SELECT pg_advisory_lock($1)', [LOCK_KEY]);
     const server = await lock.query(
@@ -1088,43 +1134,63 @@ export async function provisionPortal(
 
     // 2. Principals: create the absent ones, rotate the logins' passwords.
     const created = new Set(PRINCIPALS.filter((p) => !outside.checkpoint.present.has(p)));
+    // The prospect login's file is optional. With none, a login this run creates
+    // gets a password made here, held in memory for this run's probes and written
+    // nowhere, so no one holds it; one that already exists is left as it is.
+    const prospectUnset = config.prospectPassword === '';
+    const prospectKept = prospectUnset && !created.has('prospectLogin');
     const passwords: Record<string, string> = {
       tenantLogin: config.tenantPassword,
       ownerLogin: config.ownerPassword,
       provisionerLogin: config.provisionerPassword,
-      prospectLogin: config.prospectPassword,
+      prospectLogin: prospectUnset
+        ? randomBytes(24).toString('base64url')
+        : config.prospectPassword,
       migratorLogin: config.migratorPassword,
     };
+    // The prospect password, when none is named, is made here and held only in
+    // memory: every line from this point passes through `redact` with it.
+    const say = (line: string): void =>
+      log(redact(line, { prospectPassword: passwords['prospectLogin'] }));
+    prospectProbe = prospectKept ? '' : passwords['prospectLogin']!;
+    const rotated = LOGINS.filter(
+      (p) => !created.has(p) && !(p === 'prospectLogin' && prospectKept)
+    );
     await inTransaction(lock, '', async () => {
       for (const principal of PRINCIPALS) {
         if (created.has(principal)) {
           await createPrincipal(lock, names, principal, passwords[principal]);
-        } else if (LOGINS.includes(principal)) {
+        } else if (rotated.includes(principal)) {
           await rotatePassword(lock, names[principal], passwords[principal]!);
         }
       }
       await grantMemberships(lock, names, created);
     });
-    log(
+    say(
       created.size > 0
         ? `created ${[...created].map((p) => names[p]).join(', ')}`
         : 'passwords rotated'
     );
+    if (prospectUnset) {
+      say(
+        created.has('prospectLogin')
+          ? `${names.prospectLogin} created with a password no one holds: PORTAL_PROSPECT_PASSWORD_FILE was not named; name it in a later full run to set one`
+          : `${names.prospectLogin} password left as it is: PORTAL_PROSPECT_PASSWORD_FILE was not named`
+      );
+    }
 
     // 3. The database, outside any transaction, as PostgreSQL requires.
     const done = [
       created.size > 0 ? `created ${[...created].map((p) => names[p]).join(', ')}` : undefined,
-      LOGINS.some((p) => !created.has(p))
-        ? `rotated the password of ${LOGINS.filter((p) => !created.has(p))
-            .map((p) => names[p])
-            .join(', ')}`
+      rotated.length > 0
+        ? `rotated the password of ${rotated.map((p) => names[p]).join(', ')}`
         : undefined,
     ];
     if (outside.checkpoint.databaseState === 'absent') {
       await lock.query(
         `CREATE DATABASE ${ident(config.database)} OWNER ${ident(names.migratorLogin)}`
       );
-      log(`created database ${config.database}`);
+      say(`created database ${config.database}`);
       done.push(`created database ${config.database} (empty)`);
     }
     // Before PostgreSQL 15, schema `public` is still the bootstrap superuser's.
@@ -1148,7 +1214,12 @@ export async function provisionPortal(
     refusals = (
       await probeOtherDatabases(
         (others.rows as { datname: string }[]).map((r) => r.datname),
-        LOGINS.map((p) => ({ name: names[p], password: passwords[p]! })),
+        LOGINS.map((p) => ({
+          name: names[p],
+          // A password this run does not know is probed with a wrong one, as
+          // `--migrate-only` does: a rule that admits the login still shows.
+          password: p === 'prospectLogin' && prospectKept ? PROBE_PASSWORD : passwords[p]!,
+        })),
         options.attempt ?? attemptWith(config)
       )
     ).map((text) => `extra M28: ${text}`);
@@ -1157,16 +1228,18 @@ export async function provisionPortal(
     }
 
     // 5. In the portal database, one transaction: check again, create, check all.
-    await applyInPortal(config, names, major, migrations, created, log);
-    log('post-check passed: the server matches the manifest');
+    await applyInPortal(config, names, major, migrations, created, say);
+    say('post-check passed: the server matches the manifest');
   } finally {
     await lock.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
     lock.release();
     await maintenance.end();
   }
   const tags = migrations.map((m) => m.tag);
+  if (prospectProbe === '')
+    log('prospect login not smoke-tested: this run holds no password for it');
   await verifyBoundary(
-    config,
+    { ...config, prospectPassword: prospectProbe },
     [
       ...Object.keys(PORTAL_TABLES),
       ...Object.keys(PROVISIONER_TABLES),

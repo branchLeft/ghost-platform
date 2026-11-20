@@ -191,6 +191,7 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0011_support_access',
       'applied migration 0012_demo_request_status_read',
       'applied migration 0013_moderation_item',
+      'applied migration 0014_tenant_billing',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -285,6 +286,33 @@ describe('--migrate-only on a real server', () => {
       `SELECT count(*)::int AS n FROM pg_roles WHERE rolname IN ('portal_prospect', '${PROSPECT}')`
     );
     expect(rows!.rows[0].n).toBe(0);
+  });
+
+  it('reaches the newest migrations from a server provisioned before the prospect login, with no prospect password typed', async () => {
+    await provisionedBeforeDocuments();
+    await admin(PROV_DB, 'REVOKE USAGE ON SCHEMA portal FROM portal_prospect');
+    await admin(
+      'postgres',
+      `REVOKE CONNECT ON DATABASE ${PROV_DB} FROM ${PROSPECT}`,
+      `DROP ROLE ${PROSPECT}`,
+      'DROP ROLE portal_prospect'
+    );
+    // The migrator path alone still refuses, naming the one step that fixes it.
+    expect((await migrate()).code).toBe(1);
+    // The full run is given no prospect password file: it creates the role and
+    // the login and applies the migrations the older image lacked.
+    const full = await run({}, { prospect: null });
+    expect(full.err).toEqual([]);
+    expect(full.code).toBe(0);
+    expect(full.out).toContain('applied migration 0010_demo_request');
+    expect(full.out).toContain(
+      `${PROSPECT} created with a password no one holds: PORTAL_PROSPECT_PASSWORD_FILE was not named; name it in a later full run to set one`
+    );
+    // From here the routine path runs on its own, as the migrator, and finds nothing pending.
+    const again = await migrate();
+    expect(again.err).toEqual([]);
+    expect(again.code).toBe(0);
+    expect(again.out).toContain('no pending migrations');
   });
 
   it('adds the demo request table to a server that has the lifecycle, with the front door insert-only, then its status read', async () => {

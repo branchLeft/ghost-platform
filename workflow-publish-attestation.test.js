@@ -59,6 +59,13 @@ const WORKFLOWS = [
     guarded: false,
   },
   {
+    file: 'publish-ring-controller.yml',
+    job: 'publish',
+    ref: 'refs/tags/ring-controller-v${version}',
+    publish: /^ {8}run: pnpm publish "\$\{TARBALL\}" --no-git-checks$/m,
+    guarded: false,
+  },
+  {
     file: 'publish-tenant-package.yml',
     job: 'publish',
     ref: 'refs/tags/v${version}',

@@ -155,6 +155,7 @@ export {
   contentVolumeName,
   databaseAndUserName,
   metricsVolumeName,
+  verdictJournalVolumeName,
   verdictVolumeName,
   secretsEnvPath,
   sqlIdentifier,
@@ -167,10 +168,14 @@ export type { RegisteredName, SlugClaimant } from './naming.js';
 export { DEFAULT_RSS_BUDGET_MIB, DEFAULT_UPLOAD_CEILING_MIB, uploadLimits } from './runtime.js';
 export type { UploadLimits } from './runtime.js';
 export {
+  GATEWAY_FOLDER_PATTERN,
   MEDIA_BUCKET_PREFIX,
+  bareHttpsOrigin,
   mediaBucketName,
   mediaPublicBaseUrl,
   validateMediaBucket,
+  validateMediaFolder,
+  validateMediaShard,
 } from './media.js';
 
 export type { PromotionTargets } from './transform.js';

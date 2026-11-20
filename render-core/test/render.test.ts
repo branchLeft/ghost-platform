@@ -362,6 +362,7 @@ describe('demo/entry-tenant/professional-tenant compose sanity', () => {
     expect(compose).toContain('storage__images__wrappedConfig__forcePathStyle: true');
     expect(compose).not.toContain("storage__active: 'S3Storage'");
     expect(compose).toContain('privacy__useUpdateCheck: false');
+    expect(compose).toContain('privacy__useGravatar: false');
     expect(compose).toContain('security__allowWebhookInternalIPs: false');
   });
 });

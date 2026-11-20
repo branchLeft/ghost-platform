@@ -15,18 +15,18 @@ export type RouteResult =
   | { readonly ok: true; readonly route: RoutedRequest }
   | { readonly ok: false; readonly refusal: Refusal };
 
-const MAX_TARGET_LENGTH = 4096;
-const MAX_KEY_BYTES = 1024;
+export const MAX_TARGET_LENGTH = 4096;
+export const MAX_KEY_BYTES = 1024;
 const MAX_PART_NUMBER = 10000;
 
 /** Bytes a raw target may carry: printable ASCII without space, backslash or `#`. */
-const RAW_TARGET_OK = /^[\x21\x22\x24-\x5b\x5d-\x7e]+$/;
+export const RAW_TARGET_OK = /^[\x21\x22\x24-\x5b\x5d-\x7e]+$/;
 /** Percent-encodings of `/`, `\` and `.`, refused outright rather than decoded. */
-const ENCODED_SEPARATOR_OR_DOT = /%(?:2f|5c|2e)/i;
-const BUCKET_NAME = /^(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+export const ENCODED_SEPARATOR_OR_DOT = /%(?:2f|5c|2e)/i;
+export const BUCKET_NAME = /^(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const PART_NUMBER = /^[1-9][0-9]{0,4}$/;
 /** Control, format and non-space separator characters: never in an object name. */
-const FORBIDDEN_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}]/u;
+export const FORBIDDEN_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Zs}]/u;
 
 const refused = (code: Parameters<typeof refusal>[0]): { ok: false; refusal: Refusal } => ({
   ok: false,
@@ -34,7 +34,7 @@ const refused = (code: Parameters<typeof refusal>[0]): { ok: false; refusal: Ref
 });
 
 /** Decodes percent-encoding once; `undefined` for a malformed or overlong sequence. */
-function decodeOnce(text: string): string | undefined {
+export function decodeOnce(text: string): string | undefined {
   try {
     return decodeURIComponent(text);
   } catch {
@@ -61,7 +61,7 @@ function isDangerousSegment(text: string): boolean {
  * normalises must not be handed a way out. A segment that is not already NFC
  * is refused too, so one object never has two spellings.
  */
-function isSafeSegment(decoded: string): boolean {
+export function isSafeSegment(decoded: string): boolean {
   // A plain space is the one separator allowed in an object name.
   if (FORBIDDEN_CHARS.test(decoded.replaceAll(' ', ''))) return false;
   if (isDangerousSegment(decoded)) return false;
@@ -69,10 +69,10 @@ function isSafeSegment(decoded: string): boolean {
   return !isDangerousSegment(decoded.normalize('NFKC'));
 }
 
-type Query = ReadonlyMap<string, string>;
+export type Query = ReadonlyMap<string, string>;
 
 /** Parses the query string strictly; `undefined` when it is malformed or repeats a name. */
-function parseQuery(raw: string): Query | undefined {
+export function parseQuery(raw: string): Query | undefined {
   const params = new Map<string, string>();
   if (raw === '') return params;
   for (const pair of raw.split('&')) {
@@ -112,9 +112,13 @@ const OPERATION_CHANGING_HEADERS = [
   'x-amz-storage-class',
 ];
 
-function hasOperationChangingHeader(request: GatewayRequest): boolean {
+export function hasOperationChangingHeader(
+  request: GatewayRequest,
+  allowed: readonly string[] = []
+): boolean {
   return Object.keys(request.headers).some((name) => {
     const lower = name.toLowerCase();
+    if (allowed.includes(lower)) return false;
     return OPERATION_CHANGING_HEADERS.some((prefix) => lower.startsWith(prefix));
   });
 }

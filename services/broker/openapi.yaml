@@ -75,7 +75,8 @@ paths:
           description: The signature does not verify, is missing, or its nonce/timestamp fail the replay checks. Carries no body.
         '409':
           description: >-
-            The slot is locked by a concurrent request; occupied in a phase
+            The slot is locked by a concurrent request (`reason` is `locked`,
+            retry later); occupied in a phase
             with no colour a swap could deploy alongside (`preparing`,
             `resetting`, `detaching`, `error`); its lease hash has not yet
             rotated past a previous descriptor (see `assertHashRotated`); the
