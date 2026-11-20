@@ -100,7 +100,9 @@ GTID_FLAGS=(--gtid_mode=ON --enforce_gtid_consistency=ON)
 # hosted runner's disk sometimes stalls every tenant's commit for 150 to 570 ms
 # with no dump running, which control 2 read as the candidate's. What it costs:
 # percona_snapshot_probe.md, "Control 2's source". The replica keeps the disk.
-SOURCE_DATADIR_TMPFS="/var/lib/mysql:rw,size=2g"
+# mode=1777: the Percona image runs mysqld as its own non-root user and never
+# chowns the datadir, so a root-owned tmpfs gave "Permission denied".
+SOURCE_DATADIR_TMPFS="/var/lib/mysql:rw,size=2g,mode=1777"
 unset DATADIR_TMPFS
 
 # Image, config mount point, name, then mysqld flags. The config is mounted
@@ -127,6 +129,8 @@ wait_ready() {
             [ "$(MYSQL_PWD="$MYSQL_ROOT_PASSWORD" docker exec -e MYSQL_PWD "$1" mysql -uroot -N -B -e 'SELECT @@port' 2>/dev/null)" = "3306" ]; then
             return 0
         fi
+        # A container that has already exited will never answer: stop waiting.
+        [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ] || break
         sleep 1
     done
     # The server's own last words: a start that fails is otherwise silent.

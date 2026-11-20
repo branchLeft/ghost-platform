@@ -730,7 +730,7 @@ exit 0
         self.assertEqual(len(runs), 2, runs)
         source, replica = runs
         self.assertIn("--name snapshot-proof-source-", source)
-        self.assertIn("--tmpfs /var/lib/mysql:rw,size=2g", source)
+        self.assertIn("--tmpfs /var/lib/mysql:rw,size=2g,mode=1777", source)
         self.assertIn("--name snapshot-proof-replica-", replica)
         self.assertNotIn("--tmpfs", replica)
 
