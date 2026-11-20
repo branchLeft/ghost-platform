@@ -1,9 +1,13 @@
 {
   "extends": "./tsconfig.json",
   // The shared base sets `noEmit`, because most projects extending it only
-  // ever type-check. This is the one config here that has to produce output.
+  // ever type-check. This is the one config here that has to produce output,
+  // and it is the config the published package is built from, so it also
+  // emits the declarations a consumer imports.
   "compilerOptions": {
-    "noEmit": false
+    "noEmit": false,
+    "declaration": true,
+    "rootDir": "src"
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test/**/*.ts"]

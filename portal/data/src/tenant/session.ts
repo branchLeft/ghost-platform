@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import { deriveBillingView, type BillingView } from '../billing.js';
 import { deriveHealthView } from '../healthView.js';
 import type { HealthView } from '../reading.js';
 import {
@@ -63,6 +64,7 @@ import {
   documentVersion,
   healthReading,
   moderationItem,
+  tenantBilling,
   moderationSetting,
   supportAccessReading,
   supportAccessRequest,
@@ -179,6 +181,17 @@ export class TenantDb {
     const rows = await this.run(scope, (tx) => tx.select().from(healthReading));
     const row = rows[0];
     return row ? deriveHealthView(row) : null;
+  }
+
+  /**
+   * The bound tenant's billing record: its opaque reference and payment state.
+   * Null when the owner has recorded none. Row-level isolation limits the read
+   * to the bound tenant, and the tenant role cannot write it.
+   */
+  async ownBilling(scope: TenantScope): Promise<BillingView | null> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantBilling));
+    const row = rows[0];
+    return row ? deriveBillingView(row) : null;
   }
 
   /**

@@ -22,6 +22,22 @@ export interface DrainTarget {
    * that host's mail.
    */
   readonly sendingDomain?: string;
+  /**
+   * A demo's own sender local part (the descriptor's `mail.identity.localPart`):
+   * the one local part its mail may leave under on the demo mail domain. Only
+   * ever set for a demo whose descriptor carries a well-formed one; absent, the
+   * demo's mail is held. Never set for a tenant.
+   */
+  readonly senderLocalPart?: string;
+  /**
+   * The one address a demo may send to: the prospect's own claimed address,
+   * the descriptor's `ownerEmail`, lower-cased. A personal address: it is
+   * never logged. Absent (a missing or unreadable `ownerEmail`), every
+   * recipient is refused. Never set for a tenant.
+   */
+  readonly ownerEmail?: string;
+  /** A demo's own per-slot ceiling, the descriptor's `mail.ceiling`: a whole number, zero allowed. Absent, the collector's default applies. */
+  readonly mailCeiling?: number;
 }
 
 /** The sending targets a descriptor's `mail.route.primary` may name. Mirrors render-core's `MailRoute`; this service keeps its own shape check rather than import render-core. */
@@ -203,6 +219,75 @@ function readSendingDomain(
     : undefined;
 }
 
+// The shape render-core accepts for a demo's local part (validate.ts), bounded
+// on both sides of the boundary character.
+const LOCAL_PART_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
+const MAX_ADDRESS_LENGTH = 254;
+// Characters that make an address more than one plain mailbox, or read
+// differently by different parsers. Written as a loop so no control character
+// sits in a regular expression (no-control-regex).
+const ADDRESS_SPECIALS = ',;<>()"\\[]';
+
+/**
+ * A recipient address as it is compared: lower-cased, and `null` unless it
+ * names exactly one plain mailbox (one '@', a dotted domain, no whitespace,
+ * control character, comma, angle bracket, quote or bracket). The one function
+ * reads both the descriptor's owner address and a drained message's recipient,
+ * so the two are compared in one spelling.
+ */
+export function normalizeRecipient(raw: unknown): string | null {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_ADDRESS_LENGTH) {
+    return null;
+  }
+  for (const char of raw) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code <= 0x20 || (code >= 0x7f && code <= 0x9f) || ADDRESS_SPECIALS.includes(char)) {
+      return null;
+    }
+  }
+  const lower = raw.toLowerCase();
+  const at = lower.indexOf('@');
+  if (at <= 0 || at !== lower.lastIndexOf('@')) {
+    return null;
+  }
+  const domain = lower.slice(at + 1);
+  const dot = domain.lastIndexOf('.');
+  return dot > 0 && dot < domain.length - 1 ? lower : null;
+}
+
+/** What a demo descriptor says about its own slot: the pieces the demo containment reads. Empty for a tenant. */
+function readDemoSlot(
+  kind: 'demo' | 'tenant',
+  raw: object
+): Pick<DrainTarget, 'senderLocalPart' | 'ownerEmail' | 'mailCeiling'> {
+  if (kind !== 'demo') {
+    return {};
+  }
+  const { ownerEmail, mail } = raw as { ownerEmail?: unknown; mail?: unknown };
+  const mailObject =
+    typeof mail === 'object' && mail !== null ? (mail as Record<string, unknown>) : {};
+  const identity = mailObject.identity;
+  const localPart =
+    typeof identity === 'object' && identity !== null
+      ? (identity as { kind?: unknown; localPart?: unknown })
+      : undefined;
+  const senderLocalPart =
+    localPart?.kind === 'demo' &&
+    typeof localPart.localPart === 'string' &&
+    LOCAL_PART_PATTERN.test(localPart.localPart)
+      ? localPart.localPart
+      : undefined;
+  const owner = normalizeRecipient(ownerEmail);
+  const ceiling = mailObject.ceiling;
+  return {
+    ...(senderLocalPart === undefined ? {} : { senderLocalPart }),
+    ...(owner === null ? {} : { ownerEmail: owner }),
+    ...(typeof ceiling === 'number' && Number.isSafeInteger(ceiling) && ceiling >= 0
+      ? { mailCeiling: ceiling }
+      : {}),
+  };
+}
+
 function isLive(expiresAt: string | null, nowMs: number): boolean {
   if (expiresAt === null) {
     return true;
@@ -337,6 +422,7 @@ export class DescriptorTargetStore implements TargetStore {
           : { sweegoAllowance: mailRoute.sweegoAllowance }),
         ...(raw.kind === 'demo' ? { demo: true as const } : {}),
         ...(sendingDomain === undefined ? {} : { sendingDomain }),
+        ...readDemoSlot(raw.kind, raw),
       });
     }
     this.current = next;

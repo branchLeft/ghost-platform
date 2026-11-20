@@ -57,6 +57,8 @@ function requiredSecretKeys(descriptor: TenantStackDescriptor): string[] {
   const keys: string[] = [...REQUIRED_SECRET_KEYS[descriptor.database.kind]];
   if (descriptor.media.kind === 's3') {
     keys.push(SECRET_ENV_KEYS.s3AccessKeyId, SECRET_ENV_KEYS.s3SecretAccessKey);
+  } else if (descriptor.media.kind === 'gateway') {
+    keys.push(SECRET_ENV_KEYS.gatewayAccessKeyId, SECRET_ENV_KEYS.gatewaySecretAccessKey);
   }
   if (descriptor.transport.kind === 'smtp') {
     keys.push(SECRET_ENV_KEYS.mailPassword);

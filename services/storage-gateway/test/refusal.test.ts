@@ -7,6 +7,7 @@ const CODES: RefusalCode[] = [
   'signature-refused',
   'credential-not-active',
   'credential-invalid',
+  'profile-not-allowed',
   'operation-not-allowed',
   'target-malformed',
   'bucket-not-allowed',

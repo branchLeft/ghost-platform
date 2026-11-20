@@ -16,6 +16,7 @@ import type { Throttle } from '../../src/throttle.js';
 import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';
 import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
 import {
+  ADMIT_ALL_DEMO_MAIL,
   DRAIN_TOKEN,
   LOGIN,
   NEWSLETTER,
@@ -137,6 +138,7 @@ describe('the IP2 newsletter lane in the collector loop', () => {
       sweegoDeliveryClient: sweego,
       sweegoThrottle: countingThrottle(),
       sweegoQuota: quota,
+      demoContainment: ADMIT_ALL_DEMO_MAIL,
       throttle: NEVER_THROTTLED,
       dedupe: createSubmittedTracker(60_000),
       health: createHealthState(),

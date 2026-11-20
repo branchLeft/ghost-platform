@@ -1,3 +1,4 @@
+import type { DemoContainment } from '../../src/demoContainment.js';
 import type { DeliveryClient } from '../../src/deliveryClient.js';
 import type { SweegoQuota } from '../../src/sendingTarget.js';
 import type { Throttle } from '../../src/throttle.js';
@@ -10,6 +11,15 @@ export const DRAIN_TOKEN = 'estate-drain-token';
 export const QUOTA_FREE: SweegoQuota = {
   allowanceReached: () => false,
   accountCapReached: () => false,
+};
+
+/**
+ * A demo containment that admits everything, for the tests that are about
+ * something else a demo target does (its lane, its route). The containment's
+ * own tests are demoContainment*.test.ts; this double must never stand in for them.
+ */
+export const ADMIT_ALL_DEMO_MAIL: DemoContainment = {
+  admit: () => ({ ok: true, from: 'slot@demo.example' }),
 };
 
 export interface FakeClient extends DeliveryClient {

@@ -6,6 +6,11 @@ import { connect, enterRole, type Tx } from '../src/db.js';
 import { OwnerDb } from '../src/owner/index.js';
 import { ProvisionerDb } from '../src/provisioner/index.js';
 import {
+  demoStateEventInsert,
+  hostnameRegisterInsert,
+  hostnameRetirementInsert,
+} from '../src/provisioner/insertShapes.js';
+import {
   demoStateEvent,
   documentVersion,
   healthReading,
@@ -69,10 +74,10 @@ describe('the provisioner role writes the register and the events, insert only',
       await outcome(
         asProvisioner(async (tx) => {
           await tx
-            .insert(demoStateEvent)
+            .insert(demoStateEventInsert)
             .values({ demoId: newDemo, sequence: 1, toState: 'VERIFIED' });
-          await tx.insert(hostnameRegister).values({ label: newLabel, demoId: newDemo });
-          await tx.insert(hostnameRetirement).values({ label: newLabel });
+          await tx.insert(hostnameRegisterInsert).values({ label: newLabel, demoId: newDemo });
+          await tx.insert(hostnameRetirementInsert).values({ label: newLabel });
         })
       )
     ).toBe('ok');
@@ -215,13 +220,137 @@ describe('the privilege tables, role by role, as the catalog holds them', () => 
   }
 
   it.each(['hostname_register', 'hostname_retirement', 'demo_state_event'])(
-    'on %s: the provisioner holds SELECT and INSERT, the owner SELECT, the tenant nothing',
+    'on %s: the provisioner holds SELECT and no table-wide INSERT, the owner SELECT, the tenant nothing',
     async (table) => {
-      expect(await held('portal_provisioner', table)).toEqual(['SELECT', 'INSERT']);
+      expect(await held('portal_provisioner', table)).toEqual(['SELECT']);
       expect(await held('portal_owner', table)).toEqual(['SELECT']);
       expect(await held('portal_tenant', table)).toEqual([]);
     }
   );
+
+  /** The columns of `table` that `role` holds `privilege` on, by name. */
+  async function columnsHeld(role: string, table: string, privilege: string): Promise<string[]> {
+    const result = await fx.admin.query<{ column_name: string }>(
+      `SELECT a.attname AS column_name
+         FROM pg_attribute a
+        WHERE a.attrelid = $2::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND has_column_privilege($1, $2, a.attname, $3)
+        ORDER BY a.attnum`,
+      [role, `portal.${table}`, privilege]
+    );
+    return result.rows.map((r) => r.column_name);
+  }
+
+  it.each([
+    ['hostname_register', ['label', 'demo_id'], 'allocated_at'],
+    ['hostname_retirement', ['label'], 'retired_at'],
+    [
+      'demo_state_event',
+      [
+        'demo_id',
+        'sequence',
+        'previous_sequence',
+        'from_state',
+        'to_state',
+        'lease_issued_at',
+        'lease_ends_at',
+        'extension_days',
+      ],
+      'recorded_at',
+    ],
+  ])(
+    'on %s: the provisioner may INSERT the granted columns and never the stamp, and no one else any',
+    async (table, columns, stamp) => {
+      expect(await columnsHeld('portal_provisioner', table, 'INSERT')).toEqual(columns);
+      expect(await columnsHeld('portal_provisioner', table, 'INSERT')).not.toContain(stamp);
+      // Every other privilege on a column is held, if at all, only through SELECT.
+      for (const privilege of ['UPDATE', 'REFERENCES']) {
+        expect(await columnsHeld('portal_provisioner', table, privilege)).toEqual([]);
+      }
+      expect(await columnsHeld('portal_owner', table, 'INSERT')).toEqual([]);
+      expect(await columnsHeld('portal_tenant', table, 'INSERT')).toEqual([]);
+    }
+  );
+});
+
+describe('the provisioner cannot set the time a row is stamped with', () => {
+  // The three stamps, each a database default: a raw-SQL writer holding the
+  // role must not be able to give a term or a hostname any time it likes.
+  const PAST = '2001-01-01T00:00:00Z';
+
+  it('refuses a register row that names allocated_at, to a past time or to DEFAULT', async () => {
+    for (const value of [`'${PAST}'`, 'DEFAULT', 'now()']) {
+      const sqlText = `INSERT INTO portal.hostname_register (label, demo_id, allocated_at)
+                       VALUES ('rrrrrrrrrrrrrrrrrrrr', '${randomUUID()}', ${value})`;
+      expect(await outcome(asProvisioner((tx) => tx.execute(sql.raw(sqlText))))).toBe(
+        PERMISSION_DENIED
+      );
+    }
+  });
+
+  it('refuses a retirement that names retired_at', async () => {
+    const sqlText = `INSERT INTO portal.hostname_retirement (label, retired_at) VALUES ('${label}', '${PAST}')`;
+    expect(await outcome(asProvisioner((tx) => tx.execute(sql.raw(sqlText))))).toBe(
+      PERMISSION_DENIED
+    );
+  });
+
+  it('refuses an event that names recorded_at, so a term cannot start in the past', async () => {
+    const sqlText = `INSERT INTO portal.demo_state_event
+                       (demo_id, sequence, to_state, recorded_at)
+                     VALUES ('${randomUUID()}', 1, 'VERIFIED', '${PAST}')`;
+    expect(await outcome(asProvisioner((tx) => tx.execute(sql.raw(sqlText))))).toBe(
+      PERMISSION_DENIED
+    );
+  });
+
+  it('refuses the full-table insert the ORM writes, which names every column', async () => {
+    expect(
+      await outcome(
+        asProvisioner((tx) =>
+          tx.insert(hostnameRetirement).values({ label: 'ssssssssssssssssssss' })
+        )
+      )
+    ).toBe(PERMISSION_DENIED);
+  });
+
+  it('stamps each row from the database clock when the insert leaves the stamp out', async () => {
+    const newDemo = randomUUID();
+    const newLabel = 'tttttttttttttttttttt';
+    const before = Date.now();
+    await provisioner.run(async (tx) => {
+      await tx.execute(
+        sql.raw(`INSERT INTO portal.demo_state_event (demo_id, sequence, to_state)
+                 VALUES ('${newDemo}', 1, 'VERIFIED')`)
+      );
+      await tx.execute(
+        sql.raw(`INSERT INTO portal.hostname_register (label, demo_id)
+                 VALUES ('${newLabel}', '${newDemo}')`)
+      );
+      await tx.execute(
+        sql.raw(`INSERT INTO portal.hostname_retirement (label) VALUES ('${newLabel}')`)
+      );
+    });
+    const stamps = await fx.admin.query<{ stamp: Date }>(
+      `SELECT recorded_at AS stamp FROM portal.demo_state_event WHERE demo_id = $1
+       UNION ALL SELECT allocated_at FROM portal.hostname_register WHERE label = $2
+       UNION ALL SELECT retired_at FROM portal.hostname_retirement WHERE label = $2`,
+      [newDemo, newLabel]
+    );
+    expect(stamps.rows).toHaveLength(3);
+    for (const { stamp } of stamps.rows) {
+      // The database's clock and this process's agree to within a generous margin.
+      expect(Math.abs(stamp.getTime() - before)).toBeLessThan(60_000);
+    }
+  });
+
+  it('still lets ProvisionerDb write and read back every stamp it never names', async () => {
+    const newDemo = randomUUID();
+    const view = await provisioner.beginDemo(newDemo);
+    expect(view.recordedAt).toBeInstanceOf(Date);
+    const claimed = await provisioner.transition(newDemo, 'CLAIMED');
+    expect(claimed.recordedAt.getTime()).toBeGreaterThanOrEqual(view.recordedAt.getTime());
+  });
 });
 
 describe('the provisioner role and its login', () => {

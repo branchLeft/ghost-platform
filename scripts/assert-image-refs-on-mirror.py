@@ -274,6 +274,109 @@ def expand(
 
 
 # ---------------------------------------------------------------------------
+# Workflow expressions that are pinned by construction.
+
+OUTPUT_EXPR_RE = re.compile(
+    r"\A\$\{\{\s*(?P<ctx>steps|needs)\.(?P<id>[A-Za-z_][\w-]*)\.outputs\.(?P<name>[A-Za-z_][\w-]*)\s*\}\}\Z"
+)
+ENV_EXPR_RE = re.compile(r"\A\$\{\{\s*env\.(?P<name>[A-Za-z_]\w*)\s*\}\}\Z")
+OWN_REPO_RE = re.compile(r"\Aghcr\.io/branchleft/[a-z0-9][a-z0-9._/-]*\Z")
+DIGEST_CHECK_RE = re.compile(r"sha256:\\?\[0-9a-f\\?\]\\?\{64\\?\}")
+PUBLISHED_REF_RE = re.compile(r"\A\$(?:\{(?P<b>[A-Za-z_]\w*)\}|(?P<n>[A-Za-z_]\w*))@\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)\Z")
+
+
+def own_repos(var: str, env: Env, glob: Env) -> bool:
+    """True when every value `var` can take is a ghcr.io/branchleft repository, not the mirror."""
+    out = expand(f"${{{var}}}", env, glob)
+    if out is None or not out[0]:
+        return False
+    return all(
+        OWN_REPO_RE.match(v) and not v.removeprefix("ghcr.io/").startswith((MIRROR_PREFIX, RETIRED_MIRROR_PREFIX, RETIRED_PRIVATE_PREFIX))
+        for v in out[0]
+    )
+
+
+def block_end(lines: list[str], start: int, indent: int) -> int:
+    """Index after the block that starts at `start`: the next non-blank line at `indent` or less."""
+    for i in range(start + 1, len(lines)):
+        if lines[i].strip() and not lines[i].lstrip().startswith("#") and len(lines[i]) - len(lines[i].lstrip()) <= indent:
+            return i
+    return len(lines)
+
+
+def job_lines(lines: list[str], job: str | None, at: int | None = None) -> tuple[int, int] | None:
+    """Line range of workflow job `job`, or of the job holding line index `at` when `job` is None."""
+    jobs_at = next((i for i, line in enumerate(lines) if re.match(r"jobs:\s*\Z", line)), None)
+    if jobs_at is None:
+        return None
+    nxt = next((x for x in lines[jobs_at + 1:] if x.strip() and not x.lstrip().startswith("#")), None)
+    if nxt is None:
+        return None
+    job_indent = len(nxt) - len(nxt.lstrip())
+    for i in range(jobs_at + 1, len(lines)):
+        m = re.match(rf"\s{{{job_indent}}}(?P<name>[A-Za-z0-9_-]+):\s*\Z", lines[i])
+        if not m:
+            continue
+        end = block_end(lines, i, job_indent)
+        if (job is not None and m["name"] == job) or (job is None and at is not None and i <= at < end):
+            return i, end
+    return None
+
+
+def step_publishes_pinned(lines: list[str], lo: int, hi: int, step: str, name: str, env: Env, glob: Env) -> bool:
+    """True when step `step` writes `name=$REPO@$digest` to GITHUB_OUTPUT, REPO being one of our own
+    repositories and the digest having been checked against the sha256 shape in the same step."""
+    for i in range(lo, hi):
+        m = re.match(rf"(\s*)(?:-\s+)?id:\s*[\"']?{re.escape(step)}[\"']?\s*\Z", lines[i])
+        if not m:
+            continue
+        top = next((k for k in range(i, lo - 1, -1) if re.match(r"\s*-\s", lines[k])), i)
+        end = block_end(lines, top, len(lines[top]) - len(lines[top].lstrip()))
+        block = "\n".join(lines[top:end])
+        if not DIGEST_CHECK_RE.search(block):
+            return False
+        found = False
+        for w in re.finditer(rf"""["']?{re.escape(name)}=(?P<v>[^"'\s]+)["']?\s*>>\s*["']?\$\{{?GITHUB_OUTPUT""", block):
+            ref = PUBLISHED_REF_RE.match(w["v"])
+            if not ref or not own_repos(ref["b"] or ref["n"], env, glob):
+                return False
+            found = True
+        return found
+    return False
+
+
+def pinned_by_construction(raw: str, number: int, lines: list[str], env: Env, glob: Env) -> bool:
+    """True when workflow expression `raw`, on line `number`, can only be one of our own images with a
+    verified digest: a step output assembled as `$REPO@$digest`, handed on through a job's `outputs:`,
+    or the repository name of an `image:` whose `digest:` sits beside it."""
+    m = OUTPUT_EXPR_RE.match(raw)
+    if m and m["ctx"] == "steps":
+        span = job_lines(lines, None, number - 1)
+        return bool(span) and step_publishes_pinned(lines, span[0], span[1], m["id"], m["name"], env, glob)
+    if m:
+        span = job_lines(lines, m["id"])
+        if not span:
+            return False
+        for i in range(*span):
+            o = re.match(rf"\s*{re.escape(m['name'])}:\s*(?P<v>\$\{{\{{.*?\}}\}})\s*\Z", lines[i])
+            inner = OUTPUT_EXPR_RE.match(o["v"]) if o else None
+            if inner and inner["ctx"] == "steps":
+                return step_publishes_pinned(lines, span[0], span[1], inner["id"], inner["name"], env, glob)
+        return False
+    e = ENV_EXPR_RE.match(raw)
+    if e and re.match(r"\s*image:", lines[number - 1]):
+        indent = len(lines[number - 1]) - len(lines[number - 1].lstrip())
+        lo = hi = number - 1
+        while lo > 0 and (not lines[lo - 1].strip() or len(lines[lo - 1]) - len(lines[lo - 1].lstrip()) >= indent):
+            lo -= 1
+        while hi + 1 < len(lines) and (not lines[hi + 1].strip() or len(lines[hi + 1]) - len(lines[hi + 1].lstrip()) >= indent):
+            hi += 1
+        siblings = [x for x in lines[lo:hi + 1] if x.strip() and len(x) - len(x.lstrip()) == indent]
+        return any(re.match(r"\s*digest:\s*\S", x) for x in siblings) and own_repos(e["name"], env, glob)
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Reading a file into logical lines.
 
 def strip_hash_comment(line: str) -> str:
@@ -818,6 +921,8 @@ def candidates(
             if raw[1:] not in info.anchors:
                 found.append(Cand(number, raw, True))  # an alias whose anchor is not in this file
             return
+        if info.kind == "yaml" and pinned_by_construction(raw, number, info.raw, info.env, glob):
+            return
         out = expand(raw, info.env, glob, frozenset({own}) if own else frozenset())
         if out is None:
             found.append(Cand(number, raw, True))
@@ -1018,6 +1123,12 @@ SELF_LIST = {
     "images": [{"name": "ghost", "source": "docker.io/library/ghost", "digest": DIGEST_A}],
 }
 GOOD_REF = f"${{IMAGE_REGISTRY:-docker.io/library}}/ghost:6@{DIGEST_A}"
+PUBLISH_STEP = (
+    "jobs:\n  push:\n    env:\n      IMAGE: ghcr.io/branchleft/thing\n    steps:\n      - id: digest\n        run: |\n"
+    "          printf '%s' \"$d\" | grep -Eq '^sha256:[0-9a-f]{64}$'\n"
+    '          echo "image=$IMAGE@$d" >> "$GITHUB_OUTPUT"\n'
+    "      - run: echo\n        env:\n          PINNED_IMAGE: ${{ steps.digest.outputs.image }}\n"
+)
 WORKFLOW_HEAD = "permissions:\n  packages: read\njobs:\n  t:\n    env:\n"
 
 
@@ -1089,6 +1200,14 @@ def self_test() -> int:
             {"t.sh": "docker build -t quay.io/evil/x:1 .\ndocker run quay.io/evil/x:1\n"},
             ["other-registry"],
         ),
+        "step output with no digest shape check": (
+            {".github/workflows/ci.yml": PUBLISH_STEP.replace("grep -Eq '^sha256:[0-9a-f]{64}$'", "true")},
+            [UNRESOLVED],
+        ),
+        "step output of a foreign repository": (
+            {".github/workflows/ci.yml": PUBLISH_STEP.replace("branchleft/thing", "evil/thing")},
+            [UNRESOLVED],
+        ),
         "override to somewhere else": (
             {".github/workflows/ci.yml": WORKFLOW_HEAD + "      IMAGE_REGISTRY: docker.io/library\n"},
             ["bad-override"],
@@ -1099,6 +1218,7 @@ def self_test() -> int:
         ),
     }
     clean = {
+        ".github/workflows/publish.yml": PUBLISH_STEP,
         "Dockerfile": f"ARG IMAGE_REGISTRY\nFROM {GOOD_REF}\nFROM scratch\n",
         ".github/workflows/ci.yml": WORKFLOW_HEAD
         + f"      IMAGE_REGISTRY: {MIRROR_REGISTRY}\n    steps:\n      - run: docker build -t app:ci .\n"
