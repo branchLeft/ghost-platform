@@ -222,7 +222,14 @@ export function provisionOwner(
   return result;
 }
 
-const READY_PROBE = `require('node:http').get('http://${GHOST_LISTEN}/ghost/api/admin/authentication/setup/', (res) => { console.log('up'); res.resume(); }).on('error', () => process.exit(1));`;
+/**
+ * A `node -e` program that exits 0 and prints `up` only when Ghost answers 200.
+ * Ghost answers 503 while it is still starting, and that is not ready.
+ */
+export function readyProbeScript(listen) {
+  return `require('node:http').get('http://${listen}/ghost/api/admin/authentication/setup/', (res) => { res.resume(); if (true) { console.log('up'); } else { process.exit(1); } }).on('error', () => process.exit(1));`;
+}
+const READY_PROBE = readyProbeScript(GHOST_LISTEN);
 
 /** Restarts the tenant container and waits until Ghost answers again. */
 function restartAndWait(container, execFile) {
