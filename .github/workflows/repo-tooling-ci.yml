@@ -177,6 +177,12 @@ jobs:
       - name: Demo go-live sabotage proof
         run: python3 demo-host/provision/sabotage_demo_go_live.py
 
+      # The demo host's export release (demo-host/provision/export_release.py):
+      # each refusal dropped in a scratch copy, the suite red for every one and
+      # green on the real copy. Its tests run in the discover step above.
+      - name: Demo host export release sabotage proof
+        run: python3 demo-host/provision/sabotage_export_release.py
+
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
 
