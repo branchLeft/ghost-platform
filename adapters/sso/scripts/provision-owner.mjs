@@ -115,6 +115,34 @@ async function ownerEmail() {
     await knex.destroy();
   }
 }
+// Ghost seeds two fixture posts ("coming-soon", "about") into every fresh
+// database, and its default cover image is hosted on static.ghost.org. A
+// fresh tenant makes no third-party request it did not choose, so both go.
+const SEEDED_SLUGS = ['coming-soon', 'about'];
+const STATIC_GHOST = 'https://static.ghost.org/';
+async function withKnex(fn) {
+  const knex = require('/var/lib/ghost/current/core/server/data/db/connection.js');
+  try {
+    return await fn(knex);
+  } finally {
+    await knex.destroy();
+  }
+}
+// removeFixturePosts is true only right after the owner is created: no tenant
+// content can exist yet, so the slugs are Ghost's own fixtures. Ghost's own
+// setup route is the only path that gets here fresh; re-runs only null links.
+async function clearSeededDefaults(knex, removeFixturePosts) {
+  if (removeFixturePosts) {
+    const ids = await knex('posts').whereIn('slug', SEEDED_SLUGS).pluck('id');
+    if (ids.length) {
+      await knex('posts_authors').whereIn('post_id', ids).del();
+      await knex('posts_tags').whereIn('post_id', ids).del();
+      await knex('posts').whereIn('id', ids).del();
+    }
+  }
+  await knex('posts').whereRaw('feature_image LIKE ?', [STATIC_GHOST + '%']).update({ feature_image: null });
+  await knex('settings').where('key', 'cover_image').whereRaw('value LIKE ?', [STATIC_GHOST + '%']).update({ value: null });
+}
 async function main() {
   const owner = await readOwner();
   const site = new URL(owner.siteUrl);

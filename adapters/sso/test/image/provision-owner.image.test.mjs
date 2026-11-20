@@ -182,6 +182,7 @@ const owner = {
 };
 
 let sink;
+let ownerCookie;
 
 describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, () => {
   let unprovisioned;
@@ -246,6 +247,7 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
     const session = await provisioned.signIn(OWNER_EMAIL, chosen);
     assert.equal(session.status, 201, session.text);
     const cookie = session.headers['set-cookie'].map((c) => c.split(';')[0]).join('; ');
+    ownerCookie = cookie;
     const me = await provisioned.request(
       'GET',
       '/ghost/api/admin/users/me/?include=roles',
@@ -260,6 +262,31 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
     assert.deepEqual(
       user.roles.map((r) => r.name),
       ['Owner']
+    );
+  });
+
+  it('serves no post, setting or page that names static.ghost.org', async () => {
+    const posts = await provisioned.request(
+      'GET',
+      '/ghost/api/admin/posts/?status=all&limit=all&formats=html',
+      undefined,
+      { cookie: ownerCookie }
+    );
+    assert.equal(posts.status, 200, posts.text);
+    assert.ok(!posts.text.includes('static.ghost.org'), 'a post still names static.ghost.org');
+    const settings = await provisioned.request('GET', '/ghost/api/admin/settings/', undefined, {
+      cookie: ownerCookie,
+    });
+    assert.equal(settings.status, 200, settings.text);
+    assert.ok(
+      !settings.text.includes('static.ghost.org'),
+      'a setting still names static.ghost.org'
+    );
+    const home = await provisioned.request('GET', '/', undefined, {});
+    assert.equal(home.status, 200);
+    assert.ok(
+      !home.text.includes('static.ghost.org'),
+      'the home page still names static.ghost.org'
     );
   });
 
