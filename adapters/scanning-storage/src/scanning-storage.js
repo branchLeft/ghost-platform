@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 
 const { readRefusal, sealRefusal } = require('./quarantine');
 const {
+  AUDIENCE,
   buildRefusalError,
   buildScannerUnconfiguredError,
   buildVerdictPendingError,
@@ -812,7 +813,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         if (this.metrics) {
           this.metrics.recordRefusal('sealed');
         }
-        throw buildRefusalError(GhostErrors, sealed);
+        throw buildRefusalError(GhostErrors, sealed, AUDIENCE.TENANT_STAFF);
       }
 
       const { decision, verdict } = await evaluate(this.checks, this.policy, buffer);
@@ -826,7 +827,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           if (this.metrics) {
             this.metrics.recordRefusal('sealed');
           }
-          throw buildRefusalError(GhostErrors, sealedSince);
+          throw buildRefusalError(GhostErrors, sealedSince, AUDIENCE.TENANT_STAFF);
         }
         return this.#proceedWithWriteTimeout(proceed);
       }
@@ -842,7 +843,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         if (this.metrics) {
           this.metrics.recordRefusal('verdict');
         }
-        throw buildRefusalError(GhostErrors, verdict);
+        throw buildRefusalError(GhostErrors, verdict, AUDIENCE.TENANT_STAFF);
       }
 
       if (decision === 'hold') {
