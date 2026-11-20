@@ -500,6 +500,9 @@ function ledgerPath(quarantinePath, owner, familyKey) {
   return path.join(quarantinePath, `${id}${COPIES_SUFFIX}`);
 }
 
+// A missing ledger is null; one that exists and cannot be read as a ledger
+// throws, so no caller takes "cannot tell" for "nothing frozen". The adapter
+// answers a path frozen when the ledger it would be in is unreadable.
 function readLedger(file) {
   let raw;
   try {
@@ -508,13 +511,16 @@ function readLedger(file) {
     if (err.code === 'ENOENT') return null;
     throw err;
   }
+  let parsed;
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && Array.isArray(parsed.copies)) return parsed;
+    parsed = JSON.parse(raw);
   } catch {
-    // fall through
+    throw new Error(`copy ledger ${path.basename(file)} cannot be parsed`);
   }
-  return null;
+  if (!parsed || !Array.isArray(parsed.copies)) {
+    throw new Error(`copy ledger ${path.basename(file)} has no list of copies`);
+  }
+  return parsed;
 }
 
 // Remembers that `storedPath` now holds the bytes named `digest`. Synchronous
@@ -539,7 +545,14 @@ function familiesToFreeze(quarantinePath, owner, { digest, family }) {
   const found = [];
   for (const name of listEntries(quarantinePath).filter((n) => n.endsWith(COPIES_SUFFIX))) {
     const file = path.join(quarantinePath, name);
-    const ledger = readLedger(file);
+    let ledger;
+    try {
+      ledger = readLedger(file);
+    } catch {
+      // Cannot be tied to a family or a digest; frozenOf() still answers
+      // frozen for any path whose own ledger this is.
+      continue;
+    }
     if (ledger === null || ledger.owner !== owner) continue;
     if (ledger.family === family || ledger.copies.some((c) => c.digest === digest)) {
       found.push({ file, ledger });

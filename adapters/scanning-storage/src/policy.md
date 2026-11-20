@@ -50,6 +50,10 @@ bytes already stored, the adapter:
    tier, in the quarantine directory;
 3. removes it from the served location.
 
+A ledger that exists but cannot be read (damaged, or with no list of copies)
+answers every path of its family frozen, and is logged (`COPY_LEDGER_FAILED`):
+"cannot tell" is never taken for "nothing frozen".
+
 A copy that cannot be read back is not removed, and one the backend refuses to
 remove stays where it is; both are logged (`FREEZE_INCOMPLETE`) and counted
 (`scanning_storage_freeze_incomplete_total`). The storage gateway in front of

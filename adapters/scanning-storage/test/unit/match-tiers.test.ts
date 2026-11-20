@@ -102,13 +102,16 @@ function build(
     unavailable?: string[];
     storagePath?: string;
     withMetrics?: boolean;
+    withoutNotFoundError?: boolean;
   } = {}
 ): Built {
   const logged: string[] = [];
   const metrics = new ScannerMetrics({ tenant: null });
   const Adapter = defineScanningStorageAdapter(FakeStorageBase, {
     loadWrappedAdapterClass: makeLoadWrappedAdapterClass({ FakeAdapter: FakeWrappedAdapter }),
-    GhostErrors,
+    GhostErrors: options.withoutNotFoundError
+      ? { ...GhostErrors, NotFoundError: undefined }
+      : GhostErrors,
   });
   const verdicts = new FakeVerdictClient({ refuse: new Map(), unavailable: options.unavailable });
   const adapter = new Adapter({
@@ -123,6 +126,7 @@ function build(
     computeDigest: digestBytes,
     metrics: options.withMetrics === false ? undefined : metrics,
     holdRetryMs: 10,
+    holdMaxRetryMs: 20,
     holdLogger: { error: (...args: unknown[]) => logged.push(args.map(String).join(' ')) },
   }) as Adapter;
   return { adapter, verdicts, metrics, logged };
@@ -511,6 +515,59 @@ describe('the ways a freeze can be short of what it set out to do', () => {
     expect(logged.some((l) => /COPY_LEDGER_FAILED .*step=read/.test(l))).toBe(true);
   });
 
+  it('answers every path of a family frozen when its ledger exists but cannot be parsed', async () => {
+    const { adapter, logged } = build();
+    await storeAll(adapter, PROCESSED, ORIGINAL, OTHER);
+    const ledgers = (await fs.readdir(quarantinePath)).filter((n) => n.endsWith('.copies.json'));
+    expect(ledgers).toHaveLength(2);
+    for (const name of ledgers) await fs.writeFile(path.join(quarantinePath, name), '{not json');
+
+    for (const o of [PROCESSED, ORIGINAL, OTHER]) {
+      expect(await present(adapter, o.key), o.key).toBe(false);
+      await expect(adapter.read({ path: o.key })).rejects.toThrow();
+    }
+    await expect(
+      adapter.saveRaw(Buffer.from('a-new-size'), `size/w1000/${DAY}/photo.png`)
+    ).rejects.toThrow();
+    expect(logged.some((l) => /COPY_LEDGER_FAILED .*step=read/.test(l))).toBe(true);
+  });
+
+  it('a ledger with no list of copies is as unreadable as one that is not JSON', async () => {
+    const { adapter } = build();
+    await storeAll(adapter, PROCESSED);
+    const [name] = (await fs.readdir(quarantinePath)).filter((n) => n.endsWith('.copies.json'));
+    await fs.writeFile(path.join(quarantinePath, name as string), '{"owner":"x"}');
+    expect(await present(adapter, PROCESSED.key)).toBe(false);
+  });
+
+  it('keeps one entry for a path written twice, with the digest of what is there now', async () => {
+    const { adapter } = build();
+    await storeAll(adapter, PROCESSED);
+    const replacement = Buffer.from('replacement-bytes');
+    await adapter.saveRaw(replacement, PROCESSED.key);
+
+    // The old bytes are no longer anything's copy; the new ones are, once.
+    expect(await adapter.applyVerdict(digestBytes(PROCESSED.bytes), EXACT_CSAM)).toBeNull();
+    expect(await adapter.applyVerdict(digestBytes(replacement), EXACT_CSAM)).toMatchObject({
+      copies: 1,
+      withheld: 1,
+    });
+  });
+
+  it('never lowers a frozen family: a near verdict after an exact one leaves every copy sealed', async () => {
+    const { adapter } = build();
+    await storeAll(adapter, PROCESSED, ORIGINAL);
+    await adapter.applyVerdict(digestBytes(PROCESSED.bytes), EXACT_CSAM);
+    await adapter.applyVerdict(digestBytes(ORIGINAL.bytes), NEAR_CSAM);
+
+    for (const o of [PROCESSED, ORIGINAL]) {
+      expect(readRefusal(quarantinePath, digestBytes(o.bytes))).toMatchObject({ tier: 'two' });
+    }
+    await expect(
+      adapter.saveRaw(Buffer.from('a-new-size'), `size/w1000/${DAY}/photo.png`)
+    ).rejects.toThrow();
+  });
+
   it('says aloud when a stored object could not be entered in the ledger, and still stores it', async () => {
     const { adapter, logged } = build();
     adapter.wrapped.urlToPath = () => {
@@ -524,6 +581,23 @@ describe('the ways a freeze can be short of what it set out to do', () => {
     ).resolves.toBeDefined();
 
     expect(logged.some((l) => /COPY_LEDGER_FAILED wraps=FakeAdapter/.test(l))).toBe(true);
+  });
+
+  it('words a frozen read as an error with a code when Ghost supplies no NotFoundError', async () => {
+    const { adapter } = build({ withoutNotFoundError: true });
+    await storeAll(adapter, PROCESSED);
+    await adapter.applyVerdict(digestBytes(PROCESSED.bytes), EXACT_CSAM);
+
+    await expect(adapter.read({ path: PROCESSED.key })).rejects.toMatchObject({ code: 'ENOENT' });
+    // A string path is read the same way as an options object.
+    await expect(adapter.read(PROCESSED.key as unknown as { path: string })).rejects.toThrow();
+  });
+
+  it('serves a request with no path through untouched, and a path with no ledger', () => {
+    const { adapter } = build();
+    const res: FakeResponse = { statusCode: 200, end() {} };
+    adapter.serve()({} as { path: string }, res, () => {});
+    expect(res.served).toBe(true);
   });
 
   it('passes a serve() that is not a function straight through', () => {

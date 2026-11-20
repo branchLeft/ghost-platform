@@ -814,19 +814,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       let record;
       try {
         record = readRefusal(this.quarantinePath, digest);
-        if (record === null) return null;
-        if (this.metrics && typeof this.metrics.recordMatch === 'function') {
-          this.metrics.recordMatch(record.tier);
-        }
+        this.#count('recordMatch', record.tier);
         this.logger.error(
           `${MATCH_LOG_PREFIX} tier=${record.tier} action=${record.action ?? 'seal'} wraps=${this.wrapsName} digest=${digest}`
         );
         return await this.#freezeCopies(record, digest, hintPath);
       } catch (error) {
         this.logger.error(`${FREEZE_FAILED_LOG_PREFIX} digest=${digest}`, error);
-        if (this.metrics && typeof this.metrics.recordFreezeIncomplete === 'function') {
-          this.metrics.recordFreezeIncomplete();
-        }
+        this.#count('recordFreezeIncomplete');
         return null;
       }
     }
@@ -899,9 +894,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
             summary.withheld += 1;
           } else {
             summary.incomplete += 1;
-            if (this.metrics && typeof this.metrics.recordFreezeIncomplete === 'function') {
-              this.metrics.recordFreezeIncomplete();
-            }
+            this.#count('recordFreezeIncomplete');
           }
         }
         writeLedger(file, frozen);
@@ -965,6 +958,11 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         return { name, dir: path.posix.join(root, dir) };
       }
       return { name, dir };
+    }
+
+    // A metric a test double may not implement, and one that is not wired.
+    #count(method, ...args) {
+      if (typeof this.metrics?.[method] === 'function') this.metrics[method](...args);
     }
 
     #recordCopy(storedPath, buffer) {
