@@ -2,7 +2,9 @@ import type { ClientBase } from 'pg';
 import {
   INIT,
   MEMBERSHIPS,
+  grantsAt,
   ROLE_ATTRIBUTES,
+  type Grant,
   type ManifestObject,
   type Names,
   type Principal,
@@ -94,6 +96,36 @@ const OBJECT_WORD: Record<ManifestObject['kind'], string> = {
   function: 'FUNCTION',
 };
 
+/** The privileges PostgreSQL lets a column carry. */
+const COLUMN_PRIVILEGES: readonly string[] = ['INSERT', 'REFERENCES', 'SELECT', 'UPDATE'];
+
+/**
+ * One manifest grant as a GRANT statement. A grant naming `columns` is a
+ * column-level grant: each privilege is limited to those columns, so the
+ * grantee holds nothing on a column the list leaves out. It is a table's alone.
+ */
+function grantStatement(object: ManifestObject, grant: Grant, names: Names): string {
+  const word = OBJECT_WORD[object.kind];
+  const target = object.kind === 'database' ? ident(object.identity) : identity(object.identity);
+  const grantee = ident(names[grant.grantee as Principal]);
+  if (grant.columns === undefined) {
+    return `GRANT ${grant.privileges.join(', ')} ON ${word} ${target} TO ${grantee}`;
+  }
+  if (object.kind !== 'table') {
+    throw new Error(`a column grant is a table's alone: ${object.identity} is a ${object.kind}`);
+  }
+  if (grant.columns.length === 0) {
+    throw new Error(`a column grant names no column: ${object.identity}`);
+  }
+  const bad = grant.privileges.filter((privilege) => !COLUMN_PRIVILEGES.includes(privilege));
+  if (bad.length > 0) {
+    throw new Error(`not a column privilege: ${bad.join(', ')} on ${object.identity}`);
+  }
+  const columns = grant.columns.map(ident).join(', ');
+  const privileges = grant.privileges.map((privilege) => `${privilege} (${columns})`).join(', ');
+  return `GRANT ${privileges} ON ${word} ${target} TO ${grantee}`;
+}
+
 /**
  * The statements that give a just-created object its manifest ACL: PUBLIC's
  * creation defaults revoked where the manifest gives PUBLIC nothing, then the
@@ -105,7 +137,6 @@ export function grantStatements(
   major: number,
   only: (grantee: Principal) => boolean = () => true
 ): string[] {
-  const word = OBJECT_WORD[object.kind];
   const target = object.kind === 'database' ? ident(object.identity) : identity(object.identity);
   const out: string[] = [];
   if (object.since === INIT && object.kind === 'database') {
@@ -117,11 +148,27 @@ export function grantStatements(
   }
   for (const grant of object.grants) {
     if (grant.grantee === 'PUBLIC' || !only(grant.grantee)) continue;
-    out.push(
-      `GRANT ${grant.privileges.join(', ')} ON ${word} ${target} TO ${ident(names[grant.grantee])}`
-    );
+    out.push(grantStatement(object, grant, names));
   }
   return out;
+}
+
+/**
+ * The grants a principal created on a database that is already initialised
+ * must be given: whatever the manifest gives it on the objects `applied`
+ * migrations (and init) made, so the check that follows finds it complete.
+ * Nothing is revoked and no other principal's grant is touched.
+ */
+export function catchUpGrantStatements(
+  object: ManifestObject,
+  applied: readonly string[],
+  created: ReadonlySet<Principal>,
+  names: Names
+): string[] {
+  if (object.since !== INIT && !applied.includes(object.since)) return [];
+  return grantsAt(object, applied)
+    .filter((grant) => grant.grantee !== 'PUBLIC' && created.has(grant.grantee as Principal))
+    .map((grant) => grantStatement(object, grant, names));
 }
 
 /**
@@ -129,14 +176,9 @@ export function grantStatements(
  * migration made: only the grants the manifest records as added by `tag`.
  */
 export function addedGrantStatements(object: ManifestObject, tag: string, names: Names): string[] {
-  const word = OBJECT_WORD[object.kind];
-  const target = identity(object.identity);
   return (object.added ?? [])
     .filter((later) => later.since === tag)
     .flatMap((later) => later.grants)
     .filter((grant) => grant.grantee !== 'PUBLIC')
-    .map(
-      (grant) =>
-        `GRANT ${grant.privileges.join(', ')} ON ${word} ${target} TO ${ident(names[grant.grantee as Principal])}`
-    );
+    .map((grant) => grantStatement(object, grant, names));
 }

@@ -161,6 +161,9 @@ export function parseInspectedEnv(stdout: string): Record<string, string> {
   return env;
 }
 
+/** Ghost's content directory inside the tenant's image; the volume mounted here holds its media. */
+export const GHOST_CONTENT_DIR = '/var/lib/ghost/content';
+
 export function runDocker(
   dockerCommand: string,
   argv: readonly string[],

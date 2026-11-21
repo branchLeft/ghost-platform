@@ -14,6 +14,7 @@ export {
   EXTENSION_DAYS,
   LEASE_DAYS,
   NEXT_STATES,
+  SLOT_COUNT,
   SLOT_HOLDING_STATES,
   TERMINAL_STATES,
   isAllowedTransition,
@@ -132,6 +133,37 @@ export class ExtensionRefusedError extends Error {
         : `demo ${demoId} has used its one self-service extension`
     );
     this.name = 'ExtensionRefusedError';
+  }
+}
+
+/**
+ * What a request met at the front door: a slot, or a place on the waiting list.
+ * Either way it is an outcome, never an error. A waiting entry's position is
+ * one-based, so the first in line is 1.
+ */
+export interface Admission {
+  event: DemoEventView;
+  state: 'CLAIMED' | 'WAITING';
+  /** Where the request stands on the waiting list; null when it was given a slot. */
+  queuePosition: number | null;
+}
+
+/**
+ * A demo that cannot be admitted: it has already been (it is past VERIFIED), or
+ * it has no recorded request. A waiting entry is made only from a recorded
+ * request, so it always carries the contact details the front door took.
+ */
+export class AdmissionRefusedError extends Error {
+  constructor(
+    readonly demoId: string,
+    readonly reason: 'state' | 'request'
+  ) {
+    super(
+      reason === 'state'
+        ? `demo ${demoId} is past VERIFIED: it has already been admitted`
+        : `demo ${demoId} has no recorded request to admit`
+    );
+    this.name = 'AdmissionRefusedError';
   }
 }
 

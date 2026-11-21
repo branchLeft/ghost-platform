@@ -15,6 +15,11 @@ const { defineScanningStorageAdapter } = require('../../src/scanning-storage.js'
 const { FakeVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
+// These tests ask fakes keyed by the content digest, so the verdict key is the
+// digest here; the perceptual hash is tested in pdq.test.ts.
+const keyByDigest = async (buffer) => ({
+  hash: require('node:crypto').createHash('sha256').update(buffer).digest('hex'),
+});
 const { digestBytes } = require('../../src/pdq.js');
 const { sealRefusal } = require('../../src/quarantine.js');
 const {
@@ -69,7 +74,12 @@ function buildAdapter({
     GhostErrors,
   });
   const verdictClient = new FakeVerdictClient({ refuse, unavailable });
-  const checks = [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })];
+  const checks = [
+    createPdqKnownMaterialCheck(verdictClient, {
+      computeVerdictKey: keyByDigest,
+      computeDigest: digestBytes,
+    }),
+  ];
   const resolvedQuarantinePath = quarantinePath ?? path.join(tmpDir, 'quarantine');
   const instance = new Adapter({
     wraps: 'FakeAdapter',
@@ -1433,6 +1443,28 @@ describe('the hold branch', () => {
       );
     });
 
+    it('puts wrappedConfig.tenantPrefix into a held object-storage URL, after the base and before the date folder', async () => {
+      const { instance: adapter } = buildAdapter({
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: {
+          storagePath: 'wrapped',
+          bucket: 'test-bucket',
+          cdnUrl: 'https://cdn.example.test',
+          tenantPrefix: 'opaque-t1',
+        },
+      });
+      adapter.wrapped.getTargetDir = () => '2026/09';
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+
+      const url = await adapter.save(file);
+
+      expect(url).toMatch(
+        new RegExp(
+          `^https://cdn\\.example\\.test/opaque-t1/2026/09/${BAD_DIGEST}-[a-z2-7]{22}\\.png$`
+        )
+      );
+    });
+
     it('builds the URL from endpoint+bucket when no cdnUrl is configured', async () => {
       const { instance: adapter } = buildAdapter({
         unavailable: [BAD_DIGEST],
@@ -1809,7 +1841,11 @@ describe('a configured channel that does not answer in time', () => {
       wrappedConfig: { storagePath: 'wrapped' },
       quarantinePath: path.join(tmpDir, 'quarantine'),
       checks: [
-        createPdqKnownMaterialCheck(slowClient, { computeDigest: digestBytes, timeoutMs: 10 }),
+        createPdqKnownMaterialCheck(slowClient, {
+          computeVerdictKey: keyByDigest,
+          computeDigest: digestBytes,
+          timeoutMs: 10,
+        }),
       ],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,

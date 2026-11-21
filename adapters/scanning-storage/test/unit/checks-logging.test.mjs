@@ -6,6 +6,10 @@ const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
 const { FakeVerdictClient } = require('../../src/verdict-client.js');
 
 const computeDigest = (buffer) => buffer.toString('hex');
+// The key the hash source is asked about is not the digest: a stand-in that
+// differs from it shows which of the two each part uses.
+const keyOf = (buffer) => `key-${buffer.toString('hex')}`;
+const computeVerdictKey = async (buffer) => ({ hash: keyOf(buffer), reason: null });
 const buffer = Buffer.from('anything');
 const digest = computeDigest(buffer);
 
@@ -32,6 +36,7 @@ describe('createPdqKnownMaterialCheck logging', () => {
     const logger = { error: vi.fn() };
     const check = createPdqKnownMaterialCheck(throwingClient(new Error('channel unreachable')), {
       computeDigest,
+      computeVerdictKey,
       logger,
     });
     const verdict = await check.run({ buffer });
@@ -46,6 +51,7 @@ describe('createPdqKnownMaterialCheck logging', () => {
     const logger = { error: vi.fn() };
     const check = createPdqKnownMaterialCheck(neverClient, {
       computeDigest,
+      computeVerdictKey,
       timeoutMs: 10,
       logger,
     });
@@ -61,7 +67,11 @@ describe('createPdqKnownMaterialCheck logging', () => {
 
   it('control: logs nothing on a clean answer', async () => {
     const logger = { error: vi.fn() };
-    const check = createPdqKnownMaterialCheck(new FakeVerdictClient(), { computeDigest, logger });
+    const check = createPdqKnownMaterialCheck(new FakeVerdictClient(), {
+      computeDigest,
+      computeVerdictKey,
+      logger,
+    });
     const verdict = await check.run({ buffer });
     expect(logger.error).not.toHaveBeenCalled();
     expect(verdict.classification).toBe('no-known-match');
@@ -74,7 +84,7 @@ describe('createPdqKnownMaterialCheck logging', () => {
         return { classification: 'unavailable' };
       },
     };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, logger });
+    const check = createPdqKnownMaterialCheck(client, { computeDigest, computeVerdictKey, logger });
     await check.run({ buffer });
     expect(logger.error).not.toHaveBeenCalled();
   });
@@ -87,11 +97,13 @@ describe('createPdqKnownMaterialCheck logging', () => {
     };
     const thrown = createPdqKnownMaterialCheck(throwingClient(new Error('channel unreachable')), {
       computeDigest,
+      computeVerdictKey,
       logger,
     });
     await expect(thrown.run({ buffer })).resolves.toEqual(unavailableFromError);
     const slow = createPdqKnownMaterialCheck(neverClient, {
       computeDigest,
+      computeVerdictKey,
       timeoutMs: 10,
       logger,
     });
@@ -103,6 +115,7 @@ describe('createPdqKnownMaterialCheck logging', () => {
     async (logger) => {
       const check = createPdqKnownMaterialCheck(throwingClient(new Error('channel unreachable')), {
         computeDigest,
+        computeVerdictKey,
         logger,
       });
       await expect(check.run({ buffer })).resolves.toEqual(unavailableFromError);
@@ -119,6 +132,7 @@ describe('createPdqKnownMaterialCheck logging', () => {
       const logger = { error: vi.fn() };
       const check = createPdqKnownMaterialCheck(throwingClient(thrownValue), {
         computeDigest,
+        computeVerdictKey,
         logger,
       });
       await check.run({ buffer });
@@ -147,6 +161,7 @@ describe('createPdqKnownMaterialCheck logging', () => {
       const logger = { error: vi.fn() };
       const check = createPdqKnownMaterialCheck(throwingClient(thrownValue), {
         computeDigest,
+        computeVerdictKey,
         logger,
       });
       await expect(check.run({ buffer })).resolves.toEqual(unavailableFromError);

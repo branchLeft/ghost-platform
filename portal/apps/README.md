@@ -43,6 +43,21 @@ there is no option to forget. A kind that is absent or not exactly `REAL` or
 nothing, and the save answers 400 `REFUSED` and stores nothing. A valid `DEMO`
 keeps the demo notice, no form, and a refused save.
 
+## Publishing a document
+
+The owner console's `/documents` screen publishes the next version of a
+document: its kind (`terms`, `usage` or `subprocessors`, the kinds the data
+layer holds), a title, an effective date and the text, pasted into the form.
+`POST /documents/publish` calls `OwnerDb.publishDocument`; the version number
+and the moment of publication are the database's, and the form names neither.
+A sub-processor list takes its entries one `NAME | PURPOSE` a line and is
+refused inside its notice. A pasted text is larger than the shell's 4096 byte
+form, so this one action takes 512 KiB (`formLimits`); every other action keeps
+the default. The action runs only for the owner's organisation holding the
+owner role, and checks the organisation again itself. A published version shows
+on the tenant portal's `/documents` page once its effective date has passed.
+The console holds no document text: it is the owner's, pasted at run time.
+
 ## Support access
 
 `/site-access` shows the signed-in tenant whether support access to its site
@@ -92,6 +107,65 @@ What it writes, and what it never does:
 - The run log has one line per tenant (`recorded state=...` or `left out: ...`)
   and one for the run, and never a reason, a clock, a lane or an id. The exit
   status is `0` only when the text was accepted and every write was made.
+
+## Erasing a whole site
+
+`/erasure` is the tenant's own request to erase its whole site, and it is not a
+member's data request: a member's request goes to the tenant, who is the
+controller, and is actioned in Ghost, never here. The page says so beside the
+one button. `POST /erasure/request` files the signed-in tenant's request: the
+handler reads no form field, so no tenant id and no text can travel with it,
+and it destroys nothing. Nothing under `portal/` can reach a host, so the key
+is destroyed where it lives, on the control host, by
+`infra/provisioning/scripts/erase_tenant_backup_identity.py`, run as root.
+
+The page says one of three things, from the tenant's own row and nothing else
+(`TenantDb.ownErasure`):
+
+- no request: the button;
+- a request, key not recorded as destroyed: that it was requested and that
+  **nothing has been erased**, with no residual window and no word for the data
+  being gone or deleted, however long it waits;
+- a request whose key is recorded as destroyed: the time the key was recorded
+  destroyed, the residual window of **around 46 days** counted from that
+  moment, that it has **no upper bound**, and why (the pruner never deletes the
+  anchor dump, however old, so a run of failed nightly dumps stretches it). It
+  prints no date on which the data is gone, because no such date is known.
+
+A row that says it is destroyed without carrying the moment, and a status the
+page does not know, are shown as requested.
+
+### The erasure recorder
+
+`src/erasure/main.ts` is one run of the recorder: it reads the erase command's
+output (its standard output and standard error together) from standard input,
+and records the key as destroyed for the one tenant that output proves. It is
+built into the same image and run inside the console container, as
+`docker exec -i <console> node dist/erasure/main.js`, so it holds no credential
+the console does not already hold (`CONSOLE_DATABASE_URL_FILE`). The container
+has no route to a host, so the host pipes the command's output in; that step is
+the departure flow's, not a hand step.
+
+It records only when all of these hold, and otherwise records nothing and exits
+1:
+
+- the text holds the command's full green proof line, word for word, for
+  exactly one tenant (`proof green: ... hold no copy`). The command's other
+  success line, `no copy of its backup identity was present; nothing to
+  erase`, is not a proof: a tenant that was never enrolled gets it too;
+- the text holds no `ALERT` line, which the command prints for a red proof;
+- the slug is a registered tenant name;
+- that tenant's request is still waiting. A tenant that never asked cannot be
+  recorded as erased, and a second run changes nothing, so the first recorded
+  moment stands (`OwnerDb.recordKeyDestroyed`).
+
+The run log has one line: the slug and the outcome, never any of the text. A
+test reads the command's own source to hold the proof text to it, so a reworded
+command stops the recorder recording rather than recording on a line it no
+longer means. The owner console lists every erasure request, waiting ones first,
+with the recorded moment; it carries no button for it.
+
+All wording is `ALL_CAPS` placeholder until the owner supplies it.
 
 ## Support tickets
 
@@ -200,7 +274,7 @@ the one issued for that tenant (the API refuses a tenant credential on any other
 tenant's path), looked up by the scope's tenant id.
 
 ```text
-PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback)
+PORTAL_PROVISIONING_URL            the provisioning API's base URL (https; http only for loopback or a bare service name such as `provisioning`)
 PORTAL_PROVISIONING_CREDENTIALS_FILE  a file of lines <tenant uuid>=<credential>, one per tenant
 ```
 
@@ -297,7 +371,7 @@ restart. `*_DATABASE_URL_FILE` holds the connection URL of a login that is a
 member of `portal_tenant` alone (portal) or `portal_owner` alone (console).
 The URL may omit the password (`postgres://LOGIN@HOST:PORT/portal`): the `pg`
 driver then reads `PGPASSWORD` from the process environment, so the password
-need not appear in the URL file. Plain HTTP is accepted only for a loopback origin.
+need not appear in the URL file. Plain HTTP is accepted only for a loopback origin or a bare service name with no dot (the compose network's name for the provisioning service).
 
 A pending sign-in rides in a cookie sealed under a key drawn at start, so a restart drops every pending sign-in and several instances cannot accept each other's cookie.
 
@@ -446,7 +520,7 @@ with no button, because the contract refuses to approve one.
   other stops the process at start.
 
 ```text
-CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback only
+CONSOLE_PROVISIONING_URL              the API's origin: https, or http for loopback or a bare service name only
 CONSOLE_PROVISIONING_CREDENTIAL_FILE  a file holding the owner credential
 ```
 

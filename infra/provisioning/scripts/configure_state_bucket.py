@@ -26,6 +26,17 @@ class StateBucketError(Exception):
     """Setup did not complete, or the provider's read-back disagrees."""
 
 
+def refuse_media_bucket(bucket: str) -> None:
+    """Refuse any bucket whose name says it holds tenant media: its lifecycle
+    is its own, and nothing here may replace it. Same check as
+    db/provision/configure_backup_bucket.py, which cannot import this one."""
+    if "media" in bucket.lower():
+        raise StateBucketError(
+            f"{bucket!r} looks like a media bucket; this script replaces a bucket's whole "
+            "lifecycle. Nothing was changed."
+        )
+
+
 def versioning_document() -> bytes:
     return (f'<VersioningConfiguration xmlns="{S3_NS}"><Status>Enabled</Status>'
             "</VersioningConfiguration>").encode()
@@ -64,6 +75,7 @@ def configure(*, bucket, endpoint, region, access_key, secret_key,
     """Create (tolerating 'already owned by you'), enable versioning, set the
     lifecycle, then read both back. Raises StateBucketError unless the
     provider's answer shows both settings."""
+    refuse_media_bucket(bucket)
     common = dict(endpoint=endpoint, region=region, access_key=access_key,
                   secret_key=secret_key, bucket=bucket, transport=transport)
 

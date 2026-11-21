@@ -1,5 +1,12 @@
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
+import {
+  TenantNotBillableError,
+  deriveBillingView,
+  parseBillingReference,
+  parsePaymentState,
+  type BillingView,
+} from '../billing.js';
 import { connect, enterRole, type PortalDb, type Tx } from '../db.js';
 import { deriveHealthView } from '../healthView.js';
 import { deriveReading, type HealthView } from '../reading.js';
@@ -12,6 +19,7 @@ import {
   type SubprocessorEntry,
 } from '../documents.js';
 import {
+  countDemosIn,
   eventsOf,
   hostnameOf,
   listDemos,
@@ -26,6 +34,8 @@ import {
   healthReading,
   supportAccessReading,
   supportAccessRequest,
+  tenantBilling,
+  tenantErasureRequest,
   tenantRegister,
 } from '../schema.js';
 import {
@@ -34,12 +44,30 @@ import {
   type SupportRequestStatus,
   type SupportRequestView,
 } from '../supportAccess.js';
+import { deriveErasureView, type ErasureRequestView } from '../tenantErasure.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
-export { InvalidPublicationError, SUBPROCESSOR_NOTICE_DAYS } from '../documents.js';
+export {
+  DOCUMENT_KINDS,
+  InvalidPublicationError,
+  SUBPROCESSOR_NOTICE_DAYS,
+  type DocumentKind,
+  type DocumentView,
+  type SubprocessorEntry,
+} from '../documents.js';
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 export type { DemoRequestView } from '../demoRequest.js';
+export {
+  ERASURE_RESIDUAL_AROUND_DAYS,
+  ERASURE_RESIDUAL_REASON,
+  ERASURE_STATUSES,
+  RESIDUAL_WINDOW,
+  type ErasureRequestView,
+  type ErasureStatus,
+  type ErasureView,
+  type ResidualWindow,
+} from '../tenantErasure.js';
 export {
   InvalidSupportReadingError,
   SUPPORT_READING_FRESH_SECONDS,
@@ -52,9 +80,19 @@ import { parseTenantId } from '../tenantId.js';
 import { parseTenantKind } from '../tenantKind.js';
 import { normaliseTenantName, TenantNameTakenError } from '../tenantName.js';
 import { readDatabaseError, UNIQUE_VIOLATION } from '../databaseError.js';
-import type { TenantRegistration } from '../tenant/session.js';
+import { TenantNotRegisteredError, type TenantRegistration } from '../tenant/session.js';
 
 export { InvalidTenantNameError, TenantNameTakenError } from '../tenantName.js';
+export {
+  BILLING_REFERENCE_PATTERN,
+  InvalidBillingReferenceError,
+  InvalidPaymentStateError,
+  PAYMENT_STATES,
+  TenantNotBillableError,
+  type BillingView,
+  type PaymentState,
+} from '../billing.js';
+export { TenantNotRegisteredError } from '../tenant/session.js';
 
 /** A tenant being registered: the register row, plus the name it signed up under. */
 export interface NewTenantRegistration extends TenantRegistration {
@@ -206,6 +244,85 @@ export class OwnerDb {
   }
 
   /**
+   * Sets a real tenant's payment state, creating its billing record (with no
+   * reference) if it has none. The state is parsed before a statement runs and
+   * the table refuses one outside the list again. `stateChangedAt` moves only
+   * when the state does, so setting the state a tenant already has changes
+   * nothing. A tenant that is not registered is refused with
+   * `TenantNotRegisteredError`, a demo slot with `TenantNotBillableError`.
+   */
+  async setPaymentState(tenantId: string, state: string): Promise<BillingView> {
+    const id = parseTenantId(tenantId);
+    const paymentState = parsePaymentState(state);
+    return this.run(async (tx) => {
+      await assertBillable(tx, id);
+      const [row] = await tx
+        .insert(tenantBilling)
+        .values({ tenantId: id, paymentState })
+        .onConflictDoUpdate({
+          target: tenantBilling.tenantId,
+          set: {
+            paymentState,
+            stateChangedAt: sql`CASE WHEN ${tenantBilling.paymentState} IS DISTINCT FROM excluded.payment_state THEN now() ELSE ${tenantBilling.stateChangedAt} END`,
+          },
+        })
+        .returning();
+      return deriveBillingView(row!);
+    });
+  }
+
+  /**
+   * Records, replaces or (given null) clears a real tenant's billing
+   * reference: the opaque reference into the owner's invoicing tool. A value
+   * that is not an opaque reference, a card-number-like one included, is
+   * refused with `InvalidBillingReferenceError` before a statement runs and
+   * again by the table. A tenant with no billing record is given one as
+   * `unpaid`; an existing record keeps its payment state.
+   */
+  async setBillingReference(tenantId: string, reference: string | null): Promise<BillingView> {
+    const id = parseTenantId(tenantId);
+    const billingReference = reference === null ? null : parseBillingReference(reference);
+    return this.run(async (tx) => {
+      await assertBillable(tx, id);
+      const [row] = await tx
+        .insert(tenantBilling)
+        .values({ tenantId: id, billingReference, paymentState: 'unpaid' })
+        .onConflictDoUpdate({ target: tenantBilling.tenantId, set: { billingReference } })
+        .returning();
+      return deriveBillingView(row!);
+    });
+  }
+
+  /** One tenant's billing record; null when it has none. */
+  async billingOf(tenantId: string): Promise<BillingView | null> {
+    const id = parseTenantId(tenantId);
+    return this.run(async (tx) => {
+      const [row] = await tx.select().from(tenantBilling).where(eq(tenantBilling.tenantId, id));
+      return row ? deriveBillingView(row) : null;
+    });
+  }
+
+  /** Every billing record, by tenant id: the console's read. It writes nothing. */
+  async listBilling(): Promise<BillingView[]> {
+    return this.run(async (tx) => {
+      const rows = await tx.select().from(tenantBilling).orderBy(asc(tenantBilling.tenantId));
+      return rows.map(deriveBillingView);
+    });
+  }
+
+  /** Every overdue tenant, the longest overdue first: the console's list. */
+  async listOverdue(): Promise<BillingView[]> {
+    return this.run(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(tenantBilling)
+        .where(eq(tenantBilling.paymentState, 'overdue'))
+        .orderBy(asc(tenantBilling.stateChangedAt), asc(tenantBilling.tenantId));
+      return rows.map(deriveBillingView);
+    });
+  }
+
+  /**
    * Replaces a tenant's support-access reading with what the host's read-only
    * report said at `observedAt`. A state or lane outside the closed lists is
    * refused before a statement runs, and the table refuses it again.
@@ -271,9 +388,59 @@ export class OwnerDb {
     return changed.length > 0;
   }
 
+  /**
+   * Every tenant erasure request: those still waiting for their key to be
+   * destroyed first, then the rest, each group oldest first. The console's
+   * read; it has no paging.
+   */
+  async listErasureRequests(): Promise<ErasureRequestView[]> {
+    return this.run(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(tenantErasureRequest)
+        .orderBy(
+          desc(sql`${tenantErasureRequest.status} <> 'key_destroyed'`),
+          asc(tenantErasureRequest.requestedAt),
+          asc(tenantErasureRequest.tenantId)
+        );
+      return rows.flatMap((row) => {
+        const view = deriveErasureView(row);
+        return view.state === 'none' ? [] : [{ tenantId: row.tenantId, view }];
+      });
+    });
+  }
+
+  /**
+   * Records that a tenant's backup key has been destroyed, at the database's
+   * clock. It moves a `requested` row and nothing else: a tenant that never
+   * asked, and a request already recorded, change nothing and return false, so
+   * a tenant that did not ask to be erased can never be shown as erased and the
+   * first recorded moment is never overwritten. The caller holds the proof (the
+   * erase command's own green line); this method cannot check it, and the
+   * console's recorder is the only caller.
+   */
+  async recordKeyDestroyed(tenantId: string): Promise<boolean> {
+    const id = parseTenantId(tenantId);
+    const changed = await this.run((tx) =>
+      tx
+        .update(tenantErasureRequest)
+        .set({ status: 'key_destroyed', keyDestroyedAt: sql`now()` })
+        .where(
+          and(eq(tenantErasureRequest.tenantId, id), eq(tenantErasureRequest.status, 'requested'))
+        )
+        .returning({ tenantId: tenantErasureRequest.tenantId })
+    );
+    return changed.length > 0;
+  }
+
   /** Every demo with its current state, term and hostname: the console's read. It writes nothing. */
   listDemos(): Promise<DemoSummary[]> {
     return this.run(listDemos);
+  }
+
+  /** How many demos are on the waiting list now: a read, it writes nothing. */
+  waitingCount(): Promise<number> {
+    return this.run((tx) => countDemosIn(tx, ['WAITING']));
   }
 
   /** One demo's history, oldest transition first. */
@@ -363,6 +530,16 @@ export class OwnerDb {
       return deriveDocumentView(inserted[0]!);
     });
   }
+}
+
+/** Refuses a tenant that is not registered or is a demo slot: only a real tenant is billed. */
+async function assertBillable(tx: Tx, tenantId: string): Promise<void> {
+  const [row] = await tx
+    .select({ kind: tenantRegister.kind })
+    .from(tenantRegister)
+    .where(eq(tenantRegister.tenantId, tenantId));
+  if (row === undefined) throw new TenantNotRegisteredError();
+  if (row.kind !== 'REAL') throw new TenantNotBillableError();
 }
 
 /** Whether the database refused a row for taking effect inside its notice. */

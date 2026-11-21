@@ -21,6 +21,14 @@ import { classifyFile, hostOf } from '../lib/origins.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'manifest.json'), 'utf8'));
+// The platform's default footer credit as render-core names it for every tenant: the one
+// record the footer patches' partial must carry (themes/footer-credit/README.md).
+const FOOTER_CREDIT = JSON.parse(
+  fs.readFileSync(
+    path.join(HERE, '..', '..', 'render-core', 'test', 'golden', 'demo.ghost-settings.json'),
+    'utf8'
+  )
+).footerCredit;
 const IMAGE = process.env.IMAGE;
 const SITE = 'http://localhost:2368';
 const OWN_HOST = 'localhost';
@@ -55,6 +63,58 @@ export function linkedAssets(html) {
   for (const m of html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)) found.push(m[1]);
   return found.filter((u) => u.replace(SITE, '').startsWith('/assets/'));
 }
+
+// Ghost's own credit links ghost.org ("Powered by Ghost", or "Published with Ghost" in Starter).
+const GHOST_CREDIT = /<a\b[^>]*\bhref=["']https:\/\/ghost\.org\/?["'][^>]*>[^<]*<\/a>/gi;
+const PLATFORM_CREDIT =
+  /<span class="platform-footer-credit"><a href="([^"]*)"[^>]*>([^<]*)<\/a><\/span>/g;
+
+// The footer credits on a rendered page, in page order: Ghost's own and the platform's.
+export function footerCredits(html) {
+  const ghost = [...html.matchAll(GHOST_CREDIT)].map((m) => m.index);
+  const platform = [...html.matchAll(PLATFORM_CREDIT)].map((m) => ({
+    index: m.index,
+    url: m[1],
+    text: m[2],
+  }));
+  return { ghost, platform };
+}
+
+// A page that carries Ghost's credit carries the platform's beside it, after it, as often.
+export function assertCreditsBesideEachOther(label, html, { required }) {
+  const { ghost, platform } = footerCredits(html);
+  if (required) assert.ok(ghost.length > 0, `${label}: Ghost's own credit is not on the page`);
+  assert.equal(platform.length, ghost.length, `${label}: a platform credit for each Ghost credit`);
+  platform.forEach((credit, i) => {
+    assert.equal(credit.text, FOOTER_CREDIT.text, `${label}: credit text`);
+    assert.equal(credit.url, FOOTER_CREDIT.url, `${label}: credit link`);
+    assert.ok(credit.index > ghost[i], `${label}: the platform's credit follows Ghost's`);
+    const between = html.slice(ghost[i], credit.index);
+    assert.ok(between.length < 400, `${label}: the credits are not side by side`);
+  });
+}
+
+describe('the control: the footer credit check fails when either credit is missing', () => {
+  const ghostOnly = `<footer><a href="https://ghost.org/" target="_blank" rel="noopener">Ghost</a></footer>`;
+  const both = `<footer><a href="https://ghost.org/">Ghost</a>
+    <span class="platform-footer-credit"><a href="${FOOTER_CREDIT.url}" rel="noopener">${FOOTER_CREDIT.text}</a></span></footer>`;
+  it("fails a page with Ghost's credit alone", () => {
+    assert.throws(() => assertCreditsBesideEachOther('ghost only', ghostOnly, { required: true }));
+  });
+  it('fails a page with the platform credit alone', () => {
+    const platformOnly = both.replace(/<a href="https:\/\/ghost\.org\/">Ghost<\/a>/, '');
+    assert.throws(() =>
+      assertCreditsBesideEachOther('platform only', platformOnly, { required: true })
+    );
+  });
+  it("fails a page that puts the platform credit before Ghost's", () => {
+    const swapped = `<footer>${both.match(/<span.*<\/span>/s)[0]}<a href="https://ghost.org/">Ghost</a></footer>`;
+    assert.throws(() => assertCreditsBesideEachOther('swapped', swapped, { required: true }));
+  });
+  it('passes a page with both, in order', () => {
+    assertCreditsBesideEachOther('both', both, { required: true });
+  });
+});
 
 describe('the control: the rendered-page check fails on an outside origin', () => {
   it('flags a font stylesheet and a script from another origin', () => {
@@ -205,6 +265,15 @@ describe('the built image', { skip: IMAGE ? false : 'IMAGE is not set' }, () => 
           !html.includes('platform-fonts'),
           `${theme.name}: on Theme default the page must not link the fonts stylesheet`
         );
+
+        // Ghost's own credit stays and the platform's default credit sits beside it, on the
+        // home page and on the theme's error page (Starter keeps its credit in both templates).
+        assertCreditsBesideEachOther(`${theme.name} home page`, html, { required: true });
+        const missing = await fetch(`${base}/no-such-page-for-the-footer-credit/`);
+        assert.equal(missing.status, 404);
+        assertCreditsBesideEachOther(`${theme.name} error page`, await missing.text(), {
+          required: false,
+        });
 
         const assets = linkedAssets(html);
         assert.ok(

@@ -1,0 +1,11 @@
+{
+  "slug": "gw-co",
+  "uid": 30401,
+  "stackName": "gw-co",
+  "contentVolume": "ghost-gw-co-content",
+  "adaptersVolume": "ghost-gw-co-adapters",
+  "appHostPrivateIp": "10.20.2.40",
+  "databaseName": "ghost_gw_co",
+  "mediaBucket": "shard-a-example",
+  "mediaFolder": "q7Zr2mXv9KpL4tWb8NcE"
+}

@@ -801,7 +801,7 @@ class HoldRegistry {
   // a hold, so onRefuse has nothing of this registry's to undo.
   async #resolveRefused(digest, entry) {
     for (const hold of entry.holds) {
-      await hold.onRefuse();
+      await hold.onRefuse(digest);
     }
     this.#forget(digest);
     this.#release(digest, { keepBytes: true });

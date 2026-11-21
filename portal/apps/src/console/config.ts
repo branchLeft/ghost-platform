@@ -2,6 +2,7 @@ import type { BlockList } from 'node:net';
 import {
   parseOrigin,
   ConfigError,
+  allowsPlainHttp,
   parseOutputs,
   parsePort,
   parseTrustedProxyList,
@@ -33,7 +34,7 @@ export interface OwnerConsoleConfig {
  * Neither variable set is no queue. One alone is a mistake that stops the
  * process at start, so a half-configured console never looks configured. The
  * credential travels in a header, so the URL is an origin over https (plain
- * http only for loopback), with nothing else in it.
+ * http only for loopback or a bare service name on the private network), with nothing else in it.
  */
 export function loadProvisioning(
   env: Readonly<Record<string, string | undefined>>,
@@ -49,8 +50,7 @@ export function loadProvisioning(
     if (error instanceof ConfigError) throw error;
     throw new ConfigError('CONSOLE_PROVISIONING_URL is not a URL');
   }
-  const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
-  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+  if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && allowsPlainHttp(parsed))) {
     throw new ConfigError('CONSOLE_PROVISIONING_URL must be https');
   }
   if (

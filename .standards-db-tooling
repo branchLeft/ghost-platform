@@ -122,3 +122,7 @@ portal/data/test/prospectStatusRead.test.ts
 # The rollback proof: reads the column catalogue of a throwaway MySQL that a
 # candidate image has migrated, to compare it with the old image's schema.
 rollback-proof/live-schema.mjs
+
+# Operational check: the media erasure job reads the gateway write ledger's SQLite copy read-only, and its test builds one.
+infra/provisioning/scripts/erase_tenant_media.py
+infra/provisioning/scripts/test_erase_tenant_media.py

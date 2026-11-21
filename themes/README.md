@@ -79,6 +79,10 @@ The choice is Ghost data, not tenant-template data. A platform-applied default f
 
 To offer another family, add it to `manifest.json` (below) with a `fallback` of `sans-serif`, `serif` or `monospace`; the settings, the partial and the checks follow from the manifest.
 
+## The platform's footer credit
+
+Every theme prints the platform's default footer credit beside Ghost's own, which stays. The build patches each theme's footer after the pins are checked: `themes/footer-credit/README.md`. A new theme needs its patch there.
+
 ## Adding or updating a theme or font
 
 1. Add the entry to `manifest.json` with the full commit SHA and licence file name; leave the hashes out.

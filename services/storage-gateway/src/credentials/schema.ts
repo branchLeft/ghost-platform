@@ -16,6 +16,12 @@ export const credentials = sqliteTable(
     folder: text('folder').notNull(),
     bucket: text('bucket').notNull(),
     state: text('state', { enum: ['active', 'disabled', 'revoked'] }).notNull(),
+    // Which listener the credential may be presented to. A row written before
+    // the column existed is a media credential, which is exactly what the
+    // default says; no per-tenant value is guessed.
+    profile: text('profile', { enum: ['media', 'state'] })
+      .notNull()
+      .default('media'),
     createdAt: text('created_at').notNull(),
     disabledAt: text('disabled_at'),
     // The tenant's upload ceiling in MiB. Mint requires it and the upload path
@@ -25,6 +31,7 @@ export const credentials = sqliteTable(
   },
   (table) => [
     check('credentials_state_known', sql`${table.state} IN ('active', 'disabled', 'revoked')`),
+    check('credentials_profile_known', sql`${table.profile} IN ('media', 'state')`),
     // A stored ceiling is never a value the body stage would refuse: NULL, or a
     // positive whole number. A bad value cannot be written even by a direct write.
     check(
