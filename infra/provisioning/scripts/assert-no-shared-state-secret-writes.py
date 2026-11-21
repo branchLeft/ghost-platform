@@ -20,12 +20,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+# GitHub secret names are not case-sensitive, so every pattern that names a
+# secret or a method ignores case; a finding reports the canonical upper case.
 FORBIDDEN = re.compile(
-    r"\b(HETZNER_S3_ACCESS_KEY_ID|HETZNER_S3_SECRET_ACCESS_KEY|TENANT_STATE_S3_[A-Z0-9_]+)\b"
+    r"\b(HETZNER_S3_ACCESS_KEY_ID|HETZNER_S3_SECRET_ACCESS_KEY|TENANT_STATE_S3_[A-Z0-9_]+)\b",
+    re.IGNORECASE,
 )
 _GH_SECRET_SET = re.compile(r"\bgh\s+secret\s+set\b(?P<rest>.*)")
 _API_SECRET_PUT = re.compile(
-    r"\bgh\s+api\b.*(?:-X\s*PUT|--method[ =]PUT).*/secrets/|\bgh\s+api\b.*/secrets/.*(?:-X\s*PUT|--method[ =]PUT)"
+    r"\bgh\s+api\b.*(?:-X\s*PUT|--method[ =]PUT).*/secrets/|\bgh\s+api\b.*/secrets/.*(?:-X\s*PUT|--method[ =]PUT)",
+    re.IGNORECASE,
 )
 _LITERAL_NAME = re.compile(r"""^\s*['"]?[A-Z][A-Z0-9_]*['"]?(\s|$)""")
 
@@ -73,7 +77,7 @@ def scan(path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     for number, line in logical_lines(text):
         is_write = bool(_GH_SECRET_SET.search(line) or _API_SECRET_PUT.search(line))
-        names = FORBIDDEN.findall(line)
+        names = [name.upper() for name in FORBIDDEN.findall(line)]
         for name in sorted(set(names)):
             findings.append(Finding(path, number, "writes" if is_write else "mentions", name))
         set_match = _GH_SECRET_SET.search(line)

@@ -8,6 +8,10 @@ fails when any file it is given names `HETZNER_S3_ACCESS_KEY_ID`,
 that writes a secret (a `gh secret set` command, or a PUT to a `/secrets/` path)
 is reported as a write, any other line as a mention, and a write whose secret
 name is not a literal is refused because the check cannot see what it writes.
+Names match in any case, because GitHub treats secret names as case-insensitive
+(`secrets.hetzner_s3_access_key_id` is the same secret); a finding reports the
+upper-case name. `TheSpellingsGitHubTreatsAsTheSameSecret` in the tests has one
+case per spelling.
 
 `infra-provisioning-scripts-ci.yml` runs it on `provision-tenant.yml`. The
 control is `fixtures/seeded-shared-state-write.yml`, a workflow that writes the

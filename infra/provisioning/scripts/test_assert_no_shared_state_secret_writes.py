@@ -75,5 +75,53 @@ class TheScan(unittest.TestCase):
         self.assertEqual(len(check.scan("f", text)), 1)
 
 
+class TheSpellingsGitHubTreatsAsTheSameSecret(unittest.TestCase):
+    """GitHub secret names are not case-sensitive, so a lower- or mixed-case
+    spelling of the shared pair reads or writes the same secret. Each spelling
+    is its own test, and each reports the canonical upper-case name."""
+
+    def _kinds_and_names(self, text: str) -> list[tuple[str, str]]:
+        return [(f.kind, f.name) for f in check.scan("f", text)]
+
+    def test_a_lower_case_api_put_of_the_access_key_is_a_write(self):
+        text = "run: gh api -X PUT repos/o/r/environments/production/secrets/hetzner_s3_access_key_id\n"
+        self.assertEqual(self._kinds_and_names(text), [("writes", "HETZNER_S3_ACCESS_KEY_ID")])
+
+    def test_a_lower_case_api_put_of_the_provisioning_jobs_name_is_a_write(self):
+        text = "run: gh api --method PUT repos/o/r/actions/secrets/tenant_state_s3_access_key_id\n"
+        self.assertEqual(self._kinds_and_names(text), [("writes", "TENANT_STATE_S3_ACCESS_KEY_ID")])
+
+    def test_a_mixed_case_api_put_with_the_path_first_is_a_write(self):
+        text = "run: gh api repos/o/r/actions/secrets/Hetzner_S3_Secret_Access_Key -X PUT\n"
+        self.assertEqual(self._kinds_and_names(text), [("writes", "HETZNER_S3_SECRET_ACCESS_KEY")])
+
+    def test_a_lower_case_method_word_does_not_hide_an_api_write(self):
+        text = "run: gh api -X put repos/o/r/actions/secrets/hetzner_s3_access_key_id\n"
+        self.assertEqual(self._kinds_and_names(text), [("writes", "HETZNER_S3_ACCESS_KEY_ID")])
+
+    def test_a_lower_case_secret_read_is_a_mention(self):
+        text = "env:\n  K: ${{ secrets.hetzner_s3_access_key_id }}\n"
+        self.assertEqual(self._kinds_and_names(text), [("mentions", "HETZNER_S3_ACCESS_KEY_ID")])
+
+    def test_a_mixed_case_secret_read_is_a_mention(self):
+        text = "env:\n  K: ${{ secrets.Tenant_State_S3_Access_Key_Id }}\n"
+        self.assertEqual(self._kinds_and_names(text), [("mentions", "TENANT_STATE_S3_ACCESS_KEY_ID")])
+
+    def test_a_lower_case_name_on_a_secret_set_line_is_a_write(self):
+        text = "run: printf x | gh secret set hetzner_s3_secret_access_key --repo r\n"
+        self.assertEqual(self._kinds_and_names(text), [("writes", "HETZNER_S3_SECRET_ACCESS_KEY")])
+
+    def test_a_mixed_case_name_on_a_secret_set_line_is_a_write(self):
+        text = "run: printf x | gh secret set Tenant_State_S3_Secret_Access_Key --repo r\n"
+        self.assertEqual(self._kinds_and_names(text), [("writes", "TENANT_STATE_S3_SECRET_ACCESS_KEY")])
+
+    def test_a_lower_case_name_in_a_comment_is_still_allowed(self):
+        self.assertEqual(check.scan("f", "      # hetzner_s3_access_key_id is retired\n"), [])
+
+    def test_the_tenants_own_name_in_lower_case_is_not_flagged(self):
+        text = "run: gh api -X PUT repos/o/r/environments/production/secrets/state_gateway_access_key_id\n"
+        self.assertEqual(self._kinds_and_names(text), [])
+
+
 if __name__ == "__main__":
     unittest.main()
