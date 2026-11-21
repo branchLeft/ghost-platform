@@ -2,6 +2,7 @@ import { createEssentialsRoutes, type KindReader, type RouteSet } from './essent
 import { createProfessionalRoutes } from './professionalRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
+import type { ThirdPartyOff } from './thirdPartyOff.js';
 
 /**
  * The two promotion screens the tenant portal adds: ask for Essentials (needs
@@ -13,9 +14,10 @@ export function createPromotionRoutes(
   provisioning: ProvisioningSettings | undefined,
   support: SupportSettings | undefined,
   reader: KindReader,
-  clock: () => number
+  clock: () => number,
+  thirdPartyOff?: ThirdPartyOff
 ): RouteSet {
-  const essentials = createEssentialsRoutes(provisioning, reader);
+  const essentials = createEssentialsRoutes(provisioning, reader, thirdPartyOff);
   const professional = createProfessionalRoutes(support, reader, clock);
   return {
     nav: [...essentials.nav, ...professional.nav],

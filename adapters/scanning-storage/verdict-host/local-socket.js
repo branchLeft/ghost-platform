@@ -42,9 +42,15 @@ function clearStaleSocket(file) {
   fs.unlinkSync(file);
 }
 
+function isSlotId(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 2 ** 31 - 1;
+}
+
 function startLocalSocket({
   queue,
   socketPath,
+  socketUid,
+  socketGid,
   socketMode = DEFAULT_SOCKET_MODE,
   askWaitMs = DEFAULT_ASK_WAIT_MS,
   readTimeoutMs = DEFAULT_READ_TIMEOUT_MS,
@@ -53,6 +59,11 @@ function startLocalSocket({
 }) {
   if (typeof socketPath !== 'string' || !path.isAbsolute(socketPath)) {
     throw new Error('the local socket path must be absolute');
+  }
+  // The slot's own identity is required, never inferred: a socket made by
+  // whoever happened to run the process is not one slot's alone.
+  if (!isSlotId(socketUid) || !isSlotId(socketGid)) {
+    throw new Error('the local socket needs the slot uid and gid, whole numbers of 1 or more');
   }
   // hash -> set of functions to call with the verdict that settles it.
   const waiters = new Map();
@@ -136,6 +147,16 @@ function startLocalSocket({
   server.maxConnections = maxConnections;
 
   return new Promise((resolve, reject) => {
+    // A process makes its socket as itself, so the identity is the unit's to
+    // set (the container's user), and this refuses to run as any other.
+    if (process.geteuid() !== socketUid || process.getegid() !== socketGid) {
+      reject(
+        new Error(
+          `the host end must run as uid ${socketUid} gid ${socketGid}, not uid ${process.geteuid()} gid ${process.getegid()}`
+        )
+      );
+      return;
+    }
     clearStaleSocket(socketPath);
     // 0600 from the instant it exists; the configured mode applies after.
     // listen() binds a unix path in the same tick, so the umask is restored
@@ -145,6 +166,18 @@ function startLocalSocket({
     try {
       server.listen(socketPath, () => {
         server.off('error', reject);
+        // Read the file back: a directory that hands new files to another
+        // group would give the socket an owner the check above cannot see.
+        const made = fs.lstatSync(socketPath);
+        if (made.uid !== socketUid || made.gid !== socketGid) {
+          server.close();
+          reject(
+            new Error(
+              `the socket is owned by uid ${made.uid} gid ${made.gid}, not the slot's uid ${socketUid} gid ${socketGid}`
+            )
+          );
+          return;
+        }
         fs.chmodSync(socketPath, socketMode);
         resolve({
           server,
