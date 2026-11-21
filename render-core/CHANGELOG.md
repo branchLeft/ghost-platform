@@ -4,6 +4,33 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Additive:** `renderSettings()` names `footerCredit` (`text`, `url`, `keepGhostCredit: true`) in
+  `ghost-settings.json` for every kind: the default footer credit that extends Ghost's own
+  "Powered by Ghost". `text` and `url` are the placeholders `FOOTER_CREDIT_TEXT` and
+  `PUBLICPRESS_MAIN_SITE_URL` until the owner supplies the copy; Ghost's credit stays. New exports
+  `FOOTER_CREDIT_TEXT`, `FOOTER_CREDIT_URL` and `FooterCreditSettings`. The `ghost-settings.json`
+  goldens gain the key; code injection is unchanged.
+- **Additive:** a descriptor that names `safety.verdictSource: "production"` now also renders a
+  `verdict-host` service in the slot's stack, from the same `${IMAGE}` as Ghost, with
+  `network_mode: none`: the container has a loopback interface and nothing else, so it has no
+  gateway, no address on any bridge and no route off the machine, and nothing on the app host can be
+  reached from it, not even a service that listens on every address. (An `internal: true` bridge
+  network was the first design and is not used: Docker still gives the host that bridge's first
+  address, which answers for such a service.) It publishes no port, and carries `read_only`,
+  `cap_drop: ALL`, `no-new-privileges` and its own limits. It runs as `user: "<uid>:<uid>"` and is
+  given `VERDICT_HOST_SOCKET_UID` and `VERDICT_HOST_SOCKET_GID` of the same slot uid, which the host
+  end requires. It mounts the verdict volume read-write (Ghost keeps it read-only) and a second
+  external volume, `ghost-<slug>-verdict-journal`. `assertRuntimePosture` refuses a sidecar that has a
+  published port, any network or `networks`, a `network_mode` other than `none`, or that a Ghost
+  service shares the namespace of; a verdict volume with no sidecar; and Ghost mounting it without
+  `:ro`. New export `verdictJournalVolumeName`. Absent or `"none"`, every artefact is byte-identical
+  to before. No Docker version beyond the Compose one the app hosts already run is needed.
+  See src/compose.md#the-verdict-host-sidecar.
+- **Rollout:** with the switch on, the stack needs the journal volume to exist, and an image that
+  carries the host end at `/opt/branchleft/scanning-storage/verdict-host/main.js` (the image does not
+  yet), a verify key and an inbound port. Until then the sidecar does not start, and every upload is
+  held, never served. Do not set the switch on a descriptor before they exist.
+
 - **Additive: storage gateway media.** `media.kind: "gateway"` (`endpoint`, `region`, `shard`,
   `folder`, `resize`, `srcsets`) renders Ghost's `S3Storage` against the storage gateway:
   `endpoint` the gateway, `forcePathStyle: true`, `bucket` the shard, `tenantPrefix` the tenant's

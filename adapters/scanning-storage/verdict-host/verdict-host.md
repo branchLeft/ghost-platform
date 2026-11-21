@@ -133,8 +133,12 @@ Three layers inside this process, and one outside it.
    the guard, one without) must be flagged by the same run.
 4. **Outside this process.** The guard is not a sandbox: code in the process can
    undo it. The load-bearing control is the unit that runs the process denying
-   it every network address but its own listener. That unit is not part of this
-   change.
+   it every network address but its own listener. For a slot that is the
+   `verdict-host` sidecar render-core renders with `network_mode: none`, so it
+   has no network at all and no address of the host's to reach
+   (`render-core/src/compose.md#the-verdict-host-sidecar`), proven by an
+   outbound connect from inside it that fails
+   (`render-core/test/verdict-host-network.test.ts`).
 
 ## Metrics
 
@@ -154,9 +158,9 @@ rules; change them together.
 
 ## Not in this change
 
-The unit that runs the process and denies it the network; the descriptor entry
-that gives each host its inbound address and key; something that carries the pin
-to the safety service and makes it trust only that pin; the route that lets the
-safety service reach a host from outside; a shared home for the signed-request check
-and the verdicts reader. The entry file passes the socket transport to the
+The image carrying this tree; the unit that runs the process and denies it the
+network; the descriptor entry that gives each host its inbound address and key;
+something that carries the pin to the safety service and makes it trust only that
+pin; the route that lets the safety service reach a host from outside; a shared
+home for the signed-request check and the verdicts reader. The entry file passes the socket transport to the
 decorator at `verdictSocketPath` (`../src/verdict-source.md`).

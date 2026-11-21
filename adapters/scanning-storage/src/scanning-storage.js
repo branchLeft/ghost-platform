@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 
 const { readRefusal, sealRefusal } = require('./quarantine');
 const {
+  AUDIENCE,
   buildRefusalError,
   buildScannerUnconfiguredError,
   buildVerdictPendingError,
@@ -812,7 +813,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         if (this.metrics) {
           this.metrics.recordRefusal('sealed');
         }
-        throw buildRefusalError(GhostErrors, sealed);
+        throw buildRefusalError(GhostErrors, sealed, AUDIENCE.TENANT_STAFF);
       }
 
       const { decision, verdict } = await evaluate(this.checks, this.policy, buffer);
@@ -826,7 +827,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           if (this.metrics) {
             this.metrics.recordRefusal('sealed');
           }
-          throw buildRefusalError(GhostErrors, sealedSince);
+          throw buildRefusalError(GhostErrors, sealedSince, AUDIENCE.TENANT_STAFF);
         }
         return this.#proceedWithWriteTimeout(proceed);
       }
@@ -842,7 +843,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         if (this.metrics) {
           this.metrics.recordRefusal('verdict');
         }
-        throw buildRefusalError(GhostErrors, verdict);
+        throw buildRefusalError(GhostErrors, verdict, AUDIENCE.TENANT_STAFF);
       }
 
       if (decision === 'hold') {
@@ -990,7 +991,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // not to the design.
     #urlForTargetPath(targetPath) {
       const normalized = targetPath.split(path.sep).join('/');
-      const { cdnUrl, endpoint, bucket } = this.wrappedConfig;
+      const { cdnUrl, endpoint, bucket, tenantPrefix } = this.wrappedConfig;
       if (bucket) {
         const base = cdnUrl || (endpoint ? `${endpoint.replace(/\/$/, '')}/${bucket}` : null);
         if (!base) {
@@ -998,7 +999,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
             'ScanningStorageAdapter: an object-storage hold needs wrappedConfig.cdnUrl, or .endpoint and .bucket, to build a URL'
           );
         }
-        return `${base.replace(/\/$/, '')}/${normalized}`;
+        // Ghost stores a tenant's keys under tenantPrefix when it is set, so
+        // the served URL carries the same segment: <base>/<prefix>/<path>.
+        const prefix =
+          typeof tenantPrefix === 'string' ? tenantPrefix.replace(/^\/+|\/+$/g, '') : '';
+        const key = prefix ? `${prefix}/${normalized}` : normalized;
+        return `${base.replace(/\/$/, '')}/${key}`;
       }
       const feature =
         typeof this.wrapped.storagePath === 'string'

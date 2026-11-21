@@ -90,6 +90,8 @@ export interface ExportManifest {
   readonly excluded: readonly ManifestGap[];
   /** Present only for a demo slot, whose media is local files. */
   readonly mediaFiles?: MediaFilesListing;
+  /** The `active_theme` setting the export holds, or null when it holds none. */
+  readonly activeTheme: string | null;
 }
 
 /** The manifest written beside the archive: the same, with the media list reduced to counts. */
@@ -189,7 +191,8 @@ export function buildManifest(
   included: readonly ManifestEntry[],
   extensions: readonly ExtensionReport[] = [],
   permanentGaps: readonly ManifestGap[] = KNOWN_EXPORT_GAPS,
-  mediaFiles?: MediaFilesListing
+  mediaFiles?: MediaFilesListing,
+  activeTheme: string | null = null
 ): ExportManifest {
   const failed = shortfalls(extensions);
   // The bytes are in this archive when the slot's media files were carried.
@@ -202,9 +205,35 @@ export function buildManifest(
     tenantId,
     generatedAt: generatedAtIso,
     encryption,
+    activeTheme,
     complete: failed.length === 0,
     extensions,
     included,
     excluded: [...failed, ...gaps],
   };
+}
+
+/**
+ * The `active_theme` setting from Ghost's own content export
+ * (`db[0].data.settings`), or null when the export holds no such row or is
+ * not the JSON that export writes. Never throws: the manifest then names no
+ * theme rather than failing the export.
+ */
+export function activeThemeOf(contentJson: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(contentJson);
+  } catch {
+    return null;
+  }
+  const db = (parsed as { db?: unknown } | null)?.db;
+  const settings = Array.isArray(db)
+    ? (db[0] as { data?: { settings?: unknown } } | undefined)?.data?.settings
+    : undefined;
+  if (!Array.isArray(settings)) return null;
+  const row = settings.find(
+    (r): r is { key: string; value: unknown } =>
+      typeof r === 'object' && r !== null && (r as { key?: unknown }).key === 'active_theme'
+  );
+  return typeof row?.value === 'string' ? row.value : null;
 }
