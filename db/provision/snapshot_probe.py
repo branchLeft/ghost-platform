@@ -1419,16 +1419,23 @@ def mount_type(mounts: str, path: str) -> str | None:
     return best[1] if best else None
 
 
-def assert_on_tmpfs(server: Server) -> str:
-    """Raise unless the server's datadir is really on tmpfs, so control 2 can
-    never silently fall back to the disk. Returns the line the report carries."""
+def tmpfs_datadir(server: Server, measuring: str = "control 2") -> str:
+    """The server's datadir, raising unless it is really on tmpfs, so what is
+    measured can never silently fall back to the disk."""
     datadir = server.query("SELECT @@datadir;")[0][0]
     result = subprocess.run(server.exec_argv(["cat", "/proc/mounts"]), capture_output=True, text=True, check=False, timeout=30)
     if result.returncode != 0:
         raise ProofError(f"{server.name}: could not read /proc/mounts to check the datadir: {result.stderr.strip()[:200]}")
     kind = mount_type(result.stdout, datadir)
     if kind != "tmpfs":
-        raise ProofError(f"{server.name}: datadir {datadir} is on {kind!r}, not tmpfs: control 2 would measure the disk")
+        raise ProofError(f"{server.name}: datadir {datadir} is on {kind!r}, not tmpfs: {measuring} would measure the disk")
+    return datadir
+
+
+def assert_on_tmpfs(server: Server) -> str:
+    """Raise unless the server's datadir is really on tmpfs, so control 2 can
+    never silently fall back to the disk. Returns the line the report carries."""
+    datadir = tmpfs_datadir(server)
     return f"control 2 source: datadir {datadir} on tmpfs, every other control on the real disk with real fsync"
 
 

@@ -66,6 +66,10 @@ The build copies `fonts/` into each theme at `assets/platform-fonts/`, so a font
 
 Not done here: nothing yet links `fonts.css` into a tenant's pages. That is a per-site head setting (a site header injection of `<link rel="stylesheet" href="/assets/platform-fonts/fonts.css">`) and belongs with provisioning. Until it is set, the themes use their own font stacks.
 
+## The platform's footer credit
+
+Every theme prints the platform's default footer credit beside Ghost's own, which stays. The build patches each theme's footer after the pins are checked: `themes/footer-credit/README.md`. A new theme needs its patch there.
+
 ## Adding or updating a theme or font
 
 1. Add the entry to `manifest.json` with the full commit SHA and licence file name; leave the hashes out.

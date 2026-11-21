@@ -9,7 +9,13 @@ import type { ContainerRunner } from './containerRunner.js';
 import type { ExportFile, GhostExportClient } from './ghostExportClient.js';
 import type { GhostProbe } from './ghostProbe.js';
 import { waitUntilHealthy } from './ghostProbe.js';
-import { buildManifest, sidecarOf, type ExportManifest, type ManifestEntry } from './manifest.js';
+import {
+  activeThemeOf,
+  buildManifest,
+  sidecarOf,
+  type ExportManifest,
+  type ManifestEntry,
+} from './manifest.js';
 import {
   collectExtensions,
   type ExtensionOutcome,
@@ -312,7 +318,8 @@ async function bundle(
     ],
     extensions.map((e) => e.report),
     undefined,
-    extensions.find((e) => e.mediaFiles !== undefined)?.mediaFiles
+    extensions.find((e) => e.mediaFiles !== undefined)?.mediaFiles,
+    activeThemeOf(contentAndSettings.body.toString('utf8'))
   );
   const manifestJson = JSON.stringify(manifest, null, 2);
   // Beside the archive, readable without the key: counts, never file names.

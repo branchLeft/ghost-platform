@@ -260,7 +260,9 @@ describe('the front door role inserts a request, reads its own and does nothing 
 
   it('reads no request with no address bound, and cannot read back an insert: SQLSTATE 42501', async () => {
     // The own-row reads are in prospectStatusRead.test.ts; unbound, the policy admits no row.
-    expect(await asProspect((tx) => tx.select().from(demoRequest))()).toEqual([]);
+    expect(
+      await asProspect((tx) => tx.select({ demoId: demoRequest.demoId }).from(demoRequest))()
+    ).toEqual([]);
     expect(
       await outcome(asProspect((tx) => tx.insert(demoRequest).values(row()).returning()))
     ).toBe(PERMISSION_DENIED);
@@ -489,8 +491,8 @@ describe('the privilege table, role by role, as the catalog holds it', () => {
     return result.rows.filter((r) => r.held).map((r) => r.privilege);
   }
 
-  it('gives the front door INSERT and SELECT (the row policy narrows it), the worker and the console SELECT, the tenant nothing', async () => {
-    expect(await held('portal_prospect')).toEqual(['SELECT', 'INSERT']);
+  it('gives the front door INSERT and a SELECT on three columns only, the worker and the console SELECT, the tenant nothing', async () => {
+    expect(await held('portal_prospect')).toEqual(['INSERT']);
     expect(await held('portal_provisioner')).toEqual(['SELECT']);
     expect(await held('portal_owner')).toEqual(['SELECT']);
     expect(await held('portal_tenant')).toEqual([]);

@@ -239,13 +239,42 @@ describe('every assertion is paired', () => {
   });
 });
 
-// The harness substitutes the adapter's hash stage with a fixture key (see the
-// helpers' doc). The day the adapter computes a real perceptual hash this goes
-// red: delete the substitution and run the gates on the real hash.
-describe('the substituted hash stage', () => {
-  it('is still the SHA-256 stand-in, the one thing the harness replaces', () => {
+// The gates run on the adapter's real hash stage: the fixtures are generated
+// pictures and the stand-in service is keyed on their real PDQ hashes. This
+// holds that: each fixture hashes, to a key of the shape the host end accepts,
+// the three are unrelated (a match is at most 31 bits apart), and the hash
+// functions the adapter calls are the shipped ones, not replaced by the harness.
+describe('the hash stage', () => {
+  const { hammingDistance } = require(path.join(SRC, 'pdq-ts')) as {
+    hammingDistance: (a: Uint8Array, b: Uint8Array) => number;
+  };
+  const keys = Object.values(FIXTURES).map((picture) => keyOf(picture));
+
+  it('hashes every fixture to a 32-byte key, each different', () => {
+    for (const key of keys) {
+      expect(key).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+      expect(Buffer.from(key, 'base64')).toHaveLength(32);
+    }
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('keeps the fixtures unrelated, so one answer never covers another', () => {
+    for (let a = 0; a < keys.length; a += 1) {
+      for (let b = a + 1; b < keys.length; b += 1) {
+        const distance = hammingDistance(
+          Buffer.from(keys[a] as string, 'base64'),
+          Buffer.from(keys[b] as string, 'base64')
+        );
+        expect(distance).toBeGreaterThan(31);
+      }
+    }
+  });
+
+  it('is the shipped one: the harness replaces none of the adapter hash functions', () => {
     const pdq = require(path.join(SRC, 'pdq.js'));
-    expect(Object.keys(pdq)).toEqual(['digestBytes']);
+    expect(pdq.pdqHashOfImage.name).toBe('pdqHashOfImage');
+    expect(pdq.digestBytes.name).toBe('digestBytes');
     expect(pdq.digestBytes(Buffer.from('x'))).toMatch(/^[0-9a-f]{64}$/);
+    expect(keyOf(FIXTURES.clean)).not.toBe(pdq.digestBytes(FIXTURES.clean));
   });
 });

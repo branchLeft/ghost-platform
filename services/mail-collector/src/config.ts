@@ -1,4 +1,5 @@
 import { dirname, join } from 'node:path';
+import { InvalidDemoCeilingError } from './invalidDemoCeilingError.js';
 import {
   IP2_COUNTER_PATH_ENV,
   IP2_STATE_PATH_ENV,
@@ -12,6 +13,7 @@ import {
   type Mx1LaneReturnPaths,
 } from './mx1Lane.js';
 import { MIN_MAC_KEY_LENGTH } from './outcomeId.js';
+import type { MailClass } from './sendingTarget.js';
 import { DEFAULT_PIN_TTL_MS, MAX_CAP_HOLD_MS } from './sweegoUsage.js';
 
 export interface CollectorConfig {
@@ -64,13 +66,14 @@ export interface CollectorConfig {
   /**
    * The demo mail ceilings (LLD-6 section 05), counted here so a compromised
    * demo host cannot lift them. Both count messages in a rolling window and
-   * are keyed on the slot, never on an address.
+   * are keyed on the slot, never on an address. Each mail class has its own
+   * pair: `transactional` is sign-in mail, `bulk` is newsletters.
    */
   demoCeilings: {
-    /** A demo slot's own ceiling when its descriptor names none (`mail.ceiling`). */
-    slotCeiling: number;
-    /** What every demo slot together may send in one window: the hard cap they share. */
-    estateCeiling: number;
+    /** A demo slot's own ceiling per class when its descriptor names none (`mail.ceiling`). */
+    slotCeiling: Record<MailClass, number>;
+    /** What every demo slot together may send in one window, per class: the hard cap they share. */
+    estateCeiling: Record<MailClass, number>;
     /** The rolling window both count in. */
     windowMs: number;
     /** File the counted places are kept in, so a restart does not reset them. Defaults to a file beside `dedupeStatePath`; with neither set, a restart forgets them. */
@@ -272,9 +275,22 @@ const DEFAULT_BULK_DEFERRAL_STATE_FILE = 'bulk-deferral.json';
 const DEFAULT_HEARTBEAT_FAILURE_THRESHOLD = 5;
 // Enough to try sign-up and a test send, no more.
 const DEFAULT_DEMO_SLOT_CEILING = 20;
-const DEFAULT_DEMO_ESTATE_CEILING = 200;
+const DEFAULT_DEMO_ESTATE_CEILING = 100;
 const DEFAULT_DEMO_CEILING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_DEMO_CEILING_STATE_FILE = 'demo-ceilings.json';
+
+/** Unset or empty means the default; anything else must be digits only and above zero. */
+function demoCeilingEnv(env: CollectorEnv, name: string, fallback: number): number {
+  const raw = env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const ceiling = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(ceiling) || ceiling <= 0) {
+    throw new InvalidDemoCeilingError(name);
+  }
+  return ceiling;
+}
 
 function demoCeilingStatePathEnv(env: CollectorEnv): string | undefined {
   if (env.COLLECTOR_DEMO_CEILING_STATE_PATH) {
@@ -608,12 +624,26 @@ export function loadConfig(env: CollectorEnv = process.env): CollectorConfig {
     shimScheme: shimSchemeEnv(env),
     demoMailDomain: env.COLLECTOR_DEMO_MAIL_DOMAIN || undefined,
     demoCeilings: {
-      slotCeiling: positiveIntEnv(env, 'COLLECTOR_DEMO_SLOT_CEILING', DEFAULT_DEMO_SLOT_CEILING),
-      estateCeiling: positiveIntEnv(
-        env,
-        'COLLECTOR_DEMO_ESTATE_CEILING',
-        DEFAULT_DEMO_ESTATE_CEILING
-      ),
+      slotCeiling: {
+        transactional: demoCeilingEnv(
+          env,
+          'COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING',
+          DEFAULT_DEMO_SLOT_CEILING
+        ),
+        bulk: demoCeilingEnv(env, 'COLLECTOR_DEMO_SLOT_BULK_CEILING', DEFAULT_DEMO_SLOT_CEILING),
+      },
+      estateCeiling: {
+        transactional: demoCeilingEnv(
+          env,
+          'COLLECTOR_DEMO_ESTATE_TRANSACTIONAL_CEILING',
+          DEFAULT_DEMO_ESTATE_CEILING
+        ),
+        bulk: demoCeilingEnv(
+          env,
+          'COLLECTOR_DEMO_ESTATE_BULK_CEILING',
+          DEFAULT_DEMO_ESTATE_CEILING
+        ),
+      },
       windowMs: positiveIntEnv(
         env,
         'COLLECTOR_DEMO_CEILING_WINDOW_MS',

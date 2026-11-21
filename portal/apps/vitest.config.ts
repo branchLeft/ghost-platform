@@ -17,6 +17,7 @@ export default defineConfig({
         'src/console/main.ts',
         'src/collector/main.ts',
         'src/collector/healthMain.ts',
+        'src/erasure/main.ts',
       ],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 90 },
     },

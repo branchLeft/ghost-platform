@@ -4,6 +4,7 @@ import { normalizeRecipient } from './descriptorTargets.js';
 import type { DropDetail } from './droppedOutcomes.js';
 import type { WireMessage } from './drainClient.js';
 import { normalizeDomain } from './headerFromScope.js';
+import { mailClassOf } from './sendingTarget.js';
 
 /**
  * The record of which addresses a demo slot may send to: LLD-6's "the
@@ -56,9 +57,10 @@ export type DemoVerdict =
 export interface DemoContainment {
   /**
    * Decides one drained demo message. Pure apart from taking a place under the
-   * ceilings; safe to call again for the same message id (a re-offer).
+   * ceilings of the message's class (sign-in or newsletter, from `emailId`);
+   * safe to call again for the same message id (a re-offer).
    */
-  admit(target: DrainTarget, message: Pick<WireMessage, 'id' | 'to'>): DemoVerdict;
+  admit(target: DrainTarget, message: Pick<WireMessage, 'id' | 'to' | 'emailId'>): DemoVerdict;
 }
 
 export interface DemoContainmentOptions {
@@ -83,7 +85,7 @@ const CEILING_REACHED: DropDetail = {
  * 1. the slot has a sender identity: its own local part, on the demo domain;
  * 2. the recipient is in the verified-address record;
  * 3. the slot is under its own ceiling and every demo slot together are under
- *    the estate ceiling.
+ *    the estate ceiling, each counted for the message's own class.
  *
  * The From the message goes out with is the slot's own local part on the demo
  * domain. The order matters: a refused recipient never spends a place.
@@ -105,7 +107,12 @@ export function createDemoContainment(options: DemoContainmentOptions): DemoCont
           detail: RECIPIENT_REFUSED,
         };
       }
-      const place = options.ceilings.reserve(target.id, message.id, target.mailCeiling);
+      const place = options.ceilings.reserve(
+        target.id,
+        message.id,
+        mailClassOf(message.emailId),
+        target.mailCeiling
+      );
       if (place !== 'ok') {
         return {
           ok: false,

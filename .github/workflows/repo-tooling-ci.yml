@@ -116,6 +116,13 @@ jobs:
       - name: Bundled themes and fonts tests
         run: node --test themes/*.test.mjs
 
+      # The platform's footer credit patches (themes/footer-credit/README.md):
+      # one patch per bundled theme, none removing Ghost's own credit, and the
+      # partial carries what render-core names. Their application to the real
+      # themes is proved by the image test in build.yml.
+      - name: Theme footer credit tests
+        run: python3 -m unittest discover -s themes/footer-credit -p 'test_*.py' -v
+
       # The CSP gates' verdict logic. Needs render-core built, so build it
       # first. Their live-browser run (csp/gate/csp-regression-gate.sh) needs
       # Docker and Chromium and stays out of CI, like csp/proof/.
@@ -176,6 +183,12 @@ jobs:
       # must go red for every one, and green on the real copy.
       - name: Demo go-live sabotage proof
         run: python3 demo-host/provision/sabotage_demo_go_live.py
+
+      # The demo host's export release (demo-host/provision/export_release.py):
+      # each refusal dropped in a scratch copy, the suite red for every one and
+      # green on the real copy. Its tests run in the discover step above.
+      - name: Demo host export release sabotage proof
+        run: python3 demo-host/provision/sabotage_export_release.py
 
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'

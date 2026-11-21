@@ -1,12 +1,15 @@
 'use strict';
 
 const http = require('node:http');
+const nodeTls = require('node:tls');
 const { parseVerdictsBody, definitiveAnswers, CHANNEL_VERSION } = require('./verdicts-body');
 
 // The inbound end of the verdict channel: the safety service dials this and
 // the host answers, never the other way. Two routes, both signed, both bounded
 // in bytes and time. The contract is docs/verdict-channel.md in
 // branchLeft/content-safety; the limits chosen here are in verdict-host.md.
+// Plain HTTP by default; given a certificate and key it serves the same routes
+// over TLS 1.3 and nothing else.
 
 const PENDING_PATH = '/safety/v1/pending';
 const VERDICTS_PATH = '/safety/v1/verdicts';
@@ -62,6 +65,8 @@ function startInbound({
   maxHeldPolls = DEFAULT_MAX_HELD_POLLS,
   maxConnections = DEFAULT_MAX_CONNECTIONS,
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  connectionsCheckIntervalMs,
+  tls = null,
   now = Date.now,
   logger = console,
   count = () => {},
@@ -175,24 +180,81 @@ function startInbound({
   server.requestTimeout = requestTimeoutMs;
   server.headersTimeout = requestTimeoutMs;
   server.maxHeadersCount = 32;
+  // How often Node looks for connections past the two timeouts above; its own
+  // default is 30 seconds. Set only where a test cannot wait that long.
+  if (connectionsCheckIntervalMs !== undefined) {
+    server.connectionsCheckingInterval = connectionsCheckIntervalMs;
+  }
   // A held poll is a response still being produced, not an idle socket.
   server.keepAliveTimeout = 5000;
 
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, host, () => {
-      server.off('error', reject);
-      resolve({
-        server,
-        address: server.address(),
-        close: () =>
-          new Promise((done) => {
-            server.close(() => done());
-            server.closeAllConnections();
-          }),
+  function listenPlain() {
+    return new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, host, () => {
+        server.off('error', reject);
+        resolve({
+          server,
+          address: server.address(),
+          close: () =>
+            new Promise((done) => {
+              server.close(() => done());
+              server.closeAllConnections();
+            }),
+        });
       });
     });
-  });
+  }
+
+  // The TLS server accepts, handshakes and hands each secured socket to the
+  // HTTP server as if it had accepted it. Raw sockets are kept so a close can
+  // end the ones still in a handshake, which the HTTP server never saw.
+  function listenTls({ cert, key }) {
+    const tlsServer = nodeTls.createServer({
+      cert,
+      key,
+      minVersion: 'TLSv1.3',
+      handshakeTimeout: requestTimeoutMs,
+    });
+    tlsServer.maxConnections = maxConnections;
+    const rawSockets = new Set();
+    tlsServer.on('connection', (raw) => {
+      rawSockets.add(raw);
+      raw.once('close', () => rawSockets.delete(raw));
+    });
+    tlsServer.on('secureConnection', (socket) => server.emit('connection', socket));
+    // Node leaves a socket open after a handshake error that has a listener,
+    // such as the handshake timeout, so the listener ends it.
+    tlsServer.on('tlsClientError', (err, socket) => {
+      logger.error(
+        `VerdictHost: VERDICT_HOST_TLS_HANDSHAKE_FAILED error=${String(err?.code ?? err?.name)}`
+      );
+      socket.destroy();
+    });
+    // The HTTP server never listens, so it never starts its header and request
+    // timers; its 'listening' event is what starts them.
+    server.emit('listening');
+    return new Promise((resolve, reject) => {
+      tlsServer.once('error', reject);
+      tlsServer.listen(port, host, () => {
+        tlsServer.off('error', reject);
+        resolve({
+          server: tlsServer,
+          address: tlsServer.address(),
+          close: () =>
+            new Promise((done) => {
+              tlsServer.close(() => done());
+              for (const raw of rawSockets) raw.destroy();
+              // Never listening: the callback only reports that, and is not needed.
+              server.close(() => {});
+              server.closeAllConnections();
+            }),
+        });
+      });
+    });
+  }
+
+  return tls === null ? listenPlain() : listenTls(tls);
 }
 
 module.exports = {

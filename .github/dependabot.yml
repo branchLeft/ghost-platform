@@ -37,6 +37,23 @@ updates:
     labels:
       - 'dependencies'
 
+  # The estate's app and database hosts program (Pulumi). It pins
+  # @branchleft/hetzner-host, which otherwise only moves by hand.
+  - package-ecosystem: 'npm'
+    directory: '/infra/hosts'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - 'minor'
+          - 'patch'
+    labels:
+      - 'dependencies'
+
   # The release classifier's parser (acorn), pinned exactly in its lockfile.
   - package-ecosystem: 'npm'
     directory: '/services/release-classifier'

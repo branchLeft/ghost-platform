@@ -44,9 +44,9 @@ serves nothing until one arrives. It does **not** build:
   is built in `verdict-host/` (`verdict-host/verdict-host.md`), with the
   decorator's transport in `src/socket-verdict-transport.js`
   (`src/verdict-socket.md`), which the entry file passes for `production`.
-  The digest it asks about is still a SHA-256 stand-in (`src/pdq.js`), which
-  the host end refuses as not a PDQ key, so until a real PDQ hash lands every
-  upload under `production` is held unserved, never allowed.
+  Under `production` it asks about the picture's PDQ perceptual hash
+  (`src/pdq.js`, `src/pdq.md`), never the SHA-256 digest of the bytes; bytes
+  that are not a decodable picture have no hash and are held, never allowed.
 - **An automated check for video, audio or arbitrary files.** PDQ is an
   image hash and no automated check for video or arbitrary files exists; it
   is not built here, and no frame sampling or fingerprinting is designed.
@@ -71,7 +71,8 @@ fact about the tier decides the rest: `storage__<feature>__tier`.
 
 - **The existing check** is the blocking check, refusal records, policy and
   hold path described in the rest of this file, unchanged in what it asks.
-  It looks up the digest of the bytes; it is not a video or audio scanner.
+  It looks up the PDQ hash of the picture (the digest of the bytes under the
+  in-process fake); it is not a video or audio scanner.
   Nothing reaches the wrapped adapter except after an `allow`.
 - **A refused video or audio upload** is declined before anything is hashed,
   looked up, checked, quarantined, held or written, so it asks no verdict
@@ -286,10 +287,12 @@ The adapter runs only the checks whose `blocking` is `true`, on `save()` and
 `saveRaw()`. An advisory check (`blocking: false`) is filtered out before it
 is ever invoked by this adapter -- it can never acquire the power to refuse
 a customer's upload by construction. `PdqKnownMaterialCheck` (`src/checks.js`)
-ships `blocking: true`; its hash primitive is injected (`src/pdq.js`'s
-`digestBytes`, a SHA-256 stand-in -- PDQ itself is incidental to this design
-and proving near-duplicate matching is the verdict channel's job, not this
-decorator's).
+ships `blocking: true`; its two primitives are injected: `digestBytes`
+(SHA-256, which names the bytes: quarantine files and the evidence of every
+verdict) and the verdict key (`src/pdq.js`'s `pdqHashOfImage`, the PDQ hash the
+hash source is asked about; matching by distance is the verdict channel's job,
+not this decorator's). Bytes with no hash are `unavailable` and held
+(`src/pdq.md`).
 
 ### No verdict source
 
@@ -565,6 +568,16 @@ file`, then the name and the age. A temp file holds no verdict and is never
 served, so nothing else is checked. Every other dotfile, and every byte,
 sidecar, refusal record and aside copy, is untouched by this rule.
 
+## What a match does
+
+A match has two tiers, and only exact + csam is irreversible: it is sealed and
+reported, where every other match is a freeze. The freeze reaches every copy
+Ghost made of the upload and stops further generation, and a tier-one freeze
+can be lifted from the digest alone. `src/policy.md` has the table, the refusal
+record, the copy ledger and what happens when a bucket will not let a copy go.
+What happens to a demo slot on a tier-two match is the control plane's
+(`services/broker/src/matchAction.md`).
+
 ## Icon size variants (size-variants)
 
 On object storage Ghost core rewrites a stored image's absolute bucket URL
@@ -647,10 +660,10 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 ```sh
 pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.76.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.78.0 in Docker
 ```
 
-The image test (`test/image/`) drives a real Ghost 6.76.0 container through
+The image test (`test/image/`) drives a real Ghost 6.78.0 container through
 the real adapter manager: a refused upload (415, typed error, quarantined by
 digest, nothing in the served tree), a clean upload, post creation, the
 public site, the admin API and an on-demand resize -- all still working
@@ -675,6 +688,17 @@ control case). Delivering a clean verdict from the test driver, a separate
 process from the container, uses `storage__images__resolvePath` (see
 `src/verdict-client.js`'s own comment) rather than anything that guesses the
 real channel's wire format.
+
+**The tenant tier's refusal and hold gates** are written once in
+`test/helpers/tenant-tier-gates.ts` (`test/helpers/tenant-tier-gates.md`) and run by
+`test/unit/tenant-tier-gates.test.ts` through the real entry file, decorator,
+socket transport and verdict host end, with the decorator wrapping an adapter
+in `S3Storage`'s shape over a bucket the gates read directly. On both paid tiers
+a refused upload leaves the bucket empty, and a held upload is absent from the
+bucket (never written, not merely unlinked) until a clean verdict promotes it.
+Each assertion has a control that must go red at its own id, and the same
+test-hash upload through the demo tier's adapter is a paired case. What a run on
+a live tenant slot needs is in that file's "Running it on a live slot".
 
 **Restart-safety is proven against a real container restart, not simulated:**
 upload while held, `docker restart` the same container (same writable layer,

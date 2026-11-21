@@ -5,13 +5,18 @@ import { TermsNotAcceptedError } from './documents.js';
  * The fields a promotion must supply by name. Each is tier-differentiated, so
  * none has a default and none is carried over from the demo; a field left out
  * is refused by its name. The list mirrors the render core's promotion
- * targets plus the code-injection setting.
+ * targets plus the tenant-owned settings. The import keeps the demo's value of
+ * every setting, so each tenant-owned one is named here for the rewrite to drop.
+ *
+ * `mediaEndpoint` is the gateway endpoint, `mediaFolder` the tenant's opaque
+ * folder under it (never the slug), and `mediaAddress` the media address.
  */
 export const PROMOTION_TARGET_FIELDS = [
   'databaseHost',
   'databasePort',
   'mediaEndpoint',
-  'mediaRegion',
+  'mediaFolder',
+  'mediaAddress',
   'mediaResize',
   'mediaSrcsets',
   'backupEncryptionRecipient',
@@ -21,6 +26,9 @@ export const PROMOTION_TARGET_FIELDS = [
   'mailCeiling',
   'mailEstateCeiling',
   'codeInjection',
+  'accentColour',
+  'locale',
+  'timezone',
 ] as const;
 export type PromotionTargetField = (typeof PROMOTION_TARGET_FIELDS)[number];
 
@@ -41,10 +49,19 @@ export interface ExportEvidence extends PromotionEvidence {
 /** The three go/no-go answers a gate can give; only PROMOTE lets the swap begin. */
 export type GateVerdict = 'PROMOTE' | 'WAIT' | 'ABANDON';
 
+/**
+ * What the content check found after the import. `mediaStored` counts the media
+ * objects the import stored and `mediaListed` the objects on the bundle's list;
+ * they must match.
+ */
 export interface ContentVerification {
   postPresent: boolean;
   memberPresent: boolean;
   imagePresent: boolean;
+  mediaFilePresent: boolean;
+  filePresent: boolean;
+  mediaStored: number;
+  mediaListed: number;
 }
 
 export interface DumpReceipt {
@@ -85,6 +102,8 @@ export interface PromotionRequest {
   approval: PromotionEvidence | null;
   consent: PromotionEvidence | null;
   exportDone: ExportEvidence | null;
+  /** The tenant's slug. The gateway folder must be an opaque prefix, never this value. */
+  tenantSlug: string;
   targets: PromotionTargets;
 }
 
@@ -170,6 +189,12 @@ async function assertPreconditions(
   }
   const missing = missingTargets(request.targets);
   if (missing.length > 0) throw new PromotionTargetMissingError(missing);
+  if (request.targets.mediaFolder === request.tenantSlug) {
+    throw new PromotionRefusedError(
+      'targets',
+      'mediaFolder is the tenant slug, not an opaque prefix'
+    );
+  }
   if (request.exportDone === null || request.exportDone.archiveReference === '') {
     throw new PromotionRefusedError('export', 'the export of the demo content is not done');
   }
@@ -188,7 +213,14 @@ function reasonOf(error: unknown): string {
 }
 
 function contentIsVerified(found: ContentVerification): boolean {
-  return found.postPresent && found.memberPresent && found.imagePresent;
+  return (
+    found.postPresent &&
+    found.memberPresent &&
+    found.imagePresent &&
+    found.mediaFilePresent &&
+    found.filePresent &&
+    found.mediaStored === found.mediaListed
+  );
 }
 
 function dumpExists(receipt: DumpReceipt | undefined): receipt is DumpReceipt {
