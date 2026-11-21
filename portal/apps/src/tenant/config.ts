@@ -1,5 +1,6 @@
 import type { BlockList } from 'node:net';
 import {
+  ConfigError,
   parseOrigin,
   parseOutputs,
   parsePort,
@@ -23,6 +24,15 @@ export interface TenantPortalConfig {
   readonly trustedProxies?: BlockList;
   /** Set by `PORTAL_PROVISIONING_URL`; absent, there is no demo screen. */
   readonly provisioning?: ProvisioningSettings;
+  /** Set by `PORTAL_ALLOW_PLACEHOLDER_COPY=1`; otherwise a tenant is never shown an unfilled placeholder. */
+  readonly allowPlaceholderCopy: boolean;
+}
+
+/** Off unless the variable is exactly `1`; `0` and unset are off, anything else stops the process. */
+export function parseAllowPlaceholderCopy(value: string | undefined): boolean {
+  if (value === undefined || value === '' || value === '0') return false;
+  if (value === '1') return true;
+  throw new ConfigError('PORTAL_ALLOW_PLACEHOLDER_COPY must be 1 or 0');
 }
 
 /**
@@ -47,6 +57,7 @@ export function loadTenantConfig(
     allowedOrgIds: new Set(outputs.tenantOrgIds),
     databaseUrl: read(requireEnv(env, 'PORTAL_DATABASE_URL_FILE')).trim(),
     port: parsePort(env['PORT'], 8080),
+    allowPlaceholderCopy: parseAllowPlaceholderCopy(env['PORTAL_ALLOW_PLACEHOLDER_COPY']),
     ...(trustedProxies === undefined ? {} : { trustedProxies }),
     ...(provisioning === undefined ? {} : { provisioning }),
   };

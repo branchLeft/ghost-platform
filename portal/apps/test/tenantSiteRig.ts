@@ -11,7 +11,7 @@ import {
   type Mock,
   type MockOptions,
 } from '../../../services/provisioning-controller/dist/mock/server.js';
-import { createTenantPortal } from '../src/tenant/app.js';
+import { createTenantPortal, type TenantPortalOptions } from '../src/tenant/app.js';
 import { createSiteRoutes, SITE_PATH } from '../src/tenant/site.js';
 import type { ProvisioningSettings } from '../src/tenant/provisioningSettings.js';
 import { Browser } from './browser.js';
@@ -121,7 +121,11 @@ export const issuer = new FakeIssuer();
 export const errorLines: string[] = [];
 
 /** The tenant portal over the in-memory data layer, with or without provisioning settings. */
-export function portalOn(origin: string, provisioning: ProvisioningSettings | undefined) {
+export function portalOn(
+  origin: string,
+  provisioning: ProvisioningSettings | undefined,
+  extra: Partial<TenantPortalOptions> = {}
+) {
   return createTenantPortal({
     issuer: ISSUER,
     clientId: CLIENT_PORTAL,
@@ -136,6 +140,7 @@ export function portalOn(origin: string, provisioning: ProvisioningSettings | un
     sessionSeconds: 100_000,
     onError: (line) => errorLines.push(line),
     ...(provisioning === undefined ? {} : { provisioning }),
+    ...extra,
   });
 }
 
