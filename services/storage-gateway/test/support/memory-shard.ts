@@ -15,7 +15,12 @@ export interface MemoryShard extends FakeUpstream {
 
 const xml = (text: string): string => `<?xml version="1.0" encoding="UTF-8"?>${text}`;
 const esc = (text: string): string =>
-  text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;');
 
 /**
  * A state shard that remembers what it is given: enough of S3's object and
