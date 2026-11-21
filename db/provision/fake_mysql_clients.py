@@ -54,6 +54,11 @@ argv = sys.argv[1:]
 config = cfg()
 log("start", binary="mysql", argv=argv, password=password_seen(argv), environ=sorted(os.environ))
 
+def engine_of(schema, table, engines):
+    """A table's engine as the real listing's third column: InnoDB unless the
+    config names another under `schema.table`."""
+    return engines.get(schema + "." + table, "InnoDB")
+
 def listing(statement, tables):
     """The base tables the real listing would return: every one, or only the
     schemas a `TABLE_SCHEMA IN (...)` scope names."""
@@ -67,7 +72,7 @@ if "-e" in argv and argv[argv.index("-e") + 1].startswith("SELECT TABLE_SCHEMA")
     statement = argv[argv.index("-e") + 1]
     log("list_tables", sql=statement)
     for schema, table in listing(statement, config.get("tables_at_plan", config["tables"])):
-        print(f"{schema}\t{table}")
+        print(f"{schema}\t{table}\t{engine_of(schema, table, config.get('engines', {}))}")
     sys.exit(0)
 if "-e" in argv and argv[argv.index("-e") + 1].startswith("SELECT SCHEMA_NAME"):
     log("list_schemas", sql=argv[argv.index("-e") + 1])
@@ -108,9 +113,10 @@ for line in sys.stdin:
             print(config.get("connection_id", 42))
         elif statement.startswith("SELECT TABLE_SCHEMA"):
             tables = config["tables"] if listed == 0 else config.get("tables_under_lock", config["tables"])
+            engines = config.get("engines", {}) if listed == 0 else config.get("engines_under_lock", config.get("engines", {}))
             listed += 1
             for schema, table in listing(statement, tables):
-                print(f"{schema}\t{table}")
+                print(f"{schema}\t{table}\t{engine_of(schema, table, engines)}")
         elif statement.startswith("LOCK TABLES"):
             locked = [list(pair) for pair in re.findall(r"`([^`]*)`\.`([^`]*)` READ", statement)]
             # With `timeout_on` named, only a statement that locks that table
@@ -151,6 +157,10 @@ for line in sys.stdin:
             else:
                 print(config.get("log_status", json.dumps({"binary_log_file": "mysql-bin.000007", "binary_log_position": 1234})))
         elif statement == "SHOW MASTER STATUS":
+            # MySQL 8.4 replaced the statement with SHOW BINARY LOG STATUS.
+            if config.get("master_status_error"):
+                eprint("ERROR 1064 (42000) at line 1: You have an error in your SQL syntax near 'MASTER STATUS'")
+                sys.exit(1)
             for row in config.get("master_status", ["mysql-bin.000009\t4321\t\t\t"]):
                 print(row)
         elif statement == "UNLOCK TABLES":

@@ -225,6 +225,39 @@ class ParsingTests(unittest.TestCase):
         lines.append("GRANT RELOAD, REPLICATION CLIENT ON *.* TO `mover`@`localhost`")
         self.assertEqual(sp.parse_global_privileges(lines), frozenset({"BACKUP_ADMIN", "RELOAD", "REPLICATION CLIENT"}))
 
+    def test_a_role_is_found_and_expanded(self) -> None:
+        lines = ["GRANT USAGE ON *.* TO `mover`@`localhost`", "GRANT `r1`@`%`, `r2`@`%` TO `mover`@`localhost`"]
+        self.assertEqual(sp.parse_role_grants(lines), ["`r1`@`%`", "`r2`@`%`"])
+        asked: list[str] = []
+
+        def query(sql: str) -> list[str]:
+            asked.append(sql)
+            return lines if len(asked) == 1 else ["GRANT BACKUP_ADMIN, RELOAD ON *.* TO `mover`@`localhost`", lines[1]]
+
+        grants = sp.effective_grants(query, "'mover'@'localhost'")
+        self.assertEqual(asked[1], "SHOW GRANTS FOR 'mover'@'localhost' USING `r1`@`%`, `r2`@`%`;")
+        self.assertEqual(sp.parse_global_privileges(grants), frozenset({"BACKUP_ADMIN", "RELOAD"}))
+
+    def test_a_grant_outside_the_design_is_stray(self) -> None:
+        lines = [
+            "GRANT USAGE ON *.* TO `mover`@`localhost`",
+            "GRANT BACKUP_ADMIN ON *.* TO `mover`@`localhost`",
+            "GRANT SELECT, LOCK TABLES ON `blog`.* TO `mover`@`localhost`",
+            "GRANT SELECT ON `performance_schema`.`log_status` TO `mover`@`localhost`",
+            "GRANT SELECT ON `other`.* TO `mover`@`localhost`",
+            "GRANT INSERT ON `blog`.`posts` TO `mover`@`localhost`",
+        ]
+        allowed = ["`blog`.*", "`performance_schema`.`log_status`"]
+        self.assertEqual(sp.stray_grants(lines, allowed), [lines[4], lines[5]])
+        self.assertEqual(sp.stray_grants(lines[:4], allowed), [])
+
+    def test_a_stray_grant_fails_control_four(self) -> None:
+        stray = sp.stray_grants(["GRANT SELECT ON `other`.* TO `mover`@`localhost`"], [])
+        verdict = sp.scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], stray)
+        self.assertFalse(verdict.passed)
+        self.assertIn("`other`.*", verdict.reason)
+        self.assertTrue(sp.scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], []).passed)
+
     def test_exit_codes(self) -> None:
         self.assertEqual(sp.exit_code({1: True, 2: True, 3: True, 4: True, 5: True, 6: True}, sabotaged=False), sp.EXIT_PASSED)
         for number in (1, 2, 3, 4, 5):
@@ -921,6 +954,46 @@ class TmpfsSourceTests(unittest.TestCase):
             result = sp.control_2(ctx)
         self.assertEqual(seen, {"scenario": "tmpfs-source", "snapshot": "tmpfs-source", "old_path": "tmpfs-source"})
         self.assertEqual(result.numbers[0], "NOTE")
+
+    def _control_three_events(self, sabotage: str | None) -> list[str]:
+        """Every dump or snapshot control 3 takes, in order, with `reader+` and
+        `reader-` around the ones taken while the long reader is held."""
+        import contextlib
+        import dataclasses
+        import unittest.mock as mock
+
+        events: list[str] = []
+
+        @contextlib.contextmanager
+        def reader(_ctx, _seconds):
+            events.append("reader+")
+            try:
+                yield
+            finally:
+                events.append("reader-")
+
+        sampler = mock.Mock(rows={("TABLE", "SHARED_READ", "GRANTED")}, samples=1, table_lock_samples=1)
+        ctx = dataclasses.replace(self._ctx(), sabotage=sabotage, source=mock.MagicMock())
+        with (
+            mock.patch.object(sp.time, "sleep"),
+            mock.patch.object(sp, "LockSampler", return_value=sampler),
+            mock.patch.object(sp, "long_reader", side_effect=reader),
+            mock.patch.object(sp, "_grant_old_path"),
+            mock.patch.object(sp, "_revoke_old_path"),
+            mock.patch.object(sp, "old_path_dump", side_effect=lambda _ctx: events.append("old-path dump")),
+            mock.patch.object(sp, "take_snapshot", side_effect=lambda _ctx, _name: events.append("snapshot")),
+        ):
+            sp.control_3(ctx)
+        return events
+
+    def test_control_three_under_the_old_path_takes_its_first_dump_under_a_long_reader_so_the_global_lock_cannot_go_unsampled(self) -> None:
+        self.assertEqual(
+            self._control_three_events("old-path"),
+            ["reader+", "old-path dump", "reader-", "old-path dump", "old-path dump"],
+        )
+
+    def test_control_three_without_sabotage_takes_snapshots_and_holds_no_reader(self) -> None:
+        self.assertEqual(self._control_three_events(None), ["snapshot"] * 10)
 
     def test_control_two_of_the_replication_probe_runs_both_phases_on_the_tmpfs_source_and_seeds_its_account_there(self) -> None:
         import unittest.mock as mock
