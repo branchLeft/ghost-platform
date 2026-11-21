@@ -10,9 +10,12 @@ import type { StepId } from './plan.js';
  * deployment configured for it:
  *
  * - `render-host-secrets`: `claim`, then `secrets`.
- * - `render-compose-file`: `stack`, which the host gives to the same judge that
- *   judges a stack delivered by the host's compose role, and writes only if
- *   every rule passes.
+ * - `render-compose-file`: `stack`, with parameters only. The host builds the
+ *   compose file itself from its own template, the claim's uid and ports and
+ *   these parameters, judges it, and writes it. The controller never sends
+ *   compose text and never an image pin: the first pin is written by
+ *   `branchleft-deploy`, after it has verified the image's attestation, in the
+ *   plan's `first-deploy` step.
  * - `create-app-host-slot`: `enable`, then `key`.
  *
  * Every step first asks the host how far the slug has got (`status`) and does
@@ -59,22 +62,44 @@ export interface EntryTransport {
   ): Promise<EntryReply>;
 }
 
+/** The uid and ports the host's `claim` gave a slug; the host's own numbers, never the register's. */
+export interface EntryClaim {
+  readonly uid: number;
+  readonly portA: number;
+  readonly portB: number;
+  readonly portHealth: number;
+}
+
+/** The three sizes the host maps to its own cpu, process and file caps. */
+export type StackSize = 'small' | 'standard' | 'large';
+
+/** A literal (no `$`), or a reference to a key of the tenant's secrets file. Never a secret value. */
+export type EnvironmentValue = string | number | boolean | { readonly secret: string };
+
+/**
+ * What a `stack` request may carry, and all of it: the host refuses any other key, a compose
+ * text and an image pin included. The adapter sends exactly these three fields.
+ */
+export interface StackParameters {
+  readonly size: StackSize;
+  readonly mail: boolean;
+  readonly environment: Readonly<Record<string, EnvironmentValue>>;
+}
+
 /**
  * What the verbs need that the plan's inputs, which carry names and register
  * values and never a secret, do not: the template and values of the tenant's
- * secrets file, the renderer's compose text and first image pin, and the
- * deploy key's public half. A deployment supplies them; each is read only when
- * the verb that needs it is about to be sent, and none is kept.
+ * secrets file, the stack's parameters, and the deploy key's public half. A
+ * deployment supplies them; each is read only when the verb that needs it is
+ * about to be sent, and none is kept. `stack` is given the host's claim, so
+ * anything that depends on the uid or a port uses the host's numbers.
  */
 export interface TenantEntryInputs {
   secrets(request: StepRequest): Promise<{
     readonly template: string;
     readonly values: Readonly<Record<string, string>>;
   }>;
-  stack(request: StepRequest): Promise<{
-    readonly composeText: string;
-    readonly imageEnvText: string;
-  }>;
+  stack(request: StepRequest, claim: EntryClaim): Promise<StackParameters>;
   deployKey(request: StepRequest): Promise<string>;
 }
 
@@ -88,6 +113,8 @@ export interface TenantEntryHostOptions {
 /** How far the host says a slug has got. */
 interface SlugStatus {
   readonly claimed: boolean;
+  /** The claim's numbers; present exactly when `claimed`. */
+  readonly claim: EntryClaim | null;
   readonly volumes: boolean;
   readonly secrets: boolean;
   readonly stack: boolean;
@@ -106,6 +133,22 @@ const WORD = /^[a-z][a-z-]{0,40}$/;
 
 const yes = (lines: ReadonlyMap<string, string>, key: string): boolean => lines.get(key) === 'yes';
 
+function claimOf(lines: ReadonlyMap<string, string>): EntryClaim {
+  const number = (key: string): number => {
+    const text = lines.get(key);
+    if (text === undefined || !/^[0-9]{1,6}$/.test(text)) {
+      throw new Error(`the host entry point's status carries no readable ${key}`);
+    }
+    return Number(text);
+  };
+  return {
+    uid: number('uid'),
+    portA: number('port_a'),
+    portB: number('port_b'),
+    portHealth: number('port_health'),
+  };
+}
+
 function parseStatus(reply: EntryReply): SlugStatus {
   const lines = new Map<string, string>();
   for (const line of reply.stdout.split('\n')) {
@@ -115,8 +158,10 @@ function parseStatus(reply: EntryReply): SlugStatus {
   if (!lines.has('claimed-here')) {
     throw new Error('the host entry point answered status with nothing the adapter can read');
   }
+  const claimed = yes(lines, 'claimed-here');
   return {
-    claimed: yes(lines, 'claimed-here'),
+    claimed,
+    claim: claimed ? claimOf(lines) : null,
     volumes: yes(lines, 'volumes'),
     secrets: yes(lines, 'secrets'),
     stack: yes(lines, 'stack'),
@@ -171,12 +216,17 @@ export class TenantEntryHost implements HostEntryPoint {
 
   private async renderComposeFile(request: StepRequest, slug: string): Promise<void> {
     const status = await this.status(slug);
-    if (!status.claimed || !status.secrets) {
+    if (!status.claimed || status.claim === null || !status.secrets) {
       throw new PermanentStepError('the secrets step is not done on the host; no stack is sent');
     }
     if (status.stack) return;
-    const { composeText, imageEnvText } = await this.options.inputs.stack(request);
-    await this.call('stack', slug, { compose_text: composeText, image_env_text: imageEnvText });
+    const parameters = await this.options.inputs.stack(request, status.claim);
+    // Exactly the three fields, picked here: whatever else a provider returned is not sent.
+    await this.call('stack', slug, {
+      size: parameters.size,
+      mail: parameters.mail,
+      environment: parameters.environment,
+    });
   }
 
   private async createAppHostSlot(request: StepRequest, slug: string): Promise<void> {
@@ -190,6 +240,15 @@ export class TenantEntryHost implements HostEntryPoint {
     if (status.slot) return;
     const publicKey = await this.options.inputs.deployKey(request);
     await this.call('key', slug, { public_key: publicKey }, [publicKey]);
+  }
+
+  /**
+   * The uid and ports the host gave a slug, read from its status, or null for a slug it never
+   * claimed. For a deployment's other steps (the edge's port, for one), which must use the host's
+   * numbers and not the register's.
+   */
+  async claimOf(slug: string): Promise<EntryClaim | null> {
+    return (await this.status(slug)).claim;
   }
 
   private async status(slug: string): Promise<SlugStatus> {

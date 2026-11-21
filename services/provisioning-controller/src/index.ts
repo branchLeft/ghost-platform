@@ -7,9 +7,13 @@ export type { CliIo } from './main.js';
 export { commandHostPorts, HOST_EXIT_PERMANENT } from './commandHost.js';
 export { ENTRY_EXIT, ENTRY_VERBS, TenantEntryHost } from './tenantEntryHost.js';
 export type {
+  EntryClaim,
   EntryReply,
   EntryTransport,
   EntryVerb,
+  EnvironmentValue,
+  StackParameters,
+  StackSize,
   TenantEntryHostOptions,
   TenantEntryInputs,
 } from './tenantEntryHost.js';

@@ -6,6 +6,7 @@ import {
   TenantEntryHost,
   executeOnboarding,
   planOnboarding,
+  type EntryClaim,
   type EntryReply,
   type EntryTransport,
   type EntryVerb,
@@ -13,6 +14,7 @@ import {
   type HostEntryPoint,
   type RecordedApproval,
   type RegisterEntry,
+  type StackParameters,
   type StepRequest,
   type TenantEntryInputs,
 } from '../../src/index.js';
@@ -38,8 +40,19 @@ const DEMO_APPROVAL: RecordedApproval = {
 const CANARY = 'EXAMPLE_SECRET_CANARY_7f3a';
 const TEMPLATE = 'GHOST_DB_PASSWORD=\nGHOST_OWNER_EMAIL=\n';
 const VALUES = { GHOST_DB_PASSWORD: CANARY, GHOST_OWNER_EMAIL: 'owner@example.invalid' };
-const COMPOSE = 'name: demo-tenant\nservices: {}\n';
-const PIN = `IMAGE=ghcr.io/branchleft/ghost-tenant@sha256:${'b'.repeat(64)}\n`;
+/** What the controller sends for the stack: parameters only, and a reference to a secret's name. */
+const PARAMETERS: StackParameters = {
+  size: 'standard',
+  mail: true,
+  environment: {
+    url: 'https://demo-tenant.sites.publicpress.co.uk',
+    database__connection__password: { secret: 'GHOST_DB_PASSWORD' },
+    mail__options__port: 587,
+    privacy__useGravatar: false,
+  },
+};
+/** The numbers the fake host hands out, which are not the register's (uid 30001, port 8101). */
+const CLAIM: EntryClaim = { uid: 30000, portA: 40000, portB: 40001, portHealth: 40002 };
 const KEY = `ssh-ed25519 ${'A'.repeat(68)}`;
 
 interface Sent {
@@ -53,14 +66,15 @@ const reply = (code: number, stdout = '', stderr = ''): EntryReply => ({ code, s
 /**
  * A stand-in for the host's entry point that keeps what the real program keeps (a marker, the
  * secrets file, the stack, the unit's enable link, the slot) and refuses by the real program's
- * words when a verb comes out of order. The judge is stood in by two rules: a compose text that
- * says `privileged` is refused, and a pin that is not the tenant image is refused.
+ * words when a verb comes out of order. It takes the real verb's request: exactly `size`, `mail`
+ * and `environment`, and it refuses a pin or a compose text by name. The judge is stood in by one
+ * rule: a reference to a key the secrets file does not hold is refused.
  */
 class FakeEntryPoint implements EntryTransport {
   readonly sent: Sent[] = [];
   private readonly claimed = new Set<string>();
   private readonly secrets = new Set<string>();
-  private readonly stacks = new Map<string, { compose: string; pin: string }>();
+  private readonly stacks = new Map<string, Readonly<Record<string, unknown>>>();
   private readonly enabled = new Set<string>();
   private readonly slots = new Set<string>();
   /** Per verb: how many leading requests get the host's busy answer. */
@@ -102,6 +116,10 @@ class FakeEntryPoint implements EntryTransport {
         0,
         [
           'claimed-here=yes',
+          `uid=${CLAIM.uid}`,
+          `port_a=${CLAIM.portA}`,
+          `port_b=${CLAIM.portB}`,
+          `port_health=${CLAIM.portHealth}`,
           'volumes=yes',
           `secrets=${yn(this.secrets.has(slug))}`,
           `stack=${yn(this.stacks.has(slug))}`,
@@ -113,7 +131,10 @@ class FakeEntryPoint implements EntryTransport {
     if (verb === 'claim') {
       if (this.claimed.has(slug)) return refuse('slug-in-use');
       this.claimed.add(slug);
-      return reply(0, 'claimed uid=30000 port_a=40000 port_b=40001 port_health=40002\n');
+      return reply(
+        0,
+        `claimed uid=${CLAIM.uid} port_a=${CLAIM.portA} port_b=${CLAIM.portB} port_health=${CLAIM.portHealth}\n`
+      );
     }
     if (!this.claimed.has(slug)) return refuse('not-claimed-here');
     if (verb === 'secrets') {
@@ -122,17 +143,22 @@ class FakeEntryPoint implements EntryTransport {
     }
     if (!this.secrets.has(slug)) return refuse('secrets-first');
     if (verb === 'stack') {
-      if (this.stacks.has(slug)) return refuse('stack-exists');
-      const compose = String(payload?.['compose_text']);
-      const pin = String(payload?.['image_env_text']);
-      if (compose.includes('privileged')) {
-        return refuse('judge-refused', `${slug}: service app is privileged\n`);
+      const keys = Object.keys(payload ?? {});
+      if (keys.includes('image_env_text')) return refuse('pin-not-accepted');
+      if (keys.includes('compose_text')) return refuse('compose-not-accepted');
+      if (keys.sort().join() !== 'environment,mail,size') return refuse('payload-keys');
+      const given = JSON.stringify(payload);
+      const held = this.stacks.get(slug);
+      if (held !== undefined) {
+        return JSON.stringify(held) === given
+          ? reply(0, 'compose.yml already in place\n')
+          : refuse('stack-exists');
       }
-      if (!pin.startsWith('IMAGE=ghcr.io/branchleft/ghost-tenant@sha256:')) {
-        return refuse('image-not-tenant');
+      if (given.includes('GHOST_MISSING')) {
+        return refuse('judge-refused', `${slug}: secrets file has no key GHOST_MISSING\n`);
       }
-      this.stacks.set(slug, { compose, pin });
-      return reply(0, 'compose.yml and image.env written\n');
+      this.stacks.set(slug, payload ?? {});
+      return reply(0, 'compose.yml written\n');
     }
     if (verb === 'enable') {
       this.enabled.add(slug);
@@ -149,18 +175,21 @@ class FakeEntryPoint implements EntryTransport {
 }
 
 class FakeInputs implements TenantEntryInputs {
-  compose = COMPOSE;
-  pin = PIN;
+  parameters: StackParameters = PARAMETERS;
+  /** Extra fields a careless provider might return beside the parameters. */
+  extra: Readonly<Record<string, unknown>> = {};
   readonly reads: string[] = [];
+  readonly claims: EntryClaim[] = [];
 
   async secrets(request: StepRequest) {
     this.reads.push(`secrets:${request.id}`);
     return { template: TEMPLATE, values: VALUES };
   }
 
-  async stack(request: StepRequest) {
+  async stack(request: StepRequest, claim: EntryClaim): Promise<StackParameters> {
     this.reads.push(`stack:${request.id}`);
-    return { composeText: this.compose, imageEnvText: this.pin };
+    this.claims.push(claim);
+    return { ...this.parameters, ...this.extra } as StackParameters;
   }
 
   async deployKey(request: StepRequest): Promise<string> {
@@ -252,11 +281,15 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
     expect(verbs.indexOf('stack')).toBeLessThan(verbs.indexOf('enable'));
   });
 
-  it('hands the host exactly the renderer text, the secrets payload and the public key', async () => {
-    const { entry, ports } = rig();
+  it('hands the host exactly the stack parameters, the secrets payload and the public key', async () => {
+    const { entry, inputs, ports } = rig();
     await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
     const payload = (verb: EntryVerb): unknown => entry.sent.find((s) => s.verb === verb)?.payload;
-    expect(payload('stack')).toEqual({ compose_text: COMPOSE, image_env_text: PIN });
+    expect(payload('stack')).toEqual(PARAMETERS);
+    // The host's claim, not the register's uid and port, is what the provider is given.
+    expect(inputs.claims).toEqual([CLAIM]);
+    expect(CLAIM.uid).not.toBe(DEMO.appHostUid);
+    expect(CLAIM.portA).not.toBe(DEMO.appHostPort);
     expect(payload('secrets')).toEqual({ template: TEMPLATE, values: VALUES });
     expect(payload('key')).toEqual({ public_key: KEY });
     expect(payload('claim')).toBeUndefined();
@@ -297,7 +330,10 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
 describe('TenantEntryHost: what stops the run', () => {
   it('stops at the stack when the host refuses it, by name, and never enables the unit', async () => {
     const { world, entry, inputs, ports } = rig();
-    inputs.compose = 'name: demo-tenant\nservices:\n  app:\n    privileged: true\n';
+    inputs.parameters = {
+      ...PARAMETERS,
+      environment: { ...PARAMETERS.environment, x: { secret: 'GHOST_MISSING' } },
+    };
     const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
 
     expect(result.status).toBe('stopped');
@@ -309,17 +345,52 @@ describe('TenantEntryHost: what stops the run', () => {
     expect(entry.has('demo-tenant')).toMatchObject({ stack: false, enabled: false, slot: false });
     const failed = world.state.records.find((r) => r.event === 'step-failed');
     expect(failed?.reason).toContain('tenant entry refused stack with judge-refused');
-    expect(failed?.reason).toContain('service app is privileged');
+    expect(failed?.reason).toContain('secrets file has no key GHOST_MISSING');
     // A refusal cannot be helped by trying again: one attempt.
     expect(entry.sent.filter((s) => s.verb === 'stack')).toHaveLength(1);
   });
 
-  it('refuses a first pin that is not the tenant image, by name', async () => {
+  it('never sends a compose text or an image pin, whatever a provider returns beside the parameters', async () => {
     const { entry, inputs, ports } = rig();
-    inputs.pin = `IMAGE=example.invalid/app@sha256:${'c'.repeat(64)}\n`;
+    inputs.extra = {
+      compose_text: 'name: x\nservices: {}\n',
+      image_env_text: `IMAGE=ghcr.io/branchleft/ghost-tenant@sha256:${'b'.repeat(64)}\n`,
+      volumes: ['/:/host'],
+      user: '0:0',
+    };
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    expect(result.status).toBe('complete');
+    const stack = entry.sent.find((s) => s.verb === 'stack');
+    expect(Object.keys(stack?.payload ?? {}).sort()).toEqual(['environment', 'mail', 'size']);
+    expect(JSON.stringify(entry.sent)).not.toContain('image_env_text');
+    expect(JSON.stringify(entry.sent)).not.toContain('compose_text');
+  });
+
+  it('stops by name when the host refuses a parameter, and tries once', async () => {
+    const { world, entry, ports } = rig();
+    entry.forced.set('stack', reply(ENTRY_EXIT.refused, '', 'refused: field-environment\n'));
     const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
     expect(result.status).toBe('stopped');
-    expect(entry.has('demo-tenant').stack).toBe(false);
+    expect(entry.sent.filter((s) => s.verb === 'stack')).toHaveLength(1);
+    const failed = world.state.records.find((r) => r.event === 'step-failed');
+    expect(failed?.reason).toContain('tenant entry refused stack with field-environment');
+  });
+
+  it('sends the same stack again after a lost reply and is told it is in place', async () => {
+    const { entry, ports } = rig();
+    const host = ports.hosts['app-host'];
+    await host.run(request('render-host-secrets'));
+    entry.forced.set(
+      'status',
+      reply(
+        0,
+        'claimed-here=yes\nuid=30000\nport_a=40000\nport_b=40001\nport_health=40002\nvolumes=yes\nsecrets=yes\nstack=no\nenabled=no\nslot=no\n'
+      )
+    );
+    await host.run(request('render-compose-file'));
+    await host.run(request('render-compose-file'));
+    expect(entry.sent.filter((s) => s.verb === 'stack')).toHaveLength(2);
+    expect(entry.has('demo-tenant').stack).toBe(true);
   });
 
   it('never enables a unit whose stack is not in place, even if the host would', async () => {
@@ -408,6 +479,27 @@ describe('TenantEntryHost: no secret value in what it says', () => {
     const text = JSON.stringify(world.state.records);
     expect(text).not.toContain(KEY);
     expect(text).toContain('refused key with unreadable');
+  });
+
+  it('treats a claimed slug whose status carries no uid or ports as a failure to retry', async () => {
+    const { entry, inputs, ports } = rig();
+    entry.forced.set('status', reply(0, 'claimed-here=yes\nvolumes=yes\nsecrets=yes\n'));
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    expect(result.status).toBe('stopped');
+    expect(inputs.reads).toEqual([]);
+    expect(entry.verbs()).toEqual([]);
+  });
+
+  it('gives a deployment the claim the host holds for a slug, and nothing for one never claimed', async () => {
+    const entry = new FakeEntryPoint();
+    const adapter = new TenantEntryHost({
+      transport: entry,
+      inputs: new FakeInputs(),
+      fallback: { run: async () => undefined },
+    });
+    expect(await adapter.claimOf('demo-tenant')).toBeNull();
+    await adapter.run(request('render-host-secrets'));
+    expect(await adapter.claimOf('demo-tenant')).toEqual(CLAIM);
   });
 
   it('treats a status it cannot read as a failure to retry, not as an empty host', async () => {
