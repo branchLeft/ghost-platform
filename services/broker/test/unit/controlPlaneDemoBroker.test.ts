@@ -44,6 +44,20 @@ describe('createTunnelBroker', () => {
     expect(await tunnel.status(SLOT)).toMatchObject({ phase: 'free' });
   });
 
+  it('freezes a running slot and says the evidence is detached', async () => {
+    const { tunnel } = await started();
+    await tunnel.reconcile(SLOT, descriptorForSlot(SLOT));
+    expect(await tunnel.freeze(SLOT)).toBe('detached');
+    // The slot is held, not reset: the reset is a separate, later call.
+    expect(await tunnel.status(SLOT)).toMatchObject({ phase: 'error' });
+    expect(await tunnel.reset(SLOT)).toBe('free');
+  });
+
+  it('says a slot that is free has nothing to freeze', async () => {
+    const { tunnel } = await started();
+    expect(await tunnel.freeze(SLOT)).toBe('nothing-to-freeze');
+  });
+
   it('a request signed with a key the broker does not know is refused, with no body read into the reply', async () => {
     const { broker: b } = await started();
     const stranger = createTunnelBroker({
@@ -56,6 +70,7 @@ describe('createTunnelBroker', () => {
       status: 401,
     });
     expect(await stranger.reset(SLOT)).toBe('refused');
+    expect(await stranger.freeze(SLOT)).toBe('refused');
   });
 
   it('a stale timestamp is refused by the replay window', async () => {
