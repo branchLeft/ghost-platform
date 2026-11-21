@@ -176,6 +176,19 @@ class SlotNamesDriftGuardTests(unittest.TestCase):
         self.assertEqual(bs.IMAGE_LOAD_PATH, f"{rss.IMAGE_STAGING_DIR}/{rss.IMAGE_STAGING_FILENAME}")
 
 
+class SlotImageNameDriftGuardTests(unittest.TestCase):
+    def test_the_slot_image_name_is_the_one_the_broker_pushes_it_under(self):
+        # Duplicated like every literal here (the wrapper is installed
+        # alone); this is what stops the two drifting apart silently.
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "services/broker/src/controlPlaneSlotImagePush.ts"
+        ).read_text(encoding="utf-8")
+        found = re.search(r"export const SLOT_IMAGE_REF = '([^']+)';", source)
+        self.assertIsNotNone(found)
+        self.assertEqual(bs.SLOT_IMAGE_NAME, found.group(1))
+
+
 class FakeSlotOps:
     def __init__(self, content_volume: str | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
@@ -2199,6 +2212,9 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             "branchleft_slot.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=self._own_uid)
         )
         self._patch.start()
+        # `load_image` passes docker's own output through to stdout.
+        self._stdout_patch = mock.patch("sys.stdout", io.StringIO())
+        self._stdout_patch.start()
         self._fakebin = self._path("fakebin")
         os.makedirs(self._fakebin)
         self._path_patch = mock.patch.dict(
@@ -2212,16 +2228,50 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             self._kill_recorded_group(pid_file)
         self._path_patch.stop()
         self._patch.stop()
+        self._stdout_patch.stop()
         self._tmp.cleanup()
 
     def _path(self, name: str) -> str:
         return os.path.join(self._tmp.name, name)
 
-    def _write_fake_docker(self, body: str) -> None:
+    # The id the fake `docker load` reports and the fake `docker image inspect`
+    # confirms; every call it answers is appended to `_calls_file()`.
+    LOADED_ID = "sha256:" + "ab" * 32
+
+    def _calls_file(self) -> str:
+        return self._path("docker-calls.txt")
+
+    def _write_fake_docker(
+        self,
+        body: str,
+        *,
+        reports: str | None = None,
+        inspect_prints: str | None = None,
+    ) -> None:
+        """A `docker` that answers `image inspect` and `tag` itself and runs
+        `body` for `load`, then prints `reports` (default: one unnamed image
+        id, as `docker save <digest>` leaves it; `""` prints nothing).
+        """
+        reported = f"Loaded image ID: {self.LOADED_ID}" if reports is None else reports
+        inspected = self.LOADED_ID if inspect_prints is None else inspect_prints
         script = self._path("fakebin/docker")
         with open(script, "w", encoding="ascii") as handle:
-            handle.write("#!/bin/sh\n" + body)
+            handle.write(
+                "#!/bin/sh\n"
+                f'echo "$@" >> {self._calls_file()}\n'
+                'case "$1" in\n'
+                f"  image) echo '{inspected}'; exit 0;;\n"
+                "  tag) exit 0;;\n"
+                "esac\n" + body + (f"printf '%s\\n' '{reported}'\n" if reported else "")
+            )
         os.chmod(script, 0o755)
+
+    def _docker_calls(self) -> list[str]:
+        try:
+            with open(self._calls_file(), "r", encoding="ascii") as handle:
+                return handle.read().splitlines()
+        except FileNotFoundError:
+            return []
 
     def _pid_file(self, name: str = "docker.pid") -> str:
         pid_file = self._path(name)
@@ -2366,13 +2416,15 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         with mock.patch("branchleft_slot.subprocess.Popen", wraps=subprocess.Popen) as popen:
             bs.RealSlotOps().load_image(path)
 
-        popen.assert_called_once()
+        # The first spawn is the load; the id check and the tag that follow
+        # (`subprocess.run` goes through `Popen`) are later calls.
+        load_call = popen.call_args_list[0]
         self.assertEqual(
-            popen.call_args.args[0],
+            load_call.args[0],
             ["timeout", "--signal=KILL", str(bs.IMAGE_LOAD_TIMEOUT_SECONDS), "docker", "load"],
         )
-        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.PIPE)
-        self.assertTrue(popen.call_args.kwargs.get("start_new_session"))
+        self.assertIs(load_call.kwargs["stdin"], subprocess.PIPE)
+        self.assertTrue(load_call.kwargs.get("start_new_session"))
 
     @_NEEDS_TIMEOUT
     def test_the_timeout_is_read_when_the_load_starts_not_when_the_module_is_imported(self):
@@ -2383,7 +2435,7 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             with mock.patch("branchleft_slot.subprocess.Popen", wraps=subprocess.Popen) as popen:
                 bs.RealSlotOps().load_image(path)
 
-        self.assertIn("7", popen.call_args.args[0])
+        self.assertIn("7", popen.call_args_list[0].args[0])
 
     def test_refuses_a_symlink_at_the_exact_path_without_following_it(self):
         real_target = self._path("real.tar")
@@ -2438,6 +2490,77 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             bs.RealSlotOps().load_image(path)
 
         self.assertEqual(caught.exception.returncode, 1)
+
+    # `docker save <digest>` leaves the loaded image unnamed, and
+    # `name@sha256:<digest>` does not resolve for an unnamed image, so `load`
+    # tags the loaded image. Reasons: branchleft_slot.md#loaded-image-is-tagged-by-its-id.
+    @_NEEDS_TIMEOUT
+    def test_the_loaded_image_is_tagged_with_the_slot_image_name_by_its_own_id(self):
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\n")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            bs.RealSlotOps().load_image(path)
+
+        self.assertEqual(
+            self._docker_calls(),
+            [
+                "load",
+                f"image inspect --format {{{{.Id}}}} {self.LOADED_ID}",
+                f"tag {self.LOADED_ID} {bs.SLOT_IMAGE_NAME}:{self.LOADED_ID.replace(':', '-')}",
+            ],
+        )
+
+    @_NEEDS_TIMEOUT
+    def test_what_docker_load_printed_still_reaches_the_caller(self):
+        # `services/broker/src/plugins/dockerImageLoader.ts` reads the
+        # `Loaded image ID:` line from this process's stdout.
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\n")
+        out = io.StringIO()
+
+        with contextlib.redirect_stdout(out):
+            bs.RealSlotOps().load_image(path)
+
+        self.assertEqual(out.getvalue().strip(), f"Loaded image ID: {self.LOADED_ID}")
+
+    def _assert_refused_and_not_tagged(self, **fake: str) -> None:
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\n", **fake)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(bs.RefusedImage):
+                bs.RealSlotOps().load_image(path)
+        self.assertFalse([c for c in self._docker_calls() if c.startswith("tag ")])
+
+    @_NEEDS_TIMEOUT
+    def test_a_load_that_reports_no_image_id_is_refused_and_not_tagged(self):
+        self._assert_refused_and_not_tagged(reports="")
+
+    @_NEEDS_TIMEOUT
+    def test_a_named_image_is_refused_and_not_tagged(self):
+        self._assert_refused_and_not_tagged(reports="Loaded image: ghcr.io/branchleft/ghost-tenant:latest")
+
+    @_NEEDS_TIMEOUT
+    def test_two_images_in_one_archive_are_refused_and_not_tagged(self):
+        other = "sha256:" + "cd" * 32
+        self._assert_refused_and_not_tagged(
+            reports=f"Loaded image ID: {self.LOADED_ID}\nLoaded image ID: {other}"
+        )
+
+    @_NEEDS_TIMEOUT
+    def test_an_id_that_is_not_sha256_and_64_hex_is_refused_and_not_tagged(self):
+        for bad in (
+            "Loaded image ID: sha256:abc",
+            "Loaded image ID: sha256:" + "AB" * 32,
+            "Loaded image ID: " + "ab" * 32,
+            "Loaded image ID: sha256:" + "ab" * 32 + " ; rm -rf /",
+        ):
+            with self.subTest(bad=bad):
+                self._assert_refused_and_not_tagged(reports=bad)
+
+    @_NEEDS_TIMEOUT
+    def test_an_image_whose_own_id_is_another_value_is_refused_and_not_tagged(self):
+        self._assert_refused_and_not_tagged(inspect_prints="sha256:" + "cd" * 32)
 
     def test_refuses_a_fifo_at_the_exact_path_without_blocking(self):
         # Without O_NONBLOCK, root's own open(2) on a fifo blocks until a
