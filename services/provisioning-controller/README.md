@@ -100,8 +100,7 @@ next check.
 built against: read a demo, ask for the Essentials tier or open the Professional
 enquiry, list the requests waiting on the owner, approve one, and read a
 tenant. It is registered in `speckify.yaml` as `provisioning-api`. Nothing serves
-it for real yet; the executor above is not wired to HTTP, and the real service is
-a later waypoint's. The spec itself settles how a demo is named, the two
+it but the service in Part 4; the executor above is not wired to HTTP. The spec itself settles how a demo is named, the two
 credentials, and what Approve records.
 
 - **Generated client and server.** `src/generated/` is Speckify's output,
@@ -137,6 +136,7 @@ credentials, and what Approve records.
   Approving a request finishes provisioning at once (the tenant is `live`, with
   a placeholder invoice reference and hostname); `createMock({ settleOnApprove: false })`
   holds it at `provisioning` until `store.settle` is called.
+
 - **What the generated server does not do.** It validates the path, query and
   body before any handler runs, so a request that is both invalid and
   unauthenticated is answered 400, not 401. It does not enforce
@@ -150,6 +150,84 @@ credentials, and what Approve records.
   right, the wrong and no credential, so a renamed route or an operation the mock
   lacks fails. `test/unit/provisioningMock.test.ts` runs the journey through the
   generated client.
+
+## Part 4: the real service
+
+`src/service/` is the contract served for real: the generated `createServer`
+over the same rules the mock has (`src/service/store.ts`, which the mock also
+uses), with these differences. The mock is for tests and is not in the image;
+the service is.
+
+- **Credentials are files, read on every call.** `PROVISIONING_OWNER_CREDENTIAL_FILE`
+  holds the owner console's credential; `PROVISIONING_TENANT_CREDENTIALS_FILE`
+  holds lines of `<tenant uuid>=<credential>`, the file format the portal reads
+  (`PORTAL_PROVISIONING_CREDENTIALS_FILE`), so one file can serve both. A credential under 16
+  characters, a credential shared by two tenants or equal to the owner's, an empty or
+  malformed file or a missing one means no credential is valid: every call answers 401
+  and the problem is logged as a code, never a value. A credential the owner places or
+  changes takes effect on the next call. The checks are `src/service/auth.ts`: a tenant
+  credential on an owner call, the owner's on a tenant call and one tenant's on another's
+  path are each 403, and nothing a tenant presents lets it past its own paths.
+- **Tenants come from a register of demos** (`PROVISIONING_DEMOS_FILE`): `{"demos":
+[{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
+  never in the repository, refused if other users can write it, and looked at again
+  whenever the file changes. Until a tenant is promoted its demo is what the register says;
+  after, the service's own record is. A database adapter for the demo register is later work.
+- **State survives a restart.** `PROVISIONING_STATE_DIR` holds `state.json` (replaced whole by
+  a rename after the new content is on disk, mode 0600, refused at start if damaged,
+  linked or readable by others) and `approvals.json`, the approval ledger in the shape
+  `FileApprovalLedger` reads, so the executor can be given an approval the console recorded.
+  A change that cannot be written down is undone and answered 500.
+- **Approve starts the move and does not finish it.** The tenant is `essentials` in state
+  `provisioning` and the demo is `PROMOTING` until the executor, which is not wired to this
+  service, says otherwise. `invoice_ref` stays null until something raises the invoice.
+- **Run it** from this directory after `pnpm run build`, with the four paths and
+  `LISTEN_HOST` (loopback by default; the container sets `0.0.0.0` and publishes no
+  port): `PROVISIONING_STATE_DIR=... PROVISIONING_DEMOS_FILE=... pnpm run service`. It
+  answers `GET /healthz` with no credential. `contract/smoke_service.py` does this
+  from files of its own, walks the journey, restarts it and checks it kept its state.
+- **Seen on the real portal** (the done check of branchLeft/workspace#3818): sign in to the
+  tenant portal as a demo tenant's admin; `/demo` shows the register's address and
+  state; `/essentials` asks and shows pending; in the owner console `/requests` lists the
+  request and Approve takes it off the queue; the portal's `/site` then shows `provisioning`
+  and the tier; a second Approve changes nothing. The service's log shows no problem code.
+- **Not here**: the host programs the executor runs, wiring the executor to an approval,
+  settling a tenant to `live`, and a source for the register other than a file.
+
+## The SSH transport to a tenant host
+
+`SshEntryTransport` (`src/sshEntryTransport.ts`) is the real transport behind a host
+adapter's `EntryTransport` port: `send(verb, slug, payload?)` runs one ssh client, which
+runs the host's forced command `VERB SLUG` once, with the payload as one JSON object on
+standard input. It is not wired into `main` or `runConfig` yet.
+
+- **Argument vector only.** `child_process.spawn` with `shell: false`; the verb is checked
+  against a closed list and the slug against the register's slot pattern before a process
+  starts. `BatchMode=yes` and `StrictHostKeyChecking=yes` are fixed, the only known-hosts
+  file is the pinned one, `-F` always names a file (`/dev/null` unless configured).
+- **Configuration, never a request.** Key file, known-hosts file, ssh config file, the jump
+  chain (ops1, edge1, edge-t) and the target account and host come from `SshEntryConfig`;
+  every path and name is validated when the transport is made.
+- **Bounded.** A timeout kills the client; each output stream has a byte bound that kills
+  it too; the payload has one. The client inherits only `PATH`, `HOME` and `LANG`.
+- **Result.** The host program's own exit code and streams are returned for the adapter to
+  map (0 done, 1 refused, 2 usage, 3 busy, 4 failed). A call that never reached the program
+  is thrown: `SshTransportError` (retryable: timeout, connection, signal) or
+  `SshTransportRefusedError`, a `PermanentStepError` (bad request, client cannot start,
+  host key not matching the pin, output over the bound). Remote text is never put in an
+  error message.
+- **Hops need an ssh config file.** ssh takes a hop's key and host-key settings from its
+  config file, not from the command line, so a configuration with `jumpHops` and no
+  `sshConfigFile` is refused (`invalid-config`), as is one with no `jumpHops` list at all.
+  `hopConfigProblems(config)` asks the real client (`ssh -G`) what it applies to each hop and
+  names any setting that is not strict host keys, batch mode, the pinned known-hosts file
+  alone, identities only and the key; the first live wiring runs it before a send.
+- **Argument vector.** `-F CONFIG -o BatchMode=yes -o StrictHostKeyChecking=yes
+-o UserKnownHostsFile=KNOWN -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
+-o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ConnectTimeout=N -T
+-i KEY [-p PORT] [-J HOPS] USER@HOST VERB SLUG`; the payload is one JSON object on standard
+  input. Each `send` runs exactly one client, which runs the host's forced command once.
+- **Not here**: the key and known-hosts files themselves.
 
 ## Running it
 

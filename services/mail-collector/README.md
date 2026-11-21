@@ -14,9 +14,11 @@ authenticated SMTP submission, and acks it back. See
 | `COLLECTOR_DESCRIPTOR_REFRESH_MS` | no (default `5000`) | How often the descriptor directory is re-read. |
 | `COLLECTOR_DESCRIPTOR_MAX_STALENESS_MS` | no (default `60000`) | Past this age, the drain list is treated as empty rather than as its last good read. |
 | `COLLECTOR_DEMO_MAIL_DOMAIN` | for a demo host | The platform's shared demo mail domain: the one domain a demo host's header From may carry (a demo descriptor holds a local part only). Unset, the mail of every demo host is held, unsent and unacked, and the collector logs `demo_mail_domain_not_set` at start-up. See the header From scope section. |
-| `COLLECTOR_DEMO_SLOT_CEILING` | no (default `20`) | A demo slot's own ceiling, in messages per window, when its descriptor's `mail.ceiling` names none. See Demo mail containment. |
-| `COLLECTOR_DEMO_ESTATE_CEILING` | no (default `200`) | The hard cap every demo slot shares, in messages per window. |
-| `COLLECTOR_DEMO_CEILING_WINDOW_MS` | no (default `86400000`, one day) | The rolling window both demo ceilings count in. |
+| `COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING` | no (default `20`) | A demo slot's own ceiling for sign-in (transactional) mail, in messages per window, when its descriptor's `mail.ceiling` names none. A positive whole number: anything else refuses start-up. Counted apart from newsletters. See Demo mail containment. |
+| `COLLECTOR_DEMO_SLOT_BULK_CEILING` | no (default `20`) | The same for newsletter (bulk) mail: a demo slot's own ceiling when its descriptor's `mail.ceiling` names none. A positive whole number. Counted apart from sign-in mail. |
+| `COLLECTOR_DEMO_ESTATE_TRANSACTIONAL_CEILING` | no (default `100`) | The hard cap every demo slot shares for sign-in (transactional) mail, in messages per window. A positive whole number. |
+| `COLLECTOR_DEMO_ESTATE_BULK_CEILING` | no (default `100`) | The hard cap every demo slot shares for newsletter (bulk) mail, in messages per window. A positive whole number. |
+| `COLLECTOR_DEMO_CEILING_WINDOW_MS` | no (default `86400000`, one day) | The rolling window every demo ceiling counts in. |
 | `COLLECTOR_DEMO_CEILING_STATE_PATH` | no (beside `COLLECTOR_DEDUPE_STATE_PATH`, as `demo-ceilings.json`) | File the counted places are kept in, so a restart does not hand every demo slot a fresh ceiling. With neither this nor the dedupe path set, a restart forgets them and the collector logs `demo_ceilings_not_persistent` at start-up. |
 | `COLLECTOR_SHIM_PORT` | no (default `8080`) | The HTTP port every host's mailgun-shim listens on for its drain surface — a deployment convention, combined with the descriptor's own `appHostIp`. |
 | `COLLECTOR_DRAIN_TOKEN` | yes | The drain endpoint's shared bearer credential. One value across every host. |
@@ -171,17 +173,26 @@ the header From check and before any target sees it:
    verified recipient. A refused recipient is acked, never sent, and reported
    to its spool as a permanent failure (the existing outcome route), so Ghost
    shows it instead of the message vanishing. It takes no place under a ceiling.
-3. **Two ceilings, not one** (`demoCeilings.ts`). Per slot: the descriptor's
-   `mail.ceiling`, or `COLLECTOR_DEMO_SLOT_CEILING` when it names none. Per
-   estate: `COLLECTOR_DEMO_ESTATE_CEILING`, shared by every demo slot. Both
-   count messages in a rolling window and both are keyed on the slot's
+3. **Two ceilings, counted per mail class** (`demoCeilings.ts`). Per slot: the
+   descriptor's `mail.ceiling`, or `COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING` /
+   `COLLECTOR_DEMO_SLOT_BULK_CEILING` when it names none. Per estate:
+   `COLLECTOR_DEMO_ESTATE_TRANSACTIONAL_CEILING` /
+   `COLLECTOR_DEMO_ESTATE_BULK_CEILING`, shared by every demo slot. Sign-in
+   mail (transactional, no email id) and newsletters (bulk, an email id) each
+   have their own count at both levels, so a campaign that fills the newsletter
+   ceiling stops no sign-in link and sign-in traffic never spends a newsletter
+   place. A descriptor's `mail.ceiling` applies to each class on its own. All
+   count messages in a rolling window and are keyed on the slot's
    descriptor slug, never on a client address, so there is no address-keyed
    path to reach over IPv6. One slot filling its ceiling stops no other slot;
-   the estate ceiling stops all of them. A message that finds a ceiling full is
+   the estate ceiling of a class stops every slot's mail of that class. A
+   message that finds a ceiling full is
    acked, never sent, and reported to its spool as a temporary failure, so the
    owner's own address is never suppressed for it. A message id that already
-   holds a place takes no second one, so a re-offer after a lost ack or an mx1
-   failure never spends the ceiling twice.
+   holds a place of its class takes no second one, so a re-offer after a lost
+   ack or an mx1 failure never spends the ceiling twice. A counted place
+   written before places had a class is counted against both classes until it
+   leaves the window.
 
 A demo's mail is held, never sent, when the loop is built without the
 containment. Logs name a reason and a message id only: no address, subject or

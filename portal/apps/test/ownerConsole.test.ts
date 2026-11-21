@@ -10,7 +10,11 @@ import {
   TENANT_B,
   type Fixture,
 } from '../../data/test/helpers.js';
-import { demoStateEvent, supportAccessRequest } from '../../data/src/schema.js';
+import {
+  demoStateEvent,
+  supportAccessRequest,
+  tenantErasureRequest,
+} from '../../data/src/schema.js';
 import { ProvisionerDb } from 'ghost-platform-portal-data/provisioner';
 import { createOwnerConsole } from '../src/console/app.js';
 import { Browser, serve, type Running } from './browser.js';
@@ -68,6 +72,7 @@ beforeAll(async () => {
       db: {
         listHealth: () => (failing ? Promise.reject(new Error('down')) : db.listHealth()),
         listSupportRequests: () => db.listSupportRequests(),
+        listErasureRequests: () => db.listErasureRequests(),
         waitingCount: () => db.waitingCount(),
         markSupportRequestDealtWith: (tenantId: string) => db.markSupportRequestDealtWith(tenantId),
       } as OwnerDb,
@@ -131,6 +136,35 @@ describe('the owner console', () => {
       expect(await ownerData.listSupportRequests()).toHaveLength(2);
     } finally {
       await fixture.adminDb.delete(supportAccessRequest);
+    }
+  });
+
+  it('lists every tenant erasure request with its status, waiting ones counted, and no button to act on one', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    expect((await browser.request('/')).body).toContain('ERASURE_REQUESTS_WAITING 0');
+    await fixture.adminDb
+      .insert(tenantErasureRequest)
+      .values({ tenantId: TENANT_A, requestedAt: new Date('2027-01-14T09:00:00Z') });
+    await fixture.adminDb.insert(tenantErasureRequest).values({
+      tenantId: TENANT_B,
+      requestedAt: new Date('2027-01-13T09:00:00Z'),
+      status: 'key_destroyed',
+      keyDestroyedAt: new Date('2027-01-15T09:00:00Z'),
+    });
+    try {
+      const page = await browser.request('/');
+      expect(page.body).toContain('ERASURE_REQUESTS_WAITING 1');
+      const queue = page.body.slice(page.body.indexOf('ERASURE_REQUESTS_HEADING'));
+      // Waiting first, then the recorded one with its moment.
+      expect(queue.indexOf(TENANT_A)).toBeLessThan(queue.indexOf(TENANT_B));
+      expect(queue).toContain('ERASURE_STATUS_REQUESTED');
+      expect(queue).toContain('ERASURE_STATUS_KEY_DESTROYED');
+      expect(queue).toContain('2027-01-15T09:00:00.000Z');
+      expect(queue).not.toContain('<form');
+      expect(queue).not.toContain('<button');
+    } finally {
+      await fixture.adminDb.delete(tenantErasureRequest);
     }
   });
 

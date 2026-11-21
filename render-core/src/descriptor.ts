@@ -223,10 +223,24 @@ export interface SafetySpec {
    * environment.md#verdict-source.
    */
   readonly verdictSource?: VerdictSourceKind;
+  /**
+   * The inbound listener the safety service dials on the host end. Names the
+   * port and that the host end serves its own certificate. It carries no
+   * address (the private address is a host-side matter) and no key or
+   * certificate path. Only with `verdictSource: 'production'`. See
+   * environment.md#verdict-source.
+   */
+  readonly inbound?: VerdictInboundSpec;
 }
 
 /** The values `safety.verdictSource` may take. See SafetySpec. */
 export type VerdictSourceKind = 'none' | 'production';
+
+/** The values `safety.inbound` names. See SafetySpec. */
+export interface VerdictInboundSpec {
+  readonly port: number;
+  readonly tls: 'pinned-private';
+}
 
 /**
  * The break-glass triple: the broker's Ed25519 public key, the tenant name a

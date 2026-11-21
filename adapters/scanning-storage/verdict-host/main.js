@@ -13,7 +13,9 @@ async function main() {
   const config = readConfig(process.env);
   const host = await startVerdictHost(config, { egressRefused: egress.refusedCount });
   const { address, port } = host.inbound.address;
-  console.log(`VERDICT_HOST_READY inbound=${address}:${port}`);
+  // The pin is public data; nothing else about the identity is printed.
+  const pin = host.tlsPin === undefined ? '' : ` tls_pin=${host.tlsPin}`;
+  console.log(`VERDICT_HOST_READY inbound=${address}:${port}${pin}`);
   const stop = () => {
     host.stop().then(
       () => process.exit(0),

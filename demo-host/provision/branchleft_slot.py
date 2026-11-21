@@ -79,6 +79,20 @@ IMAGE_LOAD_CHUNK_BYTES = 1024 * 1024
 # negative signal number `Popen` reports for that same death.
 _IMAGE_LOAD_TIMEOUT_STATUSES = frozenset({124, 137, -9})
 _IMAGE_LOAD_COMMAND = ["docker", "load"]
+# `docker load` prints one short line per image, so this bounds what is read
+# back and passed through; docker blocks (and the timeout kills it) well
+# before a larger answer could reach this process.
+IMAGE_LOAD_OUTPUT_MAX_BYTES = 65536
+IMAGE_INSPECT_TIMEOUT_SECONDS = 60
+
+# The name a pushed slot image is given on the host. Mirrors `SLOT_IMAGE_REF`
+# in `services/broker/src/controlPlaneSlotImagePush.ts`, the name the pushed
+# digest is pinned under (`name@sha256:<digest>`), duplicated like every
+# literal here. `docker save <digest>` leaves the loaded image unnamed, and a
+# `name@digest` reference does not resolve for an unnamed image, so `load`
+# tags it. Reasons: branchleft_slot.md#loaded-image-is-tagged-by-its-id.
+SLOT_IMAGE_NAME = "ghcr.io/branchleft/ghost-tenant"
+_LOADED_ID_LINE = re.compile(r"Loaded image ID: (sha256:[0-9a-f]{64})")
 
 # Where a slot's own management state lives, and the systemd unit name
 # shape LLD-2 §02 names directly ("systemctl start|stop the corresponding
@@ -525,11 +539,13 @@ class InvalidInvocation(ValueError):
 
 class RefusedImage(ValueError):
     """Raised by `RealSlotOps.load_image` when the file at `IMAGE_LOAD_PATH`
-    fails its root-side verification at the moment this process opens it --
-    a distinct failure from `InvalidInvocation`, which is about argv shape
-    and never looks at the filesystem. `parse_invocation` accepting `load`
-    says only that the *argument* was the one legal literal; this is what
-    says the *file* behind it, right now, was not what `load` may load.
+    fails its root-side verification at the moment this process opens it, or
+    when what `docker load` made of it is not one unnamed image whose own id
+    can be tagged -- a distinct failure from `InvalidInvocation`, which is
+    about argv shape and never looks at the filesystem. `parse_invocation`
+    accepting `load` says only that the *argument* was the one legal literal;
+    this is what says the *file* behind it, right now, was not what `load`
+    may load.
     """
 
 
@@ -608,9 +624,10 @@ class SlotOps(Protocol):
     def load_image(self, path: str) -> None: ...
 
 
-def _stream_checked_bytes_into_docker_load(fd: int, expected_bytes: int) -> None:
+def _stream_checked_bytes_into_docker_load(fd: int, expected_bytes: int) -> bytes:
     """Runs `docker load` under `timeout` in its own session and feeds it
-    the first `expected_bytes` bytes of `fd`, then reports how it ended.
+    the first `expected_bytes` bytes of `fd`, then reports how it ended and
+    returns what it printed (at most `IMAGE_LOAD_OUTPUT_MAX_BYTES`).
 
     Raises:
         RuntimeError: `fd` ended early, or docker exited 0 before reading it all.
@@ -623,9 +640,11 @@ def _stream_checked_bytes_into_docker_load(fd: int, expected_bytes: int) -> None
     proc = subprocess.Popen(
         ["timeout", "--signal=KILL", str(timeout_seconds), *_IMAGE_LOAD_COMMAND],
         stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         start_new_session=True,
     )
     stdin = cast(IO[bytes], proc.stdin)
+    stdout = cast(IO[bytes], proc.stdout)
     try:
         pipe_broke = _write_checked_bytes(proc, stdin.fileno(), fd, expected_bytes)
         if not pipe_broke:
@@ -634,12 +653,69 @@ def _stream_checked_bytes_into_docker_load(fd: int, expected_bytes: int) -> None
     except BaseException:
         if proc.returncode is None:
             _kill_process_group_and_reap(proc)
+        stdout.close()
         raise
     finally:
         stdin.close()
-    if returncode == 0 and pipe_broke:
-        raise RuntimeError("docker load exited 0 without reading the whole archive")
-    _raise_for_docker_exit(returncode, time.monotonic() - started, timeout_seconds)
+    try:
+        if returncode == 0 and pipe_broke:
+            raise RuntimeError("docker load exited 0 without reading the whole archive")
+        _raise_for_docker_exit(returncode, time.monotonic() - started, timeout_seconds)
+        return stdout.read(IMAGE_LOAD_OUTPUT_MAX_BYTES)
+    finally:
+        stdout.close()
+
+
+def _loaded_image_id(printed: bytes) -> str:
+    """The one id `docker load` reported, or `RefusedImage`. An image saved by
+    its digest loads unnamed and is reported as exactly one `Loaded image ID:`
+    line; a named image, several images, or anything else is not what the
+    signed push sends and is never tagged.
+    """
+    try:
+        lines = [line.strip() for line in printed.decode("utf-8").splitlines() if line.strip()]
+    except UnicodeDecodeError as exc:
+        raise RefusedImage("refused: docker load printed something that is not text") from exc
+    matches = [_LOADED_ID_LINE.fullmatch(line) for line in lines]
+    if len(lines) != 1 or matches[0] is None:
+        raise RefusedImage(
+            f"refused: docker load did not report exactly one unnamed image id "
+            f"({len(lines)} lines, first {lines[0][:80]!r})"
+            if lines
+            else "refused: docker load did not report an image id"
+        )
+    return matches[0].group(1)
+
+
+def _tag_loaded_image(image_id: str) -> str:
+    """Gives the image `image_id` the name `SLOT_IMAGE_NAME`, as a tag of its
+    own digest, so `SLOT_IMAGE_NAME@<image_id>` resolves, and returns that
+    tag. Only an image whose own id, as the engine reports it now, IS
+    `image_id` is tagged. A tag per digest, never a shared one, so a later
+    load cannot take the name away from an image an earlier one left running.
+    The tag is local: no registry is contacted.
+
+    Raises:
+        RefusedImage: the engine's own id for it is another value.
+        subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError:
+            the engine could not answer or tag.
+    """
+    shown = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", image_id],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=IMAGE_INSPECT_TIMEOUT_SECONDS,
+    ).stdout.strip()
+    if shown != image_id:
+        raise RefusedImage(f"refused: the image loaded as {image_id} reports its own id as {shown[:80]!r}")
+    tag = f"{SLOT_IMAGE_NAME}:{image_id.replace(':', '-')}"
+    subprocess.run(
+        ["docker", "tag", image_id, tag],
+        check=True,
+        timeout=IMAGE_INSPECT_TIMEOUT_SECONDS,
+    )
+    return tag
 
 
 def _write_checked_bytes(
@@ -759,9 +835,14 @@ class RealSlotOps:
                     f"refused: {path!r} is owned by uid {info.st_uid}, not the "
                     f"{BROKER_USER!r} account (uid {broker_uid})"
                 )
-            _stream_checked_bytes_into_docker_load(fd, info.st_size)
+            printed = _stream_checked_bytes_into_docker_load(fd, info.st_size)
         finally:
             os.close(fd)
+        # What docker printed goes to the caller as it always did: the broker
+        # reads the `Loaded image ID:` line from it.
+        sys.stdout.write(printed.decode("utf-8", errors="replace"))
+        sys.stdout.flush()
+        _tag_loaded_image(_loaded_image_id(printed))
 
     @staticmethod
     def _read_compose_text(slot_dir: str) -> str | None:

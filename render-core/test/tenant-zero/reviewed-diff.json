@@ -124,11 +124,14 @@
       "settings.codeinjection_head",
       "settings.codeinjection_foot",
       "settings.codeInjectionExplainer",
+      "settings.footerCredit.text",
+      "settings.footerCredit.url",
+      "settings.footerCredit.keepGhostCredit",
       "settings.heading_font",
       "settings.body_font",
       "settings.social_web"
     ],
-    "reason": "Ghost settings the render core pins (code injection blocked and empty, fonts on Theme default so no page requests a third-party font host, social web off); 5.0.0 rendered no settings file, so the running values can only be read from Ghost admin."
+    "reason": "Ghost settings the render core pins (code injection blocked and empty, fonts on Theme default so no page requests a third-party font host, social web off, and the default footer credit as placeholders until the owner supplies the copy); 5.0.0 rendered no settings file, so the running values can only be read from Ghost admin."
   },
   {
     "id": "stop-grace-period",

@@ -16,6 +16,11 @@ bin/
 # breaks the pin.
 widgets/dist/
 
+# The vendored pdq-ts build the scanning adapter hashes pictures with. Its bytes
+# are pinned by sha256 in PIN.json and a test holds them to it: reformatting
+# them breaks the pin.
+adapters/scanning-storage/src/pdq-ts/
+
 # Vendored third-party Kalotyp bundle (vendor/kalotyp/README.md). Pinned by
 # sha256 in vendor/kalotyp/kalotyp.sha256 and checked at image build: any
 # reformatting changes the bytes and breaks the pin.
@@ -38,3 +43,8 @@ services/provisioning-controller/src/generated/
 # renderer's output by render-core/test/spool.golden.test.ts. Prettier would
 # re-quote its healthcheck line and the test would fail.
 render-core/test/golden/mail-spool-compose.demo1.yml
+
+# The theme footer-credit partial (themes/footer-credit/) is one line of markup
+# copied into upstream themes whose own templates Prettier does not format;
+# its glimmer pass strips the final newline the end-of-file hook then restores.
+themes/footer-credit/*.hbs
