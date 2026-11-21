@@ -109,7 +109,7 @@ describe('the aws-chunked decoder', () => {
       good.replace('9\r\n', '9;chunk-signature=ab\r\n'),
       good.replace('9\r\n', 'zz\r\n'),
       good.replace('9\r\n', '9\n'),
-      good.replace('\r\n0\r\n', '\r\n0\r\n').replace(/0\r\nx-amz.*$/s, '0\r\n\r\n'),
+      good.replace(/0\r\nx-amz.*$/s, '0\r\n\r\n'),
       good.slice(0, 14),
       good.replace('123456789\r\n', '123456789XY'),
     ]) {

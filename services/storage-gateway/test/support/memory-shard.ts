@@ -79,7 +79,7 @@ export async function startMemoryShard(bucket: string): Promise<MemoryShard> {
         res.writeHead(200, { 'content-type': 'application/xml' });
         res.end(
           xml(
-            `<ListBucketResult><Name>${bucket}</Name><Prefix>${esc(prefix)}</Prefix><KeyCount>${contents.length + commonPrefixes.size}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${entries}${prefixes}</ListBucketResult>`
+            `<ListBucketResult><Name>${esc(bucket)}</Name><Prefix>${esc(prefix)}</Prefix><KeyCount>${contents.length + commonPrefixes.size}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${entries}${prefixes}</ListBucketResult>`
           )
         );
         return;
