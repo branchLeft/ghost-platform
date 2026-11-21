@@ -4,6 +4,14 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Fixed:** `assertRuntimePosture()` refuses a non-sidecar service that mounts a verdict or journal
+  volume at any target, in short or long syntax, and `volumes_from` is a forbidden service key. The
+  check keyed on the mount target only, so `ghost-<slug>-verdict:/elsewhere` and `volumes_from:
+  [verdict-host]` passed. No rendered stack emitted either shape; this closes the gap for a later
+  change.
+
+## 0.7.0
+
 - **Additive:** `renderSettings()` names `footerCredit` (`text`, `url`, `keepGhostCredit: true`) in
   `ghost-settings.json` for every kind: the default footer credit that extends Ghost's own
   "Powered by Ghost". `text` and `url` are the placeholders `FOOTER_CREDIT_TEXT` and

@@ -16,9 +16,12 @@ import {
   assertHold,
   assertPromotion,
   assertRefusal,
+  digestOf,
   keyOf,
   loadEntryAdapter,
   registry,
+  until,
+  wait,
   type AssertionId,
   type Loaded,
 } from '../helpers/demo-tier-gates';
@@ -122,6 +125,30 @@ describe('hold on the demo tier, through the real adapter and the real channel',
       const { slot, service } = await onChannel();
       const stored = await assertHold(slot, FIXTURES.clean);
       await assertPromotion(slot, service, FIXTURES.clean, stored);
+    }
+  );
+
+  it(
+    'the hold is addressed by the file digest: pending while the service is not draining, clear after the drain',
+    TIMEOUT,
+    async () => {
+      const { slot, service } = await onChannel();
+      await slot.upload('held.png', FIXTURES.clean);
+      const pending = await until(
+        () => slot.adapter.hold.isPending(digestOf(FIXTURES.clean)),
+        4000
+      );
+      expect(pending, 'the hold is not filed under the file digest').toBe(true);
+
+      await wait(300);
+      expect(slot.adapter.hold.isPending(digestOf(FIXTURES.clean))).toBe(true);
+
+      await service.drain(keyOf(FIXTURES.clean));
+      const released = await until(
+        () => !slot.adapter.hold.isPending(digestOf(FIXTURES.clean)),
+        4000
+      );
+      expect(released, 'the hold is still pending after the drain').toBe(true);
     }
   );
 

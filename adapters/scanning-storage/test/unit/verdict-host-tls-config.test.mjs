@@ -7,6 +7,8 @@ const { VerdictHostConfigError } = require('../../verdict-host/config-error.js')
 
 const base = {
   VERDICT_HOST_SOCKET: '/run/vh/v.sock',
+  VERDICT_HOST_SOCKET_UID: '30007',
+  VERDICT_HOST_SOCKET_GID: '30007',
   VERDICT_HOST_JOURNAL: '/var/lib/vh/queue.journal',
   VERDICT_HOST_VERIFY_KEY_FILE: '/etc/vh/channel-signing.pub',
   VERDICT_HOST_METRICS_FILE: '/var/lib/node_exporter/vh.prom',

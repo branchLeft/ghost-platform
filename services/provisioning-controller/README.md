@@ -136,6 +136,7 @@ credentials, and what Approve records.
   Approving a request finishes provisioning at once (the tenant is `live`, with
   a placeholder invoice reference and hostname); `createMock({ settleOnApprove: false })`
   holds it at `provisioning` until `store.settle` is called.
+
 - **What the generated server does not do.** It validates the path, query and
   body before any handler runs, so a request that is both invalid and
   unauthenticated is answered 400, not 401. It does not enforce
@@ -168,7 +169,7 @@ the service is.
   credential on an owner call, the owner's on a tenant call and one tenant's on another's
   path are each 403, and nothing a tenant presents lets it past its own paths.
 - **Tenants come from a register of demos** (`PROVISIONING_DEMOS_FILE`): `{"demos":
-  [{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
+[{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
   never in the repository, refused if other users can write it, and looked at again
   whenever the file changes. Until a tenant is promoted its demo is what the register says;
   after, the service's own record is. A database adapter for the demo register is later work.
@@ -192,6 +193,41 @@ the service is.
   and the tier; a second Approve changes nothing. The service's log shows no problem code.
 - **Not here**: the host programs the executor runs, wiring the executor to an approval,
   settling a tenant to `live`, and a source for the register other than a file.
+
+## The SSH transport to a tenant host
+
+`SshEntryTransport` (`src/sshEntryTransport.ts`) is the real transport behind a host
+adapter's `EntryTransport` port: `send(verb, slug, payload?)` runs one ssh client, which
+runs the host's forced command `VERB SLUG` once, with the payload as one JSON object on
+standard input. It is not wired into `main` or `runConfig` yet.
+
+- **Argument vector only.** `child_process.spawn` with `shell: false`; the verb is checked
+  against a closed list and the slug against the register's slot pattern before a process
+  starts. `BatchMode=yes` and `StrictHostKeyChecking=yes` are fixed, the only known-hosts
+  file is the pinned one, `-F` always names a file (`/dev/null` unless configured).
+- **Configuration, never a request.** Key file, known-hosts file, ssh config file, the jump
+  chain (ops1, edge1, edge-t) and the target account and host come from `SshEntryConfig`;
+  every path and name is validated when the transport is made.
+- **Bounded.** A timeout kills the client; each output stream has a byte bound that kills
+  it too; the payload has one. The client inherits only `PATH`, `HOME` and `LANG`.
+- **Result.** The host program's own exit code and streams are returned for the adapter to
+  map (0 done, 1 refused, 2 usage, 3 busy, 4 failed). A call that never reached the program
+  is thrown: `SshTransportError` (retryable: timeout, connection, signal) or
+  `SshTransportRefusedError`, a `PermanentStepError` (bad request, client cannot start,
+  host key not matching the pin, output over the bound). Remote text is never put in an
+  error message.
+- **Hops need an ssh config file.** ssh takes a hop's key and host-key settings from its
+  config file, not from the command line, so a configuration with `jumpHops` and no
+  `sshConfigFile` is refused (`invalid-config`), as is one with no `jumpHops` list at all.
+  `hopConfigProblems(config)` asks the real client (`ssh -G`) what it applies to each hop and
+  names any setting that is not strict host keys, batch mode, the pinned known-hosts file
+  alone, identities only and the key; the first live wiring runs it before a send.
+- **Argument vector.** `-F CONFIG -o BatchMode=yes -o StrictHostKeyChecking=yes
+-o UserKnownHostsFile=KNOWN -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
+-o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ConnectTimeout=N -T
+-i KEY [-p PORT] [-J HOPS] USER@HOST VERB SLUG`; the payload is one JSON object on standard
+  input. Each `send` runs exactly one client, which runs the host's forced command once.
+- **Not here**: the key and known-hosts files themselves.
 
 ## Running it
 
