@@ -246,6 +246,11 @@ jobs:
       # `closed`. Real local HTTP servers and a stand-in docker; no Docker, no
       # root. The sabotage cases break the real source and require the matching
       # check red.
+      #
+      # The same directory holds the health collector's native half
+      # (portal/host/branchleft-health-collect.py): a colour it cannot read must
+      # be reported as null, never left out, so the portal writes `unknown` and
+      # not the last good reading.
       - name: Support-access collector host program tests and sabotage proof
         run: python3 -m unittest discover -s portal/host -p 'test_*.py' -v
 

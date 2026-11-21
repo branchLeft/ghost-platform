@@ -129,7 +129,10 @@ takes the colours' scrape texts. Only the undrained colour answers: its version
 and match are the tenant's, a drained colour's are never read, and with no
 scrape, no undrained colour or two the reading is `unknown` (`src/reading.ts`).
 `OwnerDb.listHealth()` is the console's cross-tenant read. The collector that
-fetches the scrapes is separate work. The grants on `portal.health_reading`
+writes the readings is `portal/apps/src/collector/healthMain.ts`, fed by the
+native program in `portal/host/branchleft-health-collect.py` (see
+`portal/apps/README.md`). It writes `unknown`, with no scrape at all, for a
+tenant when any of its colours could not be read. The grants on `portal.health_reading`
 (tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
 `provision/manifest.ts`.
 
