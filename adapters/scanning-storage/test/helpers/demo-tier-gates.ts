@@ -13,7 +13,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { FakeStorageBase } from './fake-storage-base.mjs';
 import { FakeWrappedAdapter } from './fake-wrapped-adapter.mjs';
-import { hashOf, startRig, verdictFor } from './verdict-host-rig.mjs';
+import { texturedPng } from './pictures';
+import { startRig, verdictFor } from './verdict-host-rig.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -51,9 +52,12 @@ function must(id: AssertionId, ok: boolean, detail: string): void {
   registry.passed.add(id);
 }
 
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function until(check: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> {
+export async function until(
+  check: () => boolean | Promise<boolean>,
+  timeoutMs: number
+): Promise<boolean> {
   for (let waited = 0; waited <= timeoutMs; waited += 20) {
     if (await check()) return true;
     await wait(20);
@@ -61,26 +65,37 @@ async function until(check: () => boolean | Promise<boolean>, timeoutMs: number)
   return false;
 }
 
-// The three synthetic fixtures. None is a real image of anything: the bytes
-// only need to be distinct and stable. Which one the safety service treats as
-// the test classification is the service stand-in's choice, as the real
-// service's is a hash it holds.
+// The three synthetic fixtures: small generated pictures (soft blobs of colour
+// on a gradient, from a seeded generator in ./pictures), none a picture of
+// anything real. They are real PNGs, so the adapter decodes and hashes them as
+// it does any upload; which one the safety service treats as the test
+// classification is the service stand-in's choice, as the real service's is a
+// hash it holds. The seeds are far apart, so the three hashes are unrelated.
 export const FIXTURES = {
-  testClassification: Buffer.from('synthetic-fixture:test-classification'),
-  clean: Buffer.from('synthetic-fixture:clean'),
-  other: Buffer.from('synthetic-fixture:other'),
+  testClassification: await texturedPng(11),
+  clean: await texturedPng(12),
+  other: await texturedPng(13),
 };
 
-// The adapter's hash stage today is a SHA-256 hex stand-in, which the host end
-// refuses on sight (it carries only a 32-byte perceptual-hash key). Until the
-// adapter computes a real one, the harness swaps that one function for a map
-// from each fixture to a key of the right shape. Nothing else is swapped.
-const FIXTURE_KEYS = new Map<string, string>([
-  [FIXTURES.testClassification.toString('hex'), hashOf(11)],
-  [FIXTURES.clean.toString('hex'), hashOf(12)],
-  [FIXTURES.other.toString('hex'), hashOf(13)],
-]);
+// The key each fixture is asked about is its real PDQ hash, computed by the
+// same function the adapter calls: nothing in the adapter's hash stage is
+// replaced. The stand-in service answers on these keys.
+const { pdqHashOfImage, digestBytes } = require('../../src/pdq.js') as {
+  pdqHashOfImage: (buffer: Buffer) => Promise<{ hash: string | null; reason: string | null }>;
+  digestBytes: (buffer: Buffer) => string;
+};
+const FIXTURE_KEYS = new Map<string, string>();
+for (const picture of Object.values(FIXTURES)) {
+  const { hash, reason } = await pdqHashOfImage(picture);
+  if (hash === null) throw new Error(`a fixture picture has no PDQ hash (${reason})`);
+  FIXTURE_KEYS.set(picture.toString('hex'), hash);
+}
 export const keyOf = (bytes: Buffer): string => FIXTURE_KEYS.get(bytes.toString('hex')) ?? '';
+
+// The content digest (SHA-256) of the bytes: the name the hold registry files a
+// held upload under, so `hold.isPending` is asked with this and never with the
+// verdict key. The verdict key (`keyOf`) is only what the service is asked about.
+export const digestOf = (bytes: Buffer): string => digestBytes(bytes);
 
 export interface EntryAdapterInstance {
   wrapped: FakeWrappedAdapter;
@@ -99,19 +114,21 @@ export interface Loaded {
 
 // Loads Ghost's entry file with the two things Ghost's image would supply
 // resolved to the suite's doubles (the storage base class and the wrapped
-// local adapter) and the hash stage substituted as described above.
-export function loadEntryAdapter(srcDir: string): Loaded {
+// local adapter). The hash stage is the shipped one. `alsoWraps` names further
+// adapters a slot may wrap by name (the tenant tier's `S3Storage` double, see
+// tenant-tier-gates.md).
+export function loadEntryAdapter(srcDir: string, alsoWraps: Record<string, unknown> = {}): Loaded {
   const NodeModule = require('node:module');
   const originalLoad = NodeModule._load;
   const wrappedPath = path.join(srcDir, 'FakeAdapter');
   NodeModule._load = function patchedLoad(request: string, ...rest: unknown[]) {
     if (request === 'ghost-storage-base') return { StorageBase: FakeStorageBase };
     if (request === wrappedPath) return FakeWrappedAdapter;
+    for (const [name, adapterClass] of Object.entries(alsoWraps)) {
+      if (request === path.join(srcDir, name)) return adapterClass;
+    }
     return originalLoad.call(this, request, ...rest);
   };
-  const pdq = require(path.join(srcDir, 'pdq.js'));
-  const originalDigest = pdq.digestBytes;
-  pdq.digestBytes = (bytes: Buffer) => keyOf(bytes) || originalDigest(bytes);
   const entryFile = path.join(srcDir, 'ScanningStorageAdapter.js');
   delete require.cache[entryFile];
   const Entry = require(entryFile) as EntryAdapterClass;
@@ -119,7 +136,6 @@ export function loadEntryAdapter(srcDir: string): Loaded {
     Entry,
     restore() {
       NodeModule._load = originalLoad;
-      pdq.digestBytes = originalDigest;
       delete require.cache[entryFile];
     },
   };
@@ -356,7 +372,7 @@ export async function assertRefusal(
   const key = keyOf(bytes);
   const first = await slot.upload('first.png', bytes);
   if (first.accepted) await service.drain(key, 1500);
-  await until(() => !slot.adapter.hold.isPending(key), 4000);
+  await until(() => !slot.adapter.hold.isPending(digestOf(bytes)), 4000);
   await interfere('after-answer');
 
   const second = await slot.upload('second.png', bytes);

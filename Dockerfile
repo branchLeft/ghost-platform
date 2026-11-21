@@ -10,7 +10,7 @@
 # a bare major tag) so a rebuild is reproducible and a base-image swap is
 # always a visible, reviewed diff. Verified locally: `docker pull
 # ghost:6.76.0-alpine` resolves to this digest as of 2026-11-11.
-FROM ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a
+FROM ghost:6.78.0-alpine@sha256:baa6dbff91a28ba36c526d1f6e761deb2efe3c238c630c3f318b62f258c2d76e
 
 # Ghost's built-in S3Storage adapter (core/server/adapters/storage/S3Storage.js)
 # and its dependency, @aws-sdk/client-s3, already ship inside every official
@@ -121,13 +121,21 @@ RUN rm -rf /tmp/kalotyp
 # are checked in place. Fetching needs the network, like `apk add` above; the
 # Node already in the base image runs it and nothing is installed. Seeded into
 # the content directory by the base image's entrypoint, theme by theme.
+# The platform's footer credit goes in after the pins are checked
+# (themes/footer-credit/README.md): one patch per theme, applied with no fuzz,
+# prints it beside Ghost's own "Powered by Ghost", which stays. `patch` is a
+# build-time tool only: installed, used and removed in this one layer.
 COPY themes/fetch.mjs themes/verify.mjs themes/manifest.json /tmp/themes/
 COPY themes/lib/ /tmp/themes/lib/
 COPY themes/licences/ /tmp/themes/licences/
+COPY themes/footer-credit/ /tmp/themes/footer-credit/
 RUN set -e \
     && node /tmp/themes/fetch.mjs --out /tmp/themes-bundle \
     && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \
     && cp -R /tmp/themes-bundle/themes/. /var/lib/ghost/content.orig/themes/ \
+    && apk add --no-cache patch \
+    && sh /tmp/themes/footer-credit/apply.sh /var/lib/ghost/content.orig/themes \
+    && apk del patch \
     && for theme in /var/lib/ghost/content.orig/themes/*; do \
          mkdir -p "$theme/assets/platform-fonts" \
          && cp -R /tmp/themes-bundle/fonts/. "$theme/assets/platform-fonts/" \

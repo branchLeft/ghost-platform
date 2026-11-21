@@ -4,11 +4,12 @@
 // 1. The `prepare` script runs `pre-commit install`. In a linked worktree that
 //    writes into the main clone's hooks directory, which every worktree shares.
 //    It is run for real against a scratch repository with a stub `pre-commit`.
-// 2. The prettier and eslint hooks call `pnpm run`, and pnpm installs first when
-//    the tree has no node_modules, running `prepare` on the way. Both entries
-//    must keep that install script-free. This part reads the config as text,
-//    like the other config tests here, because the root tooling has no YAML
-//    parser.
+// 2. The prettier and eslint hooks run their tool straight from node_modules
+//    with `node`, not through `pnpm`. pnpm 11 needs a newer node than some
+//    workstations have, and the pnpm shim on those fails before it formats
+//    anything. The hooks also never install: a tree with no node_modules stops.
+//    This part reads the config as text, like the other config tests here,
+//    because the root tooling has no YAML parser.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -111,43 +112,65 @@ function hookEntry(id) {
   return assert.fail(`hook ${id} has an entry`);
 }
 
-for (const [id, script] of [
-  ['prettier', 'format'],
-  ['eslint', 'lint'],
-]) {
-  test(`the ${id} hook keeps pnpm's pre-run install script-free`, () => {
+// Each local tool hook, its tool file under node_modules, and the arguments the
+// command passes. These mirror the package.json scripts they replaced.
+const TOOL_HOOKS = [
+  {
+    id: 'prettier',
+    bin: 'node_modules/prettier/bin/prettier.cjs',
+    args: '--write . --ignore-path .gitignore',
+  },
+  {
+    id: 'eslint',
+    bin: 'node_modules/eslint/bin/eslint.js',
+    args: 'infra services render-core --ext .ts --fix',
+  },
+];
+
+for (const { id, bin, args } of TOOL_HOOKS) {
+  test(`the ${id} hook runs its tool with node from node_modules, not pnpm`, () => {
     const entry = hookEntry(id);
-    assert.match(entry, /pnpm_config_ignore_scripts=true\s+pnpm run /);
-    assert.ok(entry.includes(`pnpm run ${script}`), `still runs the ${script} script`);
+    // A command word of pnpm or corepack is what the broken shim is started by.
+    // The word inside the echoed message does not start a command, so it passes.
+    assert.doesNotMatch(entry, /(?:^|[;&|(]\s*)(?:pnpm|corepack)\s/, 'no pnpm command');
+    assert.ok(entry.includes(`node ${bin} ${args}`), `runs node ${bin} ${args}`);
   });
 }
 
-// The prettier and eslint hooks run `pnpm run` in the worktree they commit from.
-// A node_modules that is a symlink (a worktree sharing another clone's install)
-// must stop the hook at once with one line naming the cause and the fix. It must
-// not let pnpm reinstall through the link, and a real install must still run.
-// Each hook entry is run as the shell runs it, with a stub `pnpm` that records
-// each call, so nothing is installed.
-for (const id of ['prettier', 'eslint']) {
-  test(`the ${id} hook refuses a symlinked node_modules without reinstalling`, () => {
+// The prettier and eslint hooks run in the worktree they commit from. A
+// node_modules that is a symlink (a worktree sharing another clone's install)
+// must stop the hook at once with one line naming the cause and the fix. A tree
+// with no tool installed must stop the same way. Neither may start node, and a
+// real install must still run the tool. Each hook entry is run as the shell runs
+// it, with a stub `node` that records each call, so nothing is installed.
+function runHook(id, tree, stubDir) {
+  return spawnSync('sh', ['-c', hookEntry(id)], {
+    cwd: tree,
+    env: { ...process.env, PATH: `${stubDir}${path.delimiter}${process.env.PATH}` },
+    encoding: 'utf8',
+  });
+}
+
+function stubNode(stubDir, marker) {
+  const stub = path.join(stubDir, 'node');
+  fs.writeFileSync(stub, `#!/bin/sh\necho "$@" >> "${marker}"\n`);
+  fs.chmodSync(stub, 0o755);
+}
+
+for (const { id, bin } of TOOL_HOOKS) {
+  test(`the ${id} hook refuses a symlinked node_modules without starting node`, () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-symlink-'));
     try {
       const stubDir = path.join(dir, 'bin');
-      const marker = path.join(dir, 'pnpm-ran');
+      const marker = path.join(dir, 'node-ran');
       const tree = path.join(dir, 'tree');
       const target = path.join(dir, 'shared-install');
       fs.mkdirSync(stubDir);
       fs.mkdirSync(tree);
       fs.mkdirSync(target);
-      const stub = path.join(stubDir, 'pnpm');
-      fs.writeFileSync(stub, `#!/bin/sh\necho ran >> "${marker}"\n`);
-      fs.chmodSync(stub, 0o755);
+      stubNode(stubDir, marker);
       fs.symlinkSync(target, path.join(tree, 'node_modules'));
-      const result = spawnSync('sh', ['-c', hookEntry(id)], {
-        cwd: tree,
-        env: { ...process.env, PATH: `${stubDir}${path.delimiter}${process.env.PATH}` },
-        encoding: 'utf8',
-      });
+      const result = runHook(id, tree, stubDir);
       assert.notEqual(result.status, 0, 'the hook fails');
       assert.match(result.stderr, /node_modules is a symlink/, 'the message names the cause');
       assert.match(
@@ -155,30 +178,44 @@ for (const id of ['prettier', 'eslint']) {
         /pnpm install --frozen-lockfile --ignore-scripts/,
         'the message names the fix'
       );
-      assert.equal(fs.existsSync(marker), false, 'pnpm is not started');
+      assert.equal(fs.existsSync(marker), false, 'node is not started');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test(`the ${id} hook still runs pnpm in a real install`, () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-real-'));
+  test(`the ${id} hook refuses a node_modules without its tool and does not install`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-missing-'));
     try {
       const stubDir = path.join(dir, 'bin');
-      const marker = path.join(dir, 'pnpm-ran');
+      const marker = path.join(dir, 'node-ran');
       const tree = path.join(dir, 'tree');
       fs.mkdirSync(stubDir);
       fs.mkdirSync(path.join(tree, 'node_modules'), { recursive: true });
-      const stub = path.join(stubDir, 'pnpm');
-      fs.writeFileSync(stub, `#!/bin/sh\necho ran >> "${marker}"\n`);
-      fs.chmodSync(stub, 0o755);
-      const result = spawnSync('sh', ['-c', hookEntry(id)], {
-        cwd: tree,
-        env: { ...process.env, PATH: `${stubDir}${path.delimiter}${process.env.PATH}` },
-        encoding: 'utf8',
-      });
+      stubNode(stubDir, marker);
+      const result = runHook(id, tree, stubDir);
+      assert.notEqual(result.status, 0, 'the hook fails');
+      assert.match(result.stderr, /node_modules has no /, 'the message names the cause');
+      assert.equal(fs.existsSync(marker), false, 'node is not started');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test(`the ${id} hook runs its tool with node in a real install`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-real-'));
+    try {
+      const stubDir = path.join(dir, 'bin');
+      const marker = path.join(dir, 'node-ran');
+      const tree = path.join(dir, 'tree');
+      fs.mkdirSync(stubDir);
+      fs.mkdirSync(path.dirname(path.join(tree, bin)), { recursive: true });
+      fs.writeFileSync(path.join(tree, bin), '');
+      stubNode(stubDir, marker);
+      const result = runHook(id, tree, stubDir);
       assert.equal(result.status, 0, result.stderr);
-      assert.equal(fs.existsSync(marker), true, 'pnpm runs');
+      assert.equal(fs.existsSync(marker), true, 'node runs');
+      assert.ok(fs.readFileSync(marker, 'utf8').includes(bin), `node is given ${bin}`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -19,7 +19,11 @@ const target = (extra: Partial<DrainTarget> = {}): DrainTarget => ({
 });
 
 const ceilings = (estateCeiling = 100, defaultSlotCeiling = 10) =>
-  createDemoCeilings({ estateCeiling, defaultSlotCeiling, windowMs: 60_000 });
+  createDemoCeilings({
+    estateCeiling: { transactional: estateCeiling, bulk: estateCeiling },
+    defaultSlotCeiling: { transactional: defaultSlotCeiling, bulk: defaultSlotCeiling },
+    windowMs: 60_000,
+  });
 
 describe('the verified-recipient record a demo reads today: the descriptor owner address', () => {
   it("knows the prospect's own address, in any case", () => {
@@ -53,15 +57,18 @@ describe('the demo containment verdict', () => {
     createDemoContainment({ recipients, ceilings: c });
 
   it("admits the owner's mail and names the slot's own address on the demo domain as its From", () => {
-    expect(gate().admit(target(), { id: 'm1', to: 'prospect@example.com' })).toEqual({
-      ok: true,
-      from: 'slot-one@demo.example',
-    });
+    expect(gate().admit(target(), { id: 'm1', emailId: null, to: 'prospect@example.com' })).toEqual(
+      {
+        ok: true,
+        from: 'slot-one@demo.example',
+      }
+    );
   });
 
   it('builds the From from the normalised demo domain', () => {
     const verdict = gate().admit(target({ sendingDomain: 'Demo.Example.' }), {
       id: 'm1',
+      emailId: null,
       to: 'prospect@example.com',
     });
     expect(verdict).toEqual({ ok: true, from: 'slot-one@demo.example' });
@@ -77,6 +84,7 @@ describe('the demo containment verdict', () => {
     expect(
       createDemoContainment({ recipients: descriptorOwnerRecipients, ceilings: c }).admit(slot, {
         id: 'm1',
+        emailId: null,
         to: 'prospect@example.com',
       })
     ).toEqual({ ok: false, action: 'hold', reason: 'identity-unknown' });
@@ -87,6 +95,7 @@ describe('the demo containment verdict', () => {
     const c = ceilings();
     const verdict = gate(descriptorOwnerRecipients, c).admit(target(), {
       id: 'm1',
+      emailId: null,
       to: 'victim@example.org',
     });
     expect(verdict).toMatchObject({
@@ -103,17 +112,24 @@ describe('the demo containment verdict', () => {
       isVerified: (_slot, address) => address === 'verified-through-the-portal@example.com',
     };
     const g = gate(record);
-    expect(g.admit(target(), { id: 'm1', to: 'verified-through-the-portal@example.com' }).ok).toBe(
-      true
-    );
+    expect(
+      g.admit(target(), { id: 'm1', emailId: null, to: 'verified-through-the-portal@example.com' })
+        .ok
+    ).toBe(true);
     // Not even the descriptor's own owner address passes when the record does not hold it.
-    expect(g.admit(target(), { id: 'm2', to: 'prospect@example.com' }).ok).toBe(false);
+    expect(g.admit(target(), { id: 'm2', emailId: null, to: 'prospect@example.com' }).ok).toBe(
+      false
+    );
   });
 
   it("refuses past the slot's own ceiling, temporarily, so the owner's address is not suppressed", () => {
     const g = gate(descriptorOwnerRecipients, ceilings(100, 1));
-    expect(g.admit(target(), { id: 'm1', to: 'prospect@example.com' }).ok).toBe(true);
-    expect(g.admit(target(), { id: 'm2', to: 'prospect@example.com' })).toMatchObject({
+    expect(g.admit(target(), { id: 'm1', emailId: null, to: 'prospect@example.com' }).ok).toBe(
+      true
+    );
+    expect(
+      g.admit(target(), { id: 'm2', emailId: null, to: 'prospect@example.com' })
+    ).toMatchObject({
       ok: false,
       action: 'refuse',
       reason: 'slot-ceiling',
@@ -121,11 +137,34 @@ describe('the demo containment verdict', () => {
     });
   });
 
+  it('admits a newsletter and a sign-in message for one slot independently, each on its own ceiling', () => {
+    const g = gate(descriptorOwnerRecipients, ceilings(100, 1));
+    const to = 'prospect@example.com';
+    expect(g.admit(target(), { id: 'n1', emailId: 'campaign-1', to }).ok).toBe(true);
+    expect(g.admit(target(), { id: 'n2', emailId: 'campaign-1', to })).toMatchObject({
+      reason: 'slot-ceiling',
+    });
+    expect(g.admit(target(), { id: 's1', emailId: null, to }).ok).toBe(true);
+    expect(g.admit(target(), { id: 's2', emailId: null, to })).toMatchObject({
+      reason: 'slot-ceiling',
+    });
+  });
+
+  it('counts an empty email id as sign-in mail, as the lanes do', () => {
+    const g = gate(descriptorOwnerRecipients, ceilings(100, 1));
+    const to = 'prospect@example.com';
+    expect(g.admit(target(), { id: 'n1', emailId: 'campaign-1', to }).ok).toBe(true);
+    expect(g.admit(target(), { id: 's1', emailId: '', to }).ok).toBe(true);
+    expect(g.admit(target(), { id: 's2', emailId: null, to })).toMatchObject({
+      reason: 'slot-ceiling',
+    });
+  });
+
   it("uses the slot's descriptor ceiling over the default", () => {
     const g = gate(descriptorOwnerRecipients, ceilings(100, 50));
     const slot = target({ mailCeiling: 1 });
-    expect(g.admit(slot, { id: 'm1', to: 'prospect@example.com' }).ok).toBe(true);
-    expect(g.admit(slot, { id: 'm2', to: 'prospect@example.com' })).toMatchObject({
+    expect(g.admit(slot, { id: 'm1', emailId: null, to: 'prospect@example.com' }).ok).toBe(true);
+    expect(g.admit(slot, { id: 'm2', emailId: null, to: 'prospect@example.com' })).toMatchObject({
       reason: 'slot-ceiling',
     });
   });
@@ -135,18 +174,18 @@ describe('the demo containment verdict', () => {
     const a = target({ id: 'slot-a' });
     const b = target({ id: 'slot-b' });
     const c = target({ id: 'slot-c' });
-    expect(g.admit(a, { id: 'm1', to: 'prospect@example.com' }).ok).toBe(true);
-    expect(g.admit(b, { id: 'm1', to: 'prospect@example.com' }).ok).toBe(true);
-    expect(g.admit(c, { id: 'm1', to: 'prospect@example.com' })).toMatchObject({
+    expect(g.admit(a, { id: 'm1', emailId: null, to: 'prospect@example.com' }).ok).toBe(true);
+    expect(g.admit(b, { id: 'm1', emailId: null, to: 'prospect@example.com' }).ok).toBe(true);
+    expect(g.admit(c, { id: 'm1', emailId: null, to: 'prospect@example.com' })).toMatchObject({
       reason: 'estate-ceiling',
     });
-    expect(g.admit(a, { id: 'm2', to: 'prospect@example.com' })).toMatchObject({
+    expect(g.admit(a, { id: 'm2', emailId: null, to: 'prospect@example.com' })).toMatchObject({
       reason: 'estate-ceiling',
     });
   });
 
   it('a refusal and a verdict never carry an address', () => {
-    const verdict = gate().admit(target(), { id: 'm1', to: 'victim@example.org' });
+    const verdict = gate().admit(target(), { id: 'm1', emailId: null, to: 'victim@example.org' });
     const text = JSON.stringify(verdict);
     expect(text).not.toContain('victim');
     expect(text).not.toContain('prospect');

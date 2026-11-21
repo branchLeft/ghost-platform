@@ -699,6 +699,27 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     expect: /extra M06: DELETE on table portal.demo_request to portal_prospect/,
   },
   {
+    id: 'M06',
+    title: 'SELECT on the whole requests table given to the prospect role',
+    apply: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
+    // A table-level revoke takes the column grants with it, so they are given back.
+    undo: [
+      [P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect'],
+      [
+        P,
+        'GRANT SELECT (demo_id, publication_name, submitted_at) ON portal.demo_request TO portal_prospect',
+      ],
+    ],
+    expect: /extra M06: SELECT on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M07',
+    title: "SELECT on the requests' address column given to the prospect role",
+    apply: [[P, 'GRANT SELECT (verified_address) ON portal.demo_request TO portal_prospect']],
+    undo: [[P, 'REVOKE SELECT (verified_address) ON portal.demo_request FROM portal_prospect']],
+    expect: /extra M07: SELECT on column portal.demo_request.verified_address to portal_prospect/,
+  },
+  {
     id: 'M07',
     title: 'a column grant on the requests to the prospect role',
     apply: [[P, 'GRANT UPDATE (publication_name) ON portal.demo_request TO portal_prospect']],
@@ -950,11 +971,11 @@ export const MISSING: readonly Tamper[] = [
     expect: /missing M06: INSERT on table portal.demo_request to portal_prospect/,
   },
   {
-    id: 'M06',
-    title: "the prospect role's SELECT on the requests",
-    apply: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect']],
-    undo: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
-    expect: /missing M06: SELECT on table portal.demo_request to portal_prospect/,
+    id: 'M07',
+    title: "the prospect role's SELECT on a status column of the requests",
+    apply: [[P, 'REVOKE SELECT (publication_name) ON portal.demo_request FROM portal_prospect']],
+    undo: [[P, 'GRANT SELECT (publication_name) ON portal.demo_request TO portal_prospect']],
+    expect: /missing M07: SELECT on column portal.demo_request.publication_name to portal_prospect/,
   },
   {
     id: 'M09',
