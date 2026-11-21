@@ -434,6 +434,37 @@ class BackupTenantMediaTests(unittest.TestCase):
         self.assertFalse(any(photo_digest in key for key in backup_keys))
         self.assertFalse(any(second_digest in key for key in backup_keys))
 
+    def test_reads_use_the_live_endpoint_and_writes_use_the_backup_endpoint(self):
+        reads, writes = [], []
+
+        def list_objects(**kw):
+            reads.append((kw["endpoint"], kw["region"]))
+            return self.store.list_objects(**kw)
+
+        def get_object_with_content_type(**kw):
+            reads.append((kw["endpoint"], kw["region"]))
+            return self.store.get_object_with_content_type(**kw)
+
+        def put_object(**kw):
+            writes.append((kw["endpoint"], kw["region"], kw["access_key"]))
+            return self.store.put_object(**kw)
+
+        self._backup(
+            list_objects=list_objects,
+            get_object_with_content_type=get_object_with_content_type,
+            put_object=put_object,
+            backup_endpoint="backup.example.test",
+            backup_region="other",
+        )
+        self.assertEqual(set(reads), {(ENDPOINT, REGION)})
+        self.assertEqual({w[:2] for w in writes}, {("backup.example.test", "other")})
+        self.assertEqual({w[2] for w in writes}, {"backup-ak"})
+
+    def test_the_backup_endpoint_defaults_to_the_live_one(self):
+        writes = []
+        self._backup(put_object=lambda **kw: (writes.append((kw["endpoint"], kw["region"])), self.store.put_object(**kw))[1])
+        self.assertEqual(set(writes), {(ENDPOINT, REGION)})
+
     def test_sabotage_a_digest_derived_backup_id_is_caught_by_that_assertion(self):
         # Reproduces the exact regression this control exists to catch -- an
         # id generator that returns the plaintext digest instead of a random

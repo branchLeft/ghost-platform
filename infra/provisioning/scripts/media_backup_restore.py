@@ -469,6 +469,8 @@ def backup_tenant_media(
     recipient: str,
     manifest_signing_key_path: str,
     confirm_tenant_has_no_media: bool = False,
+    backup_endpoint: str | None = None,
+    backup_region: str | None = None,
     list_objects=_default_list_objects,
     get_object_with_content_type=_default_get_object_with_content_type,
     put_object=_default_put_object,
@@ -486,8 +488,12 @@ def backup_tenant_media(
     Signs the manifest with the key at `manifest_signing_key_path` before it is
     encrypted, which is required: there is no way to write an unsigned
     manifest. Refuses an empty live bucket unless `confirm_tenant_has_no_media=True`.
-    May raise `MediaBackupFloorError`. See media_backup_restore.md#backup_tenant_media."""
+    Live reads go to `endpoint` and `region`; backup writes go to
+    `backup_endpoint` and `backup_region`, each falling back to those two when
+    not given. May raise `MediaBackupFloorError`. See media_backup_restore.md#backup_tenant_media."""
     _assert_valid_tenant_slug(tenant, MediaBackupError)
+    write_endpoint = backup_endpoint or endpoint
+    write_region = backup_region or region
 
     live_objects = list_objects(
         bucket=live_bucket,
@@ -526,8 +532,8 @@ def backup_tenant_media(
         )
         put_object(
             bucket=backup_bucket,
-            endpoint=endpoint,
-            region=region,
+            endpoint=write_endpoint,
+            region=write_region,
             access_key=backup_access_key,
             secret_key=backup_secret_key,
             key=_object_key_for_backup(tenant, run_id, backup_id),
@@ -566,8 +572,8 @@ def backup_tenant_media(
     # no manifest is incomplete by definition and restore never reads it.
     put_object(
         bucket=backup_bucket,
-        endpoint=endpoint,
-        region=region,
+        endpoint=write_endpoint,
+        region=write_region,
         access_key=backup_access_key,
         secret_key=backup_secret_key,
         key=_manifest_key(tenant, run_id),
@@ -890,6 +896,14 @@ def main(argv: list[str] | None = None) -> int:
     backup_p.add_argument("--endpoint", required=True)
     backup_p.add_argument("--region", required=True)
     backup_p.add_argument(
+        "--backup-endpoint",
+        help="the backup bucket's endpoint when it is not the live one (default: --endpoint)",
+    )
+    backup_p.add_argument(
+        "--backup-region",
+        help="the backup bucket's region when it is not the live one (default: --region)",
+    )
+    backup_p.add_argument(
         "--confirm-tenant-has-no-media",
         action="store_true",
         help=(
@@ -940,6 +954,8 @@ def main(argv: list[str] | None = None) -> int:
                 recipient=_require_env("AGE_RECIPIENT_PUBLIC_KEY"),
                 manifest_signing_key_path=_require_env("MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE"),
                 confirm_tenant_has_no_media=args.confirm_tenant_has_no_media,
+                backup_endpoint=args.backup_endpoint,
+                backup_region=args.backup_region,
             )
             print(
                 f"backup: tenant={report.tenant} run_id={report.run_id} "
