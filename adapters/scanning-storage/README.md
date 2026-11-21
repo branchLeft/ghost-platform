@@ -647,10 +647,10 @@ derivatives; `S3Storage.ts`/`LocalStorageBase.ts` implement `save`,
 ```sh
 pnpm install --frozen-lockfile && pnpm run coverage                       # unit, 90% threshold on every metric
 docker build -t ghost-platform:ci ../..
-IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.76.0 in Docker
+IMAGE=ghost-platform:ci pnpm run test:image       # real Ghost 6.78.0 in Docker
 ```
 
-The image test (`test/image/`) drives a real Ghost 6.76.0 container through
+The image test (`test/image/`) drives a real Ghost 6.78.0 container through
 the real adapter manager: a refused upload (415, typed error, quarantined by
 digest, nothing in the served tree), a clean upload, post creation, the
 public site, the admin API and an on-demand resize -- all still working
