@@ -10,4 +10,9 @@ export const CLI_ENV_VARS = {
   NTFY_URL: 'NTFY_URL',
   NTFY_TOKEN: 'NTFY_TOKEN',
   GITHUB_TOKEN: 'GITHUB_TOKEN',
+  // The filing identity's token (never the ambient Actions token, which cannot
+  // write the workspace) and the workspace issue number of the launch item the
+  // filed item is added to. Both are read only when a new major is found.
+  FILING_TOKEN: 'MAJOR_WATCHER_FILING_TOKEN',
+  LAUNCH_ITEM: 'MAJOR_WATCHER_LAUNCH_ITEM',
 } as const;
