@@ -16,6 +16,7 @@ import {
   Channel,
   FIXTURES,
   GateFailure,
+  digestOf,
   keyOf,
   until,
   wait,
@@ -360,7 +361,7 @@ export class TenantSlot implements TenantSurface {
   }
 
   async settled(bytes: Buffer): Promise<boolean> {
-    return !this.adapter.hold.isPending(keyOf(bytes));
+    return !this.adapter.hold.isPending(digestOf(bytes));
   }
 
   uploadedKeys(): string[] {
