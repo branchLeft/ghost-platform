@@ -144,6 +144,9 @@
 /demo-host/provision/demo_go_live.py             @branchLeft/branchleft-admin
 /demo-host/provision/test_demo_go_live.py        @branchLeft/branchleft-admin
 /demo-host/provision/sabotage_demo_go_live.py    @branchLeft/branchleft-admin
+/demo-host/provision/demo_verdict_evidence.py    @branchLeft/branchleft-admin
+/services/broker/src/verdictSourceReport.ts      @branchLeft/branchleft-admin
+/services/broker/test/unit/verdictSourceReport.test.ts @branchLeft/branchleft-admin
 /demo-host/provision/export_release.py           @branchLeft/branchleft-admin
 /demo-host/provision/test_export_release.py      @branchLeft/branchleft-admin
 /demo-host/provision/sabotage_export_release.py  @branchLeft/branchleft-admin
