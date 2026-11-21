@@ -7,10 +7,10 @@ repos:
       - id: trailing-whitespace
         # A unified diff carries a lone space for each blank context line;
         # stripping it breaks the patch (adapters/sso/ghost-core-overlay/,
-        # adapters/stripe-connect-limit/ghost-core-overlay/).
+        # adapters/stripe-connect-limit/ghost-core-overlay/, themes/footer-credit/).
         # themes/licences/ holds upstream licence texts, pinned by sha256 in
         # themes/manifest.json; stripping their trailing blanks changes the bytes.
-        exclude: ^(widgets/dist/|themes/licences/|adapters/(sso|stripe-connect-limit)/ghost-core-overlay/.*\.patch$)
+        exclude: ^(widgets/dist/|themes/licences/|adapters/(sso|stripe-connect-limit)/ghost-core-overlay/.*\.patch$|themes/footer-credit/.*\.patch$)
       - id: end-of-file-fixer
         # widgets/dist/ is vendored third-party bundles, content-addressed by
         # sha384 in widgets/pins.json -- adding a trailing newline changes
@@ -21,7 +21,9 @@ repos:
         # stored in each database's migration history and compared by
         # portal/data/provision/provisionPortal.ts; a trailing newline would
         # make every applied database read as drifted.
-        exclude: ^(widgets/dist/|themes/licences/|vendor/kalotyp/kalotyp\.(js|css)$|(portal/data|services/[^/]+)/drizzle/.*\.sql$)
+        # The theme footer patches (themes/footer-credit/) end where a unified
+        # diff ends, and one ends a template that has no final newline.
+        exclude: ^(widgets/dist/|themes/licences/|themes/footer-credit/.*\.patch$|vendor/kalotyp/kalotyp\.(js|css)$|(portal/data|services/[^/]+)/drizzle/.*\.sql$)
       - id: check-yaml
       # Stated rather than inherited: the hook's own default has moved before,
       # and this threshold is meant to be the same number in every repo.
