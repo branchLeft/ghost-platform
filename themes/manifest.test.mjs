@@ -4,10 +4,19 @@
 // bundle in verify.test.mjs.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { fontsCss, readManifest } from './fetch.mjs';
+import {
+  applyPlatformFonts,
+  BODY_SETTING,
+  fontsCss,
+  fontThemeSettings,
+  HEADING_SETTING,
+  platformFontsPartial,
+  readManifest,
+} from './fetch.mjs';
 import {
   declaredReservedFontName,
   declaredReservedNames,
@@ -66,6 +75,7 @@ describe('the committed manifest', () => {
       'IBM Plex Sans',
       'IBM Plex Serif',
       'IBM Plex Mono',
+      'Space Grotesk',
     ]) {
       assert.ok(families.includes(wanted), `${wanted} is missing`);
     }
@@ -124,6 +134,193 @@ describe('the committed manifest', () => {
       (css.match(/@font-face/g) ?? []).length,
       REAL.fonts.reduce((n, f) => n + f.files.length, 0)
     );
+  });
+});
+
+describe('the font a tenant can choose', () => {
+  it('offers Space Grotesk under OFL-1.1 with its licence text pinned and no reserved name', () => {
+    const f = REAL.fonts.find((x) => x.family === 'Space Grotesk');
+    assert.ok(f, 'Space Grotesk is missing');
+    assert.equal(f.licence.spdx, 'OFL-1.1');
+    assert.equal(f.reservedFontName, null);
+    assert.match(f.licence.copyright, /Space Grotesk Project Authors/);
+  });
+
+  it('offers every bundled family, and "Theme default" first, for both roles', () => {
+    const settings = fontThemeSettings(REAL);
+    const families = REAL.fonts.map((f) => f.family);
+    for (const key of [HEADING_SETTING, BODY_SETTING]) {
+      assert.equal(settings[key].type, 'select');
+      assert.equal(settings[key].default, 'Theme default');
+      assert.deepEqual(settings[key].options, ['Theme default', ...families]);
+    }
+  });
+
+  it('writes a link and a variable for every family, in both roles, and no outside origin', () => {
+    const partial = platformFontsPartial(REAL);
+    for (const f of REAL.fonts) {
+      for (const [setting, variable] of [
+        [HEADING_SETTING, '--gh-font-heading'],
+        [BODY_SETTING, '--gh-font-body'],
+      ]) {
+        assert.ok(
+          partial.includes(`match @custom.${setting} "=" "${f.family}"}}<link `),
+          `${f.family}: no ${setting} link`
+        );
+        assert.ok(
+          partial.includes(`<style>:root{${variable}:"${f.family}",${f.fallback}}`),
+          `${f.family}: no ${variable} rule`
+        );
+      }
+    }
+    assert.ok(!/https?:\/\/|\/\//.test(partial), 'the partial must name no origin');
+    assert.ok(partial.includes('{{asset "platform-fonts/fonts.css"}}'));
+  });
+
+  it('emits nothing for any value that is not a family name', () => {
+    const partial = platformFontsPartial(REAL);
+    assert.ok(!partial.includes('"!="'), 'a family is chosen by equality only');
+    assert.ok(!partial.includes('{{else}}'), 'no branch may render for another value');
+  });
+
+  it('refuses a family name that could break out of the partial', () => {
+    for (const family of ['Evil"}}', 'A;B', 'Theme default', '', 'Two  Spaces']) {
+      const m = clone();
+      m.fonts[0].family = family;
+      assert.match(
+        validateManifest(m).join('\n'),
+        /family must be letters|duplicate|family required/
+      );
+    }
+  });
+
+  it('refuses a font with no generic fallback', () => {
+    const m = clone();
+    delete m.fonts[0].fallback;
+    assert.match(validateManifest(m).join('\n'), /fallback must be one of/);
+  });
+});
+
+describe('applyPlatformFonts', () => {
+  let dir;
+  const write = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  };
+  const read = (rel) => fs.readFileSync(path.join(dir, rel), 'utf8');
+  const HBS =
+    '<head>\n    <link rel="stylesheet" href="{{asset "built/screen.css"}}">\n    {{ghost_head}}\n</head>\n';
+  const PKG = (custom) =>
+    JSON.stringify({ name: 't', config: { custom, posts_per_page: 5 } }, null, 2);
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overlay-'));
+    write('default.hbs', HBS);
+    write('package.json', PKG({ title_font: { type: 'select', options: ['a'], default: 'a' } }));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('GREEN: adds the two settings, the partial and one include after the head helper', () => {
+    applyPlatformFonts(dir, REAL);
+    const pkg = JSON.parse(read('package.json'));
+    assert.deepEqual(Object.keys(pkg.config.custom), ['title_font', HEADING_SETTING, BODY_SETTING]);
+    assert.equal(pkg.config.posts_per_page, 5);
+    assert.equal(read('partials/platform-fonts.hbs'), platformFontsPartial(REAL));
+    assert.match(
+      read('default.hbs'),
+      /\n    \{\{ghost_head\}\}\n    \{\{> "platform-fonts"\}\}\n<\/head>/
+    );
+  });
+
+  it('GREEN: a theme with no custom settings gets them', () => {
+    write('package.json', JSON.stringify({ name: 't' }));
+    applyPlatformFonts(dir, REAL);
+    assert.deepEqual(Object.keys(JSON.parse(read('package.json')).config.custom), [
+      HEADING_SETTING,
+      BODY_SETTING,
+    ]);
+  });
+
+  const unchanged = (action) => {
+    const before = [read('default.hbs'), read('package.json')];
+    assert.throws(action);
+    assert.deepEqual([read('default.hbs'), read('package.json')], before);
+    assert.ok(!fs.existsSync(path.join(dir, 'partials/platform-fonts.hbs')));
+  };
+
+  it('RED: a theme with no head helper fails and is left unchanged', () => {
+    write('default.hbs', '<head></head>');
+    unchanged(() => applyPlatformFonts(dir, REAL));
+  });
+
+  it('GREEN: a head helper named in a comment is not a second head helper', () => {
+    write('default.hbs', `{{!-- output with {{ghost_head}} below --}}\n${HBS}`);
+    applyPlatformFonts(dir, REAL);
+    assert.match(read('default.hbs'), /\n    \{\{ghost_head\}\}\n    \{\{> "platform-fonts"\}\}\n/);
+    assert.equal((read('default.hbs').match(/platform-fonts/g) ?? []).length, 1);
+  });
+
+  it('RED: a theme with two head helpers fails and is left unchanged', () => {
+    write('default.hbs', `${HBS}{{ghost_head}}`);
+    unchanged(() => applyPlatformFonts(dir, REAL));
+  });
+
+  it('RED: a theme that already has the setting fails and is left unchanged', () => {
+    write(
+      'package.json',
+      PKG({ [HEADING_SETTING]: { type: 'select', options: ['a'], default: 'a' } })
+    );
+    unchanged(() => applyPlatformFonts(dir, REAL));
+  });
+
+  const crowded = (extra = {}) => {
+    const custom = Object.fromEntries(
+      Array.from({ length: 17 }, (_, i) => [`s${i}`, { type: 'boolean', default: false }])
+    );
+    const own = {
+      type: 'select',
+      options: ['Modern sans-serif', 'Elegant serif'],
+      default: 'Modern sans-serif',
+    };
+    return { ...custom, title_font: own, body_font: own, ...extra };
+  };
+
+  it('GREEN: a theme with no room offers the families through its own title and body fonts', () => {
+    write('package.json', PKG(crowded()));
+    applyPlatformFonts(dir, REAL);
+    const custom = JSON.parse(read('package.json')).config.custom;
+    assert.equal(Object.keys(custom).length, 19);
+    const families = REAL.fonts.map((f) => f.family);
+    for (const key of ['title_font', 'body_font']) {
+      assert.deepEqual(custom[key].options, ['Modern sans-serif', 'Elegant serif', ...families]);
+      assert.equal(custom[key].default, 'Modern sans-serif');
+    }
+    assert.equal(
+      read('partials/platform-fonts.hbs'),
+      platformFontsPartial(REAL, { heading: 'title_font', body: 'body_font' })
+    );
+    assert.ok(!read('partials/platform-fonts.hbs').includes(HEADING_SETTING));
+  });
+
+  it('RED: a theme with no room and no title and body font selects fails, unchanged', () => {
+    const custom = Object.fromEntries(
+      Array.from({ length: 19 }, (_, i) => [`s${i}`, { type: 'boolean', default: false }])
+    );
+    write('package.json', PKG(custom));
+    unchanged(() => applyPlatformFonts(dir, REAL));
+  });
+
+  it('RED: a theme with no room whose title font already offers a family fails, unchanged', () => {
+    write(
+      'package.json',
+      PKG(crowded({ title_font: { type: 'select', options: ['Inter', 'x'], default: 'x' } }))
+    );
+    unchanged(() => applyPlatformFonts(dir, REAL));
+  });
+
+  it('RED: a second run fails rather than adding the include twice', () => {
+    applyPlatformFonts(dir, REAL);
+    assert.throws(() => applyPlatformFonts(dir, REAL), /already includes the partial/);
   });
 });
 
