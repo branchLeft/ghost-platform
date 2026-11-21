@@ -4,7 +4,7 @@
 
 The two grant lanes and the four-hour clock of LLD-5 section 05, run as root
 on the tenant's own app host. The owner ruled on 2026-09-24
-(branchLeft/workspace#1245) that grant and revoke are commands the owner runs
+that grant and revoke are commands the owner runs
 over SSH on the tenant host, that the four-hour clock covers both lanes, and
 that the clock overrides a tenant's own un-suspend. Only minting is on `ops1`
 (`break-glass-mint.md`).

@@ -81,8 +81,7 @@ therefore encrypt an object of their own bytes and a matching manifest (the
 right `tenant`, a digest that agrees with the object) to a tenant's own
 recipient, and every check that compares a manifest with its objects passes,
 because the two agree with each other. That is the forged pair that restored
-with `verified=1` in review of branchLeft/ghost-platform#249
-(branchLeft/workspace#1346).
+with `verified=1` in review of branchLeft/ghost-platform#249.
 
 So the manifest carries a `signature`: an OpenSSH ed25519 signature made by
 `backup_tenant_media` with a private key held apart from the bucket put

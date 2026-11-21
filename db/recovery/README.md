@@ -76,7 +76,7 @@ functional dump/restore/binlog-replay proof against real MySQL 8.0
 containers, plus the mismatched-client control case (an 8.4 `mysqldump`
 genuinely failing `--source-data=2` against an 8.0 server, reproducing
 `install_host_prereqs.py`'s own module docstring), was run by hand and is
-recorded verbatim in the PR body for branchLeft/workspace#1205 rather than
+recorded verbatim in the PR body for the tracked issue rather than
 kept here — it needs two throwaway MySQL containers and does not belong in
 CI's fast, mocked test path.
 

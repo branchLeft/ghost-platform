@@ -2,7 +2,7 @@
 """Unit tests for assert-tenant-provisioning-scoping.py.
 
 This is the credential-scoping guard `provision-tenant.yml` runs before it
-creates anything. branchLeft/workspace#284 found it because the guard's
+creates anything. A review of the two workflows found it because the guard's
 required set and `infra-hosts-ci.yml`'s own repository-level secret used to
 be the same two names, so no configuration could ever pass both workflows'
 demands. These tests exercise the set logic directly -- missing, shadowed,

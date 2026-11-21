@@ -1,5 +1,4 @@
-# Self-hosted front-end widgets (branchLeft/workspace#1230)
-
+# Self-hosted front-end widgets
 The image built from the root `Dockerfile` loads six CDN script bundles plus
 one CDN stylesheet by default, all on floating `~` version ranges. Ghost picks
 each range from the `version` its own release carries in

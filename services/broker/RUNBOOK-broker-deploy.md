@@ -56,7 +56,7 @@ demo1 -- an operator step; nothing here runs from CI.
 **Pin the commit first.** This install comes from one ghost-platform commit,
 named here and nowhere else in this runbook. The value is the commit the
 broker release `1dbed88-20261011T105328Z` was built from, which demo1 ran as of
-its last read-back on 2026-10-11: [ISSUE branchLeft/workspace#1545](https://github.com/branchLeft/workspace/issues/1545#issuecomment-6108286313)
+its last read-back on 2026-10-11, recorded in the tracker
 (comment 6108286313), and the pinned-sources section of
 `ghost-platform-docs/demo1-host-build-and-broker-runbook.md`. Check it out
 before step 4, and stop if the check fails:
@@ -373,7 +373,7 @@ are a clean build of that commit, who pushed the tag, or that the tag check
 was the one on `main`. The controls are the pinned digest, which makes
 reviewed code choose which release deploys, and the check above that the
 attested commit is on `main`. This is the same trust in GitHub that
-branchLeft/workspace#2483 accepted for merge signatures; moving to a key of
+was accepted for merge signatures; moving to a key of
 our own later changes only the attest step and the flags above. A `broker-v*`
 tag is protected from deletion and update by the `release tags` repository
 ruleset; the digest pin is what keeps a moved tag from deploying.

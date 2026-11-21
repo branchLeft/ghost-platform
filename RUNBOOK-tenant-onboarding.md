@@ -85,7 +85,7 @@ so it must keep them at the repository level. Provisioning reaches a
 different bucket, `branchleft-tenant-pulumi-state`, and needs a *second*
 Object Storage credential scoped to it — reusing the estate's would give a
 tenant deployer write access to the checkpoint the production hcloud token
-lives in (branchLeft/workspace#284). Mint it in the Hetzner Cloud Console
+lives in. Mint it in the Hetzner Cloud Console
 (Object Storage → the project holding `branchleft-tenant-pulumi-state` →
 Credentials → Generate credential).
 
@@ -841,7 +841,7 @@ If it names anything other than the tenant you are onboarding — `website`,
 `edge`, `db`, `monitoring` — stop.
 
 Changing the check's shape so the flag is not routine on the normal path is
-[branchLeft/workspace#279](https://github.com/branchLeft/workspace/issues/279);
+tracked separately;
 until it lands, this two-step is the procedure.
 
 **Verify the slot before going further.** Nothing in CI can exercise the path a

@@ -26,7 +26,7 @@ hel1 except the throwaway probe bucket in step 9 and its deletion in step 10.
   `ExpiredObjectDeleteMarker`. They cost nothing but clutter listings; adding
   the element in a rule of its own is a separate change, once overlapping rules
   are proven on this engine.
-- **Media, by the owner's ruling (branchLeft/workspace#1325):** the media backup job never
+- **Media, by the owner's ruling:** the media backup job never
   deletes. Each run writes a new dated copy under
   `media/<tenant>/generations/<UTC run id>/` and the job keeps the put-only
   key. This applies the bucket's half: a current-version expiry on `media/`
@@ -418,9 +418,9 @@ unset LAB_ACCESS_KEY_ID LAB_SECRET_ACCESS_KEY CONFIRM_BUCKET
 
 ## After it succeeds
 
-Close nothing from here by hand. Cite on branchLeft/workspace#1554: step 6's
+Close nothing from here by hand. Cite on the tracking issue for the lifecycle work: step 6's
 lifecycle read-back, step 7's PASS, and step 9's listings. Cite the same on
-branchLeft/workspace#1325 together with step 10e's `list-buckets` output.
+the media-backup tracking issue together with step 10e's `list-buckets` output.
 
 ## What this does not unblock
 
@@ -436,6 +436,6 @@ be scheduled before:
    from the bucket put credential, the job reads it from
    `MEDIA_BACKUP_MANIFEST_SIGNING_KEY_FILE`, and the restore host holds its
    public half for `--manifest-public-key-file`. Without it every restore
-   refuses the manifest, by design (branchLeft/workspace#1346).
+   refuses the manifest, by design.
 
 The hel1 bucket this runbook originally named is out of scope; see the top.

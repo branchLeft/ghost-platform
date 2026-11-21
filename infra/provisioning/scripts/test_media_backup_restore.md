@@ -21,7 +21,7 @@ second-recipient ciphertext -- is proven by `media-backup-restore-proof.sh`.
 
 ## ManifestAuthenticityTests
 
-The control for branchLeft/workspace#1346. A generation is forged the way a
+The control for manifest authenticity. A generation is forged the way a
 holder of only the bucket put credential can: the attacker's own bytes encrypted
 to the tenant's recipient, and a manifest with the right tenant, a fresh run id
 and a digest that agrees with them. Restore must refuse it, and write nothing to

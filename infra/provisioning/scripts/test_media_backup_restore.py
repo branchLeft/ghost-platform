@@ -1166,7 +1166,7 @@ class NewestCompleteCopyRestoreTests(unittest.TestCase):
 
 
 class ManifestAuthenticityTests(unittest.TestCase):
-    """The control for branchLeft/workspace#1346: `age`'s recipient is public,
+    """The control for manifest authenticity: `age`'s recipient is public,
     so anyone holding the bucket's put credential can encrypt a forged object
     and a matching manifest to a tenant's recipient. Restore must refuse such
     a pair because the manifest is not signed by the key the backup worker
