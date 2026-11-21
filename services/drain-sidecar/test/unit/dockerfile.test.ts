@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 // The digest the image scan was run against. The Dockerfile must pin exactly
 // this digest, so the scan's findings describe the base that ships.
 const SCANNED_BASE_DIGEST =
-  'sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a';
+  'sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dockerfile = readFileSync(resolve(here, '../../Dockerfile'), 'utf8');
@@ -23,7 +23,7 @@ describe('Dockerfile base image', () => {
   });
 
   it('pins the digest the image scan was run against', () => {
-    expect(fromLines(dockerfile)[0]).toBe(`FROM node:26.13.0-alpine@${SCANNED_BASE_DIGEST}`);
+    expect(fromLines(dockerfile)[0]).toBe(`FROM node:26.13.1-alpine@${SCANNED_BASE_DIGEST}`);
   });
 
   it('upgrades zlib before the package manager is used', () => {
