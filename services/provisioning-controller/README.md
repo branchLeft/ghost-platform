@@ -193,6 +193,31 @@ the service is.
 - **Not here**: the host programs the executor runs, wiring the executor to an approval,
   settling a tenant to `live`, and a source for the register other than a file.
 
+## The SSH transport to a tenant host
+
+`SshEntryTransport` (`src/sshEntryTransport.ts`) is the real transport behind a host
+adapter's `EntryTransport` port: `send(verb, slug, payload?)` runs one ssh client, which
+runs the host's forced command `VERB SLUG` once, with the payload as one JSON object on
+standard input. It is not wired into `main` or `runConfig` yet.
+
+- **Argument vector only.** `child_process.spawn` with `shell: false`; the verb is checked
+  against a closed list and the slug against the register's slot pattern before a process
+  starts. `BatchMode=yes` and `StrictHostKeyChecking=yes` are fixed, the only known-hosts
+  file is the pinned one, `-F` always names a file (`/dev/null` unless configured).
+- **Configuration, never a request.** Key file, known-hosts file, ssh config file, the jump
+  chain (ops1, edge1, edge-t) and the target account and host come from `SshEntryConfig`;
+  every path and name is validated when the transport is made.
+- **Bounded.** A timeout kills the client; each output stream has a byte bound that kills
+  it too; the payload has one. The client inherits only `PATH`, `HOME` and `LANG`.
+- **Result.** The host program's own exit code and streams are returned for the adapter to
+  map (0 done, 1 refused, 2 usage, 3 busy, 4 failed). A call that never reached the program
+  is thrown: `SshTransportError` (retryable: timeout, connection, signal) or
+  `SshTransportRefusedError`, a `PermanentStepError` (bad request, client cannot start,
+  host key not matching the pin, output over the bound). Remote text is never put in an
+  error message.
+- **Not here**: the key and known-hosts files themselves, and the check that the hops
+  accept the key and the pinned file through the ssh config (first wiring step).
+
 ## Running it
 
 `node dist/bin.js --config <file> --approval-id <id>` runs one approval to done
