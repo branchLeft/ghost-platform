@@ -94,6 +94,51 @@ step already complete under different inputs; the approval check and the host
 call are never atomic, so a revocation that lands between them is seen at the
 next check.
 
+### The app host's tenant entry point (`src/tenantEntryHost.ts`)
+
+`TenantEntryHost` is a `HostEntryPoint` for the app host's forced command (the
+`tenant_entry` role in branchLeft/shared-infra holds its verbs, order and exit
+codes). It serves three steps and passes every other step to a fallback entry
+point, so the owner's single approval is the only hand step for a new tenant:
+
+| Step                   | Verbs sent                                                         |
+| ---------------------- | ------------------------------------------------------------------ |
+| `render-host-secrets`  | `claim`, then `secrets`                                            |
+| `render-compose-file`  | `stack`: three parameters (`size`, `mail`, `environment`) only     |
+| `create-app-host-slot` | `enable`, then `key`                                               |
+
+- **Parameters, not text.** The host builds the compose file from its own
+  template, the claim's uid and ports and these parameters, and judges it. The
+  adapter sends exactly `size`, `mail` and `environment` (a literal, or a
+  `{ secret: NAME }` reference to a key of the secrets file); it picks those
+  three fields, so nothing else a provider returns is sent. It never sends
+  compose text and never an image pin: the first pin is written by
+  `branchleft-deploy` after it verifies the image's attestation, in the plan's
+  `first-deploy` step, which runs after `create-app-host-slot`.
+- **The host's claim.** `status` carries the uid and ports `claim` gave the slug.
+  `TenantEntryInputs.stack` is given them, and `claimOf(slug)` returns them to
+  any deployment step that needs the host's numbers (they are not the
+  register's).
+- **Plan order.** `render-compose-file` depends on `render-host-secrets` and
+  `create-app-host-slot` depends on it, so a unit is never enabled before its
+  compose file is in place. `status`'s `stack=yes` means the compose file alone.
+- **Idempotent.** Each step first asks `status` and sends only what is left, so
+  a resume or a retry after a lost reply sends nothing twice. The host also
+  accepts the same `stack` parameters again.
+- **Errors.** A refusal (exit 1) is a `PermanentStepError` naming the verb and
+  the host's word, with the host's sentences as detail; a usage error (2) is
+  permanent; busy (3), a failed step (4) and an unknown code are retried. Values
+  the request carried are withheld from any detail.
+- **Inputs and transport are ports** (`TenantEntryInputs`, `EntryTransport`):
+  the template, values, parameters and deploy key come from the deployment;
+  none is kept.
+
+Known limits: the adapter is not yet wired into the command (the SSH transport
+and the input sources are deployment adapters); `publish-hostnames` still takes
+its port from the register, not from the claim (`claimOf` is the way a
+deployment's edge step reads the host's number); the `owner` verb and the first
+deploy go through the fallback.
+
 ## Part 3: the provisioning API contract and its mock
 
 `openapi.yaml` is the contract the customer portal and the owner console are
