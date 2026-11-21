@@ -1,3 +1,5 @@
+import { isAbsolute } from 'node:path';
+import type { TenantEntryFiles } from './fileTenantEntryInputs.js';
 import { invalidSshSettings, type SshEndpoint, type SshEntryConfig } from './sshEntryTransport.js';
 
 /**
@@ -11,7 +13,41 @@ import { invalidSshSettings, type SshEndpoint, type SshEntryConfig } from './ssh
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-const REQUIRED_KEYS = ['keyFile', 'knownHostsFile', 'jumpHops', 'target'] as const;
+const REQUIRED_KEYS = ['keyFile', 'knownHostsFile', 'jumpHops', 'target', 'inputs'] as const;
+const INPUT_KEYS = ['secretsFile', 'stackFile', 'deployKeyFile'] as const;
+
+/** What the section holds: the transport's settings, and the files the tenant entry inputs are read from. */
+export interface ParsedSshEntry {
+  readonly transport: SshEntryConfig;
+  readonly files: TenantEntryFiles;
+}
+
+function parseInputFiles(raw: unknown, problems: string[]): TenantEntryFiles | undefined {
+  if (!isRecord(raw)) {
+    problems.push('sshEntry.inputs is not an object');
+    return undefined;
+  }
+  const before = problems.length;
+  const extra = Object.keys(raw).filter((k) => !(INPUT_KEYS as readonly string[]).includes(k));
+  if (extra.length > 0) problems.push(`sshEntry.inputs has unknown keys: ${extra.join(', ')}`);
+  for (const key of INPUT_KEYS) {
+    const value = raw[key];
+    if (
+      typeof value !== 'string' ||
+      value.length === 0 ||
+      value.includes('\0') ||
+      !isAbsolute(value)
+    ) {
+      problems.push(`sshEntry.inputs.${key} is not an absolute path`);
+    }
+  }
+  if (problems.length > before) return undefined;
+  return {
+    secretsFile: raw['secretsFile'] as string,
+    stackFile: raw['stackFile'] as string,
+    deployKeyFile: raw['deployKeyFile'] as string,
+  };
+}
 const OPTIONAL_KEYS = [
   'sshConfigFile',
   'sshProgram',
@@ -38,7 +74,7 @@ function parseEndpoint(name: string, raw: unknown, problems: string[]): SshEndpo
 }
 
 /** Appends what is wrong to `problems`; returns the settings only when there is nothing wrong. */
-export function parseSshEntry(raw: unknown, problems: string[]): SshEntryConfig | undefined {
+export function parseSshEntry(raw: unknown, problems: string[]): ParsedSshEntry | undefined {
   const before = problems.length;
   if (!isRecord(raw)) {
     problems.push('sshEntry is not an object');
@@ -67,7 +103,9 @@ export function parseSshEntry(raw: unknown, problems: string[]): SshEntryConfig 
       });
     }
   }
+  const files = raw['inputs'] === undefined ? undefined : parseInputFiles(raw['inputs'], problems);
   if (problems.length > before || target === undefined || jumpHops === undefined) return undefined;
+  if (files === undefined) return undefined;
 
   const settings = {
     keyFile: raw['keyFile'] as string,
@@ -86,5 +124,5 @@ export function parseSshEntry(raw: unknown, problems: string[]): SshEntryConfig 
     }),
   } satisfies SshEntryConfig;
   for (const name of invalidSshSettings(settings)) problems.push(`sshEntry.${name} is not usable`);
-  return problems.length > before ? undefined : settings;
+  return problems.length > before ? undefined : { transport: settings, files };
 }
