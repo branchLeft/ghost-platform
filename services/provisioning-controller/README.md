@@ -169,7 +169,7 @@ the service is.
   credential on an owner call, the owner's on a tenant call and one tenant's on another's
   path are each 403, and nothing a tenant presents lets it past its own paths.
 - **Tenants come from a register of demos** (`PROVISIONING_DEMOS_FILE`): `{"demos":
-[{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
+  [{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
   never in the repository, refused if other users can write it, and looked at again
   whenever the file changes. Until a tenant is promoted its demo is what the register says;
   after, the service's own record is. A database adapter for the demo register is later work.

@@ -93,6 +93,14 @@ jobs:
             printf '%s\n' "$output" | grep -q 'ConfigError' || { echo "::error::$entry entry point did not reach its configuration check: $output"; exit 1; }
           done
 
+      # The provisioning API's service is the same image's third program, run by
+      # the control-plane stack by its path in the image. With no configuration
+      # it must stop at its own configuration check, never at a missing module.
+      - name: The provisioning service reaches its configuration check
+        run: |
+          output="$(docker run --rm portal-apps:ci node /app/services/provisioning-controller/dist/src/service/main.js 2>&1 || true)"
+          printf '%s\n' "$output" | grep -q 'PROVISIONING_.*is not set' || { echo "::error::the provisioning service did not reach its configuration check: $output"; exit 1; }
+
       # The screens import the provisioning-API client from the built
       # controller package, by its package name, from the portal's own directory.
       # A missing built file or export fails here, at import, rather than later.
