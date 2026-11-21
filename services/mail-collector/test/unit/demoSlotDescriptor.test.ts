@@ -164,22 +164,28 @@ describe('the demo ceilings the collector is configured with', () => {
 
   it('has a small default per slot, a hard estate cap, and a day-long window', () => {
     expect(loadConfig(BASE).demoCeilings).toEqual({
-      slotCeiling: 20,
-      estateCeiling: 200,
+      slotCeiling: { transactional: 20, bulk: 20 },
+      estateCeiling: { transactional: 100, bulk: 100 },
       windowMs: 86_400_000,
       statePath: undefined,
     });
   });
 
-  it('reads the three numbers from the environment', () => {
+  it('reads the four ceilings and the window from the environment', () => {
     expect(
       loadConfig({
         ...BASE,
-        COLLECTOR_DEMO_SLOT_CEILING: '5',
-        COLLECTOR_DEMO_ESTATE_CEILING: '50',
+        COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING: '5',
+        COLLECTOR_DEMO_SLOT_BULK_CEILING: '6',
+        COLLECTOR_DEMO_ESTATE_TRANSACTIONAL_CEILING: '50',
+        COLLECTOR_DEMO_ESTATE_BULK_CEILING: '60',
         COLLECTOR_DEMO_CEILING_WINDOW_MS: '3600000',
       }).demoCeilings
-    ).toMatchObject({ slotCeiling: 5, estateCeiling: 50, windowMs: 3_600_000 });
+    ).toMatchObject({
+      slotCeiling: { transactional: 5, bulk: 6 },
+      estateCeiling: { transactional: 50, bulk: 60 },
+      windowMs: 3_600_000,
+    });
   });
 
   it('keeps the counted places beside the dedupe file unless told otherwise', () => {

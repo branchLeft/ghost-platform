@@ -14,6 +14,7 @@ import { createDrainClient, type WireMessage } from '../../src/drainClient.js';
 import { createDroppedOutcomes } from '../../src/droppedOutcomes.js';
 import { createHealthState } from '../../src/health.js';
 import { createLogger } from '../../src/log.js';
+import type { MailClass } from '../../src/sendingTarget.js';
 import { FakeShimServer, type QueuedMessage } from '../helpers/fakeShimServer.js';
 import { createFakeTargetStore } from '../helpers/fakeTargetStore.js';
 import { DRAIN_TOKEN, countingThrottle, settle, until } from '../helpers/loopHarness.js';
@@ -38,6 +39,11 @@ const demoMessage = (id: string, extra: Partial<QueuedMessage> = {}): QueuedMess
   text: id,
   headers: {},
   ...extra,
+});
+
+const bothClasses = (ceiling: number): Record<MailClass, number> => ({
+  transactional: ceiling,
+  bulk: ceiling,
 });
 
 interface Delivered {
@@ -125,8 +131,8 @@ describe('demo mail containment in the collector loop', () => {
           createDemoContainment({
             recipients: options.recipients ?? descriptorOwnerRecipients,
             ceilings: createDemoCeilings({
-              estateCeiling: options.estateCeiling ?? 1000,
-              defaultSlotCeiling: options.slotCeiling ?? 1000,
+              estateCeiling: bothClasses(options.estateCeiling ?? 1000),
+              defaultSlotCeiling: bothClasses(options.slotCeiling ?? 1000),
               windowMs: 24 * 60 * 60 * 1000,
             }),
           }));
@@ -192,6 +198,25 @@ describe('demo mail containment in the collector loop', () => {
       severity: 'temporary',
     });
     expect(logLines.join('\n')).toContain('slot-ceiling');
+  });
+
+  it('admits a newsletter and a sign-in message for one slot independently', async () => {
+    shimA.enqueue(demoMessage('n1', { emailId: 'campaign-1' }));
+    shimA.enqueue(demoMessage('n2', { emailId: 'campaign-1' }));
+    shimA.enqueue(demoMessage('s1'));
+    shimA.enqueue(demoMessage('s2'));
+    const { mx1 } = start({ targets: [slotA()], slotCeiling: 1 });
+    await until(() => ackedA().length === 4, 'all four acked');
+    await settle();
+    // Each class took its own one place: the second of each is refused, and a
+    // full newsletter ceiling did not stop the sign-in message behind it.
+    expect(mx1.delivered.map((d) => d.id).sort()).toEqual(['n1', 's1']);
+    await until(() => reportedA().length === 2, 'both ceiling failures reported');
+    expect(
+      reportedA()
+        .map((r) => r.id)
+        .sort()
+    ).toEqual(['n2', 's2']);
   });
 
   it("takes the slot ceiling from the slot's own descriptor over the collector default", async () => {
@@ -276,8 +301,8 @@ describe('demo mail containment in the collector loop', () => {
       demoContainment: createDemoContainment({
         recipients: descriptorOwnerRecipients,
         ceilings: createDemoCeilings({
-          estateCeiling: 10,
-          defaultSlotCeiling: 1,
+          estateCeiling: bothClasses(10),
+          defaultSlotCeiling: bothClasses(1),
           windowMs: 60_000,
         }),
       }),
