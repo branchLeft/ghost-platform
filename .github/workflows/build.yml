@@ -40,8 +40,9 @@ jobs:
     name: docker build
     runs-on: ubuntu-latest
     # Observed 1.18-1.63min over the last 20 successful runs (p95 1.57min)
-    # before the break-glass image test, which adds about 31 s.
-    timeout-minutes: 20
+    # before the break-glass image test, which adds about 31 s. The Ghost zip
+    # import probe adds its own boots and a size ladder up to 256 MiB.
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -87,6 +88,18 @@ jobs:
         run: pnpm run test:image
         env:
           IMAGE: ghost-platform:ci
+
+      # Ghost's own zip import of a demo-shaped site, through the scanning
+      # decorator over S3 with a tenant prefix and a media address, against the
+      # recording S3 double: which references the import rewrites, how it
+      # treats staff users and settings, and the zip size at which it refuses.
+      # The report is in the job summary. See
+      # adapters/scanning-storage/probe/ghost_import_probe.md. Python standard
+      # library only.
+      - name: Ghost zip import probe against the built image
+        run: |
+          python3 -m unittest discover -s adapters/scanning-storage/probe -p 'test_*.py'
+          python3 adapters/scanning-storage/probe/ghost_import_probe.py --image ghost-platform:ci
 
       # An export is verified by using it: Ghost's own export is taken from a
       # seeded Ghost and re-imported into a fresh one, and named posts, tags,
