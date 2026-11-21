@@ -116,6 +116,27 @@ export interface EnqueueBatchParams {
   now: number;
 }
 
+/** What `purgeLease` removed. */
+export interface PurgeLeaseResult {
+  /** Unsent recipient rows deleted. */
+  recipients: number;
+  /** Batch rows deleted because nothing was left in them. */
+  batches: number;
+}
+
+/** A lease id is a 26-character Crockford base32 ULID, the shape `render-core` issues. */
+const LEASE_ID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+export function isLeaseId(value: string): boolean {
+  return LEASE_ID_PATTERN.test(value);
+}
+
+function assertLeaseId(leaseId: string): void {
+  if (!isLeaseId(leaseId)) {
+    throw new TypeError(`Not a lease id: ${JSON.stringify(leaseId)}`);
+  }
+}
+
 /** A recipient row handed to a drain caller — held, with a lease, until it acks or the lease lapses. */
 export interface DrainedRecipient {
   /** Stable across re-offers: a crash-before-ack recipient comes back under this same id. */
@@ -183,13 +204,17 @@ export interface ShimStore {
    * at the sender domain. Throws `TenantRegistrationRefused` when the key is
    * already bound to a different credential, or when the registration would
    * newly overlap another credential's sender address.
-   * See store.md#sender-domain, #sender-local-part and #registration-refusals.
+   * `leaseId` is the demo lease the credential serves (a ULID): given, it
+   * replaces the stored one (`null` clears it); omitted, a re-registration
+   * leaves it as it was. See store.md#sender-domain, #sender-local-part,
+   * #registration-refusals and #the-lease-a-batch-belongs-to.
    */
   registerTenant(
     domain: string,
     apiKey: string,
     senderDomain: string | null,
-    senderLocalPart?: string | null
+    senderLocalPart?: string | null,
+    leaseId?: string | null
   ): void;
   /** Resolves null for an unknown domain and for a wrong key alike: both are the same 401. */
   verifyTenant(domain: string, apiKey: string): Promise<Tenant | null>;
@@ -217,6 +242,22 @@ export interface ShimStore {
    * See store.md#removing-a-credential.
    */
   removeTenant(domain: string): boolean;
+  /** The lease a credential serves, `null` when it serves none or is unregistered. */
+  tenantLease(domain: string): string | null;
+  /**
+   * Binds a credential to the lease it now serves without rotating its key;
+   * false if the domain is unregistered. Every batch enqueued afterwards is
+   * stamped with it. See store.md#the-lease-a-batch-belongs-to.
+   */
+  setTenantLease(domain: string, leaseId: string): boolean;
+  /**
+   * Deletes the unsent (pending or held) recipients of every batch stamped
+   * with exactly `leaseId`, then each such batch left with no recipient.
+   * Another lease's batches, and the same credential's batches under a later
+   * lease, are not touched; sent, failed and suppressed rows stay as the
+   * record of what happened. See store.md#purging-a-lease.
+   */
+  purgeLease(leaseId: string): PurgeLeaseResult;
 
   recordEvent(event: Omit<StoredEvent, 'id'>): void;
   listEvents(domain: string, options: ListEventsOptions): ListEventsResult;
@@ -439,8 +480,9 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
   }
 
   return {
-    registerTenant(domain, apiKey, senderDomain, senderLocalPart = null) {
+    registerTenant(domain, apiKey, senderDomain, senderLocalPart = null, leaseId) {
       const claim = normaliseClaim(senderDomain, senderLocalPart);
+      if (leaseId !== undefined && leaseId !== null) assertLeaseId(leaseId);
       // Salts are per row, so a shared key is invisible to a lookup: it is found
       // by hashing the key under every other credential's salt, one scrypt each.
       // That runs before the write lock is taken, so a host with many
@@ -461,7 +503,12 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
           }
           assertNoNewOverlap(tx, domain, claim);
           const { salt, hash } = hashApiKey(apiKey);
-          const row = { apiKeySalt: salt, apiKeyHash: hash, ...claim };
+          const row = {
+            apiKeySalt: salt,
+            apiKeyHash: hash,
+            ...claim,
+            ...(leaseId === undefined ? {} : { leaseId }),
+          };
           tx.insert(tenants)
             .values({ domain, ...row })
             .onConflictDoUpdate({ target: tenants.domain, set: row })
@@ -547,6 +594,58 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
       return result.changes > 0;
     },
 
+    tenantLease(domain) {
+      const row = db
+        .select({ leaseId: tenants.leaseId })
+        .from(tenants)
+        .where(eq(tenants.domain, domain))
+        .get();
+      return row?.leaseId ?? null;
+    },
+
+    setTenantLease(domain, leaseId) {
+      assertLeaseId(leaseId);
+      const result = db.update(tenants).set({ leaseId }).where(eq(tenants.domain, domain)).run();
+      return result.changes > 0;
+    },
+
+    purgeLease(leaseId) {
+      assertLeaseId(leaseId);
+      return db.transaction((tx) => {
+        const batchIds = tx
+          .select({ batchId: queueBatches.batchId })
+          .from(queueBatches)
+          .where(eq(queueBatches.leaseId, leaseId))
+          .all()
+          .map((row) => row.batchId);
+        let recipients = 0;
+        let batches = 0;
+        for (const batchId of batchIds) {
+          recipients += tx
+            .delete(queueRecipients)
+            .where(
+              and(
+                eq(queueRecipients.batchId, batchId),
+                inArray(queueRecipients.status, UNDRAINED_STATUSES)
+              )
+            )
+            .run().changes;
+          const left = tx
+            .select({ c: count() })
+            .from(queueRecipients)
+            .where(eq(queueRecipients.batchId, batchId))
+            .get();
+          if (left?.c === 0) {
+            batches += tx
+              .delete(queueBatches)
+              .where(eq(queueBatches.batchId, batchId))
+              .run().changes;
+          }
+        }
+        return { recipients, batches };
+      });
+    },
+
     recordEvent(event) {
       insertEvent(db, event);
     },
@@ -622,8 +721,23 @@ export function createSqliteStore(filename = ':memory:'): ShimStore {
         if (recipients.length === 0 && offered.length > 0) {
           return;
         }
+        // The lease is read in the same transaction as the insert, so a batch
+        // is stamped with the lease its credential served at that moment.
+        const leaseId =
+          tx
+            .select({ leaseId: tenants.leaseId })
+            .from(tenants)
+            .where(eq(tenants.domain, domain))
+            .get()?.leaseId ?? null;
         tx.insert(queueBatches)
-          .values({ batchId, domain, emailId, payload: JSON.stringify(payload), createdAt: now })
+          .values({
+            batchId,
+            domain,
+            emailId,
+            payload: JSON.stringify(payload),
+            createdAt: now,
+            leaseId,
+          })
           .run();
         for (const recipient of recipients) {
           tx.insert(queueRecipients)

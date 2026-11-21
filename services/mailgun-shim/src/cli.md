@@ -55,3 +55,22 @@ suppressions and already-queued mail stay, and queued mail still drains.
 Purging those on a slot's reset is separate work. Re-registering the same
 domain afterwards needs no `--rotate` and issues a new key; the removed key
 stays dead. Nothing prints a key.
+
+## Lease
+
+`register --lease <lease-id>` and `set-lease <credential-domain> <lease-id>`
+bind a credential to the demo lease it serves, a 26-character ULID. Both refuse
+anything else, so a typo cannot bind a credential to a lease nothing will ever
+purge. Without `--lease`, a re-registration leaves the bound lease as it was.
+
+## Purge lease
+
+`purge-lease <lease-id>` deletes the unsent mail (pending, or taken by the
+drainer and not yet acknowledged) of every batch stamped with exactly that
+lease, then each such batch left empty (store.md#purging-a-lease). It takes the
+lease id and nothing else, with no flags: a credential domain in that place is
+refused with the usage line and nothing is purged, because purging by credential
+is purging by slot, which would also delete the next visitor's mail
+(store.md#the-lease-a-batch-belongs-to). It prints how many recipients and
+batches went. Run it for the lease being recycled, after the slot is wiped and
+before the credential is registered for the next lease.

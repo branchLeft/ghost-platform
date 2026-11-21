@@ -36,6 +36,13 @@
       "when": 1795061258383,
       "tag": "0004_replay_dedupe_index",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1795251892202,
+      "tag": "0005_demo_lease",
+      "breakpoints": true
     }
   ]
 }

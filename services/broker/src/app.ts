@@ -32,6 +32,12 @@ import {
   type ImagePushDeps,
 } from './imagePush.js';
 import { clearLeaseAndHash, writeLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
+import {
+  readRetiringLease,
+  runRecycleEffects,
+  type RecycleEffects,
+  type RetiringLease,
+} from './recycle.js';
 import { otherColour, validateSlotLiteral, type Colour } from './literals.js';
 import type { RealTrafficChecker } from './realTraffic.js';
 import type { Renderer } from './render.js';
@@ -41,6 +47,7 @@ import { compareParsed } from './parsedDifference.js';
 import { HostConflictError, hostHeldByAnotherSlot, hostOfSlotEntry } from './slotsFile.js';
 import {
   assertHashRotated,
+  errorStateOf,
   evidenceStatusOf,
   readSlotState,
   releaseHeldEvidence,
@@ -67,6 +74,8 @@ export interface BrokerDeps {
   /** Which loaded seams are not shipped final modules (`seamReadiness.ts`); reported by `/status`. */
   readonly seamReadiness: SeamReadiness;
   readonly leaseStoreConfig: LeaseStoreConfig;
+  /** What `/reset` purges and retires beyond the slot itself: the lease's unsent mail and its hostname. */
+  readonly recycle: RecycleEffects;
   readonly drainFlags: DrainFlagStore;
   readonly imagePush: ImagePushDeps;
   readonly healthChecker: HealthChecker;
@@ -654,9 +663,27 @@ async function handleReset(deps: BrokerDeps, body: SlotBody): Promise<ResetResul
       deps.log(`reset refused: ${refusal}`);
       return reply(409, { error: refusal, reason: 'held-evidence' });
     }
+    // What the recycle must still purge and retire is read before the lease
+    // record goes (nothing on disk names it afterwards), and kept in the
+    // state until the slot is `free`: a retry after a failure finds the
+    // record already gone and takes it from there instead.
+    let retiring: RetiringLease | undefined;
+    try {
+      retiring =
+        state.retiring ?? (await readRetiringLease(deps.leaseStoreConfig, slot)) ?? undefined;
+    } catch (err) {
+      // The lease it names is unknown, so its mail could not be purged: the
+      // slot is left as it is, access included, for an operator to settle.
+      deps.log(
+        `reset refused for slot "${slot}": its lease record is unreadable: ${errorLogText(err)}`
+      );
+      await writeSlotState(deps.stateDir, slot, errorStateOf(state));
+      return reply(503, { slot, phase: 'error' });
+    }
     await writeSlotState(deps.stateDir, slot, {
       phase: 'resetting' satisfies Phase,
       lastHashId: state.lastHashId,
+      retiring,
     });
     // Revoke first (F10): a teardown that then fails must still leave no
     // live access behind, rather than leaving the previous visitor's
@@ -667,11 +694,16 @@ async function handleReset(deps: BrokerDeps, body: SlotBody): Promise<ResetResul
       // a reset that then fails still leaves no way back into the site.
       await deps.adminApi.forget?.(slot);
       await deps.wrapper.reset(slot);
+      // Only now, with both colours stopped and the slot emptied, can nothing
+      // queue more mail under the old lease: its unsent mail goes, then its
+      // hostname is retired. A failure here leaves the slot out of `free`.
+      if (retiring !== undefined) await runRecycleEffects(deps.recycle, retiring);
     } catch (err) {
       deps.log(`reset failed for slot "${slot}": ${errorLogText(err)}`);
       await writeSlotState(deps.stateDir, slot, {
         phase: 'error' satisfies Phase,
         lastHashId: state.lastHashId,
+        retiring,
       });
       return reply(503, { slot, phase: 'error' });
     }
@@ -770,6 +802,20 @@ async function handleFreeze(deps: BrokerDeps, body: SlotBody): Promise<FreezeRes
         lastHashId: state.lastHashId,
         evidence: 'frozen',
       });
+      // The lease and hostname this occupancy still has to purge and retire
+      // are read before the lease record goes and kept in the state, so a
+      // `/reset` after the detach recycles them as it would have without the
+      // freeze. An unreadable record fails here, before access is cut.
+      const retiring =
+        state.retiring ?? (await readRetiringLease(deps.leaseStoreConfig, slot)) ?? undefined;
+      if (retiring !== undefined) {
+        await writeSlotState(deps.stateDir, slot, {
+          phase: 'detaching' satisfies Phase,
+          lastHashId: state.lastHashId,
+          evidence: 'frozen',
+          retiring,
+        });
+      }
       // T3: cut access, revoking first as `/reset` does. Every step is idempotent.
       await deps.drainFlags.set(slot, 'a');
       await deps.drainFlags.set(slot, 'b');

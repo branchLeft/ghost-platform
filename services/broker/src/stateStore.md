@@ -77,6 +77,10 @@ released slot keeps its confirmation and does not throw on a fail-closed path.
 Any change to who may release held evidence must change this function and
 this rule together.
 
+The release also carries a `retiring` already in the state (a recycle still owed
+from before the freeze), unless its caller names one: building a fresh object
+must not drop it. See recycle.md.
+
 `POST /freeze` is that path's one caller (`app.md#freeze`). It stores the
 wrapper's receipt in `heldReceipt` in the same write, so a replayed `/freeze`
 answers from it, and `errorStateOf` carries the receipt with a confirmed
