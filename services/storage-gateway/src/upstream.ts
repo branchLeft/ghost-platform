@@ -15,7 +15,7 @@ import {
 } from './sigv4-verifier.js';
 import type { UploadBindings } from './uploads.js';
 
-const EMPTY_SHA256 = createHash('sha256').digest('hex');
+export const EMPTY_SHA256 = createHash('sha256').digest('hex');
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const REDACTED = '[redacted]';
 /** The most of an upstream error or control response the gateway will read into memory. */
@@ -242,9 +242,9 @@ const BODY_OPERATIONS: ReadonlySet<string> = new Set([
   'CompleteMultipartUpload',
 ]);
 
-const XML_HEADERS = { 'content-type': 'application/xml' } as const;
+export const XML_HEADERS = { 'content-type': 'application/xml' } as const;
 
-function gatewayAnswer(code: RefusalCode, s3Code: string): UpstreamAnswer {
+export function gatewayAnswer(code: RefusalCode, s3Code: string): UpstreamAnswer {
   const r = refusal(code);
   return {
     status: r.status,
@@ -264,11 +264,11 @@ function refusedAnswer(code: RefusalCode, s3Code: string): UpstreamAnswer {
   return gatewayAnswer(code, s3Code);
 }
 
-function amzDateOf(ms: number): string {
+export function amzDateOf(ms: number): string {
   return new Date(ms).toISOString().replace(/[-:]|\.\d{3}/g, '');
 }
 
-function validateEndpoint(endpoint: string | URL): URL {
+export function validateEndpoint(endpoint: string | URL): URL {
   const url = new URL(endpoint.toString());
   const loopback = LOOPBACK_HOSTS.has(url.hostname);
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
@@ -285,7 +285,7 @@ function validateEndpoint(endpoint: string | URL): URL {
  * The headers to forward: those the client's signature covered and the
  * allowlist admits. `undefined` when a value cannot be forwarded verbatim.
  */
-function forwardedHeaders(request: GatewayRequest): Map<string, string[]> | undefined {
+export function forwardedHeaders(request: GatewayRequest): Map<string, string[]> | undefined {
   const out = new Map<string, string[]>();
   const auth = request.headers.authorization;
   const authorization = typeof auth === 'string' ? auth : undefined;
@@ -321,12 +321,12 @@ const METHOD_OF: Readonly<Record<string, string>> = {
   HeadObject: 'HEAD',
 };
 
-function isThrottle(status: number): boolean {
+export function isThrottle(status: number): boolean {
   return status === 429 || status === 503;
 }
 
 /** Reads at most the cap of a small response; the rest is discarded. */
-async function readCapped(stream: Readable, signal: AbortSignal): Promise<string> {
+export async function readCapped(stream: Readable, signal: AbortSignal): Promise<string> {
   const onAbort = (): void => {
     stream.destroy();
   };
@@ -446,7 +446,7 @@ function decodeEntities(text: string): string {
     .replaceAll('&amp;', '&');
 }
 
-function relayHeaders(
+export function relayHeaders(
   raw: UpstreamTransportResponse['headers'],
   options: { readonly keepLength: boolean }
 ): Record<string, string> {
@@ -464,7 +464,7 @@ function relayHeaders(
 }
 
 /** An upstream error reduced to its S3 code under a fixed message: nothing the service echoed survives. */
-function sanitisedError(status: number, document: string, head: boolean): UpstreamAnswer {
+export function sanitisedError(status: number, document: string, head: boolean): UpstreamAnswer {
   if (head) return { status, headers: {} };
   const code = /<Code>([^<]*)<\/Code>/.exec(document)?.[1] ?? '';
   const s3Code = SAFE_S3_CODE.test(code) ? code : status >= 500 ? 'InternalError' : 'AccessDenied';
@@ -476,7 +476,7 @@ function sanitisedError(status: number, document: string, head: boolean): Upstre
 }
 
 /** Cuts a streamed body that goes quiet, so a stalled read cannot hold the connection forever. */
-function guardIdle(stream: Readable, idleMs: number): Readable {
+export function guardIdle(stream: Readable, idleMs: number): Readable {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const arm = (): void => {
     if (timer !== undefined) clearTimeout(timer);
@@ -513,7 +513,7 @@ export const nodeTransport: UpstreamTransport = (req) =>
     }
   });
 
-const defaultSleep = (ms: number, signal: AbortSignal): Promise<void> =>
+export const defaultSleep = (ms: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     const done = (): void => {
       clearTimeout(timer);
