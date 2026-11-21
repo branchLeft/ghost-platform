@@ -355,6 +355,47 @@ describe('assertRuntimePosture() on the verdict host end', () => {
     expect(() => assertRuntimePosture(real, '10.20.1.50')).not.toThrow();
   });
 
+  it('SABOTAGE — a Ghost that mounts a verdict volume at another path is refused, by its source name', () => {
+    // RED on main: the check keys on the mount target, so `:/elsewhere` passes.
+    for (const colour of ['ghost-a', 'ghost-b']) {
+      for (const source of [verdictVolumeName(SLUG), verdictJournalVolumeName(SLUG)]) {
+        refuses(
+          (document) => {
+            const volumes = servicesOf(document)[colour].volumes as YamlValue[];
+            servicesOf(document)[colour].volumes = [...volumes, `${source}:/elsewhere`];
+          },
+          new RegExp(`service "${colour}": must mount the verdict volume read-only`)
+        );
+      }
+    }
+    // The same mount read-only is allowed: only a writable one replaces the socket.
+    const readOnly = clone(real);
+    const volumes = servicesOf(readOnly)['ghost-a'].volumes as YamlValue[];
+    servicesOf(readOnly)['ghost-a'].volumes = [
+      ...volumes,
+      `${verdictVolumeName(SLUG)}:/elsewhere:ro`,
+    ];
+    expect(() => assertRuntimePosture(readOnly, '10.20.1.50')).not.toThrow();
+  });
+
+  it('SABOTAGE — a Ghost that mounts the verdict volume in long syntax is refused', () => {
+    // RED on main: mountOf() reads only string volumes, so a mapping passes.
+    refuses((document) => {
+      const volumes = servicesOf(document)['ghost-a'].volumes as YamlValue[];
+      servicesOf(document)['ghost-a'].volumes = [
+        ...volumes,
+        { type: 'volume', source: verdictVolumeName(SLUG), target: '/elsewhere' },
+      ];
+    }, /service "ghost-a": must mount the verdict volume read-only/);
+  });
+
+  it('SABOTAGE — a Ghost that inherits the sidecar mounts through volumes_from is refused', () => {
+    // RED on main: volumes_from is not a forbidden key, so the volumes check never sees it.
+    refuses((document) => {
+      servicesOf(document)['ghost-a'].volumes_from = [VERDICT_HOST_SERVICE];
+    }, /service "ghost-a": must not set `volumes_from`/);
+  });
+
   it('SABOTAGE — a verdict volume with no sidecar is refused, mounted or only declared', () => {
     // RED: Ghost dials a socket that nothing makes.
     refuses((document) => {
