@@ -92,6 +92,8 @@ describe('the other series', () => {
 describe('configuration', () => {
   const base = {
     VERDICT_HOST_SOCKET: '/run/vh/v.sock',
+    VERDICT_HOST_SOCKET_UID: '30007',
+    VERDICT_HOST_SOCKET_GID: '30007',
     VERDICT_HOST_JOURNAL: '/var/lib/vh/queue.journal',
     VERDICT_HOST_VERIFY_KEY_FILE: '/etc/vh/channel-signing.pub',
     VERDICT_HOST_METRICS_FILE: '/var/lib/node_exporter/vh.prom',
@@ -101,6 +103,8 @@ describe('configuration', () => {
   it('reads a complete environment and applies the defaults', () => {
     expect(readConfig(base)).toMatchObject({
       socketMode: 0o600,
+      socketUid: 30007,
+      socketGid: 30007,
       inboundHost: '127.0.0.1',
       inboundPort: 8443,
       holdMs: 30_000,
@@ -136,6 +140,13 @@ describe('configuration', () => {
       'loopback',
     ],
     ['a wildcard inbound address', { VERDICT_HOST_INBOUND_HOST: '0.0.0.0' }, 'loopback'],
+    ['no socket uid', { VERDICT_HOST_SOCKET_UID: undefined }, 'VERDICT_HOST_SOCKET_UID'],
+    ['no socket gid', { VERDICT_HOST_SOCKET_GID: undefined }, 'VERDICT_HOST_SOCKET_GID'],
+    ['an empty socket uid', { VERDICT_HOST_SOCKET_UID: '' }, 'VERDICT_HOST_SOCKET_UID'],
+    ['a socket uid of root', { VERDICT_HOST_SOCKET_UID: '0' }, 'VERDICT_HOST_SOCKET_UID'],
+    ['a socket gid of root', { VERDICT_HOST_SOCKET_GID: '0' }, 'VERDICT_HOST_SOCKET_GID'],
+    ['a socket uid that is a name', { VERDICT_HOST_SOCKET_UID: 'node' }, 'VERDICT_HOST_SOCKET_UID'],
+    ['a socket gid that is negative', { VERDICT_HOST_SOCKET_GID: '-1' }, 'VERDICT_HOST_SOCKET_GID'],
     ['a socket mode that is not octal', { VERDICT_HOST_SOCKET_MODE: '9' }, 'octal'],
     ['a hold of zero', { VERDICT_HOST_HOLD_MS: '0' }, 'VERDICT_HOST_HOLD_MS'],
   ])('refuses %s', (_name, change, message) => {

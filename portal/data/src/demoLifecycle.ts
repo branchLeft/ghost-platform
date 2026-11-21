@@ -121,16 +121,22 @@ export class DemoExistsError extends Error {
   }
 }
 
-/** An extension the rules do not give: the demo is not LIVE or EXPIRING, or its one self-service extension is spent. */
+/**
+ * An extension the rules do not give: the demo is not LIVE or EXPIRING, its
+ * one self-service extension is spent, or no consented request for it is
+ * recorded.
+ */
 export class ExtensionRefusedError extends Error {
   constructor(
     readonly demoId: string,
-    readonly reason: 'state' | 'spent'
+    readonly reason: 'state' | 'spent' | 'consent'
   ) {
     super(
       reason === 'state'
         ? `demo ${demoId} can be extended only while LIVE or EXPIRING`
-        : `demo ${demoId} has used its one self-service extension`
+        : reason === 'spent'
+          ? `demo ${demoId} has used its one self-service extension`
+          : `demo ${demoId} has no recorded extension request with consent`
     );
     this.name = 'ExtensionRefusedError';
   }
