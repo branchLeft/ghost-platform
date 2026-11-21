@@ -194,7 +194,7 @@ SAMPLES: tuple[tuple[str, bool, str], ...] = (
         "build.yml build declares no permissions",
     ),
     (
-        "services/export-bundler/test/image/ghost-container.mjs",
+        "test-support/ghost-container.mjs",
         True,
         "imported by a test that build.yml build runs",
     ),

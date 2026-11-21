@@ -16,7 +16,9 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { SUPPORT_ACCESS_STATES, SUPPORT_LANES, SUPPORT_REQUEST_STATUSES } from './supportAccess.js';
+import { ERASURE_STATUSES } from './tenantErasure.js';
 import { TENANT_KINDS } from './tenantKind.js';
+import { BILLING_REFERENCE_PATTERN, CARD_NUMBER_LIKE_PATTERN, PAYMENT_STATES } from './billing.js';
 import { TENANT_NAME_PATTERN } from './tenantName.js';
 import { CUSTOM_DOMAIN_FQDN_PATTERN, VERIFICATION_TOKEN_PATTERN } from './customDomain.js';
 import {
@@ -27,6 +29,7 @@ import {
   STATES_BEFORE_LEASE,
   STATES_WITH_LEASE,
 } from './demoStates.js';
+import { EVALUATING_MAX, MISSING_MAX } from './demoExtension.js';
 import {
   ADDRESS_MAX,
   ADDRESS_PATTERN,
@@ -183,6 +186,52 @@ export const supportAccessReading = portal
   .enableRLS();
 
 /**
+ * A paying tenant's billing record: an opaque reference into the owner's
+ * invoicing tool and a payment state (`unpaid`, `paid`, `overdue`), one row per
+ * tenant. Nothing else about payment is held: no card or bank detail, no name
+ * or address, no provider key, and no column that holds free text. The
+ * reference is checked for shape, and one that reads as a card number is
+ * refused (`billing.ts`). The state has no default: a row that names none is
+ * refused, never guessed. `state_changed_at` is the database's clock and moves
+ * only when the state does. The owner role writes; the tenant role reads its
+ * own row and holds no write privilege, so it cannot mark itself paid.
+ */
+export const tenantBilling = portal
+  .table(
+    'tenant_billing',
+    {
+      tenantId: uuid('tenant_id')
+        .primaryKey()
+        .references(() => tenantRegister.tenantId),
+      billingReference: text('billing_reference'),
+      paymentState: text('payment_state').notNull(),
+      stateChangedAt: timestamp('state_changed_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      check(
+        'tenant_billing_payment_state_known',
+        sql`${table.paymentState} IN (${sql.raw(sqlList(PAYMENT_STATES))})`
+      ),
+      check(
+        'tenant_billing_reference_shape',
+        sql`${table.billingReference} ~ ${sql.raw(`'${BILLING_REFERENCE_PATTERN}'`)}`
+      ),
+      check(
+        'tenant_billing_reference_not_card_like',
+        sql`${table.billingReference} !~ ${sql.raw(`'${CARD_NUMBER_LIKE_PATTERN}'`)}`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
  * A tenant's request for support access, holding the tenant, the database-clock
  * time, a status (`open`, then `dealt_with`) and no text. A tenant has at most
  * one open request (a partial unique index) and any number dealt with, kept as
@@ -225,6 +274,57 @@ export const supportAccessRequest = portal
         for: 'insert',
         to: portalTenant,
         withCheck: sql`${table.status} = 'open'`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A tenant's own request to erase its whole site: one row per tenant for all
+ * time, with the database-clock time of the request, a status (`requested`,
+ * then `key_destroyed`) and the database-clock time at which the owner role
+ * recorded that the tenant's backup key was destroyed. No text. The tenant role
+ * may insert its own `requested` row and read it; only the owner role updates
+ * it, and no role deletes it. A row opens nothing and destroys nothing: the key
+ * is destroyed on the control host, and the row says so only once the owner
+ * role has been given that command's green proof. The check ties the two
+ * columns together, so a `key_destroyed` row always carries its moment and a
+ * `requested` row never does.
+ */
+export const tenantErasureRequest = portal
+  .table(
+    'tenant_erasure_request',
+    {
+      tenantId: uuid('tenant_id')
+        .primaryKey()
+        .references(() => tenantRegister.tenantId),
+      requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+      status: text('status').notNull().default('requested'),
+      keyDestroyedAt: timestamp('key_destroyed_at', { withTimezone: true }),
+    },
+    (table) => [
+      check(
+        'tenant_erasure_request_status_known',
+        sql`${table.status} IN (${sql.raw(sqlList(ERASURE_STATUSES))})`
+      ),
+      check(
+        'tenant_erasure_request_destroyed_moment',
+        sql`(${table.status} = 'requested' AND ${table.keyDestroyedAt} IS NULL) OR (${table.status} = 'key_destroyed' AND ${table.keyDestroyedAt} IS NOT NULL)`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+      // A tenant files a request and nothing more: it cannot file one that
+      // already says the key is destroyed.
+      pgPolicy('tenant_insert_requested', {
+        as: 'restrictive',
+        for: 'insert',
+        to: portalTenant,
+        withCheck: sql`${table.status} = 'requested' AND ${table.keyDestroyedAt} IS NULL`,
       }),
     ]
   )
@@ -650,6 +750,148 @@ export const demoRequest = portal
         for: 'select',
         to: portalProvisioner,
         using: sql`true`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A prospect's request to extend the demo it runs: the answers, the consent to
+ * be contacted with the exact wording shown, and the database's own time. One
+ * row per demo for all time (the demo's one self-service extension is the only
+ * one there is), append-only by grant: the front door's role may insert, and
+ * only for a demo whose request carries the address its transaction bound; the
+ * lifecycle worker reads. Nothing updates or deletes a row, so consent once
+ * recorded cannot be altered. Every rule in `demoExtension.ts` is repeated
+ * here as a check.
+ */
+export const demoExtensionRequest = portal
+  .table(
+    'demo_extension_request',
+    {
+      demoId: uuid('demo_id')
+        .primaryKey()
+        .references(() => demoRequest.demoId),
+      stillEvaluating: text('still_evaluating').notNull(),
+      whatIsMissing: text('what_is_missing'),
+      audienceSize: text('audience_size').notNull(),
+      chargesReaders: boolean('charges_readers').notNull(),
+      moveWhen: text('move_when').notNull(),
+      consentWording: text('consent_wording').notNull(),
+      consentedAt: timestamp('consented_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      check(
+        'demo_extension_request_evaluating_length',
+        sql`char_length(${table.stillEvaluating}) BETWEEN 1 AND ${sql.raw(String(EVALUATING_MAX))}`
+      ),
+      check(
+        'demo_extension_request_missing_length',
+        sql`${table.whatIsMissing} IS NULL OR char_length(${table.whatIsMissing}) BETWEEN 1 AND ${sql.raw(String(MISSING_MAX))}`
+      ),
+      check(
+        'demo_extension_request_choices_shape',
+        sql`${table.audienceSize} ~ ${sql.raw(`'${SLUG_PATTERN}'`)} AND ${table.moveWhen} ~ ${sql.raw(`'${SLUG_PATTERN}'`)}`
+      ),
+      check(
+        'demo_extension_request_consent_wording_length',
+        sql`char_length(${table.consentWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))}`
+      ),
+      // The front door files a request only for the demo whose own request holds
+      // the address its transaction bound. The subquery runs as the front door,
+      // which holds no SELECT on the address column, so it names the demo alone
+      // and the request table's own-row policy does the narrowing.
+      pgPolicy('extension_insert', {
+        as: 'permissive',
+        for: 'insert',
+        to: portalProspect,
+        withCheck: sql`EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = ${table.demoId})`,
+      }),
+      pgPolicy('provisioner_read', {
+        as: 'permissive',
+        for: 'select',
+        to: portalProvisioner,
+        using: sql`true`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/** What a queue item is about; the content itself is never stored. */
+export const SUBJECT_KINDS = ['comment', 'post'] as const;
+export type SubjectKind = (typeof SUBJECT_KINDS)[number];
+
+/** Where a queue item stands. A new item is held; the other states are set by later work. */
+export const ITEM_STATUSES = ['held', 'released', 'removed', 'expired'] as const;
+export type ItemStatus = (typeof ITEM_STATUSES)[number];
+
+/** Whether a classifier's floor is mandatory or the tenant's own setting applied. */
+export const CLASSIFIER_STATES = ['floor', 'setting'] as const;
+export type ClassifierState = (typeof CLASSIFIER_STATES)[number];
+
+/** One classifier's verdict on the held subject: a name and a score, no text. */
+export interface StoredClassifier {
+  name: string;
+  confidence: number;
+  state: ClassifierState;
+}
+
+/**
+ * The shape every reference stored in the queue must have (Ghost ids, member
+ * ids, the deciding party). Letters, digits and four punctuation marks, at
+ * most 64 characters: a sentence of comment text cannot be written into a
+ * column that holds it. Mirrored in the table's constraints.
+ */
+export const REFERENCE_PATTERN = '^[A-Za-z0-9_.:-]{1,64}$';
+
+/**
+ * A tenant's moderation queue: one row per held subject, a reference to the
+ * content in the tenant's own Ghost and the safety service's decision about
+ * it. It never holds the comment text, the member's display name or the post;
+ * those are fetched live when an item is opened. Isolated like every tenant
+ * table; a tenant inserts and reads, and nothing here updates or deletes yet.
+ */
+export const moderationItem = portal
+  .table(
+    'moderation_item',
+    {
+      id: uuid('id').primaryKey().defaultRandom(),
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      subjectKind: text('subject_kind').notNull(),
+      subjectId: text('subject_id').notNull(),
+      memberId: text('member_id').notNull(),
+      classifiers: jsonb('classifiers').$type<StoredClassifier[]>().notNull(),
+      status: text('status').notNull(),
+      decidedBy: text('decided_by').notNull(),
+      decidedAt: timestamp('decided_at', { withTimezone: true }).notNull(),
+    },
+    (table) => [
+      unique('moderation_item_subject_unique').on(
+        table.tenantId,
+        table.subjectKind,
+        table.subjectId
+      ),
+      check(
+        'moderation_item_subject_kind_known',
+        sql`${table.subjectKind} IN (${sql.raw(sqlList(SUBJECT_KINDS))})`
+      ),
+      check(
+        'moderation_item_status_known',
+        sql`${table.status} IN (${sql.raw(sqlList(ITEM_STATUSES))})`
+      ),
+      check(
+        'moderation_item_references_bounded',
+        sql`${table.subjectId} ~ ${sql.raw(`'${REFERENCE_PATTERN}'`)} AND ${table.memberId} ~ ${sql.raw(`'${REFERENCE_PATTERN}'`)} AND ${table.decidedBy} ~ ${sql.raw(`'${REFERENCE_PATTERN}'`)}`
+      ),
+      check('moderation_item_classifiers_array', sql`jsonb_typeof(${table.classifiers}) = 'array'`),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
       }),
     ]
   )

@@ -14,6 +14,11 @@ const { defineScanningStorageAdapter } = require('../../src/scanning-storage.js'
 const { FakeVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
+// These tests ask fakes keyed by the content digest, so the verdict key is the
+// digest here; the perceptual hash is tested in pdq.test.ts.
+const keyByDigest = async (buffer) => ({
+  hash: require('node:crypto').createHash('sha256').update(buffer).digest('hex'),
+});
 const { digestBytes } = require('../../src/pdq.js');
 const GhostErrors = require('@tryghost/errors');
 
@@ -96,7 +101,12 @@ function buildAdapter(quarantinePath) {
       cdnUrl: 'https://cdn.example.test',
     },
     quarantinePath,
-    checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })],
+    checks: [
+      createPdqKnownMaterialCheck(verdictClient, {
+        computeVerdictKey: keyByDigest,
+        computeDigest: digestBytes,
+      }),
+    ],
     policy: new SafetyPolicy(),
     computeDigest: digestBytes,
     holdRetryMs: 20,

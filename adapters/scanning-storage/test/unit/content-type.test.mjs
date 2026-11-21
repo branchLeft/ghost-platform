@@ -14,6 +14,11 @@ const { sniffImageContentType, stampImageContentType } = require('../../src/cont
 const { FakeVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
+// These tests ask fakes keyed by the content digest, so the verdict key is the
+// digest here; the perceptual hash is tested in pdq.test.ts.
+const keyByDigest = async (buffer) => ({
+  hash: require('node:crypto').createHash('sha256').update(buffer).digest('hex'),
+});
 const { digestBytes } = require('../../src/pdq.js');
 const GhostErrors = require('@tryghost/errors');
 
@@ -165,7 +170,12 @@ function buildS3Adapter({ unavailable = [], wrappedConfig = {}, logger } = {}) {
     // A bucket config makes a held upload's URL absolute, as it is on S3.
     wrappedConfig: { bucket: 'bucket', cdnUrl: 'https://cdn.example.test', ...wrappedConfig },
     quarantinePath: path.join(tmpDir, 'quarantine'),
-    checks: [createPdqKnownMaterialCheck(verdictClient, { computeDigest: digestBytes })],
+    checks: [
+      createPdqKnownMaterialCheck(verdictClient, {
+        computeVerdictKey: keyByDigest,
+        computeDigest: digestBytes,
+      }),
+    ],
     policy: new SafetyPolicy(),
     computeDigest: digestBytes,
     holdRetryMs: 20,

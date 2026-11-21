@@ -14,6 +14,7 @@ import {
 } from '../provision/provisionPortal.js';
 import {
   addedGrantStatements,
+  catchUpGrantStatements,
   createPrincipal,
   grantStatements,
   ident,
@@ -26,6 +27,7 @@ import {
   principalNames,
   rowSecurityEnabled,
 } from '../provision/manifest.js';
+import type { Principal } from '../provision/manifest.js';
 import { scramVerifier } from '../provision/scram.js';
 
 // The command's inputs, its redaction and its connections, without a server.
@@ -106,12 +108,32 @@ describe('loadConfig', () => {
     'PORTAL_TENANT_PASSWORD_FILE',
     'PORTAL_OWNER_PASSWORD_FILE',
     'PORTAL_PROVISIONER_PASSWORD_FILE',
-    'PORTAL_PROSPECT_PASSWORD_FILE',
     'PORTAL_MIGRATOR_PASSWORD_FILE',
   ])('refuses with a clear error when %s is missing', (name) => {
     const { dir, env } = files(GOOD);
     delete env[name];
     expect(() => loadConfig(env, [])).toThrow(new RegExp(`${name} must name a file`));
+    rmSync(dir, { recursive: true });
+  });
+
+  it('needs no prospect password file: the login has no user yet, so the full run asks for no typed secret', () => {
+    const { dir, env } = files(GOOD);
+    delete env['PORTAL_PROSPECT_PASSWORD_FILE'];
+    const config = loadConfig(env, []);
+    expect(config.prospectPassword).toBe('');
+    expect(config.tenantPassword).toBe(TENANT_PW);
+    env['PORTAL_PROSPECT_PASSWORD_FILE'] = '';
+    expect(loadConfig(env, []).prospectPassword).toBe('');
+    rmSync(dir, { recursive: true });
+  });
+
+  it('still refuses a prospect password file that is named but unreadable or empty', () => {
+    const { dir, env } = files({ ...GOOD, PORTAL_PROSPECT_PASSWORD_FILE: '\n' });
+    expect(() => loadConfig(env, [])).toThrow(/PORTAL_PROSPECT_PASSWORD_FILE: .* is empty/);
+    env['PORTAL_PROSPECT_PASSWORD_FILE'] = join(dir, 'absent');
+    expect(() => loadConfig(env, [])).toThrow(
+      /PORTAL_PROSPECT_PASSWORD_FILE: cannot read the file at/
+    );
     rmSync(dir, { recursive: true });
   });
 
@@ -453,6 +475,28 @@ describe('the statements the command writes', () => {
     ]);
   });
 
+  it('the catch-up gives a new principal exactly the manifest grants, as plain GRANTs', () => {
+    const fn = manifest(14, 'portal').find((o) => o.identity === 'public.bound_address()')!;
+    const applied = [fn.since];
+    expect(
+      catchUpGrantStatements(fn, applied, new Set<Principal>(['prospectRole']), names)
+    ).toEqual(['GRANT EXECUTE ON FUNCTION public.bound_address() TO "portal_prospect"']);
+    expect(catchUpGrantStatements(fn, applied, new Set<Principal>(['tenantRole']), names)).toEqual(
+      []
+    );
+  });
+
+  it('the catch-up never emits ALL, WITH GRANT OPTION or PUBLIC, for any object or tag', () => {
+    const everyTag = [...new Set(manifest(14, 'portal').map((o) => o.since))];
+    const everyone = new Set(Object.keys(names) as Principal[]);
+    for (const object of manifest(14, 'portal')) {
+      for (const statement of catchUpGrantStatements(object, everyTag, everyone, names)) {
+        expect(statement).toMatch(/^GRANT /);
+        expect(statement).not.toMatch(/\bALL\b|WITH GRANT OPTION|PUBLIC/);
+      }
+    }
+  });
+
   it('revokes CREATE on schema public before PostgreSQL 15 only', () => {
     const before = manifest(14, 'portal').find((o) => o.identity === 'public')!;
     const after = manifest(17, 'portal').find((o) => o.identity === 'public')!;
@@ -485,10 +529,14 @@ describe('the statements the command writes', () => {
     const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
     const status = '0012_demo_request_status_read';
     expect(addedGrantStatements(table, status, names)).toEqual([
-      'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"',
+      'GRANT SELECT ("demo_id", "publication_name", "submitted_at") ON TABLE portal.demo_request TO "portal_prospect"',
     ]);
     expect(addedGrantStatements(table, '0010_demo_request', names)).toEqual([]);
     expect(grantStatements(table, names, 14)).not.toContain(
+      'GRANT SELECT ("demo_id", "publication_name", "submitted_at") ON TABLE portal.demo_request TO "portal_prospect"'
+    );
+    // The front door is never given the whole table: only the status columns.
+    expect(addedGrantStatements(table, status, names).join('\n')).not.toContain(
       'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"'
     );
     const plain = manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!;
@@ -499,6 +547,72 @@ describe('the statements the command writes', () => {
       added: [{ since: status, grants: [{ grantee: 'PUBLIC' as const, privileges: ['SELECT'] }] }],
     };
     expect(addedGrantStatements(withPublic, status, names)).toEqual([]);
+  });
+
+  it('renders a column grant as column-level privileges, in the same statement shape', () => {
+    const table = {
+      ...manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!,
+      grants: [
+        { grantee: 'ownerRole' as const, privileges: ['SELECT'] },
+        { grantee: 'ownerRole' as const, privileges: ['INSERT', 'UPDATE'], columns: ['a', 'b_c'] },
+      ],
+      added: [
+        {
+          since: 'later',
+          grants: [{ grantee: 'tenantRole' as const, privileges: ['SELECT'], columns: ['a'] }],
+        },
+      ],
+    };
+    expect(grantStatements(table, names, 14)).toEqual([
+      'GRANT SELECT ON TABLE portal.tenant_register TO "portal_owner"',
+      'GRANT INSERT ("a", "b_c"), UPDATE ("a", "b_c") ON TABLE portal.tenant_register TO "portal_owner"',
+    ]);
+    expect(addedGrantStatements(table, 'later', names)).toEqual([
+      'GRANT SELECT ("a") ON TABLE portal.tenant_register TO "portal_tenant"',
+    ]);
+  });
+
+  it('refuses a column grant on anything but a table, with no column, or of a privilege no column holds', () => {
+    const table = manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!;
+    const withGrant = (grant: { privileges: string[]; columns: string[] }): typeof table => ({
+      ...table,
+      grants: [{ grantee: 'ownerRole', ...grant }],
+    });
+    expect(() =>
+      grantStatements(
+        { ...withGrant({ privileges: ['USAGE'], columns: ['a'] }), kind: 'schema' },
+        names,
+        14
+      )
+    ).toThrow("a column grant is a table's alone");
+    expect(() =>
+      grantStatements(withGrant({ privileges: ['INSERT'], columns: [] }), names, 14)
+    ).toThrow('names no column');
+    expect(() =>
+      grantStatements(withGrant({ privileges: ['DELETE'], columns: ['a'] }), names, 14)
+    ).toThrow('not a column privilege: DELETE');
+    expect(() =>
+      grantStatements(withGrant({ privileges: ['INSERT'], columns: ['a"; DROP'] }), names, 14)
+    ).toThrow('not a plain identifier');
+  });
+
+  it('gives the provisioner INSERT by column, leaving out each stamp the database sets', () => {
+    const all = manifest(14, 'portal').flatMap((o) => grantStatements(o, names, 14));
+    const provisioner = all.filter((s) => s.endsWith('TO "portal_provisioner"'));
+    expect(provisioner).toEqual([
+      'GRANT USAGE ON SCHEMA portal TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_state_event TO "portal_provisioner"',
+      'GRANT INSERT ("demo_id", "sequence", "previous_sequence", "from_state", "to_state", "lease_issued_at", "lease_ends_at", "extension_days") ON TABLE portal.demo_state_event TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.hostname_register TO "portal_provisioner"',
+      'GRANT INSERT ("demo_id", "label") ON TABLE portal.hostname_register TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.hostname_retirement TO "portal_provisioner"',
+      'GRANT INSERT ("label") ON TABLE portal.hostname_retirement TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_request TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_extension_request TO "portal_provisioner"',
+    ]);
+    for (const stamp of ['recorded_at', 'allocated_at', 'retired_at']) {
+      expect(all.filter((s) => s.includes(stamp))).toEqual([]);
+    }
   });
 
   it('expects an added grant and row security only once the migration that makes them is applied', () => {
@@ -529,6 +643,8 @@ describe('the statements the command writes', () => {
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.health_reading TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.support_access_reading TO "portal_owner"',
       'GRANT SELECT, UPDATE ON TABLE portal.support_access_request TO "portal_owner"',
+      'GRANT INSERT, SELECT, UPDATE ON TABLE portal.tenant_billing TO "portal_owner"',
+      'GRANT SELECT, UPDATE ON TABLE portal.tenant_erasure_request TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.moderation_setting TO "portal_tenant"',
     ]);
   });

@@ -15,7 +15,9 @@ export default defineConfig({
       // entry, main.js, only wires the guard to the service and is driven by
       // the no-egress test as a real child process, which coverage cannot see.
       include: ['src/**/*.js', 'verdict-host/**/*.js'],
-      exclude: ['src/ScanningStorageAdapter.js', 'verdict-host/main.js'],
+      // src/pdq-ts is the vendored pdq-ts build: it is tested at its own source
+      // against the C++ reference, and here by test/unit/pdq.test.ts.
+      exclude: ['src/ScanningStorageAdapter.js', 'src/pdq-ts/**', 'verdict-host/main.js'],
       thresholds: {
         // Non-negotiable for this component: it is the control that stops
         // illegal material being served, and an untested branch in it is a

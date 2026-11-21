@@ -31,7 +31,7 @@ export async function startCanary() {
   };
 }
 
-function freePort() {
+export function freePort() {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.listen(0, '127.0.0.1', () => {
@@ -51,6 +51,8 @@ export async function runOneRound({ entry, args = [], canary }) {
   const env = {
     PATH: process.env.PATH,
     VERDICT_HOST_SOCKET: socketPath,
+    VERDICT_HOST_SOCKET_UID: String(process.geteuid()),
+    VERDICT_HOST_SOCKET_GID: String(process.getegid()),
     VERDICT_HOST_JOURNAL: path.join(directory, 'state', 'queue.journal'),
     VERDICT_HOST_VERIFY_KEY_FILE: keys.keyFile,
     VERDICT_HOST_METRICS_FILE: path.join(directory, 'metrics', 'vh.prom'),

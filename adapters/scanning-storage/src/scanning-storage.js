@@ -4,8 +4,20 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 
-const { readRefusal, sealRefusal } = require('./quarantine');
 const {
+  readRefusal,
+  sealRefusal,
+  recordCopy,
+  familyKeyOf,
+  familiesToFreeze,
+  markFamilyFrozen,
+  writeLedger,
+  unfreezeFamily,
+  liftFreeze,
+  frozenOf,
+} = require('./quarantine');
+const {
+  AUDIENCE,
   buildRefusalError,
   buildScannerUnconfiguredError,
   buildVerdictPendingError,
@@ -25,6 +37,13 @@ const {
   resolveWriteTimeoutMs,
   REQUEST_WRITE_TIMEOUT_LOG_PREFIX,
 } = require('./hold');
+
+// Fixed prefixes, so a log search or alert has one string to match.
+const MATCH_LOG_PREFIX = 'ScanningStorageAdapter: MATCH';
+const FREEZE_FAILED_LOG_PREFIX = 'ScanningStorageAdapter: FREEZE_FAILED';
+const FREEZE_INCOMPLETE_LOG_PREFIX = 'ScanningStorageAdapter: FREEZE_INCOMPLETE';
+const LIFT_INCOMPLETE_LOG_PREFIX = 'ScanningStorageAdapter: FREEZE_LIFT_INCOMPLETE';
+const COPY_LEDGER_FAILED_LOG_PREFIX = 'ScanningStorageAdapter: COPY_LEDGER_FAILED';
 
 const DEFAULT_TREE_MAX_ENTRIES = 5000;
 const DEFAULT_TREE_DEADLINE_MS = 30000;
@@ -415,6 +434,10 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       // match the wrapped adapter.
       this.staticFileURLPrefix = this.wrapped.staticFileURLPrefix;
       this.quarantinePath = config.quarantinePath;
+      // Names this feature's objects in the quarantine directory every
+      // feature shares: the copy ledger and a resumed hold are both keyed by
+      // it. The wrapped adapter's storagePath is what differs between features.
+      this.owner = `${wraps}:${this.storagePath ?? ''}`;
       this.wrappedConfig = wrappedConfig || {};
       if (this.#isBucketImages() && !this.imageTransform) {
         // Silent otherwise: the upload works and only the next icon save fails.
@@ -468,7 +491,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // backends (a directory for the local adapters, the
         // staticFileURLPrefix for S3Storage), and it is where a promotion
         // lands -- so it is what a resumed hold must match.
-        owner: `${wraps}:${this.storagePath ?? ''}`,
+        owner: this.owner,
         computeDigest,
         retryIntervalMs: config.holdRetryMs,
         maxRetryIntervalMs: config.holdMaxRetryMs,
@@ -519,8 +542,17 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // silently disables responsive images for every tenant if it is missing.
     async saveRaw(buffer, targetPath) {
       this.#refuseIfNoVerdictSource();
+      // A copy of an upload that matched is not made, whatever asks for it: a
+      // responsive derivative generated now would be a new copy of withheld
+      // material.
+      this.#refuseIfFrozen(targetPath);
       return this.#scanAndProceed(buffer, {
-        proceed: () => this.wrapped.saveRaw(buffer, targetPath),
+        hintPath: targetPath,
+        proceed: async (scanned) => {
+          const url = await this.wrapped.saveRaw(buffer, targetPath);
+          if (scanned) this.#recordCopy(targetPath, buffer);
+          return url;
+        },
         onHold: (digest) => this.#registerHold(digest, buffer, targetPath),
       });
     }
@@ -535,8 +567,10 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         // go to the same key as an ordinary, scanned, overwriting write.
         const targetPath = this.#overwriteKey(file.name, targetDir);
         return this.#scanAndProceed(buffer, {
-          proceed: async () => {
+          hintPath: targetPath,
+          proceed: async (scanned) => {
             const url = await this.wrapped.saveRaw(buffer, targetPath);
+            if (scanned) this.#recordCopy(targetPath, buffer);
             await this.#writeIconVariants(buffer, targetPath);
             return url;
           },
@@ -574,13 +608,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       };
       try {
         return await this.#scanAndProceed(buffer, {
-          proceed: async () => {
+          proceed: async (scanned) => {
             const { fixed, remember } = promised();
             const name = fixed ?? withRandomName(file).name;
             const url = await this.wrapped.save({ ...file, name }, targetDir);
             if (remember) {
               rememberStoredName(this.storedNames, storedBasename(url, name));
             }
+            if (scanned) this.#recordCopy(this.#pathOfStoredUrl(url), buffer);
             await this.#writeIconVariants(buffer, this.#pathOfStoredUrl(url));
             return url;
           },
@@ -732,10 +767,22 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // with reality, and nothing for a process restart to lose. The design's
     // own words for the local backend: "held outside the served tree."
     exists(...args) {
+      const [fileName, targetDir] = args;
+      if (
+        this.#isFrozenPath(
+          targetDir ? path.posix.join(String(targetDir), String(fileName)) : fileName
+        )
+      ) {
+        return false;
+      }
       return this.wrapped.exists(...args);
     }
 
     read(...args) {
+      const [options] = args;
+      if (this.#isFrozenPath(options && typeof options === 'object' ? options.path : options)) {
+        return Promise.reject(this.#notFoundError());
+      }
       return this.wrapped.read(...args);
     }
 
@@ -744,7 +791,238 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     }
 
     serve(...args) {
-      return this.wrapped.serve(...args);
+      const inner = this.wrapped.serve(...args);
+      if (typeof inner !== 'function') return inner;
+      // A frozen path answers 404 whether or not the wrapped adapter still
+      // holds the bytes, so a copy a freeze could not remove is still not
+      // served through Ghost.
+      return (req, res, next) => {
+        if (req && this.#isFrozenPath(req.path)) {
+          res.statusCode = 404;
+          res.end();
+          return undefined;
+        }
+        return inner(req, res, next);
+      };
+    }
+
+    // What a match does once it is made (policy.md). The refusal record is
+    // already sealed by tier; this is the part that reaches the copies of the
+    // same upload that were stored before the verdict arrived. Never throws
+    // past the refusal that called it: a failure here is logged and counted,
+    // and the upload is refused all the same.
+    async #actOnMatch(digest, hintPath) {
+      let record;
+      try {
+        record = readRefusal(this.quarantinePath, digest);
+        this.#count('recordMatch', record.tier);
+        this.logger.error(
+          `${MATCH_LOG_PREFIX} tier=${record.tier} action=${record.action ?? 'seal'} wraps=${this.wrapsName} digest=${digest}`
+        );
+        return await this.#freezeCopies(record, digest, hintPath);
+      } catch (error) {
+        this.logger.error(`${FREEZE_FAILED_LOG_PREFIX} digest=${digest}`, error);
+        this.#count('recordFreezeIncomplete');
+        return null;
+      }
+    }
+
+    // Applies a verdict that arrives for bytes already stored (a re-scan that
+    // lists a hash that was clean, or a verdict injected by a test): seals or
+    // freezes the digest under the same record an upload's refusal writes, then
+    // freezes every copy of the family. Returns what it did, or null when the
+    // policy does not call the verdict a match or nothing stored has the digest.
+    async applyVerdict(digest, verdict) {
+      if (this.policy.decide(verdict) !== 'refuse') return null;
+      const [found] = familiesToFreeze(this.quarantinePath, this.owner, { digest });
+      const copy = found && found.ledger.copies.find((c) => c.digest === digest);
+      if (!copy) return null;
+      const buffer = await this.#bytesOfCopy(copy);
+      await sealRefusal(this.quarantinePath, digest, buffer, verdict, this.computeDigest);
+      return this.#actOnMatch(digest, copy.path);
+    }
+
+    // Undoes a tier-one freeze from the digest alone: every copy the freeze
+    // took out of the served location is written back from quarantine, the
+    // family answers present again, and the records go. A tier-two seal is
+    // never lifted, nor is a freeze with a seal anywhere in its family; those
+    // answer 'sealed' and change nothing. Returns 'lifted', 'not-refused',
+    // 'sealed', or 'incomplete' when a copy's bytes could not be put back (the
+    // freeze then stays in place).
+    async liftFreeze(digest) {
+      const record = readRefusal(this.quarantinePath, digest);
+      if (record === null) return 'not-refused';
+      const found = familiesToFreeze(this.quarantinePath, this.owner, { digest });
+      const copyDigests = found.flatMap(({ ledger }) => ledger.copies.map((c) => c.digest));
+      const digests = [...new Set([digest, ...copyDigests])];
+      for (const d of digests) {
+        const r = readRefusal(this.quarantinePath, d);
+        if (r !== null && r.tier !== 'one') return 'sealed';
+      }
+      for (const { ledger } of found) {
+        for (const copy of ledger.copies.filter((c) => c.withheld)) {
+          try {
+            const bytes = await fs.readFile(path.join(this.quarantinePath, copy.digest));
+            await this.wrapped.saveRaw(bytes, copy.path);
+          } catch (error) {
+            this.logger.error(`${LIFT_INCOMPLETE_LOG_PREFIX} path=${copy.path}`, error);
+            return 'incomplete';
+          }
+        }
+      }
+      for (const { file, ledger } of found) unfreezeFamily(file, ledger);
+      for (const d of digests) liftFreeze(this.quarantinePath, d);
+      return 'lifted';
+    }
+
+    // Reaches every copy: the family of every stored path that has this
+    // digest, and the family of the path the matching upload was headed for.
+    // The family is marked frozen first, so everything answers absent at once;
+    // then each copy is read back, kept under its own digest at the same tier,
+    // and removed. A copy that cannot be read is not removed (the bytes are the
+    // only record); one the backend refuses to remove is counted, loudly.
+    async #freezeCopies(record, digest, hintPath) {
+      const family =
+        typeof hintPath === 'string' ? familyKeyOf(hintPath, this.storagePath) : undefined;
+      const found = familiesToFreeze(this.quarantinePath, this.owner, { digest, family });
+      const summary = { families: found.length, copies: 0, withheld: 0, incomplete: 0 };
+      for (const { file, ledger } of found) {
+        const frozen = markFamilyFrozen(file, ledger, record.tier, record.classification);
+        for (const copy of frozen.copies) {
+          summary.copies += 1;
+          if (await this.#withholdCopy(copy, record)) {
+            copy.withheld = true;
+            summary.withheld += 1;
+          } else {
+            summary.incomplete += 1;
+            this.#count('recordFreezeIncomplete');
+          }
+        }
+        writeLedger(file, frozen);
+      }
+      return summary;
+    }
+
+    async #withholdCopy(copy, record) {
+      let bytes;
+      try {
+        bytes = await this.#bytesOfCopy(copy);
+        await sealRefusal(
+          this.quarantinePath,
+          this.computeDigest(bytes),
+          bytes,
+          { classification: record.classification, matchType: record.matchType, source: 'family' },
+          this.computeDigest
+        );
+      } catch (error) {
+        this.logger.error(`${FREEZE_INCOMPLETE_LOG_PREFIX} path=${copy.path} step=keep`, error);
+        return false;
+      }
+      // Already taken out by an earlier freeze: only the record above moved.
+      if (copy.withheld) return true;
+      try {
+        const { name, dir } = this.#deleteArgsOf(copy.path);
+        await this.wrapped.delete(name, dir);
+      } catch (error) {
+        // A bucket behind the storage gateway refuses every delete: the copy
+        // stays where it is and this adapter can only stop answering for it.
+        this.logger.error(`${FREEZE_INCOMPLETE_LOG_PREFIX} path=${copy.path} step=remove`, error);
+        return false;
+      }
+      return true;
+    }
+
+    // A copy a freeze already withheld is read back from quarantine, where it
+    // is kept; any other from the wrapped adapter, where it is still served.
+    async #bytesOfCopy(copy) {
+      if (copy.withheld) return fs.readFile(path.join(this.quarantinePath, copy.digest));
+      return this.wrapped.read({ path: this.#readPathOf(copy.path) });
+    }
+
+    // A path under an absolute storage root is read relative to it (Ghost's
+    // local adapter joins the two); any other path is read as it was stored.
+    #readPathOf(storedPath) {
+      const root = this.storagePath;
+      if (typeof root === 'string' && path.isAbsolute(root) && storedPath.startsWith(`${root}/`)) {
+        return storedPath.slice(root.length + 1);
+      }
+      return storedPath;
+    }
+
+    // Ghost's local adapter deletes `path.join(targetDir, fileName)`, so a
+    // path stored relative to an absolute root is made absolute first.
+    #deleteArgsOf(storedPath) {
+      const name = path.posix.basename(storedPath);
+      const dir = path.posix.dirname(storedPath);
+      const root = this.storagePath;
+      if (typeof root === 'string' && path.isAbsolute(root) && !path.isAbsolute(storedPath)) {
+        return { name, dir: path.posix.join(root, dir) };
+      }
+      return { name, dir };
+    }
+
+    // A metric a test double may not implement, and one that is not wired.
+    #count(method, ...args) {
+      if (typeof this.metrics?.[method] === 'function') this.metrics[method](...args);
+    }
+
+    #recordCopy(storedPath, buffer) {
+      try {
+        if (typeof storedPath !== 'string' || storedPath === '') {
+          throw new Error('the stored path is unknown');
+        }
+        recordCopy(
+          this.quarantinePath,
+          this.owner,
+          this.storagePath,
+          storedPath,
+          this.computeDigest(buffer)
+        );
+      } catch (error) {
+        // The object is already stored; failing the upload now would not
+        // undo it. A copy missing from the ledger is one a freeze cannot
+        // reach, so it is said aloud.
+        this.logger.error(`${COPY_LEDGER_FAILED_LOG_PREFIX} wraps=${this.wrapsName}`, error);
+      }
+    }
+
+    // The freeze of the family a stored path belongs to, or null. An
+    // unreadable ledger answers frozen: it is where a freeze would be.
+    #frozenOf(storedPath) {
+      if (typeof storedPath !== 'string' || storedPath === '') return null;
+      try {
+        return frozenOf(this.quarantinePath, this.owner, this.storagePath, storedPath);
+      } catch (error) {
+        this.logger.error(
+          `${COPY_LEDGER_FAILED_LOG_PREFIX} wraps=${this.wrapsName} step=read`,
+          error
+        );
+        return { tier: 'two', classification: null };
+      }
+    }
+
+    #isFrozenPath(storedPath) {
+      return this.#frozenOf(storedPath) !== null;
+    }
+
+    #refuseIfFrozen(targetPath) {
+      const frozen = this.#frozenOf(targetPath);
+      if (frozen === null) return;
+      if (this.metrics) {
+        this.metrics.recordRefusal('sealed');
+      }
+      throw buildRefusalError(
+        GhostErrors,
+        { classification: frozen.classification ?? 'csam' },
+        AUDIENCE.TENANT_STAFF
+      );
+    }
+
+    #notFoundError() {
+      if (typeof GhostErrors.NotFoundError === 'function') {
+        return new GhostErrors.NotFoundError({ message: 'Could not find image.' });
+      }
+      return Object.assign(new Error('Could not find image.'), { code: 'ENOENT' });
     }
 
     #overwriteKey(fileName, targetDir) {
@@ -774,7 +1052,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // here records a verdict or says they were scanned (see tier-policy.md).
     #decideVideoAudio(family, proceed) {
       if (this.allowVideoAudio) {
-        return this.#proceedWithWriteTimeout(proceed);
+        // Stored unchecked: no verdict will ever name it, so it is not in the
+        // copy ledger either.
+        return this.#proceedWithWriteTimeout(proceed, false);
       }
       if (this.metrics) {
         this.metrics.recordRefusal('video-audio');
@@ -785,9 +1065,9 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       throw buildVideoAudioRefusedError(GhostErrors);
     }
 
-    async #proceedWithWriteTimeout(proceed) {
+    async #proceedWithWriteTimeout(proceed, scanned = true) {
       try {
-        return await withWriteTimeout(proceed(), this.writeTimeoutMs);
+        return await withWriteTimeout(proceed(scanned), this.writeTimeoutMs);
       } catch (err) {
         if (isWriteTimeoutError(err)) {
           this.logger.error(REQUEST_WRITE_TIMEOUT_LOG_PREFIX, err);
@@ -798,7 +1078,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
 
     // `isMediaUpload` is false only for a theme tree, whose files are served
     // as theme assets and are not uploads to a media feature.
-    async #scanAndProceed(buffer, { proceed, onHold }, { isMediaUpload = true } = {}) {
+    async #scanAndProceed(buffer, { proceed, onHold, hintPath }, { isMediaUpload = true } = {}) {
       const videoAudioFamily = isMediaUpload ? detectVideoAudioFamily(buffer) : null;
       if (videoAudioFamily !== null) {
         return this.#decideVideoAudio(videoAudioFamily, proceed);
@@ -812,7 +1092,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         if (this.metrics) {
           this.metrics.recordRefusal('sealed');
         }
-        throw buildRefusalError(GhostErrors, sealed);
+        throw buildRefusalError(GhostErrors, sealed, AUDIENCE.TENANT_STAFF);
       }
 
       const { decision, verdict } = await evaluate(this.checks, this.policy, buffer);
@@ -826,7 +1106,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
           if (this.metrics) {
             this.metrics.recordRefusal('sealed');
           }
-          throw buildRefusalError(GhostErrors, sealedSince);
+          throw buildRefusalError(GhostErrors, sealedSince, AUDIENCE.TENANT_STAFF);
         }
         return this.#proceedWithWriteTimeout(proceed);
       }
@@ -842,7 +1122,8 @@ function defineScanningStorageAdapter(StorageBase, deps) {
         if (this.metrics) {
           this.metrics.recordRefusal('verdict');
         }
-        throw buildRefusalError(GhostErrors, verdict);
+        await this.#actOnMatch(verdict.evidence, hintPath);
+        throw buildRefusalError(GhostErrors, verdict, AUDIENCE.TENANT_STAFF);
       }
 
       if (decision === 'hold') {
@@ -948,9 +1229,14 @@ function defineScanningStorageAdapter(StorageBase, deps) {
       return {
         onAllow: async (heldBuffer) => {
           await this.wrapped.saveRaw(heldBuffer, targetPath);
+          this.#recordCopy(targetPath, heldBuffer);
           await this.#writeIconVariants(heldBuffer, targetPath);
         },
-        onRefuse: async () => {},
+        // Nothing was written for a hold, so there is nothing of its own to
+        // undo; but a sibling copy of the same upload may already be served.
+        onRefuse: async (digest) => {
+          if (typeof digest === 'string') await this.#actOnMatch(digest, targetPath);
+        },
       };
     }
 
@@ -990,7 +1276,7 @@ function defineScanningStorageAdapter(StorageBase, deps) {
     // not to the design.
     #urlForTargetPath(targetPath) {
       const normalized = targetPath.split(path.sep).join('/');
-      const { cdnUrl, endpoint, bucket } = this.wrappedConfig;
+      const { cdnUrl, endpoint, bucket, tenantPrefix } = this.wrappedConfig;
       if (bucket) {
         const base = cdnUrl || (endpoint ? `${endpoint.replace(/\/$/, '')}/${bucket}` : null);
         if (!base) {
@@ -998,7 +1284,12 @@ function defineScanningStorageAdapter(StorageBase, deps) {
             'ScanningStorageAdapter: an object-storage hold needs wrappedConfig.cdnUrl, or .endpoint and .bucket, to build a URL'
           );
         }
-        return `${base.replace(/\/$/, '')}/${normalized}`;
+        // Ghost stores a tenant's keys under tenantPrefix when it is set, so
+        // the served URL carries the same segment: <base>/<prefix>/<path>.
+        const prefix =
+          typeof tenantPrefix === 'string' ? tenantPrefix.replace(/^\/+|\/+$/g, '') : '';
+        const key = prefix ? `${prefix}/${normalized}` : normalized;
+        return `${base.replace(/\/$/, '')}/${key}`;
       }
       const feature =
         typeof this.wrapped.storagePath === 'string'

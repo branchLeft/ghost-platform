@@ -79,7 +79,10 @@ const describeLogs = (processes: readonly Started[]): string =>
  * own process, and an SMTP server standing in for the mail host. Needs
  * `PORTAL_TEST_DATABASE_URL`, like the data-layer tests.
  */
-export async function startRig(target: Target): Promise<Rig> {
+export async function startRig(
+  target: Target,
+  options: { readonly allowPlaceholderCopy?: boolean } = {}
+): Promise<Rig> {
   const adminUrl = process.env['PORTAL_TEST_DATABASE_URL'];
   if (adminUrl === undefined) throw new Error('PORTAL_TEST_DATABASE_URL is not set');
   const cleanups: Array<() => Promise<void>> = [];
@@ -195,6 +198,8 @@ export async function startRig(target: Target): Promise<Rig> {
         PORTAL_DATABASE_URL_FILE: tenantDatabase,
         PORTAL_PROVISIONING_URL: provisioningUrl,
         PORTAL_PROVISIONING_CREDENTIALS_FILE: tenantCredentials,
+        // The rig is a ring under inspection: every placeholder the screens hold may be read.
+        ...(options.allowPlaceholderCopy === false ? {} : { PORTAL_ALLOW_PLACEHOLDER_COPY: '1' }),
         PORTAL_SUPPORT_SMTP_HOST: LOOPBACK,
         PORTAL_SUPPORT_SMTP_PORT: String(mail.port),
         PORTAL_SUPPORT_SMTP_SECURITY: 'STARTTLS',

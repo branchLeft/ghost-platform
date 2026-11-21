@@ -14,7 +14,10 @@ exactly as it was. The checks run in this order:
 1. The demo is in a state PROMOTING can be entered from (LIVE, EXTENDED or EXPIRING).
 2. An approval is recorded.
 3. A consent is recorded.
-4. Every promotion target is supplied by name. A field left out is refused by its name.
+4. Every promotion target is supplied by name. A field left out is refused by its name. The
+   gateway folder (`mediaFolder`) is refused when it equals the tenant slug: it is an opaque
+   prefix. The tenant-owned settings (`codeInjection`, `accentColour`, `locale`, `timezone`) are
+   targets, so the import's copies of them can be dropped.
 5. The export of the demo content is done.
 6. The demo's owner has accepted the current version of each document (terms,
    privacy, DPA). The effect `assertDocumentsAccepted` is wired to the data
@@ -25,7 +28,8 @@ exactly as it was. The checks run in this order:
 
 ## The path
 
-PROMOTING, the swap, the check that a post, a member and an image arrived, the
+PROMOTING, the swap, the check that a post, a member, an image, a media file and a
+file arrived and that the media objects stored match the bundle's list, the
 first dump, a second read of the drain flag, then PROMOTED, then the hostname is
 retired. PROMOTED is recorded only after the dump exists.
 

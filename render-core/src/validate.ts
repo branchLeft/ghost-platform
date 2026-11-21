@@ -23,7 +23,13 @@ import type { TenantDescriptor, TenantStackDescriptor } from './descriptor.js';
 import { SECRET_ENV_KEYS } from './environment.js';
 import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
 import type { SlugClaimant } from './naming.js';
-import { mediaPublicBaseUrl, validateMediaBucket } from './media.js';
+import {
+  bareHttpsOrigin,
+  mediaPublicBaseUrl,
+  validateMediaBucket,
+  validateMediaFolder,
+  validateMediaShard,
+} from './media.js';
 import { MAIL_ROUTES, MAX_SWEEGO_ALLOWANCE, mailRouteOf } from './mail.js';
 
 export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3';
@@ -103,7 +109,7 @@ function assertDiscriminant(container: unknown, field: string, allowed: readonly
 
 const TENANT_KIND_VALUES = ['demo', 'tenant'] as const;
 const DATABASE_KIND_VALUES = ['sqlite', 'mysql'] as const;
-const MEDIA_KIND_VALUES = ['local', 's3'] as const;
+const MEDIA_KIND_VALUES = ['local', 's3', 'gateway'] as const;
 const TRANSPORT_KIND_VALUES = ['queue', 'smtp'] as const;
 const SENDING_IDENTITY_KIND_VALUES = ['demo', 'tenant'] as const;
 const HOSTNAME_KIND_VALUES = ['ours', 'theirs'] as const;
@@ -195,6 +201,7 @@ const DESCRIPTOR_KEYS = [
   'safety',
   'breakGlass',
   'expiresAt',
+  'analytics',
 ] as const;
 /** `DESCRIPTOR_KEYS` without `ownerEmail`: see validateTenantStack. */
 const STACK_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'ownerEmail');
@@ -203,6 +210,15 @@ const DATABASE_SQLITE_KEYS = ['kind', 'path'] as const;
 const DATABASE_MYSQL_KEYS = ['kind', 'host', 'port', 'name', 'user'] as const;
 const MEDIA_LOCAL_KEYS = ['kind', 'path', 'resize', 'srcsets'] as const;
 const MEDIA_S3_KEYS = ['kind', 'endpoint', 'region', 'bucket', 'resize', 'srcsets'] as const;
+const MEDIA_GATEWAY_KEYS = [
+  'kind',
+  'endpoint',
+  'region',
+  'shard',
+  'folder',
+  'resize',
+  'srcsets',
+] as const;
 const TRANSPORT_QUEUE_KEYS = ['kind', 'path'] as const;
 const TRANSPORT_SMTP_KEYS = ['kind', 'host', 'port', 'user'] as const;
 const MAIL_KEYS = ['enabled', 'ceiling', 'estateCeiling', 'identity', 'route'] as const;
@@ -220,7 +236,8 @@ const CODE_INJECTION_GRANTED_KEYS = ['kind', 'by', 'reason', 'until'] as const;
 const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
-const SAFETY_KEYS = ['near', 'exact', 'verdictSource'] as const;
+const SAFETY_KEYS = ['near', 'exact', 'verdictSource', 'inbound'] as const;
+const VERDICT_INBOUND_KEYS = ['port', 'tls'] as const;
 const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
 const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
@@ -386,11 +403,19 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
   if (descriptor.media.kind === 'local') {
     assertNoUnknownKeys(descriptor.media, MEDIA_LOCAL_KEYS, 'media');
     assertString(descriptor.media.path, 'media.path');
-  } else {
+  } else if (descriptor.media.kind === 's3') {
     assertNoUnknownKeys(descriptor.media, MEDIA_S3_KEYS, 'media');
     assertString(descriptor.media.endpoint, 'media.endpoint');
     assertString(descriptor.media.region, 'media.region');
     assertString(descriptor.media.bucket, 'media.bucket');
+  } else {
+    assertNoUnknownKeys(descriptor.media, MEDIA_GATEWAY_KEYS, 'media');
+    assertString(descriptor.media.endpoint, 'media.endpoint');
+    assertString(descriptor.media.region, 'media.region');
+    assertString(descriptor.media.shard, 'media.shard');
+    // Present, never defaulted: a missing folder is refused here, so nothing
+    // downstream can fall back to the slug. See media.md#the-tenant-folder.
+    assertString(descriptor.media.folder, 'media.folder');
   }
   assertBoolean(descriptor.media.resize, 'media.resize');
   assertBoolean(descriptor.media.srcsets, 'media.srcsets');
@@ -488,6 +513,7 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
   assertVerdictSource(descriptor.safety);
+  assertVerdictInbound(descriptor.safety);
 
   // Presence of all three, not just their type: a `breakGlass.kind` of
   // "enabled" missing `tenant` (say) fails here with a named error, before
@@ -629,12 +655,29 @@ function validateDatabase(
   validateDatabaseIdentity(slug, database);
 }
 
-function validateMedia(slug: TenantDescriptor['slug'], media: TenantDescriptor['media']): void {
+function validateMedia(
+  slug: TenantDescriptor['slug'],
+  media: TenantDescriptor['media'],
+  zones: ZoneConfig
+): void {
   if (media.kind === 'local') {
     assertNonEmptyPath(media.path, 'media.path');
     return;
   }
   assertNonEmptyString(media.region, 'media.region');
+  if (media.kind === 'gateway') {
+    bareHttpsOrigin(media.endpoint, 'media.endpoint');
+    validateMediaShard(slug, media);
+    validateMediaFolder(slug, media);
+    if (zones.mediaOrigin === undefined) {
+      throw new FieldValidationError(
+        'zones.mediaOrigin',
+        `media.kind "gateway" requires zones.mediaOrigin, the platform's own media address: ` +
+          `Ghost writes it into every published post as cdnUrl.`
+      );
+    }
+    return;
+  }
   // Throws for anything but a bare https host — see `mediaPublicBaseUrl`'s
   // own doc comment. Calling it here, at validate() time, is what stops
   // "javascript:alert(1)" (or an http endpoint, or one carrying a path)
@@ -884,6 +927,14 @@ export interface ZoneConfig {
    * checked by name (`validateMailIdentity`'s own tenant branch).
    */
   readonly demoMailDomain: string;
+  /**
+   * The platform's own media address, `https://<host>` under one of
+   * `ownedDomains`: the `cdnUrl` a `gateway` tenant's Ghost writes into every
+   * published post, so a post never names the storage supplier or a bucket.
+   * Optional, and required only by a `gateway` descriptor. See
+   * media.md#the-media-address.
+   */
+  readonly mediaOrigin?: string;
 }
 
 function normalizeDomain(value: string): string {
@@ -996,6 +1047,24 @@ function validateZoneConfig(zones: ZoneConfig): void {
       );
     }
   }
+  if (zones.mediaOrigin !== undefined) {
+    if (typeof zones.mediaOrigin !== 'string') {
+      throw new FieldValidationError(
+        'zones.mediaOrigin',
+        `zones.mediaOrigin must be a string or undefined, got ${describeType(zones.mediaOrigin)}.`
+      );
+    }
+    const origin = bareHttpsOrigin(zones.mediaOrigin, 'zones.mediaOrigin');
+    const host = new URL(origin).hostname;
+    if (new URL(origin).port !== '' || isOutsideOwnedDomains(host, zones.ownedDomains)) {
+      throw new FieldValidationError(
+        'zones.mediaOrigin',
+        `zones.mediaOrigin "${zones.mediaOrigin}" must be https://<host> with no port, the host ` +
+          `under one of zones.ownedDomains (${zones.ownedDomains.join(', ')}): Ghost writes it ` +
+          `into every published post, so it must be an address the platform owns.`
+      );
+    }
+  }
 }
 
 function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneConfig): void {
@@ -1096,6 +1165,49 @@ function assertVerdictSource(safety: Record<string, unknown>): void {
 }
 
 /**
+ * `safety.inbound` is optional and only meaningful with `verdictSource
+ * "production"`. When present it is an object of exactly `port` (a whole
+ * number, 1 to 65535) and `tls` (the one literal "pinned-private"). Nothing
+ * else: no address, no key or certificate path.
+ */
+function assertVerdictInbound(safety: Record<string, unknown>): void {
+  if (!('inbound' in safety)) return;
+  const inbound = safety.inbound;
+  if (typeof inbound !== 'object' || inbound === null || Array.isArray(inbound)) {
+    throw new FieldValidationError(
+      'safety.inbound',
+      `safety.inbound must be an object, got ${describeType(inbound)}.`
+    );
+  }
+  assertNoUnknownKeys(inbound, VERDICT_INBOUND_KEYS, 'safety.inbound');
+  if (!('port' in inbound)) {
+    throw new FieldValidationError('safety.inbound.port', 'safety.inbound.port is required.');
+  }
+  const port = inbound.port;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new FieldValidationError(
+      'safety.inbound.port',
+      `safety.inbound.port must be a whole number from 1 to 65535, got ${JSON.stringify(port)}.`
+    );
+  }
+  if (!('tls' in inbound)) {
+    throw new FieldValidationError('safety.inbound.tls', 'safety.inbound.tls is required.');
+  }
+  if (inbound.tls !== 'pinned-private') {
+    throw new FieldValidationError(
+      'safety.inbound.tls',
+      `safety.inbound.tls must be "pinned-private", got ${JSON.stringify(inbound.tls)}.`
+    );
+  }
+  if (safety.verdictSource !== 'production') {
+    throw new FieldValidationError(
+      'safety.inbound',
+      'safety.inbound is only allowed with safety.verdictSource "production".'
+    );
+  }
+}
+
+/**
  * Both flags are on for every tenant today — see SafetySpec's own doc
  * comment. A demo may not name the production verdict source: its upload
  * route stays refusing until the demo's own go-live gate reads a real
@@ -1182,12 +1294,13 @@ function checkInv2(descriptor: TenantStackDescriptor): void {
   }
 }
 
-/** INV-3 — `media.kind = "s3"` implies `backup.kind = "bucket-native"`. */
+/** INV-3 — object-storage media (`s3` or `gateway`) implies `backup.kind = "bucket-native"`. */
 function checkInv3(descriptor: TenantStackDescriptor): void {
-  if (descriptor.media.kind === 's3' && descriptor.backup.kind !== 'bucket-native') {
+  if (descriptor.media.kind !== 'local' && descriptor.backup.kind !== 'bucket-native') {
     throw new InvariantViolationError(
       'INV-3',
-      `media.kind "s3" requires backup.kind "bucket-native", got "${descriptor.backup.kind}". A ` +
+      `media.kind "${descriptor.media.kind}" requires backup.kind "bucket-native", got ` +
+        `"${descriptor.backup.kind}". A ` +
         `tenant with its own bucket and platform backups is backed up twice, or not at all.`
     );
   }
@@ -1227,9 +1340,9 @@ function checkTierVariants(descriptor: TenantStackDescriptor): void {
         `kind "tenant" requires database.kind "mysql", got "${descriptor.database.kind}".`
       );
     }
-    if (descriptor.media.kind !== 's3') {
+    if (descriptor.media.kind === 'local') {
       throw new TierMismatchError(
-        `kind "tenant" requires media.kind "s3", got "${descriptor.media.kind}".`
+        `kind "tenant" requires media.kind "s3" or "gateway", got "${descriptor.media.kind}".`
       );
     }
     if (descriptor.mail.identity.kind !== 'tenant') {
@@ -1239,7 +1352,7 @@ function checkTierVariants(descriptor: TenantStackDescriptor): void {
       );
     }
     // No separate backup check here: this function already forces a
-    // tenant's media to "s3", so INV-3 (media "s3" implies backup
+    // tenant's media to object storage, so INV-3 (object storage implies backup
     // "bucket-native", checked earlier in validate()) already rejects a
     // tenant with the wrong backup — a second check here could never fire.
     return;
@@ -1393,6 +1506,30 @@ export function validateOwnerEmailSecret(value: string): EmailAddress {
 /** Where a descriptor's owner address lives: inline, or in the secrets file. */
 type OwnerEmailPlacement = 'inline' | 'secret';
 
+const LOWER_CASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Analytics is off unless the descriptor says `on`. An `on` tenant needs a
+ * lower-case UUID site identifier (upper case would boot cleanly and then
+ * file every row under a value the database policy never matches), and a
+ * demo never has analytics (LLD-11 section 09).
+ */
+function validateAnalytics(descriptor: TenantStackDescriptor): void {
+  const analytics = descriptor.analytics;
+  if (analytics === undefined || analytics.kind === 'off') {
+    return;
+  }
+  if (descriptor.kind === 'demo') {
+    throw new FieldValidationError('analytics', 'a demo descriptor may not turn analytics on.');
+  }
+  if (!LOWER_CASE_UUID.test(analytics.siteUuid)) {
+    throw new FieldValidationError(
+      'analytics.siteUuid',
+      'analytics.siteUuid must be a lower-case UUID (8-4-4-4-12 hex, no upper-case letters).'
+    );
+  }
+}
+
 function validateFields(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
@@ -1440,12 +1577,13 @@ function validateFields(
   validatePortTriple(descriptor.ports);
   validatePrivateIpV4(descriptor.appHostIp);
   validateDatabase(descriptor.slug, descriptor.database);
-  validateMedia(descriptor.slug, descriptor.media);
+  validateMedia(descriptor.slug, descriptor.media, zones);
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
   validateMailIdentity(descriptor.mail, zones);
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
+  validateAnalytics(descriptor);
   validateCodeInjection(descriptor.codeInjection);
   validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {

@@ -3,7 +3,11 @@ import { chmod, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from 'n
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SlotName, TenantDescriptor } from '@branchleft/ghost-platform-render-core';
+import type {
+  EmailAddress,
+  SlotName,
+  TenantDescriptor,
+} from '@branchleft/ghost-platform-render-core';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { adminApiConfigFromEnv } from '../../src/config.js';
 import {
@@ -49,6 +53,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 const execFileAsync = promisify(execFile);
 const SLOT = '0' as SlotName;
 const PASSWORD = 'p'.repeat(43);
+const OWNER_READER = 'owner-review@example.invalid' as EmailAddress;
 
 function managed(): TenantDescriptor {
   return {
@@ -74,6 +79,7 @@ describe('the Ghost admin client', () => {
       keyStore: createAdminKeyStore(keyDir),
       zones: TEST_ZONES,
       readyTimeoutMs: 5_000,
+      ownerReader: OWNER_READER,
       sleep: async () => undefined,
       newPassword: () => PASSWORD,
       ...overrides,
@@ -243,6 +249,7 @@ describe('the Ghost admin client', () => {
       expect(ghost.requests.map((r) => `${r.method} ${r.path}`)).toEqual([
         'GET /authentication/setup/',
         'PUT /settings/',
+        'GET /members/',
       ]);
     });
 
@@ -479,9 +486,9 @@ describe('adminApiConfigFromEnv', () => {
   };
 
   it('has no default for the key folder', () => {
-    expect(() => adminApiConfigFromEnv(zonesEnv)).toThrow(
-      'Missing required environment variable BROKER_ADMIN_KEY_DIR'
-    );
+    expect(() =>
+      adminApiConfigFromEnv({ ...zonesEnv, OWNER_DUE_DILIGENCE_EMAIL: OWNER_READER })
+    ).toThrow('Missing required environment variable BROKER_ADMIN_KEY_DIR');
   });
 
   it('reads the folder and the ready budget', () => {
@@ -490,6 +497,7 @@ describe('adminApiConfigFromEnv', () => {
         ...zonesEnv,
         BROKER_ADMIN_KEY_DIR: '/k',
         BROKER_GHOST_READY_TIMEOUT_MS: '1234',
+        OWNER_DUE_DILIGENCE_EMAIL: OWNER_READER,
       })
     ).toMatchObject({ keyDir: '/k', readyTimeoutMs: 1234 });
   });

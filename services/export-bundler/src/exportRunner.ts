@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isMediaEntryName, MEDIA_ENTRY_PREFIX } from './entryNames.js';
 import type { DrainFlag } from './drainFlag.js';
 import type { DrainFlagStore } from './drainFlagStore.js';
 import { assertDrained } from './drainGate.js';
@@ -8,8 +9,19 @@ import type { ContainerRunner } from './containerRunner.js';
 import type { ExportFile, GhostExportClient } from './ghostExportClient.js';
 import type { GhostProbe } from './ghostProbe.js';
 import { waitUntilHealthy } from './ghostProbe.js';
-import { buildManifest, type ExportManifest, type ManifestEntry } from './manifest.js';
-import { collectExtensions, type ExtensionOutcome, type MediaConfig } from './extensions.js';
+import {
+  activeThemeOf,
+  buildManifest,
+  sidecarOf,
+  type ExportManifest,
+  type ManifestEntry,
+} from './manifest.js';
+import {
+  collectExtensions,
+  type ExtensionOutcome,
+  type MediaConfig,
+  type MediaTreeConfig,
+} from './extensions.js';
 import type { MediaProbe } from './mediaManifest.js';
 import { writeEncryptedArchive, writeManifestSidecar } from './archive.js';
 import type { AuditRecorder } from './auditLog.js';
@@ -76,6 +88,11 @@ export interface ExportRequest {
   readonly liveDatabase: DatabaseTarget;
   /** Where this tenant's media is served from, and how links to it are signed. */
   readonly media: MediaConfig;
+  /**
+   * Set for a demo slot: where its served media tree is read from. The live
+   * demo's Ghost can still write to the volume, so the read is a snapshot.
+   */
+  readonly mediaTree?: MediaTreeConfig;
 }
 
 export interface ExportResult {
@@ -251,6 +268,7 @@ async function exportOnScratch(
         baseUrl,
         tenantId: request.tenantId,
         media: request.media,
+        ...(request.mediaTree === undefined ? {} : { mediaTree: request.mediaTree }),
         nowSeconds: Math.floor(Date.parse(deps.nowIso()) / 1000),
         contentJson: contentAndSettings.body.toString('utf8'),
       });
@@ -286,14 +304,26 @@ async function bundle(
     [
       { name: 'content_and_settings', path: CONTENT_ENTRY },
       { name: 'post_analytics', path: ANALYTICS_ENTRY },
-      ...extensionFiles.map((file): ManifestEntry => ({
-        name: file.name.replace(/\.json$/, '').replace(/\.csv$/, '_csv'),
-        path: file.name,
-      })),
+      ...extensionFiles
+        .filter((file) => !isMediaEntryName(file.name))
+        .map((file): ManifestEntry => ({
+          name: file.name.replace(/\.json$/, '').replace(/\.csv$/, '_csv'),
+          path: file.name,
+        })),
+      // One line for the whole tree: a file's name is the tenant's own content,
+      // and this list sits beside the archive in the clear.
+      ...(extensionFiles.some((file) => isMediaEntryName(file.name))
+        ? [{ name: 'media_files', path: MEDIA_ENTRY_PREFIX }]
+        : []),
     ],
-    extensions.map((e) => e.report)
+    extensions.map((e) => e.report),
+    undefined,
+    extensions.find((e) => e.mediaFiles !== undefined)?.mediaFiles,
+    activeThemeOf(contentAndSettings.body.toString('utf8'))
   );
   const manifestJson = JSON.stringify(manifest, null, 2);
+  // Beside the archive, readable without the key: counts, never file names.
+  const sidecarJson = JSON.stringify(sidecarOf(manifest), null, 2);
 
   const stem = join(
     request.destDir,
@@ -316,7 +346,7 @@ async function bundle(
   // An archive without its audit record must not outlive the run: any
   // failure from here on removes both files before it is reported.
   try {
-    await writeManifestSidecar(manifestPath, manifestJson);
+    await writeManifestSidecar(manifestPath, sidecarJson);
     const archiveSha256 = createHash('sha256')
       .update(await readFile(archivePath))
       .digest('hex');

@@ -1,7 +1,8 @@
 /**
  * The `AdminApiClient` seam (`../adminApi.ts`), filled with the real
  * client (`../ghostAdmin/client.ts`). Reads its configuration when loaded,
- * so a missing `BROKER_ADMIN_KEY_DIR` stops the broker starting at all.
+ * so a missing `BROKER_ADMIN_KEY_DIR` or `OWNER_DUE_DILIGENCE_EMAIL` stops the
+ * broker starting at all.
  * See ghostAdminApi.md#ghostadminapi.
  */
 import type { AdminApiClient } from '../adminApi.js';
@@ -18,6 +19,7 @@ const adminApi: AdminApiClient & SeamMarker = {
     keyStore: createAdminKeyStore(config.keyDir),
     zones: config.zones,
     readyTimeoutMs: config.readyTimeoutMs,
+    ownerReader: config.ownerReader,
   }),
 };
 

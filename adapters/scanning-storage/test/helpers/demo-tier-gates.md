@@ -45,13 +45,13 @@ suite red at the assertions above, and restoring the file turns it green.
 
 ## What is substituted, and why
 
-**The hash stage.** The adapter's key is still a SHA-256 hex stand-in
-(`../../src/pdq.js`), and the host end refuses anything that is not a 32-byte
-perceptual-hash key, so on the real channel today the real key can only be held.
-The harness replaces that one function with a map from each fixture to a key of
-the right shape. Nothing else is replaced. `the substituted hash stage` in the
-test file goes red the day `pdq.js` stops being the stand-in: delete
-`loadEntryAdapter`'s substitution and run the gates on the real hash.
+**Nothing in the hash stage.** The fixtures are small generated pictures
+(`./pictures.ts`), and the adapter hashes them with its real PDQ stage
+(`../../src/pdq.js`), so the key an upload is asked about is the real
+perceptual hash. The stand-in service is keyed on those same hashes, computed
+by the same function. `the hash stage` in the test file holds that: the three
+fixtures hash, to unrelated keys of the shape the host end accepts, and the
+adapter's hash functions are the shipped ones.
 
 **Ghost.** The wrapped adapter is the suite's directory-free fake, and
 `Slot.sizeRequest` follows Ghost's responsive-size route (serve a derivative
@@ -60,13 +60,13 @@ That the real route behaves so against a real Ghost is proven by
 `../image/scanning-storage.image.test.mjs`; this harness does not start Ghost.
 
 **The test-classification hash.** The real safety service holds the real one.
-Here the fixtures are synthetic bytes, and the stand-in service decides which
-of them it answers as a match.
+Here the fixtures are synthetic patterns, and the stand-in service decides
+which of them it answers as a match.
 
 ## Not covered
 
 - A run on a live demo host's first slot, over the real service and the hash
-  source. That needs the host, the service and the adapter's real hash, and is
+  source. That needs the host and the service, and is
   a delivery step, not this file.
 - The estate's Prometheus scraping the age. The series is read from the host
   end's own renderer, which is what the textfile it writes is made of.

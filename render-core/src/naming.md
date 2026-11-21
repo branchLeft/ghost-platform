@@ -55,3 +55,10 @@ tenant data and `identity.ts` does not list it.
 slot's local verdict socket, rendered only when its descriptor names the
 production verdict source (compose.md#the-verdict-volume). One per slot,
 never shared between slots. It holds a socket, not tenant data.
+
+## Verdict host volume
+
+`verdictJournalVolumeName` is `ghost-<slug>-verdict-journal`: the verdict host
+end's queue journal and metrics textfile, mounted by the sidecar alone, per slot
+and never shared. The sidecar has no network, so there is no network name
+(compose.md#the-verdict-host-sidecar).
