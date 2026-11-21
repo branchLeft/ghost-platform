@@ -434,7 +434,7 @@ describe('executeOnboarding: the approval gate', () => {
       ApprovalScopeError
     );
     // every step before the first one outside the `setup` scope
-    expect(world.calls).toHaveLength(STEP_IDS.indexOf('publish-hostnames'));
+    expect(world.calls).toHaveLength(STEP_IDS.indexOf('publish-mail-dns'));
   });
 
   it('runs nothing when the ledger answers with a different approval than the one asked for', async () => {
