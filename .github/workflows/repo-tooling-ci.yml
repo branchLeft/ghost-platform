@@ -220,6 +220,11 @@ jobs:
       - name: Workflow permissions test
         run: python3 -m unittest discover -s scripts -p 'test_workflow_permissions.py'
 
+      # GitHub drops scheduled runs queued for minute 0 of an hour when it is
+      # busy. Fails a `cron` entry that fires at minute 0.
+      - name: Workflow cron minute test
+        run: python3 -m unittest discover -s scripts -p 'test_workflow_cron_minute.py'
+
       # Each gate of the demo site block broken in a scratch copy: the suite must
       # go red for every one, and green on the real copy.
       - name: Demo site block sabotage proof

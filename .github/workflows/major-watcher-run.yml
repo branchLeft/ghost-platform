@@ -8,7 +8,10 @@ name: Major watcher run
 # monitoring, not an agent in operations -- nothing here runs a model.
 #
 # Every 6 hours, well inside a day-long alerting SLA even allowing for a
-# missed run.
+# missed run. The minute is 43, not 0: GitHub drops scheduled runs queued
+# for the top of the hour when it is busy, and a `0 */6 * * *` schedule here
+# never fired once, while the release watcher's `17 */6 * * *` fires every
+# time. scripts/test_workflow_cron_minute.py fails a minute-0 schedule.
 #
 # Dedupe state (see services/major-watcher/README.md "State") lives on its
 # own branch, `state/major-watcher`, never on `main` -- `main` requires
@@ -21,7 +24,7 @@ name: Major watcher run
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '43 */6 * * *'
   # Manual runs are safe here in a way they are not in recovery-image.yml
   # or registry-push.yml: this workflow ships no artifact and merges
   # nothing, so there is no review gate a dispatched run could bypass.
