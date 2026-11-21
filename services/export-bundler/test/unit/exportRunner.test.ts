@@ -502,6 +502,22 @@ describe('runExport', () => {
     expect(sidecar.encryption).toEqual(expected);
   });
 
+  it("the manifest names the demo's active theme, inside the archive and in the clear sidecar beside it", async () => {
+    const withTheme = JSON.stringify({
+      ...JSON.parse(CONTENT_JSON),
+      db: [{ data: { settings: [{ key: 'active_theme', value: 'demo-theme' }] } }],
+    });
+    const { deps } = fakeDeps({ contentJson: withTheme });
+    const result = await runExport(deps, request());
+    expect(result.manifest.activeTheme).toBe('demo-theme');
+    const tar = decryptAge(result.archivePath, identity.identityPath);
+    expect(JSON.parse(tarMember(tar, 'manifest.json').toString('utf8')).activeTheme).toBe(
+      'demo-theme'
+    );
+    const sidecar = JSON.parse(await readFile(result.manifestPath, 'utf8'));
+    expect(sidecar.activeTheme).toBe('demo-theme');
+  });
+
   it("PLAINTEXT NEVER ON DISK: no file the run leaves, in the destination or the temp directory, holds the tenant's content", async () => {
     const scratchTmp = await mkdtemp(join(tmpdir(), 'export-bundler-run-tmpdir-'));
     const savedTmp = process.env.TMPDIR;

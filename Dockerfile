@@ -121,13 +121,21 @@ RUN rm -rf /tmp/kalotyp
 # are checked in place. Fetching needs the network, like `apk add` above; the
 # Node already in the base image runs it and nothing is installed. Seeded into
 # the content directory by the base image's entrypoint, theme by theme.
+# The platform's footer credit goes in after the pins are checked
+# (themes/footer-credit/README.md): one patch per theme, applied with no fuzz,
+# prints it beside Ghost's own "Powered by Ghost", which stays. `patch` is a
+# build-time tool only: installed, used and removed in this one layer.
 COPY themes/fetch.mjs themes/verify.mjs themes/manifest.json /tmp/themes/
 COPY themes/lib/ /tmp/themes/lib/
 COPY themes/licences/ /tmp/themes/licences/
+COPY themes/footer-credit/ /tmp/themes/footer-credit/
 RUN set -e \
     && node /tmp/themes/fetch.mjs --out /tmp/themes-bundle \
     && node /tmp/themes/verify.mjs --bundle /tmp/themes-bundle --base-themes /var/lib/ghost/current/content/themes \
     && cp -R /tmp/themes-bundle/themes/. /var/lib/ghost/content.orig/themes/ \
+    && apk add --no-cache patch \
+    && sh /tmp/themes/footer-credit/apply.sh /var/lib/ghost/content.orig/themes \
+    && apk del patch \
     && for theme in /var/lib/ghost/content.orig/themes/*; do \
          mkdir -p "$theme/assets/platform-fonts" \
          && cp -R /tmp/themes-bundle/fonts/. "$theme/assets/platform-fonts/" \

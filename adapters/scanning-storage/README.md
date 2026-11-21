@@ -676,6 +676,17 @@ process from the container, uses `storage__images__resolvePath` (see
 `src/verdict-client.js`'s own comment) rather than anything that guesses the
 real channel's wire format.
 
+**The tenant tier's refusal and hold gates** are written once in
+`test/helpers/tenant-tier-gates.ts` (`test/helpers/tenant-tier-gates.md`) and run by
+`test/unit/tenant-tier-gates.test.ts` through the real entry file, decorator,
+socket transport and verdict host end, with the decorator wrapping an adapter
+in `S3Storage`'s shape over a bucket the gates read directly. On both paid tiers
+a refused upload leaves the bucket empty, and a held upload is absent from the
+bucket (never written, not merely unlinked) until a clean verdict promotes it.
+Each assertion has a control that must go red at its own id, and the same
+test-hash upload through the demo tier's adapter is a paired case. What a run on
+a live tenant slot needs is in that file's "Running it on a live slot".
+
 **Restart-safety is proven against a real container restart, not simulated:**
 upload while held, `docker restart` the same container (same writable layer,
 entrypoint killed and started again -- what a deploy, a crash, an OOM kill or

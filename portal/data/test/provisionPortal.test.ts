@@ -19,6 +19,7 @@ import {
   OWNER,
   PROV_DB,
   PROSPECT,
+  PROSPECT_PW,
   PROVISIONER,
   TENANT,
   TENANT_PW,
@@ -50,6 +51,14 @@ async function privilege(role: string, table: string, what: string): Promise<boo
   const [result] = await admin(
     PROV_DB,
     `SELECT has_table_privilege('${role}', '${table}', '${what}') AS p`
+  );
+  return Boolean(result!.rows[0].p);
+}
+
+async function columnPrivilege(role: string, column: string): Promise<boolean> {
+  const [result] = await admin(
+    PROV_DB,
+    `SELECT has_column_privilege('${role}', 'portal.demo_request', '${column}', 'SELECT') AS p`
   );
   return Boolean(result!.rows[0].p);
 }
@@ -215,8 +224,14 @@ describe('the provisioning lifecycle', () => {
     // on the address it binds: it cannot change one or remove one. The
     // lifecycle worker and the owner console read what it wrote and write
     // nothing to it.
-    for (const what of ['INSERT', 'SELECT']) {
-      expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(true);
+    expect(await privilege('portal_prospect', 'portal.demo_request', 'INSERT')).toBe(true);
+    // It reads three columns of the table, not the table.
+    expect(await privilege('portal_prospect', 'portal.demo_request', 'SELECT')).toBe(false);
+    for (const column of ['demo_id', 'publication_name', 'submitted_at']) {
+      expect(await columnPrivilege('portal_prospect', column)).toBe(true);
+    }
+    for (const column of ['verified_subject', 'verified_address', 'consent_wording']) {
+      expect(await columnPrivilege('portal_prospect', column)).toBe(false);
     }
     for (const what of ['UPDATE', 'DELETE']) {
       expect(await privilege('portal_prospect', 'portal.demo_request', what)).toBe(false);
@@ -273,6 +288,76 @@ describe('the provisioning lifecycle', () => {
     await expect(connectAs(TENANT, TENANT_PW)).rejects.toThrow();
     await connectAs(MIGRATOR, 'rotated-migrator-1');
     await expect(connectAs(MIGRATOR, MIGRATOR_PW)).rejects.toThrow();
+  });
+
+  async function prospectVerifier(): Promise<string> {
+    const [result] = await admin(
+      'postgres',
+      `SELECT coalesce(rolpassword, '-') AS v FROM pg_authid WHERE rolname = '${PROSPECT}'`
+    );
+    return result!.rows[0].v as string;
+  }
+
+  it('needs no prospect password file: it creates the login with a password no one holds, leaves it on a second run, and sets it when the file is named', async () => {
+    const first = await run({}, { prospect: null });
+    expect(first.err).toEqual([]);
+    expect(first.code).toBe(0);
+    expect(first.out).toContain(
+      `${PROSPECT} created with a password no one holds: PORTAL_PROSPECT_PASSWORD_FILE was not named; name it in a later full run to set one`
+    );
+    // The run held the password it made, so the boundary test covered the login.
+    expect(first.out).not.toContain(
+      'prospect login not smoke-tested: this run holds no password for it'
+    );
+    expect(first.out).toContain('boundary verified');
+    const made = await prospectVerifier();
+    expect(made).toMatch(/^SCRAM-SHA-256\$/);
+    // Nothing the operator holds opens it: not the test fixture's, not an empty one.
+    await expect(connectAs(PROSPECT, PROSPECT_PW)).rejects.toThrow();
+    await expect(connectAs(PROSPECT, '')).rejects.toThrow();
+    const state = await stateSnapshot();
+
+    const second = await run({}, { prospect: null });
+    expect(second.err).toEqual([]);
+    expect(second.code).toBe(0);
+    expect(second.out).toContain(
+      `${PROSPECT} password left as it is: PORTAL_PROSPECT_PASSWORD_FILE was not named`
+    );
+    expect(second.out).toContain(
+      'prospect login not smoke-tested: this run holds no password for it'
+    );
+    expect(await prospectVerifier()).toBe(made);
+    const strip = (lines: string[]): string[] =>
+      lines.filter(
+        (line) =>
+          ![TENANT, OWNER, PROVISIONER, PROSPECT, MIGRATOR].some((login) =>
+            line.startsWith(`${login} `)
+          )
+      );
+    expect(strip(await stateSnapshot())).toEqual(strip(state));
+
+    const third = await run();
+    expect(third.err).toEqual([]);
+    expect(third.code).toBe(0);
+    expect(await prospectVerifier()).not.toBe(made);
+    await connectAs(PROSPECT, PROSPECT_PW);
+  });
+
+  it('never prints the password it makes for a new prospect login', async () => {
+    const seen: string[] = [];
+    const result = await run(
+      {
+        attempt: async (_database, login, password) => {
+          if (login === PROSPECT) seen.push(password);
+          return '28000';
+        },
+      },
+      { prospect: null }
+    );
+    expect(result.code).toBe(0);
+    expect(seen.length).toBeGreaterThan(0);
+    const printed = [...result.out, ...result.err].join('\n');
+    for (const password of seen) expect(printed).not.toContain(password);
   });
 
   it('applies a pending migration and grants what it made, in one transaction', async () => {
@@ -466,7 +551,7 @@ describe('the provisioning lifecycle', () => {
       await admin(PROV_DB, sabotage);
       try {
         await expect(verifyBoundary(provConfig())).rejects.toThrow(
-          /prospect reads only its own row of portal\.demo_request: expected ok, got error without a SQLSTATE: Error/
+          /prospect reads only its own row of portal\.demo_request: expected ok, got probe failed: the front door saw \d+ requests, want 0, with nothing bound/
         );
       } finally {
         await admin(PROV_DB, restore);
@@ -476,13 +561,14 @@ describe('the provisioning lifecycle', () => {
 
   it('the boundary smoke test fails when the prospect role could no longer read its own request', async () => {
     expect((await run()).code).toBe(0);
-    await admin(PROV_DB, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect');
+    const columns = '(demo_id, publication_name, submitted_at)';
+    await admin(PROV_DB, `REVOKE SELECT ${columns} ON portal.demo_request FROM portal_prospect`);
     try {
       await expect(verifyBoundary(provConfig())).rejects.toThrow(
         'prospect reads only its own row of portal.demo_request: expected ok, got 42501'
       );
     } finally {
-      await admin(PROV_DB, 'GRANT SELECT ON portal.demo_request TO portal_prospect');
+      await admin(PROV_DB, `GRANT SELECT ${columns} ON portal.demo_request TO portal_prospect`);
     }
   });
 

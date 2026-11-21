@@ -1,10 +1,68 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CONTENT_PANELS,
   ContactConfigError,
   PROGRESS_REFRESH_SECONDS,
+  PROGRESS_STEPS,
+  RESTATED_EXPECTATIONS,
+  clampPanel,
   parseProspectContact,
   renderProvisioningPage,
 } from '../src/frontdoor/provisionPage.js';
+
+describe('renderProvisioningPage: named steps and user-paced content', () => {
+  it('marks the step the demo is on: the first while CLAIMED, the second while PROVISIONING', () => {
+    const claimed = renderProvisioningPage('CLAIMED', CONTACT, null)!.body;
+    expect(claimed).toContain('data-step="ACTIVE">STEP_RECEIVED_LABEL');
+    expect(claimed).toContain('data-step="TODO">STEP_MAKING_LABEL');
+    const making = renderProvisioningPage('PROVISIONING', CONTACT, null)!.body;
+    expect(making).toContain('data-step="DONE">STEP_RECEIVED_LABEL');
+    expect(making).toContain('data-step="ACTIVE">STEP_MAKING_LABEL');
+    expect(making).toContain('data-step="TODO">STEP_CHECKING_LABEL');
+    expect(PROGRESS_STEPS).toHaveLength(3);
+  });
+
+  it('shows the first content panel by default and the next link to the second', () => {
+    const body = renderProvisioningPage('PROVISIONING', CONTACT, null)!.body;
+    expect(body).toContain(CONTENT_PANELS[0]!.heading);
+    expect(body).not.toContain(CONTENT_PANELS[1]!.heading);
+    expect(body).toContain('href="?panel=1"');
+  });
+
+  it('the last panel has no next link', () => {
+    const body = renderProvisioningPage('PROVISIONING', CONTACT, null, 2)!.body;
+    expect(body).toContain(CONTENT_PANELS[2]!.heading);
+    expect(body).not.toContain('?panel=');
+  });
+
+  it('clamps a requested position into the range rather than showing an empty screen', () => {
+    expect(clampPanel(-1)).toBe(0);
+    expect(clampPanel(1.5)).toBe(0);
+    expect(clampPanel(NaN)).toBe(0);
+    expect(clampPanel(99)).toBe(CONTENT_PANELS.length - 1);
+  });
+
+  it('control: a provision that finishes instantly does not advance the content past the prospect pace', () => {
+    // The prospect is on panel 0. The provision goes CLAIMED, PROVISIONING, LIVE
+    // at once: the panel shown at each step is the one the prospect asked for.
+    const stillHere = renderProvisioningPage('CLAIMED', CONTACT, null, 0)!.body;
+    const madeAtOnce = renderProvisioningPage('PROVISIONING', CONTACT, null, 0)!.body;
+    expect(stillHere).toContain(CONTENT_PANELS[0]!.heading);
+    expect(madeAtOnce).toContain(CONTENT_PANELS[0]!.heading);
+    expect(madeAtOnce).not.toContain(CONTENT_PANELS[1]!.heading);
+    const live = renderProvisioningPage('LIVE', CONTACT, 'k7m.demo.example.test', 0)!.body;
+    expect(live).not.toContain(CONTENT_PANELS[1]!.heading);
+    expect(live).not.toContain(CONTENT_PANELS[2]!.heading);
+  });
+
+  it('completion restates the expectations whatever the content position', () => {
+    for (const position of [0, 1, 2]) {
+      const body = renderProvisioningPage('LIVE', CONTACT, 'k7m.demo.example.test', position)!.body;
+      for (const text of RESTATED_EXPECTATIONS) expect(body).toContain(`<li>${text}</li>`);
+    }
+    expect(RESTATED_EXPECTATIONS).toHaveLength(3);
+  });
+});
 
 const CONTACT = { address: 'hello@example.test', bookingUrl: 'https://book.example.test/call' };
 

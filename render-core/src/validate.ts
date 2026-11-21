@@ -235,7 +235,8 @@ const CODE_INJECTION_GRANTED_KEYS = ['kind', 'by', 'reason', 'until'] as const;
 const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
-const SAFETY_KEYS = ['near', 'exact', 'verdictSource'] as const;
+const SAFETY_KEYS = ['near', 'exact', 'verdictSource', 'inbound'] as const;
+const VERDICT_INBOUND_KEYS = ['port', 'tls'] as const;
 const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
 const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
@@ -511,6 +512,7 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
   assertVerdictSource(descriptor.safety);
+  assertVerdictInbound(descriptor.safety);
 
   // Presence of all three, not just their type: a `breakGlass.kind` of
   // "enabled" missing `tenant` (say) fails here with a named error, before
@@ -1157,6 +1159,49 @@ function assertVerdictSource(safety: Record<string, unknown>): void {
     throw new FieldValidationError(
       'safety.verdictSource',
       `safety.verdictSource must be "none" or "production" when given, got ${JSON.stringify(value)}.`
+    );
+  }
+}
+
+/**
+ * `safety.inbound` is optional and only meaningful with `verdictSource
+ * "production"`. When present it is an object of exactly `port` (a whole
+ * number, 1 to 65535) and `tls` (the one literal "pinned-private"). Nothing
+ * else: no address, no key or certificate path.
+ */
+function assertVerdictInbound(safety: Record<string, unknown>): void {
+  if (!('inbound' in safety)) return;
+  const inbound = safety.inbound;
+  if (typeof inbound !== 'object' || inbound === null || Array.isArray(inbound)) {
+    throw new FieldValidationError(
+      'safety.inbound',
+      `safety.inbound must be an object, got ${describeType(inbound)}.`
+    );
+  }
+  assertNoUnknownKeys(inbound, VERDICT_INBOUND_KEYS, 'safety.inbound');
+  if (!('port' in inbound)) {
+    throw new FieldValidationError('safety.inbound.port', 'safety.inbound.port is required.');
+  }
+  const port = inbound.port;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new FieldValidationError(
+      'safety.inbound.port',
+      `safety.inbound.port must be a whole number from 1 to 65535, got ${JSON.stringify(port)}.`
+    );
+  }
+  if (!('tls' in inbound)) {
+    throw new FieldValidationError('safety.inbound.tls', 'safety.inbound.tls is required.');
+  }
+  if (inbound.tls !== 'pinned-private') {
+    throw new FieldValidationError(
+      'safety.inbound.tls',
+      `safety.inbound.tls must be "pinned-private", got ${JSON.stringify(inbound.tls)}.`
+    );
+  }
+  if (safety.verdictSource !== 'production') {
+    throw new FieldValidationError(
+      'safety.inbound',
+      'safety.inbound is only allowed with safety.verdictSource "production".'
     );
   }
 }

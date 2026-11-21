@@ -51,9 +51,12 @@ function must(id: AssertionId, ok: boolean, detail: string): void {
   registry.passed.add(id);
 }
 
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function until(check: () => boolean | Promise<boolean>, timeoutMs: number): Promise<boolean> {
+export async function until(
+  check: () => boolean | Promise<boolean>,
+  timeoutMs: number
+): Promise<boolean> {
   for (let waited = 0; waited <= timeoutMs; waited += 20) {
     if (await check()) return true;
     await wait(20);
@@ -99,14 +102,19 @@ export interface Loaded {
 
 // Loads Ghost's entry file with the two things Ghost's image would supply
 // resolved to the suite's doubles (the storage base class and the wrapped
-// local adapter) and the hash stage substituted as described above.
-export function loadEntryAdapter(srcDir: string): Loaded {
+// local adapter) and the hash stage substituted as described above. `alsoWraps`
+// names further adapters a slot may wrap by name (the tenant tier's
+// `S3Storage` double, see tenant-tier-gates.md).
+export function loadEntryAdapter(srcDir: string, alsoWraps: Record<string, unknown> = {}): Loaded {
   const NodeModule = require('node:module');
   const originalLoad = NodeModule._load;
   const wrappedPath = path.join(srcDir, 'FakeAdapter');
   NodeModule._load = function patchedLoad(request: string, ...rest: unknown[]) {
     if (request === 'ghost-storage-base') return { StorageBase: FakeStorageBase };
     if (request === wrappedPath) return FakeWrappedAdapter;
+    for (const [name, adapterClass] of Object.entries(alsoWraps)) {
+      if (request === path.join(srcDir, name)) return adapterClass;
+    }
     return originalLoad.call(this, request, ...rest);
   };
   const pdq = require(path.join(srcDir, 'pdq.js'));

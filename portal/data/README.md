@@ -445,8 +445,20 @@ others; `request_insert` lets it `INSERT`; `provisioner_read` lets
 bound, so an unbound statement sees no request. It returns the request's demo
 id, the publication name and the time it was recorded, which is what a status
 page needs; the lifecycle state is not here, because the front door cannot read
-it. The `SELECT` privilege is table-wide, so the policy is what narrows it: a
-statement that skips the typed read still sees one row at most.
+it. The `SELECT` privilege is by column, on those three columns alone
+(`demo_id`, `publication_name`, `submitted_at`), and the policy narrows the
+rows: a statement that skips the typed read still sees one row at most, and a
+statement that names any other column, or `*`, is refused with `42501`.
+
+*Why by column.* A session on the front door's connection can set
+`portal.prospect_address` to any value, so the row policy alone does not stop a
+compromised front door reading the row of an address it can guess. The column
+grant caps that: the address, the subject, the consent wording and the answers
+are out of its reach whatever it binds. The manifest records the grant with
+`columns`, and the provisioning check (M07) pins it exactly, so a table-wide
+grant (M06) or a grant on a fourth column (M07) is refused. The tenant binding
+(`portal.tenant_id`) has the same property and is the isolation the tenant
+tables rest on; it is not changed here.
 
 **One request per verified address.** The verified address is unique over all
 time: a second submission for an address is refused by the table
@@ -518,6 +530,40 @@ Tenant-facing code imports the first only; a test fails if anything under
 `src/tenant` imports the owner path, the provisioner path or the migrator. The owner pool connects as a login that is a member
 of `portal_owner` alone, so the tenant-facing connection cannot assume that role.
 
+## Recovering from a stopped first run
+
+A full run that stops on an already-initialised database, after it has created
+roles (steps 2 to 4), leaves those roles holding no grants. The next run refuses,
+naming each missing grant, for example `missing M05: USAGE on schema portal to
+portal_prospect`. The command never repairs this itself: a stopped run and a
+tampered role look the same, so both are refused. A stopped run on a fresh
+server needs no recovery: the next run completes the database.
+
+If the refusal names roles with no grants, and you know the failed run created
+them, drop those roles on the database host as the administrator, then re-run
+the full command. Drop only the roles the refusal names. A refusal naming a role
+with no grants means exactly this, or that privileges were removed by hand:
+investigate before dropping anything.
+
+Connect without a secret on the command line. The administrator password goes
+in a password file, never in the URL or in an argument list (`ps` shows
+arguments to every local user). Create it with mode 0600, one line:
+
+```text
+<host>:<port>:postgres:<administrator>:<password>
+```
+
+Then, with `PGPASSFILE` naming that file, run:
+
+```sh
+PGPASSFILE=/path/to/pgpass psql -h <host> -p <port> -U <administrator> -d postgres -v ON_ERROR_STOP=1 -c 'DROP ROLE portal_prospect' -c 'DROP ROLE portal_prospect_login'
+```
+
+The role is dropped first, so a refusal (the role holds a grant, a privilege or a
+policy reference) stops before the login is touched; `ON_ERROR_STOP` stops the
+run at the first error. Use your configured login names if they differ from the
+defaults in the table above. Delete the password file afterwards.
+
 ## Running the tests
 
 ```sh
@@ -546,25 +592,35 @@ node dist/provision/provisionMain.js   # or: pnpm run provision
 Every input is a file named by an environment variable; a secret in argv or in
 the variable itself is refused.
 
-| Variable                      | Holds                                                 |
-| ----------------------------- | ----------------------------------------------------- |
-| `PORTAL_ADMIN_URL_FILE`       | administrator connection URL (host and user required) |
-| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
-| `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
-| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII) |
-| `PORTAL_PROSPECT_PASSWORD_FILE` | password for the prospect login (printable ASCII)   |
-| `PORTAL_MIGRATOR_PASSWORD_FILE` | password for the migrator login (printable ASCII) |
-| `PORTAL_MIGRATOR_URL_FILE`    | `--migrate-only` only: the migrator login's connection URL, password included |
-| `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
-| `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
-| `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
-| `PORTAL_PROVISIONER_LOGIN`    | optional, default `portal_provisioner_login`          |
-| `PORTAL_PROSPECT_LOGIN`       | optional, default `portal_prospect_login`             |
-| `PORTAL_MIGRATOR_LOGIN`       | optional, default `portal_migrator_login`             |
+| Variable                           | Holds                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------- |
+| `PORTAL_ADMIN_URL_FILE`            | administrator connection URL (host and user required)                         |
+| `PORTAL_TENANT_PASSWORD_FILE`      | password for the tenant login (printable ASCII)                               |
+| `PORTAL_OWNER_PASSWORD_FILE`       | password for the owner login (printable ASCII)                                |
+| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII)                          |
+| `PORTAL_PROSPECT_PASSWORD_FILE`    | optional: password for the prospect login (printable ASCII); see below        |
+| `PORTAL_MIGRATOR_PASSWORD_FILE`    | password for the migrator login (printable ASCII)                             |
+| `PORTAL_MIGRATOR_URL_FILE`         | `--migrate-only` only: the migrator login's connection URL, password included |
+| `PORTAL_DATABASE_NAME`             | optional, default `portal`                                                    |
+| `PORTAL_TENANT_LOGIN`              | optional, default `portal_tenant_login`                                       |
+| `PORTAL_OWNER_LOGIN`               | optional, default `portal_owner_login`                                        |
+| `PORTAL_PROVISIONER_LOGIN`         | optional, default `portal_provisioner_login`                                  |
+| `PORTAL_PROSPECT_LOGIN`            | optional, default `portal_prospect_login`                                     |
+| `PORTAL_MIGRATOR_LOGIN`            | optional, default `portal_migrator_login`                                     |
 
-The five logins must differ and their passwords come from five files. A full
-run needs all five password files: the manifest is closed, so a run without
-one is refused rather than provisioning four of five.
+The five logins must differ. A full run needs the tenant, owner, provisioner
+and migrator password files: a run without one is refused rather than
+provisioning the others alone. The prospect password file is the one optional
+file, because the front door that will use the prospect login is not built yet
+and nothing holds its password. Without the file, a run that creates the login
+gives it a random password made in memory, used for that run's probes and
+written nowhere, so no one holds it; a run that finds the login already there
+leaves its password as it is, probes the other databases with a wrong one and
+skips the prospect login's smoke test, and says so in its output. Naming the
+file in a later full run sets the password. So a server provisioned before the
+prospect login existed reaches the newest migrations with no secret typed for
+it: the full run creates the role and login, gives them what the manifest grants
+on what is already there, and applies the pending migrations.
 
 The command creates what is absent, checks everything, and repairs nothing.
 `provision/manifest.ts` is the closed manifest: the four roles and five logins
@@ -654,8 +710,8 @@ created-empty, not provisioned` when the full provision has not run, and with
 `migrate refused: cannot connect ... as <migrator>` when the migrator or the
 database does not exist. A server last provisioned before `portal_provisioner`,
 `portal_prospect` or the migrator existed is such a case: `--migrate-only` refuses, and the full
-run (with every password file) comes first, then `--migrate-only` for later
-migrations. It skips step 5, which needs the other logins' passwords. Run again
+run (with the password files it needs; the prospect's is optional) comes first, then
+`--migrate-only` for later migrations. It skips step 5, which needs the other logins' passwords. Run again
 with nothing pending, it applies nothing and prints `no pending migrations`.
 
 **What the routine path does not observe.** A superuser reads catalogs the
