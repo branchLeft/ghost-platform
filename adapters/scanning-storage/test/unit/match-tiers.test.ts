@@ -121,7 +121,13 @@ function build(
       refuseDelete: options.refuseDelete ?? false,
     },
     quarantinePath,
-    checks: [createPdqKnownMaterialCheck(verdicts, { computeDigest: digestBytes })],
+    checks: [
+      createPdqKnownMaterialCheck(verdicts, {
+        computeDigest: digestBytes,
+        // The fake verdicts are keyed by the content digest, so the key is the digest.
+        computeVerdictKey: async (buffer: Buffer) => ({ hash: digestBytes(buffer), reason: null }),
+      }),
+    ],
     policy: new SafetyPolicy(),
     computeDigest: digestBytes,
     metrics: options.withMetrics === false ? undefined : metrics,
