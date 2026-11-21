@@ -1,12 +1,31 @@
 {
-  "name": "ghost-platform-ring-controller",
-  "version": "0.0.0",
-  "private": true,
-  "license": "SEE LICENSE IN ../../LICENSE",
+  "name": "@branchleft/ghost-platform-ring-controller",
+  "version": "0.1.0",
+  "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@11.17.0",
   "description": "The ring controller (LLD-4 §04/§05/§06b): deterministic software with no model in its path. It takes one published digest through four rings in a fixed order, one tenant at a time, advancing only when a ring has baked and is healthy, on top of the per-tenant bump state machine and its abort flag, which never interrupts the migration step and pages at least once when a tenant can be neither verified nor undone.",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/branchLeft/ghost-platform.git",
+    "directory": "services/ring-controller"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",

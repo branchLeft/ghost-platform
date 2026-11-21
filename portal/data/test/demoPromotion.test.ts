@@ -20,6 +20,16 @@ const MUTATING = ['transition', 'commitSwap', 'takeFirstDump', 'abortPromotion',
 const TARGETS: PromotionTargets = Object.fromEntries(
   PROMOTION_TARGET_FIELDS.map((field) => [field, `VALUE_${field}`])
 );
+const SLUG = 'SLUG_VALUE';
+const COMPLETE_CONTENT: ContentVerification = {
+  postPresent: true,
+  memberPresent: true,
+  imagePresent: true,
+  mediaFilePresent: true,
+  filePresent: true,
+  mediaStored: 2,
+  mediaListed: 2,
+};
 
 interface Fake {
   effects: PromotionEffects;
@@ -64,11 +74,7 @@ function fake(behaviour: Behaviour = {}): Fake {
     transition: (_id, to) => run(`transition:${to}`, undefined),
     commitSwap: () => run('commitSwap', undefined),
     rollbackSwap: () => run('rollbackSwap', undefined),
-    verifyContent: () =>
-      run(
-        'verifyContent',
-        behaviour.content ?? { postPresent: true, memberPresent: true, imagePresent: true }
-      ),
+    verifyContent: () => run('verifyContent', behaviour.content ?? COMPLETE_CONTENT),
     takeFirstDump: () =>
       run('takeFirstDump', { reference: behaviour.dumpReference ?? 'DUMP_REF', takenAt: NOW }),
     abortPromotion: (_id, returnTo) => run(`abortPromotion:${returnTo}`, undefined),
@@ -80,6 +86,7 @@ function fake(behaviour: Behaviour = {}): Fake {
 function request(overrides: Partial<PromotionRequest> = {}): PromotionRequest {
   return {
     demoId: DEMO,
+    tenantSlug: SLUG,
     position: { state: 'LIVE', origin: null },
     approval: { reference: 'APPROVAL_REF', recordedAt: NOW },
     consent: { reference: 'CONSENT_REF', recordedAt: NOW },
@@ -256,6 +263,50 @@ describe('promoteDemo, preconditions are enforced before any write', () => {
   });
 });
 
+describe('promoteDemo, the gateway folder and the tenant-owned settings', () => {
+  it('names the gateway endpoint, the opaque folder and the media address as targets', () => {
+    expect(PROMOTION_TARGET_FIELDS).toEqual(
+      expect.arrayContaining(['mediaEndpoint', 'mediaFolder', 'mediaAddress'])
+    );
+    expect(PROMOTION_TARGET_FIELDS).not.toContain('mediaRegion');
+  });
+
+  it('names every tenant-owned setting the import would otherwise overwrite', () => {
+    expect(PROMOTION_TARGET_FIELDS).toEqual(
+      expect.arrayContaining(['codeInjection', 'accentColour', 'locale', 'timezone'])
+    );
+  });
+
+  it('refuses a folder that is the tenant slug, by name, before any write', async () => {
+    const { effects, calls } = fake();
+    const targets = { ...TARGETS, mediaFolder: SLUG };
+    const refused = promoteDemo(request({ targets }), effects);
+    await expect(refused).rejects.toBeInstanceOf(PromotionRefusedError);
+    await expect(refused).rejects.toThrow('mediaFolder');
+    await expect(refused).rejects.toMatchObject({ precondition: 'targets' });
+    expect(calls).toEqual([]);
+  });
+
+  it('accepts a folder that differs from the slug', async () => {
+    const { effects } = fake();
+    const targets = { ...TARGETS, mediaFolder: 'OPAQUE_PREFIX' };
+    const outcome = await promoteDemo(request({ targets }), effects);
+    expect(outcome.status).toBe('promoted');
+  });
+
+  it('is incomplete when the content check sees a media count that does not match the list', async () => {
+    const content = { ...COMPLETE_CONTENT, mediaStored: 0, mediaListed: 1 };
+    const { effects, calls } = fake({ content });
+    const outcome = await promoteDemo(request(), effects);
+    expect(outcome).toMatchObject({
+      status: 'incomplete',
+      failedStep: 'content',
+      swapRolledBack: true,
+    });
+    expect(calls).not.toContain('takeFirstDump');
+  });
+});
+
 describe('promoteDemo, a failure after PROMOTING is incomplete, never done', () => {
   it('reports an incomplete promotion when the first dump fails, and never PROMOTED', async () => {
     const { effects, calls } = fake({ failing: ['takeFirstDump'] });
@@ -280,9 +331,13 @@ describe('promoteDemo, a failure after PROMOTING is incomplete, never done', () 
   });
 
   it.each([
-    { postPresent: false, memberPresent: true, imagePresent: true },
-    { postPresent: true, memberPresent: false, imagePresent: true },
-    { postPresent: true, memberPresent: true, imagePresent: false },
+    { ...COMPLETE_CONTENT, postPresent: false },
+    { ...COMPLETE_CONTENT, memberPresent: false },
+    { ...COMPLETE_CONTENT, imagePresent: false },
+    { ...COMPLETE_CONTENT, mediaFilePresent: false },
+    { ...COMPLETE_CONTENT, filePresent: false },
+    { ...COMPLETE_CONTENT, mediaStored: 1, mediaListed: 2 },
+    { ...COMPLETE_CONTENT, mediaStored: 3, mediaListed: 2 },
   ])('is incomplete when the imported content lacks something: %o', async (content) => {
     const { effects, calls } = fake({ content });
     const outcome = await promoteDemo(request(), effects);

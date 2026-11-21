@@ -4,6 +4,7 @@ const { VerdictQueue } = require('./queue');
 const { createAuthenticator, loadVerifyKey } = require('./auth');
 const { startLocalSocket } = require('./local-socket');
 const { startInbound } = require('./inbound');
+const { ensureTlsIdentity } = require('./tls-identity');
 const { HostMetrics } = require('./metrics');
 const { startTextfileExport } = require('../src/metrics');
 
@@ -13,6 +14,13 @@ const { startTextfileExport } = require('../src/metrics');
 const SWEEP_INTERVAL_MS = 5000;
 
 async function startVerdictHost(config, { logger = console, now = Date.now, egressRefused } = {}) {
+  // First, so a refused identity leaves nothing open. The key stays in this
+  // function: only the pin leaves it.
+  const identity =
+    config.tlsCertFile === undefined
+      ? null
+      : ensureTlsIdentity({ certFile: config.tlsCertFile, keyFile: config.tlsKeyFile, now });
+
   const queue = new VerdictQueue({
     journalFile: config.journalFile,
     now,
@@ -45,6 +53,7 @@ async function startVerdictHost(config, { logger = console, now = Date.now, egre
     host: config.inboundHost,
     port: config.inboundPort,
     holdMs: config.holdMs,
+    tls: identity === null ? null : { cert: identity.certificatePem, key: identity.privateKeyPem },
     now,
     logger,
     count: (family, value) => metrics.count(family, value),
@@ -59,6 +68,7 @@ async function startVerdictHost(config, { logger = console, now = Date.now, egre
     metrics,
     local,
     inbound,
+    tlsPin: identity === null ? undefined : identity.pin,
     async stop() {
       clearInterval(sweeper);
       stopExport();

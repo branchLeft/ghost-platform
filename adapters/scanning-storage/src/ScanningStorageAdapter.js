@@ -11,12 +11,12 @@ const GhostErrors = require('@tryghost/errors');
 
 const { defineScanningStorageAdapter } = require('./scanning-storage');
 const { createPdqKnownMaterialCheck } = require('./checks');
-const { PRODUCTION, resolveVerdictSource } = require('./verdict-source');
+const { IN_PROCESS_FAKE, PRODUCTION, resolveVerdictSource } = require('./verdict-source');
 const { createSocketVerdictTransport } = require('./socket-verdict-transport');
 const { resolveTierPolicy } = require('./tier-policy');
 const { SafetyPolicy } = require('./policy');
 const { getProcessMetrics, configureProcessExport } = require('./metrics');
-const { digestBytes } = require('./pdq');
+const { digestBytes, digestVerdictKey, pdqHashOfImage, decoderLoadError } = require('./pdq');
 
 // The wrapped adapter is resolved the same way Ghost's own adapter manager
 // resolves any adapter: by name, from this same directory. Ghost's built
@@ -68,10 +68,25 @@ function socketTransportFor(config) {
 // operator sees.
 module.exports = class ScanningStorageAdapter extends Adapter {
   constructor(config = {}) {
-    const { verdictClient, refuseUploadsReason } = resolveVerdictSource(config, {
+    const { kind, verdictClient, refuseUploadsReason } = resolveVerdictSource(config, {
       transport: socketTransportFor(config),
       logger: config.holdLogger || console,
     });
+    // What the verdict source is asked about. The hash source takes a PDQ hash
+    // and nothing else, so `production` asks about that. The in-process fake is
+    // a test double with no hash source behind it: its seeds (`refuse`,
+    // `unavailable`, `resolvePath`) name bytes by digest, as its documentation
+    // says, and so it is asked about the digest, for any bytes (a theme's
+    // templates, a file that is not a picture) as before.
+    const computeVerdictKey = kind === IN_PROCESS_FAKE ? digestVerdictKey : pdqHashOfImage;
+    // Without the image decoder no upload has a hash, so every one is held:
+    // safe and also total, so it is said once, loudly, at construction.
+    const decoderError = kind === PRODUCTION ? decoderLoadError() : null;
+    if (decoderError) {
+      (config.holdLogger || console).error(
+        `ScanningStorageAdapter: PDQ_DECODER_UNAVAILABLE the image decoder could not be loaded (${decoderError.message}): no upload can be hashed, so every upload is held`
+      );
+    }
     // One registry for the process, exported only when both keys are set
     // (metrics.md#configuration); nothing is written otherwise.
     const metrics = getProcessMetrics();
@@ -82,6 +97,7 @@ module.exports = class ScanningStorageAdapter extends Adapter {
       checks: [
         createPdqKnownMaterialCheck(verdictClient, {
           computeDigest: digestBytes,
+          computeVerdictKey,
           metrics,
           logger: config.holdLogger || console,
         }),

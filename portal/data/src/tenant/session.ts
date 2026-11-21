@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import { deriveBillingView, type BillingView } from '../billing.js';
 import { deriveHealthView } from '../healthView.js';
 import type { HealthView } from '../reading.js';
 import {
@@ -63,9 +64,11 @@ import {
   documentVersion,
   healthReading,
   moderationItem,
+  tenantBilling,
   moderationSetting,
   supportAccessReading,
   supportAccessRequest,
+  tenantErasureRequest,
   tenantRegister,
 } from '../schema.js';
 import {
@@ -73,6 +76,7 @@ import {
   type SupportAccessView,
   type SupportRequestStatus,
 } from '../supportAccess.js';
+import { deriveErasureView, type ErasureView } from '../tenantErasure.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
@@ -182,6 +186,17 @@ export class TenantDb {
   }
 
   /**
+   * The bound tenant's billing record: its opaque reference and payment state.
+   * Null when the owner has recorded none. Row-level isolation limits the read
+   * to the bound tenant, and the tenant role cannot write it.
+   */
+  async ownBilling(scope: TenantScope): Promise<BillingView | null> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantBilling));
+    const row = rows[0];
+    return row ? deriveBillingView(row) : null;
+  }
+
+  /**
    * The bound tenant's support-access state at `now`. With no reading, a
    * stale one or one dated ahead, the answer is `unknown`; `closed` comes only
    * from a fresh reading that says so. Row-level isolation limits the read to
@@ -207,6 +222,34 @@ export class TenantDb {
         .returning({ tenantId: supportAccessRequest.tenantId })
     );
     return inserted.length > 0;
+  }
+
+  /**
+   * Records the bound tenant's own request to erase its whole site: its own
+   * row, with the database's clock and no text. A tenant has one such row for
+   * all time, so a second request records nothing and returns false. The row
+   * opens nothing and destroys nothing; it is a request the owner acts on.
+   */
+  async requestOwnErasure(scope: TenantScope): Promise<boolean> {
+    const inserted = await this.run(scope, (tx) =>
+      tx
+        .insert(tenantErasureRequest)
+        .values({ tenantId: scope.tenantId })
+        .onConflictDoNothing()
+        .returning({ tenantId: tenantErasureRequest.tenantId })
+    );
+    return inserted.length > 0;
+  }
+
+  /**
+   * The bound tenant's erasure request as it may be shown: `none`, `requested`
+   * (nothing has been erased) or `key_destroyed` with the honest residual
+   * window. `key_destroyed` comes only from a row that says so and carries the
+   * moment; anything the row cannot prove is shown as `requested`.
+   */
+  async ownErasure(scope: TenantScope): Promise<ErasureView> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantErasureRequest));
+    return deriveErasureView(rows[0] ?? null);
   }
 
   /**

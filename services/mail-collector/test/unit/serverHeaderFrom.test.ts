@@ -139,22 +139,60 @@ describe('dist/server.js -- the header From check is on and has a scope', () => 
     expect(acked()).toEqual([]);
   });
 
+  const DEMO = {
+    kind: 'demo',
+    ownerEmail: 'reader@example.com',
+    mail: { identity: { kind: 'demo', localPart: 'slot-one' } },
+  };
+
   it("sends a demo's mail from the configured demo mail domain only", async () => {
     shim.enqueue(message('forged', 'hello@main.example'));
     shim.enqueue(message('genuine', 'hello@demo.example'));
-    await start({ kind: 'demo' }, { COLLECTOR_DEMO_MAIL_DOMAIN: 'demo.example' });
+    await start(DEMO, { COLLECTOR_DEMO_MAIL_DOMAIN: 'demo.example' });
     await until(
       () => acked().includes('forged') && acked().includes('genuine'),
       'both acked',
       10_000
     );
     await settle();
-    expect(fromsAtSink()).toEqual(['hello@demo.example']);
+    expect(fromsAtSink()).toEqual(['slot-one@demo.example']);
+  });
+
+  it("sends a demo's mail as the slot's own local part, whatever its Ghost asked for, and to the owner's address only", async () => {
+    shim.enqueue(message('rewritten', 'admin@demo.example'));
+    shim.enqueue({ ...message('elsewhere', 'slot-one@demo.example'), to: 'victim@example.org' });
+    await start(DEMO, { COLLECTOR_DEMO_MAIL_DOMAIN: 'demo.example' });
+    await until(
+      () => acked().includes('rewritten') && acked().includes('elsewhere'),
+      'both acked',
+      10_000
+    );
+    await settle();
+    expect(fromsAtSink()).toEqual(['slot-one@demo.example']);
+    expect(sink.messages.map((m) => m.parsed.to)).toHaveLength(1);
+    expect(logs.join('')).toContain('recipient-not-verified');
+  });
+
+  it("stops a demo slot at its own ceiling: the rest are acked and never reach mx1's stand-in", async () => {
+    shim.enqueue(message('first', 'slot-one@demo.example'));
+    shim.enqueue(message('second', 'slot-one@demo.example'));
+    await start(DEMO, {
+      COLLECTOR_DEMO_MAIL_DOMAIN: 'demo.example',
+      COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING: '1',
+    });
+    await until(
+      () => acked().includes('first') && acked().includes('second'),
+      'both acked',
+      10_000
+    );
+    await settle();
+    expect(sink.messages).toHaveLength(1);
+    expect(logs.join('')).toContain('slot-ceiling');
   });
 
   it("holds a demo's mail when no demo mail domain is configured, and says so at start-up", async () => {
     shim.enqueue(message('genuine', 'hello@demo.example'));
-    await start({ kind: 'demo' });
+    await start(DEMO);
     await until(() => logs.join('').includes('from-scope-unknown'), 'a hold', 10_000);
     await settle();
     expect(logs.join('')).toContain('demo_mail_domain_not_set');

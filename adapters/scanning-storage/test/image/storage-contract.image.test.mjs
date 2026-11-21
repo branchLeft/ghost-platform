@@ -44,9 +44,9 @@ if (!IMAGE) {
 // Bumping Ghost fails this on purpose: the shape tests below say whether the
 // new version still fits the gateway's allowlist, and this constant is then
 // raised together with the docs that name the version.
-const PINNED_GHOST_VERSION = '6.76.0';
+const PINNED_GHOST_VERSION = '6.78.0';
 
-// Ghost 6.76's whole storage vocabulary, in the order the gateway lists it.
+// Ghost 6.78's whole storage vocabulary, in the order the gateway lists it.
 const EXPECTED_SHAPES = [
   'AbortMultipartUpload',
   'CompleteMultipartUpload',
@@ -186,7 +186,7 @@ describe('the storage request contract, against the real Ghost image', () => {
   // fails the step: node:test on Node 22 does not count a failed hook.
   after(teardown);
 
-  it('runs Ghost 6.76', () => {
+  it('runs Ghost 6.78', () => {
     assert.equal(
       ghost.ghostVersion(),
       PINNED_GHOST_VERSION,

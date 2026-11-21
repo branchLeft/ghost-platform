@@ -1,4 +1,5 @@
 import { hkdfSync } from 'node:crypto';
+import type { CredentialProfile } from '../contracts.js';
 import type { MasterSecret } from './masterSecret.js';
 
 /**
@@ -8,6 +9,14 @@ import type { MasterSecret } from './masterSecret.js';
  * Changing it changes every tenant's secret: it is versioned, never edited.
  */
 export const TENANT_SECRET_LABEL = 'branchleft/storage-gateway/tenant-sigv4-secret/v1';
+
+/**
+ * The label for a tenant's state credential. It differs from
+ * {@link TENANT_SECRET_LABEL}, so a secret derived for a media key id is never
+ * the secret of a state key id even if one master secret were ever loaded
+ * into both processes. Versioned, never edited.
+ */
+export const STATE_SECRET_LABEL = 'branchleft/storage-gateway/state-sigv4-secret/v1';
 
 /** Bytes of HKDF output per tenant secret: SHA-256's hash length. */
 export const TENANT_SECRET_BYTES = 32;
@@ -33,9 +42,9 @@ export function hkdfSha256(ikm: Buffer, salt: Buffer, info: Buffer, length: numb
  * The zero byte cannot occur in either part, so no (label, key id) pair
  * encodes the same bytes as another.
  */
-export function tenantSecretInfo(keyId: string): Buffer {
+export function tenantSecretInfo(keyId: string, profile: CredentialProfile = 'media'): Buffer {
   return Buffer.concat([
-    Buffer.from(TENANT_SECRET_LABEL, 'utf8'),
+    Buffer.from(profile === 'state' ? STATE_SECRET_LABEL : TENANT_SECRET_LABEL, 'utf8'),
     Buffer.from([0]),
     Buffer.from(keyId, 'utf8'),
   ]);
@@ -49,14 +58,18 @@ export function tenantSecretInfo(keyId: string): Buffer {
  * because the master secret is already uniformly random; the label in
  * `info` does the separating.
  */
-export function deriveTenantSecret(master: MasterSecret, keyId: string): string {
+export function deriveTenantSecret(
+  master: MasterSecret,
+  keyId: string,
+  profile: CredentialProfile = 'media'
+): string {
   if (!isValidKeyId(keyId)) {
     throw new Error('key id is not well formed');
   }
   const okm = hkdfSha256(
     master.keyMaterial(),
     Buffer.alloc(0),
-    tenantSecretInfo(keyId),
+    tenantSecretInfo(keyId, profile),
     TENANT_SECRET_BYTES
   );
   return okm.toString('base64url');

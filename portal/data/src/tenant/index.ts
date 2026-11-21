@@ -11,6 +11,7 @@ export {
 export { assertTenantTablesIsolated, UnisolatedTableError } from '../isolation.js';
 export type { Tx } from '../db.js';
 export type { HealthView } from '../reading.js';
+export { PAYMENT_STATES, type BillingView, type PaymentState } from '../billing.js';
 export {
   COMMENT_CHECKS,
   InvalidSettingError,
@@ -55,6 +56,15 @@ export {
   type EdgeTarget,
 } from '../domainCheck.js';
 export { nodeDnsResolver } from '../nodeDnsResolver.js';
+export {
+  ERASURE_RESIDUAL_AROUND_DAYS,
+  ERASURE_RESIDUAL_REASON,
+  ERASURE_STATUSES,
+  RESIDUAL_WINDOW,
+  type ErasureStatus,
+  type ErasureView,
+  type ResidualWindow,
+} from '../tenantErasure.js';
 export {
   SUPPORT_ACCESS_STATES,
   SUPPORT_READING_FRESH_SECONDS,

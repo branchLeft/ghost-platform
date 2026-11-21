@@ -42,6 +42,7 @@ describe('the admin client wired into reconcile and reset', () => {
       keyStore: createAdminKeyStore(keyDir),
       zones: TEST_ZONES,
       readyTimeoutMs: 2_000,
+      ownerReader: 'owner-review@example.invalid' as EmailAddress,
       sleep: async () => undefined,
     });
     const g = ghost;
@@ -158,6 +159,7 @@ describe('the shipped plugin module', () => {
     const saved = { ...process.env };
     Object.assign(process.env, {
       BROKER_ADMIN_KEY_DIR: keyDir,
+      OWNER_DUE_DILIGENCE_EMAIL: 'owner-review@example.invalid',
       BROKER_DEMO_ZONE: TEST_ZONES.demoZone,
       BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
       BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),

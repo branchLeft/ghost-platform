@@ -140,6 +140,79 @@ describe('a prospect reads their own request and no other', () => {
   });
 });
 
+describe('the front door reads the three status columns and no other', () => {
+  const ADDRESS = 'columns@example.invalid';
+
+  beforeAll(async () => {
+    await prospect.submit(request(ADDRESS, 'NAME_OF_COLUMNS'));
+  });
+
+  /** One statement as the front door with its own address bound, so only the column grant can refuse it. */
+  async function ownRowStatement(statement: ReturnType<typeof sql>): Promise<string> {
+    return outcome(() =>
+      prospect.run(async (tx) => {
+        await bind(tx, 'portal.prospect_address', ADDRESS);
+        await tx.execute(statement);
+      })
+    );
+  }
+
+  it('reads its own three status columns (the positive control)', async () => {
+    expect(
+      await ownRowStatement(
+        sql`SELECT demo_id, publication_name, submitted_at FROM portal.demo_request`
+      )
+    ).toBe('ok');
+  });
+
+  it.each([
+    'verified_subject',
+    'verified_address',
+    'description',
+    'accent_colour',
+    'theme',
+    'font',
+    'new_to_ghost',
+    'import_source',
+    'outlet_type',
+    'logo_hash',
+    'consent_wording',
+    'explainer_wording',
+  ])('cannot read %s, even on the row it may see: SQLSTATE 42501', async (column) => {
+    expect(await ownRowStatement(sql.raw(`SELECT ${column} FROM portal.demo_request`))).toBe(
+      PERMISSION_DENIED
+    );
+  });
+
+  it('cannot read every column at once: SQLSTATE 42501', async () => {
+    expect(await ownRowStatement(sql`SELECT * FROM portal.demo_request`)).toBe(PERMISSION_DENIED);
+  });
+
+  it('cannot filter on a column it may not read: SQLSTATE 42501', async () => {
+    expect(
+      await ownRowStatement(
+        sql`SELECT demo_id FROM portal.demo_request WHERE verified_address LIKE '%'`
+      )
+    ).toBe(PERMISSION_DENIED);
+  });
+
+  it('holds the grant on those three columns and on no table-wide SELECT, as the catalog has it', async () => {
+    const result = await fx.admin.query<{ column: string }>(
+      `SELECT a.attname AS "column"
+         FROM pg_attribute a
+        WHERE a.attrelid = 'portal.demo_request'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+          AND has_column_privilege('portal_prospect', a.attrelid, a.attnum, 'SELECT')
+          AND NOT has_table_privilege('portal_prospect', a.attrelid, 'SELECT')
+        ORDER BY 1`
+    );
+    expect(result.rows.map((r) => r.column)).toEqual([
+      'demo_id',
+      'publication_name',
+      'submitted_at',
+    ]);
+  });
+});
+
 describe('what the front door still cannot do', () => {
   it('cannot read back an insert it did not bind the address for: SQLSTATE 42501', async () => {
     const insert = (tx: Tx): Promise<unknown> =>
@@ -239,13 +312,13 @@ describe('the policy is what does it', () => {
 });
 
 describe('the grants and the policies, as the catalog holds them', () => {
-  it('gives the front door INSERT and SELECT on the requests and nothing more', async () => {
+  it('gives the front door INSERT on the requests and no table-wide privilege besides', async () => {
     const result = await fx.admin.query<{ privilege: string }>(
       `SELECT p AS privilege FROM unnest($1::text[]) p
         WHERE has_table_privilege('portal_prospect', 'portal.demo_request', p) ORDER BY 1`,
       [['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']]
     );
-    expect(result.rows.map((r) => r.privilege)).toEqual(['INSERT', 'SELECT']);
+    expect(result.rows.map((r) => r.privilege)).toEqual(['INSERT']);
   });
 
   it('holds exactly three policies, each for a named role and none for PUBLIC', async () => {

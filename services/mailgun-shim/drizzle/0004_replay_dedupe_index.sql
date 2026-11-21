@@ -1,0 +1,1 @@
+CREATE INDEX `idx_queue_batches_domain_email` ON `queue_batches` (`domain`,`email_id`);

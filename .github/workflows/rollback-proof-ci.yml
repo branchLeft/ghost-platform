@@ -26,16 +26,16 @@ on:
     paths:
       - rollback-proof/**
       - test-support/image-harness.mjs
-      - services/export-bundler/test/image/ghost-admin.mjs
-      - services/export-bundler/test/image/ghost-container.mjs
+      - test-support/ghost-admin.mjs
+      - test-support/ghost-container.mjs
       - .github/workflows/rollback-proof-ci.yml
   pull_request:
     branches: [main]
     paths:
       - rollback-proof/**
       - test-support/image-harness.mjs
-      - services/export-bundler/test/image/ghost-admin.mjs
-      - services/export-bundler/test/image/ghost-container.mjs
+      - test-support/ghost-admin.mjs
+      - test-support/ghost-container.mjs
       - .github/workflows/rollback-proof-ci.yml
   workflow_call:
     inputs:

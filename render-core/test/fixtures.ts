@@ -239,3 +239,59 @@ export function professionalTenantDescriptor(): TenantDescriptor {
     expiresAt: null,
   };
 }
+
+/** `TEST_ZONES` plus the platform's own media address, which a `gateway`
+ * descriptor requires. Test-only, under a reserved example.test zone. */
+export const TEST_GATEWAY_ZONES: ZoneConfig = {
+  ...TEST_ZONES,
+  mediaOrigin: 'https://media.platform-domain.example.test',
+};
+
+/** An opaque folder for `gatewayTenantDescriptor()`: random-looking, in the
+ * gateway's own alphabet, and not containing the slug. */
+export const GATEWAY_FOLDER = 'q7Zr2mXv9KpL4tWb8NcE';
+
+/**
+ * A paying tenant whose media is one folder in a shared shard, reached
+ * through the storage gateway. Otherwise the entry tier's shape, under its
+ * own slug, uid and ports.
+ */
+export function gatewayTenantDescriptor(): TenantDescriptor {
+  const entry = entryTenantDescriptor();
+  return {
+    ...entry,
+    slug: 'gw-co' as Slug,
+    siteUrl: 'https://blog.gw-co.example' as AbsoluteUrl,
+    ownerEmail: 'owner@gw-co.example' as EmailAddress,
+    uid: 30401 as TenantUid,
+    ports: { a: 3401 as Port, b: 3402 as Port, health: 3403 as Port },
+    appHostIp: '10.20.2.40' as PrivateIpV4,
+    database: {
+      kind: 'mysql',
+      host: 'db-t1.internal',
+      port: 3306 as Port,
+      name: 'ghost_gw_co',
+      user: 'ghost_gw_co',
+    },
+    media: {
+      kind: 'gateway',
+      endpoint: 'https://storage-gateway.internal.example.test',
+      region: 'eu',
+      shard: 'shard-a-example',
+      folder: GATEWAY_FOLDER,
+      resize: true,
+      srcsets: true,
+    },
+    transport: { kind: 'smtp', host: 'mx.internal', port: 587 as Port, user: 'gw-co' },
+    mail: {
+      ...entry.mail,
+      identity: { kind: 'tenant', domain: 'blog.gw-co.example', dkimSelector: 'bl' },
+    },
+    hostname: {
+      kind: 'theirs',
+      fqdn: 'blog.gw-co.example',
+      verifiedAt: '2026-09-01T00:00:00.000Z' as Instant,
+    },
+    backup: { kind: 'bucket-native', encryptionRecipient: 'age1qgwcoexamplerecipient' },
+  };
+}
