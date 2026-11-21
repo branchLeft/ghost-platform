@@ -47,8 +47,14 @@ stdin) and one dump session (`mysqldump`), both as the backup account.
    snapshot is a transaction and the position is read under the lock, so a
    table that is not transactional would be read after the unlock, and its
    rows would then be replayed again from the binary log. This holds for
-   both nightly paths, so one such table in any dumped schema stops that
-   schema's dump until it is converted.
+   both nightly paths. On the tenant backup worker (one schema per run) it
+   stops that schema's dump. On db1's nightly path (`dump_nightly.py`, every
+   user schema in one run) the refusal is a `SnapshotError` for a schema that
+   still exists, which fails the whole run: one such table in any schema on
+   db1 means no tenant on db1 is backed up until it is converted. That is the
+   accepted behaviour, loud by design (`DbNightlyDumpFailed`,
+   `DbNightlyDumpStale`), and the owner's pre-delivery query in the pull
+   request checks for it.
 3. Coordinator: `LOCK TABLES … READ` on exactly those tables. This takes
    no flush. A long-running read does not block it, because a read lock
    and a running read are compatible. It waits only for write

@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
 _HERE = pathlib.Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -1654,6 +1654,44 @@ def control_2(ctx: Ctx) -> ControlResult:
     return ControlResult(2, "another schema's writes are not blocked", verdict, [on_tmpfs.texts["control_2_source"], *numbers])
 
 
+# How long the long reader holds the other schema's table while the retired
+# path's first sampled dump runs, in control 3.
+OLD_PATH_LOCK_HOLD_SECONDS = 4
+
+
+@contextlib.contextmanager
+def long_reader(ctx: Ctx, seconds: int) -> Iterator[None]:
+    """A SELECT SLEEP(`seconds`) over the other schema's table on its own
+    session, started and seen running before the body, and waited for after
+    it, so a FLUSH TABLES inside the body has something to wait for."""
+    reader = ctx.source.session(database=OTHER)
+    finished = threading.Event()
+    failures: list[ProofError] = []
+
+    def hold() -> None:
+        try:
+            reader.run(f"SELECT SLEEP({seconds}) FROM posts LIMIT 1;")
+        except ProofError as exc:
+            failures.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(target=hold, daemon=True).start()
+    try:
+        for _ in range(100):
+            if ctx.source.query(f"SELECT COUNT(*) FROM performance_schema.processlist WHERE INFO LIKE 'SELECT SLEEP({seconds})%';")[0][0] != "0":
+                break
+            time.sleep(0.1)
+        else:
+            raise ProofError("the long reader never started")
+        yield
+    finally:
+        finished.wait(timeout=seconds + 60)
+        reader.close()
+    if failures:
+        raise failures[0]
+
+
 def control_3(ctx: Ctx) -> ControlResult:
     """No GLOBAL metadata lock held by the move account."""
     old_path = ctx.sabotaged("old-path")
@@ -1663,8 +1701,16 @@ def control_3(ctx: Ctx) -> ControlResult:
     try:
         if old_path:
             _grant_old_path(ctx)
-        for _ in range(3 if old_path else 10):
-            if old_path:
+        for run_number in range(3 if old_path else 10):
+            if old_path and run_number == 0:
+                # The retired path's lock is held for a few milliseconds when
+                # nothing is reading, which a sampler can miss on a loaded
+                # runner. Under a long reader its FLUSH TABLES waits for
+                # seconds with the GLOBAL lock already granted, so the first
+                # dump is taken under one and cannot go unseen.
+                with long_reader(ctx, OLD_PATH_LOCK_HOLD_SECONDS):
+                    old_path_dump(ctx)
+            elif old_path:
                 old_path_dump(ctx)
             else:
                 take_snapshot(ctx, "sampled.sql")

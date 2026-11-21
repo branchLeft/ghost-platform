@@ -357,11 +357,11 @@ def _parse_tables(lines: Sequence[str]) -> list[tuple[str, str, str]]:
 
 
 def _refuse_non_innodb(tables: Sequence[tuple[str, str, str]]) -> None:
-    """The dump runs as one InnoDB snapshot that opens after the lock is
-    released, and the binary-log position is read under the lock. A table
-    that is not transactional (MyISAM, MEMORY, CSV) is read after the unlock,
-    so its rows would run past the position and then be replayed again from
-    the log. Nothing is locked yet when this runs."""
+    """The dump runs as one InnoDB snapshot that opens while the lock is
+    held, and the binary-log position is read under the lock. A table that is
+    not transactional (MyISAM, MEMORY, CSV) is not part of that snapshot: it
+    is read after the unlock, so its rows would run past the position and then
+    be replayed again from the log. Nothing is locked yet when this runs."""
     foreign = [f"{schema}.{table} ({engine or 'no engine'})" for schema, table, engine in tables if engine.lower() != "innodb"]
     if foreign:
         shown = ", ".join(foreign[:10]) + (f" and {len(foreign) - 10} more" if len(foreign) > 10 else "")
