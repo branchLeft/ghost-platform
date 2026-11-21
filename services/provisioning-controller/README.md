@@ -133,8 +133,9 @@ point, so the owner's single approval is the only hand step for a new tenant:
   the template, values, parameters and deploy key come from the deployment;
   none is kept.
 
-Known limits: the adapter is not yet wired into the command (the SSH transport
-and the input sources are deployment adapters); `publish-hostnames` still takes
+Known limits: the SSH transport is wired (see "The SSH transport to a tenant host"), but the
+input sources (`TenantEntryInputs`) are a deployment adapter that does not exist yet;
+`publish-hostnames` still takes
 its port from the register, not from the claim (`claimOf` is the way a
 deployment's edge step reads the host's number); the `owner` verb and the first
 deploy go through the fallback.
@@ -244,7 +245,7 @@ the service is.
 `SshEntryTransport` (`src/sshEntryTransport.ts`) is the real transport behind a host
 adapter's `EntryTransport` port: `send(verb, slug, payload?)` runs one ssh client, which
 runs the host's forced command `VERB SLUG` once, with the payload as one JSON object on
-standard input. It is not wired into `main` or `runConfig` yet.
+standard input. It is selected for the app host only when the configuration has an `sshEntry` section (below).
 
 - **Argument vector only.** `child_process.spawn` with `shell: false`; the verb is checked
   against a closed list and the slug against the register's slot pattern before a process
@@ -266,7 +267,7 @@ standard input. It is not wired into `main` or `runConfig` yet.
   `sshConfigFile` is refused (`invalid-config`), as is one with no `jumpHops` list at all.
   `hopConfigProblems(config)` asks the real client (`ssh -G`) what it applies to each hop and
   names any setting that is not strict host keys, batch mode, the pinned known-hosts file
-  alone, identities only and the key; the first live wiring runs it before a send.
+  alone, identities only and the key; `composeHostPorts` runs it at startup and refuses to start on any problem.
 - **Argument vector.** `-F CONFIG -o BatchMode=yes -o StrictHostKeyChecking=yes
 -o UserKnownHostsFile=KNOWN -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ConnectTimeout=N -T
@@ -281,9 +282,17 @@ or to the step that stopped it. The approval id is the only per-run input.
 
 - **Configuration** (`src/runConfig.ts`): absolute `stateFile`, `approvalsFile`
   and `registerFile`; `hosts`, a map from entry point to `{ argv, timeoutMs? }`;
-  optional `retry` and `reportTimeoutMs`. A key it does not know is refused.
+  optional `sshEntry`, `retry` and `reportTimeoutMs`. A key it does not know is refused.
   `argv[0]` must be an absolute path: the program is started directly, never
   through a shell and never found on the path.
+- **SSH entry point** (`src/sshEntryConfig.ts`, `src/composeHostPorts.ts`): off unless the
+  configuration has an `sshEntry` section, and it has no default host, key path or hop. It names
+  `keyFile`, `knownHostsFile`, `jumpHops` (empty for a direct host) and `target`, and optionally
+  `sshConfigFile`, `sshProgram` and the transport's limits; every value is checked as the
+  transport checks it. When present, startup asks `ssh -G` about each hop and refuses to run
+  (exit 3, no step started) on any hop that is not pinned, and when `CliIo.hostComposition`
+  carries no `tenantEntryInputs`. The app host is then the tenant entry adapter over the ssh
+  transport; the program configured for `app-host` serves the steps it does not.
 - **Trusted files** (`src/trustedFile.ts`): the configuration, the approvals
   file (`{ "approvals": [...] }`) and the register file (`{ "entries": [...] }`)
   are refused unless they are regular files, not links, owned by the user the

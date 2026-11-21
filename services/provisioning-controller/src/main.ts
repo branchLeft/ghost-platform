@@ -1,5 +1,10 @@
 import { parseArgs } from 'node:util';
-import { commandHostPorts, childEnvironment, type Env } from './commandHost.js';
+import { childEnvironment, type Env } from './commandHost.js';
+import {
+  composeHostPorts,
+  SshEntryStartupError,
+  type HostComposition,
+} from './composeHostPorts.js';
 import { ApprovalRequiredError, ApprovalScopeError } from './errors.js';
 import { executeOnboarding } from './executeOnboarding.js';
 import type { Clock, ConsoleReporter, ExecutePorts, RunOptions } from './executePorts.js';
@@ -18,6 +23,8 @@ export interface CliIo {
   /** One line per progress event, then one line for an error. */
   readonly stderr: (line: string) => void;
   readonly env: Env;
+  /** What the deployment supplies that the configuration cannot hold; see `HostComposition`. */
+  readonly hostComposition?: HostComposition;
 }
 
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -78,7 +85,7 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
     ports = {
       approvals: new FileApprovalLedger(config.approvalsFile),
       register: new FileRegisterReader(config.registerFile),
-      hosts: commandHostPorts(config.hosts, childEnvironment(io.env)),
+      hosts: await composeHostPorts(config, childEnvironment(io.env), io.hostComposition),
       state: new FileStateStore(config.stateFile),
       console: lineConsole(io.stderr),
       clock: systemClock,
@@ -88,7 +95,10 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       ...(config.reportTimeoutMs !== undefined && { reportTimeoutMs: config.reportTimeoutMs }),
     };
   } catch (e) {
-    const bad = e instanceof RunConfigError || e instanceof TrustedFileError;
+    const bad =
+      e instanceof RunConfigError ||
+      e instanceof TrustedFileError ||
+      e instanceof SshEntryStartupError;
     io.stderr(JSON.stringify({ error: bad ? (e as Error).name : 'Error', message: describe(e) }));
     return EXIT.usage;
   }

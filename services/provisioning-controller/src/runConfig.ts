@@ -2,6 +2,8 @@ import { isAbsolute } from 'node:path';
 import { type CommandSpec } from './commandHost.js';
 import type { RetryPolicy } from './executePorts.js';
 import { ENTRY_POINTS, type EntryPoint } from './plan.js';
+import { parseSshEntry } from './sshEntryConfig.js';
+import type { SshEntryConfig } from './sshEntryTransport.js';
 
 /** What one deployment decides: where the files are and which program serves each entry point. */
 export interface RunConfig {
@@ -9,6 +11,8 @@ export interface RunConfig {
   readonly approvalsFile: string;
   readonly registerFile: string;
   readonly hosts: Readonly<Partial<Record<EntryPoint, CommandSpec>>>;
+  /** Absent unless the deployment names it: how the app host's forced command is reached over ssh. */
+  readonly sshEntry?: SshEntryConfig;
   readonly retry?: RetryPolicy;
   readonly reportTimeoutMs?: number;
 }
@@ -25,6 +29,7 @@ const TOP_KEYS = [
   'approvalsFile',
   'registerFile',
   'hosts',
+  'sshEntry',
   'retry',
   'reportTimeoutMs',
 ];
@@ -94,6 +99,9 @@ export function parseRunConfig(value: unknown): RunConfig {
     }
   }
 
+  const sshEntry =
+    value['sshEntry'] === undefined ? undefined : parseSshEntry(value['sshEntry'], problems);
+
   let retry: RetryPolicy | undefined;
   const rawRetry = value['retry'];
   if (rawRetry !== undefined) {
@@ -123,6 +131,7 @@ export function parseRunConfig(value: unknown): RunConfig {
     approvalsFile: value['approvalsFile'] as string,
     registerFile: value['registerFile'] as string,
     hosts,
+    ...(sshEntry !== undefined && { sshEntry }),
     ...(retry !== undefined && { retry }),
     ...(reportTimeoutMs !== undefined && { reportTimeoutMs: reportTimeoutMs as number }),
   };
