@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PermanentStepError } from '../../src/errors.js';
 import {
+  hopConfigProblems,
   SSH_ENTRY_VERBS,
   SshEntryTransport,
   SshTransportError,
   SshTransportRefusedError,
+  type SshEndpoint,
   type SshEntryConfig,
   type SshEntryReply,
 } from '../../src/sshEntryTransport.js';
@@ -54,6 +56,7 @@ const baseConfig = (): SshEntryConfig => ({
   keyFile: '/etc/controller/entry_key',
   knownHostsFile: '/etc/controller/known_hosts',
   jumpHops: HOPS,
+  sshConfigFile: '/etc/controller/ssh_config',
   target: { user: 'tenant-entry', host: 'app1.example.test' },
   timeoutMs: 5000,
 });
@@ -99,7 +102,7 @@ describe('the argument vector', () => {
     await transport().send('status', 'acme-blog');
     expect(await argvSeen()).toEqual([
       '-F',
-      '/dev/null',
+      '/etc/controller/ssh_config',
       '-o',
       'BatchMode=yes',
       '-o',
@@ -168,10 +171,12 @@ describe('the argument vector', () => {
     expect((await argvSeen()).join('\n')).not.toContain('AAAA');
   });
 
-  it('is accepted by the real ssh client: -G reads every option back', () => {
+  it('is accepted by the real ssh client: -G reads every option back', async () => {
     const ssh = spawnSync('ssh', ['-V']);
     if (ssh.error !== undefined) return; // no ssh client on this machine
-    const t = transport({}, { PATH: process.env['PATH'] ?? '' });
+    const config = join(dir, 'ssh_config');
+    await writeFile(config, '');
+    const t = transport({ sshConfigFile: config }, { PATH: process.env['PATH'] ?? '' });
     const shown = spawnSync('ssh', ['-G', ...t.argvFor('status', 'acme-blog')], {
       encoding: 'utf8',
     });
@@ -268,6 +273,10 @@ describe('what is refused before a process is started', () => {
       'a target port out of range',
       { target: { user: 'tenant-entry', host: 'a.example.test', port: 70000 } },
     ],
+    ['hops and no ssh config file', { sshConfigFile: undefined }],
+    ['no jumpHops list', { jumpHops: undefined as unknown as SshEntryConfig['jumpHops'] }],
+    ['no target', { target: undefined as unknown as SshEntryConfig['target'] }],
+    ['a hop that is not an object', { jumpHops: [null as unknown as SshEndpoint] }],
     ['a hop that is an option', { jumpHops: [{ user: 'j', host: '-J' }] }],
     ['a hop host with a comma', { jumpHops: [{ user: 'j', host: 'a,b' }] }],
     ['a program that is a relative path', { sshProgram: './ssh' }],
@@ -430,6 +439,75 @@ describe('the exit code', () => {
     await expect(
       transport({ sshProgram: join(dir, 'absent') }).send('status', 'acme-blog')
     ).rejects.toBeInstanceOf(PermanentStepError);
+  });
+});
+
+describe('the hops through the real ssh client', () => {
+  const hasSsh = spawnSync('ssh', ['-V']).error === undefined;
+  const GOOD = [
+    'Host edge1.example.test edge-t.example.test',
+    '  StrictHostKeyChecking yes',
+    '  BatchMode yes',
+    '  UserKnownHostsFile /etc/controller/known_hosts',
+    '  GlobalKnownHostsFile /dev/null',
+    '  IdentitiesOnly yes',
+    '  IdentityFile /etc/controller/entry_key',
+    '',
+  ];
+
+  async function problemsWith(lines: string[]): Promise<string[]> {
+    const file = join(dir, 'hop_config');
+    await writeFile(file, lines.join('\n'));
+    await chmod(file, 0o600);
+    const env = { PATH: process.env['PATH'] ?? '', HOME: dir };
+    return hopConfigProblems({ ...baseConfig(), sshConfigFile: file }, env);
+  }
+
+  it.skipIf(!hasSsh)('finds a stanza that pins every setting complete, for each hop', async () => {
+    expect(await problemsWith(GOOD)).toEqual([]);
+  });
+
+  it.skipIf(!hasSsh)('names a hop the stanza does not cover at all', async () => {
+    const problems = await problemsWith(
+      GOOD.map((l) => l.replace('edge-t.example.test', 'other.example.test'))
+    );
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems.every((p) => p.startsWith('jumpHops[1]'))).toBe(true);
+  });
+
+  it.skipIf(!hasSsh).each([
+    ['StrictHostKeyChecking yes', 'StrictHostKeyChecking is not yes'],
+    ['BatchMode yes', 'BatchMode is not yes'],
+    ['UserKnownHostsFile /etc/controller/known_hosts', 'UserKnownHostsFile is not the pinned'],
+    ['GlobalKnownHostsFile /dev/null', 'GlobalKnownHostsFile is not switched off'],
+    ['IdentitiesOnly yes', 'IdentitiesOnly is not yes'],
+    ['IdentityFile /etc/controller/entry_key', 'IdentityFile is not the key'],
+  ])('reports a stanza with %s missing', async (setting, expected) => {
+    const problems = await problemsWith(GOOD.filter((l) => l.trim() !== setting));
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toContain('jumpHops[0]');
+    expect(problems[1]).toContain('jumpHops[1]');
+    expect(problems.every((p) => p.includes(expected))).toBe(true);
+  });
+
+  it.skipIf(!hasSsh)('reports a stanza that points at another known-hosts file', async () => {
+    const problems = await problemsWith(
+      GOOD.map((l) => l.replace('/etc/controller/known_hosts', '/etc/other/known_hosts'))
+    );
+    expect(problems.some((p) => p.includes('UserKnownHostsFile'))).toBe(true);
+  });
+
+  it('reports a configuration ssh cannot read, and an unusable one', async () => {
+    const env = { PATH: `${dir}:/usr/bin:/bin`, HOME: dir };
+    await writeFile(join(dir, 'ssh'), '#!/bin/sh\nexit 255\n');
+    await chmod(join(dir, 'ssh'), 0o755);
+    expect(await hopConfigProblems(baseConfig(), env)).toEqual([
+      'jumpHops[0]: ssh could not read the configuration',
+      'jumpHops[1]: ssh could not read the configuration',
+    ]);
+    expect(await hopConfigProblems({ ...baseConfig(), sshConfigFile: undefined }, env)).toEqual([
+      'invalid setting sshConfigFile (required with jumpHops)',
+    ]);
   });
 });
 

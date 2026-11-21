@@ -1,48 +1,11 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { childEnvironment, type Env } from './commandHost.js';
 import { PermanentStepError } from './errors.js';
 
 /**
- * The controller's SSH transport to a tenant host's entry point: the real half
- * of the `EntryTransport` port the host adapters take (`TenantEntryHost` sends
- * `VERB SLUG` and, for a verb that needs more, one JSON object on standard
- * input, and reads back the exit code, standard output and standard error).
- *
- * Each `send` runs exactly one ssh client, which runs the host's forced command
- * once:
- *
- *   ssh -F CONFIG -o BatchMode=yes -o StrictHostKeyChecking=yes
- *       -o UserKnownHostsFile=KNOWN -o GlobalKnownHostsFile=/dev/null
- *       -o IdentitiesOnly=yes -o ForwardAgent=no -o ClearAllForwardings=yes
- *       -o LogLevel=ERROR -o ConnectTimeout=N -T -i KEY [-p PORT] [-J HOPS]
- *       USER@HOST VERB SLUG
- *
- * What makes it safe to point at a tenant host:
- *
- * - An argument vector only. The child is started with `shell: false`; no
- *   string is ever built into a command line, and the controller never sees a
- *   shell. The one remote command word pair is `VERB SLUG`, and both are
- *   checked against a closed list and a strict pattern before anything starts.
- * - Where it goes and what it holds come from configuration the deployment
- *   wrote, never from a request: the key file, the pinned known-hosts file, the
- *   jump chain, the target. `send` takes only a verb, a slug and a payload.
- * - The host's key must already be pinned: `StrictHostKeyChecking=yes` and
- *   `BatchMode=yes` are fixed, and the only known-hosts file is the pinned one
- *   (the system file is switched off). A changed or unknown key stops the call.
- * - `-F` always names a file (`/dev/null` unless configured), so the
- *   controller user's own ssh config cannot add a proxy, a forward or an agent.
- * - A timeout kills the child, a bound on each output stream kills it too, and
- *   the child inherits no token or agent socket (`childEnvironment`).
- *
- * The result is the host program's own: its exit code (0 done, 1 refused, 2
- * usage, 3 busy, 4 a step failed, or any other code the host used) with its
- * output, for the adapter to map. What the adapter cannot be given, because the
- * host program never ran or its answer cannot be trusted, is thrown here as a
- * typed error: `SshTransportError` when trying again can help (no route, a
- * timeout, a killed client) and `SshTransportRefusedError`, a
- * `PermanentStepError`, when it cannot (a request that is not a request, a
- * client that cannot start, a host key that does not match the pin, a flood of
- * output). The remote program's text never enters an error message.
+ * The controller's SSH transport to a tenant host's entry point: one forced-command ssh call
+ * per request, argument vector only. Its design is in this package's README, "The SSH transport
+ * to a tenant host".
  */
 
 /** The verbs the host program accepts: the closed list a request is checked against. */
@@ -83,7 +46,11 @@ export interface SshEntryConfig {
    * `/dev/null`, so nothing of the user's own is read.
    */
   readonly sshConfigFile?: string;
-  /** The hops in the order they are crossed (ops1 to edge1 to edge-t); empty for a direct host. */
+  /**
+   * The hops in the order they are crossed (ops1 to edge1 to edge-t); empty for a direct host.
+   * Any hop needs `sshConfigFile`: ssh gives a hop's own settings from that file, not from the
+   * command line.
+   */
   readonly jumpHops: readonly SshEndpoint[];
   /** The tenant host and the account its forced command is bound to. */
   readonly target: SshEndpoint;
@@ -176,8 +143,18 @@ export function invalidSshSettings(config: SshEntryConfig): string[] {
   ) {
     bad.push('sshProgram');
   }
-  checkEndpoint('target', config.target, bad);
-  config.jumpHops.forEach((hop, i) => checkEndpoint(`jumpHops[${String(i)}]`, hop, bad));
+  if (typeof config.target !== 'object' || config.target === null) bad.push('target');
+  else checkEndpoint('target', config.target, bad);
+  if (!Array.isArray(config.jumpHops)) bad.push('jumpHops');
+  else {
+    config.jumpHops.forEach((hop, i) => {
+      if (typeof hop !== 'object' || hop === null) bad.push(`jumpHops[${String(i)}]`);
+      else checkEndpoint(`jumpHops[${String(i)}]`, hop, bad);
+    });
+    if (config.jumpHops.length > 0 && config.sshConfigFile === undefined) {
+      bad.push('sshConfigFile (required with jumpHops)');
+    }
+  }
   if (config.timeoutMs !== undefined && !isCount(config.timeoutMs, 1, 600_000)) {
     bad.push('timeoutMs');
   }
@@ -413,4 +390,53 @@ export class SshEntryTransport {
       child.stdin.end(input);
     });
   }
+}
+
+/**
+ * Asks `ssh -G` what the client would apply to each hop and names every setting that is not the
+ * pinned one (see the README). Empty means every hop is configured as the target is.
+ */
+export async function hopConfigProblems(
+  config: SshEntryConfig,
+  env: Env = process.env
+): Promise<string[]> {
+  const bad = invalidSshSettings(config);
+  if (bad.length > 0) return bad.map((name) => `invalid setting ${name}`);
+  const program = config.sshProgram ?? 'ssh';
+  const problems: string[] = [];
+  for (const [i, hop] of config.jumpHops.entries()) {
+    const name = `jumpHops[${String(i)}]`;
+    const args = ['-G', '-F', config.sshConfigFile ?? '/dev/null'];
+    if (hop.port !== undefined) args.push('-p', String(hop.port));
+    args.push('-l', hop.user, hop.host);
+    let shown: string;
+    try {
+      shown = await new Promise<string>((resolve, reject) => {
+        execFile(
+          program,
+          args,
+          { env: childEnvironment(env), timeout: 10_000, maxBuffer: 1_048_576 },
+          (error, stdout) => (error === null ? resolve(stdout) : reject(error))
+        );
+      });
+    } catch {
+      problems.push(`${name}: ssh could not read the configuration`);
+      continue;
+    }
+    const lines = shown.split('\n');
+    const has = (line: string): boolean => lines.includes(line);
+    if (!has('stricthostkeychecking true'))
+      problems.push(`${name}: StrictHostKeyChecking is not yes`);
+    if (!has('batchmode yes')) problems.push(`${name}: BatchMode is not yes`);
+    if (!has('identitiesonly yes')) problems.push(`${name}: IdentitiesOnly is not yes`);
+    if (!has(`userknownhostsfile ${config.knownHostsFile}`)) {
+      problems.push(`${name}: UserKnownHostsFile is not the pinned file alone`);
+    }
+    if (!has('globalknownhostsfile /dev/null')) {
+      problems.push(`${name}: GlobalKnownHostsFile is not switched off`);
+    }
+    if (!has(`identityfile ${config.keyFile}`))
+      problems.push(`${name}: IdentityFile is not the key`);
+  }
+  return problems;
 }

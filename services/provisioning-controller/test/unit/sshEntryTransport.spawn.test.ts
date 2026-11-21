@@ -36,6 +36,7 @@ describe('how the client is started', () => {
       {
         keyFile: '/etc/controller/entry_key',
         knownHostsFile: '/etc/controller/known_hosts',
+        sshConfigFile: '/etc/controller/ssh_config',
         jumpHops: [{ user: 'jumper', host: 'edge1.example.test' }],
         target: { user: 'tenant-entry', host: 'app1.example.test' },
       },
