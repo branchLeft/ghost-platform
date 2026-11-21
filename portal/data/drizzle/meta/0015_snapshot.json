@@ -1,5 +1,5 @@
 {
-  "id": "7c06ec61-e3ff-43a2-a041-79bdd04f7595",
+  "id": "eb80eedf-4d7f-4b53-982d-4c6db7d3c140",
   "prevId": "5cb3a09d-cfbb-4938-bfff-823efcdcb885",
   "version": "7",
   "dialect": "postgresql",
@@ -127,111 +127,6 @@
         "custom_domain_request_token_shape": {
           "name": "custom_domain_request_token_shape",
           "value": "\"portal\".\"custom_domain_request\".\"verification_token\" ~ '^[a-z2-7]{32}$'"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "portal.demo_extension_request": {
-      "name": "demo_extension_request",
-      "schema": "portal",
-      "columns": {
-        "demo_id": {
-          "name": "demo_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "still_evaluating": {
-          "name": "still_evaluating",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "what_is_missing": {
-          "name": "what_is_missing",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "audience_size": {
-          "name": "audience_size",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "charges_readers": {
-          "name": "charges_readers",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "move_when": {
-          "name": "move_when",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "consent_wording": {
-          "name": "consent_wording",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "consented_at": {
-          "name": "consented_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "demo_extension_request_demo_id_demo_request_demo_id_fk": {
-          "name": "demo_extension_request_demo_id_demo_request_demo_id_fk",
-          "tableFrom": "demo_extension_request",
-          "tableTo": "demo_request",
-          "schemaTo": "portal",
-          "columnsFrom": ["demo_id"],
-          "columnsTo": ["demo_id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "extension_insert": {
-          "name": "extension_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": ["portal_prospect"],
-          "withCheck": "EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = \"portal\".\"demo_extension_request\".\"demo_id\" AND demo_request.verified_address = public.bound_address())"
-        },
-        "provisioner_read": {
-          "name": "provisioner_read",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": ["portal_provisioner"],
-          "using": "true"
-        }
-      },
-      "checkConstraints": {
-        "demo_extension_request_evaluating_length": {
-          "name": "demo_extension_request_evaluating_length",
-          "value": "char_length(\"portal\".\"demo_extension_request\".\"still_evaluating\") BETWEEN 1 AND 500"
-        },
-        "demo_extension_request_missing_length": {
-          "name": "demo_extension_request_missing_length",
-          "value": "\"portal\".\"demo_extension_request\".\"what_is_missing\" IS NULL OR char_length(\"portal\".\"demo_extension_request\".\"what_is_missing\") BETWEEN 1 AND 500"
-        },
-        "demo_extension_request_choices_shape": {
-          "name": "demo_extension_request_choices_shape",
-          "value": "\"portal\".\"demo_extension_request\".\"audience_size\" ~ '^[a-z0-9-]{1,40}$' AND \"portal\".\"demo_extension_request\".\"move_when\" ~ '^[a-z0-9-]{1,40}$'"
-        },
-        "demo_extension_request_consent_wording_length": {
-          "name": "demo_extension_request_consent_wording_length",
-          "value": "char_length(\"portal\".\"demo_extension_request\".\"consent_wording\") BETWEEN 1 AND 2000"
         }
       },
       "isRLSEnabled": true
@@ -1280,6 +1175,81 @@
         "tenant_billing_reference_not_card_like": {
           "name": "tenant_billing_reference_not_card_like",
           "value": "\"portal\".\"tenant_billing\".\"billing_reference\" !~ '^([_.:-]?[0-9]){12,}$'"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "portal.tenant_erasure_request": {
+      "name": "tenant_erasure_request",
+      "schema": "portal",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'requested'"
+        },
+        "key_destroyed_at": {
+          "name": "key_destroyed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tenant_erasure_request_tenant_id_tenant_register_tenant_id_fk": {
+          "name": "tenant_erasure_request_tenant_id_tenant_register_tenant_id_fk",
+          "tableFrom": "tenant_erasure_request",
+          "tableTo": "tenant_register",
+          "schemaTo": "portal",
+          "columnsFrom": ["tenant_id"],
+          "columnsTo": ["tenant_id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "tenant_isolation": {
+          "name": "tenant_isolation",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": ["portal_tenant"],
+          "using": "\"portal\".\"tenant_erasure_request\".\"tenant_id\" = public.bound_tenant()",
+          "withCheck": "\"portal\".\"tenant_erasure_request\".\"tenant_id\" = public.bound_tenant()"
+        },
+        "tenant_insert_requested": {
+          "name": "tenant_insert_requested",
+          "as": "RESTRICTIVE",
+          "for": "INSERT",
+          "to": ["portal_tenant"],
+          "withCheck": "\"portal\".\"tenant_erasure_request\".\"status\" = 'requested' AND \"portal\".\"tenant_erasure_request\".\"key_destroyed_at\" IS NULL"
+        }
+      },
+      "checkConstraints": {
+        "tenant_erasure_request_status_known": {
+          "name": "tenant_erasure_request_status_known",
+          "value": "\"portal\".\"tenant_erasure_request\".\"status\" IN ('requested', 'key_destroyed')"
+        },
+        "tenant_erasure_request_destroyed_moment": {
+          "name": "tenant_erasure_request_destroyed_moment",
+          "value": "(\"portal\".\"tenant_erasure_request\".\"status\" = 'requested' AND \"portal\".\"tenant_erasure_request\".\"key_destroyed_at\" IS NULL) OR (\"portal\".\"tenant_erasure_request\".\"status\" = 'key_destroyed' AND \"portal\".\"tenant_erasure_request\".\"key_destroyed_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": true

@@ -1,6 +1,6 @@
 /**
  * The control plane's signed calls to the demo host's broker, over the
- * tunnel ops1 dials to demo1: reconcile, status and reset. The demo estate
+ * tunnel ops1 dials to demo1: reconcile, status, freeze and reset. The demo estate
  * never initiates (LLD-2 section 06): this module only ever sends from ops1,
  * and what it sends is signed with the same scheme `/reconcile` and `/reset`
  * check. It answers with a closed set of replies and never a response body,
@@ -18,13 +18,34 @@ export type ReconcileReply =
   | { readonly kind: 'running'; readonly colour: Colour }
   /** 503: the broker's own reset-and-retry-once is spent and the slot is left `error`. */
   | { readonly kind: 'failed' }
+  /**
+   * 409 with reason `locked`: the broker holds the slot lock for the whole of
+   * a reconcile, so an earlier send of this one is still running. Retry later;
+   * it is not a refusal.
+   */
+  | { readonly kind: 'locked' }
   /** Any other answer: the broker refused. A refusal is final and its slot is not ours to touch. */
   | { readonly kind: 'refused'; readonly status: number }
   /** No answer inside the deadline: the request may or may not have run. Sending it again is safe. */
   | { readonly kind: 'unanswered' };
 
-/** What `/reset` said. */
-export type ResetReply = 'free' | 'refused' | 'unanswered';
+/** What `/reset` said. `locked` (409, reason `locked`) is a reconcile still running: retry later. */
+export type ResetReply = 'free' | 'refused' | 'locked' | 'unanswered';
+
+/**
+ * What `/freeze` said. Only `detached` means the slot's held evidence is out of
+ * the slot and confirmed so: nothing else lets a caller reset.
+ * - `detached`: 200, the receipt parsed and names this slot.
+ * - `pending`: 503, the revoke or the detach did not complete. The slot stays
+ *   held, so every `/reset` is refused; the freeze is sent again.
+ * - `locked`: 409 with reason `locked`, a request is already running on the slot.
+ * - `nothing-to-freeze`: 409 with reason `nothing-to-freeze`, the slot is free.
+ * - `refused`: any other answer, final.
+ * - `unanswered`: no answer in the deadline. It may or may not have run, and
+ *   sending it again is safe (the broker resumes a freeze it left half done).
+ */
+export type FreezeReply =
+  'detached' | 'pending' | 'locked' | 'nothing-to-freeze' | 'refused' | 'unanswered';
 
 /** `GET /status/{slot}`, reduced to the two facts provisioning is judged on. */
 export interface SlotReading {
@@ -38,6 +59,8 @@ export interface DemoBroker {
   /** Undefined when the host did not give a usable answer: unreachable, refused or malformed. */
   status(slot: SlotName): Promise<SlotReading | undefined>;
   reset(slot: SlotName): Promise<ResetReply>;
+  /** Moves the slot's evidence out of the slot before a reset; never resets and never destroys. */
+  freeze(slot: SlotName): Promise<FreezeReply>;
 }
 
 export interface TunnelBrokerOptions {
@@ -88,6 +111,16 @@ function isColour(value: unknown): value is Colour {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+/** A 409 whose machine-readable reason is `reason`: never the prose beside it. */
+function isConflict(status: number, body: unknown, reason: string): boolean {
+  return status === 409 && isRecord(body) && body['reason'] === reason;
+}
+
+/** A 409 the broker marked `locked`: the machine-readable reason, never the prose beside it. */
+function isLockedConflict(status: number, body: unknown): boolean {
+  return status === 409 && isRecord(body) && body['reason'] === 'locked';
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -145,13 +178,33 @@ export function createTunnelBroker(options: TunnelBrokerOptions): DemoBroker {
       if (response.status === 503 && isRecord(body) && body['phase'] === 'error') {
         return { kind: 'failed' };
       }
+      if (isLockedConflict(response.status, body)) return { kind: 'locked' };
       return { kind: 'refused', status: response.status };
     },
 
     async reset(slot) {
       const response = await signedPost('/reset', { slot });
       if (response === undefined) return 'unanswered';
-      return response.status === 200 ? 'free' : 'refused';
+      if (response.status === 200) return 'free';
+      return isLockedConflict(response.status, await readJson(response)) ? 'locked' : 'refused';
+    },
+
+    async freeze(slot) {
+      const response = await signedPost('/freeze', { slot });
+      if (response === undefined) return 'unanswered';
+      const body = await readJson(response);
+      if (response.status === 200) {
+        // Detached is the broker's confirmed marker, not any 200.
+        return isRecord(body) && body['evidence'] === 'detached' && body['slot'] === slot
+          ? 'detached'
+          : 'refused';
+      }
+      if (response.status === 503) {
+        return isRecord(body) && body['evidence'] === 'frozen' ? 'pending' : 'refused';
+      }
+      if (isConflict(response.status, body, 'locked')) return 'locked';
+      if (isConflict(response.status, body, 'nothing-to-freeze')) return 'nothing-to-freeze';
+      return 'refused';
     },
 
     async status(slot) {

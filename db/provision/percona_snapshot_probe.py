@@ -1118,6 +1118,8 @@ class Run:
     password: str
     scenario: Scenario | None = None
     failure: Exception | None = None
+    # What the source's datadir was checked to be, for control 2's report.
+    source_note: str = ""
 
     @property
     def sabotage(self) -> str | None:
@@ -1632,13 +1634,34 @@ def control_1(run: Run) -> sp.ControlResult:
     return sp.ControlResult(1, title, verdict, numbers)
 
 
+# The source's datadir is on tmpfs, started so by prove-percona-snapshot.sh
+# (SOURCE_DATADIR_TMPFS there, the one place the location is named). A hosted
+# runner's disk sometimes stalls a commit for 150 to 570 ms on every tenant at
+# once: all tenants share one binary log and redo log, so a commit waits on the
+# same fsync. It does so with no dump running, and the same candidate passed on
+# other runners. A datadir off the disk cleared every such stall on the stock
+# probe (0 of 20 runners). The cost: control 2 does not exercise real-disk
+# contention between a dump's reads and another tenant's commits, and does not
+# cover the fsync wait in the snapshot's coordinate read. A lock wait does not
+# depend on the disk, so the global-lock sabotage stays red.
+def source_datadir_note(source: sp.Server) -> str:
+    """Raise unless the source's datadir is really on tmpfs; return the line
+    the log carries. The replica is not checked: its disk is not measured."""
+    datadir = sp.tmpfs_datadir(source, "control 2")
+    return (
+        f"source datadir {datadir} on tmpfs: control 2 measures lock and wait stalls, not the runner's disk; "
+        "the fsync wait in the snapshot's coordinate read is not covered"
+    )
+
+
 def control_2(run: Run) -> sp.ControlResult:
     """Every tenant's worst write stays under the limit in every round, the
     whole run: issue 1708's rule. Whether a failure is the host's is the exit
     code's to say, round by round."""
     scenario = get_scenario(run)
     verdict = rounds_latency_verdict(scenario.window_latencies, LATENCY_LIMIT_SECONDS, scenario.round_baselines)
-    numbers = [
+    numbers = [run.source_note] if run.source_note else []
+    numbers += [
         f"{tenant}: {len(latencies)} write transactions timed, worst {sp._ms(max(latencies, default=0.0))}, "
         f"worst before the first dump {sp._ms(scenario.baseline[tenant])}"
         for tenant, latencies in scenario.latencies.items()
@@ -1782,6 +1805,12 @@ def run_probe(args: argparse.Namespace) -> int:
         sabotage=args.sabotage,
     )
     run = Run(ctx, (workdir / f"{DUMP_PASSWORD_FILE}.pw").read_text().strip())
+    try:
+        run.source_note = source_datadir_note(ctx.source)
+    except sp.ProofError as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    ctx.say(f"  {run.source_note}")
     seed_run(run)
     outcomes: dict[int, bool] = {}
     rounds: dict[int, RoundReading] | None = None

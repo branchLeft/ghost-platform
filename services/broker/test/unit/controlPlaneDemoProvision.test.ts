@@ -17,6 +17,7 @@ import {
   countingGate,
   depsFor,
   fakeStore,
+  recordingMailer,
   tunnelTo,
   virtualClock,
   type ControllableHealth,
@@ -54,8 +55,14 @@ function setup(b: TestBroker, wrap: (inner: DemoBroker) => DemoBroker = (inner) 
   const store = fakeStore(clock.nowMs);
   const gate = countingGate();
   const logs: string[] = [];
-  const deps: ProvisionDeps = depsFor(store, wrap(tunnelTo(b)), gate, clock, logs);
-  return { clock, store, gate, logs, deps };
+  const mailer = recordingMailer();
+  /** The demo's state at the moment each arrival mail went: it must not be LIVE yet. */
+  const stateAtMail: string[] = [];
+  const deps: ProvisionDeps = depsFor(store, wrap(tunnelTo(b)), gate, clock, logs, async (a) => {
+    stateAtMail.push(store.state());
+    await mailer.send(a);
+  });
+  return { clock, store, gate, logs, deps, mailer, stateAtMail };
 }
 
 async function statusOf(
@@ -69,7 +76,7 @@ async function statusOf(
 describe('provisionDemo against the real broker', () => {
   it('a request becomes a running slot: PROVISIONING issues the seven-day term, the descriptor expires with it, LIVE follows a healthy answer', async () => {
     const b = await started();
-    const { store, deps, gate } = setup(b);
+    const { store, deps, gate, mailer, stateAtMail } = setup(b);
 
     const outcome = await provisionDemo(deps, DEMO_ID, SLOT);
 
@@ -77,7 +84,17 @@ describe('provisionDemo against the real broker', () => {
     if (outcome.state !== 'LIVE') return;
     expect(outcome.attempts).toBe(1);
     expect(outcome.colour).toBe('a');
-    expect(outcome.passphrase).toBe(gate.issued[0]);
+    // The passphrase leaves only in the arrival mail, and the mail goes before LIVE.
+    expect(outcome).not.toHaveProperty('passphrase');
+    expect(mailer.sent).toEqual([
+      {
+        address: OWNER,
+        hostname: outcome.hostname,
+        passphrase: gate.issued[0],
+        expiresAt: outcome.expiresAt,
+      },
+    ]);
+    expect(stateAtMail).toEqual(['PROVISIONING']);
     expect(store.moves).toEqual(['PROVISIONING', 'LIVE']);
     expect(await statusOf(b, SLOT)).toMatchObject({ phase: 'running', healthy: true });
 

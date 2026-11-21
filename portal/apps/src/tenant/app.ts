@@ -8,6 +8,7 @@ import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js
 import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-portal-data/tenant';
 import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
+import { renderErasure } from '../shell/erasureHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { renderSupportAccess } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
@@ -99,6 +100,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
       { label: 'NAV_SITE_ACCESS', href: '/site-access' },
+      { label: 'NAV_ERASURE', href: '/erasure' },
       ...demo.nav,
       ...site.nav,
       ...support.nav,
@@ -149,6 +151,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
         ]);
         return renderSupportAccess(access, request);
       },
+      '/erasure': async (scope) => renderErasure(await options.db.ownErasure(scope)),
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([
@@ -186,6 +189,14 @@ export function createTenantPortal(options: TenantPortalOptions) {
       '/site-access/request': async (scope) => {
         await options.db.requestSupportAccess(scope);
         return '/site-access';
+      },
+      // The tenant's own request to erase its whole site. It reads no field of
+      // the form, so nothing the visitor sends reaches it, and it destroys
+      // nothing: it records the request, and the page keeps saying nothing has
+      // been erased until the owner records the key as destroyed.
+      '/erasure/request': async (scope) => {
+        await options.db.requestOwnErasure(scope);
+        return '/erasure';
       },
       '/documents/accept': async (scope, identity, form) => {
         const kind = form.get('kind') ?? '';

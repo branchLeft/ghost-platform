@@ -44,6 +44,20 @@ describe('createTunnelBroker', () => {
     expect(await tunnel.status(SLOT)).toMatchObject({ phase: 'free' });
   });
 
+  it('freezes a running slot and says the evidence is detached', async () => {
+    const { tunnel } = await started();
+    await tunnel.reconcile(SLOT, descriptorForSlot(SLOT));
+    expect(await tunnel.freeze(SLOT)).toBe('detached');
+    // The slot is held, not reset: the reset is a separate, later call.
+    expect(await tunnel.status(SLOT)).toMatchObject({ phase: 'error' });
+    expect(await tunnel.reset(SLOT)).toBe('free');
+  });
+
+  it('says a slot that is free has nothing to freeze', async () => {
+    const { tunnel } = await started();
+    expect(await tunnel.freeze(SLOT)).toBe('nothing-to-freeze');
+  });
+
   it('a request signed with a key the broker does not know is refused, with no body read into the reply', async () => {
     const { broker: b } = await started();
     const stranger = createTunnelBroker({
@@ -56,6 +70,7 @@ describe('createTunnelBroker', () => {
       status: 401,
     });
     expect(await stranger.reset(SLOT)).toBe('refused');
+    expect(await stranger.freeze(SLOT)).toBe('refused');
   });
 
   it('a stale timestamp is refused by the replay window', async () => {
@@ -128,5 +143,61 @@ describe('createTunnelBroker', () => {
     ]) {
       expect(() => createTunnelBroker({ baseUrl, privateKeyRaw: key })).not.toThrow();
     }
+  });
+
+  it('reads a 409 with reason locked as retry-later, and any other 409 as a refusal', async () => {
+    const answering = (status: number, body: unknown): DemoBroker =>
+      createTunnelBroker({
+        baseUrl: 'http://127.0.0.1:8090',
+        privateKeyRaw: generateTestKeyPair().privateKeyRaw,
+        fetch: async () => new Response(JSON.stringify(body), { status }),
+      });
+    const locked = { error: 'locked by a concurrent request', reason: 'locked' };
+    const held = { error: 'held evidence', reason: 'held-evidence' };
+    const occupied = { error: 'occupied' };
+
+    expect(await answering(409, locked).reconcile(SLOT, descriptorForSlot(SLOT))).toEqual({
+      kind: 'locked',
+    });
+    expect(await answering(409, occupied).reconcile(SLOT, descriptorForSlot(SLOT))).toEqual({
+      kind: 'refused',
+      status: 409,
+    });
+    // The reason is read only on a 409: it is not a way to talk a 500 into a retry.
+    expect(await answering(500, locked).reconcile(SLOT, descriptorForSlot(SLOT))).toEqual({
+      kind: 'refused',
+      status: 500,
+    });
+    expect(await answering(409, locked).reset(SLOT)).toBe('locked');
+    expect(await answering(409, held).reset(SLOT)).toBe('refused');
+    expect(await answering(409, occupied).reset(SLOT)).toBe('refused');
+    expect(await answering(500, locked).reset(SLOT)).toBe('refused');
+  });
+
+  it("meets the real broker's held slot lock as locked, not as a refusal", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const health = controllableHealth();
+    broker = await startTestBroker({
+      wrapDeps: (deps) => ({
+        ...deps,
+        healthChecker: health,
+        renderer: {
+          render: async (descriptor) => {
+            await held;
+            return deps.renderer.render(descriptor);
+          },
+        },
+      }),
+    });
+    const tunnel = tunnelTo(broker);
+    const first = tunnel.reconcile(SLOT, descriptorForSlot(SLOT));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await tunnel.reconcile(SLOT, descriptorForSlot(SLOT))).toEqual({ kind: 'locked' });
+    expect(await tunnel.reset(SLOT)).toBe('locked');
+    release();
+    expect(await first).toEqual({ kind: 'running', colour: 'a' });
   });
 });

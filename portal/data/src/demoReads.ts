@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { Tx } from './db.js';
 import {
   deriveEventView,
@@ -103,5 +103,31 @@ export async function countDemosIn(tx: Tx, states: readonly DemoState[]): Promis
     .select({ total: count() })
     .from(latest)
     .where(inArray(latest.toState, [...states]));
+  return row?.total ?? 0;
+}
+
+/**
+ * How many demos are FAILED but still hold a slot: those whose hostname is
+ * registered and not retired. The lifecycle worker retires a failed demo's
+ * hostname only once its slot is free, and leaves it unretired when the slot
+ * could not be reset (or its state is unknown), so an unretired hostname is the
+ * record that the slot is not free. A demo that failed before it had a hostname
+ * never held one. Read inside the caller's transaction, like `countDemosIn`.
+ */
+export async function countFailedHoldingSlot(tx: Tx): Promise<number> {
+  const latest = tx
+    .selectDistinctOn([demoStateEvent.demoId], {
+      demoId: demoStateEvent.demoId,
+      toState: demoStateEvent.toState,
+    })
+    .from(demoStateEvent)
+    .orderBy(asc(demoStateEvent.demoId), desc(demoStateEvent.sequence))
+    .as('latest');
+  const [row] = await tx
+    .select({ total: count() })
+    .from(latest)
+    .innerJoin(hostnameRegister, eq(hostnameRegister.demoId, latest.demoId))
+    .leftJoin(hostnameRetirement, eq(hostnameRetirement.label, hostnameRegister.label))
+    .where(and(eq(latest.toState, 'FAILED'), isNull(hostnameRetirement.label)));
   return row?.total ?? 0;
 }

@@ -110,8 +110,15 @@
     {
       "idx": 15,
       "version": "7",
-      "when": 1795071239788,
-      "tag": "0015_demo_extension_request",
+      "when": 1795170369075,
+      "tag": "0015_tenant_erasure_request",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795252054479,
+      "tag": "0016_demo_extension_request",
       "breakpoints": true
     }
   ]

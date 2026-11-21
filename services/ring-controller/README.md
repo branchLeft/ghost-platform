@@ -32,6 +32,16 @@ reimplementing:
   design keeps unreachable for the whole bake window, and this component
   does not open it.
 
+## No verified backup, no bump
+
+`createVerifiedBackup(tenantId, takeDump)` (`src/verifiedBackup.ts`) is the
+`backup()` a tenant's `BumpStateMachine` runs in `backing-up`. It asks for an
+on-demand dump of that one tenant and judges it by the dump's floor assertion,
+never its exit code: the dump is for this tenant, no floor table is missing,
+at least one floor table was seen, the worker reports it ok, and a copy was
+stored. Anything else, a throw included, is `backup-failed` and the migration
+never starts. `takeDump` is wired to the backup worker's `run_tenant_dump`.
+
 ## Rings
 
 `runRelease` (`src/ringController.ts`) takes one already-published image

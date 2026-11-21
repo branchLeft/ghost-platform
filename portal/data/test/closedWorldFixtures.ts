@@ -82,6 +82,25 @@ export const EXTRAS: readonly Tamper[] = [
     expect: /extra M07: UPDATE on column portal.tenant_register.zitadel_org_id to portal_owner/,
   },
   {
+    id: 'M07',
+    title: "the provisioner's INSERT on a register timestamp (a column the manifest leaves out)",
+    apply: [[P, 'GRANT INSERT (allocated_at) ON portal.hostname_register TO portal_provisioner']],
+    undo: [[P, 'REVOKE INSERT (allocated_at) ON portal.hostname_register FROM portal_provisioner']],
+    expect:
+      /extra M07: INSERT on column portal.hostname_register.allocated_at to portal_provisioner/,
+  },
+  {
+    id: 'M06',
+    title: "the provisioner's INSERT on the whole register, which would cover its timestamp",
+    apply: [[P, 'GRANT INSERT ON portal.hostname_register TO portal_provisioner']],
+    // Revoking the table-wide privilege takes the column ones with it: put them back.
+    undo: [
+      [P, 'REVOKE INSERT ON portal.hostname_register FROM portal_provisioner'],
+      [P, 'GRANT INSERT (label, demo_id) ON portal.hostname_register TO portal_provisioner'],
+    ],
+    expect: /extra M06: INSERT on table portal.hostname_register to portal_provisioner/,
+  },
+  {
     id: 'M08',
     title: 'row-level policies switched off on the register',
     apply: [[P, 'ALTER TABLE portal.tenant_register DISABLE ROW LEVEL SECURITY']],
@@ -533,7 +552,7 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     undo: [
       [
         P,
-        'ALTER POLICY extension_insert ON portal.demo_extension_request WITH CHECK (EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = demo_extension_request.demo_id AND demo_request.verified_address = public.bound_address()))',
+        'ALTER POLICY extension_insert ON portal.demo_extension_request WITH CHECK (EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = demo_extension_request.demo_id))',
       ],
     ],
     expect: /extra M20: policy extension_insert on portal.demo_extension_request/,
@@ -724,6 +743,27 @@ export const MORE_EXTRAS: readonly Tamper[] = [
     apply: [[P, 'GRANT DELETE ON portal.demo_request TO portal_prospect']],
     undo: [[P, 'REVOKE DELETE ON portal.demo_request FROM portal_prospect']],
     expect: /extra M06: DELETE on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M06',
+    title: 'SELECT on the whole requests table given to the prospect role',
+    apply: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
+    // A table-level revoke takes the column grants with it, so they are given back.
+    undo: [
+      [P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect'],
+      [
+        P,
+        'GRANT SELECT (demo_id, publication_name, submitted_at) ON portal.demo_request TO portal_prospect',
+      ],
+    ],
+    expect: /extra M06: SELECT on table portal.demo_request to portal_prospect/,
+  },
+  {
+    id: 'M07',
+    title: "SELECT on the requests' address column given to the prospect role",
+    apply: [[P, 'GRANT SELECT (verified_address) ON portal.demo_request TO portal_prospect']],
+    undo: [[P, 'REVOKE SELECT (verified_address) ON portal.demo_request FROM portal_prospect']],
+    expect: /extra M07: SELECT on column portal.demo_request.verified_address to portal_prospect/,
   },
   {
     id: 'M07',
@@ -921,6 +961,13 @@ export const MISSING: readonly Tamper[] = [
     expect: /missing M06: INSERT on table portal.health_reading to portal_owner/,
   },
   {
+    id: 'M07',
+    title: "the provisioner's INSERT on a register column the manifest grants",
+    apply: [[P, 'REVOKE INSERT (label) ON portal.hostname_register FROM portal_provisioner']],
+    undo: [[P, 'GRANT INSERT (label) ON portal.hostname_register TO portal_provisioner']],
+    expect: /missing M07: INSERT on column portal.hostname_register.label to portal_provisioner/,
+  },
+  {
     id: 'M09',
     title: "the tenant role's EXECUTE on bound_tenant()",
     apply: [[P, 'REVOKE EXECUTE ON FUNCTION public.bound_tenant() FROM portal_tenant']],
@@ -929,10 +976,10 @@ export const MISSING: readonly Tamper[] = [
   },
   {
     id: 'M06',
-    title: "the provisioner role's INSERT on the hostname register",
-    apply: [[P, 'REVOKE INSERT ON portal.hostname_register FROM portal_provisioner']],
-    undo: [[P, 'GRANT INSERT ON portal.hostname_register TO portal_provisioner']],
-    expect: /missing M06: INSERT on table portal.hostname_register to portal_provisioner/,
+    title: "the provisioner role's SELECT on the hostname register",
+    apply: [[P, 'REVOKE SELECT ON portal.hostname_register FROM portal_provisioner']],
+    undo: [[P, 'GRANT SELECT ON portal.hostname_register TO portal_provisioner']],
+    expect: /missing M06: SELECT on table portal.hostname_register to portal_provisioner/,
   },
   {
     id: 'M06',
@@ -970,11 +1017,11 @@ export const MISSING: readonly Tamper[] = [
     expect: /missing M06: INSERT on table portal.demo_request to portal_prospect/,
   },
   {
-    id: 'M06',
-    title: "the prospect role's SELECT on the requests",
-    apply: [[P, 'REVOKE SELECT ON portal.demo_request FROM portal_prospect']],
-    undo: [[P, 'GRANT SELECT ON portal.demo_request TO portal_prospect']],
-    expect: /missing M06: SELECT on table portal.demo_request to portal_prospect/,
+    id: 'M07',
+    title: "the prospect role's SELECT on a status column of the requests",
+    apply: [[P, 'REVOKE SELECT (publication_name) ON portal.demo_request FROM portal_prospect']],
+    undo: [[P, 'GRANT SELECT (publication_name) ON portal.demo_request TO portal_prospect']],
+    expect: /missing M07: SELECT on column portal.demo_request.publication_name to portal_prospect/,
   },
   {
     id: 'M09',

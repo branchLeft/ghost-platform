@@ -139,6 +139,32 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
    every round, the long round and the short ones, is under 100 ms for the whole
    run (a writer's first two statements are dropped as connection warm-up). The
    limit is never loosened, and no round is outvoted by the others.
+   **Control 2's source.** The source's datadir is on tmpfs, started so by
+   `prove-percona-snapshot.sh` (`SOURCE_DATADIR_TMPFS`, the one place the
+   location is named). The probe reads the container's mount table before it
+   seeds anything and refuses to run (exit 5) unless that datadir is really on
+   tmpfs, so it cannot fall back to the disk unnoticed; the log's setup line and
+   control 2's report name it. The replica keeps the disk.
+   Why: a hosted runner's disk sometimes stalls a commit for 150 to 570 ms,
+   and every tenant shares one binary log and redo log, so a stall hits all
+   three tenants at once, with the same size, and with no dump running. On the
+   native runner this showed as one run in three red: worst writes of 291.2,
+   289.2 and 290.4 ms on the three tenants in one run, 402 ms before any dump had
+   started in another, about 85 in 100 of the slow writes outside every
+   tenant's own window, and the same candidate digest green on other runs. The
+   stock probe measured the same disk stall (19 of 120 fresh runners; a tmpfs
+   datadir stalled 0 of 20), and `snapshot_probe.md`, "Control 2's source",
+   records the owner's ruling to fix the cause. The window attribution below
+   cannot make that run green: it only changes the red from "inadequate" to
+   "inconclusive".
+   The cost, in plain words: control 2 (and controls 1 and 3, which share its
+   pass) no longer exercise real-disk I/O contention between a dump's reads and
+   another tenant's commits, and nothing here covers the fsync wait in the
+   snapshot's coordinate read. A lock wait does not depend on the disk, so a
+   dump that really holds a lock still stalls the other tenants: the
+   `global-lock` red case, the dumped tenant's writes blocked for about a
+   minute, stays red on the tmpfs source. Controls 4 to 6 do not depend on the
+   disk.
    **Host noise, told by where a slow write fell.** The probe records the start
    and length of every write over 50 ms (`SLOW_WRITE_SECONDS`) per tenant, and
    each tenant's snapshot windows (when its dump ran, by pass). A write over

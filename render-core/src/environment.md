@@ -64,6 +64,24 @@ Nothing renders the decorator's in-process fake, which scans nothing; it is
 for a test harness's own environment. Any other value of the field, a
 different case or the fake's name included, is refused by `validate()`.
 
+The optional `safety.inbound` block names the port the safety service dials
+on the slot's verdict host end, and that the host end serves its own
+certificate over TLS (`{ "port": 8443, "tls": "pinned-private" }`). It is
+allowed only with `verdictSource: "production"`, and a demo never gets it.
+`validate()` refuses any other key, a port that is not a whole number from 1
+to 65535, a `tls` other than `"pinned-private"`, and a block without
+`verdictSource: "production"`. With it, and only with it, a paying tenant's
+environment also renders two of the host end's own setting names:
+
+- `VERDICT_HOST_INBOUND_PORT`, the port as a string.
+- `VERDICT_HOST_INBOUND_TLS=pinned-private`.
+
+Absent, the block renders nothing and the output is byte-identical to before.
+No address, and no key or certificate path, is ever rendered: the host end's
+`VERDICT_HOST_TLS_CERT_FILE` and `VERDICT_HOST_TLS_KEY_FILE` are host-local.
+The certificate's pin is made by the host end when it first starts and is
+reported by it; nothing here renders or checks it.
+
 Set the switch only once the slot's verdict host end runs beside it and its
 volume exists. Before then the socket has nobody listening, so every upload
 is accepted and held, never served.
@@ -84,6 +102,24 @@ one it did cover green. The three features never diverge on which adapter
 they wrap; only `STATIC_FILE_URL_PREFIX` differs between them, because
 `S3Storage` does not infer its own URL segment from the feature it was
 constructed for.
+
+## Gateway media environment
+
+A `gateway` tenant's three features wrap `S3Storage` exactly as an `s3`
+tenant's do, with these wrapped-config values instead:
+
+| Key | Value |
+|---|---|
+| `endpoint` | `media.endpoint`, the gateway's https origin |
+| `forcePathStyle` | `true`: the gateway admits path-style requests only |
+| `bucket` | `media.shard` |
+| `tenantPrefix` | `media.folder`, the tenant's opaque folder, never the slug |
+| `cdnUrl` | `zones.mediaOrigin`, the platform's own media address |
+| `accessKeyId`, `secretAccessKey` | `${GHOST_STORAGE_GATEWAY_KEY_ID:?…}`, `${GHOST_STORAGE_GATEWAY_SECRET:?…}` |
+
+The folder and shard are re-checked here, so a descriptor that skipped
+`validate()` still cannot put a slug into a published URL. See
+media.md#the-tenant-folder and media.md#the-media-address.
 
 ## Break-glass environment
 

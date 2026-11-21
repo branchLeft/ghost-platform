@@ -51,3 +51,36 @@ describe('createSigningSecretSource', () => {
     await expect(source.signingSecret(keyId)).resolves.toBeUndefined();
   });
 });
+
+describe('createSigningSecretSource across profiles', () => {
+  const STATE = 'GWSTATE0000000000000000000';
+  const withState: Record<string, StoredCredential> = {
+    ...rows,
+    [STATE]: {
+      keyId: STATE,
+      folder: 's'.repeat(16),
+      bucket: 'state-shard',
+      profile: 'state',
+      state: 'active',
+      createdAt: 'x',
+      disabledAt: null,
+    },
+  };
+  const get = (keyId: string): StoredCredential | undefined => withState[keyId];
+
+  it('signs a state key id only for the state profile, with the state derivation', async () => {
+    const stateSource = createSigningSecretSource({ get }, MASTER, 'state');
+    await expect(stateSource.signingSecret(STATE)).resolves.toBe(
+      deriveTenantSecret(MASTER, STATE, 'state')
+    );
+    await expect(stateSource.signingSecret(ACTIVE)).resolves.toBeUndefined();
+  });
+
+  it('gives a media-profile source no secret for a state key id', async () => {
+    const mediaSource = createSigningSecretSource({ get }, MASTER);
+    await expect(mediaSource.signingSecret(STATE)).resolves.toBeUndefined();
+    await expect(mediaSource.signingSecret(ACTIVE)).resolves.toBe(
+      deriveTenantSecret(MASTER, ACTIVE)
+    );
+  });
+});

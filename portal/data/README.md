@@ -369,9 +369,17 @@ allocated again, and a label not in the register or already retired is refused
 **Who writes them.** `portal_provisioner`, a third role, used only by the
 control-plane lifecycle worker (not built here) through
 the `./provisioner` export (`ProvisionerDb`). It can
-`INSERT` and `SELECT` the three tables and can neither `UPDATE` nor `DELETE` any
-of them: refused at the permission level, SQLSTATE `42501`, which the provisioning
-command's own check (M06) and smoke test both hold. The owner role may only
+`SELECT` the three tables and `INSERT` into them by column, and can neither
+`UPDATE` nor `DELETE` any of them: refused at the permission level, SQLSTATE
+`42501`, which the provisioning command's own check (M06, M07) and smoke test
+both hold. The `INSERT` leaves out the one timestamp each table has
+(`recorded_at`, `allocated_at`, `retired_at`), so the database's clock stamps
+every row and a raw-SQL writer holding the role cannot backdate a demo's term
+or a hostname's allocation: an insert that names one, even as `DEFAULT`, is
+refused with `42501`. `ProvisionerDb` therefore inserts through the narrowed
+shapes in `src/provisioner/insertShapes.ts`, which a test holds to the schema
+and to the manifest's column grant. The manifest's grants take a `columns`
+list for this (rendered as `GRANT INSERT (...) ON TABLE ...`, checked by M07). The owner role may only
 `SELECT` them (`OwnerDb.listDemos`, `demoHistory`, `demoHostname`,
 `listHostnames`); the tenant role holds nothing on them. The internet-facing
 prospect path is a separate role, `portal_prospect`, below.
@@ -384,7 +392,11 @@ full house is an outcome and never an error: the request goes onto the list as
 consent and explainer wording, read through `ProvisionerDb.request` and
 `OwnerDb.demoRequest`), holds no term and no hostname, and comes back with its
 place in the queue. A request is `CLAIMED` only when fewer than six demos hold a
-slot and nobody is waiting, so a later request never passes an earlier one; a
+slot and nobody is waiting (a demo holds one in a state from `CLAIMED` to
+`PROMOTING`, and also when it is `FAILED` with its hostname not yet retired:
+the worker retires a failed demo's hostname only once its slot is free, so an
+unretired hostname on a `FAILED` demo is the record that the slot still needs a
+reset or a person), so a later request never passes an earlier one; a
 slot that frees while someone waits is for the front of the list, offered by a
 later step that is not built here (the move is `WAITING` to `CLAIMED`). The
 decision is made under one advisory lock held to the end of the transaction, so
@@ -433,8 +445,20 @@ others; `request_insert` lets it `INSERT`; `provisioner_read` lets
 bound, so an unbound statement sees no request. It returns the request's demo
 id, the publication name and the time it was recorded, which is what a status
 page needs; the lifecycle state is not here, because the front door cannot read
-it. The `SELECT` privilege is table-wide, so the policy is what narrows it: a
-statement that skips the typed read still sees one row at most.
+it. The `SELECT` privilege is by column, on those three columns alone
+(`demo_id`, `publication_name`, `submitted_at`), and the policy narrows the
+rows: a statement that skips the typed read still sees one row at most, and a
+statement that names any other column, or `*`, is refused with `42501`.
+
+*Why by column.* A session on the front door's connection can set
+`portal.prospect_address` to any value, so the row policy alone does not stop a
+compromised front door reading the row of an address it can guess. The column
+grant caps that: the address, the subject, the consent wording and the answers
+are out of its reach whatever it binds. The manifest records the grant with
+`columns`, and the provisioning check (M07) pins it exactly, so a table-wide
+grant (M06) or a grant on a fourth column (M07) is refused. The tenant binding
+(`portal.tenant_id`) has the same property and is the isolation the tenant
+tables rest on; it is not changed here.
 
 **One request per verified address.** The verified address is unique over all
 time: a second submission for an address is refused by the table
@@ -479,7 +503,7 @@ migration is applied, so a server held back still verifies.
 ## The demo extension request
 
 A prospect whose demo is running may ask for more time. The request is
-`portal.demo_extension_request` (migration `0015_demo_extension_request`): what
+`portal.demo_extension_request` (migration `0016_demo_extension_request`): what
 they are still evaluating, what is missing, an audience-size band, whether they
 charge readers, when they would move, their consent to be contacted, the exact
 consent wording they were shown and the database's own time. It is keyed on the
@@ -488,8 +512,10 @@ time, matching the demo's one self-service extension.
 
 **Who writes and reads it.** `portal_prospect` can `INSERT` (`ProspectDb.requestExtension`)
 and holds nothing else on the table. An insert policy admits the row only when
-the demo's own request carries the address the transaction bound, so a
-prospect cannot file for another address's demo; with nothing bound it is
+the demo's own request is one the front door can see: it holds no SELECT on the
+address column, so the policy names the demo alone and the request table's own-row
+policy (the address the transaction bound) narrows what it finds. A prospect
+cannot file for another address's demo; with nothing bound it is
 refused. `portal_provisioner` can `SELECT` (`ProvisionerDb.extensionRequest`).
 No role updates or deletes a row, so consent once recorded cannot be altered.
 
@@ -517,6 +543,54 @@ grant with no request refused; a second request, a second grant and a grant
 outside LIVE or EXPIRING refused; the front door refused another address's demo
 and an unbound insert; the front door's read, update and delete and the
 worker's update and delete refused with `42501`.
+
+## Tenant erasure requests
+
+`portal.tenant_erasure_request` is a tenant's own request to erase its whole
+site (migration `0015_tenant_erasure_request`): one row per tenant for all time
+(its primary key is the tenant), the database's time of the request, a status
+(`requested`, then `key_destroyed`) and the database's time at which the owner
+role recorded that the tenant's backup key was destroyed. It has no column that
+holds text. A check ties the two together: `requested` never carries a key
+moment and `key_destroyed` always does.
+
+**Who writes and reads it.** `portal_tenant` can `INSERT` its own row
+(`TenantDb.requestOwnErasure`) and `SELECT` it (`TenantDb.ownErasure`). A
+restrictive insert policy admits only a plain `requested` row, so a tenant
+cannot file a request that already says its key is destroyed. `portal_owner`
+can `SELECT` and `UPDATE` (`OwnerDb.listErasureRequests`,
+`OwnerDb.recordKeyDestroyed`). Nothing deletes a row, and the tenant role has
+no `UPDATE`.
+
+**What a row means.** It destroys nothing. The key is destroyed on the control
+host by `erase_tenant_backup_identity.py`, and the owner role is told only from
+that command's own green proof line (the console's erasure recorder).
+`recordKeyDestroyed` moves a `requested` row and nothing else: a tenant that
+never asked cannot be recorded, and a second recording keeps the first moment.
+
+**What it may be shown as.** `deriveErasureView` returns `key_destroyed` only
+for a row that says so and carries its moment; anything else that exists is
+`requested`. A `key_destroyed` view carries the residual window as a constant:
+around 46 days from the moment the key was destroyed, `upperBoundDays: null`
+(typed `null`, not `number`) and the reason code `ANCHOR_DUMP_NEVER_PRUNED`.
+The pruner never deletes the anchor dump however old it is, so there is no
+bound, and no value derived from the clock can read as an end date.
+
+**Other tables erasure must cover.** This table records a request; it is not an
+inventory of what holds a tenant's data. Any store added later that holds
+tenant data (for example reader analytics) is part of an erasure, and its
+design must say how: by the tenant's own backup key, by a per-tenant delete, or
+as data the portal never held.
+
+Control cases (`test/tenantErasure.test.ts`): a tenant files one row with the
+database's clock and a second request records nothing; tenant B sees nothing of
+tenant A's row and cannot file for it; a tenant cannot file an already-destroyed
+row nor update or delete its own; the status is held to the closed list and the
+moment to the status; a tenant that never asked cannot be recorded as erased.
+Sabotage: an `UPDATE` grant to the tenant role lets it declare its own key
+destroyed, a lifted insert restriction lets it file an already-destroyed row,
+and a dropped moment check stores a destroyed row with no moment which is
+still shown as requested; each is restored and refused again.
 
 ## Moderation queue
 
@@ -548,6 +622,40 @@ Tenant-facing code imports the first only; a test fails if anything under
 `src/tenant` imports the owner path, the provisioner path or the migrator. The owner pool connects as a login that is a member
 of `portal_owner` alone, so the tenant-facing connection cannot assume that role.
 
+## Recovering from a stopped first run
+
+A full run that stops on an already-initialised database, after it has created
+roles (steps 2 to 4), leaves those roles holding no grants. The next run refuses,
+naming each missing grant, for example `missing M05: USAGE on schema portal to
+portal_prospect`. The command never repairs this itself: a stopped run and a
+tampered role look the same, so both are refused. A stopped run on a fresh
+server needs no recovery: the next run completes the database.
+
+If the refusal names roles with no grants, and you know the failed run created
+them, drop those roles on the database host as the administrator, then re-run
+the full command. Drop only the roles the refusal names. A refusal naming a role
+with no grants means exactly this, or that privileges were removed by hand:
+investigate before dropping anything.
+
+Connect without a secret on the command line. The administrator password goes
+in a password file, never in the URL or in an argument list (`ps` shows
+arguments to every local user). Create it with mode 0600, one line:
+
+```text
+<host>:<port>:postgres:<administrator>:<password>
+```
+
+Then, with `PGPASSFILE` naming that file, run:
+
+```sh
+PGPASSFILE=/path/to/pgpass psql -h <host> -p <port> -U <administrator> -d postgres -v ON_ERROR_STOP=1 -c 'DROP ROLE portal_prospect' -c 'DROP ROLE portal_prospect_login'
+```
+
+The role is dropped first, so a refusal (the role holds a grant, a privilege or a
+policy reference) stops before the login is touched; `ON_ERROR_STOP` stops the
+run at the first error. Use your configured login names if they differ from the
+defaults in the table above. Delete the password file afterwards.
+
 ## Running the tests
 
 ```sh
@@ -576,25 +684,35 @@ node dist/provision/provisionMain.js   # or: pnpm run provision
 Every input is a file named by an environment variable; a secret in argv or in
 the variable itself is refused.
 
-| Variable                      | Holds                                                 |
-| ----------------------------- | ----------------------------------------------------- |
-| `PORTAL_ADMIN_URL_FILE`       | administrator connection URL (host and user required) |
-| `PORTAL_TENANT_PASSWORD_FILE` | password for the tenant login (printable ASCII)       |
-| `PORTAL_OWNER_PASSWORD_FILE`  | password for the owner login (printable ASCII)        |
-| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII) |
-| `PORTAL_PROSPECT_PASSWORD_FILE` | password for the prospect login (printable ASCII)   |
-| `PORTAL_MIGRATOR_PASSWORD_FILE` | password for the migrator login (printable ASCII) |
-| `PORTAL_MIGRATOR_URL_FILE`    | `--migrate-only` only: the migrator login's connection URL, password included |
-| `PORTAL_DATABASE_NAME`        | optional, default `portal`                            |
-| `PORTAL_TENANT_LOGIN`         | optional, default `portal_tenant_login`               |
-| `PORTAL_OWNER_LOGIN`          | optional, default `portal_owner_login`                |
-| `PORTAL_PROVISIONER_LOGIN`    | optional, default `portal_provisioner_login`          |
-| `PORTAL_PROSPECT_LOGIN`       | optional, default `portal_prospect_login`             |
-| `PORTAL_MIGRATOR_LOGIN`       | optional, default `portal_migrator_login`             |
+| Variable                           | Holds                                                                         |
+| ---------------------------------- | ----------------------------------------------------------------------------- |
+| `PORTAL_ADMIN_URL_FILE`            | administrator connection URL (host and user required)                         |
+| `PORTAL_TENANT_PASSWORD_FILE`      | password for the tenant login (printable ASCII)                               |
+| `PORTAL_OWNER_PASSWORD_FILE`       | password for the owner login (printable ASCII)                                |
+| `PORTAL_PROVISIONER_PASSWORD_FILE` | password for the provisioner login (printable ASCII)                          |
+| `PORTAL_PROSPECT_PASSWORD_FILE`    | optional: password for the prospect login (printable ASCII); see below        |
+| `PORTAL_MIGRATOR_PASSWORD_FILE`    | password for the migrator login (printable ASCII)                             |
+| `PORTAL_MIGRATOR_URL_FILE`         | `--migrate-only` only: the migrator login's connection URL, password included |
+| `PORTAL_DATABASE_NAME`             | optional, default `portal`                                                    |
+| `PORTAL_TENANT_LOGIN`              | optional, default `portal_tenant_login`                                       |
+| `PORTAL_OWNER_LOGIN`               | optional, default `portal_owner_login`                                        |
+| `PORTAL_PROVISIONER_LOGIN`         | optional, default `portal_provisioner_login`                                  |
+| `PORTAL_PROSPECT_LOGIN`            | optional, default `portal_prospect_login`                                     |
+| `PORTAL_MIGRATOR_LOGIN`            | optional, default `portal_migrator_login`                                     |
 
-The five logins must differ and their passwords come from five files. A full
-run needs all five password files: the manifest is closed, so a run without
-one is refused rather than provisioning four of five.
+The five logins must differ. A full run needs the tenant, owner, provisioner
+and migrator password files: a run without one is refused rather than
+provisioning the others alone. The prospect password file is the one optional
+file, because the front door that will use the prospect login is not built yet
+and nothing holds its password. Without the file, a run that creates the login
+gives it a random password made in memory, used for that run's probes and
+written nowhere, so no one holds it; a run that finds the login already there
+leaves its password as it is, probes the other databases with a wrong one and
+skips the prospect login's smoke test, and says so in its output. Naming the
+file in a later full run sets the password. So a server provisioned before the
+prospect login existed reaches the newest migrations with no secret typed for
+it: the full run creates the role and login, gives them what the manifest grants
+on what is already there, and applies the pending migrations.
 
 The command creates what is absent, checks everything, and repairs nothing.
 `provision/manifest.ts` is the closed manifest: the four roles and five logins
@@ -684,8 +802,8 @@ created-empty, not provisioned` when the full provision has not run, and with
 `migrate refused: cannot connect ... as <migrator>` when the migrator or the
 database does not exist. A server last provisioned before `portal_provisioner`,
 `portal_prospect` or the migrator existed is such a case: `--migrate-only` refuses, and the full
-run (with every password file) comes first, then `--migrate-only` for later
-migrations. It skips step 5, which needs the other logins' passwords. Run again
+run (with the password files it needs; the prospect's is optional) comes first, then
+`--migrate-only` for later migrations. It skips step 5, which needs the other logins' passwords. Run again
 with nothing pending, it applies nothing and prints `no pending migrations`.
 
 **What the routine path does not observe.** A superuser reads catalogs the

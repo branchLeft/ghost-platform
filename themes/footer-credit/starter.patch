@@ -1,0 +1,20 @@
+--- a/default.hbs
++++ b/default.hbs
+@@ -65,6 +65,7 @@
+         </div>
+         <div class="gh-foot-meta">
+             Published with <a href="https://ghost.org" target="_blank" rel="noopener">Ghost</a>
++            {{> platform-footer-credit}}
+         </div>
+     </div>
+ </footer>
+--- a/error.hbs
++++ b/error.hbs
+@@ -94,6 +94,7 @@
+         </div>
+         <div class="gh-foot-meta">
+             Published with <a href="https://ghost.org" target="_blank" rel="noopener">Ghost</a>
++            {{> platform-footer-credit}}
+         </div>
+     </div>
+ </footer>

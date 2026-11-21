@@ -21,6 +21,11 @@ const REFUSALS: Readonly<Record<RefusalCode, Refusal>> = {
     message: 'This credential cannot be used.',
     status: 403,
   },
+  'profile-not-allowed': {
+    code: 'profile-not-allowed',
+    message: 'This credential is not valid on this endpoint.',
+    status: 403,
+  },
   'operation-not-allowed': {
     code: 'operation-not-allowed',
     message: 'This operation is not allowed.',

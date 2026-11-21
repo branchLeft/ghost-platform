@@ -16,6 +16,7 @@ import {
   uuid,
 } from 'drizzle-orm/pg-core';
 import { SUPPORT_ACCESS_STATES, SUPPORT_LANES, SUPPORT_REQUEST_STATUSES } from './supportAccess.js';
+import { ERASURE_STATUSES } from './tenantErasure.js';
 import { TENANT_KINDS } from './tenantKind.js';
 import { BILLING_REFERENCE_PATTERN, CARD_NUMBER_LIKE_PATTERN, PAYMENT_STATES } from './billing.js';
 import { TENANT_NAME_PATTERN } from './tenantName.js';
@@ -273,6 +274,57 @@ export const supportAccessRequest = portal
         for: 'insert',
         to: portalTenant,
         withCheck: sql`${table.status} = 'open'`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
+ * A tenant's own request to erase its whole site: one row per tenant for all
+ * time, with the database-clock time of the request, a status (`requested`,
+ * then `key_destroyed`) and the database-clock time at which the owner role
+ * recorded that the tenant's backup key was destroyed. No text. The tenant role
+ * may insert its own `requested` row and read it; only the owner role updates
+ * it, and no role deletes it. A row opens nothing and destroys nothing: the key
+ * is destroyed on the control host, and the row says so only once the owner
+ * role has been given that command's green proof. The check ties the two
+ * columns together, so a `key_destroyed` row always carries its moment and a
+ * `requested` row never does.
+ */
+export const tenantErasureRequest = portal
+  .table(
+    'tenant_erasure_request',
+    {
+      tenantId: uuid('tenant_id')
+        .primaryKey()
+        .references(() => tenantRegister.tenantId),
+      requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+      status: text('status').notNull().default('requested'),
+      keyDestroyedAt: timestamp('key_destroyed_at', { withTimezone: true }),
+    },
+    (table) => [
+      check(
+        'tenant_erasure_request_status_known',
+        sql`${table.status} IN (${sql.raw(sqlList(ERASURE_STATUSES))})`
+      ),
+      check(
+        'tenant_erasure_request_destroyed_moment',
+        sql`(${table.status} = 'requested' AND ${table.keyDestroyedAt} IS NULL) OR (${table.status} = 'key_destroyed' AND ${table.keyDestroyedAt} IS NOT NULL)`
+      ),
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+      // A tenant files a request and nothing more: it cannot file one that
+      // already says the key is destroyed.
+      pgPolicy('tenant_insert_requested', {
+        as: 'restrictive',
+        for: 'insert',
+        to: portalTenant,
+        withCheck: sql`${table.status} = 'requested' AND ${table.keyDestroyedAt} IS NULL`,
       }),
     ]
   )
@@ -745,14 +797,15 @@ export const demoExtensionRequest = portal
         'demo_extension_request_consent_wording_length',
         sql`char_length(${table.consentWording}) BETWEEN 1 AND ${sql.raw(String(WORDING_MAX))}`
       ),
-      // The front door files a request only for the demo whose own request
-      // holds the address its transaction bound: the subquery runs as the
-      // front door, so the request table's own-row policy narrows it too.
+      // The front door files a request only for the demo whose own request holds
+      // the address its transaction bound. The subquery runs as the front door,
+      // which holds no SELECT on the address column, so it names the demo alone
+      // and the request table's own-row policy does the narrowing.
       pgPolicy('extension_insert', {
         as: 'permissive',
         for: 'insert',
         to: portalProspect,
-        withCheck: sql`EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = ${table.demoId} AND demo_request.verified_address = public.bound_address())`,
+        withCheck: sql`EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = ${table.demoId})`,
       }),
       pgPolicy('provisioner_read', {
         as: 'permissive',

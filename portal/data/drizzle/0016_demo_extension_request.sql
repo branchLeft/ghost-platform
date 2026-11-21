@@ -15,5 +15,5 @@ CREATE TABLE "portal"."demo_extension_request" (
 --> statement-breakpoint
 ALTER TABLE "portal"."demo_extension_request" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "portal"."demo_extension_request" ADD CONSTRAINT "demo_extension_request_demo_id_demo_request_demo_id_fk" FOREIGN KEY ("demo_id") REFERENCES "portal"."demo_request"("demo_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE POLICY "extension_insert" ON "portal"."demo_extension_request" AS PERMISSIVE FOR INSERT TO "portal_prospect" WITH CHECK (EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = "portal"."demo_extension_request"."demo_id" AND demo_request.verified_address = public.bound_address()));--> statement-breakpoint
+CREATE POLICY "extension_insert" ON "portal"."demo_extension_request" AS PERMISSIVE FOR INSERT TO "portal_prospect" WITH CHECK (EXISTS (SELECT 1 FROM portal.demo_request WHERE demo_request.demo_id = "portal"."demo_extension_request"."demo_id"));--> statement-breakpoint
 CREATE POLICY "provisioner_read" ON "portal"."demo_extension_request" AS PERMISSIVE FOR SELECT TO "portal_provisioner" USING (true);
