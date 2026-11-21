@@ -51,7 +51,9 @@ export async function startMemoryShard(bucket: string): Promise<MemoryShard> {
         res.writeHead(404, { 'content-type': 'application/xml' });
         res.end(xml('<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>'));
       };
-      if (parts[0] !== bucket) {
+      const knownBuckets = new Map<string, string>([[bucket, bucket]]);
+      const storedBucket = knownBuckets.get(parts[0] ?? '');
+      if (storedBucket === undefined) {
         res.writeHead(404, { 'content-type': 'application/xml' });
         res.end(xml('<Error><Code>NoSuchBucket</Code><Message>missing</Message></Error>'));
         return;
@@ -92,7 +94,7 @@ export async function startMemoryShard(bucket: string): Promise<MemoryShard> {
         res.writeHead(200, { 'content-type': 'application/xml' });
         res.end(
           xml(
-            `<ListBucketResult><Name>${esc(bucket)}</Name><Prefix>${esc(prefix)}</Prefix><KeyCount>${contents.length + commonPrefixes.size}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${entries}${prefixes}</ListBucketResult>`
+            `<ListBucketResult><Name>${esc(storedBucket)}</Name><Prefix>${esc(prefix)}</Prefix><KeyCount>${contents.length + commonPrefixes.size}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${entries}${prefixes}</ListBucketResult>`
           )
         );
         return;
