@@ -608,6 +608,7 @@ describe('the statements the command writes', () => {
       'GRANT SELECT ON TABLE portal.hostname_retirement TO "portal_provisioner"',
       'GRANT INSERT ("label") ON TABLE portal.hostname_retirement TO "portal_provisioner"',
       'GRANT SELECT ON TABLE portal.demo_request TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_extension_request TO "portal_provisioner"',
     ]);
     for (const stamp of ['recorded_at', 'allocated_at', 'retired_at']) {
       expect(all.filter((s) => s.includes(stamp))).toEqual([]);
