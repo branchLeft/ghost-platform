@@ -3,6 +3,7 @@ import type { TenantScope } from 'ghost-platform-portal-data/tenant';
 import { portalErrorLine } from '../shell/errorLine.js';
 import { escapeHtml, type NavItem } from '../shell/html.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
+import type { ThirdPartyOff } from './thirdPartyOff.js';
 
 /** The page this screen is served at. */
 export const SITE_PATH = '/site';
@@ -80,7 +81,11 @@ function renderHostnames(hostnames: readonly string[]): string {
  * The page body. Every string is a placeholder except the values the API
  * returned, which are escaped here and nowhere else.
  */
-export function renderSite(read: SiteRead, customDomainPath?: string): string {
+export function renderSite(
+  read: SiteRead,
+  customDomainPath?: string,
+  thirdPartyOffBlock = ''
+): string {
   switch (read.kind) {
     case 'demo':
       return (
@@ -103,6 +108,7 @@ export function renderSite(read: SiteRead, customDomainPath?: string): string {
         `<dt>SITE_INVOICE_LABEL</dt><dd>${invoice}</dd>` +
         `<dt>SITE_HOSTNAMES_LABEL</dt><dd>${renderHostnames(tenant.hostnames)}</dd>` +
         '</dl>' +
+        thirdPartyOffBlock +
         renderCustomDomainSlot(customDomainPath)
       );
     }
@@ -118,6 +124,8 @@ export interface SiteRoutesOptions {
   readonly onError?: (line: string) => void;
   /** The custom-domain screen's route, once it has one. */
   readonly customDomainPath?: string;
+  /** Why FirstPromoter and Transistor are off; absent, the screen carries no such block. */
+  readonly thirdPartyOff?: ThirdPartyOff;
 }
 
 const OFF: SiteRoutes = { nav: [], pages: {} };
@@ -138,7 +146,8 @@ export function createSiteRoutes(
       [SITE_PATH]: async (scope) =>
         renderSite(
           await readSite(settings, scope.tenantId, options.onError),
-          options.customDomainPath
+          options.customDomainPath,
+          options.thirdPartyOff?.block()
         ),
     },
   };

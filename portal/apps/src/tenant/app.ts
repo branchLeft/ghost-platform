@@ -23,6 +23,7 @@ import { moderationBody, saveModeration } from './moderationSettings.js';
 import { createPromotionRoutes } from './promotionRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
+import { createThirdPartyOff, type ThirdPartyOffCopy } from './thirdPartyOff.js';
 import { createSiteRoutes } from './site.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
@@ -54,6 +55,14 @@ export interface TenantPortalOptions {
    * served: no page, no action and no navigation entry.
    */
   readonly provisioning?: ProvisioningSettings;
+  /**
+   * True only for a ring under inspection, where an unfilled placeholder in the
+   * third-party-off copy may be read. Absent or false, a tenant is never shown one:
+   * the block and the line are left out.
+   */
+  readonly allowPlaceholderCopy?: boolean;
+  /** The third-party-off copy; absent, the owner's copy in `thirdPartyOff.ts`. */
+  readonly thirdPartyOffCopy?: ThirdPartyOffCopy;
 }
 
 /**
@@ -80,10 +89,21 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
-  const site = createSiteRoutes(options.provisioning, { onError: options.onError });
+  const thirdPartyOff = createThirdPartyOff({
+    ...(options.thirdPartyOffCopy === undefined ? {} : { copy: options.thirdPartyOffCopy }),
+    allowPlaceholders: options.allowPlaceholderCopy === true,
+  });
+  const site = createSiteRoutes(options.provisioning, {
+    onError: options.onError,
+    thirdPartyOff,
+  });
   const demo = createDemoRoutes(options.provisioning);
-  const promotion = createPromotionRoutes(options.provisioning, options.support, options.db, () =>
-    Math.floor(now().getTime() / 1000)
+  const promotion = createPromotionRoutes(
+    options.provisioning,
+    options.support,
+    options.db,
+    () => Math.floor(now().getTime() / 1000),
+    thirdPartyOff
   );
   return createShell<TenantScope>({
     issuer: options.issuer,
