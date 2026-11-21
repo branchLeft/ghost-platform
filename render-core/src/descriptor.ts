@@ -261,6 +261,15 @@ export type BreakGlassSpec =
       readonly supportIdentity: EmailAddress;
     };
 
+/**
+ * Tenant analytics. Off by default: an absent field and `kind: 'off'` mean
+ * the same thing, and render no analytics keys at all. `on` names the
+ * tenant's site identifier, which must be a lower-case UUID and is refused
+ * for a demo. See environment.ts (analyticsEnvironment) and LLD-11 section 09.
+ */
+export type AnalyticsSpec =
+  { readonly kind: 'off' } | { readonly kind: 'on'; readonly siteUuid: string };
+
 export interface TenantDescriptor {
   /**
    * The schema version this descriptor was built against. A reconciler that
@@ -290,6 +299,8 @@ export interface TenantDescriptor {
   readonly safety: SafetySpec;
   readonly breakGlass: BreakGlassSpec;
   readonly expiresAt: Instant | null;
+  /** Absent means off (LLD-11 section 09). */
+  readonly analytics?: AnalyticsSpec;
 }
 
 /**
