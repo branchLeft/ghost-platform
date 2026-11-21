@@ -5,6 +5,14 @@ export { ENTRY_POINTS, STEP_IDS, digestOf } from './plan.js';
 export { runCli, EXIT } from './main.js';
 export type { CliIo } from './main.js';
 export { commandHostPorts, HOST_EXIT_PERMANENT } from './commandHost.js';
+export { ENTRY_EXIT, ENTRY_VERBS, TenantEntryHost } from './tenantEntryHost.js';
+export type {
+  EntryReply,
+  EntryTransport,
+  EntryVerb,
+  TenantEntryHostOptions,
+  TenantEntryInputs,
+} from './tenantEntryHost.js';
 export type { CommandSpec, Env } from './commandHost.js';
 export { parseRunConfig, RunConfigError } from './runConfig.js';
 export type { RunConfig } from './runConfig.js';
