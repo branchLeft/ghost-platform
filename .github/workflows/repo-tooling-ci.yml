@@ -220,6 +220,9 @@ jobs:
       - name: Workflow permissions test
         run: python3 -m unittest discover -s scripts -p 'test_workflow_permissions.py'
 
+      - name: Apply-gate operands on the ghost-platform calls
+        run: python3 -m unittest discover -s scripts -p 'test_apply_gate_operands.py' -v
+
       # Each gate of the demo site block broken in a scratch copy: the suite must
       # go red for every one, and green on the real copy.
       - name: Demo site block sabotage proof
@@ -312,6 +315,9 @@ jobs:
           verdict-step: noop
           summary-step: Write the plan to the job summary
           plan-file: preview-plan.json
+          required-operands: |
+            github.event_name == 'push'
+            github.ref == 'refs/heads/main'
 
       - name: Check the apply gate (demo host)
         uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
@@ -321,3 +327,6 @@ jobs:
           verdict-step: noop
           summary-step: Write the plan to the job summary
           plan-file: preview-plan.json
+          required-operands: |
+            github.event_name == 'push'
+            github.ref == 'refs/heads/main'
