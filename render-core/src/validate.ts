@@ -1399,14 +1399,31 @@ function checkTierVariants(descriptor: TenantStackDescriptor): void {
   if (descriptor.expiresAt === null) {
     throw new TierMismatchError('kind "demo" requires a non-null expiresAt.');
   }
-  // Incidental, decided by the implementing agent: a demo visitor already
-  // holds admin on their own disposable slot, so
-  // there is nothing left for a support identity to reach that the visitor
-  // cannot already reach — the break-glass mechanism exists for a *paying*
-  // tenant's own admin, which a demo has no separate one of.
-  if (descriptor.breakGlass.kind !== 'disabled') {
+}
+
+/**
+ * A demo may carry the sign-in adapter only pinned to its own owner: the
+ * prospect reaches admin by a signed link, never a password. A demo has no
+ * support account, so any other identity is refused. See validate.md#demo-sign-in.
+ */
+function checkDemoBreakGlassIsOwner(
+  descriptor: TenantStackDescriptor,
+  owner: OwnerEmailPlacement
+): void {
+  if (descriptor.kind !== 'demo' || descriptor.breakGlass.kind !== 'enabled') {
+    return;
+  }
+  if (owner !== 'inline') {
     throw new TierMismatchError(
-      `kind "demo" requires breakGlass.kind "disabled", got "${descriptor.breakGlass.kind}".`
+      'kind "demo" with breakGlass.kind "enabled" must carry its ownerEmail inline, so the ' +
+        'identity the adapter is pinned to can be checked against it.'
+    );
+  }
+  const ownerEmail = (descriptor as TenantDescriptor).ownerEmail;
+  if (descriptor.breakGlass.supportIdentity.toLowerCase() !== ownerEmail.toLowerCase()) {
+    throw new TierMismatchError(
+      'kind "demo" requires breakGlass.supportIdentity to equal its own ownerEmail: the adapter ' +
+        "may sign in the demo's owner and nobody else (values withheld)."
     );
   }
 }
@@ -1570,6 +1587,7 @@ function validateFields(
   checkInv3(descriptor);
   checkCodeInjectionHostnamePrecondition(descriptor);
   checkTierVariants(descriptor);
+  checkDemoBreakGlassIsOwner(descriptor, owner);
   checkHostnameGateConsistency(descriptor);
   checkBreakGlassIdentity(descriptor);
   checkBreakGlassImageOrdering(descriptor, zones);

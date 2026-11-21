@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
+import type { KeyObject } from 'node:crypto';
 import type { BlockList } from 'node:net';
 import { MIN_KEY_BYTES } from './cookie.js';
+import { parseInvitationPublicKey } from './invitation.js';
 import { isLoopbackHost, parseTrustedProxies } from 'ghost-platform-request-guard/dist/index.js';
 
 export interface GateConfig {
@@ -30,6 +32,15 @@ export interface GateConfig {
    * rather than admitting a request it should have refused.
    */
   readonly trafficCounterDir?: string;
+  /** Absent unless `GATE_INVITE_PUBLIC_KEY_FILE` is set; see ../README.md#the-arrival-link. */
+  readonly invitation?: InvitationConfig;
+}
+
+export interface InvitationConfig {
+  readonly publicKey: KeyObject;
+  readonly ledgerDir: string;
+  readonly mailProofDir: string;
+  readonly mailProofMaxAgeSeconds: number;
 }
 
 export type GateEnv = Record<string, string | undefined>;
@@ -55,6 +66,27 @@ function positiveInteger(env: GateEnv, name: string, fallback: number, max: numb
  * rather than guessing. The key is read from a file so it never appears in
  * the process environment, and must be at least 32 bytes.
  */
+function loadInvitation(
+  env: GateEnv,
+  readFile: (path: string) => Buffer
+): InvitationConfig | undefined {
+  const keyFile = env.GATE_INVITE_PUBLIC_KEY_FILE;
+  const others = ['GATE_INVITE_STATE_DIR', 'GATE_MAIL_PROOF_DIR'];
+  if (!keyFile) {
+    const stray = others.find((name) => env[name]);
+    if (stray !== undefined) {
+      throw new Error(`${stray} is set but GATE_INVITE_PUBLIC_KEY_FILE is not`);
+    }
+    return undefined;
+  }
+  return {
+    publicKey: parseInvitationPublicKey(readFile(keyFile).toString('utf8')),
+    ledgerDir: requireEnv(env, 'GATE_INVITE_STATE_DIR'),
+    mailProofDir: requireEnv(env, 'GATE_MAIL_PROOF_DIR'),
+    mailProofMaxAgeSeconds: positiveInteger(env, 'GATE_MAIL_PROOF_MAX_AGE_SECONDS', 3600, 86400),
+  };
+}
+
 export function loadConfig(
   env: GateEnv,
   readKey: (path: string) => Buffer = (path) => readFileSync(path)
@@ -106,5 +138,6 @@ export function loadConfig(
     argon2MaxConcurrent: positiveInteger(env, 'GATE_ARGON2_MAX_CONCURRENT', 3, 64),
     argon2MaxQueued: positiveInteger(env, 'GATE_ARGON2_MAX_QUEUED', 64, 10_000),
     trafficCounterDir: env.GATE_TRAFFIC_COUNTER_DIR || undefined,
+    invitation: loadInvitation(env, readKey),
   };
 }

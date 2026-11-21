@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import { createSourceResolver } from 'ghost-platform-request-guard/dist/index.js';
+import { generateKeyPair } from '../helpers/invitations.js';
 
 const KEY = Buffer.alloc(32, 1);
 const base = {
@@ -159,5 +160,58 @@ describe('loadConfig', () => {
 
   it('reads the key through the default file reader', () => {
     expect(() => loadConfig({ ...base, GATE_SIGNING_KEY_FILE: '/nonexistent/key' })).toThrow();
+  });
+  describe('the arrival link settings', () => {
+    const publicKey = generateKeyPair().publicKeyBase64;
+    const withKeys = (over: Record<string, string | undefined> = {}) => ({
+      ...base,
+      GATE_TRUSTED_PROXIES: EDGE,
+      GATE_INVITE_PUBLIC_KEY_FILE: '/invite.pub',
+      GATE_INVITE_STATE_DIR: '/state/invites',
+      GATE_MAIL_PROOF_DIR: '/state/mail',
+      ...over,
+    });
+    const read = (path: string) => (path === '/invite.pub' ? Buffer.from(publicKey) : KEY);
+
+    it('is absent unless a public key is named, so there is no arrival route by default', () => {
+      expect(load({ ...base, GATE_TRUSTED_PROXIES: EDGE }).invitation).toBeUndefined();
+    });
+
+    it('reads the key, both directories and the proof age, with a default of an hour', () => {
+      const { invitation } = loadConfig(withKeys(), read);
+      expect(invitation).toMatchObject({
+        ledgerDir: '/state/invites',
+        mailProofDir: '/state/mail',
+        mailProofMaxAgeSeconds: 3600,
+      });
+      expect(invitation?.publicKey.asymmetricKeyType).toBe('ed25519');
+      const bounded = loadConfig(withKeys({ GATE_MAIL_PROOF_MAX_AGE_SECONDS: '120' }), read);
+      expect(bounded.invitation?.mailProofMaxAgeSeconds).toBe(120);
+    });
+
+    it.each(['GATE_INVITE_STATE_DIR', 'GATE_MAIL_PROOF_DIR'])(
+      'refuses to start with a key and no %s: an arrival that cannot be single-use or ready is not offered',
+      (name) => {
+        expect(() => loadConfig(withKeys({ [name]: undefined }), read)).toThrow(name);
+      }
+    );
+
+    it.each(['GATE_INVITE_STATE_DIR', 'GATE_MAIL_PROOF_DIR'])(
+      'refuses to start with %s set and no key, which is a half-made setting',
+      (name) => {
+        const other =
+          name === 'GATE_INVITE_STATE_DIR' ? 'GATE_MAIL_PROOF_DIR' : 'GATE_INVITE_STATE_DIR';
+        expect(() =>
+          loadConfig(withKeys({ GATE_INVITE_PUBLIC_KEY_FILE: undefined, [other]: undefined }), read)
+        ).toThrow(name);
+      }
+    );
+
+    it('refuses a key that is not an Ed25519 public key, and an out-of-range proof age', () => {
+      expect(() => loadConfig(withKeys(), () => Buffer.from('nonsense!'))).toThrow();
+      expect(() => loadConfig(withKeys({ GATE_MAIL_PROOF_MAX_AGE_SECONDS: '0' }), read)).toThrow(
+        'GATE_MAIL_PROOF_MAX_AGE_SECONDS'
+      );
+    });
   });
 });
