@@ -50,6 +50,7 @@ export type {
   TenantDescriptor,
   TenantKind,
   TenantStackDescriptor,
+  VerdictInboundSpec,
   VerdictSourceKind,
   TransportSpec,
 } from './descriptor.js';

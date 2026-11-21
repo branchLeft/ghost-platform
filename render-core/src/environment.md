@@ -64,6 +64,24 @@ Nothing renders the decorator's in-process fake, which scans nothing; it is
 for a test harness's own environment. Any other value of the field, a
 different case or the fake's name included, is refused by `validate()`.
 
+The optional `safety.inbound` block names the port the safety service dials
+on the slot's verdict host end, and that the host end serves its own
+certificate over TLS (`{ "port": 8443, "tls": "pinned-private" }`). It is
+allowed only with `verdictSource: "production"`, and a demo never gets it.
+`validate()` refuses any other key, a port that is not a whole number from 1
+to 65535, a `tls` other than `"pinned-private"`, and a block without
+`verdictSource: "production"`. With it, and only with it, a paying tenant's
+environment also renders two of the host end's own setting names:
+
+- `VERDICT_HOST_INBOUND_PORT`, the port as a string.
+- `VERDICT_HOST_INBOUND_TLS=pinned-private`.
+
+Absent, the block renders nothing and the output is byte-identical to before.
+No address, and no key or certificate path, is ever rendered: the host end's
+`VERDICT_HOST_TLS_CERT_FILE` and `VERDICT_HOST_TLS_KEY_FILE` are host-local.
+The certificate's pin is made by the host end when it first starts and is
+reported by it; nothing here renders or checks it.
+
 Set the switch only once the slot's verdict host end runs beside it and its
 volume exists. Before then the socket has nobody listening, so every upload
 is accepted and held, never served.

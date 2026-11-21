@@ -101,6 +101,12 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 - **Rollout:** the volume is `external`, and nothing listens on the socket
   until the slot's verdict host end runs. Do not set the switch on a
   descriptor before both exist, or uploads are held, never served.
+- **Additive: the host end's inbound listener.** `safety.inbound`
+  (`{ port, tls: "pinned-private" }`) is optional and needs
+  `verdictSource: "production"`. A paying tenant then also renders
+  `VERDICT_HOST_INBOUND_PORT` and `VERDICT_HOST_INBOUND_TLS`. No address and no
+  key or certificate path is rendered. New export `VerdictInboundSpec`. See
+  src/environment.md#verdict-source.
 
 **The strict content policy can carry Stripe.**
 
