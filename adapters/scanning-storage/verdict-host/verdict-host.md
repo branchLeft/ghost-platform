@@ -158,8 +158,7 @@ rules; change them together.
 
 ## Not in this change
 
-The image carrying this tree; the unit that runs the process and denies it the
-network; the descriptor entry that gives each host its inbound address and key;
+The image carrying this tree; the descriptor entry that gives each host its inbound address and key;
 something that carries the pin to the safety service and makes it trust only that
 pin; the route that lets the safety service reach a host from outside; a shared
 home for the signed-request check and the verdicts reader. The entry file passes the socket transport to the
