@@ -305,7 +305,7 @@ jobs:
       # gets its own step here: the infra workflows are path-filtered, and a
       # check there would not run on a pull request that breaks the gate.
       - name: Check the apply gate (hosts)
-        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           workflow: .github/workflows/infra-hosts-ci.yml
           pairs: plan:apply
@@ -314,7 +314,7 @@ jobs:
           plan-file: preview-plan.json
 
       - name: Check the apply gate (demo host)
-        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           workflow: .github/workflows/infra-demo-host-ci.yml
           pairs: plan:apply
