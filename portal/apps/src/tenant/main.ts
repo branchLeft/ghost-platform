@@ -5,6 +5,7 @@ import { createPortalPool } from '../shell/pool.js';
 import { loadTenantConfig } from './config.js';
 import { createTenantPortal } from './app.js';
 import { disabledLine, failureLine, loadSupportSettings } from './supportConfig.js';
+import { withheldLine } from './thirdPartyOff.js';
 
 const writeLine = (line: string): void => void process.stderr.write(`${line}\n`);
 const config = loadTenantConfig(process.env);
@@ -13,6 +14,8 @@ const { support, disabledBecause } = loadSupportSettings(process.env, readText, 
   process.stderr.write(`${failureLine(code)}\n`)
 );
 if (support === undefined) process.stderr.write(`${disabledLine(disabledBecause)}\n`);
+const withheld = withheldLine();
+if (withheld !== undefined && !config.allowPlaceholderCopy) process.stderr.write(`${withheld}\n`);
 const portal = createTenantPortal({
   ...config,
   db: new TenantDb(pool),
