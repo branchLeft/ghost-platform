@@ -201,12 +201,3 @@ export function verdictVolumeName(slug: Slug): string {
 export function verdictJournalVolumeName(slug: Slug): string {
   return `ghost-${slug}-verdict-journal`;
 }
-
-/**
- * The per-slot Docker network the verdict host end joins and nothing else
- * does. Rendered `internal: true`, so it has no gateway and no NAT and an
- * outbound connect has no route. See compose.md#the-verdict-host-sidecar.
- */
-export function verdictNetworkName(slug: Slug): string {
-  return `ghost-${slug}-verdict-net`;
-}

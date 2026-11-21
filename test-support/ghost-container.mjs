@@ -1,11 +1,6 @@
 import crypto from 'node:crypto';
 import http from 'node:http';
-import {
-  docker,
-  pollHttp200,
-  reservePort,
-  runStep,
-} from '../../../../test-support/image-harness.mjs';
+import { docker, pollHttp200, reservePort, runStep } from './image-harness.mjs';
 
 export { docker };
 

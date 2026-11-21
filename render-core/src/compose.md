@@ -87,33 +87,52 @@ use it, and a one-colour render must not remove it as an orphan). It runs the
 same digest-pinned `${IMAGE}` as Ghost, with its own `entrypoint`
 (`VERDICT_HOST_ENTRYPOINT`), because the image's own entrypoint starts Ghost.
 
-**The network deny.** The sidecar joins exactly one network,
-`ghost-<slug>-verdict-net` (`naming.ts#verdictNetworkName`), declared in this
-file as `internal: true`: Docker gives it no gateway and no NAT, so a connect
-to any address off the network has no route. The in-process egress guard
-(`adapters/scanning-storage/verdict-host/verdict-host.md`) is only a guard;
-this is the control that does not depend on the process's own code. The network
-is owned by this file, never `external` (so `internal` is what Docker applies)
-and never IPv6 (a route the IPv4 reasoning does not cover). No Ghost service
-joins it: Ghost reaches the host end by the unix socket on the verdict volume,
-not the network.
+**The network deny.** The sidecar has no network: `network_mode: none`, and no
+`networks` key beside it. Its container has a loopback interface and nothing
+else, so it has no gateway, no address on any bridge and no route off the
+machine: a connect to the host-gateway address, to the default bridge's gateway
+or to a public address fails with "network unreachable". The in-process egress
+guard (`adapters/scanning-storage/verdict-host/verdict-host.md`) is only a
+guard; this is the control that does not depend on the process's own code.
+
+An `internal: true` bridge network was the first design and is refused. It
+removes the route off the host but not the host: Docker still gives the host the
+bridge's first address, and it answers a connect from the container, so any
+service on the app host that listens on every address (sshd, for one) is
+reachable from the sidecar, and the app hosts' own firewall covers only the mail
+spool's bridge. Docker's isolated gateway mode on the bridge (Docker Engine 28.0
+and later) would remove that address, but `none` needs no minimum version and
+leaves nothing to answer, so it is the one used. The host end needs only
+loopback today (it binds its inbound address on `127.0.0.1` and refuses any
+other), which `none` leaves; how the safety service reaches it is the inbound
+route's change, which moves it to a unix socket on the verdict volume. No Ghost
+service shares the sidecar's namespace: Ghost reaches the host end by that
+socket, not a network.
 
 **The rest of the posture.** No published port and no `expose`. `read_only`,
 `init`, `cap_drop: [ALL]`, `no-new-privileges`, a numeric `user`, a `/tmp`
 tmpfs, and limits of its own (`VERDICT_HOST_LIMITS`: a small queue process,
 not a Ghost) with swap bounded and logs bounded. The healthcheck asks whether
 the socket exists. `assertRuntimePosture` holds the sidecar to all of it, and
-refuses one with a port, with none or more than one network, on a network that
-is not `internal`, external or IPv6, or on a network a Ghost service also
-joins.
+refuses one with a port, with any `networks`, `links`, `dns` or `extra_hosts`,
+or with a `network_mode` other than `none`; a Ghost service that sets any
+`network_mode` at all (which would put it in the sidecar's namespace); a verdict
+volume declared or mounted with no sidecar to make the socket; and Ghost
+mounting the verdict volume without `:ro`.
+
+**Identity.** The sidecar runs as `user: "<uid>:<uid>"`, the slot's own uid,
+and is given `VERDICT_HOST_SOCKET_UID` and `VERDICT_HOST_SOCKET_GID` of the same
+value. The host end makes its socket as itself, refuses to start as any other
+user or group, and reads the socket back to check its owner
+(`adapters/scanning-storage/verdict-host/verdict-host.md#the-local-socket`).
 
 **Volumes.** The verdict volume read-write (the host end creates the socket;
 Ghost still mounts it read-only) and a second external volume,
 `ghost-<slug>-verdict-journal`, for the queue journal and metrics textfile,
 that only the sidecar mounts.
 
-**Not here.** The sidecar runs as the slot's own uid for now; a uid of its own
-and a shared socket group are the per-slot socket identity's. The verify key
+**Not here.** A uid of its own for the sidecar and a group Ghost shares for the
+socket are the per-slot socket identity's. The verify key
 file and the inbound port are the descriptor and edge route's, and the host end
 refuses to start without them. The image does not yet carry the host end at
 `VERDICT_HOST_ENTRYPOINT`. Until all three exist the sidecar does not start,

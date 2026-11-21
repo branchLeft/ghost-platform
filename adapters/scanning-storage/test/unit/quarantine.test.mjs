@@ -134,7 +134,9 @@ describe('sealRefusal', () => {
     expect(isRefused(quarantinePath, digest)).toBe(false);
     expect(readRefusal(quarantinePath, digest)).toBeNull();
 
-    await sealRefusal(quarantinePath, digest, bytes, verdict, digestBytes);
+    await sealRefusal(quarantinePath, digest, bytes, verdict, digestBytes, {
+      now: () => '2026-11-20T10:00:00.000Z',
+    });
 
     expect(await fs.readFile(path.join(quarantinePath, digest))).toEqual(bytes);
     expect(isRefused(quarantinePath, digest)).toBe(true);
@@ -142,6 +144,9 @@ describe('sealRefusal', () => {
       classification: 'csam',
       matchType: 'exact',
       source: 'test',
+      tier: 'two',
+      action: 'seal',
+      sealedAt: '2026-11-20T10:00:00.000Z',
       evidence: digest,
     });
   });
@@ -177,8 +182,10 @@ describe('sealRefusal', () => {
     const quarantinePath = path.join(tmpDir, 'quarantine');
     await fs.mkdir(quarantinePath, { recursive: true });
     await fs.writeFile(path.join(quarantinePath, `${digest}.refused.json`), '{not json');
+    // Unreadable is the tier nothing lifts.
     expect(readRefusal(quarantinePath, digest)).toEqual({
       classification: 'csam',
+      tier: 'two',
       evidence: digest,
     });
   });

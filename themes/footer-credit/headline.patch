@@ -1,0 +1,10 @@
+--- a/default.hbs
++++ b/default.hbs
+@@ -104,6 +104,7 @@
+                 {{else}}
+                     {{@custom.footer_text}}
+                 {{/unless}}
++                {{> platform-footer-credit}}
+             </div>
+         </div>
+     </footer>

@@ -1443,6 +1443,28 @@ describe('the hold branch', () => {
       );
     });
 
+    it('puts wrappedConfig.tenantPrefix into a held object-storage URL, after the base and before the date folder', async () => {
+      const { instance: adapter } = buildAdapter({
+        unavailable: [BAD_DIGEST],
+        wrappedConfig: {
+          storagePath: 'wrapped',
+          bucket: 'test-bucket',
+          cdnUrl: 'https://cdn.example.test',
+          tenantPrefix: 'opaque-t1',
+        },
+      });
+      adapter.wrapped.getTargetDir = () => '2026/09';
+      const file = await writeTempFile(BAD_BYTES, 'held.png');
+
+      const url = await adapter.save(file);
+
+      expect(url).toMatch(
+        new RegExp(
+          `^https://cdn\\.example\\.test/opaque-t1/2026/09/${BAD_DIGEST}-[a-z2-7]{22}\\.png$`
+        )
+      );
+    });
+
     it('builds the URL from endpoint+bucket when no cdnUrl is configured', async () => {
       const { instance: adapter } = buildAdapter({
         unavailable: [BAD_DIGEST],

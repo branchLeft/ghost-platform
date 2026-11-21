@@ -95,12 +95,29 @@ export MYSQL_ROOT_PASSWORD
 # percona_snapshot_probe.py checks these two settings on the source.
 GTID_FLAGS=(--gtid_mode=ON --enforce_gtid_consistency=ON)
 
+# The source's datadir is on tmpfs; this is the one place the location is
+# named (the probe checks it is really tmpfs and refuses to run otherwise). A
+# hosted runner's disk sometimes stalls every tenant's commit for 150 to 570 ms
+# with no dump running, which control 2 read as the candidate's. What it costs:
+# percona_snapshot_probe.md, "Control 2's source". The replica keeps the disk.
+# mode=1777: the Percona image runs mysqld as its own non-root user and never
+# chowns the datadir, so a root-owned tmpfs gave "Permission denied".
+SOURCE_DATADIR_TMPFS="/var/lib/mysql:rw,size=2g,mode=1777"
+unset DATADIR_TMPFS
+
 # Image, config mount point, name, then mysqld flags. The config is mounted
 # unchanged; only the bind address (db1's private address) and GTID mode are
-# set on the command line.
+# set on the command line. With DATADIR_TMPFS set (for one call, never from
+# outside) the datadir is that tmpfs mount instead of the container's own
+# filesystem.
 start_server() {
+    local tmpfs=()
+    if [ -n "${DATADIR_TMPFS:-}" ]; then
+        tmpfs=(--tmpfs "$DATADIR_TMPFS")
+    fi
     docker run -d --platform "$PLATFORM" --name "$3" --network "$NET" -e MYSQL_ROOT_PASSWORD \
         -v "$REPO_ROOT/db/stack/conf.d/branchleft.cnf:$2:ro" \
+        ${tmpfs[@]+"${tmpfs[@]}"} \
         "$1" --bind-address=0.0.0.0 "${GTID_FLAGS[@]}" "${@:4}" >/dev/null
 }
 
@@ -112,14 +129,18 @@ wait_ready() {
             [ "$(MYSQL_PWD="$MYSQL_ROOT_PASSWORD" docker exec -e MYSQL_PWD "$1" mysql -uroot -N -B -e 'SELECT @@port' 2>/dev/null)" = "3306" ]; then
             return 0
         fi
+        # A container that has already exited will never answer: stop waiting.
+        [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ] || break
         sleep 1
     done
+    # The server's own last words: a start that fails is otherwise silent.
+    docker logs --tail 60 "$1" >&2 2>&1 || true
     fail "$1 never answered a real query"
 }
 
 echo "== setup: source $SOURCE_KIND, replica percona, on $PLATFORM"
 docker network create "$NET" >/dev/null
-start_server "$SOURCE_IMAGE" "$SOURCE_CNF" "$SRC"
+DATADIR_TMPFS="$SOURCE_DATADIR_TMPFS" start_server "$SOURCE_IMAGE" "$SOURCE_CNF" "$SRC"
 start_server "$REPLICA_IMAGE" "$REPLICA_CNF" "$REP" --server-id=2
 wait_ready "$SRC"
 wait_ready "$REP"

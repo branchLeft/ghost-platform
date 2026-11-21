@@ -1,11 +1,11 @@
 /**
  * The per-slot verdict host end, rendered as a `verdict-host` sidecar from the
- * same digest-pinned image as Ghost, on a per-slot `internal: true` network
- * and no other. See `src/compose.md#the-verdict-host-sidecar`.
+ * same digest-pinned image as Ghost, with no network at all
+ * (`network_mode: none`). See `src/compose.md#the-verdict-host-sidecar`.
  *
  * The network deny is the control, so it is proven red-then-green here: a
- * rendered stack whose sidecar network is not `internal`, or that an extra
- * network or a Ghost service joins, is refused by `assertRuntimePosture`, and a
+ * rendered stack whose sidecar has any network, a published port, or a network
+ * mode other than `none`, is refused by `assertRuntimePosture`, and a
  * `compose.ts` mutated to render the route is caught by the same assertions.
  * The live outbound-connect proof is `verdict-host-network.test.ts`.
  */
@@ -15,13 +15,15 @@ import type { ComposeStackArgs } from '../src/compose.js';
 import {
   VERDICT_HOST_ENTRYPOINT,
   VERDICT_HOST_LIMITS,
+  VERDICT_HOST_NETWORK_MODE,
   VERDICT_HOST_SERVICE,
   assertRuntimePosture,
   composeDocument,
   renderComposeStack,
 } from '../src/compose.js';
 import { mailSpoolNetworkName } from '../src/spool.js';
-import { verdictJournalVolumeName, verdictNetworkName, verdictVolumeName } from '../src/naming.js';
+import { verdictJournalVolumeName, verdictVolumeName } from '../src/naming.js';
+import { VERDICT_MOUNT_PATH } from '../src/environment.js';
 import type { YamlValue } from '../src/yaml.js';
 import { cleanupSabotageTmp, importSabotaged } from './helpers/sourceSabotage.js';
 
@@ -31,7 +33,6 @@ afterAll(() => {
 
 const SLUG = 'acme' as Slug;
 const UID = 30123 as TenantUid;
-const VERDICT_NETWORK = verdictNetworkName(SLUG);
 
 const baseArgs: ComposeStackArgs = {
   kind: 'tenant',
@@ -61,10 +62,6 @@ function servicesOf(document: Doc): Record<string, Service> {
   return document.services as Record<string, Service>;
 }
 
-function networksOf(document: Doc): Record<string, Record<string, YamlValue>> {
-  return (document.networks ?? {}) as Record<string, Record<string, YamlValue>>;
-}
-
 function sidecarOf(document: Doc): Service {
   const sidecar = servicesOf(document)[VERDICT_HOST_SERVICE];
   if (sidecar === undefined) throw new Error('no verdict-host service rendered');
@@ -80,25 +77,11 @@ function clone(document: Doc): Doc {
  * control cannot pass on a variant that has a route. */
 function networkDenyProblems(document: Doc): string[] {
   const problems: string[] = [];
-  const services = servicesOf(document);
-  const sidecar = services[VERDICT_HOST_SERVICE];
+  const sidecar = servicesOf(document)[VERDICT_HOST_SERVICE];
   if (sidecar === undefined) return ['no verdict-host service'];
-  const joined = Array.isArray(sidecar.networks) ? (sidecar.networks as string[]) : [];
-  if (joined.length !== 1) problems.push(`sidecar joins ${joined.length} networks`);
-  for (const name of joined) {
-    const network = networksOf(document)[name];
-    if (network === undefined) problems.push(`network ${name} is not declared`);
-    else if (network.internal !== true) problems.push(`network ${name} is not internal`);
-    else if (network.external === true) problems.push(`network ${name} is external`);
-  }
+  if (sidecar.network_mode !== 'none') problems.push('sidecar has a network');
+  if ('networks' in sidecar) problems.push('sidecar lists networks');
   if ('ports' in sidecar) problems.push('sidecar publishes ports');
-  for (const [name, service] of Object.entries(services)) {
-    if (name === VERDICT_HOST_SERVICE) continue;
-    const theirs = Array.isArray(service.networks) ? (service.networks as string[]) : [];
-    if (theirs.some((network) => joined.includes(network))) {
-      problems.push(`${name} joins the sidecar network`);
-    }
-  }
   return problems;
 }
 
@@ -116,30 +99,33 @@ describe('a slot that names the production verdict source', () => {
     expect(sidecar.entrypoint).toEqual(['node', VERDICT_HOST_ENTRYPOINT]);
   });
 
-  it('joins exactly one network, which is internal, owned by the stack and its own', () => {
-    expect(sidecar.networks).toEqual([VERDICT_NETWORK]);
-    expect(VERDICT_NETWORK).toBe('ghost-acme-verdict-net');
-    expect(networksOf(document)[VERDICT_NETWORK]).toEqual({
-      name: VERDICT_NETWORK,
-      internal: true,
-    });
+  it('has no network at all, and no network of its own is declared', () => {
+    expect(sidecar.network_mode).toBe('none');
+    expect(sidecar.network_mode).toBe(VERDICT_HOST_NETWORK_MODE);
+    for (const key of ['networks', 'links', 'dns', 'extra_hosts', 'ports', 'expose']) {
+      expect(sidecar).not.toHaveProperty(key);
+    }
+    expect(document.networks).toBeUndefined();
+    expect(JSON.stringify(document)).not.toContain('verdict-net');
     expect(networkDenyProblems(document)).toEqual([]);
   });
 
   it('is joined by no Ghost service, and Ghost keeps the default network', () => {
     for (const colour of ['ghost-a', 'ghost-b']) {
       expect(servicesOf(document)[colour].networks).toBeUndefined();
+      expect(servicesOf(document)[colour].network_mode).toBeUndefined();
     }
   });
 
-  it('leaves a Ghost with mail on its own two networks, never the verdict network', () => {
+  it('leaves a Ghost with mail on its own two networks, and the sidecar still has none', () => {
     const mail = mailSpoolNetworkName(UID);
     const withMail = composeDocument({ ...baseArgs, mailNetwork: mail });
     for (const colour of ['ghost-a', 'ghost-b']) {
       expect(servicesOf(withMail)[colour].networks).toEqual(['default', mail]);
     }
-    expect(sidecarOf(withMail).networks).toEqual([VERDICT_NETWORK]);
-    expect(Object.keys(networksOf(withMail)).sort()).toEqual([mail, VERDICT_NETWORK].sort());
+    expect(sidecarOf(withMail).network_mode).toBe('none');
+    expect(sidecarOf(withMail)).not.toHaveProperty('networks');
+    expect(Object.keys(withMail.networks as Doc)).toEqual([mail]);
   });
 
   it('publishes no port and exposes none', () => {
@@ -161,9 +147,28 @@ describe('a slot that names the production verdict source', () => {
     expect(sidecar.tmpfs).toEqual([
       `/tmp:rw,noexec,nosuid,nodev,size=${VERDICT_HOST_LIMITS.tmpfsSize}`,
     ]);
-    for (const forbidden of ['privileged', 'cap_add', 'network_mode', 'devices', 'pid', 'ipc']) {
+    for (const forbidden of ['privileged', 'cap_add', 'devices', 'pid', 'ipc']) {
       expect(sidecar).not.toHaveProperty(forbidden);
     }
+  });
+
+  it("names the slot's own uid and gid for the host end, the ones it runs as", () => {
+    // The host end refuses to start without both, and as any other user.
+    expect(sidecar.user).toBe('30123:30123');
+    expect(sidecar.environment).toMatchObject({
+      VERDICT_HOST_SOCKET_UID: '30123',
+      VERDICT_HOST_SOCKET_GID: '30123',
+    });
+    const text = renderComposeStack(baseArgs);
+    expect(text).toContain("VERDICT_HOST_SOCKET_UID: '30123'");
+    expect(text).toContain("VERDICT_HOST_SOCKET_GID: '30123'");
+    // Another slot gets its own.
+    const other = composeDocument({ ...baseArgs, uid: 30456 as TenantUid });
+    expect(sidecarOf(other).user).toBe('30456:30456');
+    expect(sidecarOf(other).environment).toMatchObject({
+      VERDICT_HOST_SOCKET_UID: '30456',
+      VERDICT_HOST_SOCKET_GID: '30456',
+    });
   });
 
   it('carries resource limits of its own, swap bounded, logs bounded', () => {
@@ -224,14 +229,12 @@ describe('a slot that names the production verdict source', () => {
   it('passes the posture check as rendered text', () => {
     const yaml = renderComposeStack(baseArgs);
     expect(yaml).toContain('  verdict-host:\n');
-    expect(yaml).toContain(
-      `  ${VERDICT_NETWORK}:\n    name: '${VERDICT_NETWORK}'\n    internal: true\n`
-    );
+    expect(yaml).toContain("    network_mode: 'none'\n");
+    expect(yaml).not.toContain('networks:');
   });
 
-  it('two slugs never share a verdict network or journal volume', () => {
+  it('two slugs never share a journal volume', () => {
     const other = 'globex' as Slug;
-    expect(verdictNetworkName(other)).not.toBe(VERDICT_NETWORK);
     expect(verdictJournalVolumeName(other)).not.toBe(verdictJournalVolumeName(SLUG));
     expect(
       renderComposeStack({ ...baseArgs, slug: other, verdictVolume: verdictVolumeName(other) })
@@ -267,52 +270,60 @@ describe('assertRuntimePosture() on the verdict host end', () => {
     expect(() => assertRuntimePosture(real, '10.20.1.50')).not.toThrow();
   });
 
-  it('SABOTAGE — a verdict network that is not internal is refused, the real render restores green', () => {
-    // RED: the network has a gateway, so the process has a route off the host.
+  it('SABOTAGE — a sidecar on any network is refused, the real render restores green', () => {
+    // RED: a sidecar given a network of its own, internal or not, has the
+    // host's address on the bridge.
     refuses((document) => {
-      networksOf(document)[VERDICT_NETWORK].internal = false;
-    }, /joins network "ghost-acme-verdict-net", which is not `internal: true`/);
+      delete sidecarOf(document).network_mode;
+      sidecarOf(document).networks = ['verdict-net'];
+      document.networks = { 'verdict-net': { name: 'verdict-net', internal: true } };
+    }, /service "verdict-host": must set `network_mode: none`/);
+    // The default network, which has egress.
     refuses((document) => {
-      delete networksOf(document)[VERDICT_NETWORK].internal;
-    }, /not `internal: true`/);
+      delete sidecarOf(document).network_mode;
+    }, /must set `network_mode: none`/);
+    // Both set: Compose would refuse it, and so does the posture.
+    refuses((document) => {
+      sidecarOf(document).networks = ['default'];
+    }, /must not set `networks`/);
+    refuses((document) => {
+      sidecarOf(document).networks = {};
+    }, /must not set `networks`/);
     // GREEN
     expect(() => assertRuntimePosture(real, '10.20.1.50')).not.toThrow();
   });
 
-  it('refuses an external verdict network, which this file does not own', () => {
-    refuses((document) => {
-      networksOf(document)[VERDICT_NETWORK].external = true;
-    }, /must be owned by this file/);
+  it.each(['host', 'bridge', 'default', 'service:ghost-a', 'container:other', ''])(
+    'SABOTAGE — a sidecar with `network_mode: %s` is refused',
+    (mode) => {
+      refuses((document) => {
+        sidecarOf(document).network_mode = mode;
+      }, /service "verdict-host": must (not set `network_mode`|set `network_mode: none`)/);
+    }
+  );
+
+  it('refuses a sidecar that sets a network-shaped key that has no meaning without one', () => {
+    for (const key of ['links', 'dns', 'dns_search', 'extra_hosts', 'mac_address']) {
+      refuses(
+        (document) => {
+          sidecarOf(document)[key] = key === 'mac_address' ? '02:42:ac:11:00:02' : ['x'];
+        },
+        new RegExp(`must not set \`${key}\``)
+      );
+    }
   });
 
-  it('refuses an IPv6 verdict network', () => {
+  it('SABOTAGE — a Ghost service that shares the sidecar network namespace is refused', () => {
+    // RED: Ghost would sit in the namespace the sidecar has.
     refuses((document) => {
-      networksOf(document)[VERDICT_NETWORK].enable_ipv6 = true;
-    }, /must not set `enable_ipv6`/);
-  });
-
-  it('SABOTAGE — a sidecar that also joins the default network is refused', () => {
+      servicesOf(document)['ghost-a'].network_mode = 'service:verdict-host';
+    }, /service "ghost-a": must not set `network_mode`/);
+    // And a `none` Ghost is not exempt: only the sidecar may set it.
     refuses((document) => {
-      sidecarOf(document).networks = [VERDICT_NETWORK, 'default'];
-    }, /must list exactly one network/);
-  });
-
-  it('refuses a sidecar with no networks, which Compose reads as the default network', () => {
-    refuses((document) => {
-      delete sidecarOf(document).networks;
-    }, /must list exactly one network/);
-  });
-
-  it('refuses a sidecar joined to a network the file does not declare', () => {
-    refuses((document) => {
-      sidecarOf(document).networks = ['elsewhere'];
-    }, /which the file does not declare/);
-  });
-
-  it('SABOTAGE — a Ghost service that joins the verdict network is refused', () => {
-    refuses((document) => {
-      servicesOf(document)['ghost-a'].networks = ['default', VERDICT_NETWORK];
-    }, /service "ghost-a": must not join the verdict host's network/);
+      servicesOf(document)['ghost-a'].network_mode = 'none';
+    }, /service "ghost-a": must not set `network_mode`/);
+    // GREEN
+    expect(() => assertRuntimePosture(real, '10.20.1.50')).not.toThrow();
   });
 
   it('SABOTAGE — a published port on the sidecar is refused', () => {
@@ -325,6 +336,47 @@ describe('assertRuntimePosture() on the verdict host end', () => {
     refuses((document) => {
       sidecarOf(document).expose = ['9000'];
     }, /must not set `expose`/);
+  });
+
+  it('SABOTAGE — a Ghost that mounts the verdict volume read-write is refused', () => {
+    // RED: Ghost could replace the socket or write beside it.
+    for (const colour of ['ghost-a', 'ghost-b']) {
+      refuses(
+        (document) => {
+          const service = servicesOf(document)[colour];
+          service.volumes = (service.volumes as string[]).map((volume) =>
+            volume.endsWith(`${VERDICT_MOUNT_PATH}:ro`) ? volume.slice(0, -':ro'.length) : volume
+          );
+        },
+        new RegExp(`service "${colour}": must mount the verdict volume read-only`)
+      );
+    }
+    // GREEN
+    expect(() => assertRuntimePosture(real, '10.20.1.50')).not.toThrow();
+  });
+
+  it('SABOTAGE — a verdict volume with no sidecar is refused, mounted or only declared', () => {
+    // RED: Ghost dials a socket that nothing makes.
+    refuses((document) => {
+      delete servicesOf(document)[VERDICT_HOST_SERVICE];
+      delete document.networks;
+    }, /service "ghost-a": mounts the verdict volume at `\/var\/lib\/ghost\/verdict` but no `verdict-host` service/);
+    // A declared volume nothing uses is refused too.
+    refuses((document) => {
+      const services = servicesOf(document);
+      delete services[VERDICT_HOST_SERVICE];
+      delete document.networks;
+      for (const colour of ['ghost-a', 'ghost-b']) {
+        services[colour].volumes = (services[colour].volumes as string[]).filter(
+          (volume) => !volume.includes(VERDICT_MOUNT_PATH)
+        );
+      }
+    }, /volume "ghost-acme-verdict": a verdict volume is declared but no `verdict-host` service uses it/);
+    // GREEN: a slot that never named the verdict source renders none of it.
+    const { verdictVolume: _drop, ...without } = baseArgs;
+    expect(() => composeDocument(without)).not.toThrow();
+    expect(() => assertRuntimePosture(composeDocument(without), '10.20.1.50')).not.toThrow();
+    expect(() => assertRuntimePosture(real, '10.20.1.50')).not.toThrow();
   });
 
   const DROPS: readonly [string, (service: Service) => void, RegExp][] = [
@@ -370,47 +422,74 @@ describe('assertRuntimePosture() on the verdict host end', () => {
 });
 
 describe('the network deny is in compose.ts and nowhere weaker', () => {
-  it('SABOTAGE — a compose.ts that renders the network without `internal` is refused by its own posture check; the real one renders', async () => {
-    // RED: only the `internal` line is dropped; the posture check still runs.
+  it('SABOTAGE — a compose.ts that renders the sidecar with a network is refused by its own posture check; the real one renders', async () => {
+    // RED: only the `network_mode` line is replaced by a network; the posture
+    // check still runs.
     const sabotaged = await importSabotaged<typeof import('../src/compose.js')>(
       'compose.ts',
       (source) => {
-        const target = '{ name: verdictNetwork, internal: true }';
+        const target = '    network_mode: VERDICT_HOST_NETWORK_MODE,\n';
         if (!source.includes(target)) {
           throw new Error('sabotage target not found in compose.ts -- update the mutation');
         }
-        return source.replace(target, '{ name: verdictNetwork }');
+        return source.replace(target, "    networks: ['default'],\n");
       }
     );
-    expect(() => sabotaged.renderComposeStack(baseArgs)).toThrow(/which is not `internal: true`/);
+    expect(() => sabotaged.renderComposeStack(baseArgs)).toThrow(
+      /service "verdict-host": must set `network_mode: none`/
+    );
     // GREEN
     expect(() => renderComposeStack(baseArgs)).not.toThrow();
   });
 
   it('SABOTAGE — with the posture check also gone, the document tests still see the route', async () => {
-    // RED: `internal` is dropped and the posture check removed, so a route is
-    // rendered. The structural assertions above must flag it on their own.
+    // RED: the sidecar is given the default network and the posture check
+    // removed, so a route is rendered. The structural assertions above must flag
+    // it on their own.
     const sabotaged = await importSabotaged<typeof import('../src/compose.js')>(
       'compose.ts',
       (source) => {
-        const internal = '{ name: verdictNetwork, internal: true }';
-        const check = 'checkVerdictHostNetwork(document, services, problems);';
-        if (!source.includes(internal) || !source.includes(check)) {
+        const mode = '    network_mode: VERDICT_HOST_NETWORK_MODE,\n';
+        const check = 'checkVerdictHostNetwork(services, problems);';
+        if (!source.includes(mode) || !source.includes(check)) {
           throw new Error('sabotage target not found in compose.ts -- update the mutation');
         }
-        return source.replace(internal, '{ name: verdictNetwork }').replace(check, '');
+        return source.replace(mode, '').replace(check, '');
       }
     );
     const document = sabotaged.composeDocument(baseArgs);
-    expect(networkDenyProblems(document)).toEqual([`network ${VERDICT_NETWORK} is not internal`]);
-    expect(sabotaged.renderComposeStack(baseArgs)).not.toContain('internal: true');
+    expect(networkDenyProblems(document)).toEqual(['sidecar has a network']);
+    expect(sabotaged.renderComposeStack(baseArgs)).not.toContain("network_mode: 'none'");
     // GREEN: the real module has no route.
     expect(networkDenyProblems(composeDocument(baseArgs))).toEqual([]);
-    expect(renderComposeStack(baseArgs)).toContain('internal: true');
+    expect(renderComposeStack(baseArgs)).toContain("network_mode: 'none'");
   });
 
-  it('SABOTAGE — a compose.ts that lets a Ghost colour join the verdict network is refused', async () => {
-    // RED: both Ghost colours are given the sidecar's network.
+  it('SABOTAGE — a compose.ts that renders no socket uid or gid for the host end is caught by the render test', async () => {
+    // RED: the host end would refuse to start without them (PR 1007).
+    const sabotaged = await importSabotaged<typeof import('../src/compose.js')>(
+      'compose.ts',
+      (source) => {
+        const target = '      VERDICT_HOST_SOCKET_UID: String(args.uid),\n';
+        if (!source.includes(target)) {
+          throw new Error('sabotage target not found in compose.ts -- update the mutation');
+        }
+        return source.replace(target, '');
+      }
+    );
+    const environment = sidecarOf(sabotaged.composeDocument(baseArgs)).environment as Record<
+      string,
+      YamlValue
+    >;
+    expect(environment).not.toHaveProperty('VERDICT_HOST_SOCKET_UID');
+    // GREEN
+    expect(sidecarOf(composeDocument(baseArgs)).environment).toHaveProperty(
+      'VERDICT_HOST_SOCKET_UID'
+    );
+  });
+
+  it('SABOTAGE — a compose.ts that gives a Ghost colour the sidecar network mode is refused', async () => {
+    // RED: both Ghost colours are put in the sidecar's network namespace.
     const sabotaged = await importSabotaged<typeof import('../src/compose.js')>(
       'compose.ts',
       (source) => {
@@ -418,11 +497,11 @@ describe('the network deny is in compose.ts and nowhere weaker', () => {
         if (!source.includes(target)) {
           throw new Error('sabotage target not found in compose.ts -- update the mutation');
         }
-        return source.replace(target, 'networks: [verdictNetworkName(args.slug)],');
+        return source.replace(target, "network_mode: 'service:verdict-host',");
       }
     );
     expect(() => sabotaged.renderComposeStack(baseArgs)).toThrow(
-      /service "ghost-a": must not join the verdict host's network/
+      /service "ghost-a": must not set `network_mode`/
     );
     // GREEN
     expect(() => renderComposeStack(baseArgs)).not.toThrow();

@@ -2,6 +2,7 @@ import type { ClientBase } from 'pg';
 import {
   INIT,
   MEMBERSHIPS,
+  grantsAt,
   ROLE_ATTRIBUTES,
   type Grant,
   type ManifestObject,
@@ -150,6 +151,24 @@ export function grantStatements(
     out.push(grantStatement(object, grant, names));
   }
   return out;
+}
+
+/**
+ * The grants a principal created on a database that is already initialised
+ * must be given: whatever the manifest gives it on the objects `applied`
+ * migrations (and init) made, so the check that follows finds it complete.
+ * Nothing is revoked and no other principal's grant is touched.
+ */
+export function catchUpGrantStatements(
+  object: ManifestObject,
+  applied: readonly string[],
+  created: ReadonlySet<Principal>,
+  names: Names
+): string[] {
+  if (object.since !== INIT && !applied.includes(object.since)) return [];
+  return grantsAt(object, applied)
+    .filter((grant) => grant.grantee !== 'PUBLIC' && created.has(grant.grantee as Principal))
+    .map((grant) => grantStatement(object, grant, names));
 }
 
 /**

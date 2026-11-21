@@ -15,7 +15,6 @@ import {
   metricsVolumeName,
   stackName,
   verdictJournalVolumeName,
-  verdictNetworkName,
 } from './naming.js';
 import type { YamlValue } from './yaml.js';
 import { toYaml } from './yaml.js';
@@ -53,6 +52,19 @@ export const VERDICT_HOST_SERVICE = 'verdict-host';
  * and the descriptor switch stays off. See compose.md#the-verdict-host-sidecar.
  */
 export const VERDICT_HOST_ENTRYPOINT = '/opt/branchleft/scanning-storage/verdict-host/main.js';
+
+/**
+ * The sidecar has no network at all: `network_mode: none` gives its container a
+ * loopback interface and nothing else, so there is no gateway to the host, no
+ * address on any bridge, and no route off the machine. An `internal: true`
+ * bridge network was the first design and was refused: Docker still puts the
+ * network's gateway on the host's bridge, and a service on the host that
+ * listens on every address (sshd, for one) answers on it. The host end needs
+ * only loopback today (it binds its inbound address on `127.0.0.1` and refuses
+ * any other), which `none` leaves; how the safety service reaches it is the
+ * inbound route's change, not this one. See compose.md#the-verdict-host-sidecar.
+ */
+export const VERDICT_HOST_NETWORK_MODE = 'none';
 
 /** Where the sidecar mounts its own journal volume, read-write. */
 export const VERDICT_HOST_STATE_PATH = '/var/lib/verdict-host';
@@ -213,22 +225,23 @@ function ghostService(
 
 /**
  * The per-slot verdict host end, from the same digest-pinned image as Ghost.
- * It joins one network and no other, `internal: true`, so an outbound connect
- * has no route; it publishes no port. The posture matches Ghost's. See
- * compose.md#the-verdict-host-sidecar.
+ * It has no network (`network_mode: none`), so there is no route off the
+ * machine and no gateway to the host; it publishes no port. The posture matches
+ * Ghost's. See compose.md#the-verdict-host-sidecar.
  */
 function verdictHostService(
   args: ComposeStackArgs,
   verdict: string,
-  journal: string,
-  network: string
+  journal: string
 ): Record<string, YamlValue> {
   return {
     image: '${IMAGE}',
     restart: 'unless-stopped',
     stop_grace_period: VERDICT_HOST_LIMITS.stopGracePeriod,
-    // The slot's own uid for now. A uid of its own, and a group Ghost shares
-    // for the socket, are the per-slot socket identity's, not this render's.
+    // The slot's own uid and gid, the same ones `VERDICT_HOST_SOCKET_UID` and
+    // `_GID` name below: the host end refuses to start as any other, and makes
+    // its socket as itself. A uid of its own and a group Ghost shares for the
+    // socket are the per-slot socket identity's, not this render's.
     user: `${args.uid}:${args.uid}`,
     init: true,
     read_only: true,
@@ -254,10 +267,14 @@ function verdictHostService(
     // them, so it never runs half-configured.
     environment: {
       VERDICT_HOST_SOCKET: VERDICT_SOCKET_PATH,
+      VERDICT_HOST_SOCKET_UID: String(args.uid),
+      VERDICT_HOST_SOCKET_GID: String(args.uid),
       VERDICT_HOST_JOURNAL: `${VERDICT_HOST_STATE_PATH}/queue.journal`,
       VERDICT_HOST_METRICS_FILE: `${VERDICT_HOST_STATE_PATH}/verdict-host.prom`,
     },
-    networks: [network],
+    // No network at all, and no `networks` key beside it: see
+    // `VERDICT_HOST_NETWORK_MODE`.
+    network_mode: VERDICT_HOST_NETWORK_MODE,
     // Read-write here, read-only in Ghost: the host end creates the socket.
     volumes: [`${verdict}:${VERDICT_MOUNT_PATH}`, `${journal}:${VERDICT_HOST_STATE_PATH}`],
     healthcheck: {
@@ -290,7 +307,6 @@ export function composeDocument(args: ComposeStackArgs): Record<string, YamlValu
     volumes[metrics] = { external: true };
   }
   const journal = verdict === null ? null : verdictJournalVolumeName(args.slug);
-  const verdictNetwork = verdict === null ? null : verdictNetworkName(args.slug);
   if (verdict !== null && journal !== null) {
     volumes[verdict] = { external: true };
     volumes[journal] = { external: true };
@@ -309,13 +325,10 @@ export function composeDocument(args: ComposeStackArgs): Record<string, YamlValu
   if (args.mailNetwork) {
     networks[args.mailNetwork] = { name: args.mailNetwork, external: true };
   }
-  if (verdict !== null && journal !== null && verdictNetwork !== null) {
+  if (verdict !== null && journal !== null) {
     // Both colours use the one sidecar, so it is rendered whichever colours
     // are, and a one-colour render keeps it from being removed as an orphan.
-    services[VERDICT_HOST_SERVICE] = verdictHostService(args, verdict, journal, verdictNetwork);
-    // Owned by this file, never `external`, so `internal` is what Docker
-    // applies: no gateway, no NAT, no route off the network.
-    networks[verdictNetwork] = { name: verdictNetwork, internal: true };
+    services[VERDICT_HOST_SERVICE] = verdictHostService(args, verdict, journal);
   }
 
   return {
@@ -449,6 +462,14 @@ export function assertRuntimePosture(
     const at = (message: string) => problems.push(`service "${name}": ${message}`);
 
     for (const key of FORBIDDEN_SERVICE_KEYS) {
+      // The one use of `network_mode` this file renders: no network at all.
+      if (
+        key === 'network_mode' &&
+        name === VERDICT_HOST_SERVICE &&
+        service.network_mode === VERDICT_HOST_NETWORK_MODE
+      ) {
+        continue;
+      }
       if (key in service) at(`must not set \`${key}\``);
     }
 
@@ -535,7 +556,8 @@ export function assertRuntimePosture(
     }
   }
 
-  checkVerdictHostNetwork(document, services, problems);
+  checkVerdictHostNetwork(services, problems);
+  checkVerdictVolume(document, services, problems);
 
   if (problems.length > 0) {
     throw new Error(
@@ -550,68 +572,82 @@ function asRecord(value: YamlValue | undefined): Record<string, YamlValue> | und
     : undefined;
 }
 
-/** The network names a service lists, whether as a list or a map; null when
- * it lists none, which Compose reads as the stack's `default` network. */
-function serviceNetworkNames(service: Record<string, YamlValue>): string[] | null {
-  const networks = service.networks;
-  if (Array.isArray(networks)) {
-    return networks.filter((n): n is string => typeof n === 'string');
-  }
-  const record = asRecord(networks);
-  return record ? Object.keys(record) : null;
-}
-
 /**
- * The verdict host end's network deny. It must list exactly one network, that
- * network must be declared in this file, `internal: true`, not `external` and
- * not IPv6, and no other service may join it. A network that is not internal
- * gives the process a gateway, and "never dials out" would rest on code alone.
+ * The verdict host end's network deny. It must set `network_mode: none`, list no
+ * `networks`, and no other service may share its network namespace
+ * (`network_mode: service:verdict-host` is refused for every service by the
+ * forbidden keys). A network, even an `internal: true` one, gives the process a
+ * bridge with the host's own address on it, so a service on the host that
+ * listens on every address answers the sidecar; no network leaves nothing to
+ * answer. The verdict host end then has no way to "never dial out" that rests
+ * on its own code alone.
  */
 function checkVerdictHostNetwork(
-  document: Record<string, YamlValue>,
   services: Record<string, Record<string, YamlValue>>,
   problems: string[]
 ): void {
   const sidecar = services[VERDICT_HOST_SERVICE];
   if (sidecar === undefined) return;
   const at = (message: string) => problems.push(`service "${VERDICT_HOST_SERVICE}": ${message}`);
-
-  const names = serviceNetworkNames(sidecar);
-  if (names === null || names.length !== 1) {
+  if (sidecar.network_mode !== VERDICT_HOST_NETWORK_MODE) {
     at(
-      'must list exactly one network, an `internal: true` one of its own; with none it joins ' +
-        'the default network, which has egress'
+      `must set \`network_mode: ${VERDICT_HOST_NETWORK_MODE}\`: any network, \`internal\` or not, ` +
+        "leaves the host's own address on the bridge, and with none it joins the default network, " +
+        'which has egress'
     );
-    return;
   }
-  const [network] = names;
-  const topLevel = asRecord(document.networks) ?? {};
-  const declared = asRecord(topLevel[network]);
-  if (declared === undefined) {
-    at(`joins network "${network}", which the file does not declare`);
-  } else {
-    if (declared.internal !== true) {
-      at(
-        `joins network "${network}", which is not \`internal: true\`: a network with a gateway ` +
-          'gives it a route off the host'
-      );
-    }
-    if (declared.external === true) {
-      at(
-        `network "${network}" must be owned by this file, or \`internal\` is not what Docker applies`
-      );
-    }
-    if (declared.enable_ipv6 !== undefined && declared.enable_ipv6 !== false) {
-      at(
-        `network "${network}" must not set \`enable_ipv6\`: it is a route the IPv4 reasoning misses`
-      );
-    }
+  for (const key of ['networks', 'links', 'dns', 'dns_search', 'extra_hosts', 'mac_address']) {
+    if (key in sidecar) at(`must not set \`${key}\`: it has no network`);
   }
+}
 
+/** The target and read-only flag of a service volume string `src:dst[:opts]`. */
+function mountOf(volume: YamlValue): { target: string; readOnly: boolean } | null {
+  if (typeof volume !== 'string') return null;
+  const [, target, options] = volume.split(':');
+  if (target === undefined) return null;
+  return { target, readOnly: (options ?? '').split(',').includes('ro') };
+}
+
+/**
+ * The verdict volume holds the socket the host end makes. A service that
+ * mounts it with no `verdict-host` service to make the socket dials one nobody
+ * owns, and a service other than the sidecar may only dial it, never replace
+ * it. With no sidecar, no service mounts the volume and none is declared; with
+ * one, every other service mounts it read-only.
+ */
+function checkVerdictVolume(
+  document: Record<string, YamlValue>,
+  services: Record<string, Record<string, YamlValue>>,
+  problems: string[]
+): void {
+  const hasSidecar = services[VERDICT_HOST_SERVICE] !== undefined;
   for (const [name, service] of Object.entries(services)) {
     if (name === VERDICT_HOST_SERVICE) continue;
-    if (serviceNetworkNames(service)?.includes(network)) {
-      problems.push(`service "${name}": must not join the verdict host's network "${network}"`);
+    const volumes = Array.isArray(service.volumes) ? service.volumes : [];
+    for (const volume of volumes) {
+      const mount = mountOf(volume);
+      if (mount?.target !== VERDICT_MOUNT_PATH) continue;
+      if (!hasSidecar) {
+        problems.push(
+          `service "${name}": mounts the verdict volume at \`${VERDICT_MOUNT_PATH}\` but no ` +
+            `\`${VERDICT_HOST_SERVICE}\` service makes the socket`
+        );
+      } else if (!mount.readOnly) {
+        problems.push(
+          `service "${name}": must mount the verdict volume read-only, or it may replace the socket`
+        );
+      }
+    }
+  }
+  if (!hasSidecar) {
+    for (const key of Object.keys(asRecord(document.volumes) ?? {})) {
+      if (/^ghost-.+-verdict(-journal)?$/.test(key)) {
+        problems.push(
+          `volume "${key}": a verdict volume is declared but no \`${VERDICT_HOST_SERVICE}\` ` +
+            'service uses it'
+        );
+      }
     }
   }
 }

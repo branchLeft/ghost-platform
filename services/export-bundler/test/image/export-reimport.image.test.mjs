@@ -8,8 +8,8 @@
 //   IMAGE=ghost-platform:ci node --test test/image/export-reimport.image.test.mjs
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { GhostAdmin } from './ghost-admin.mjs';
-import { GhostContainer } from './ghost-container.mjs';
+import { GhostAdmin } from '../../../../test-support/ghost-admin.mjs';
+import { GhostContainer } from '../../../../test-support/ghost-container.mjs';
 import {
   NAMED_IMAGE,
   NAMED_MEMBERS,
