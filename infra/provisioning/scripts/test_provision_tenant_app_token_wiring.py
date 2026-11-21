@@ -35,11 +35,11 @@ class NoPersonalTokenTests(unittest.TestCase):
     def test_the_retired_secret_is_not_named_anywhere_in_the_workflow(self):
         self.assertNotIn(RETIRED_SECRET, gate._read_workflow())
 
-    def test_no_secret_other_than_the_key_and_state_credentials_is_read(self):
+    def test_no_secret_other_than_the_key_and_the_minted_pair_is_read(self):
         allowed = {
             "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-            "TENANT_STATE_S3_ACCESS_KEY_ID",
-            "TENANT_STATE_S3_SECRET_ACCESS_KEY",
+            "MINTED_STATE_ACCESS_KEY_ID",
+            "MINTED_STATE_SECRET_ACCESS_KEY",
         }
         used = set(re.findall(r"\$\{\{\s*secrets\.([A-Za-z0-9_]+)", gate._read_workflow()))
         self.assertEqual(used - allowed, set(),

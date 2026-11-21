@@ -58,9 +58,11 @@ name: Provision tenant
 # environment secret and its id a repository variable; no personal token is
 # read anywhere, and a failed mint stops the run with no fallback. What the
 # token writes to the generated repo is that repo's own Pulumi secrets
-# passphrase and the encryption salt that verifies it -- the two writes that
-# hand the new repo something it needs to keep secret from this repo, going
-# forward.
+# passphrase, the encryption salt that verifies it, and the tenant's own state
+# credential -- the writes that hand the new repo something it needs to keep
+# secret from this repo, going forward. The state credential is the one
+# minted for that tenant alone; the shared state key is never read or written
+# here (assert-no-shared-state-secret-writes.py holds this file to that).
 
 on:
   workflow_dispatch:
@@ -108,6 +110,9 @@ on:
       image_ref:
         description: 'Tenant image, digest-pinned: ghcr.io/...@sha256:<64 hex>'
         required: true
+      state_prefix:
+        description: "This tenant's opaque state prefix from the tenant register: a random identifier, never the slug. Not a secret."
+        required: true
 
 permissions:
   contents: read
@@ -153,39 +158,18 @@ jobs:
       APP_HOST_PRIVATE_IP: ${{ inputs.app_host_private_ip }}
       APP_HOST_SSH_ADDRESS: ${{ inputs.app_host_ssh_address }}
       IMAGE_REF: ${{ inputs.image_ref }}
-      # The tenant's Pulumi state backend: one Hetzner Object Storage bucket
-      # holding every tenant stack, addressed by project name, so onboarding
-      # creates no storage resource at all.
+      # The tenant's Pulumi state backend: one shared state bucket, one opaque
+      # prefix per tenant inside it, reached only through the storage gateway's
+      # public state name. The tenant's credential is its own, minted for it
+      # alone and confined by the gateway to that prefix; this job holds no
+      # state credential of its own and so none that reaches another tenant's
+      # state. The URL is built and checked by render-tenant-state-backend.py,
+      # which refuses the estate's own bucket by name.
       #
-      # **A tenant bucket, never the estate's own.** `branchleft-pulumi-state`
-      # holds `branchleft-hetzner-estate/production`, whose checkpoint carries
-      # the production hcloud API token, alongside the network and mail stacks.
-      # The S3 credential a tenant repo's CI must hold to reach its own state is
-      # not scoped to a stack, so pointing tenants at that bucket would give
-      # every tenant deployer write access to the estate's control plane -- and
-      # destroying a checkpoint needs no ability to decrypt it. Object Storage is
-      # priced per account regardless of bucket count, so the separation is free.
-      # The validation step refuses that bucket by name.
-      #
-      # Both the endpoint host and `region` in this URL must name the bucket's
-      # own location; a mismatch is an opaque 403 that reads as a credential
-      # problem.
-      #
-      # **A dedicated credential, deliberately not HETZNER_S3_ACCESS_KEY_ID /
-      # HETZNER_S3_SECRET_ACCESS_KEY.** Those names are `infra-hosts-ci.yml`'s
-      # own repository-level credential for `branchleft-pulumi-state`, the
-      # estate's bucket; its plan job declares no `environment:` and so can only
-      # ever resolve a repository secret. Reusing that name here would force one
-      # of two outcomes: an estate credential scoped to this environment (which
-      # breaks the hosts stack, since environment secrets are invisible to a job
-      # with no `environment:`), or a repository-level copy of a
-      # provisioning-capable credential (which the scoping guard below exists to
-      # refuse). A separate credential under a separate name removes the
-      # collision instead of choosing a side of it.
-      TENANT_BACKEND_URL: ${{ vars.HETZNER_PULUMI_BACKEND_URL }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
-      AWS_REGION: hel1
+      # The bucket and the region are repository variables, never literals here.
+      STATE_GATEWAY_BUCKET: ${{ vars.STATE_GATEWAY_BUCKET }}
+      STATE_GATEWAY_REGION: ${{ vars.STATE_GATEWAY_REGION }}
+      TENANT_STATE_PREFIX: ${{ inputs.state_prefix }}
       # Platform-wide facts rather than per-tenant answers, so they are
       # repository variables and not ten more fields on a form nobody can fill
       # in correctly from memory. `workflow_dispatch` also caps inputs at ten,
@@ -436,7 +420,7 @@ jobs:
           # Digest pin and registry both. The app host resolves this reference
           # (infra/tenant/index.ts's imageEnvPath), not this runner, so a
           # registry the host cannot pull from provisions a whole tenant before
-          # failing. Same shape as the HETZNER_PULUMI_BACKEND_URL check below.
+          # failing.
           #
           # In a tested script rather than inline: a rule in this YAML is only
           # provable by dispatching this workflow, which means provisioning a
@@ -444,33 +428,6 @@ jobs:
           python3 infra/provisioning/scripts/assert-image-ref.py --self-test
           python3 infra/provisioning/scripts/assert-image-ref.py \
             --image-ref "$IMAGE_REF"
-
-          # Repository configuration rather than an operator's input, so checked
-          # for presence and shape. An unset variable expands to '' and would
-          # send the tenant's first checkpoint to whatever backend the runner
-          # last logged into.
-          [[ -n "$TENANT_BACKEND_URL" ]] \
-            || fail "the HETZNER_PULUMI_BACKEND_URL repository variable is empty or unset"
-          # Deliberate: refuses a gs:// (Google Cloud) backend by name, so a
-          # copied-over old value fails loudly instead of reaching Pulumi.
-          [[ "$TENANT_BACKEND_URL" == s3://* ]] \
-            || fail "HETZNER_PULUMI_BACKEND_URL must be an s3:// backend; a gs:// backend would give this tenant a Google Cloud dependency"
-          # The bucket name is extracted and compared, not substring-matched.
-          # An earlier spelling tested for the literal `s3://branchleft-pulumi-state?`
-          # and so passed the same bucket written without query parameters --
-          # a refusal that depends on punctuation is not a refusal. This is the
-          # estate's own control-plane bucket, and a tenant deployer that can
-          # write to it can destroy the checkpoint the production hcloud token
-          # lives in; destroying a checkpoint needs no ability to decrypt it.
-          backend_bucket="${TENANT_BACKEND_URL#s3://}"
-          backend_bucket="${backend_bucket%%\?*}"
-          backend_bucket="${backend_bucket%%/*}"
-          [[ "$backend_bucket" != "branchleft-pulumi-state" ]] \
-            || fail "HETZNER_PULUMI_BACKEND_URL names branchleft-pulumi-state, the estate's own state bucket. Tenant state goes in a separate bucket -- the S3 credential is not scoped per stack, so this would hand every tenant deployer write access to the estate, network and mail checkpoints."
-          [[ -n "$backend_bucket" ]] \
-            || fail "HETZNER_PULUMI_BACKEND_URL names no bucket"
-          [[ -n "$AWS_ACCESS_KEY_ID" && -n "$AWS_SECRET_ACCESS_KEY" ]] \
-            || fail "TENANT_STATE_S3_ACCESS_KEY_ID / TENANT_STATE_S3_SECRET_ACCESS_KEY are empty or unset; the tenant's state backend is unreachable without them"
 
           for pair in \
             "PLATFORM_DB_PRIVATE_IP=$PLATFORM_DB_PRIVATE_IP" \
@@ -536,6 +493,23 @@ jobs:
           elif [ -n "$existing_repo" ]; then
             echo "::warning::the requested repository name does not exist -- the name redirects to a repository that was renamed. The name is free and creating the repository here will disable that redirect, so existing links to the old name will stop resolving."
           fi
+
+      # The new tenant's state backend and its own credential, before anything
+      # exists: a value that is wrong or not yet delivered stops the run with no
+      # repository and no stack to clean up.
+      - name: Build the tenant's state backend URL
+        run: python3 infra/provisioning/scripts/render-tenant-state-backend.py
+
+      # The controller's `mint-state-credential` step mints this pair at the
+      # gateway's state instance for this tenant alone, and fills the two
+      # environment secrets below. DELIVERY FROM THE CONTROLLER TO THIS STEP IS
+      # NOT BUILT YET: until it is, an absent pair stops the run here, and
+      # nothing falls back to any other key.
+      - name: Receive the tenant's own minted state credential
+        env:
+          MINTED_STATE_ACCESS_KEY_ID: ${{ secrets.MINTED_STATE_ACCESS_KEY_ID }}
+          MINTED_STATE_SECRET_ACCESS_KEY: ${{ secrets.MINTED_STATE_SECRET_ACCESS_KEY }}
+        run: python3 infra/provisioning/scripts/receive-minted-state-credential.py
 
       # Before the repository exists, and before anything is minted. A missing
       # or unusable escrow key must stop the run while there is still nothing to
@@ -823,6 +797,10 @@ jobs:
         working-directory: tenant
         env:
           PULUMI_CONFIG_PASSPHRASE: ${{ env.TENANT_PULUMI_PASSPHRASE }}
+          # The new tenant's own credential, through the gateway: it reaches
+          # this tenant's prefix and no other tenant's state.
+          AWS_ACCESS_KEY_ID: ${{ env.STATE_GATEWAY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ env.STATE_GATEWAY_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
           # Re-checked against this step's own effective value: a typo in the
@@ -928,44 +906,21 @@ jobs:
           printf '%s' "$SALT" | gh secret set PULUMI_ENCRYPTION_SALT --repo "$TENANT_REPO" --env production
           echo "TENANT_PULUMI_SALT=$SALT" >> "$GITHUB_ENV"
 
-      # The state credentials the tenant's own CI needs to reach its checkpoint.
-      # Distributing them is this flow's job -- the tenant repository has no
-      # other way to obtain them, and without them its deploy job cannot even
-      # log in to the backend.
-      #
-      # Environment-scoped like the rest: at the repository level they would be
-      # readable by any workflow run in that repo.
-      #
-      # **Written under the tenant repo's own name for this credential, not
-      # this workflow's.** `$AWS_ACCESS_KEY_ID` / `$AWS_SECRET_ACCESS_KEY` now
-      # come from this job's TENANT_STATE_S3_* environment secrets, but the
-      # generated repo's own CI (ghost-platform-tenant-template's
-      # `infra-ci.yml`) reads `HETZNER_S3_ACCESS_KEY_ID` /
-      # `HETZNER_S3_SECRET_ACCESS_KEY` -- that repo has no hosts-stack
-      # workflow to collide with, so the name this platform used before the
-      # estate-credential rename is still the right one to hand it.
-      # Every tenant repo receives the same credential value today; giving
-      # each tenant its own is a separate, still-open piece of work.
-      #
-      # **What that scoping does NOT bound, stated rather than implied.** This
-      # credential is not scoped per stack. Once read, it reads, writes and
-      # deletes `.pulumi/stacks/*` for every tenant, as each tenant's own deploy
-      # job does for its own. None of that needs decryption: plaintext outputs,
-      # config and the salt are readable, and a checkpoint can be rewritten or
-      # destroyed. The environment gate bounds which job may read it, not what it
-      # reaches; bounding that needs Hetzner's per-bucket key allowlisting, whose
-      # `ListBucket` behaviour is undemonstrated and whose account caps may not
-      # fit 100 tenants. What IS bounded, by name in the validation step above,
-      # is that this is never the estate's own bucket.
+      # The state credential the tenant's own CI needs to reach its checkpoint:
+      # the tenant's OWN, minted for it alone and confined by the gateway to its
+      # own prefix, written under the names its CI reads. Environment-scoped
+      # like the rest: at the repository level it would be readable by any
+      # workflow run in that repo. No credential that reaches another tenant's
+      # state is read or written anywhere in this file.
       - name: Write the tenant repo's state credentials and variables
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          printf '%s' "$AWS_ACCESS_KEY_ID" \
-            | gh secret set HETZNER_S3_ACCESS_KEY_ID --repo "$TENANT_REPO" --env production
-          printf '%s' "$AWS_SECRET_ACCESS_KEY" \
-            | gh secret set HETZNER_S3_SECRET_ACCESS_KEY --repo "$TENANT_REPO" --env production
+          printf '%s' "$STATE_GATEWAY_ACCESS_KEY_ID" \
+            | gh secret set STATE_GATEWAY_ACCESS_KEY_ID --repo "$TENANT_REPO" --env production
+          printf '%s' "$STATE_GATEWAY_SECRET_ACCESS_KEY" \
+            | gh secret set STATE_GATEWAY_SECRET_ACCESS_KEY --repo "$TENANT_REPO" --env production
           # The full backend URL rather than a bucket name: an s3:// backend
           # needs the endpoint, path-style and region query parameters too, and
           # a repo that only held the bucket would have to rebuild them.
