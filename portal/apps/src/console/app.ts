@@ -6,10 +6,12 @@ import {
 } from 'ghost-platform-identity/dist/index.js';
 import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js';
 import { OwnerDb } from 'ghost-platform-portal-data/owner';
+import { renderErasureQueue } from '../shell/erasureHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { renderSupportQueue } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
+import { createDocumentsScreen } from './documentsScreen.js';
 import { createRequestsScreen, type ProvisioningOptions } from './requestsScreen.js';
 
 export interface OwnerConsoleOptions {
@@ -57,6 +59,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     fetchKeys: options.fetchKeys,
   });
   const requests = createRequestsScreen(options.provisioning, options.ownerOrgId);
+  const documents = createDocumentsScreen(options.db, options.ownerOrgId);
   return createShell<true>({
     issuer: options.issuer,
     clientId: options.clientId,
@@ -67,8 +70,9 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     verifier,
     secureCookies: options.secureCookies,
     title: 'OWNER_CONSOLE',
-    nav: [{ label: 'NAV_HOME', href: '/' }, ...requests.nav],
-    pages: requests.pages,
+    nav: [{ label: 'NAV_HOME', href: '/' }, ...requests.nav, ...documents.nav],
+    pages: { ...requests.pages, ...documents.pages },
+    formLimits: documents.formLimits,
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
     fetch: options.fetch,
@@ -79,17 +83,20 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
       : { clientLimit: { trustedProxies: options.trustedProxies } }),
     bind: async () => true,
     landing: async () => {
-      const [tenants, requests] = await Promise.all([
+      const [tenants, requests, waiting, erasures] = await Promise.all([
         options.db.listHealth(),
         options.db.listSupportRequests(),
+        options.db.waitingCount(),
+        options.db.listErasureRequests(),
       ]);
       const rows = tenants
         .map((t) => `<li><code>${escapeHtml(t.tenantId)}</code>${renderHealth(t.health)}</li>`)
         .join('');
-      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><ul>${rows}</ul>${renderSupportQueue(requests)}`;
+      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><p>DEMOS_WAITING ${waiting}</p><ul>${rows}</ul>${renderSupportQueue(requests)}${renderErasureQueue(erasures)}`;
     },
     actions: {
       ...requests.actions,
+      ...documents.actions,
       // The only thing the queue can do: mark one tenant's open request dealt
       // with. It writes the status and nothing else, and deletes nothing.
       '/support-requests/dealt-with': async (_bound, _identity, form) => {

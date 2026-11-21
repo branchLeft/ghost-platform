@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeThemeOf,
   buildManifest,
   KNOWN_EXPORT_GAPS,
   REQUIRED_EXTENSIONS,
@@ -143,6 +144,48 @@ describe('buildManifest', () => {
       const unknown = build(all({ media: { expected: null, present: 0 } }));
       expect(unknown.complete).toBe(false);
       expect(unknown.excluded[0]?.reason).toBe('reported complete but present 0 of expected null');
+    });
+  });
+
+  describe('active theme', () => {
+    const exportWith = (settings: unknown): string =>
+      JSON.stringify({ db: [{ meta: {}, data: { posts: [], settings } }] });
+
+    it('names the active theme the export holds', () => {
+      const manifest = buildManifest(
+        'tenant-1',
+        '2026-01-01T00:00:00.000Z',
+        encryption,
+        [],
+        [],
+        KNOWN_EXPORT_GAPS,
+        undefined,
+        'casper-demo'
+      );
+      expect(manifest.activeTheme).toBe('casper-demo');
+    });
+
+    it('names no theme when none is given', () => {
+      const manifest = buildManifest('tenant-1', '2026-01-01T00:00:00.000Z', encryption, []);
+      expect(manifest.activeTheme).toBeNull();
+    });
+
+    it('reads the active_theme row of the content export settings', () => {
+      const json = exportWith([
+        { key: 'title', value: 'Demo' },
+        { key: 'active_theme', value: 'demo-theme' },
+      ]);
+      expect(activeThemeOf(json)).toBe('demo-theme');
+    });
+
+    it('is null when the export holds no active_theme row', () => {
+      expect(activeThemeOf(exportWith([{ key: 'title', value: 'Demo' }]))).toBeNull();
+    });
+
+    it('is null, not a throw, for an export that is not the expected JSON', () => {
+      expect(activeThemeOf('not json')).toBeNull();
+      expect(activeThemeOf('{"db":[]}')).toBeNull();
+      expect(activeThemeOf(exportWith([{ key: 'active_theme', value: 7 }]))).toBeNull();
     });
   });
 });

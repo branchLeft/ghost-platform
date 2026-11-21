@@ -62,9 +62,13 @@ To add a font family, fetch its licence with `curl -fsSL -o themes/licences/<fam
 
 ## How the fonts are served
 
-The build copies `fonts/` into each theme at `assets/platform-fonts/`, so a font is a file at `/assets/platform-fonts/<family>/<file>.woff2` and the generated stylesheet is `/assets/platform-fonts/fonts.css`. No theme file is changed. Ghost's own font picker (Design settings) writes a Bunny Fonts link into every page when a font is chosen; nothing here selects one, and it must stay on "Theme default" for tenants.
+The build copies `fonts/` into each theme at `assets/platform-fonts/`, so a font is a file at `/assets/platform-fonts/<family>/<file>.woff2` and the generated stylesheet is `/assets/platform-fonts/fonts.css`. No theme file is changed. Ghost's own font picker (Design settings) writes a Bunny Fonts link (`fonts.bunny.net`, a third-party origin) into every page when a font is chosen; nothing here selects one, and it must stay on "Theme default" for tenants. The render core enforces that where a reconciler applies `ghost-settings.json`: it names `heading_font` and `body_font` as empty on every apply (`render-core/src/settings.md`). A site nothing reconciles (tenant zero today, whose settings were placed by hand) is cleared once in Ghost admin: Settings, Design & branding, Customise, Global, Heading font and Body font both set to "Theme default", then Save. Good looks like: a page load makes no request to `fonts.bunny.net` and the `<body>` has no `gh-font-heading-` or `gh-font-body-` class.
 
 Not done here: nothing yet links `fonts.css` into a tenant's pages. That is a per-site head setting (a site header injection of `<link rel="stylesheet" href="/assets/platform-fonts/fonts.css">`) and belongs with provisioning. Until it is set, the themes use their own font stacks.
+
+## The platform's footer credit
+
+Every theme prints the platform's default footer credit beside Ghost's own, which stays. The build patches each theme's footer after the pins are checked: `themes/footer-credit/README.md`. A new theme needs its patch there.
 
 ## Adding or updating a theme or font
 

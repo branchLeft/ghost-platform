@@ -579,6 +579,77 @@ describe('the scanning storage decorator, wrapping the local images adapter', ()
   );
 });
 
+// What a match does is decided by its tier (src/policy.md): exact + csam is a
+// seal and starts the reporting clock, every other match is a freeze that
+// nobody has decided anything about. The same refused upload through a real
+// Ghost, with only the verdict's matchType changed, is recorded as each.
+describe('the tier of a match, against a real Ghost', () => {
+  for (const [matchType, tier, action] of [
+    ['exact', 'two', 'seal'],
+    ['near', 'one', 'freeze'],
+  ]) {
+    it(
+      `records a csam match of type ${matchType} as a tier-${tier} ${action}, and refuses it the same`,
+      { timeout: 120_000 },
+      async () => {
+        const badBytes = fs.readFileSync(path.join(FIXTURES, 'bad.png'));
+        const badDigest = sha256Hex(badBytes);
+
+        const ghost = await GhostContainer.start({
+          storage__images__adapter: 'ScanningStorageAdapter',
+          storage__images__verdictSource: 'in-process-fake',
+          storage__images__wraps: 'LocalImagesStorage',
+          storage__images__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__images__refuse: JSON.stringify({
+            [badDigest]: { classification: 'csam', matchType },
+          }),
+          storage__media__adapter: 'ScanningStorageAdapter',
+          storage__media__verdictSource: 'in-process-fake',
+          storage__media__wraps: 'LocalMediaStorage',
+          storage__media__quarantinePath: '/var/lib/ghost/content/quarantine',
+          storage__files__adapter: 'ScanningStorageAdapter',
+          storage__files__verdictSource: 'in-process-fake',
+          storage__files__wraps: 'LocalFilesStorage',
+          storage__files__quarantinePath: '/var/lib/ghost/content/quarantine',
+        });
+
+        try {
+          assert.equal(
+            ghost.booted,
+            true,
+            `ghost did not boot (${ghost.bootDetail}):\n${ghost.logs()}`
+          );
+          await ghost.setupOwner();
+          const cookie = await ghost.login();
+
+          const refused = await ghost.uploadImage(
+            cookie,
+            path.join(FIXTURES, 'bad.png'),
+            'bad.png'
+          );
+          assert.equal(refused.status, 415, JSON.stringify(refused.body));
+
+          const read = ghost.execAsGhost(
+            'cat',
+            `/var/lib/ghost/content/quarantine/${badDigest}.refused.json`
+          );
+          assert.equal(read.status, 0, read.stderr);
+          const record = JSON.parse(read.stdout);
+          assert.equal(record.tier, tier);
+          assert.equal(record.action, action);
+          assert.equal(typeof record.sealedAt, tier === 'two' ? 'string' : 'undefined');
+          assert.equal(typeof record.frozenAt, tier === 'one' ? 'string' : 'undefined');
+          // The site and the admin API keep serving either way.
+          assert.equal(await ghost.getStatus('/'), 200);
+          assert.equal(await ghost.me(cookie), 200);
+        } finally {
+          ghost.stop();
+        }
+      }
+    );
+  }
+});
+
 describe('the scanning storage decorator, wrapping S3Storage', () => {
   it(
     'refuses a match on the object-storage tier too, and nothing refused reaches the bucket',

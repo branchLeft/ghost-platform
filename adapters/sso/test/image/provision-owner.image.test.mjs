@@ -181,7 +181,24 @@ const owner = {
   siteTitle: 'SITE_TITLE',
 };
 
+/**
+ * The URLs in `text` whose host is static.ghost.org, compared by parsed
+ * hostname (not by substring). JSON-escaped slashes are unescaped first.
+ */
+function staticGhostUrls(text) {
+  const found = [];
+  for (const [url] of text.replaceAll('\\/', '/').matchAll(/https?:\/\/[^\s"'\\<>]+/g)) {
+    try {
+      if (new URL(url).hostname === 'static.ghost.org') found.push(url);
+    } catch {
+      // not a parseable URL
+    }
+  }
+  return found;
+}
+
 let sink;
+let ownerCookie;
 
 describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, () => {
   let unprovisioned;
@@ -246,6 +263,7 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
     const session = await provisioned.signIn(OWNER_EMAIL, chosen);
     assert.equal(session.status, 201, session.text);
     const cookie = session.headers['set-cookie'].map((c) => c.split(';')[0]).join('; ');
+    ownerCookie = cookie;
     const me = await provisioned.request(
       'GET',
       '/ghost/api/admin/users/me/?include=roles',
@@ -261,6 +279,34 @@ describe('a fresh tenant Ghost against a first visitor', { timeout: 600_000 }, (
       user.roles.map((r) => r.name),
       ['Owner']
     );
+  });
+
+  it('serves no post, setting or page that names static.ghost.org', async () => {
+    const posts = await provisioned.request(
+      'GET',
+      '/ghost/api/admin/posts/?status=all&limit=all&formats=html',
+      undefined,
+      { cookie: ownerCookie }
+    );
+    assert.equal(posts.status, 200, posts.text);
+    assert.deepEqual(staticGhostUrls(posts.text), [], 'a post names static.ghost.org');
+    const settings = await provisioned.request('GET', '/ghost/api/admin/settings/', undefined, {
+      cookie: ownerCookie,
+    });
+    assert.equal(settings.status, 200, settings.text);
+    assert.deepEqual(staticGhostUrls(settings.text), [], 'a setting names static.ghost.org');
+    const home = await provisioned.request('GET', '/', undefined, {});
+    assert.equal(home.status, 200);
+    assert.deepEqual(staticGhostUrls(home.text), [], 'the home page names static.ghost.org');
+    const about = await provisioned.request('GET', '/about/', undefined, {});
+    assert.equal(about.status, 200, `the About page answered ${about.status}`);
+    assert.deepEqual(staticGhostUrls(about.text), [], 'the About page names static.ghost.org');
+  });
+
+  it("serves the About link's page on a fresh site, so the default navigation is not a 404", async () => {
+    // Ghost's default navigation links to /about/ (default-settings.json).
+    const about = await provisioned.request('GET', '/about/', undefined, {});
+    assert.equal(about.status, 200, `the About link answered ${about.status}`);
   });
 
   it('is a no-op the second time: no new owner, no second email', async () => {

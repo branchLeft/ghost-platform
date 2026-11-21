@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { and, asc, eq } from 'drizzle-orm';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import type { CredentialRecord, CredentialStore } from '../contracts.js';
+import type { CredentialProfile, CredentialRecord, CredentialStore } from '../contracts.js';
 import { credentials } from './schema.js';
 
 /** Where drizzle-kit writes the migrations: `../../drizzle` from both `src/credentials/` and `dist/credentials/`. */
@@ -22,6 +22,8 @@ export interface NewCredential {
   readonly folder: string;
   readonly bucket: string;
   readonly createdAt: string;
+  /** Which listener the credential is for; absent stores `media`. */
+  readonly profile?: CredentialProfile;
   /** The tenant's upload ceiling in MiB; absent stores NULL, which the upload path refuses. The caller validates it; mint requires it. */
   readonly uploadCeilingMib?: number;
 }

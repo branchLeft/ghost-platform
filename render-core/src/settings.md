@@ -40,3 +40,27 @@ restriction upstream rejects the two disagreeing as an opaque HTTP 400,
 with the real cause visible only in container output, so both are computed
 from the same call to `mail.ts#renderSendingAddress` rather than from two
 independent readings of the descriptor's sending identity.
+
+**`heading_font` and `body_font` are always `''` ("Theme default").** Ghost's
+Design settings font picker writes these two settings, and Ghost's `ghost_head`
+helper then puts a stylesheet link to `fonts.bunny.net` (a third-party origin)
+into every page of the site, which the platform's rule that a tenant page
+requests nothing from another origin forbids. Both are writable through the
+Admin API (they are in Ghost's settings-input allowlist), so, like the two
+code-injection boxes, they are named on every apply: a font chosen by hand is
+cleared again. The platform's own self-hosted fonts are a separate path
+(`themes/README.md`, "How the fonts are served").
+
+**`footerCredit` is the default footer credit, the same for every kind and
+tier.** Ghost's own "Powered by Ghost" line stays: `keepGhostCredit` is always
+`true`, and a theme renders the platform's credit beside Ghost's, never in
+its place (Ghost's licence and theme terms keep the Ghost credit). `text` and
+`url` are the placeholders `FOOTER_CREDIT_TEXT` and `PUBLICPRESS_MAIN_SITE_URL`
+until the owner supplies the wording and the main-site address; the copy is
+the owner's, so nothing here writes any. It is its own key, not a code
+injection: the code-injection posture stays blocked and empty, and the credit
+is not folded into `codeinjection_foot`. Ghost has no setting that holds it, so
+this artefact names it and the theme layer renders it; the broker's Admin API
+write names only the Ghost keys. Whether a tenant may turn it off, and on which
+tier, is the owner's open question on branchLeft/workspace#1819; there is no
+off switch and no descriptor field for it until that is answered.

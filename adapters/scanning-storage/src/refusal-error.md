@@ -2,16 +2,24 @@
 
 ## Refusal wording
 
-The wording splits by classification: generic for `csam`, specific for
-everything else.
+The wording is decided by two things: the audience reading it and the
+classification. `buildRefusalError(GhostErrors, verdict, audience)` takes
+`audience` from `AUDIENCE`:
 
-For `csam`, the specific reason is operational intelligence handed to
-whoever is holding the account, which may not be the tenant, so the message
-stays generic (`GENERIC_CONTEXT`).
+- `TENANT_STAFF` gets the specific message (naming the classification) for
+  an ordinary match. Every upload is made by authenticated tenant staff, so
+  the scanning path passes this audience.
+- `ANONYMOUS` gets the neutral `GENERIC_CONTEXT` for every match. It names no
+  classifier.
+- Any other or missing audience gets the neutral message. The wording fails
+  closed rather than guessing who is reading it.
 
-For every other classification, the message names it. An upload is always
-made by authenticated staff, who get an accurate answer rather than being
-treated as adversaries.
+For `csam` (tier two), the message is `GENERIC_CONTEXT` for every audience,
+tenant staff included. The specific reason is operational intelligence, and
+an authenticated account can be a compromised one. The control case is that a
+tier-two match through the tenant-staff path still returns the generic
+message; the unit tests in `test/unit/refusal-error.test.mjs` prove it, and a
+sabotage that removes the exception turns them red.
 
 ## Video and audio refusal
 

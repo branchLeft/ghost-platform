@@ -1,7 +1,9 @@
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile as execFileCallback, execFileSync } from 'node:child_process';
+import http from 'node:http';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -9,7 +11,10 @@ import {
   parseArgs,
   parseOwnerEmail,
   provisionOwner,
+  readyProbeScript,
 } from '../../scripts/provision-owner.mjs';
+
+const execFileAsync = promisify(execFileCallback);
 
 const SCRIPT = fileURLToPath(new URL('../../scripts/provision-owner.mjs', import.meta.url));
 const OWNER_EMAIL = 'owner@example.invalid';
@@ -261,5 +266,37 @@ describe('the command line', () => {
     expect(JSON.parse(out)).toEqual({ created: false, alreadySetUp: true });
     expect(readFileSync(argvLog, 'utf8')).not.toContain(OWNER_EMAIL);
     expect(JSON.parse(readFileSync(stdinLog, 'utf8')).email).toBe(OWNER_EMAIL);
+  });
+});
+
+describe('readyProbeScript', () => {
+  // Runs the probe the way the host does, against a local stand-in for Ghost
+  // that answers with `status`. Returns what the probe printed, or its exit code.
+  async function probe(status) {
+    const server = http.createServer((req, res) => {
+      res.statusCode = status;
+      res.end('x');
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [
+        '-e',
+        readyProbeScript(`127.0.0.1:${port}`),
+      ]);
+      return stdout.trim();
+    } catch (error) {
+      return `exit ${error.code}`;
+    } finally {
+      server.close();
+    }
+  }
+
+  it('reports up when Ghost answers 200', async () => {
+    expect(await probe(200)).toBe('up');
+  });
+
+  it('does not report up while Ghost answers 503 (still starting or in maintenance)', async () => {
+    expect(await probe(503)).toBe('exit 1');
   });
 });

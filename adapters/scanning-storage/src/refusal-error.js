@@ -15,9 +15,21 @@ function specificContext(classification) {
 // this module stays testable without it: Ghost's own image already carries
 // it (it is Ghost core's own dependency), and the entry file wires the real
 // module in only when this class is loaded inside Ghost.
-function buildRefusalError(GhostErrors, verdict) {
-  const context =
-    verdict.classification === 'csam' ? GENERIC_CONTEXT : specificContext(verdict.classification);
+// Who is reading the refusal. The wording is decided by the audience, not by
+// the caller's guess about it: anything that is not exactly TENANT_STAFF gets
+// the neutral message, so an unknown or missing audience fails closed.
+const AUDIENCE = Object.freeze({
+  ANONYMOUS: 'anonymous',
+  TENANT_STAFF: 'tenant-staff',
+});
+
+// A tier-two (csam) match stays generic even for tenant staff: an
+// authenticated account can be a compromised one, and the specific reason is
+// operational intelligence. Only an ordinary match is named, and only to
+// tenant staff.
+function buildRefusalError(GhostErrors, verdict, audience) {
+  const named = verdict.classification !== 'csam' && audience === AUDIENCE.TENANT_STAFF;
+  const context = named ? specificContext(verdict.classification) : GENERIC_CONTEXT;
   return new GhostErrors.UnsupportedMediaTypeError({
     message: 'Unsupported media error, cannot upload image.',
     context,
@@ -108,6 +120,7 @@ function buildNameLapsedError(GhostErrors, fileName) {
 }
 
 module.exports = {
+  AUDIENCE,
   buildRefusalError,
   buildNamesFullError,
   buildNameLapsedError,

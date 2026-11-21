@@ -51,6 +51,38 @@ describe('buildTar', () => {
     }
   );
 
+  it('carries a media path as a path-bearing entry, long ones through the ustar prefix, byte-for-byte through the system tar', () => {
+    const long = `content/images/2026/11/${'d'.repeat(60)}/${'f'.repeat(70)}.png`;
+    const tar = buildTar(
+      [
+        { name: 'manifest.json', data: '{}' },
+        { name: 'content/images/2026/11/a@2x.png', data: 'PNG' },
+        { name: long, data: 'LONG' },
+        { name: 'content/files/doc.pdf', data: Buffer.alloc(600, 9) },
+      ],
+      1_700_000_000
+    );
+    expect(tarListing(tar)).toEqual([
+      'manifest.json',
+      'content/images/2026/11/a@2x.png',
+      long,
+      'content/files/doc.pdf',
+    ]);
+    expect(tarMember(tar, long).toString('utf8')).toBe('LONG');
+    expect(tarMember(tar, 'content/files/doc.pdf').equals(Buffer.alloc(600, 9))).toBe(true);
+  });
+
+  it.each([
+    ['content/images/../../etc/passwd'],
+    ['/content/images/a.png'],
+    ['content/images/size/w600/a.png'],
+    ['content/themes/casper/a.png'],
+    ['content/images/has space.png'],
+    ['content/images/' + 'x'.repeat(120)],
+  ])('refuses the unsafe media entry name %j', (name) => {
+    expect(() => buildTar([{ name, data: 'x' }], 0)).toThrow(ArchiveEntryError);
+  });
+
   it('refuses a duplicate entry name rather than shadowing one file with another', () => {
     expect(() =>
       buildTar(

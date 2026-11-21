@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,11 +8,16 @@ import {
   exitCodeFor,
   failureLines,
   main,
+  parseArgs,
   reportExport,
 } from '../../src/cli.js';
 import { ExportCleanupError, type ExportResult } from '../../src/exportRunner.js';
 import { DockerEngineTooOldError } from '../../src/containerRunner.js';
-import { TenantConfigError } from '../../src/tenantConfig.js';
+import {
+  RecipientMismatchError,
+  SUPPORT_IDENTITY_ENV,
+  TenantConfigError,
+} from '../../src/tenantConfig.js';
 import { writeFakeDocker } from '../helpers/fakeDocker.js';
 
 /**
@@ -164,5 +169,194 @@ describe('reportExport and the failure lines', () => {
 
   it('a failed export with clean teardown prints one line', () => {
     expect(failureLines(new Error('boom'))).toEqual(['export-bundler: Error: boom']);
+  });
+});
+
+describe('parseArgs: the media flags', () => {
+  const base = [
+    '--grant-lane',
+    'consented',
+    '--grant-reference',
+    'ref',
+    '--descriptor',
+    'd.json',
+    '--age-recipient',
+    'age1x',
+    '--requested-by',
+    'a',
+    '--delivered-to',
+    'b',
+    '--dest-dir',
+    '/d',
+    '--flag-dir',
+    '/f',
+    '--audit-log',
+    '/a',
+    '--loopback-port',
+    '1',
+    '--erasure-date',
+    '2030-01-01',
+  ];
+
+  it('carries no media files by default, with the 128 MiB upload ceiling', () => {
+    const opts = parseArgs(base);
+    expect(opts.carryMediaFiles).toBe(false);
+    expect(opts.uploadCeilingBytes).toBe(128 * 1024 * 1024);
+  });
+
+  it('carries them only when asked, with the ceiling the destination tier states', () => {
+    const opts = parseArgs([...base, '--carry-media-files', '--upload-ceiling-bytes', '5000']);
+    expect(opts.carryMediaFiles).toBe(true);
+    expect(opts.uploadCeilingBytes).toBe(5000);
+  });
+
+  it.each([['0'], ['-1'], ['1.5'], ['abc'], ['']])('refuses the upload ceiling %j', (value) => {
+    expect(() => parseArgs([...base, '--upload-ceiling-bytes', value])).toThrow(/positive whole/);
+  });
+});
+
+const PROMOTION = 'age1' + 'q'.repeat(58);
+const OTHER = 'age1' + 'p'.repeat(58);
+
+const BASE_FLAGS = [
+  '--grant-lane',
+  'consented',
+  '--grant-reference',
+  'test-reference',
+  '--descriptor',
+  '/nonexistent/descriptor.json',
+  '--age-recipient',
+  PROMOTION,
+  '--requested-by',
+  'tester',
+  '--delivered-to',
+  'tester',
+  '--dest-dir',
+  '/nonexistent/dest',
+  '--flag-dir',
+  '/nonexistent/flags',
+  '--audit-log',
+  '/nonexistent/audit.log',
+  '--loopback-port',
+  '4400',
+  '--erasure-date',
+  '2030-01-01',
+];
+
+describe('parseArgs: --promotion-recipient', () => {
+  it('is absent unless given', () => {
+    expect(parseArgs(BASE_FLAGS).promotionRecipient).toBeUndefined();
+  });
+
+  it('is read when given', () => {
+    expect(parseArgs([...BASE_FLAGS, '--promotion-recipient', PROMOTION]).promotionRecipient).toBe(
+      PROMOTION
+    );
+  });
+
+  it.each([
+    ['with no value at the end', ['--promotion-recipient']],
+    ['followed by another flag', ['--promotion-recipient', '--erasure-date', '2031-01-01']],
+  ])('is refused %s, never read as absent', (_label, extra) => {
+    expect(() => parseArgs([...BASE_FLAGS, ...extra])).toThrow(TenantConfigError);
+  });
+});
+
+/**
+ * main() reads the flag and hands it, with the grant's lane, to bindTenant.
+ * A fake `docker` answers the engine version and the compose config of a
+ * demo, so each run reaches the binding and stops there, before any
+ * container, volume or network call. Delete the promotion argument from
+ * main()'s bindTenant call and the first three cases fail: the recipient
+ * is then refused for the wrong reason, or not at all.
+ */
+describe('main: a demo export binds its recipient before anything is created', () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'export-bundler-cli-promotion-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function demoDocker(): Promise<{ docker: string; argvLog: string; flags: string[] }> {
+    const compose = {
+      name: 'demo-one',
+      services: {
+        'ghost-a': {
+          image: 'ghost-platform@sha256:abc',
+          environment: {
+            adapters__sso__BreakGlassSSO__tenant: 'demo-one',
+            [SUPPORT_IDENTITY_ENV]: 'support@demo-one.example',
+          },
+          volumes: [{ type: 'volume', source: 'ghost-demo-one-content', target: '/content' }],
+        },
+      },
+    };
+    const descriptorPath = join(dir, 'descriptor.json');
+    await writeFile(descriptorPath, JSON.stringify({ slug: 'demo-one', backup: { kind: 'none' } }));
+    const composePath = join(dir, 'compose.json');
+    await writeFile(composePath, JSON.stringify(compose));
+    const argvLog = join(dir, 'argv.log');
+    const docker = join(dir, 'docker-demo.sh');
+    await writeFile(
+      docker,
+      [
+        '#!/bin/sh',
+        `printf '%s\n' "$1" >> '${argvLog}'`,
+        `if [ "$1" = version ]; then echo 28.0.0; exit 0; fi`,
+        `if [ "$1" = compose ]; then cat '${composePath}'; exit 0; fi`,
+        'exit 0',
+        '',
+      ].join('\n')
+    );
+    await chmod(docker, 0o755);
+    const flags = BASE_FLAGS.map((f) =>
+      f === '/nonexistent/descriptor.json' ? descriptorPath : f
+    );
+    return { docker, argvLog, flags };
+  }
+
+  async function verbs(argvLog: string): Promise<string[]> {
+    return (await readFile(argvLog, 'utf8')).trim().split('\n');
+  }
+
+  const run = (docker: string, argv: string[]) =>
+    main(argv, { dockerCommand: docker, signalTarget: new EventEmitter() as never });
+
+  it('refuses a demo with no promotion recipient, after the compose read and before anything else', async () => {
+    const { docker, argvLog, flags } = await demoDocker();
+    await expect(run(docker, flags)).rejects.toThrow(/no promotion recipient/);
+    expect(await verbs(argvLog)).toEqual(['version', 'compose']);
+  });
+
+  it("refuses an operator recipient that is not the promotion's", async () => {
+    const { docker, argvLog, flags } = await demoDocker();
+    const argv = flags.map((f) => (f === PROMOTION ? OTHER : f));
+    await expect(run(docker, [...argv, '--promotion-recipient', PROMOTION])).rejects.toThrow(
+      RecipientMismatchError
+    );
+    expect(await verbs(argvLog)).toEqual(['version', 'compose']);
+  });
+
+  it('refuses a promotion recipient under the incident lane', async () => {
+    const { docker, argvLog, flags } = await demoDocker();
+    const argv = flags.map((f) => (f === 'consented' ? 'incident' : f));
+    await expect(run(docker, [...argv, '--promotion-recipient', PROMOTION])).rejects.toThrow(
+      /only under a consented support grant/
+    );
+    expect(await verbs(argvLog)).toEqual(['version', 'compose']);
+  });
+
+  it('accepts a matching promotion recipient under the consented lane: the run goes past the binding', async () => {
+    const { docker, flags } = await demoDocker();
+    const raised = await run(docker, [...flags, '--promotion-recipient', PROMOTION]).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+    // The stack has no database configured, so the run stops later, for that
+    // reason; what matters is that it is not a refusal of the recipient.
+    expect((raised as Error | undefined)?.message ?? '').not.toMatch(/recipient/i);
+    expect(raised).not.toBeInstanceOf(RecipientMismatchError);
   });
 });

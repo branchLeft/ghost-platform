@@ -147,3 +147,32 @@ describe('tenantEnvironment() — Ghost mail transport timeouts', () => {
     expect(rendered.mail__options__socketTimeout).toBeUndefined();
   });
 });
+
+// Ghost builds a member's `avatar_image` as a Gravatar address from a hash of
+// the member's email unless `privacy:useGravatar` is off, so Portal's account
+// page would send each signed-in reader's hash to a third party. The key
+// reaches every kind of tenant, under both widget sources.
+describe('tenantEnvironment() — Gravatar off', () => {
+  const KEY = 'privacy__useGravatar';
+
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+    ['tenant fixture', tenantDescriptor],
+  ] as const)('renders %s with Gravatar off', (_label, fixture) => {
+    expect(env(fixture())[KEY]).toBe(false);
+  });
+
+  it.each(['cdn', 'own-origin'] as const)('renders it off with the %s widget source', (source) => {
+    const descriptor = tenantDescriptor();
+    const rendered = tenantEnvironment(
+      descriptor,
+      LIMITS,
+      secretsEnvPath(descriptor.slug),
+      TEST_ZONES,
+      source
+    );
+    expect(rendered[KEY]).toBe(false);
+  });
+});

@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,7 +32,9 @@ afterAll(() => {
 
 const EntryAdapter = require('../../src/ScanningStorageAdapter.js');
 
-const CLEAN_BYTES = Buffer.from('clean-image-bytes');
+// Real pictures: the adapter asks the hash source about a perceptual hash,
+// and bytes that are not a decodable image have none.
+const CLEAN_BYTES = readFileSync(path.resolve(SRC_DIR, '../test/fixtures/clean.png'));
 
 let tmpDir;
 
