@@ -11,7 +11,9 @@
 FROM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5
 
 # Alpine's zlib fix is not in the base's package index until upgraded here.
-RUN apk upgrade --no-cache zlib
+# libcrypto3 and libssl3 ship below their fixed release (3.5.9-r1) in the base,
+# and the image scan fails on those high findings, so they are upgraded here too.
+RUN apk upgrade --no-cache zlib libcrypto3 libssl3
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json pins. npm is removed in the same layer: it is only the installer

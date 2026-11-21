@@ -95,6 +95,13 @@ export type ObjectKind = 'database' | 'schema' | 'table' | 'sequence' | 'functio
 export interface Grant {
   grantee: Grantee;
   privileges: readonly string[];
+  /**
+   * Limits the privileges to these columns of a table: a column-level grant.
+   * The grantee then holds them on no other column, and a statement that
+   * names a left-out column, even to write its DEFAULT, is refused. Left out,
+   * the grant is the whole table's.
+   */
+  columns?: readonly string[];
 }
 
 /**
@@ -141,6 +148,18 @@ const CUSTOM_DOMAIN = '0009_custom_domain';
 const DEMO_REQUEST = '0010_demo_request';
 const SUPPORT_ACCESS = '0011_support_access';
 export const STATUS_READ = '0012_demo_request_status_read';
+/**
+ * The columns the front door may read of a request (M07): the demo id, the
+ * publication name and the time it was recorded, which is what a status page
+ * shows. Every other column stays out of its reach.
+ */
+export const STATUS_COLUMNS = {
+  privileges: ['SELECT'],
+  columns: ['demo_id', 'publication_name', 'submitted_at'],
+} as const;
+const QUEUE = '0013_moderation_item';
+const TENANT_BILLING = '0014_tenant_billing';
+const TENANT_ERASURE = '0015_tenant_erasure_request';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -272,6 +291,35 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
       ],
     },
+    // TenantDb.ownBilling reads; OwnerDb.setPaymentState and
+    // setBillingReference insert and, through ON CONFLICT DO UPDATE, update,
+    // and billingOf, listBilling and listOverdue read. The tenant role holds
+    // SELECT alone, so a tenant cannot mark itself paid. Nothing deletes a
+    // record, and the table has no column that holds free text or card data.
+    {
+      kind: 'table',
+      identity: 'portal.tenant_billing',
+      since: TENANT_BILLING,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['SELECT'] },
+        { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
+      ],
+    },
+    // TenantDb.requestOwnErasure inserts the tenant's one row (its primary key
+    // is the tenant, so a second request records nothing) and ownErasure reads
+    // it; OwnerDb.listErasureRequests reads and recordKeyDestroyed updates the
+    // status. The tenant role holds no UPDATE, so it cannot mark its own key
+    // destroyed. Nothing deletes a request, and the table has no column that
+    // holds text.
+    {
+      kind: 'table',
+      identity: 'portal.tenant_erasure_request',
+      since: TENANT_ERASURE,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
+      ],
+    },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
     // and reads. Nothing updates or deletes a version, so what a tenant
     // accepted cannot change under it.
@@ -304,6 +352,15 @@ export function manifest(major: number, database: string): readonly ManifestObje
       since: MODERATION,
       grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] }],
     },
+    // TenantDb.holdItem inserts, and holdItem, moderationItems and
+    // moderationItem read, the tenant's own queue items. Nothing updates or
+    // deletes an item yet, and the owner role reads nothing here.
+    {
+      kind: 'table',
+      identity: 'portal.moderation_item',
+      since: QUEUE,
+      grants: [{ grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] }],
+    },
     // TenantDb.requestCustomDomain inserts and reads the tenant's own requests,
     // connectCustomDomain deletes the request it turns into a connection and
     // removeCustomDomain deletes one. Nothing updates a request. The owner role
@@ -326,41 +383,67 @@ export function manifest(major: number, database: string): readonly ManifestObje
     // ProvisionerDb appends events and reads the latest to decide the next;
     // OwnerDb.listDemos and demoHistory read. No role updates or deletes an
     // event: the history is the record, and the tenant role holds nothing.
+    // The provisioner's INSERT is by column and leaves out recorded_at, so the
+    // database's clock stamps every event and a raw-SQL writer cannot backdate
+    // one (the term_set check ties the term it issues to that stamp).
     {
       kind: 'table',
       identity: 'portal.demo_state_event',
       since: DEMO_LIFECYCLE,
       grants: [
-        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        {
+          grantee: 'provisionerRole',
+          privileges: ['INSERT'],
+          columns: [
+            'demo_id',
+            'sequence',
+            'previous_sequence',
+            'from_state',
+            'to_state',
+            'lease_issued_at',
+            'lease_ends_at',
+            'extension_days',
+          ],
+        },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
     // ProvisionerDb.allocateHostname inserts; OwnerDb.listHostnames reads. The
     // register is append-only by grant: no role may update or delete a row.
+    // INSERT is by column and leaves out allocated_at, which the database sets.
     {
       kind: 'table',
       identity: 'portal.hostname_register',
       since: DEMO_LIFECYCLE,
       grants: [
-        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['INSERT'], columns: ['demo_id', 'label'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
     // ProvisionerDb.retireHostname inserts; a retirement is a row, never an
-    // edit of the register. OwnerDb.listHostnames reads.
+    // edit of the register. OwnerDb.listHostnames reads. INSERT is by column and
+    // leaves out retired_at, which the database sets.
     {
       kind: 'table',
       identity: 'portal.hostname_retirement',
       since: DEMO_LIFECYCLE,
       grants: [
-        { grantee: 'provisionerRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+        { grantee: 'provisionerRole', privileges: ['INSERT'], columns: ['label'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
     // ProspectDb.submit inserts. ProspectDb.ownRequest reads once the status
-    // migration has given the front door SELECT, and the table's row policy
-    // shows it only the row whose address the transaction bound; it cannot
-    // change a request or remove one. ProvisionerDb.request and
+    // migration has given the front door SELECT on the three columns a status
+    // page shows, and the table's row policy shows it only the row whose
+    // address the transaction bound; it cannot change a request or remove one.
+    // The grant is by column because a session on the front door's connection
+    // can set the address the policy reads: a compromised front door could
+    // then read any row it can name an address for, and the columns it holds
+    // are all it could read from it. The address, the subject, the wording and
+    // the answers are not among them. ProvisionerDb.request and
     // OwnerDb.listRequests read. No role updates or deletes a request.
     {
       kind: 'table',
@@ -371,9 +454,7 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'provisionerRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
-      added: [
-        { since: STATUS_READ, grants: [{ grantee: 'prospectRole', privileges: ['SELECT'] }] },
-      ],
+      added: [{ since: STATUS_READ, grants: [{ grantee: 'prospectRole', ...STATUS_COLUMNS }] }],
     },
   ];
 }
@@ -396,9 +477,12 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.health_reading': { enabled: true, forced: false },
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
+  'portal.tenant_billing': { enabled: true, forced: false },
+  'portal.tenant_erasure_request': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
+  'portal.moderation_item': { enabled: true, forced: false },
   'portal.custom_domain_request': { enabled: true, forced: false },
   'portal.connected_domain': { enabled: true, forced: false },
   'portal.demo_state_event': { enabled: false, forced: false },
@@ -507,6 +591,34 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`
   ),
   policy(
+    'portal.tenant_billing',
+    'tenant_isolation',
+    TENANT_BILLING,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  policy(
+    'portal.tenant_erasure_request',
+    'tenant_isolation',
+    TENANT_ERASURE,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  // The restrictive half: whatever else lets a tenant insert, the row it files
+  // is a plain request. Only the owner role's UPDATE records a destroyed key.
+  policy(
+    'portal.tenant_erasure_request',
+    'tenant_insert_requested',
+    TENANT_ERASURE,
+    'a',
+    'null',
+    "((status = 'requested'::text) AND (key_destroyed_at IS NULL))",
+    'tenantRole',
+    false
+  ),
+  policy(
     'portal.support_access_request',
     'tenant_isolation',
     SUPPORT_ACCESS,
@@ -542,6 +654,7 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`,
     `(${BOUND})`
   ),
+  policy('portal.moderation_item', 'tenant_isolation', QUEUE, '*', `(${BOUND})`, `(${BOUND})`),
   policy(
     'portal.custom_domain_request',
     'tenant_isolation',
@@ -699,6 +812,25 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'ON portal.support_access_reading USING btree (tenant_id)',
     ],
   },
+  'portal.tenant_billing': {
+    since: TENANT_BILLING,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column billing_reference text notnull=false ${PLAIN}`,
+      `column payment_state text notnull=true ${PLAIN}`,
+      `column state_changed_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default state_changed_at now()',
+      "constraint tenant_billing_payment_state_known CHECK ((payment_state = ANY (ARRAY['unpaid'::text, " +
+        "'paid'::text, 'overdue'::text])))",
+      'constraint tenant_billing_pkey PRIMARY KEY (tenant_id)',
+      "constraint tenant_billing_reference_not_card_like CHECK ((billing_reference !~ '^([_.:-]?[0-9]){12,}$'::text))",
+      "constraint tenant_billing_reference_shape CHECK ((billing_reference ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{2,63}$'::text))",
+      'constraint tenant_billing_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.tenant_billing_pkey CREATE UNIQUE INDEX tenant_billing_pkey ' +
+        'ON portal.tenant_billing USING btree (tenant_id)',
+    ],
+  },
   'portal.support_access_request': {
     since: SUPPORT_ACCESS,
     lines: [
@@ -719,6 +851,26 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         "(tenant_id) WHERE (status = 'open'::text)",
       'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +
         'ON portal.support_access_request USING btree (request_id)',
+    ],
+  },
+  'portal.tenant_erasure_request': {
+    since: TENANT_ERASURE,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
+      `column key_destroyed_at timestamp with time zone notnull=false ${PLAIN}`,
+      'default requested_at now()',
+      "default status 'requested'::text",
+      "constraint tenant_erasure_request_destroyed_moment CHECK ((((status = 'requested'::text) AND " +
+        "(key_destroyed_at IS NULL)) OR ((status = 'key_destroyed'::text) AND (key_destroyed_at IS NOT NULL))))",
+      'constraint tenant_erasure_request_pkey PRIMARY KEY (tenant_id)',
+      "constraint tenant_erasure_request_status_known CHECK ((status = ANY (ARRAY['requested'::text, " +
+        "'key_destroyed'::text])))",
+      'constraint tenant_erasure_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.tenant_erasure_request_pkey CREATE UNIQUE INDEX tenant_erasure_request_pkey ' +
+        'ON portal.tenant_erasure_request USING btree (tenant_id)',
     ],
   },
   'portal.document_version': {
@@ -788,6 +940,36 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
       'index portal.moderation_setting_tenant_id_check_id_pk CREATE UNIQUE INDEX ' +
         'moderation_setting_tenant_id_check_id_pk ON portal.moderation_setting ' +
         'USING btree (tenant_id, check_id)',
+    ],
+  },
+  'portal.moderation_item': {
+    since: QUEUE,
+    lines: [
+      `column id uuid notnull=true ${PLAIN}`,
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column subject_kind text notnull=true ${PLAIN}`,
+      `column subject_id text notnull=true ${PLAIN}`,
+      `column member_id text notnull=true ${PLAIN}`,
+      `column classifiers jsonb notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
+      `column decided_by text notnull=true ${PLAIN}`,
+      `column decided_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default id gen_random_uuid()',
+      "constraint moderation_item_classifiers_array CHECK ((jsonb_typeof(classifiers) = 'array'::text))",
+      'constraint moderation_item_pkey PRIMARY KEY (id)',
+      "constraint moderation_item_references_bounded CHECK (((subject_id ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) " +
+        "AND (member_id ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) AND (decided_by ~ '^[A-Za-z0-9_.:-]{1,64}$'::text)))",
+      "constraint moderation_item_status_known CHECK ((status = ANY (ARRAY['held'::text, " +
+        "'released'::text, 'removed'::text, 'expired'::text])))",
+      "constraint moderation_item_subject_kind_known CHECK ((subject_kind = ANY (ARRAY['comment'::text, " +
+        "'post'::text])))",
+      'constraint moderation_item_subject_unique UNIQUE (tenant_id, subject_kind, subject_id)',
+      'constraint moderation_item_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.moderation_item_pkey CREATE UNIQUE INDEX moderation_item_pkey ' +
+        'ON portal.moderation_item USING btree (id)',
+      'index portal.moderation_item_subject_unique CREATE UNIQUE INDEX moderation_item_subject_unique ' +
+        'ON portal.moderation_item USING btree (tenant_id, subject_kind, subject_id)',
     ],
   },
   'portal.custom_domain_request': {

@@ -59,6 +59,37 @@ describe('the dropped-outcome queue kept across a restart', () => {
     expect(after.pending).toBe(0);
   });
 
+  it('keeps the severity and text of a demo refusal across a restart, and reports them as written', async () => {
+    const reports: object[] = [];
+    const make = (): DroppedOutcomes =>
+      createDroppedOutcomes({
+        client: {
+          reportOutcomes: async (_target, outcomes) => {
+            reports.push(...outcomes);
+            return { recorded: outcomes.map((o) => o.id), alreadyHandled: [], unknown: [] };
+          },
+        },
+        log: createLogger(() => {}),
+        statePath,
+      });
+    const before = make();
+    before.dropped('tenant-a', 'm-1', 1, {
+      severity: 'temporary',
+      message: 'Demo mail limit reached',
+    });
+    before.dropped('tenant-a', 'm-2', 1);
+    before.acked({ acked: ['m-1', 'm-2'], alreadyHandled: [], unknown: [] });
+    await make().flush(target);
+    expect(reports).toEqual([
+      expect.objectContaining({
+        id: 'm-1',
+        severity: 'temporary',
+        message: 'Demo mail limit reached',
+      }),
+      expect.objectContaining({ id: 'm-2', severity: 'permanent' }),
+    ]);
+  });
+
   it('keeps a report the spool never answered: it is still queued and still on disk', async () => {
     const failing = reporter({ reject: true });
     failing.dropped('tenant-a', 'm-1', 1);

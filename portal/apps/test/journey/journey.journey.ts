@@ -98,6 +98,23 @@ describe(`the portal journey in a browser (${target.kind === 'image' ? target.re
     expect(await context.pages.tenant.locator('body').innerText()).toContain('SITE_NOT_PROMOTED');
   });
 
+  it('control: with placeholders not allowed, no screen shows the third-party-off copy, the form and the site still stand, and the portal says what it withholds', async () => {
+    await started?.close();
+    started = await startRig(target, { allowPlaceholderCopy: false });
+    const context = await journeyContext();
+    const failure = await walk(JOURNEY, context, `${OUT}/control-no-placeholder-copy`).catch(
+      (e: unknown) => e
+    );
+    expect(failure).toBeInstanceOf(StepFailure);
+    const step = failure as StepFailure;
+    expect(step.stepId).toBe('ask-for-essentials');
+    expect(step.problems).toEqual(['missing THIRD_PARTY_OFF_ONBOARDING_LINE']);
+    const text = await context.pages.tenant.locator('body').innerText();
+    expect(text).toContain('REQUEST_ESSENTIALS');
+    expect(text).not.toContain('THIRD_PARTY_OFF');
+    expect(rigOf().logs()).toContain('portal.copy_withheld');
+  });
+
   it('the Professional enquiry ends at its confirmation with the mail double holding one message', async () => {
     const context = await journeyContext();
     const results = await walk(PROFESSIONAL_JOURNEY, context, `${OUT}/professional`);

@@ -64,7 +64,8 @@ export async function run(
     tenant?: string;
     owner?: string;
     provisioner?: string;
-    prospect?: string;
+    /** `null` names no prospect password file at all. */
+    prospect?: string | null;
     migrator?: string;
   } = {}
 ): Promise<Run> {
@@ -73,9 +74,9 @@ export async function run(
     tenant: passwords.tenant ?? TENANT_PW,
     owner: passwords.owner ?? OWNER_PW,
     provisioner: passwords.provisioner ?? PROVISIONER_PW,
-    prospect: passwords.prospect ?? PROSPECT_PW,
     migrator: passwords.migrator ?? MIGRATOR_PW,
   };
+  if (passwords.prospect !== null) files['prospect'] = passwords.prospect ?? PROSPECT_PW;
   const out: string[] = [];
   const err: string[] = [];
   const code = await runProvision(
@@ -84,7 +85,7 @@ export async function run(
       PORTAL_TENANT_PASSWORD_FILE: 'tenant',
       PORTAL_OWNER_PASSWORD_FILE: 'owner',
       PORTAL_PROVISIONER_PASSWORD_FILE: 'provisioner',
-      PORTAL_PROSPECT_PASSWORD_FILE: 'prospect',
+      ...(passwords.prospect === null ? {} : { PORTAL_PROSPECT_PASSWORD_FILE: 'prospect' }),
       PORTAL_MIGRATOR_PASSWORD_FILE: 'migrator',
       PORTAL_DATABASE_NAME: PROV_DB,
       PORTAL_TENANT_LOGIN: TENANT,

@@ -25,6 +25,11 @@ export const REQUESTS: Target = {
   folder: 'console',
 };
 
+export const DOCUMENTS: Target = {
+  file: fileURLToPath(new URL('../src/console/documentsScreen.ts', import.meta.url)),
+  folder: 'console',
+};
+
 export const POOL: Target = {
   file: fileURLToPath(new URL('../src/shell/pool.ts', import.meta.url)),
   folder: 'shell',

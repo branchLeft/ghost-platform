@@ -190,6 +190,9 @@ describe('--migrate-only on a real server', () => {
       'applied migration 0010_demo_request',
       'applied migration 0011_support_access',
       'applied migration 0012_demo_request_status_read',
+      'applied migration 0013_moderation_item',
+      'applied migration 0014_tenant_billing',
+      'applied migration 0015_tenant_erasure_request',
       ...NOT_OBSERVED,
       'post-check passed: the server matches the manifest',
       'portal database migrated',
@@ -286,6 +289,33 @@ describe('--migrate-only on a real server', () => {
     expect(rows!.rows[0].n).toBe(0);
   });
 
+  it('reaches the newest migrations from a server provisioned before the prospect login, with no prospect password typed', async () => {
+    await provisionedBeforeDocuments();
+    await admin(PROV_DB, 'REVOKE USAGE ON SCHEMA portal FROM portal_prospect');
+    await admin(
+      'postgres',
+      `REVOKE CONNECT ON DATABASE ${PROV_DB} FROM ${PROSPECT}`,
+      `DROP ROLE ${PROSPECT}`,
+      'DROP ROLE portal_prospect'
+    );
+    // The migrator path alone still refuses, naming the one step that fixes it.
+    expect((await migrate()).code).toBe(1);
+    // The full run is given no prospect password file: it creates the role and
+    // the login and applies the migrations the older image lacked.
+    const full = await run({}, { prospect: null });
+    expect(full.err).toEqual([]);
+    expect(full.code).toBe(0);
+    expect(full.out).toContain('applied migration 0010_demo_request');
+    expect(full.out).toContain(
+      `${PROSPECT} created with a password no one holds: PORTAL_PROSPECT_PASSWORD_FILE was not named; name it in a later full run to set one`
+    );
+    // From here the routine path runs on its own, as the migrator, and finds nothing pending.
+    const again = await migrate();
+    expect(again.err).toEqual([]);
+    expect(again.code).toBe(0);
+    expect(again.out).toContain('no pending migrations');
+  });
+
   it('adds the demo request table to a server that has the lifecycle, with the front door insert-only, then its status read', async () => {
     const all = readMigrations();
     const index = all.findIndex((m) => m.tag === '0010_demo_request');
@@ -301,7 +331,8 @@ describe('--migrate-only on a real server', () => {
     expect(held.err).toEqual([]);
     expect(held.code).toBe(0);
     const state = `SELECT has_table_privilege('portal_prospect', 'portal.demo_request', 'INSERT') AS i,
-              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
+              has_any_column_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS s,
+              has_table_privilege('portal_prospect', 'portal.demo_request', 'SELECT') AS w,
               has_table_privilege('portal_provisioner', 'portal.demo_request', 'SELECT') AS p,
               (SELECT relrowsecurity FROM pg_class WHERE oid = 'portal.demo_request'::regclass) AS rls,
               to_regprocedure('public.bound_address()') IS NOT NULL AS fn,
@@ -309,6 +340,7 @@ describe('--migrate-only on a real server', () => {
     expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
       i: true,
       s: false,
+      w: false,
       p: true,
       rls: false,
       fn: false,
@@ -322,6 +354,7 @@ describe('--migrate-only on a real server', () => {
     expect((await admin(PROV_DB, state))[0]!.rows[0]).toEqual({
       i: true,
       s: true,
+      w: false,
       p: true,
       rls: true,
       fn: true,

@@ -1,4 +1,4 @@
-import { asc, desc, eq } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { Tx } from './db.js';
 import {
   deriveEventView,
@@ -86,4 +86,48 @@ export async function listRequests(tx: Tx): Promise<DemoRequestView[]> {
     .from(demoRequest)
     .orderBy(asc(demoRequest.submittedAt), asc(demoRequest.demoId));
   return rows.map(deriveRequestView);
+}
+
+/**
+ * How many demos are in any of `states` right now: each demo counts once, by
+ * its latest row. Read inside the caller's transaction, so a count taken under
+ * a lock is the count the lock protects.
+ */
+export async function countDemosIn(tx: Tx, states: readonly DemoState[]): Promise<number> {
+  const latest = tx
+    .selectDistinctOn([demoStateEvent.demoId], { toState: demoStateEvent.toState })
+    .from(demoStateEvent)
+    .orderBy(asc(demoStateEvent.demoId), desc(demoStateEvent.sequence))
+    .as('latest');
+  const [row] = await tx
+    .select({ total: count() })
+    .from(latest)
+    .where(inArray(latest.toState, [...states]));
+  return row?.total ?? 0;
+}
+
+/**
+ * How many demos are FAILED but still hold a slot: those whose hostname is
+ * registered and not retired. The lifecycle worker retires a failed demo's
+ * hostname only once its slot is free, and leaves it unretired when the slot
+ * could not be reset (or its state is unknown), so an unretired hostname is the
+ * record that the slot is not free. A demo that failed before it had a hostname
+ * never held one. Read inside the caller's transaction, like `countDemosIn`.
+ */
+export async function countFailedHoldingSlot(tx: Tx): Promise<number> {
+  const latest = tx
+    .selectDistinctOn([demoStateEvent.demoId], {
+      demoId: demoStateEvent.demoId,
+      toState: demoStateEvent.toState,
+    })
+    .from(demoStateEvent)
+    .orderBy(asc(demoStateEvent.demoId), desc(demoStateEvent.sequence))
+    .as('latest');
+  const [row] = await tx
+    .select({ total: count() })
+    .from(latest)
+    .innerJoin(hostnameRegister, eq(hostnameRegister.demoId, latest.demoId))
+    .leftJoin(hostnameRetirement, eq(hostnameRetirement.label, hostnameRegister.label))
+    .where(and(eq(latest.toState, 'FAILED'), isNull(hostnameRetirement.label)));
+  return row?.total ?? 0;
 }

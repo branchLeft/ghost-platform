@@ -21,3 +21,11 @@ test('mailgun-shim base image is the node alpine base pinned by a sha256 digest'
   assert.equal(froms.length, 1, 'expected exactly one FROM line');
   assert.match(froms[0], /^node:[0-9.]+-alpine@sha256:[0-9a-f]{64}$/);
 });
+
+// The image scan fails on any high finding with a fix in the base's index. The
+// alpine base ships libcrypto3 and libssl3 below their fixed release, so the
+// Dockerfile must upgrade them alongside zlib before the scan runs.
+test('mailgun-shim Dockerfile upgrades the OpenSSL packages the image scan flags', () => {
+  const text = fs.readFileSync(DOCKERFILE, 'utf8');
+  assert.match(text, /^RUN apk upgrade --no-cache zlib libcrypto3 libssl3$/m);
+});

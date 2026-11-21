@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
+import { createHash } from 'node:crypto';
 import { inspect } from 'node:util';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,6 +10,7 @@ import { SigV4Verifier } from '../src/sigv4-verifier.js';
 import { createInMemoryUploadBindings } from '../src/uploads.js';
 import {
   UpstreamCredentials,
+  compositeEtagFromCompleteBody,
   createUpstream,
   type UpstreamAnswer,
   type UpstreamBody,
@@ -893,6 +895,296 @@ describe('upstream: an upload the service took but never answered', () => {
         RangeError
       );
     }
+  });
+});
+
+describe('upstream: a multipart complete the service took but never answered', () => {
+  const VERSION = 'v-0002';
+  const UPLOAD = 'UP1';
+  const binding = { keyId: KEY_ID, bucket: BUCKET, key: `${FOLDER}/big.bin` };
+  const partEtags = [
+    createHash('md5').update('part one').digest('hex'),
+    createHash('md5').update('part two').digest('hex'),
+    createHash('md5').update('part three').digest('hex'),
+  ];
+  /** The S3 rule, written out independently of the gateway: MD5 of the binary MD5s, then -N. */
+  const composite = `${createHash('md5')
+    .update(Buffer.concat(partEtags.map((e) => Buffer.from(e, 'hex'))))
+    .digest('hex')}-${partEtags.length}`;
+  const completeBody = (etags: readonly string[], quoted: 'raw' | 'entity' = 'entity'): string =>
+    '<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">' +
+    etags
+      .map(
+        (e, i) =>
+          `<Part><PartNumber>${i + 1}</PartNumber><ETag>${
+            quoted === 'entity' ? `&quot;${e}&quot;` : `"${e}"`
+          }</ETag></Part>`
+      )
+      .join('') +
+    '</CompleteMultipartUpload>';
+  const COMPLETE_BODY = completeBody(partEtags);
+  const complete: SignSpec = {
+    method: 'POST',
+    path: `/${BUCKET}/${FOLDER}/big.bin`,
+    query: { uploadId: UPLOAD },
+    headers: { host: HOST, 'content-length': String(COMPLETE_BODY.length) },
+    body: COMPLETE_BODY,
+    payloadHash: sha256Hex(COMPLETE_BODY),
+  };
+
+  /**
+   * The storage service as measured: it takes the complete and then goes
+   * quiet (`hang`), drops the connection (`drop`) or sends its headers and
+   * stalls before the document (`stall`). `committed` decides whether the
+   * object was made, with `storedEtag` its ETag; `landsAfter` is how many
+   * existence checks miss before it shows.
+   */
+  async function lossyService(behaviour: {
+    readonly onComplete: 'hang' | 'drop' | 'stall';
+    readonly committed: boolean;
+    readonly landsAfter?: number;
+    readonly storedEtag?: string;
+  }): Promise<Double & { probes(): number }> {
+    let stored: string | undefined;
+    let heads = 0;
+    const double = await startDouble((seen, res) => {
+      if (seen.method === 'POST') {
+        if (behaviour.committed) stored = behaviour.storedEtag ?? composite;
+        if (behaviour.onComplete === 'drop') res.socket?.destroy();
+        if (behaviour.onComplete === 'stall') res.writeHead(200, { 'content-type': 'text/xml' });
+        return;
+      }
+      if (seen.method === 'HEAD') {
+        heads += 1;
+        if (stored === undefined || heads <= (behaviour.landsAfter ?? 0)) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        res.writeHead(200, {
+          etag: `"${stored}"`,
+          'x-amz-version-id': VERSION,
+          'content-length': '36700160',
+          'content-type': 'application/octet-stream',
+        });
+        res.end();
+      }
+    });
+    return Object.assign(double, { probes: () => heads });
+  }
+
+  const quick = { deadlineMs: 150, confirmWindowMs: 600, confirmIntervalMs: 20 };
+
+  async function runComplete(
+    double: Double,
+    text: string = COMPLETE_BODY
+  ): Promise<{
+    answer: UpstreamAnswer;
+    logs: UpstreamLogEntry[];
+    uploads: ReturnType<typeof createInMemoryUploadBindings>;
+  }> {
+    const r = rig();
+    const uploads = createInMemoryUploadBindings();
+    uploads.bind(UPLOAD, binding);
+    const up = createUpstream(r.options(double, { ...quick, uploads }));
+    const prepared = await prepare({
+      ...complete,
+      headers: { host: HOST, 'content-length': String(text.length) },
+      body: text,
+      payloadHash: sha256Hex(text),
+    });
+    const answer = await answerWithin(
+      up.forward({ ...prepared, tenant: TENANT, body: body(text) }),
+      3000
+    );
+    return { answer, logs: r.logs, uploads };
+  }
+
+  it('computes the ETag a finished multipart object carries from the part list', () => {
+    expect(compositeEtagFromCompleteBody(COMPLETE_BODY)).toBe(composite);
+    expect(compositeEtagFromCompleteBody(completeBody(partEtags, 'raw'))).toBe(composite);
+    expect(compositeEtagFromCompleteBody(completeBody([...partEtags].reverse()))).not.toBe(
+      composite
+    );
+  });
+
+  it('computes nothing when a part ETag is not a plain MD5, or there are no parts', () => {
+    expect(compositeEtagFromCompleteBody(completeBody(['not-an-md5']))).toBeUndefined();
+    expect(
+      compositeEtagFromCompleteBody(completeBody([partEtags[0] as string, `${'a'.repeat(31)}-2`]))
+    ).toBeUndefined();
+    expect(compositeEtagFromCompleteBody('<CompleteMultipartUpload/>')).toBeUndefined();
+  });
+
+  describe('a part list built to make the parse slow', () => {
+    const TIME_BOUND_MS = 250;
+    const timed = (document: string): { result: string | undefined; ms: number } => {
+      const started = performance.now();
+      const result = compositeEtagFromCompleteBody(document);
+      return { result, ms: performance.now() - started };
+    };
+
+    it('returns nothing, fast, for tens of thousands of opening tags that never close', () => {
+      const { result, ms } = timed(`<CompleteMultipartUpload>${'<Part>'.repeat(50_000)}`);
+      expect(result).toBeUndefined();
+      expect(ms).toBeLessThan(TIME_BOUND_MS);
+    });
+
+    it('returns nothing, fast, for part tags nested without end and ETag tags left open', () => {
+      for (const unit of ['<Part><Part>', '<Part><ETag>', '<Part><ETag></Part>', '</Part><Part>']) {
+        const { result, ms } = timed(`<CompleteMultipartUpload>${unit.repeat(50_000)}`);
+        expect(result).toBeUndefined();
+        expect(ms).toBeLessThan(TIME_BOUND_MS);
+      }
+    });
+
+    it('refuses a part list longer than S3 allows, and accepts one of exactly that length', () => {
+      const etag = partEtags[0] as string;
+      const parts = (n: number): string => completeBody(Array.from({ length: n }, () => etag));
+      expect(compositeEtagFromCompleteBody(parts(10_001))).toBeUndefined();
+      const full = timed(parts(10_000));
+      expect(full.result).toMatch(/^[0-9a-f]{32}-10000$/);
+      expect(full.ms).toBeLessThan(TIME_BOUND_MS);
+    });
+
+    it('checks nothing for a body past the cap, however it is shaped', async () => {
+      const double = await lossyService({ onComplete: 'hang', committed: true });
+      const huge = `<CompleteMultipartUpload>${'<Part>'.repeat(400_000)}</CompleteMultipartUpload>`;
+      const { answer } = await runComplete(double, huge);
+      expect(answer.status).toBe(504);
+      expect(double.probes()).toBe(0);
+    });
+  });
+
+  it('answers success, once, when the deadline passes but the object was made', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: true });
+    const { answer, logs, uploads } = await runComplete(double);
+
+    expect(answer.status).toBe(200);
+    expect(answer.refusal).toBeUndefined();
+    expect(answer.headers).toEqual({
+      'content-type': 'application/xml',
+      'x-amz-version-id': VERSION,
+    });
+    expect(String(answer.body)).toContain('<CompleteMultipartUploadResult');
+    expect(String(answer.body)).toContain(`<ETag>&quot;${composite}&quot;</ETag>`);
+    expect(String(answer.body)).toContain(`<Key>${FOLDER}/big.bin</Key>`);
+    expect(double.seen.filter((s) => s.method === 'POST')).toHaveLength(1);
+    const head = double.seen.find((s) => s.method === 'HEAD') as Seen;
+    expect(head.url).toBe(`/${BUCKET}/${FOLDER}/big.bin`);
+    expect(await signatureAccepted(head)).toBe(true);
+    expect(uploads.isBound(UPLOAD, binding)).toBe(false);
+    expect(logs.at(-1)).toMatchObject({ outcome: 'committed-unanswered', status: 200, probes: 1 });
+  });
+
+  it('keeps checking inside its window for an object that shows late', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: true, landsAfter: 3 });
+    const { answer, logs } = await runComplete(double);
+    expect(answer.status).toBe(200);
+    expect(double.probes()).toBe(4);
+    expect(logs.at(-1)?.probes).toBe(4);
+  });
+
+  it('answers success when the connection drops after a complete that was made', async () => {
+    const double = await lossyService({ onComplete: 'drop', committed: true });
+    const { answer, logs } = await runComplete(double);
+    expect(answer.status).toBe(200);
+    expect(logs.at(-1)?.outcome).toBe('committed-unanswered');
+  });
+
+  it('answers success when the headers arrive, the document never does, and the object was made', async () => {
+    const double = await lossyService({ onComplete: 'stall', committed: true });
+    const { answer, logs } = await runComplete(double);
+    expect(answer.status).toBe(200);
+    expect(String(answer.body)).toContain('<CompleteMultipartUploadResult');
+    expect(logs.at(-1)?.outcome).toBe('committed-unanswered');
+  });
+
+  it('still answers a retryable timeout, and keeps the upload bound, when nothing was made', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: false });
+    const { answer, logs, uploads } = await runComplete(double);
+    expect(answer.status).toBe(504);
+    expect(answer.refusal?.code).toBe('upstream-timeout');
+    expect(double.probes()).toBeGreaterThan(1);
+    expect(uploads.isBound(UPLOAD, binding)).toBe(true);
+    expect(logs.at(-1)?.outcome).toBe('timeout');
+  });
+
+  it('still answers unavailable when the connection drops and nothing was made', async () => {
+    const double = await lossyService({ onComplete: 'drop', committed: false });
+    const { answer, logs } = await runComplete(double);
+    expect(answer.status).toBe(503);
+    expect(answer.refusal?.code).toBe('upstream-unavailable');
+    expect(logs.at(-1)?.outcome).toBe('unreachable');
+  });
+
+  it('never claims an object at the key whose ETag is not the one this part list makes', async () => {
+    const double = await lossyService({
+      onComplete: 'hang',
+      committed: true,
+      storedEtag: `${'0'.repeat(32)}-3`,
+    });
+    const { answer, uploads } = await runComplete(double);
+    expect(answer.status).toBe(504);
+    expect(answer.refusal?.code).toBe('upstream-timeout');
+    expect(uploads.isBound(UPLOAD, binding)).toBe(true);
+  });
+
+  it('never claims a single-part object whose ETag only looks like the first part', async () => {
+    const double = await lossyService({
+      onComplete: 'hang',
+      committed: true,
+      storedEtag: partEtags[0] as string,
+    });
+    const { answer } = await runComplete(double);
+    expect(answer.status).toBe(504);
+  });
+
+  it('checks nothing when the part list cannot fix an ETag, and leaves the failure standing', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: true });
+    const odd = completeBody(['an-encrypted-part-etag']);
+    const { answer } = await runComplete(double, odd);
+    expect(answer.status).toBe(504);
+    expect(double.probes()).toBe(0);
+  });
+
+  it('leaves the failure standing when the part list cannot be read back', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: true });
+    const up = createUpstream(rig().options(double, quick));
+    const prepared = await prepare(complete);
+    let opens = 0;
+    const unreadable: UpstreamBody = {
+      sha256: sha256Hex(COMPLETE_BODY),
+      size: Buffer.byteLength(COMPLETE_BODY),
+      open: () => {
+        opens += 1;
+        if (opens > 1) throw new Error('spool gone');
+        return Readable.from([Buffer.from(COMPLETE_BODY)]);
+      },
+    };
+    const answer = await answerWithin(
+      up.forward({ ...prepared, tenant: TENANT, body: unreadable }),
+      3000
+    );
+    expect(answer.status).toBe(504);
+    expect(double.probes()).toBe(0);
+  });
+
+  it('checks nothing once the client has gone away', async () => {
+    const double = await lossyService({ onComplete: 'hang', committed: true });
+    const up = createUpstream(rig().options(double, { ...quick, deadlineMs: 5000 }));
+    const prepared = await prepare(complete);
+    const controller = new AbortController();
+    const pending = up.forward({
+      ...prepared,
+      tenant: TENANT,
+      body: body(COMPLETE_BODY),
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 50);
+    const answer = await answerWithin(pending, 2000);
+    expect(answer.refusal?.code).toBe('upstream-unavailable');
+    expect(double.probes()).toBe(0);
   });
 });
 

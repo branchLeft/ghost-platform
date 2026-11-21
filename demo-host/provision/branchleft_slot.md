@@ -125,6 +125,46 @@ timeout catching anything. The figure duplicates the default in
 literal in this file. `IMAGE_LOAD_TIMEOUT_SECONDS` (300) is generous for a
 multi-hundred-MB image and was not tuned to any one measured run.
 
+## Loaded image is tagged by its id
+
+The signed push sends an archive made with `docker save <manifest digest>`
+(`services/broker/src/controlPlaneImagePush.ts`), so the loaded image has no
+name, and `name@sha256:<digest>`, the reference a slot's `image.env` pins,
+does not resolve for an unnamed image (observed with a real Docker,
+containerd image store; shared-infra's `demo1_egress_spool` has the same step
+for the spool image). After `docker load` exits 0, `load_image` therefore
+tags the image, and only then returns:
+
+1. What `docker load` printed (at most `IMAGE_LOAD_OUTPUT_MAX_BYTES`) is
+   passed through to this process's stdout unchanged, because the broker's
+   `dockerImageLoader.ts` reads the `Loaded image ID:` line from it.
+2. It must be exactly one line, `Loaded image ID: sha256:<64 lowercase hex>`.
+   No line, a named image (`Loaded image: ...`), several images, or any other
+   shape is `RefusedImage` and nothing is tagged.
+3. `docker image inspect --format {{.Id}} <id>` must answer that same id. On
+   the containerd image store an image's id IS its manifest digest, so this is
+   the check that the image is the one the digest names. Another answer is
+   `RefusedImage`.
+4. `docker tag <id> SLOT_IMAGE_NAME:sha256-<hex>`. `SLOT_IMAGE_NAME` mirrors
+   `SLOT_IMAGE_REF` in `controlPlaneSlotImagePush.ts` (a test reads that file
+   to keep them equal). The tag carries the digest, so a later load never
+   moves it off an image an earlier load left in use. It is local: nothing is
+   pulled and no registry is contacted.
+
+The wrapper is given no digest: its argv is one literal. The id is the one
+the archive itself holds and the engine confirms, so what makes a tag harmless
+is content addressing. `name@sha256:<id>` resolves only to an image whose id
+is that digest, and a pin is chosen by the signed request, not by the broker.
+Named limit: every unnamed image loaded through this verb gets the slot image
+name, the drain sidecar's too, since the wrapper cannot tell them apart. Its
+reference, `drain-sidecar@<digest>`, still does not resolve; only a pin that
+names the slot image under the sidecar's digest would, and none does.
+
+The refusals come after the load, so a refused archive stays on the host
+unnamed, as every pushed image did before this step. On a classic image store
+the id is not the manifest digest, so the tag is made but `name@<manifest
+digest>` does not resolve; the spool role fails closed the same way.
+
 ## _data_directory
 
 The one, slot-derived path to the colour pair's shared SQLite data volume
@@ -439,11 +479,14 @@ If docker exits 0 before it has read every byte, the wrapper raises an error.
 Exceptions `load_image` raises, and when:
 
 - `RefusedImage`: a pre-load check above fails (cannot open, not a regular
-  file, over `IMAGE_LOAD_MAX_BYTES`, or not owned by the broker account).
+  file, over `IMAGE_LOAD_MAX_BYTES`, or not owned by the broker account), or
+  after the load what docker printed is not exactly one unnamed image id the
+  engine confirms (see "Loaded image is tagged by its id").
 - `RuntimeError`: the file ends before `st_size` bytes are read, or docker
   exits 0 without reading the whole archive.
 - `subprocess.TimeoutExpired`: `docker load` runs out its deadline.
-- `subprocess.CalledProcessError`: `docker load` exits non-zero.
+- `subprocess.CalledProcessError`: `docker load` exits non-zero, or the id
+  check or the tag does.
 - `OSError`: reading the file, or starting `docker load`, fails.
 
 Not guaranteed by this code: that the bytes are the ones the broker intended.

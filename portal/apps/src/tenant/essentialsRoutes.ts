@@ -15,6 +15,7 @@ import {
 } from './promotionPages.js';
 import { requestPromotion, type PromotionOutcome } from './promotionRequest.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
+import type { ThirdPartyOff } from './thirdPartyOff.js';
 
 /** The one read the promotion screens need of the tenant data layer. `TenantDb` satisfies it. */
 export interface KindReader {
@@ -62,13 +63,14 @@ export async function readKind(reader: KindReader, scope: TenantScope): Promise<
  */
 export function createEssentialsRoutes(
   settings: ProvisioningSettings | undefined,
-  reader: KindReader
+  reader: KindReader,
+  thirdPartyOff?: ThirdPartyOff
 ): RouteSet {
   if (settings === undefined) return NO_ROUTES;
   const pages: Record<string, PromotionPage> = {
     [ESSENTIALS_PATH]: async (scope) =>
       (await readKind(reader, scope)) === 'DEMO'
-        ? renderEssentialsForm()
+        ? renderEssentialsForm(thirdPartyOff?.onboardingLine())
         : renderNotForThisTenant(),
     [ESSENTIALS_SENT_PATH]: async () => renderEssentialsSent(),
     [ESSENTIALS_OPEN_PATH]: async () => renderEssentialsOtherRequestOpen(),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  STATE_SECRET_LABEL,
   TENANT_SECRET_LABEL,
   deriveTenantSecret,
   hkdfSha256,
@@ -103,5 +104,27 @@ describe('deriveTenantSecret', () => {
   ])('refuses the malformed key id %j', (keyId) => {
     expect(isValidKeyId(keyId)).toBe(false);
     expect(() => deriveTenantSecret(MASTER, keyId)).toThrow('key id is not well formed');
+  });
+});
+
+describe('the state profile derivation', () => {
+  // Computed by an independent HKDF (Python's hmac and hashlib) over the same
+  // master secret, the state label and the key ids.
+  it('matches known answers computed outside this code', () => {
+    expect(STATE_SECRET_LABEL).toBe('branchleft/storage-gateway/state-sigv4-secret/v1');
+    expect(deriveTenantSecret(MASTER, KEY_A, 'state')).toBe(
+      '3E9db_CLOJaCWorfoViJ4UnYSMDj11-fI4Ml4IV8WWU'
+    );
+    expect(deriveTenantSecret(MASTER, KEY_B, 'state')).toBe(
+      'gVLoOIfAFRSB0dwWArEa3HnrG5Y8mXU6C2FHHdvU0gI'
+    );
+  });
+
+  it('gives a state key id a different secret from a media one, from the same master secret', () => {
+    expect(deriveTenantSecret(MASTER, KEY_A, 'state')).not.toBe(deriveTenantSecret(MASTER, KEY_A));
+    expect(deriveTenantSecret(MASTER, KEY_A, 'media')).toBe(deriveTenantSecret(MASTER, KEY_A));
+    expect(tenantSecretInfo(KEY_A, 'state')).toEqual(
+      Buffer.concat([Buffer.from(STATE_SECRET_LABEL), Buffer.from([0]), Buffer.from(KEY_A)])
+    );
   });
 });

@@ -17,9 +17,10 @@ export const PROFESSIONAL_LIMITED_PATH = '/professional/limited';
  * The Essentials request: one button and no field. The tenant is the signed-in
  * session's and the tier is fixed by the route, so there is nothing to type.
  */
-export function renderEssentialsForm(): string {
+export function renderEssentialsForm(thirdPartyOffLine = ''): string {
   return (
     '<h1>ESSENTIALS_TITLE</h1>' +
+    thirdPartyOffLine +
     `<form method="post" action="${escapeHtml(ESSENTIALS_SEND_PATH)}">` +
     '<p><button type="submit">REQUEST_ESSENTIALS</button></p></form>'
   );
