@@ -59,7 +59,8 @@ interface Rules {
 async function readInputJson(path: string, rules: Rules): Promise<unknown> {
   let file: Awaited<ReturnType<typeof open>>;
   try {
-    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a FIFO planted at the path would otherwise hold this open until a writer came, before the regular-file check could refuse it. It changes nothing for a regular file.
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (e) {
     const code = (e as { code?: string }).code;
     throw new TrustedFileError(

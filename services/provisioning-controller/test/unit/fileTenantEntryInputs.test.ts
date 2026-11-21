@@ -1,4 +1,7 @@
-import { chmod, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile, symlink, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   EXIT,
@@ -147,6 +150,38 @@ describe('FileTenantEntryInputs: the files must be trusted', () => {
     await expect(at(work.path('missing.json')).secrets(request())).rejects.toThrow(
       /cannot be opened/
     );
+  });
+
+  it('refuses a named pipe at once instead of waiting for a writer', async () => {
+    const f = await files();
+    const pipe = work.path('pipe.json');
+    await promisify(execFile)('mkfifo', [pipe]);
+    const inputs = new FileTenantEntryInputs({
+      ...f,
+      secretsFile: pipe,
+      stackFile: pipe,
+      deployKeyFile: pipe,
+    });
+    const outcome = async (run: Promise<unknown>): Promise<string> => {
+      const timer = new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 1500));
+      return Promise.race([
+        run.then(
+          () => 'accepted',
+          (e: Error) => e.message
+        ),
+        timer,
+      ]);
+    };
+    try {
+      expect(await outcome(inputs.secrets(request()))).toMatch(/not a regular file/);
+      expect(await outcome(inputs.deployKey(request()))).toMatch(/not a regular file/);
+    } finally {
+      // Let a blocked open, if the guard is missing, finish so the test run can end.
+      await open(pipe, constants.O_WRONLY | constants.O_NONBLOCK).then(
+        (h) => h.close(),
+        () => undefined
+      );
+    }
   });
 });
 
