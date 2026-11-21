@@ -20,7 +20,7 @@ export const askForEssentials: JourneyStep = {
     await pages.tenant.getByRole('link', { name: 'NAV_ESSENTIALS', exact: true }).click();
     await pages.tenant.waitForURL(/\/essentials$/);
   },
-  expect: ['ESSENTIALS_TITLE', 'REQUEST_ESSENTIALS'],
+  expect: ['ESSENTIALS_TITLE', 'THIRD_PARTY_OFF_ONBOARDING_LINE', 'REQUEST_ESSENTIALS'],
   forbid: ['NOT_FOR_THIS_TENANT'],
 };
 
@@ -51,6 +51,9 @@ export const essentialsSite: JourneyStep = {
     'SITE_INVOICE_LABEL',
     'MOCK_INVOICE_REF_',
     'SITE_HOSTNAMES_LABEL',
+    'THIRD_PARTY_OFF_HEADING',
+    'THIRD_PARTY_OFF_BODY',
+    'THIRD_PARTY_OFF_LINK_LABEL',
   ],
   forbid: ['SITE_NOT_PROMOTED', 'SITE_UNAVAILABLE'],
 };
