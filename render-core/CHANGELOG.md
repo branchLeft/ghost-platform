@@ -2,7 +2,7 @@
 
 All notable changes to `@branchleft/ghost-platform-render-core` are recorded here.
 
-## Unreleased
+## 0.7.0
 
 - **Additive:** `renderSettings()` names `footerCredit` (`text`, `url`, `keepGhostCredit: true`) in
   `ghost-settings.json` for every kind: the default footer credit that extends Ghost's own
