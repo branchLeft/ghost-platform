@@ -2,11 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { childEnvironment, type Env } from './commandHost.js';
 import { PermanentStepError } from './errors.js';
 
-/**
- * The controller's SSH transport to a tenant host's entry point: one forced-command ssh call
- * per request, argument vector only. Its design is in this package's README, "The SSH transport
- * to a tenant host".
- */
+/** One forced-command ssh call per request, argument vector only; see the README's SSH section. */
 
 /** The verbs the host program accepts: the closed list a request is checked against. */
 export const SSH_ENTRY_VERBS = [

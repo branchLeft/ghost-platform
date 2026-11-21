@@ -15,11 +15,7 @@ import {
   type SshEntryReply,
 } from '../../src/sshEntryTransport.js';
 
-/**
- * The port as the host adapter declares it (`EntryTransport` in the tenant entry host adapter),
- * copied here so this transport is proved assignable to it; the adapter's own file is not on this
- * branch. Replace the copy with an import once the adapter has landed.
- */
+/** The adapter's `EntryTransport`, copied (its file is not on this branch); import it once it lands. */
 interface AdapterEntryTransport {
   send(
     verb: 'status' | 'claim' | 'secrets' | 'stack' | 'enable' | 'key' | 'owner',
