@@ -6,7 +6,11 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { environmentNamesAcrossMatrix, fixtureResourceCaps } from './helpers/environmentMatrix.js';
+import {
+  environmentNamesAcrossMatrix,
+  fixtureResourceCaps,
+  matrixRenders,
+} from './helpers/environmentMatrix.js';
 
 interface Caps {
   readonly cpus: string;
@@ -45,6 +49,17 @@ describe('contract/tenant-entry.json: environment names', () => {
       { missingFromFile, notProduced },
       'add missingFromFile to environmentNames, remove notProduced'
     ).toEqual({ missingFromFile: [], notProduced: [] });
+  });
+
+  it('has every name of every render, so a branch cannot be refused by the allowlist', () => {
+    const allowed = new Set(contract.environmentNames);
+    const offenders = matrixRenders()
+      .map((render) => ({
+        label: render.label,
+        missing: render.names.filter((name) => !allowed.has(name)),
+      }))
+      .filter((offender) => offender.missing.length > 0);
+    expect(offenders.slice(0, 5), 'renders with names missing from the file').toEqual([]);
   });
 
   it('is sorted and has no duplicates', () => {
