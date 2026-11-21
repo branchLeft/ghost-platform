@@ -330,6 +330,118 @@
     {
       "path": "scripts/assert-image-refs-on-mirror.py",
       "reason": "The guard's own constants and self-test inputs: refs written to throwaway trees, never pulled."
+    },
+    {
+      "path": ".image-scan-exemptions.json",
+      "reason": "The image-scan exemption register: each entry names the published image a vulnerability exemption applies to, as data the scan matches on; nothing reads it as a pull."
+    },
+    {
+      "path": "csp/gate/test_csp_checkout_gate.py",
+      "reason": "Unit tests of the checkout gate over a faked docker: the strings are fixture names for the fake and its expected output, never pulled."
+    },
+    {
+      "path": "workflow-image-scan-before-attest.test.js",
+      "reason": "Asserts the shape of the publish workflows' scan-before-attest job; the image names are the repositories the workflows publish, compared as text."
+    },
+    {
+      "path": "workflow-percona-image.test.js",
+      "reason": "Asserts the shape of the percona publish workflow and its Dockerfile; the references are text it compares and the rejected variants it builds."
+    },
+    {
+      "path": "workflow-demo-edge-image.test.js",
+      "reason": "Asserts the shape of the demo-edge publish workflow; the references are text it compares and sabotaged variants it must reject."
+    },
+    {
+      "path": "workflow-demo-gate-image.test.js",
+      "reason": "Asserts the base pin written in the demo-gate Dockerfile; the reference is a text comparison, never pulled."
+    },
+    {
+      "path": "portal-apps-image.test.js",
+      "reason": "Asserts the base pin written in the portal Dockerfile; the reference is a text comparison, never pulled."
+    },
+    {
+      "path": "services/storage-gateway/test/image.test.ts",
+      "reason": "Asserts the base pin written in the storage-gateway Dockerfile; the reference is a text comparison, never pulled."
+    },
+    {
+      "path": "promote/promote.test.mjs",
+      "reason": "Fixtures for the promote tool's refusal of a tag-only reference; the references are rejected or faked inputs."
+    },
+    {
+      "path": "services/broker/test/unit/controlPlaneImagePush.test.ts",
+      "reason": "Unit test over a faked registry client; the references are rejected inputs and fixtures."
+    },
+    {
+      "path": "infra/provisioning/scripts/test_provision_tenant_image_pin.py",
+      "reason": "Negative fixtures for the tenant image-pin gate; the references are rejected inputs."
+    },
+    {
+      "path": "infra/provisioning/scripts/test_scratch_boot_smoke.py",
+      "reason": "Scratch boot smoke tests over a faked docker; the references are inputs to the fake."
+    },
+    {
+      "path": "portal/apps/test/journeyTarget.test.ts",
+      "reason": "Negative fixtures for the journey target check; the references are rejected inputs."
+    },
+    {
+      "path": "render-core/test/spool.golden.test.ts",
+      "reason": "Reads the spool proof script's default as text to compare with the renderer's output; nothing is pulled."
+    },
+    {
+      "path": "render-core/test/demo-tenant.test.ts",
+      "reason": "Tenant renderer test: the image is a descriptor field rendered into compose text, never pulled."
+    },
+    {
+      "path": "render-core/test/demo-tenant/*",
+      "reason": "Fixture descriptors for the tenant renderer tests: the image is a field rendered into output, never pulled."
+    },
+    {
+      "path": "render-core/test/tenant-zero/*",
+      "reason": "Fixture descriptors and golden output for the tenant renderer tests: the image is a field rendered into output, never pulled."
+    },
+    {
+      "path": "scripts/test_package_register.py",
+      "reason": "Fixture mirror lists written to throwaway trees for the package register tests; nothing is pulled."
+    },
+    {
+      "path": "scripts/test_probe_private_packages.py",
+      "reason": "Fixture registry names for the package probe tests over a faked client; nothing is pulled."
+    },
+    {
+      "path": "db/provision/test_percona_pin.py",
+      "reason": "Fixture strings for the percona pin reader's literal check; no docker call."
+    },
+    {
+      "path": "db/provision/percona_pin.py",
+      "reason": "Reads the mirror list and checks the percona pin; SOURCE names the public repository to look up on the list and is never pulled."
+    },
+    {
+      "path": "adapters/scanning-storage/test/helpers/importer-in-image.cjs",
+      "reason": "False match: a `storage:${type}` string in a test helper, not an image."
+    },
+    {
+      "path": "adapters/scanning-storage/test/unit/icon-size-variants.test.ts",
+      "reason": "False match: a `resized:${...}` cache key in a unit test, not an image."
+    },
+    {
+      "path": "services/mail-collector/src/stateWitness.ts",
+      "reason": "False match: a `mount:${id}` key in the state witness, not an image."
+    },
+    {
+      "path": "themes/lib/origins.mjs",
+      "reason": "False match: a `https:${url}` string in the origin helper, not an image."
+    },
+    {
+      "path": "services/release-watcher/release_watcher/merge.py",
+      "reason": "Names the image the watcher looks for in a Dockerfile's FROM lines; it reads text and pulls nothing."
+    },
+    {
+      "path": "services/broker/src/controlPlaneSidecarPush.ts",
+      "reason": "A constant naming the repository the broker pushes the sidecar to and verifies; the broker pulls nothing from it by name."
+    },
+    {
+      "path": "services/broker/src/controlPlaneSlotImagePush.ts",
+      "reason": "A constant naming the repository the broker pushes a tenant image to and verifies; the broker pulls nothing from it by name."
     }
   ]
 }

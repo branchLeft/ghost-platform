@@ -7,11 +7,13 @@
 import { randomBytes } from 'node:crypto';
 import {
   renderSettings,
+  type EmailAddress,
   type SlotName,
   type TenantDescriptor,
   type ZoneConfig,
 } from '@branchleft/ghost-platform-render-core';
 import type { AdminApiClient } from '../adminApi.js';
+import { assertOwnerDueDiligenceEmail } from '../ownerDueDiligence.js';
 import { isAdminApiKey, type AdminKeyStore } from './keyStore.js';
 import { loopbackGhostTransport, type GhostResponse, type GhostTransport } from './request.js';
 import { adminApiToken } from './token.js';
@@ -38,6 +40,11 @@ export interface GhostAdminClientOptions {
   readonly keyStore: AdminKeyStore;
   readonly zones: Pick<ZoneConfig, 'demoMailDomain'>;
   readonly readyTimeoutMs: number;
+  /**
+   * The platform owner, added to every demo as a reader (a Ghost member, never
+   * staff). Required: a client built without it refuses to be built.
+   */
+  readonly ownerReader: EmailAddress;
   readonly transport?: GhostTransport;
   readonly nowMs?: () => number;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -69,6 +76,7 @@ function sessionCookie(res: GhostResponse): string {
 }
 
 export function createGhostAdminClient(options: GhostAdminClientOptions): AdminApiClient {
+  const ownerReader = assertOwnerDueDiligenceEmail(options.ownerReader);
   const transport = options.transport ?? loopbackGhostTransport;
   const nowMs = options.nowMs ?? Date.now;
   const sleep =
@@ -196,6 +204,43 @@ export function createGhostAdminClient(options: GhostAdminClientOptions): AdminA
     }
   }
 
+  /**
+   * Adds the owner to this demo as a Ghost member: a reader of the site, with
+   * no staff role and no access to its admin. Safe to repeat. The owner's
+   * address is never put in an error.
+   */
+  async function ensureOwnerReader(target: Target, slot: SlotName, key: string): Promise<void> {
+    const headers = {
+      Authorization: `Ghost ${adminApiToken(key, Math.floor(nowMs() / 1000))}`,
+    };
+    const lookup = await call(
+      target,
+      'GET',
+      `/members/?limit=1&filter=${encodeURIComponent(`email:'${ownerReader}'`)}`,
+      { headers }
+    );
+    if (lookup.status === 401 || lookup.status === 403) {
+      throw new AdminAccessLostError(slot, 'Ghost no longer accepts the stored owner access token');
+    }
+    if (lookup.status !== 200) {
+      throw new Error(`Ghost refused looking up the due-diligence reader: ${lookup.status}`);
+    }
+    const present = (lookup.body as { members?: unknown[] } | undefined)?.members ?? [];
+    if (present.length > 0) return;
+    const created = await call(target, 'POST', '/members/', {
+      body: { members: [{ email: ownerReader }] },
+      headers,
+    });
+    if (created.status !== 201) {
+      throw new Error(`Ghost refused adding the due-diligence reader: ${created.status}`);
+    }
+    const stored = (created.body as { members?: { email?: unknown }[] } | undefined)?.members?.[0]
+      ?.email;
+    if (typeof stored !== 'string' || stored.toLowerCase() !== ownerReader.toLowerCase()) {
+      throw new Error('Ghost did not read back the due-diligence reader it was asked to add');
+    }
+  }
+
   return {
     async configure(baseUrl, descriptor, slot) {
       const target: Target = {
@@ -209,6 +254,7 @@ export function createGhostAdminClient(options: GhostAdminClientOptions): AdminA
         const key = await firstBuild(target, descriptor.ownerEmail);
         await options.keyStore.write(slot, key);
         await applySettings(target, slot, key, descriptor);
+        await ensureOwnerReader(target, slot, key);
         return;
       }
       const key = await options.keyStore.read(slot);
@@ -216,6 +262,7 @@ export function createGhostAdminClient(options: GhostAdminClientOptions): AdminA
         throw new AdminAccessLostError(slot, 'no owner access token is stored for this site');
       }
       await applySettings(target, slot, key, descriptor);
+      await ensureOwnerReader(target, slot, key);
     },
 
     async forget(slot) {

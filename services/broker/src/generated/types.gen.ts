@@ -594,7 +594,7 @@ export type ReconcileSlotErrors = {
      */
     401: unknown;
     /**
-     * The slot is locked by a concurrent request; occupied in a phase with no colour a swap could deploy alongside (`preparing`, `resetting`, `detaching`, `error`); its lease hash has not yet rotated past a previous descriptor (see `assertHashRotated`); the descriptor's host is already held by a different slot; or (colour swap only) the slot is running a different tenancy's host, which only POST /reset (destructive) may replace.
+     * The slot is locked by a concurrent request (`reason` is `locked`, retry later); occupied in a phase with no colour a swap could deploy alongside (`preparing`, `resetting`, `detaching`, `error`); its lease hash has not yet rotated past a previous descriptor (see `assertHashRotated`); the descriptor's host is already held by a different slot; or (colour swap only) the slot is running a different tenancy's host, which only POST /reset (destructive) may replace.
      */
     409: ErrorBody;
     /**

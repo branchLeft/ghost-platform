@@ -29,6 +29,13 @@
       "when": 1794089971781,
       "tag": "0003_credentials_upload_ceiling",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1795051016538,
+      "tag": "0004_credentials_profile",
+      "breakpoints": true
     }
   ]
 }

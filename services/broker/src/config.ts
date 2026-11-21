@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import type { ZoneConfig } from '@branchleft/ghost-platform-render-core';
+import type { EmailAddress, ZoneConfig } from '@branchleft/ghost-platform-render-core';
+import { ownerDueDiligenceEmailFromEnv } from './ownerDueDiligence.js';
 import type { WrapperConfig } from './wrapper.js';
 
 export interface BrokerConfig {
@@ -149,17 +150,22 @@ export interface AdminApiConfig {
   /** How long to wait for a freshly started Ghost to answer its Admin API. */
   readonly readyTimeoutMs: number;
   readonly zones: ZoneConfig;
+  /** The owner, who is a reader of every demo (`OWNER_DUE_DILIGENCE_EMAIL`). Never logged. */
+  readonly ownerReader: EmailAddress;
 }
 
 /**
  * What the Ghost admin client plugin reads. `BROKER_ADMIN_KEY_DIR` has no
- * default: it holds credentials, so an unset value refuses to start.
+ * default: it holds credentials, so an unset value refuses to start. So does
+ * `OWNER_DUE_DILIGENCE_EMAIL`: a broker that cannot add the owner as a reader
+ * would create demos the owner cannot inspect.
  */
 export function adminApiConfigFromEnv(env: BrokerEnv): AdminApiConfig {
   return {
     keyDir: requireEnv(env, 'BROKER_ADMIN_KEY_DIR'),
     readyTimeoutMs: positiveInteger(env, 'BROKER_GHOST_READY_TIMEOUT_MS', 30_000, 300_000),
     zones: zonesFromEnv(env),
+    ownerReader: ownerDueDiligenceEmailFromEnv(env),
   };
 }
 

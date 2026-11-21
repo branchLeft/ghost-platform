@@ -2,7 +2,9 @@
 
 All notable changes to `@branchleft/ghost-platform-tenant` are recorded here.
 
-## Unreleased
+## 9.0.0
+
+**`GhostTenant` passes the widget origin options to the render core (0.6.0).**
 
 - **Additive:** `GhostTenant` takes two optional arguments, `widgets`
   (`'cdn'` or `'own-origin'`) and `blockThirdPartyIntegrations` (default

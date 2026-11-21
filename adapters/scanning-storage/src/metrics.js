@@ -22,6 +22,9 @@ const CLASSIFICATIONS = Object.freeze([
 // so the label set stays bounded whatever a future source says.
 const OTHER_CLASSIFICATION = 'other';
 const ERROR_KINDS = Object.freeze(['timeout', 'error']);
+// A match's tier (policy.md): 'two' is exact + csam and the only irreversible
+// one; 'one' is every other match and a freeze.
+const MATCH_TIERS = Object.freeze(['one', 'two']);
 const LATENCY_BUCKETS_SECONDS = Object.freeze([0.05, 0.1, 0.25, 0.5, 1, 2, 2.5, 5]);
 
 const DEFAULT_EXPORT_INTERVAL_MS = 15_000;
@@ -53,6 +56,8 @@ class ScannerMetrics {
     this.refused = seededCounts(REFUSAL_REASONS);
     this.verdicts = seededCounts([...CLASSIFICATIONS, OTHER_CLASSIFICATION]);
     this.errors = seededCounts(ERROR_KINDS);
+    this.matches = seededCounts(MATCH_TIERS);
+    this.freezeIncomplete = 0;
     this.unconfiguredInstances = 0;
     this.heldSources = [];
     this.latencyBuckets = LATENCY_BUCKETS_SECONDS.map(() => 0);
@@ -64,6 +69,20 @@ class ScannerMetrics {
     this.#safely(() => {
       const key = this.refused.has(reason) ? reason : null;
       if (key !== null) this.refused.set(key, this.refused.get(key) + 1);
+    });
+  }
+
+  recordMatch(tier) {
+    this.#safely(() => {
+      if (this.matches.has(tier)) this.matches.set(tier, this.matches.get(tier) + 1);
+    });
+  }
+
+  // A copy a freeze could not take out of the served location: any value above
+  // zero is a copy still being served from where the adapter cannot reach.
+  recordFreezeIncomplete() {
+    this.#safely(() => {
+      this.freezeIncomplete += 1;
     });
   }
 
@@ -159,6 +178,18 @@ class ScannerMetrics {
     for (const [reason, value] of this.refused) {
       lines.push(`${METRIC_PREFIX}uploads_refused_total${labels(['reason', reason])} ${value}`);
     }
+
+    family('matches_total', 'counter', 'Matches acted on, by tier (policy.md).');
+    for (const [tier, value] of this.matches) {
+      lines.push(`${METRIC_PREFIX}matches_total${labels(['tier', tier])} ${value}`);
+    }
+
+    family(
+      'freeze_incomplete_total',
+      'counter',
+      'Copies a freeze could not withhold from the served location.'
+    );
+    lines.push(`${METRIC_PREFIX}freeze_incomplete_total${labels()} ${this.freezeIncomplete}`);
 
     family(
       'verdicts_total',

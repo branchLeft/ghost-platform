@@ -192,3 +192,12 @@ export function metricsVolumeName(slug: Slug): string {
 export function verdictVolumeName(slug: Slug): string {
   return `ghost-${slug}-verdict`;
 }
+
+/**
+ * The verdict host end's own queue journal and metrics textfile. Its own
+ * volume per slot, mounted by the sidecar alone: Ghost never sees it. See
+ * compose.md#the-verdict-host-sidecar.
+ */
+export function verdictJournalVolumeName(slug: Slug): string {
+  return `ghost-${slug}-verdict-journal`;
+}

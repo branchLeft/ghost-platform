@@ -197,6 +197,8 @@ const EXTRA_IN_CORE_KEYS = [
   ]),
   // The ActivityPub lock is new in render-core; the frozen snapshot predates it.
   'hostSettings__limits__limitSocialWeb__disabled',
+  // The Gravatar switch is new in render-core; the frozen snapshot predates it.
+  'privacy__useGravatar',
 ].sort();
 
 // The actual diff loop, factored out so the control case below can run it
