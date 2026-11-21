@@ -73,7 +73,16 @@ export function parseArgs(argv) {
  * through argv or env, so nothing outside this process ever holds it. The
  * owner gets a reset link by email and chooses their own.
  */
+/**
+ * The About page a fresh site starts with. This is product prose, owned by the
+ * owner: the ALL_CAPS values are placeholders until the owner fills them in.
+ */
+export const ABOUT_PAGE_TITLE = 'ABOUT_PAGE_TITLE';
+export const ABOUT_PAGE_BODY = 'ABOUT_PAGE_BODY';
+
 const INNER_SCRIPT = `
+const ABOUT_PAGE_TITLE = ${JSON.stringify(ABOUT_PAGE_TITLE)};
+const ABOUT_PAGE_BODY = ${JSON.stringify(ABOUT_PAGE_BODY)};
 const http = require('node:http');
 const crypto = require('node:crypto');
 const [host, port] = '${GHOST_LISTEN}'.split(':');
@@ -102,18 +111,58 @@ function refuse(reason) {
   console.error('${REFUSED_MARKER}' + reason);
   process.exit(3);
 }
-async function ownerEmail() {
+async function ownerEmail(knex) {
+  const row = await knex('users')
+    .join('roles_users', 'roles_users.user_id', 'users.id')
+    .join('roles', 'roles.id', 'roles_users.role_id')
+    .where('roles.name', 'Owner')
+    .first('users.email');
+  return row ? row.email : null;
+}
+// Ghost seeds two fixture posts into every fresh database: "coming-soon", which
+// is deleted, and "about", which the default navigation links to (/about/), so
+// it stays and is replaced by ABOUT_PAGE_TITLE and ABOUT_PAGE_BODY. Its default
+// cover image is hosted on static.ghost.org; a fresh tenant makes no third-party
+// request it did not choose.
+const DELETED_FIXTURE_SLUGS = ['coming-soon'];
+const ABOUT_SLUG = 'about';
+const STATIC_GHOST = 'https://static.ghost.org/';
+function aboutLexical() {
+  const text = (value) => ({ detail: 0, format: 0, mode: 'normal', style: '', text: value, type: 'text', version: 1 });
+  const paragraph = (value) => ({ children: [text(value)], direction: 'ltr', format: '', indent: 0, type: 'paragraph', version: 1 });
+  return JSON.stringify({ root: { children: [paragraph(ABOUT_PAGE_BODY)], direction: 'ltr', format: '', indent: 0, type: 'root', version: 1 } });
+}
+async function withKnex(fn) {
   const knex = require('/var/lib/ghost/current/core/server/data/db/connection.js');
   try {
-    const row = await knex('users')
-      .join('roles_users', 'roles_users.user_id', 'users.id')
-      .join('roles', 'roles.id', 'roles_users.role_id')
-      .where('roles.name', 'Owner')
-      .first('users.email');
-    return row ? row.email : null;
+    return await fn(knex);
   } finally {
     await knex.destroy();
   }
+}
+// removeFixturePosts is true only right after the owner is created: no tenant
+// content can exist yet, so the slugs are Ghost's own fixtures. Ghost's own
+// setup route is the only path that gets here fresh; re-runs only null links.
+async function clearSeededDefaults(knex, removeFixturePosts) {
+  if (removeFixturePosts) {
+    const ids = await knex('posts').whereIn('slug', DELETED_FIXTURE_SLUGS).pluck('id');
+    if (ids.length) {
+      await knex('posts_authors').whereIn('post_id', ids).del();
+      await knex('posts_tags').whereIn('post_id', ids).del();
+      await knex('posts').whereIn('id', ids).del();
+    }
+    // The About page keeps its slug, so the default navigation's link is not a 404.
+    await knex('posts').where('slug', ABOUT_SLUG).update({
+      title: ABOUT_PAGE_TITLE,
+      lexical: aboutLexical(),
+      mobiledoc: null,
+      html: '<p>' + ABOUT_PAGE_BODY + '</p>',
+      feature_image: null,
+    });
+  }
+  await knex('posts').whereRaw('feature_image LIKE ?', [STATIC_GHOST + '%']).update({ feature_image: null });
+  const cover = await knex('settings').where('key', 'cover_image').whereRaw('value LIKE ?', [STATIC_GHOST + '%']).update({ value: null });
+  return cover > 0;
 }
 async function main() {
   const owner = await readOwner();
@@ -127,11 +176,14 @@ async function main() {
   const state = await call('GET', '/ghost/api/admin/authentication/setup/');
   if (state.status !== 200) refuse('setup status answered ' + state.status + ' ' + state.text.slice(0, 300));
   if (JSON.parse(state.text).setup[0].status === true) {
-    const existing = await ownerEmail();
-    if (!existing || existing.toLowerCase() !== owner.email.toLowerCase()) {
-      refuse('this Ghost is already set up with a different owner: it was claimed by someone else');
-    }
-    console.log(JSON.stringify({ created: false, alreadySetUp: true }));
+    const settingsCleared = await withKnex(async (knex) => {
+      const existing = await ownerEmail(knex);
+      if (!existing || existing.toLowerCase() !== owner.email.toLowerCase()) {
+        refuse('this Ghost is already set up with a different owner: it was claimed by someone else');
+      }
+      return clearSeededDefaults(knex, false);
+    });
+    console.log(JSON.stringify({ created: false, alreadySetUp: true, settingsCleared }));
     return;
   }
   const created = await call('POST', '/ghost/api/admin/authentication/setup/', {
@@ -143,11 +195,12 @@ async function main() {
     }],
   });
   if (created.status !== 201) refuse('setup answered ' + created.status + ' ' + created.text.slice(0, 300));
+  const settingsCleared = await withKnex((knex) => clearSeededDefaults(knex, true));
   const link = await call('POST', '/ghost/api/admin/authentication/password_reset/', {
     password_reset: [{ email: owner.email }],
   });
   if (link.status !== 200) refuse('the owner exists but the sign-in link request answered ' + link.status + ' ' + link.text.slice(0, 300));
-  console.log(JSON.stringify({ created: true, alreadySetUp: false, linkRequested: true }));
+  console.log(JSON.stringify({ created: true, alreadySetUp: false, linkRequested: true, settingsCleared }));
 }
 main().catch((error) => {
   console.error(error.stack || String(error));
@@ -186,7 +239,39 @@ export function provisionOwner(
     }
     throw error;
   }
-  return JSON.parse(output.trim().split('\n').pop());
+  const { settingsCleared, ...result } = JSON.parse(output.trim().split('\n').pop());
+  // Ghost reads settings into an in-memory cache at boot, and this step runs in
+  // another process, so a cleared cover_image only reaches the site on restart.
+  // Provisioning has no admin session to clear it through Ghost's own API.
+  if (settingsCleared) restartAndWait(container, execFile);
+  return result;
+}
+
+/**
+ * A `node -e` program that exits 0 and prints `up` only when Ghost answers 200.
+ * Ghost answers 503 while it is still starting, and that is not ready.
+ */
+export function readyProbeScript(listen) {
+  return `require('node:http').get('http://${listen}/ghost/api/admin/authentication/setup/', (res) => { res.resume(); if (res.statusCode === 200) { console.log('up'); } else { process.exit(1); } }).on('error', () => process.exit(1));`;
+}
+const READY_PROBE = readyProbeScript(GHOST_LISTEN);
+
+/** Restarts the tenant container and waits until Ghost answers again. */
+function restartAndWait(container, execFile) {
+  execFile('docker', ['restart', container], { encoding: 'utf8' });
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    try {
+      const out = execFile('docker', ['exec', container, 'node', '-e', READY_PROBE], {
+        encoding: 'utf8',
+      });
+      if (out.trim() === 'up') return;
+    } catch {
+      // not answering yet
+    }
+    Atomics.wait(pause, 0, 0, 1000);
+  }
+  throw new Error('the tenant container did not answer after its restart');
 }
 
 function main() {

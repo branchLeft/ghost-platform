@@ -41,7 +41,8 @@ export type DatabaseSpec =
 /**
  * Where uploaded media lives, and Ghost's own image-optimisation behaviour
  * for it: resizing on upload and generating responsive derivatives on
- * demand. `Local` is demo-only; a paying tenant is `S3`. Optimisation is
+ * demand. `Local` is demo-only; a paying tenant is `S3` (its own bucket,
+ * kept until the storage gateway is live) or `Gateway`. Optimisation is
  * configuration rather than a Ghost default because whether derivatives are
  * generated is a tenancy property, not an implementation detail — off for a
  * demo means one copy per upload instead of an unbounded set of them.
@@ -58,6 +59,24 @@ export type MediaSpec =
       readonly endpoint: string;
       readonly region: string;
       readonly bucket: string;
+      readonly resize: boolean;
+      readonly srcsets: boolean;
+    }
+  | {
+      /** One folder in a shared shard bucket, reached only through the
+       * storage gateway with a gateway-minted key. Replaces `s3` (a bucket
+       * and a Hetzner key per tenant) once the gateway is live. See
+       * descriptor.md#gateway-media. */
+      readonly kind: 'gateway';
+      /** The gateway's https origin, which Ghost signs its requests to. */
+      readonly endpoint: string;
+      readonly region: string;
+      /** The shared shard bucket the tenant's folder was assigned to:
+       * recorded at provisioning, never computed. */
+      readonly shard: string;
+      /** The tenant's opaque random folder, Ghost's `tenantPrefix`. Never
+       * the slug: it is in every published media URL. */
+      readonly folder: string;
       readonly resize: boolean;
       readonly srcsets: boolean;
     };
@@ -204,10 +223,24 @@ export interface SafetySpec {
    * environment.md#verdict-source.
    */
   readonly verdictSource?: VerdictSourceKind;
+  /**
+   * The inbound listener the safety service dials on the host end. Names the
+   * port and that the host end serves its own certificate. It carries no
+   * address (the private address is a host-side matter) and no key or
+   * certificate path. Only with `verdictSource: 'production'`. See
+   * environment.md#verdict-source.
+   */
+  readonly inbound?: VerdictInboundSpec;
 }
 
 /** The values `safety.verdictSource` may take. See SafetySpec. */
 export type VerdictSourceKind = 'none' | 'production';
+
+/** The values `safety.inbound` names. See SafetySpec. */
+export interface VerdictInboundSpec {
+  readonly port: number;
+  readonly tls: 'pinned-private';
+}
 
 /**
  * The break-glass triple: the broker's Ed25519 public key, the tenant name a
@@ -227,6 +260,15 @@ export type BreakGlassSpec =
       readonly tenant: string;
       readonly supportIdentity: EmailAddress;
     };
+
+/**
+ * Tenant analytics. Off by default: an absent field and `kind: 'off'` mean
+ * the same thing, and render no analytics keys at all. `on` names the
+ * tenant's site identifier, which must be a lower-case UUID and is refused
+ * for a demo. See environment.ts (analyticsEnvironment) and LLD-11 section 09.
+ */
+export type AnalyticsSpec =
+  { readonly kind: 'off' } | { readonly kind: 'on'; readonly siteUuid: string };
 
 export interface TenantDescriptor {
   /**
@@ -257,6 +299,8 @@ export interface TenantDescriptor {
   readonly safety: SafetySpec;
   readonly breakGlass: BreakGlassSpec;
   readonly expiresAt: Instant | null;
+  /** Absent means off (LLD-11 section 09). */
+  readonly analytics?: AnalyticsSpec;
 }
 
 /**

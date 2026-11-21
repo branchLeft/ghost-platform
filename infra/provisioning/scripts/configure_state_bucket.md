@@ -12,3 +12,6 @@ applied afterwards with `render-bucket-fence-policy.py`; it is deliberately
 not part of this script. Each of those keys is in a project of its own, so
 that renderer takes one project id per key (`--admin-project-id`,
 `--workload-project-id`, `--reader-project-id`).
+
+A bucket whose name contains `media` is refused before any request: this script
+replaces a bucket's whole lifecycle, and a media bucket's own is not its to set.

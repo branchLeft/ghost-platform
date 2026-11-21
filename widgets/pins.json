@@ -1,10 +1,10 @@
 {
   "$comment": "Pins for the six CDN script bundles plus one CDN stylesheet that the Ghost image built by the root Dockerfile loads by default (the widget config keys in that Ghost release's shared/config/defaults.json). Each row overrides one Ghost config key via its env-var form (nconf, separator \"__\") so the byte served is exactly the one pinned here, not whatever jsdelivr currently resolves the floating range to. Re-generate with widgets/scripts/fetch-pins.mjs; verify with widgets/scripts/verify-pins.mjs, which also fails when ghostVersion or sourceGhostImage stop matching the Dockerfile.",
-  "ghostVersion": "6.76.0",
-  "sourceGhostImage": "ghost:6.76.0-alpine@sha256:5cb5309974c0f0915321a7ea547d82ee97eb1286700e67a837022f8bee06b90a",
-  "sourceDefaultsJson": "TryGhost/Ghost @ v6.76.0, ghost/core/shared/config/defaults.json",
+  "ghostVersion": "6.78.0",
+  "sourceGhostImage": "ghost:6.78.0-alpine@sha256:baa6dbff91a28ba36c526d1f6e761deb2efe3c238c630c3f318b62f258c2d76e",
+  "sourceDefaultsJson": "TryGhost/Ghost @ v6.78.0, ghost/core/shared/config/defaults.json",
   "servedFrom": "widgets/origin (Caddy file_server on /bl-assets/, reverse-proxying everything else to the Ghost container) -- see widgets/README.md",
-  "pinnedAt": "2026-11-17",
+  "pinnedAt": "2026-11-20",
   "bundles": [
     {
       "configKey": "portal",

@@ -1,1 +1,2 @@
 widgets/dist/*	CMT-3	# vendored third-party bytes pinned by sha384
+adapters/scanning-storage/src/pdq-ts/*	CMT-3	# vendored third-party bytes pinned by sha256 in PIN.json

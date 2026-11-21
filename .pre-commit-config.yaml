@@ -7,10 +7,10 @@ repos:
       - id: trailing-whitespace
         # A unified diff carries a lone space for each blank context line;
         # stripping it breaks the patch (adapters/sso/ghost-core-overlay/,
-        # adapters/stripe-connect-limit/ghost-core-overlay/).
+        # adapters/stripe-connect-limit/ghost-core-overlay/, themes/footer-credit/).
         # themes/licences/ holds upstream licence texts, pinned by sha256 in
         # themes/manifest.json; stripping their trailing blanks changes the bytes.
-        exclude: ^(widgets/dist/|themes/licences/|adapters/(sso|stripe-connect-limit)/ghost-core-overlay/.*\.patch$)
+        exclude: ^(widgets/dist/|themes/licences/|adapters/(sso|stripe-connect-limit)/ghost-core-overlay/.*\.patch$|themes/footer-credit/.*\.patch$)
       - id: end-of-file-fixer
         # widgets/dist/ is vendored third-party bundles, content-addressed by
         # sha384 in widgets/pins.json -- adding a trailing newline changes
@@ -21,7 +21,9 @@ repos:
         # stored in each database's migration history and compared by
         # portal/data/provision/provisionPortal.ts; a trailing newline would
         # make every applied database read as drifted.
-        exclude: ^(widgets/dist/|themes/licences/|vendor/kalotyp/kalotyp\.(js|css)$|(portal/data|services/[^/]+)/drizzle/.*\.sql$)
+        # The theme footer patches (themes/footer-credit/) end where a unified
+        # diff ends, and one ends a template that has no final newline.
+        exclude: ^(widgets/dist/|themes/licences/|themes/footer-credit/.*\.patch$|vendor/kalotyp/kalotyp\.(js|css)$|(portal/data|services/[^/]+)/drizzle/.*\.sql$)
       - id: check-yaml
       # Stated rather than inherited: the hook's own default has moved before,
       # and this threshold is meant to be the same number in every repo.
@@ -35,23 +37,28 @@ repos:
 
   - repo: local
     hooks:
-      # pnpm checks the install before every `run` and, in a tree with no
-      # node_modules (a fresh worktree), installs first, running `prepare`.
-      # The env var keeps that install script-free; the script itself still runs.
+      # Runs prettier straight from node_modules, not through `pnpm run format`.
+      # pnpm 11 (packageManager in package.json) needs node >=22.13, and on a
+      # workstation whose node is 20.x the `pnpm` on PATH is a corepack shim that
+      # dies with ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING.
+      # The command is the `format` script's command with the same ignore paths.
+      # This hook does not install: a tree with no node_modules stops and says so.
       # A node_modules that is a symlink (a worktree sharing another clone's install)
-      # stops the hook before pnpm can reinstall through the link.
+      # stops the hook as well.
       - id: prettier
         name: prettier
-        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; pnpm_config_ignore_scripts=true pnpm run format'
+        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; if [ ! -f node_modules/prettier/bin/prettier.cjs ]; then echo "pre-commit stopped, node_modules has no prettier. In this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; node node_modules/prettier/bin/prettier.cjs --write . --ignore-path .gitignore --ignore-path .prettierignore --ignore-path node_modules/@branchleft/prettier-config/prettierignore'
         language: system
         files: '\.(js|mjs|ts|json|yml|yaml|md)$'
         pass_filenames: false
 
   - repo: local
     hooks:
+      # Same shape as the prettier hook above, for the same reason: eslint runs
+      # from node_modules with the `lint` script's command, not through pnpm.
       - id: eslint
         name: eslint
-        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; pnpm_config_ignore_scripts=true pnpm run lint'
+        entry: sh -c 'if [ -L node_modules ]; then echo "pre-commit stopped, node_modules is a symlink to another clone install. Fix, in this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; if [ ! -f node_modules/eslint/bin/eslint.js ]; then echo "pre-commit stopped, node_modules has no eslint. In this worktree run pnpm install --frozen-lockfile --ignore-scripts, then commit again." >&2; exit 1; fi; node node_modules/eslint/bin/eslint.js infra services render-core --ext .ts --fix'
         language: system
         files: '\.(js|ts)$'
         pass_filenames: false

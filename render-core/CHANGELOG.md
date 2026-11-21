@@ -4,6 +4,61 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Fixed:** `assertRuntimePosture()` refuses a non-sidecar service that mounts a verdict or journal
+  volume at any target, in short or long syntax, and `volumes_from` is a forbidden service key. The
+  check keyed on the mount target only, so `ghost-<slug>-verdict:/elsewhere` and `volumes_from:
+  [verdict-host]` passed. No rendered stack emitted either shape; this closes the gap for a later
+  change.
+
+## 0.7.0
+
+- **Additive:** `renderSettings()` names `footerCredit` (`text`, `url`, `keepGhostCredit: true`) in
+  `ghost-settings.json` for every kind: the default footer credit that extends Ghost's own
+  "Powered by Ghost". `text` and `url` are the placeholders `FOOTER_CREDIT_TEXT` and
+  `PUBLICPRESS_MAIN_SITE_URL` until the owner supplies the copy; Ghost's credit stays. New exports
+  `FOOTER_CREDIT_TEXT`, `FOOTER_CREDIT_URL` and `FooterCreditSettings`. The `ghost-settings.json`
+  goldens gain the key; code injection is unchanged.
+- **Additive:** a descriptor that names `safety.verdictSource: "production"` now also renders a
+  `verdict-host` service in the slot's stack, from the same `${IMAGE}` as Ghost, with
+  `network_mode: none`: the container has a loopback interface and nothing else, so it has no
+  gateway, no address on any bridge and no route off the machine, and nothing on the app host can be
+  reached from it, not even a service that listens on every address. (An `internal: true` bridge
+  network was the first design and is not used: Docker still gives the host that bridge's first
+  address, which answers for such a service.) It publishes no port, and carries `read_only`,
+  `cap_drop: ALL`, `no-new-privileges` and its own limits. It runs as `user: "<uid>:<uid>"` and is
+  given `VERDICT_HOST_SOCKET_UID` and `VERDICT_HOST_SOCKET_GID` of the same slot uid, which the host
+  end requires. It mounts the verdict volume read-write (Ghost keeps it read-only) and a second
+  external volume, `ghost-<slug>-verdict-journal`. `assertRuntimePosture` refuses a sidecar that has a
+  published port, any network or `networks`, a `network_mode` other than `none`, or that a Ghost
+  service shares the namespace of; a verdict volume with no sidecar; and Ghost mounting it without
+  `:ro`. New export `verdictJournalVolumeName`. Absent or `"none"`, every artefact is byte-identical
+  to before. No Docker version beyond the Compose one the app hosts already run is needed.
+  See src/compose.md#the-verdict-host-sidecar.
+- **Rollout:** with the switch on, the stack needs the journal volume to exist, and an image that
+  carries the host end at `/opt/branchleft/scanning-storage/verdict-host/main.js` (the image does not
+  yet), a verify key and an inbound port. Until then the sidecar does not start, and every upload is
+  held, never served. Do not set the switch on a descriptor before they exist.
+
+- **Additive: storage gateway media.** `media.kind: "gateway"` (`endpoint`, `region`, `shard`,
+  `folder`, `resize`, `srcsets`) renders Ghost's `S3Storage` against the storage gateway:
+  `endpoint` the gateway, `forcePathStyle: true`, `bucket` the shard, `tenantPrefix` the tenant's
+  opaque folder and `cdnUrl` the new `zones.mediaOrigin`, the platform's own media address. The
+  secrets template names `GHOST_STORAGE_GATEWAY_KEY_ID` and `GHOST_STORAGE_GATEWAY_SECRET`, never a
+  `GHOST_S3_*` key. A folder that equals or contains the slug, a missing folder, a per-tenant or
+  slug-bearing shard, and a gateway descriptor with no `zones.mediaOrigin` are refused. The rendered
+  identity gains `mediaFolder` for a gateway descriptor only. New exports
+  `GATEWAY_FOLDER_PATTERN`, `bareHttpsOrigin`, `validateMediaFolder`, `validateMediaShard`. Every
+  `local` and `s3` artefact is byte-identical (the goldens are unchanged). See
+  src/media.md#the-tenant-folder.
+- **Rollout:** `s3` stays for the demo-tenant slot until the gateway is live; the descriptor's
+  `media.kind` is the switch. Do not set `gateway` on a descriptor until the gateway answers on
+  `media.endpoint`, the tenant's folder has a minted credential, and the edge serves
+  `zones.mediaOrigin`, or uploads fail and published images do not load.
+
+- **Additive:** `tenantEnvironment()` renders `privacy__useGravatar: false` for every tenant, so
+  Ghost no longer builds a Gravatar address from a hash of a member's email and Portal's account
+  page sends nothing about a reader to Gravatar. Every compose golden gains the one line; no other
+  artefact changes. Ghost changes the avatar a member sees from a Gravatar picture to its initial.
 - **Additive:** `renderSettings()` names `heading_font` and `body_font` as `''` (Ghost's
   "Theme default") in `ghost-settings.json`, so a reconciler that applies the artefact clears a
   font chosen in Ghost's Design settings, which would otherwise make Ghost link a stylesheet from
@@ -54,6 +109,12 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 - **Rollout:** the volume is `external`, and nothing listens on the socket
   until the slot's verdict host end runs. Do not set the switch on a
   descriptor before both exist, or uploads are held, never served.
+- **Additive: the host end's inbound listener.** `safety.inbound`
+  (`{ port, tls: "pinned-private" }`) is optional and needs
+  `verdictSource: "production"`. A paying tenant then also renders
+  `VERDICT_HOST_INBOUND_PORT` and `VERDICT_HOST_INBOUND_TLS`. No address and no
+  key or certificate path is rendered. New export `VerdictInboundSpec`. See
+  src/environment.md#verdict-source.
 
 **The strict content policy can carry Stripe.**
 

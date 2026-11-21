@@ -1,10 +1,11 @@
-import type {
-  AllowedOperation,
-  CredentialStore,
-  GatewayRequest,
-  Refusal,
-  RefusalCode,
-  SignatureVerifier,
+import {
+  credentialProfile,
+  type AllowedOperation,
+  type CredentialStore,
+  type GatewayRequest,
+  type Refusal,
+  type RefusalCode,
+  type SignatureVerifier,
 } from './contracts.js';
 import { refusal } from './refusal.js';
 import { guardTenant, routeRequest, type RoutedRequest } from './router.js';
@@ -22,7 +23,7 @@ export interface RefusalLogEntry {
   /** The tenant's opaque folder; absent until the credential was looked up. */
   readonly folder?: string;
   /** The operation named, when the request got as far as being routed. */
-  readonly operation?: AllowedOperation;
+  readonly operation?: string;
   /** A finer reason inside the code, for the log only; never sent to the caller. */
   readonly reason?: string;
 }
@@ -117,6 +118,11 @@ export async function admit(
   if (credential === undefined) return refuse('signature-refused', { keyId });
   const folder = credential.folder;
   if (credential.state !== 'active') return refuse('credential-not-active', { keyId, folder });
+  // The media listener admits media credentials only: a state credential can
+  // delete a lock object, and must never reach the path that refuses delete.
+  if (credentialProfile(credential) !== 'media') {
+    return refuse('profile-not-allowed', { keyId, folder });
+  }
 
   const routed = routeRequest(request);
   if (!routed.ok) return refuse(routed.refusal.code, { keyId, folder });

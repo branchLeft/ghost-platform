@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gt, lte, sql } from 'drizzle-orm';
 import type { Pool } from 'pg';
 import { bind, connect, enterRole, type PortalDb, type Tx } from '../db.js';
+import { deriveBillingView, type BillingView } from '../billing.js';
 import { deriveHealthView } from '../healthView.js';
 import type { HealthView } from '../reading.js';
 import {
@@ -47,14 +48,27 @@ import {
 } from '../domainCheck.js';
 import { UNIQUE_VIOLATION, readDatabaseError } from '../databaseError.js';
 import {
+  InvalidQueueItemError,
+  deriveQueueItem,
+  validateHold,
+  type ContentSource,
+  type HoldRequest,
+  type ItemStatus,
+  type OpenedItem,
+  type QueueItemView,
+} from '../moderationQueue.js';
+import {
   connectedDomain,
   customDomainRequest,
   documentAcceptance,
   documentVersion,
   healthReading,
+  moderationItem,
+  tenantBilling,
   moderationSetting,
   supportAccessReading,
   supportAccessRequest,
+  tenantErasureRequest,
   tenantRegister,
 } from '../schema.js';
 import {
@@ -62,6 +76,7 @@ import {
   type SupportAccessView,
   type SupportRequestStatus,
 } from '../supportAccess.js';
+import { deriveErasureView, type ErasureView } from '../tenantErasure.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
@@ -84,6 +99,8 @@ function derivePendingView(row: typeof customDomainRequest.$inferSelect): Pendin
 function deriveConnectedView(row: typeof connectedDomain.$inferSelect): ConnectedDomainView {
   return { state: 'connected', fqdn: row.fqdn, connectedAt: row.connectedAt };
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface TenantRegistration {
   tenantId: string;
@@ -169,6 +186,17 @@ export class TenantDb {
   }
 
   /**
+   * The bound tenant's billing record: its opaque reference and payment state.
+   * Null when the owner has recorded none. Row-level isolation limits the read
+   * to the bound tenant, and the tenant role cannot write it.
+   */
+  async ownBilling(scope: TenantScope): Promise<BillingView | null> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantBilling));
+    const row = rows[0];
+    return row ? deriveBillingView(row) : null;
+  }
+
+  /**
    * The bound tenant's support-access state at `now`. With no reading, a
    * stale one or one dated ahead, the answer is `unknown`; `closed` comes only
    * from a fresh reading that says so. Row-level isolation limits the read to
@@ -194,6 +222,34 @@ export class TenantDb {
         .returning({ tenantId: supportAccessRequest.tenantId })
     );
     return inserted.length > 0;
+  }
+
+  /**
+   * Records the bound tenant's own request to erase its whole site: its own
+   * row, with the database's clock and no text. A tenant has one such row for
+   * all time, so a second request records nothing and returns false. The row
+   * opens nothing and destroys nothing; it is a request the owner acts on.
+   */
+  async requestOwnErasure(scope: TenantScope): Promise<boolean> {
+    const inserted = await this.run(scope, (tx) =>
+      tx
+        .insert(tenantErasureRequest)
+        .values({ tenantId: scope.tenantId })
+        .onConflictDoNothing()
+        .returning({ tenantId: tenantErasureRequest.tenantId })
+    );
+    return inserted.length > 0;
+  }
+
+  /**
+   * The bound tenant's erasure request as it may be shown: `none`, `requested`
+   * (nothing has been erased) or `key_destroyed` with the honest residual
+   * window. `key_destroyed` comes only from a row that says so and carries the
+   * moment; anything the row cannot prove is shown as `requested`.
+   */
+  async ownErasure(scope: TenantScope): Promise<ErasureView> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantErasureRequest));
+    return deriveErasureView(rows[0] ?? null);
   }
 
   /**
@@ -536,6 +592,101 @@ export class TenantDb {
         .returning();
       return gone.length + dropped.length > 0;
     });
+  }
+
+  /**
+   * Stores a held classification as a queue item for the bound tenant. Only
+   * references and scores are accepted (`InvalidQueueItemError` otherwise),
+   * the tenant is the scope's, and a subject already in the queue is returned
+   * as it stands rather than duplicated or overwritten.
+   */
+  async holdItem(scope: TenantScope, request: HoldRequest, now: Date): Promise<QueueItemView> {
+    validateHold(request);
+    const row = await this.run(scope, async (tx) => {
+      const inserted = await tx
+        .insert(moderationItem)
+        .values({
+          tenantId: scope.tenantId,
+          subjectKind: request.subjectKind as 'comment' | 'post',
+          subjectId: request.subjectId,
+          memberId: request.memberId,
+          classifiers: request.classifiers.map((c) => ({
+            name: c.name,
+            confidence: c.confidence,
+            state: c.state,
+          })),
+          status: 'held',
+          decidedBy: request.decidedBy,
+          decidedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (inserted[0]) return inserted[0];
+      const existing = await tx
+        .select()
+        .from(moderationItem)
+        .where(
+          and(
+            eq(moderationItem.subjectKind, request.subjectKind),
+            eq(moderationItem.subjectId, request.subjectId)
+          )
+        );
+      return existing[0];
+    });
+    if (!row) throw new InvalidQueueItemError('the item could not be stored');
+    return deriveQueueItem(row);
+  }
+
+  /** The bound tenant's queue items, newest decision first; optionally one status only. */
+  async moderationItems(scope: TenantScope, status?: ItemStatus): Promise<QueueItemView[]> {
+    const rows = await this.run(scope, (tx) =>
+      tx
+        .select()
+        .from(moderationItem)
+        .where(status ? eq(moderationItem.status, status) : undefined)
+        .orderBy(desc(moderationItem.decidedAt), asc(moderationItem.id))
+    );
+    return rows.map(deriveQueueItem);
+  }
+
+  /** One of the bound tenant's items, or null: another tenant's id is simply absent. */
+  async moderationItem(scope: TenantScope, id: string): Promise<QueueItemView | null> {
+    if (!UUID.test(id)) return null;
+    const rows = await this.run(scope, (tx) =>
+      tx.select().from(moderationItem).where(eq(moderationItem.id, id))
+    );
+    return rows[0] ? deriveQueueItem(rows[0]) : null;
+  }
+
+  /**
+   * Opens an item: the stored decision plus the content fetched from the
+   * tenant's own Ghost now. Nothing fetched is written anywhere; content
+   * Ghost no longer has comes back as `gone`, which is a result, not an error.
+   * The fetch runs after the read transaction has closed.
+   */
+  async openModerationItem(
+    scope: TenantScope,
+    id: string,
+    source: ContentSource
+  ): Promise<OpenedItem | null> {
+    const item = await this.moderationItem(scope, id);
+    if (!item) return null;
+    const live = await source.fetch({
+      tenantId: scope.tenantId,
+      subjectKind: item.subjectKind,
+      subjectId: item.subjectId,
+      memberId: item.memberId,
+    });
+    if (!live) return { item, content: { state: 'gone' } };
+    return {
+      item,
+      content: {
+        state: 'present',
+        text: live.text,
+        memberDisplayName: live.memberDisplayName,
+        postTitle: live.postTitle,
+      },
+    };
   }
 
   /**

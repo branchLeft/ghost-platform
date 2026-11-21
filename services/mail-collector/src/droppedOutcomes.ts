@@ -13,9 +13,20 @@ import type { Logger } from './log.js';
  * it can only follow the ack, and only reaches a spool that opted in. See
  * ../README.md#a-dropped-recipient-reported-back-to-the-spool.
  */
+/**
+ * What the spool is told about a dropped message when it is not a recipient
+ * Sweego refused: a demo's refused recipient (permanent) or its ceiling being
+ * reached (temporary, so the owner's own address is never suppressed for it).
+ * The text names no address and no subject.
+ */
+export interface DropDetail {
+  severity: 'permanent' | 'temporary';
+  message: string;
+}
+
 export interface DroppedOutcomes {
-  /** A message was dropped; its report waits for the ack. */
-  dropped(targetId: string, id: string, drainCount: number): void;
+  /** A message was dropped; its report waits for the ack. Without a `detail`, it is a permanent recipient refusal. */
+  dropped(targetId: string, id: string, drainCount: number, detail?: DropDetail): void;
   /** The spool offered the message again: its generation moved, so the report must carry the new one. */
   offered(id: string, drainCount: number): void;
   /** An ack went through: the dropped messages it covers can now be reported. */
@@ -55,6 +66,8 @@ const FAILURE_TEXT = 'Recipient refused by the delivery relay';
 
 interface Entry {
   targetId: string;
+  /** Absent: a permanent recipient refusal, the report this file held before details existed. */
+  detail?: DropDetail;
   drainCount: number;
   since: number;
   nextTryAt: number;
@@ -63,6 +76,22 @@ interface Entry {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function parseDetail(value: unknown): DropDetail | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const d = value as { severity?: unknown; message?: unknown } | null;
+  if (
+    typeof d !== 'object' ||
+    d === null ||
+    (d.severity !== 'permanent' && d.severity !== 'temporary') ||
+    typeof d.message !== 'string'
+  ) {
+    throw new Error('dropped-outcome state file has an unrecognised entry');
+  }
+  return { severity: d.severity, message: d.message };
 }
 
 /** Reads the state file back; throws on any shape it does not recognise, so the caller quarantines it. */
@@ -86,10 +115,12 @@ function parseState(raw: string): Array<[string, Entry]> {
     ) {
       throw new Error('dropped-outcome state file has an unrecognised entry');
     }
+    const detail = parseDetail(r.detail);
     return [
       r.id,
       {
         targetId: r.targetId,
+        ...(detail === undefined ? {} : { detail }),
         drainCount: r.drainCount,
         since: r.since,
         nextTryAt: r.nextTryAt,
@@ -179,14 +210,21 @@ export function createDroppedOutcomes(options: DroppedOutcomesOptions): DroppedO
   }
 
   return {
-    dropped(targetId, id, drainCount) {
+    dropped(targetId, id, drainCount, detail) {
       if (entries.size >= MAX_PENDING && !entries.has(id)) {
         const oldest = entries.entries().next().value;
         if (oldest) {
           abandon(oldest[0], oldest[1]);
         }
       }
-      entries.set(id, { targetId, drainCount, since: now(), nextTryAt: 0, acked: false });
+      entries.set(id, {
+        targetId,
+        ...(detail === undefined ? {} : { detail }),
+        drainCount,
+        since: now(),
+        nextTryAt: 0,
+        acked: false,
+      });
       persist();
     },
     offered(id, drainCount) {
@@ -227,8 +265,8 @@ export function createDroppedOutcomes(options: DroppedOutcomesOptions): DroppedO
           id,
           drainCount: entry.drainCount,
           outcome: 'failed',
-          severity: 'permanent',
-          message: FAILURE_TEXT,
+          severity: entry.detail?.severity ?? 'permanent',
+          message: entry.detail?.message ?? FAILURE_TEXT,
         }));
         let result;
         try {

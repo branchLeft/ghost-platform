@@ -11,6 +11,10 @@ export interface FakeGhost {
   readonly port: number;
   readonly requests: { method: string; path: string; headers: IncomingMessage['headers'] }[];
   readonly settings: Map<string, string | null>;
+  /** Members (readers of the site) added through the Members API. */
+  readonly members: string[];
+  /** Staff added by invite or user creation: must stay empty for a reader. */
+  readonly staffAdded: { email: string; role: string }[];
   setupBody: Record<string, unknown> | undefined;
   /** Answer 503 to this many readiness polls before answering normally. */
   bootPolls: number;
@@ -66,6 +70,8 @@ export async function startFakeGhost(): Promise<FakeGhost> {
   let password: string | undefined;
   const sessions = new Set<string>();
   const requests: FakeGhost['requests'] = [];
+  const members: string[] = [];
+  const staffAdded: FakeGhost['staffAdded'] = [];
   const settings = new Map<string, string | null>([['members_support_address', 'noreply']]);
   const overrides: FakeGhost['overrides'] = new Map();
   const readBackOverrides = new Map<string, string>();
@@ -79,7 +85,9 @@ export async function startFakeGhost(): Promise<FakeGhost> {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
-      const path = (req.url ?? '').replace(/^\/ghost\/api\/admin/, '');
+      const fullPath = (req.url ?? '').replace(/^\/ghost\/api\/admin/, '');
+      const path = fullPath.split('?')[0] ?? '';
+      const query = new URLSearchParams(fullPath.split('?')[1] ?? '');
       requests.push({ method: req.method ?? '', path, headers: req.headers });
       const raw = Buffer.concat(chunks).toString();
       const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
@@ -143,6 +151,30 @@ export async function startFakeGhost(): Promise<FakeGhost> {
           meta: {},
         });
       }
+      if (path === '/members/') {
+        if (!verifyToken(req.headers.authorization, key)) {
+          return send(401, { errors: [{ message: 'Invalid token' }] });
+        }
+        if (req.method === 'GET') {
+          const wanted = /^email:'(.*)'$/.exec(query.get('filter') ?? '')?.[1];
+          return send(200, {
+            members: members.filter((m) => m === wanted).map((email) => ({ email })),
+          });
+        }
+        if (req.method === 'POST') {
+          const entry = (body.members as { email: string }[])[0] as { email: string };
+          members.push(entry.email);
+          return send(201, { members: [{ email: entry.email }] });
+        }
+      }
+      if (req.method === 'POST' && (path === '/invites/' || path === '/users/')) {
+        const entry = ((body.invites ?? body.users) as { email: string; role?: string }[])[0] as {
+          email: string;
+          role?: string;
+        };
+        staffAdded.push({ email: entry.email, role: entry.role ?? 'unknown' });
+        return send(201, {});
+      }
       return send(404, { errors: [{ message: `no route ${req.method} ${path}` }] });
     });
   });
@@ -153,6 +185,8 @@ export async function startFakeGhost(): Promise<FakeGhost> {
     port,
     requests,
     settings,
+    members,
+    staffAdded,
     overrides,
     readBackOverrides,
     get setupBody() {

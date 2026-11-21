@@ -9,11 +9,8 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { importFailureSection, readUntilStable } from './import-log.mjs';
-import { GhostAdmin } from '../../../../services/export-bundler/test/image/ghost-admin.mjs';
-import {
-  GhostContainer,
-  docker,
-} from '../../../../services/export-bundler/test/image/ghost-container.mjs';
+import { GhostAdmin } from '../../../../test-support/ghost-admin.mjs';
+import { GhostContainer, docker } from '../../../../test-support/ghost-container.mjs';
 
 const here = new URL('.', import.meta.url);
 const repoFile = (relative) => new URL(`../../../../${relative}`, here);

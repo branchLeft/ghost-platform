@@ -23,10 +23,10 @@ export const STEP_IDS = [
   'register-host-keys',
   'create-app-host-slot',
   'push-first-commit',
-  'publish-hostnames',
   'publish-mail-dns',
   'first-deploy',
   'create-owner-account',
+  'publish-hostnames',
   'enrol-backups',
 ] as const;
 export type StepId = (typeof STEP_IDS)[number];
@@ -137,24 +137,17 @@ const SPECS: readonly StepSpec[] = [
     inputs: (e) => ({ slot: e.appHostSlot, hostnames: e.hostnames }),
   },
   {
-    id: 'publish-hostnames',
-    entryPoint: 'edge',
-    scope: 'web-address',
-    dependsOn: ['create-app-host-slot'],
-    inputs: (e) => ({ hostnames: e.hostnames, port: e.appHostPort, slot: e.appHostSlot }),
-  },
-  {
     id: 'publish-mail-dns',
     entryPoint: 'dns',
     scope: 'web-address',
-    dependsOn: ['publish-hostnames'],
+    dependsOn: ['create-app-host-slot'],
     inputs: (e) => ({ hostnames: e.hostnames }),
   },
   {
     id: 'first-deploy',
     entryPoint: 'app-host',
     scope: 'first-deploy',
-    dependsOn: ['push-first-commit', 'publish-hostnames', 'publish-mail-dns'],
+    dependsOn: ['push-first-commit', 'publish-mail-dns'],
     inputs: slotOf,
   },
   {
@@ -163,6 +156,17 @@ const SPECS: readonly StepSpec[] = [
     scope: 'first-deploy',
     dependsOn: ['first-deploy'],
     inputs: (e) => ({ slot: e.appHostSlot, secretName: `OWNER_SETUP_${e.appHostSlot}` }),
+  },
+  {
+    // The edge is what makes the site reachable, and a Ghost with no owner is
+    // claimed by whoever reaches its setup route first. So this waits for the
+    // owner account itself, not only for the deploy: nothing may publish a
+    // hostname until `create-owner-account` is recorded complete.
+    id: 'publish-hostnames',
+    entryPoint: 'edge',
+    scope: 'web-address',
+    dependsOn: ['create-app-host-slot', 'create-owner-account'],
+    inputs: (e) => ({ hostnames: e.hostnames, port: e.appHostPort, slot: e.appHostSlot }),
   },
   {
     id: 'enrol-backups',

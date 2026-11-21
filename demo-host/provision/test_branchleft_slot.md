@@ -88,6 +88,40 @@ it runs against the right descriptor before docker is ever reached.
 against a real broker account and real ownership; this class is the fast,
 hermetic form.
 
+The fake `docker` in this class answers `image inspect` and `tag` itself,
+runs the test's own body for `load`, then prints one unnamed image id (or what
+the test passes as `reports`), and appends every call to a file the test
+reads. The tests for the tag step assert the exact `image inspect` and `tag`
+argv, that docker's own output still reaches stdout (the broker reads it),
+and that no `tag` call is made for no id, a named image, two images, a
+malformed id, or an engine that reports another id. Spawns of `docker load`
+are read as `popen.call_args_list[0]`: the id check and the tag go through
+`subprocess.run`, which is also a `Popen`.
+
+## SlotImageNameDriftGuardTests
+
+`SLOT_IMAGE_NAME` is duplicated from `SLOT_IMAGE_REF` in
+`services/broker/src/controlPlaneSlotImagePush.ts`, as every literal in the
+wrapper is. The test reads that file and requires the two equal.
+
+## test_branchleft_slot_real_docker.py
+
+The proof the stand-in cannot give: a real engine. It builds a throwaway
+`FROM scratch` image, `docker save`s it by its digest, removes it, runs the
+real `RealSlotOps.load_image` on the archive, and requires
+`SLOT_IMAGE_NAME@<digest>` to resolve with `docker image inspect`; another
+digest must not resolve, and an archive of a *named* image must be refused
+and leave the slot name unresolved. It needs Docker with the containerd image
+store and GNU `timeout`, and is skipped unless `BRANCHLEFT_REAL_DOCKER=1`,
+because it builds and removes images on whatever engine it finds (only the
+ones it made, by unique name). Run from this directory:
+`BRANCHLEFT_REAL_DOCKER=1 python3 -m unittest test_branchleft_slot_real_docker`.
+With the `_tag_loaded_image` call in `load_image` removed it fails two of
+the three tests (red, recorded for the 13 Nov probe's route); with it, all pass.
+`sabotage_branchleft_slot.py` covers the same control against the stand-in:
+no tag, a tag for another id, several images, a shared moving tag, and no
+pass-through of docker's output each turn the suite red.
+
 ## test_a_mount_point_inside_the_volume_is_refused_and_not_crossed
 
 The walk checks each subdirectory's `st_dev` against its volume's. A mount

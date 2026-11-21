@@ -57,6 +57,8 @@ function requiredSecretKeys(descriptor: TenantStackDescriptor): string[] {
   const keys: string[] = [...REQUIRED_SECRET_KEYS[descriptor.database.kind]];
   if (descriptor.media.kind === 's3') {
     keys.push(SECRET_ENV_KEYS.s3AccessKeyId, SECRET_ENV_KEYS.s3SecretAccessKey);
+  } else if (descriptor.media.kind === 'gateway') {
+    keys.push(SECRET_ENV_KEYS.gatewayAccessKeyId, SECRET_ENV_KEYS.gatewaySecretAccessKey);
   }
   if (descriptor.transport.kind === 'smtp') {
     keys.push(SECRET_ENV_KEYS.mailPassword);
@@ -68,6 +70,9 @@ function requiredSecretKeys(descriptor: TenantStackDescriptor): string[] {
   // See descriptor.md#tenant-stack-descriptor.
   if (descriptor.kind === 'tenant') {
     keys.push(SECRET_ENV_KEYS.ownerEmail);
+  }
+  if (descriptor.analytics?.kind === 'on') {
+    keys.push(SECRET_ENV_KEYS.analyticsSigningKey);
   }
   return keys;
 }
@@ -87,6 +92,13 @@ export function renderSecretsTemplate(descriptor: TenantStackDescriptor): string
     '# no other path may rewrite this file. render() names the keys this tenant needs below —',
     '# it never has a value to put here.',
   ];
+  if (descriptor.analytics?.kind === 'on') {
+    lines.push(
+      `# Analytics signing key: one random 32-byte key for this tenant only. The same value is`,
+      `# also written by the same step to the query listener's key file, named by the site`,
+      `# identifier: /etc/ghost-analytics/keys/${descriptor.analytics.siteUuid}.key.`
+    );
+  }
   if (keys.length === 0) {
     lines.push('# This tenant needs no secret: sqlite + local media + queue transport.');
   } else {

@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { loadConfig, sweegoUsable } from '../../src/config.js';
+import { InvalidDemoCeilingError } from '../../src/invalidDemoCeilingError.js';
 
 const KEY = randomBytes(32).toString('hex');
 
@@ -444,6 +445,106 @@ describe('loadConfig', () => {
       expect(() => loadConfig({ ...SWEEGO_ENV, COLLECTOR_SWEEGO_SMTP_PASS: 'a-value' })).toThrow(
         /read from a file/
       );
+    });
+  });
+});
+
+describe('loadConfig: the IP2 newsletter lane', () => {
+  const LANES = {
+    COLLECTOR_MX1_TX_RETURN_PATH: 'bounce-tx@tx.example',
+    COLLECTOR_MX1_NL_RETURN_PATH: 'bounce-nl@nl.example',
+  };
+
+  it('is off while the state path is unset', () => {
+    expect(loadConfig(BASE_ENV).ip2).toBeUndefined();
+    expect(loadConfig({ ...BASE_ENV, ...LANES }).ip2).toBeUndefined();
+  });
+
+  it('reads both paths', () => {
+    expect(
+      loadConfig({
+        ...BASE_ENV,
+        ...LANES,
+        COLLECTOR_IP2_STATE_PATH: '/state/ip2.json',
+        COLLECTOR_IP2_COUNTER_PATH: '/var/ip2-count.json',
+      }).ip2
+    ).toEqual({ statePath: '/state/ip2.json', counterPath: '/var/ip2-count.json' });
+  });
+
+  it('refuses to start with the state path and no counter path', () => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_IP2_STATE_PATH: '/state/ip2.json' })
+    ).toThrow(/COLLECTOR_IP2_COUNTER_PATH/);
+  });
+
+  it('refuses to start with a counter path and no state path', () => {
+    expect(() =>
+      loadConfig({ ...BASE_ENV, ...LANES, COLLECTOR_IP2_COUNTER_PATH: '/var/ip2-count.json' })
+    ).toThrow(/COLLECTOR_IP2_STATE_PATH/);
+  });
+
+  it('refuses to start without the lane return paths: the newsletter lane has no meaning without them', () => {
+    expect(() =>
+      loadConfig({
+        ...BASE_ENV,
+        COLLECTOR_IP2_STATE_PATH: '/state/ip2.json',
+        COLLECTOR_IP2_COUNTER_PATH: '/var/ip2-count.json',
+      })
+    ).toThrow(/COLLECTOR_MX1_NL_RETURN_PATH/);
+  });
+});
+
+describe('the demo mail ceilings, one per class at slot and estate level', () => {
+  const CEILING_VARIABLES = [
+    ['COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING', 'slotCeiling', 'transactional'],
+    ['COLLECTOR_DEMO_SLOT_BULK_CEILING', 'slotCeiling', 'bulk'],
+    ['COLLECTOR_DEMO_ESTATE_TRANSACTIONAL_CEILING', 'estateCeiling', 'transactional'],
+    ['COLLECTOR_DEMO_ESTATE_BULK_CEILING', 'estateCeiling', 'bulk'],
+  ] as const;
+
+  const defaults = (): Pick<
+    ReturnType<typeof loadConfig>['demoCeilings'],
+    'slotCeiling' | 'estateCeiling'
+  > => ({
+    slotCeiling: { transactional: 20, bulk: 20 },
+    estateCeiling: { transactional: 100, bulk: 100 },
+  });
+
+  it('defaults to 20 per slot and 100 per estate, for each class', () => {
+    expect(loadConfig(BASE_ENV).demoCeilings).toMatchObject(defaults());
+  });
+
+  it.each(CEILING_VARIABLES)(
+    'reads %s into %s.%s and changes nothing else',
+    (name, level, mailClass) => {
+      const expected = defaults();
+      expected[level][mailClass] = 7;
+      expect(loadConfig({ ...BASE_ENV, [name]: '7' }).demoCeilings).toMatchObject(expected);
+    }
+  );
+
+  it.each(CEILING_VARIABLES)('treats an empty %s as unset', (name) => {
+    expect(loadConfig({ ...BASE_ENV, [name]: '' }).demoCeilings).toMatchObject(defaults());
+  });
+
+  describe.each(CEILING_VARIABLES)('%s', (name) => {
+    it.each([
+      ['0'],
+      ['-3'],
+      ['1.5'],
+      ['plenty'],
+      ['Infinity'],
+      ['NaN'],
+      ['1e2'],
+      ['0x10'],
+      [' 5'],
+      ['5 '],
+      ['+5'],
+      ['9007199254740993'],
+    ])('refuses %j and names the variable', (value) => {
+      const attempt = (): unknown => loadConfig({ ...BASE_ENV, [name]: value });
+      expect(attempt).toThrow(InvalidDemoCeilingError);
+      expect(attempt).toThrow(new RegExp(name));
     });
   });
 });

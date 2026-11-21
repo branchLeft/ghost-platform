@@ -35,6 +35,9 @@ import {
   SupportAccountNotActiveError,
   type SupportGrant,
 } from '../../src/supportGrant.js';
+import type { MediaTreeSource, TreeEntry } from '../../src/mediaSource.js';
+import { MediaTreeRefusedError } from '../../src/mediaTree.js';
+import { entriesOf, fakeSource, SERVED_FILES } from '../helpers/mediaTree.js';
 import {
   decryptAge,
   filesContaining,
@@ -135,6 +138,7 @@ function fakeDeps(overrides: {
   members?: () => Promise<Collection>;
   comments?: () => Promise<Collection>;
   mediaExists?: boolean;
+  contentJson?: string;
   /** Teardown steps that throw: the colour, the copy, the drain flag. */
   teardownFails?: readonly ('colour' | 'scratch' | 'drain flag')[];
 }): { deps: ExportRunnerDeps; recording: Recording } {
@@ -200,7 +204,7 @@ function fakeDeps(overrides: {
       return {
         filename: 'ghost.json',
         contentType: 'application/json',
-        body: Buffer.from(CONTENT_JSON),
+        body: Buffer.from(overrides.contentJson ?? CONTENT_JSON),
       };
     },
     async fetchPostAnalytics() {
@@ -498,6 +502,22 @@ describe('runExport', () => {
     expect(sidecar.encryption).toEqual(expected);
   });
 
+  it("the manifest names the demo's active theme, inside the archive and in the clear sidecar beside it", async () => {
+    const withTheme = JSON.stringify({
+      ...JSON.parse(CONTENT_JSON),
+      db: [{ data: { settings: [{ key: 'active_theme', value: 'demo-theme' }] } }],
+    });
+    const { deps } = fakeDeps({ contentJson: withTheme });
+    const result = await runExport(deps, request());
+    expect(result.manifest.activeTheme).toBe('demo-theme');
+    const tar = decryptAge(result.archivePath, identity.identityPath);
+    expect(JSON.parse(tarMember(tar, 'manifest.json').toString('utf8')).activeTheme).toBe(
+      'demo-theme'
+    );
+    const sidecar = JSON.parse(await readFile(result.manifestPath, 'utf8'));
+    expect(sidecar.activeTheme).toBe('demo-theme');
+  });
+
   it("PLAINTEXT NEVER ON DISK: no file the run leaves, in the destination or the temp directory, holds the tenant's content", async () => {
     const scratchTmp = await mkdtemp(join(tmpdir(), 'export-bundler-run-tmpdir-'));
     const savedTmp = process.env.TMPDIR;
@@ -700,6 +720,166 @@ describe('runExport', () => {
     expect('subscriptionActive' in req).toBe(false);
     expect('liveColourHealthy' in req).toBe(false);
     await expect(runExport(deps, req)).resolves.toBeDefined();
+  });
+
+  describe("a demo slot's media files", () => {
+    // The content references three originals to carry (one by a resized address),
+    // a video under media (listed, never sent), and a file the tree does not hold.
+    // `hero-..._o.png` is in the tree and referenced by nothing.
+    const REFERENCED = [
+      'images/size/w600/2026/11/hero-AAAAAAAAAAAAAAAAAAAAAA.png',
+      'images/logo.svg',
+      'media/2026/11/clip-BBBBBBBBBBBBBBBBBBBBBB.mp4',
+      'files/2026/11/guide-CCCCCCCCCCCCCCCCCCCCCC.pdf',
+      'images/2026/11/held.png',
+    ];
+    const DEMO_CONTENT = JSON.stringify({
+      posts: REFERENCED.map((r) => ({ feature_image: `__GHOST_URL__/content/${r}` })),
+    });
+    const CARRIED_FILES = {
+      'images/2026/11/hero-AAAAAAAAAAAAAAAAAAAAAA.png':
+        SERVED_FILES['images/2026/11/hero-AAAAAAAAAAAAAAAAAAAAAA.png']!,
+      'images/logo.svg': SERVED_FILES['images/logo.svg']!,
+      'files/2026/11/guide-CCCCCCCCCCCCCCCCCCCCCC.pdf':
+        SERVED_FILES['files/2026/11/guide-CCCCCCCCCCCCCCCCCCCCCC.pdf']!,
+    };
+    const demoRequest = (
+      source: MediaTreeSource = fakeSource(entriesOf(SERVED_FILES))
+    ): ExportRequest =>
+      request({
+        media: { baseUrl: null, erasureDate: '2030-01-01' },
+        mediaTree: { source, uploadCeilingBytes: 1024 },
+      });
+    const find = async (dir: string): Promise<number> => (await filesUnder(dir)).length;
+
+    it('carries only the referenced originals under images and files in the encrypted bundle; counts the unreferenced and lists the media file, sending neither', async () => {
+      const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
+      const result = await runExport(deps, demoRequest());
+      const tar = decryptAge(result.archivePath, identity.identityPath);
+      const carried = Object.keys(CARRIED_FILES).map((rel) => `content/${rel}`);
+      expect(tarListing(tar).filter((n) => n.startsWith('content/'))).toEqual([...carried].sort());
+      for (const [rel, data] of Object.entries(CARRIED_FILES)) {
+        expect(tarMember(tar, `content/${rel}`).toString('utf8')).toBe(data);
+      }
+      const inArchive = JSON.parse(tarMember(tar, 'manifest.json').toString('utf8'));
+      expect(inArchive.mediaFiles.treeFileCount).toBe(Object.keys(SERVED_FILES).length);
+      expect(inArchive.mediaFiles.files).toHaveLength(carried.length + 1);
+      expect(
+        inArchive.mediaFiles.files.find((f: { status: string }) => f.status === 'not-sent')
+      ).toMatchObject({ path: 'content/media/2026/11/clip-BBBBBBBBBBBBBBBBBBBBBB.mp4', size: 9 });
+      expect(inArchive.mediaFiles.unreferenced).toEqual([
+        'content/images/2026/11/hero-AAAAAAAAAAAAAAAAAAAAAA_o.png',
+      ]);
+      expect(inArchive.mediaFiles.danglingReferences).toEqual(['content/images/2026/11/held.png']);
+      expect(inArchive).toEqual(JSON.parse(JSON.stringify(result.manifest)));
+      expect(result.manifest.extensions.find((e) => e.name === 'media_files')).toMatchObject({
+        status: 'complete',
+        expected: Object.keys(SERVED_FILES).length,
+        present: Object.keys(SERVED_FILES).length,
+      });
+    });
+
+    it('the manifest beside the archive carries counts, never a file name, and the bytes are no longer a named gap', async () => {
+      const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
+      const result = await runExport(deps, demoRequest());
+      const sidecarText = await readFile(result.manifestPath, 'utf8');
+      const sidecar = JSON.parse(sidecarText);
+      expect(sidecar.mediaFiles).toEqual({
+        treeFileCount: Object.keys(SERVED_FILES).length,
+        carried: Object.keys(CARRIED_FILES).length,
+        carriedBytes: Object.values(CARRIED_FILES).reduce((n, d) => n + d.length, 0),
+        oversized: 0,
+        notSent: 1,
+        unreferenced: 1,
+        unrepresentable: 0,
+        danglingReferences: 1,
+      });
+      expect(sidecarText).not.toMatch(/hero-|clip-|guide-|logo\.svg|held\.png/);
+      expect(sidecar.included.map((e: { name: string }) => e.name)).toContain('media_files');
+      expect(sidecar.excluded.map((e: { name: string }) => e.name)).not.toContain('media_bytes');
+      expect(await filesContaining(destDir, 'hero-AAAA')).toEqual([]);
+    });
+
+    it('lists a referenced file over the ceiling as oversized by size, and does not put it in the bundle', async () => {
+      const big: TreeEntry = {
+        rel: 'files/huge.bin',
+        size: 2000,
+        data: null,
+        sha256: 'c'.repeat(64),
+      };
+      const { deps } = fakeDeps({
+        contentJson: JSON.stringify({ posts: [{ html: '__GHOST_URL__/content/files/huge.bin' }] }),
+      });
+      const result = await runExport(
+        deps,
+        demoRequest(fakeSource([...entriesOf(SERVED_FILES), big]))
+      );
+      const tar = decryptAge(result.archivePath, identity.identityPath);
+      const listed = JSON.parse(tarMember(tar, 'manifest.json').toString('utf8')).mediaFiles.files;
+      expect(
+        listed.find((f: { path: string }) => f.path === 'content/files/huge.bin')
+      ).toMatchObject({ size: 2000, status: 'oversized', sha256: 'c'.repeat(64) });
+      expect(tarListing(tar)).not.toContain('content/files/huge.bin');
+      expect(JSON.parse(await readFile(result.manifestPath, 'utf8')).mediaFiles.oversized).toBe(1);
+    });
+
+    it('a paid tenant, with no media tree configured, is unchanged: no media_files extension, no media entries', async () => {
+      const { deps } = fakeDeps({});
+      const result = await runExport(deps, request());
+      expect(result.manifest.extensions.map((e) => e.name)).toEqual([
+        'media',
+        'members_and_subscriptions',
+        'comments',
+      ]);
+      expect(result.manifest.mediaFiles).toBeUndefined();
+      expect(
+        tarListing(decryptAge(result.archivePath, identity.identityPath)).some((n) =>
+          n.startsWith('content/')
+        )
+      ).toBe(false);
+    });
+
+    it('a tree that cannot be read is a failed extension: the archive is made and says it is not complete', async () => {
+      const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
+      const result = await runExport(
+        deps,
+        demoRequest(
+          fakeSource(async () => {
+            throw new Error('the read container failed');
+          })
+        )
+      );
+      expect(result.manifest.complete).toBe(false);
+      const media = result.manifest.extensions.find((e) => e.name === 'media_files');
+      expect(media?.status).toBe('failed');
+      expect(media?.notes).toEqual(['Error']);
+      expect(result.manifest.mediaFiles).toBeUndefined();
+    });
+
+    it('CONTROL: a refusal by the reader REFUSES the export by name, writes no archive, audits nothing, and still tears down', async () => {
+      const refusing = fakeSource(async () => {
+        throw new MediaTreeRefusedError('content/images/2026/11/planted.png', 'a symbolic link');
+      });
+      const { deps, recording } = fakeDeps({ contentJson: DEMO_CONTENT });
+      const err = await runExport(deps, demoRequest(refusing)).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(MediaTreeRefusedError);
+      expect((err as Error).message).toContain('content/images/2026/11/planted.png');
+      expect(await find(destDir)).toBe(0);
+      expect(recording.auditEntries).toEqual([]);
+      expect(recording.containerStopped).toBe(true);
+      expect(recording.scratchDestroyed).toBe(true);
+      expect(recording.drainClearCalls).toEqual(['tenant-1-export-1']);
+    });
+
+    it('a refusal is not turned into a failed extension report', async () => {
+      const refusing = fakeSource(async () => {
+        throw new MediaTreeRefusedError('content/files/leak.txt', 'a symbolic link');
+      });
+      const { deps } = fakeDeps({ contentJson: DEMO_CONTENT });
+      await expect(runExport(deps, demoRequest(refusing))).rejects.toThrow(
+        /leak\.txt.*symbolic link/
+      );
+    });
   });
 
   describe('export completeness', () => {
