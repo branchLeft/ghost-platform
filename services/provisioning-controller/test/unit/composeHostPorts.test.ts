@@ -58,6 +58,11 @@ const sshEntry = (program: string): Record<string, unknown> => ({
   sshConfigFile: '/etc/controller/ssh_config',
   jumpHops: [{ user: 'jumper', host: 'edge1.example.test' }],
   target: { user: 'tenant-entry', host: 'app1.example.test' },
+  inputs: {
+    secretsFile: '/etc/controller/secrets.json',
+    stackFile: '/etc/controller/stack.json',
+    deployKeyFile: '/etc/controller/deploy_key.json',
+  },
   sshProgram: program,
 });
 
@@ -98,7 +103,7 @@ describe('composeHostPorts: ssh stays off unless configured', () => {
 
   it('has no default: the section is refused for a missing key file, host or hop list', () => {
     const base = sshEntry('/usr/bin/ssh');
-    for (const key of ['keyFile', 'knownHostsFile', 'target', 'jumpHops']) {
+    for (const key of ['keyFile', 'knownHostsFile', 'target', 'jumpHops', 'inputs']) {
       const { [key]: _left, ...rest } = base;
       expect(() => configWith(rest)).toThrow(new RegExp(`sshEntry\\.${key} is required`));
     }
@@ -154,7 +159,7 @@ describe('composeHostPorts: the hop check runs at startup', () => {
 describe('runCli: a configured ssh entry point that is not usable stops the run before any step', () => {
   const run = async (
     config: string,
-    hostComposition?: HostComposition
+    withInputs = false
   ): Promise<{ code: number; stdout: string[]; stderr: string[] }> => {
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -162,7 +167,7 @@ describe('runCli: a configured ssh entry point that is not usable stops the run 
       stdout: (l) => stdout.push(l),
       stderr: (l) => stderr.push(l),
       env: { PATH: process.env['PATH'] },
-      ...(hostComposition !== undefined && { hostComposition }),
+      ...(withInputs && { tenantEntryInputs: () => INPUTS }),
     });
     return { code, stdout, stderr };
   };
@@ -170,7 +175,7 @@ describe('runCli: a configured ssh entry point that is not usable stops the run 
   it('exits with the usage status, runs no step and writes no state, over an unpinned hop', async () => {
     const program = await fakeSsh(PINNED.filter((l) => l !== 'batchmode yes'));
     const config = await work.deployment({ sshEntry: sshEntry(program) });
-    const outcome = await run(config, WITH_INPUTS);
+    const outcome = await run(config, true);
     expect(outcome.code).toBe(EXIT.usage);
     expect(outcome.stdout).toEqual([]);
     expect(outcome.stderr.join('\n')).toContain('BatchMode is not yes');

@@ -19,6 +19,8 @@ export type {
 } from './tenantEntryHost.js';
 export type { CommandSpec, Env } from './commandHost.js';
 export { composeHostPorts, SshEntryStartupError } from './composeHostPorts.js';
+export { FileTenantEntryInputs, MAX_INPUT_BYTES } from './fileTenantEntryInputs.js';
+export type { TenantEntryFiles } from './fileTenantEntryInputs.js';
 export type { HostComposition } from './composeHostPorts.js';
 export { SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
 export type { SshEndpoint, SshEntryConfig } from './sshEntryTransport.js';

@@ -133,9 +133,8 @@ point, so the owner's single approval is the only hand step for a new tenant:
   the template, values, parameters and deploy key come from the deployment;
   none is kept.
 
-Known limits: the SSH transport is wired (see "The SSH transport to a tenant host"), but the
-input sources (`TenantEntryInputs`) are a deployment adapter that does not exist yet;
-`publish-hostnames` still takes
+Known limits: the SSH transport and its file-based inputs are wired (see "Running it"), but
+something must still write those files on the controller host; `publish-hostnames` still takes
 its port from the register, not from the claim (`claimOf` is the way a
 deployment's edge step reads the host's number); the `owner` verb and the first
 deploy go through the fallback.
@@ -290,9 +289,18 @@ or to the step that stopped it. The approval id is the only per-run input.
   `keyFile`, `knownHostsFile`, `jumpHops` (empty for a direct host) and `target`, and optionally
   `sshConfigFile`, `sshProgram` and the transport's limits; every value is checked as the
   transport checks it. When present, startup asks `ssh -G` about each hop and refuses to run
-  (exit 3, no step started) on any hop that is not pinned, and when `CliIo.hostComposition`
-  carries no `tenantEntryInputs`. The app host is then the tenant entry adapter over the ssh
-  transport; the program configured for `app-host` serves the steps it does not.
+  (exit 3, no step started) on any hop that is not pinned, and when the deployment supplies no
+  inputs builder (`CliIo.tenantEntryInputs`; `bin.ts` supplies `FileTenantEntryInputs`). The app
+  host is then the tenant entry adapter over the ssh transport; the program configured for
+  `app-host` serves the steps it does not.
+- **Tenant entry inputs** (`src/fileTenantEntryInputs.ts`): `sshEntry.inputs` names three
+  absolute paths, with no default: `secretsFile` (`{ "template", "values": { SLOT: { NAME:
+  VALUE } } }`), `stackFile` (`{ SLOT: { size, mail, environment } }`) and `deployKeyFile`
+  (`{ SLOT: PUBLIC_KEY }`). Each is opened without following a link and refused unless it is a
+  regular file under 1 MiB, owned by root or the controller's user, with no group or other
+  write; the secrets file is also refused if others can read it (a group may). Each file is read
+  when a verb needs it and kept never. An error names the path, the slot and the field, never
+  anything the file held, and not the parser's message.
 - **Trusted files** (`src/trustedFile.ts`): the configuration, the approvals
   file (`{ "approvals": [...] }`) and the register file (`{ "entries": [...] }`)
   are refused unless they are regular files, not links, owned by the user the
