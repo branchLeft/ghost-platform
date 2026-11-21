@@ -10,8 +10,9 @@ import {
   TENANT_A_CREDENTIAL,
   raw,
   startMock,
-  type RunningMock,
 } from '../test/support/mockHarness.js';
+import * as real from '../test/support/serviceHarness.js';
+import { createHandlers } from '../src/service/handlers.js';
 
 /**
  * The spec (openapi.yaml), the routes generated from it and the mock that
@@ -72,6 +73,14 @@ describe('the spec, the generated routes and the mock name the same operations',
     expect(sorted(fromRoutes)).toEqual(sorted(fromSpec));
   });
 
+  it('the real service implements exactly the spec operations', () => {
+    const handlers = createHandlers(new MockStore(), {
+      owner: OWNER_CREDENTIAL,
+      tenants: new Map(),
+    });
+    expect(sorted(Object.keys(handlers))).toEqual(sorted(operations.map((o) => o.id)));
+  });
+
   it('the mock implements exactly the spec operations', () => {
     const handlers = createMockHandlers(new MockStore(), {
       owner: OWNER_CREDENTIAL,
@@ -81,56 +90,96 @@ describe('the spec, the generated routes and the mock name the same operations',
   });
 });
 
-describe('the mock enforces the credential the spec names, on every operation', () => {
-  let running: RunningMock;
-  beforeAll(async () => {
-    running = await startMock();
-  });
-  afterAll(async () => {
-    await running.close();
-  });
+interface Served {
+  readonly baseUrl: string;
+  readonly close: () => Promise<void>;
+}
 
-  /** The header a scheme travels in, read from the spec rather than assumed. */
-  function headerFor(scheme: string): string {
-    const found = spec.components.securitySchemes[scheme];
-    expect(found?.in, scheme).toBe('header');
-    return found?.name ?? '';
-  }
-
-  function request(operation: Operation, headers: Record<string, string>) {
-    const path = operation.path.replace('{tenant}', TENANT_A).replace('{id}', TENANT_A);
-    const body =
-      operation.id === 'createPromotionRequest'
-        ? JSON.stringify({ tier: 'essentials' })
-        : undefined;
-    return raw(running.baseUrl, operation.method, path, {
-      headers: {
-        ...headers,
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-      },
-      ...(body === undefined ? {} : { body }),
+/** The sweep, for any implementation of the contract that can be started and given credentials. */
+function sweep(
+  name: string,
+  start: () => Promise<{
+    served: Served;
+    owner: string;
+    tenant: string;
+    done?: () => Promise<void>;
+  }>
+): void {
+  describe(`${name} enforces the credential the spec names, on every operation`, () => {
+    let running: Served;
+    let owner = '';
+    let tenant = '';
+    let done: (() => Promise<void>) | undefined;
+    beforeAll(async () => {
+      const started = await start();
+      running = started.served;
+      owner = started.owner;
+      tenant = started.tenant;
+      done = started.done;
     });
-  }
-
-  for (const operation of operations) {
-    it(`${operation.id}: no credential is 401, the other kind is 403, the right one is served`, async () => {
-      const other = operation.scheme === 'ownerCredential' ? 'tenantCredential' : 'ownerCredential';
-      const otherValue = other === 'ownerCredential' ? OWNER_CREDENTIAL : TENANT_A_CREDENTIAL;
-      const rightValue =
-        operation.scheme === 'ownerCredential' ? OWNER_CREDENTIAL : TENANT_A_CREDENTIAL;
-
-      const none = await request(operation, {});
-      expect(none.status).toBe(401);
-      const wrongKind = await request(operation, { [headerFor(other)]: otherValue });
-      expect(wrongKind.status).toBe(403);
-      const right = await request(operation, { [headerFor(operation.scheme)]: rightValue });
-      expect([401, 403]).not.toContain(right.status);
-
-      for (const result of [none, wrongKind, right]) {
-        expect(operation.statuses, `${operation.id} answered ${String(result.status)}`).toContain(
-          result.status
-        );
-      }
+    afterAll(async () => {
+      await running.close();
+      await done?.();
     });
-  }
+
+    /** The header a scheme travels in, read from the spec rather than assumed. */
+    function headerFor(scheme: string): string {
+      const found = spec.components.securitySchemes[scheme];
+      expect(found?.in, scheme).toBe('header');
+      return found?.name ?? '';
+    }
+
+    function request(operation: Operation, headers: Record<string, string>) {
+      const path = operation.path.replace('{tenant}', TENANT_A).replace('{id}', TENANT_A);
+      const body =
+        operation.id === 'createPromotionRequest'
+          ? JSON.stringify({ tier: 'essentials' })
+          : undefined;
+      return raw(running.baseUrl, operation.method, path, {
+        headers: {
+          ...headers,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body }),
+      });
+    }
+
+    for (const operation of operations) {
+      it(`${operation.id}: no credential is 401, the other kind is 403, the right one is served`, async () => {
+        const other =
+          operation.scheme === 'ownerCredential' ? 'tenantCredential' : 'ownerCredential';
+        const otherValue = other === 'ownerCredential' ? owner : tenant;
+        const rightValue = operation.scheme === 'ownerCredential' ? owner : tenant;
+
+        const none = await request(operation, {});
+        expect(none.status).toBe(401);
+        const wrongKind = await request(operation, { [headerFor(other)]: otherValue });
+        expect(wrongKind.status).toBe(403);
+        const right = await request(operation, { [headerFor(operation.scheme)]: rightValue });
+        expect([401, 403]).not.toContain(right.status);
+
+        for (const result of [none, wrongKind, right]) {
+          expect(operation.statuses, `${operation.id} answered ${String(result.status)}`).toContain(
+            result.status
+          );
+        }
+      });
+    }
+  });
+}
+
+sweep('the mock', async () => {
+  const mock = await startMock();
+  return { served: mock, owner: OWNER_CREDENTIAL, tenant: TENANT_A_CREDENTIAL };
+});
+
+sweep('the real service', async () => {
+  const rig = real.makeRig();
+  const started = await rig.start();
+  return {
+    served: started,
+    owner: real.OWNER_CREDENTIAL,
+    tenant: real.TENANT_A_CREDENTIAL,
+    done: () => rig.cleanup(),
+  };
 });

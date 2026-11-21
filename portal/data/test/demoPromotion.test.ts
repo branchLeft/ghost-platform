@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ForbiddenTransitionError, type DemoState } from '../src/demoLifecycle.js';
+import { TermsNotAcceptedError, type DocumentView } from '../src/documents.js';
 import {
   PROMOTION_TARGET_FIELDS,
   PromotionRefusedError,
@@ -19,6 +20,16 @@ const MUTATING = ['transition', 'commitSwap', 'takeFirstDump', 'abortPromotion',
 const TARGETS: PromotionTargets = Object.fromEntries(
   PROMOTION_TARGET_FIELDS.map((field) => [field, `VALUE_${field}`])
 );
+const SLUG = 'SLUG_VALUE';
+const COMPLETE_CONTENT: ContentVerification = {
+  postPresent: true,
+  memberPresent: true,
+  imagePresent: true,
+  mediaFilePresent: true,
+  filePresent: true,
+  mediaStored: 2,
+  mediaListed: 2,
+};
 
 interface Fake {
   effects: PromotionEffects;
@@ -28,6 +39,8 @@ interface Fake {
 interface Behaviour {
   drained?: boolean | (() => boolean);
   gate?: GateVerdict;
+  /** Document kinds the owner has not accepted; an unreadable answer is an `Error` instead. */
+  pending?: readonly string[] | Error;
   content?: ContentVerification;
   failing?: string[];
   dumpReference?: string;
@@ -48,14 +61,20 @@ function fake(behaviour: Behaviour = {}): Fake {
   const effects: PromotionEffects = {
     isDrained: () => run('isDrained', drained()),
     gateVerdict: () => run('gateVerdict', behaviour.gate ?? 'PROMOTE'),
+    assertDocumentsAccepted: async () => {
+      calls.push('assertDocumentsAccepted');
+      const { pending = [] } = behaviour;
+      if (pending instanceof Error) throw pending;
+      if (pending.length > 0) {
+        throw new TermsNotAcceptedError(
+          pending.map((kind) => ({ kind, version: 2 }) as unknown as DocumentView)
+        );
+      }
+    },
     transition: (_id, to) => run(`transition:${to}`, undefined),
     commitSwap: () => run('commitSwap', undefined),
     rollbackSwap: () => run('rollbackSwap', undefined),
-    verifyContent: () =>
-      run(
-        'verifyContent',
-        behaviour.content ?? { postPresent: true, memberPresent: true, imagePresent: true }
-      ),
+    verifyContent: () => run('verifyContent', behaviour.content ?? COMPLETE_CONTENT),
     takeFirstDump: () =>
       run('takeFirstDump', { reference: behaviour.dumpReference ?? 'DUMP_REF', takenAt: NOW }),
     abortPromotion: (_id, returnTo) => run(`abortPromotion:${returnTo}`, undefined),
@@ -67,6 +86,7 @@ function fake(behaviour: Behaviour = {}): Fake {
 function request(overrides: Partial<PromotionRequest> = {}): PromotionRequest {
   return {
     demoId: DEMO,
+    tenantSlug: SLUG,
     position: { state: 'LIVE', origin: null },
     approval: { reference: 'APPROVAL_REF', recordedAt: NOW },
     consent: { reference: 'CONSENT_REF', recordedAt: NOW },
@@ -87,6 +107,7 @@ describe('promoteDemo, the whole path', () => {
     const { effects, calls } = fake();
     const outcome = await promoteDemo(request(), effects);
     expect(calls).toEqual([
+      'assertDocumentsAccepted',
       'isDrained',
       'gateVerdict',
       'transition:PROMOTING',
@@ -118,6 +139,32 @@ describe('promoteDemo, the whole path', () => {
 });
 
 describe('promoteDemo, preconditions are enforced before any write', () => {
+  it('refuses a demo whose owner has not accepted the current documents, naming them', async () => {
+    const { effects, calls } = fake({ pending: ['terms', 'dpa'] });
+    const refused = promoteDemo(request(), effects);
+    await expect(refused).rejects.toBeInstanceOf(PromotionRefusedError);
+    await expect(refused).rejects.toMatchObject({ precondition: 'documents' });
+    await expect(refused).rejects.toThrow('not accepted: terms v2, dpa v2');
+    expect(calls).toContain('assertDocumentsAccepted');
+    expect(mutations(calls)).toEqual([]);
+  });
+
+  it('refuses, and writes nothing, when acceptance cannot be read', async () => {
+    const { effects, calls } = fake({ pending: new Error('DB_DOWN') });
+    await expect(promoteDemo(request(), effects)).rejects.toMatchObject({
+      precondition: 'documents',
+    });
+    expect(mutations(calls)).toEqual([]);
+  });
+
+  it('goes through for an owner who has accepted every current document', async () => {
+    const { effects, calls } = fake({ pending: [] });
+    const outcome = await promoteDemo(request(), effects);
+    expect(outcome.status).toBe('promoted');
+    expect(calls[0]).toBe('assertDocumentsAccepted');
+    expect(mutations(calls)).toContain('transition:PROMOTING');
+  });
+
   it('refuses a gate that does not say PROMOTE', async () => {
     for (const verdict of ['WAIT', 'ABANDON'] as GateVerdict[]) {
       const { effects, calls } = fake({ gate: verdict });
@@ -216,6 +263,50 @@ describe('promoteDemo, preconditions are enforced before any write', () => {
   });
 });
 
+describe('promoteDemo, the gateway folder and the tenant-owned settings', () => {
+  it('names the gateway endpoint, the opaque folder and the media address as targets', () => {
+    expect(PROMOTION_TARGET_FIELDS).toEqual(
+      expect.arrayContaining(['mediaEndpoint', 'mediaFolder', 'mediaAddress'])
+    );
+    expect(PROMOTION_TARGET_FIELDS).not.toContain('mediaRegion');
+  });
+
+  it('names every tenant-owned setting the import would otherwise overwrite', () => {
+    expect(PROMOTION_TARGET_FIELDS).toEqual(
+      expect.arrayContaining(['codeInjection', 'accentColour', 'locale', 'timezone'])
+    );
+  });
+
+  it('refuses a folder that is the tenant slug, by name, before any write', async () => {
+    const { effects, calls } = fake();
+    const targets = { ...TARGETS, mediaFolder: SLUG };
+    const refused = promoteDemo(request({ targets }), effects);
+    await expect(refused).rejects.toBeInstanceOf(PromotionRefusedError);
+    await expect(refused).rejects.toThrow('mediaFolder');
+    await expect(refused).rejects.toMatchObject({ precondition: 'targets' });
+    expect(calls).toEqual([]);
+  });
+
+  it('accepts a folder that differs from the slug', async () => {
+    const { effects } = fake();
+    const targets = { ...TARGETS, mediaFolder: 'OPAQUE_PREFIX' };
+    const outcome = await promoteDemo(request({ targets }), effects);
+    expect(outcome.status).toBe('promoted');
+  });
+
+  it('is incomplete when the content check sees a media count that does not match the list', async () => {
+    const content = { ...COMPLETE_CONTENT, mediaStored: 0, mediaListed: 1 };
+    const { effects, calls } = fake({ content });
+    const outcome = await promoteDemo(request(), effects);
+    expect(outcome).toMatchObject({
+      status: 'incomplete',
+      failedStep: 'content',
+      swapRolledBack: true,
+    });
+    expect(calls).not.toContain('takeFirstDump');
+  });
+});
+
 describe('promoteDemo, a failure after PROMOTING is incomplete, never done', () => {
   it('reports an incomplete promotion when the first dump fails, and never PROMOTED', async () => {
     const { effects, calls } = fake({ failing: ['takeFirstDump'] });
@@ -240,9 +331,13 @@ describe('promoteDemo, a failure after PROMOTING is incomplete, never done', () 
   });
 
   it.each([
-    { postPresent: false, memberPresent: true, imagePresent: true },
-    { postPresent: true, memberPresent: false, imagePresent: true },
-    { postPresent: true, memberPresent: true, imagePresent: false },
+    { ...COMPLETE_CONTENT, postPresent: false },
+    { ...COMPLETE_CONTENT, memberPresent: false },
+    { ...COMPLETE_CONTENT, imagePresent: false },
+    { ...COMPLETE_CONTENT, mediaFilePresent: false },
+    { ...COMPLETE_CONTENT, filePresent: false },
+    { ...COMPLETE_CONTENT, mediaStored: 1, mediaListed: 2 },
+    { ...COMPLETE_CONTENT, mediaStored: 3, mediaListed: 2 },
   ])('is incomplete when the imported content lacks something: %o', async (content) => {
     const { effects, calls } = fake({ content });
     const outcome = await promoteDemo(request(), effects);

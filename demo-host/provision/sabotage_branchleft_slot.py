@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sabotage proof for branchleft_slot: loosen one control at a time (the mount-point
-refusal, the reset's stopped-unit ruling, the volumes `start` creates) in a scratch copy and require the suite red, then the untouched copy green.
+refusal, the reset's stopped-unit ruling, the volumes `start` creates, the tag `load` gives a loaded image) in a scratch copy and require the suite red, then the untouched copy green.
 
 Usage: sabotage_branchleft_slot.py
 
@@ -118,6 +118,21 @@ SABOTAGES = [
     ("a missing data directory is skipped instead of refused",
      '                if data_fd is None:\n                    raise missing\n',
      '                if data_fd is None:\n                    return\n'),
+    ("load no longer tags the loaded image (name@digest does not resolve)",
+     '        _tag_loaded_image(_loaded_image_id(printed))\n',
+     '        pass\n'),
+    ("load tags an image whose own id is another value",
+     '    if shown != image_id:\n',
+     '    if False:\n'),
+    ("load tags the first image of an archive that holds several",
+     '    if len(lines) != 1 or matches[0] is None:\n',
+     '    if not lines or matches[0] is None:\n'),
+    ("load tags one shared name, so a later load takes it from the earlier image",
+     "    tag = f\"{SLOT_IMAGE_NAME}:{image_id.replace(':', '-')}\"\n",
+     "    tag = f\"{SLOT_IMAGE_NAME}:carried\"\n"),
+    ("load stops passing docker's output to the caller",
+     '        sys.stdout.write(printed.decode("utf-8", errors="replace"))\n',
+     ''),
 ]
 
 

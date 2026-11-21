@@ -205,7 +205,18 @@ export async function releaseHeldEvidence(
   slot: SlotName,
   state: Omit<SlotState, 'evidence'>
 ): Promise<void> {
-  await writeFileAtomic(statePath(dir, slot), JSON.stringify({ ...state, evidence: 'detached' }));
+  // A recycle still owed from before the freeze outlives the release, as it
+  // does every other write: a fresh object must not drop it.
+  const existing = await readSlotState(dir, slot);
+  const retiring = state.retiring ?? existing.retiring;
+  await writeFileAtomic(
+    statePath(dir, slot),
+    JSON.stringify({
+      ...state,
+      ...(retiring !== undefined ? { retiring } : {}),
+      evidence: 'detached',
+    })
+  );
 }
 
 /**

@@ -2,7 +2,7 @@
 
 ## What it is for
 
-The host half of the recycle's residue check (workspace#1657). After a slot is
+The host half of the recycle's residue check. After a slot is
 reset, `residue_of(slot, content_volume)` lists whatever of the previous
 occupant is still where `branchleft_slot` should have emptied it: the slot
 directory, both colours' environment files (`demo-<slot>-a.env`,

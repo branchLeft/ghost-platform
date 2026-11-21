@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The host half of the recycle test (workspace#1657): reset a slot that holds a
+"""The host half of the recycle test (demo recycle): reset a slot that holds a
 previous occupant's data, then check nothing of it remains.
 
 `branchleft-slot` runs for real (`main`, `RealSlotOps`) against one scratch tree

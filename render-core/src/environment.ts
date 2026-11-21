@@ -18,7 +18,14 @@ import type {
   TransportSpec,
 } from './descriptor.js';
 import { credentialDomainOf, renderSendingAddress } from './mail.js';
-import { mediaBucketName, mediaPublicBaseUrl, validateMediaBucket } from './media.js';
+import {
+  bareHttpsOrigin,
+  mediaBucketName,
+  mediaPublicBaseUrl,
+  validateMediaBucket,
+  validateMediaFolder,
+  validateMediaShard,
+} from './media.js';
 import { MAIL_SPOOL_BASE_URL, MAIL_SPOOL_SERVICE, MAIL_SPOOL_SMTP_PORT } from './spool.js';
 import { databaseAndUserName, validateDatabaseIdentity } from './naming.js';
 import type { UploadLimits } from './runtime.js';
@@ -34,6 +41,9 @@ export const SECRET_ENV_KEYS = {
   databasePassword: 'GHOST_DB_PASSWORD',
   s3AccessKeyId: 'GHOST_S3_ACCESS_KEY_ID',
   s3SecretAccessKey: 'GHOST_S3_SECRET_ACCESS_KEY',
+  /** A `gateway` tenant's gateway-minted key: never a Hetzner key. */
+  gatewayAccessKeyId: 'GHOST_STORAGE_GATEWAY_KEY_ID',
+  gatewaySecretAccessKey: 'GHOST_STORAGE_GATEWAY_SECRET',
   mailPassword: 'GHOST_MAIL_PASSWORD',
   bulkEmailApiKey: 'GHOST_BULK_EMAIL_API_KEY',
   ownerEmail: 'GHOST_OWNER_EMAIL',
@@ -124,6 +134,12 @@ function verdictEnvironment(safety: SafetySpec): Record<string, string | number 
       env[`storage__${feature}__verdictSource`] = 'production';
       env[`storage__${feature}__verdictSocketPath`] = VERDICT_SOCKET_PATH;
     }
+    // The host end's own setting names. Its certificate and key paths are
+    // host-local and never rendered here; the pin is made by the host end.
+    if (safety.inbound !== undefined) {
+      env.VERDICT_HOST_INBOUND_PORT = String(safety.inbound.port);
+      env.VERDICT_HOST_INBOUND_TLS = safety.inbound.tls;
+    }
   }
   return env;
 }
@@ -197,6 +213,26 @@ function isScanningRequired(safety: SafetySpec): boolean {
 }
 
 /**
+ * The scanning decorator's own keys for one feature when it wraps
+ * `S3Storage`: the same for an `s3` and a `gateway` tenant.
+ */
+function s3ScanningWrapper(
+  feature: StorageFeature,
+  slug: Slug
+): Record<string, string | number | boolean> {
+  return {
+    [`storage__${feature}__adapter`]: SCANNING_STORAGE_ADAPTER,
+    [`storage__${feature}__wraps`]: 'S3Storage',
+    [`storage__${feature}__quarantinePath`]: QUARANTINE_PATH,
+    // The scanner's health export. Both keys, identical for all three
+    // features: the adapter turns the export on only with both set, and
+    // exports one file per process (the first feature to configure wins).
+    [`storage__${feature}__metricsTextfilePath`]: METRICS_TEXTFILE_PATH,
+    [`storage__${feature}__metricsTenant`]: slug,
+  };
+}
+
+/**
  * Re-derives the bucket and its public URL from the slug rather than
  * trusting `media.bucket`; the three storage features render identically.
  * See environment.md#media-environment.
@@ -204,10 +240,15 @@ function isScanningRequired(safety: SafetySpec): boolean {
 function mediaEnvironment(
   slug: Slug,
   media: MediaSpec,
-  safety: SafetySpec
+  safety: SafetySpec,
+  mediaOrigin: string | undefined
 ): Record<string, string | number | boolean> {
   const scanningRequired = isScanningRequired(safety);
   const env: Record<string, string | number | boolean> = {};
+
+  if (media.kind === 'gateway') {
+    return gatewayMediaEnvironment(slug, media, safety, mediaOrigin);
+  }
 
   if (media.kind === 'local') {
     for (const feature of STORAGE_FEATURES) {
@@ -248,14 +289,7 @@ function mediaEnvironment(
   const bucket = mediaBucketName(slug);
   for (const feature of STORAGE_FEATURES) {
     if (scanningRequired) {
-      env[`storage__${feature}__adapter`] = SCANNING_STORAGE_ADAPTER;
-      env[`storage__${feature}__wraps`] = 'S3Storage';
-      env[`storage__${feature}__quarantinePath`] = QUARANTINE_PATH;
-      // The scanner's health export. Both keys, identical for all three
-      // features: the adapter turns the export on only with both set, and
-      // exports one file per process (the first feature to configure wins).
-      env[`storage__${feature}__metricsTextfilePath`] = METRICS_TEXTFILE_PATH;
-      env[`storage__${feature}__metricsTenant`] = slug;
+      Object.assign(env, s3ScanningWrapper(feature, slug));
       env[`storage__${feature}__wrappedConfig__bucket`] = bucket;
       env[`storage__${feature}__wrappedConfig__region`] = media.region;
       env[`storage__${feature}__wrappedConfig__endpoint`] = media.endpoint;
@@ -281,6 +315,58 @@ function mediaEnvironment(
       env[`storage__${feature}__multipartUploadThresholdBytes`] = MULTIPART_UPLOAD_THRESHOLD_BYTES;
       env[`storage__${feature}__multipartChunkSizeBytes`] = MULTIPART_CHUNK_SIZE_BYTES;
     }
+  }
+  if (scanningRequired) {
+    Object.assign(env, verdictEnvironment(safety));
+  }
+  return env;
+}
+
+/**
+ * A `gateway` tenant's storage: Ghost signs every request to the gateway,
+ * path-style (the only style the gateway admits), into the shared shard,
+ * under the tenant's opaque folder as `tenantPrefix`, and writes the
+ * platform's own media address as `cdnUrl`, so a published post names
+ * neither the storage supplier nor a bucket. Re-checks the folder and the
+ * shard here too, so `render()` of an unvalidated descriptor cannot slip a
+ * slug into a URL. See environment.md#gateway-media-environment.
+ */
+function gatewayMediaEnvironment(
+  slug: Slug,
+  media: Extract<MediaSpec, { kind: 'gateway' }>,
+  safety: SafetySpec,
+  mediaOrigin: string | undefined
+): Record<string, string | number | boolean> {
+  validateMediaShard(slug, media);
+  validateMediaFolder(slug, media);
+  if (mediaOrigin === undefined) {
+    throw new Error(
+      'tenantEnvironment: a "gateway" descriptor needs zones.mediaOrigin, the cdnUrl Ghost ' +
+        'writes into every published post.'
+    );
+  }
+  const cdnUrl = bareHttpsOrigin(mediaOrigin, 'zones.mediaOrigin');
+  const endpoint = bareHttpsOrigin(media.endpoint, 'media.endpoint');
+  const scanningRequired = isScanningRequired(safety);
+  const env: Record<string, string | number | boolean> = {};
+  for (const feature of STORAGE_FEATURES) {
+    const prefix = scanningRequired
+      ? `storage__${feature}__wrappedConfig__`
+      : `storage__${feature}__`; // never reached today — see isScanningRequired
+    if (scanningRequired) {
+      Object.assign(env, s3ScanningWrapper(feature, slug));
+    } else {
+      env[`storage__${feature}__adapter`] = 'S3Storage';
+    }
+    env[`${prefix}bucket`] = media.shard;
+    env[`${prefix}region`] = media.region;
+    env[`${prefix}endpoint`] = endpoint;
+    env[`${prefix}forcePathStyle`] = true;
+    env[`${prefix}tenantPrefix`] = media.folder;
+    env[`${prefix}staticFileURLPrefix`] = STATIC_FILE_URL_PREFIX[feature];
+    env[`${prefix}cdnUrl`] = cdnUrl;
+    env[`${prefix}multipartUploadThresholdBytes`] = MULTIPART_UPLOAD_THRESHOLD_BYTES;
+    env[`${prefix}multipartChunkSizeBytes`] = MULTIPART_CHUNK_SIZE_BYTES;
   }
   if (scanningRequired) {
     Object.assign(env, verdictEnvironment(safety));
@@ -493,7 +579,7 @@ export function tenantEnvironment(
   >,
   limits: UploadLimits,
   secretsFilePath: string,
-  zones: Pick<ZoneConfig, 'demoMailDomain'>,
+  zones: Pick<ZoneConfig, 'demoMailDomain' | 'mediaOrigin'>,
   widgets: WidgetSource = 'cdn',
   blockThirdPartyIntegrations = true
 ): Record<string, string | number | boolean> {
@@ -501,7 +587,7 @@ export function tenantEnvironment(
     url: descriptor.siteUrl,
     ...widgetEnvironment(descriptor.siteUrl, widgets, blockThirdPartyIntegrations),
     ...databaseEnvironment(descriptor.slug, descriptor.database),
-    ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety),
+    ...mediaEnvironment(descriptor.slug, descriptor.media, descriptor.safety, zones.mediaOrigin),
     ...transportEnvironment(descriptor.transport, descriptor.mail, zones, descriptor.uid),
     ...bulkMailEnvironment(descriptor.mail, zones, descriptor.uid),
     ...hostLimitsEnvironment(descriptor.limits),
@@ -523,6 +609,11 @@ export function tenantEnvironment(
     theme__uploadLimits__totalUncompressedBytes: limits.themeTotalUncompressedBytes,
 
     privacy__useUpdateCheck: false,
+    // Ghost fills a member's `avatar_image` with a Gravatar address built from a
+    // hash of the member's email unless this is off, so Portal's account page
+    // would send every signed-in reader's hash to a third party. Off for every
+    // kind of tenant, under both widget sources. See environment.md#gravatar.
+    privacy__useGravatar: false,
     logging__transports: '["stdout"]',
   };
 
@@ -534,14 +625,23 @@ export function tenantEnvironment(
   if (descriptor.database.kind === 'mysql') {
     escaped.database__connection__password = required('databasePassword', secretsFilePath);
   }
-  if (descriptor.media.kind === 's3') {
+  if (descriptor.media.kind !== 'local') {
+    // `s3` is the tenant's own Hetzner key; `gateway` is the gateway-minted
+    // key, so a gateway tenant's host never holds a Hetzner key.
+    const gateway = descriptor.media.kind === 'gateway';
     const scanningRequired = isScanningRequired(descriptor.safety);
     for (const feature of STORAGE_FEATURES) {
       const prefix = scanningRequired
         ? `storage__${feature}__wrappedConfig__`
         : `storage__${feature}__`; // never reached today — see mediaEnvironment's own doc comment
-      escaped[`${prefix}accessKeyId`] = required('s3AccessKeyId', secretsFilePath);
-      escaped[`${prefix}secretAccessKey`] = required('s3SecretAccessKey', secretsFilePath);
+      escaped[`${prefix}accessKeyId`] = required(
+        gateway ? 'gatewayAccessKeyId' : 's3AccessKeyId',
+        secretsFilePath
+      );
+      escaped[`${prefix}secretAccessKey`] = required(
+        gateway ? 'gatewaySecretAccessKey' : 's3SecretAccessKey',
+        secretsFilePath
+      );
     }
   }
   if (descriptor.transport.kind === 'smtp') {

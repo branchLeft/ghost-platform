@@ -190,12 +190,24 @@ jobs:
             # has no daemon. Logs the invocation and drains stdin to a file,
             # so a check below can assert both "was it called" and "what did
             # it read", never trusting the wrappers own exit code alone.
+            # `load` prints what docker prints for an image saved by digest
+            # (one unnamed image id), unless /var/log/fake-docker-noid exists;
+            # `image inspect` answers that same id and `tag` succeeds, so the
+            # wrapper tags the loaded image and every call it makes is logged.
+            FAKE_ID=sha256:abababababababababababababababababababababababababababababababab
             touch /var/log/fake-docker.log
             chmod 0644 /var/log/fake-docker.log
-            cat > /usr/local/bin/docker <<"DOCKER_EOF"
+            cat > /usr/local/bin/docker <<DOCKER_EOF
           #!/bin/sh
-          echo "$@" >> /var/log/fake-docker.log
+          echo "\$@" >> /var/log/fake-docker.log
+          case "\$1" in
+            image) echo $FAKE_ID; exit 0 ;;
+            tag) exit 0 ;;
+          esac
           cat > /var/log/fake-docker-stdin.bin
+          if [ ! -e /var/log/fake-docker-noid ]; then
+            echo "Loaded image ID: $FAKE_ID"
+          fi
           exit 0
           DOCKER_EOF
             chmod 0755 /usr/local/bin/docker
@@ -286,9 +298,24 @@ jobs:
             rm -f /var/log/fake-docker-stdin.bin
             su broker -c "printf %s the-exact-bytes-docker-load-must-read > /var/lib/branchleft-broker/image-tmp/image.tar"
             chown broker:broker /var/lib/branchleft-broker/image-tmp/image.tar
-            su broker -c "sudo -n /usr/local/sbin/branchleft-slot load /var/lib/branchleft-broker/image-tmp/image.tar"
+            loaded=$(su broker -c "sudo -n /usr/local/sbin/branchleft-slot load /var/lib/branchleft-broker/image-tmp/image.tar")
             if ! grep -qx load /var/log/fake-docker.log; then
               echo "::error::docker was not invoked with load, got:"
+              cat /var/log/fake-docker.log
+              exit 1
+            fi
+            if [ "$loaded" != "Loaded image ID: $FAKE_ID" ]; then
+              echo "::error::docker output did not reach the broker through the wrapper, got:"
+              echo "$loaded"
+              exit 1
+            fi
+            if ! grep -qxF "image inspect --format {{.Id}} $FAKE_ID" /var/log/fake-docker.log; then
+              echo "::error::the wrapper did not ask docker for the loaded image id, got:"
+              cat /var/log/fake-docker.log
+              exit 1
+            fi
+            if ! grep -qxF "tag $FAKE_ID ghcr.io/branchleft/ghost-tenant:sha256-${FAKE_ID#sha256:}" /var/log/fake-docker.log; then
+              echo "::error::the wrapper did not tag the loaded image with the slot image name, got:"
               cat /var/log/fake-docker.log
               exit 1
             fi
@@ -297,5 +324,44 @@ jobs:
               cat /var/log/fake-docker-stdin.bin
               exit 1
             fi
-            echo "accepted, and docker load received the real bytes over stdin, as required"
+            echo "accepted, tagged by its own id, and docker load received the real bytes over stdin, as required"
+
+            echo "--- real sudo + real wrapper: a load that reports no image id is refused and nothing is tagged ---"
+            : > /var/log/fake-docker.log
+            touch /var/log/fake-docker-noid
+            su broker -c "printf %s some-other-bytes > /var/lib/branchleft-broker/image-tmp/image.tar"
+            set +e
+            su broker -c "sudo -n /usr/local/sbin/branchleft-slot load /var/lib/branchleft-broker/image-tmp/image.tar"
+            status=$?
+            set -e
+            rm -f /var/log/fake-docker-noid
+            if [ "$status" -eq 0 ]; then
+              echo "::error::load succeeded although docker reported no image id"
+              exit 1
+            fi
+            if grep -q "^tag " /var/log/fake-docker.log; then
+              echo "::error::the wrapper tagged an image although docker reported no image id:"
+              cat /var/log/fake-docker.log
+              exit 1
+            fi
+            echo "refused (exit $status), nothing tagged, as required"
           '
+
+  # The wrapper's own sabotage harness: it loosens one control at a time in a
+  # scratch copy (the tag `load` gives a loaded image among them) and requires
+  # the unit suite red for each, then green untouched. Nothing else runs it, so
+  # without this job a test that stops asserting a control goes unnoticed.
+  wrapper-sabotage:
+    name: the wrapper's sabotage harness, red then green
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the sabotage harness
+        working-directory: demo-host/provision
+        run: python3 sabotage_branchleft_slot.py

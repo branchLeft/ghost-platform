@@ -51,6 +51,8 @@ export type RefusalCode =
   | 'credential-not-active'
   /** The credential record is malformed, for example an empty or multi-segment folder. */
   | 'credential-invalid'
+  /** The credential is valid, but not on this listener: a media credential on the state endpoint, or the reverse. */
+  | 'profile-not-allowed'
   /** The request is not one of the seven shapes Ghost sends. */
   | 'operation-not-allowed'
   /** The request target is malformed or uses an encoding trick. */
@@ -114,8 +116,29 @@ export type CredentialState =
   /** Permanently withdrawn, for example after tenant departure. */
   | 'revoked';
 
+/**
+ * Which listener a credential is for. `media` is Ghost's put-only media path
+ * and has no delete; `state` is a tenant's Pulumi state, which needs listing
+ * and the deletion of lock objects. A record with no profile is `media`, so
+ * every credential minted before the field existed keeps working unchanged.
+ */
+export type CredentialProfile = 'media' | 'state';
+
+/** The profile of a record: absent is `media`; a value that is not a known profile is `undefined`, which no listener admits. */
+export function credentialProfile(record: {
+  readonly profile?: unknown;
+}): CredentialProfile | undefined {
+  if (record.profile === undefined || record.profile === 'media') return 'media';
+  return record.profile === 'state' ? 'state' : undefined;
+}
+
 /** What a key id is allowed to touch. */
 export interface CredentialRecord {
+  /**
+   * Which listener this credential may be presented to. Absent means `media`.
+   * For a `state` credential `folder` is the tenant's opaque state prefix.
+   */
+  readonly profile?: CredentialProfile;
   /**
    * The tenant's opaque folder: one path segment, never the tenant's slug
    * and never containing `/`. Every object key must sit inside it.

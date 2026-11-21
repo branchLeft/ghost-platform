@@ -1,4 +1,4 @@
-import { ConfigError, type FileReader } from '../shell/config.js';
+import { ConfigError, allowsPlainHttp, type FileReader } from '../shell/config.js';
 
 /**
  * How the tenant portal reaches the provisioning API: where it is, and the
@@ -20,7 +20,7 @@ export const PROVISIONING_VARIABLES = {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** Plain HTTP is accepted only for a loopback address, for local development. */
+/** Plain HTTP is accepted only for loopback or a bare service name on the private network (see `allowsPlainHttp`). */
 function parseBaseUrl(value: string): string {
   let url: URL;
   try {
@@ -28,8 +28,7 @@ function parseBaseUrl(value: string): string {
   } catch {
     throw new ConfigError(`${PROVISIONING_VARIABLES.url} is not a URL`);
   }
-  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && allowsPlainHttp(url))) {
     throw new ConfigError(`${PROVISIONING_VARIABLES.url} must be https`);
   }
   if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {

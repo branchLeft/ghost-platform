@@ -104,6 +104,25 @@ class BucketConfigError(Exception):
     """Setup did not complete."""
 
 
+def refuse_media_bucket(bucket: str) -> None:
+    """Refuse any bucket whose name says it holds tenant media.
+
+    This script writes current-version `Expiration` elements, which delete
+    live objects. A tenant's media is the one asset with no other copy, and
+    its own bucket carries a noncurrent-only rule on purpose. Both the backup
+    bucket and the media buckets are named by the operator, so the name is
+    the only thing to refuse on. Kept in step with the same check in
+    infra/provisioning/scripts/configure_state_bucket.py: this directory ships
+    standalone to db1 and cannot import it. See configure_backup_bucket.md,
+    "Refusing a media bucket".
+    """
+    if "media" in bucket.lower():
+        raise BucketConfigError(
+            f"{bucket!r} looks like a media bucket, and this script can write a "
+            "current-version expiry that deletes live objects. Nothing was changed."
+        )
+
+
 def versioning_document() -> bytes:
     return f'<VersioningConfiguration xmlns="{S3_NS}"><Status>Enabled</Status></VersioningConfiguration>'.encode()
 
@@ -481,6 +500,7 @@ def configure_backup_bucket(
     fence_dwell_seconds: float = FENCE_ENGINE_DWELL_SECONDS,
     put=put_bucket_subresource,
 ) -> None:
+    refuse_media_bucket(bucket)
     put(
         bucket=bucket,
         endpoint=endpoint,
@@ -583,6 +603,14 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
+    # First, before any credential is read or any request made: a media bucket
+    # is refused whatever else is wrong with the command line.
+    try:
+        refuse_media_bucket(args.bucket)
+    except BucketConfigError as exc:
+        print(f"configure_backup_bucket: {exc}", file=sys.stderr)
+        return 2
+
     # THIS SCRIPT IS A SECOND PATH TO AN APPLY, and the operator who reaches it
     # is rebuilding db1 from db/RUNBOOK-db.md and never opens
     # RUNBOOK-bucket-fencing.md. A fence that locks the operator out is
@@ -649,7 +677,7 @@ def main(argv: list[str]) -> int:
             state_expiration_days=args.state_expiration_days,
             state_noncurrent_days=args.state_noncurrent_days,
         )
-    except ObjectStorageError as exc:
+    except (BucketConfigError, ObjectStorageError) as exc:
         print(f"configure_backup_bucket: {exc}", file=sys.stderr)
         return 1
 

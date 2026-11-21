@@ -9,6 +9,7 @@ import { hashApiKey } from '../../src/crypto.js';
 import {
   DEMO_LEASE,
   MIGRATIONS_FOLDER,
+  REPLAY_DEDUPE_INDEX,
   SENDER_DOMAIN,
   SENDER_LOCAL_PART,
   migrationsLedger,
@@ -265,7 +266,7 @@ describe('createSqliteStore — migrating a database that predates sender_domain
     createSqliteStore(dbPath).close();
     withFixture(dbPath, ({ db }) => {
       // Every newer row goes: the runner re-applies from the oldest forgotten one.
-      for (const index of [SENDER_DOMAIN, SENDER_LOCAL_PART, DEMO_LEASE]) {
+      for (const index of [SENDER_DOMAIN, SENDER_LOCAL_PART, REPLAY_DEDUPE_INDEX, DEMO_LEASE]) {
         db.delete(migrationsLedger).where(eq(migrationsLedger.hash, MIGRATIONS[index]!.hash)).run();
       }
     });

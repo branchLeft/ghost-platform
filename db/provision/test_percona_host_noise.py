@@ -307,7 +307,7 @@ class Control2Tests(unittest.TestCase):
             psp.record_round_baseline(scenario, number, {"t1": 0.011 * number, "t2": 0.02, "t3": 0.02})
             psp.record_round_latencies(scenario, number, {tenant: [0.004, stalls.get(number, 0.03) if tenant == "t1" else 0.03] for tenant in TENANTS})
             psp.record_round_attribution(scenario, number, slow(t1=[(3.0, stalls[number])]) if number in stalls else slow(), windows())
-        return psp.control_2(types.SimpleNamespace(failure=None, scenario=scenario))  # type: ignore[arg-type]
+        return psp.control_2(types.SimpleNamespace(failure=None, scenario=scenario, source_note=""))  # type: ignore[arg-type]
 
     def test_a_stall_in_a_short_round_fails_the_control(self) -> None:
         for number in range(1, len(psp.PLANS[None]) + 1):

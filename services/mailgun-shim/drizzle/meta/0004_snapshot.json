@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f3d5b684-936a-40f9-9b92-68a111cfdf2b",
+  "id": "924ee7d9-656f-4865-aa03-4823bee66f00",
   "prevId": "be3bd208-f209-477c-982d-9585805bbdcc",
   "tables": {
     "events": {
@@ -141,19 +141,12 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "lease_id": {
-          "name": "lease_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {
-        "idx_queue_batches_lease": {
-          "name": "idx_queue_batches_lease",
-          "columns": ["lease_id"],
+        "idx_queue_batches_domain_email": {
+          "name": "idx_queue_batches_domain_email",
+          "columns": ["domain", "email_id"],
           "isUnique": false
         }
       },
@@ -320,13 +313,6 @@
         },
         "sender_local_part": {
           "name": "sender_local_part",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "lease_id": {
-          "name": "lease_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

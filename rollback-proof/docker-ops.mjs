@@ -3,11 +3,8 @@
 // and the shared image harness only, so the job needs no install.
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import { GhostAdmin } from '../services/export-bundler/test/image/ghost-admin.mjs';
-import {
-  GhostContainer,
-  SITE_URL,
-} from '../services/export-bundler/test/image/ghost-container.mjs';
+import { GhostAdmin } from '../test-support/ghost-admin.mjs';
+import { GhostContainer, SITE_URL } from '../test-support/ghost-container.mjs';
 import { docker, pollHttp200, reservePort, sleep } from '../test-support/image-harness.mjs';
 import { SCHEMA_MARKER, parseOldSchemaOutput } from './contract.mjs';
 import { DATABASE, readColumns } from './live-schema.mjs';

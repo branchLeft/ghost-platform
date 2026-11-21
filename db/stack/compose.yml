@@ -28,6 +28,12 @@ name: db
 
 services:
   mysql:
+    # Bounded log files (doc 14 s18.2): Docker's json-file default is unbounded.
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
     image: ${IMAGE}
     restart: unless-stopped
     network_mode: host
@@ -55,6 +61,12 @@ services:
       start_period: 60s
 
   mysqld-exporter:
+    # Bounded log files (doc 14 s18.2): Docker's json-file default is unbounded.
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
     image: prom/mysqld-exporter:v0.20.0@sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e
     restart: unless-stopped
     network_mode: host

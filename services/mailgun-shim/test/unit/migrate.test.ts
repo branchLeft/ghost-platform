@@ -2,7 +2,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
-import { getTableConfig, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { getTableConfig, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { failureReason, MIGRATIONS_FOLDER, migrateStore } from '../../src/migrate.js';
 import * as schema from '../../src/schema.js';
@@ -19,6 +19,37 @@ import {
 
 const MIGRATIONS = readMigrationFiles({ migrationsFolder: MIGRATIONS_FOLDER });
 const DOMAIN = 'tenant.example.com';
+
+// queue_batches as every release before the replay-dedupe index wrote it.
+const queueBatchesWithoutReplayIndex = sqliteTable('queue_batches', {
+  batchId: text('batch_id').primaryKey(),
+  domain: text('domain').notNull(),
+  emailId: text('email_id'),
+  payload: text('payload').notNull(),
+  createdAt: real('created_at').notNull(),
+  completedAt: real('completed_at'),
+});
+// tenants as every release before the demo lease wrote it: no lease_id.
+const tenantsWithoutLease = sqliteTable(
+  'tenants',
+  {
+    domain: text('domain').primaryKey(),
+    apiKeySalt: text('api_key_salt').notNull(),
+    apiKeyHash: text('api_key_hash').notNull(),
+    senderDomain: text('sender_domain'),
+    senderLocalPart: text('sender_local_part'),
+  },
+  (table) => [
+    uniqueIndex('idx_tenants_sender_address').on(table.senderDomain, table.senderLocalPart),
+  ]
+);
+// The newest shape a database older than the ledger can have: every table as it
+// was before the replay-dedupe index and the demo lease.
+const releaseBeforeReplayIndex = {
+  ...schema,
+  tenants: tenantsWithoutLease,
+  queueBatches: queueBatchesWithoutReplayIndex,
+};
 
 describe('migrateStore — databases older than the ledger, written by a drain-era release', () => {
   let dir: string;
@@ -63,7 +94,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
 
   it('drain-shaped without sender_domain: records the first two migrations and applies only the third', async () => {
     // The shape every image between the drain handover and this store ran.
-    await seed({ ...schema, tenants: preDrain.tenants, queueBatches: preDrain.queueBatches });
+    await seed({ ...releaseBeforeReplayIndex, tenants: preDrain.tenants });
 
     createSqliteStore(dbPath).close();
 
@@ -83,14 +114,14 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
     }
   });
 
-  it('already fully current: records every migration and runs none', async () => {
-    await seed(schema);
+  it('the newest shape older than the ledger: records the migrations it reflects and applies the two after', async () => {
+    await seed(releaseBeforeReplayIndex);
     const columnsBefore = columnNames(dbPath, 'tenants');
 
     createSqliteStore(dbPath).close();
 
     expect(ledgerHashes(dbPath)).toEqual(MIGRATIONS.map((m) => m.hash));
-    expect(columnNames(dbPath, 'tenants')).toEqual(columnsBefore);
+    expect(columnNames(dbPath, 'tenants')).toEqual([...columnsBefore, 'lease_id']);
     expect(queueRecipientRows(dbPath)).toHaveLength(1);
   });
 
@@ -131,11 +162,7 @@ describe('migrateStore — databases older than the ledger, written by a drain-e
     });
     const { client, db } = openFixture(dbPath);
     try {
-      await createTables(db, {
-        ...schema,
-        tenants: previousTenants,
-        queueBatches: preDrain.queueBatches,
-      });
+      await createTables(db, { ...releaseBeforeReplayIndex, tenants: previousTenants });
       db.insert(previousTenants)
         .values({
           domain: DOMAIN,
@@ -181,7 +208,7 @@ describe('migrateStore — the demo-lease migration', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('a database one release behind gains lease_id NULL on its credentials and queued batches, and loses no row', async () => {
+  it('a database from before the demo lease gains lease_id NULL on its credentials and queued batches, and loses no row', async () => {
     const previousTenants = sqliteTable('tenants', {
       domain: text('domain').primaryKey(),
       apiKeySalt: text('api_key_salt').notNull(),
@@ -254,7 +281,7 @@ describe('failureReason', () => {
 
 describe('schema.ts', () => {
   it('declares exactly the indexes the migrations create', () => {
-    const declared = [schema.events, schema.queueRecipients]
+    const declared = [schema.events, schema.queueBatches, schema.queueRecipients]
       .flatMap((table) => getTableConfig(table).indexes.map((i) => i.config.name))
       .sort();
     const dir = mkdtempSync(join(tmpdir(), 'mailgun-shim-schema-test-'));
@@ -264,6 +291,10 @@ describe('schema.ts', () => {
       const created = withFixture(dbPath, ({ client }) =>
         [
           ...(client.pragma('index_list(events)') as Array<{ name: string; origin: string }>),
+          ...(client.pragma('index_list(queue_batches)') as Array<{
+            name: string;
+            origin: string;
+          }>),
           ...(client.pragma('index_list(queue_recipients)') as Array<{
             name: string;
             origin: string;

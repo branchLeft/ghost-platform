@@ -35,6 +35,22 @@ store.
 - If the WAL check or the migration throws, the connection is closed before the
   error propagates.
 
+## A replayed batch is refused
+
+`enqueueBatch` drops any recipient already queued for the same domain and
+`emailId` (Ghost's newsletter id), in the same transaction as the insert. The
+copy it finds must be `pending`, `held`, `sent` or `delivered`: a copy that
+`failed` or was `suppressed` is not a copy, so a real retry gets through. A
+call whose recipients are all dropped writes no batch row, and the route
+still answers "Queued", so Ghost sees nothing odd. Mail with no `emailId`
+(welcome, sign-in) is not checked.
+
+The route's own dedup only covers one send; this covers the same newsletter
+arriving again (a retry after a lost reply, a resumed send, two colours).
+`idx_queue_batches_domain_email` finds the batches of one newsletter; the
+recipient lookup then uses the `(batch_id, recipient)` primary key. Entries
+last as long as `cleanupCompletedBatches` keeps the batch.
+
 ## Schema and migrations
 
 [`schema.ts`](schema.ts) is the current schema. [`drizzle/`](../drizzle) holds
@@ -47,7 +63,8 @@ migration in `drizzle/meta/`:
 | 1   | `0001_drain_handover`     | Converts the queue to the drain shape in place. Hand-written; see [the drain-handover migration](#the-drain-handover-migration). |
 | 2   | `0002_sender_domain`      | Adds `tenants.sender_domain`. Generated.                                                                                         |
 | 3   | `0003_sender_local_part`  | Adds `tenants.sender_local_part` (NULL on every existing row) and the unique index `idx_tenants_sender_address`. Generated.      |
-| 4   | `0004_demo_lease`         | Adds `tenants.lease_id` and `queue_batches.lease_id` (NULL on every existing row) and the index `idx_queue_batches_lease`. Generated; see [the lease a batch belongs to](#the-lease-a-batch-belongs-to). |
+| 4   | `0004_replay_dedupe_index` | Adds the index `idx_queue_batches_domain_email`. Generated; see [a replayed batch is refused](#a-replayed-batch-is-refused).       |
+| 5   | `0005_demo_lease`         | Adds `tenants.lease_id` and `queue_batches.lease_id` (NULL on every existing row) and the index `idx_queue_batches_lease`. Generated; see [the lease a batch belongs to](#the-lease-a-batch-belongs-to). |
 
 To change the schema: edit `schema.ts`, run
 `pnpm exec drizzle-kit generate --name <what-it-does>` in this package, and commit
@@ -395,7 +412,7 @@ needs no lease of its own. A batch keeps the lease it was submitted under: movin
 the credential to the next lease later does not move mail already queued. A
 credential that serves no lease stamps `NULL`, and `NULL` never matches a purge.
 
-Migration `0004_demo_lease` adds the two nullable columns and an index on the
+Migration `0005_demo_lease` adds the two nullable columns and an index on the
 batch column. It rewrites no row: mail queued before it has no lease and is never
 purged by one.
 

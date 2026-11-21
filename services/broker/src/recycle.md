@@ -4,7 +4,7 @@
 
 `POST /reset` is the recycle of a demo slot (LLD-2): the lease and the gate hash
 are revoked, both colours stopped, the slot wiped, and the slot is `free` for the
-next lease. workspace#1657 adds the two residues the wrapper cannot reach, and
+next lease. The recycle adds the two residues the wrapper cannot reach, and
 makes `free` mean that every one of them is gone:
 
 | Residue                         | Removed by                                                                                                              | Proven by                                                                       |
@@ -29,6 +29,15 @@ In `handleReset`, inside the slot lock:
 The purge comes after the wrapper because the wrapper stops both colours: until
 Ghost is stopped it could queue more mail under the old lease. The hostname is
 retired after the mail so a retired name never has unsent mail behind it.
+
+## A frozen slot is recycled the same way
+
+`POST /freeze` also removes the lease record, so it reads `retiring` first,
+before access is cut, and writes it into the state (an unreadable record stops
+the freeze there, `detaching` and `frozen`, access untouched). `releaseHeldEvidence`
+carries it through the confirmed detach. A `/reset` after the detach therefore
+purges and retires exactly as one on a running slot does, and ends `error`, never
+`free`, while an effect fails. `recycle.test.ts` covers freeze, then reset.
 
 ## A failure never ends `free`
 

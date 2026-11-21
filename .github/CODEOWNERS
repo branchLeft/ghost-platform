@@ -144,6 +144,9 @@
 /demo-host/provision/demo_go_live.py             @branchLeft/branchleft-admin
 /demo-host/provision/test_demo_go_live.py        @branchLeft/branchleft-admin
 /demo-host/provision/sabotage_demo_go_live.py    @branchLeft/branchleft-admin
+/demo-host/provision/export_release.py           @branchLeft/branchleft-admin
+/demo-host/provision/test_export_release.py      @branchLeft/branchleft-admin
+/demo-host/provision/sabotage_export_release.py  @branchLeft/branchleft-admin
 /app/provision/*.py                              @branchLeft/branchleft-admin
 /adapters/sso/scripts/                           @branchLeft/branchleft-admin
 /adapters/sso/src/break-glass.js                 @branchLeft/branchleft-admin
@@ -255,6 +258,7 @@
 # --- Criterion 8 and the rules themselves win over the releases above ---
 /LICENSE                                         @branchLeft/branchleft-admin
 /render-core/LICENSE                             @branchLeft/branchleft-admin
+/services/ring-controller/LICENSE                @branchLeft/branchleft-admin
 /infra/tenant/LICENSE                            @branchLeft/branchleft-admin
 /portal/apps/src/tenant/explainerPages.ts        @branchLeft/branchleft-admin
 **/CLAUDE.md                                     @branchLeft/branchleft-admin

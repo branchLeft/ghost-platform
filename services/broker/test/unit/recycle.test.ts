@@ -15,10 +15,10 @@ import { readSlotState, recoverCrashedSlots, writeSlotState } from '../../src/st
 import { descriptorForSlot } from '../helpers/fixtures.js';
 import { startTestBroker, type TestBroker } from '../helpers/testBroker.js';
 
-// The recycle (workspace#1657): after `/reset` the previous occupant's slot
-// directory, gate cookie, unsent mail and hostname are gone before the slot is
-// `free`, so the next lease starts from nothing. Each residue below is a
-// control: recycle.md names the edit that turns its assertion red.
+// The recycle: after `/reset` the previous occupant's slot directory, gate
+// cookie, unsent mail and hostname are gone before the slot is `free`, so the
+// next lease starts from nothing. Each residue below is a control: its
+// assertion goes red when the matching step of `handleReset` is removed.
 
 const ZONE = 'demo-domain.example.test';
 
@@ -373,6 +373,63 @@ describe('the recycle: /reset leaves no residue of the previous occupant', () =>
       expect(rig.events).toEqual([]);
       await expect(stat(join(rig.broker.leaseDir, '0.json'))).resolves.toBeTruthy();
       expect((await readSlotState(rig.broker.stateDir, '0' as SlotName)).phase).toBe('error');
+    });
+  });
+
+  describe('a slot that is frozen, detached and then reset is recycled like any other', () => {
+    it('purges the old lease and retires its hostname: the freeze keeps what the lease record held', async () => {
+      rig = await startRig();
+      const a = await occupy('aaaa-first', hashOf('one'));
+      rig.spool.submit(a.lease, 'queued-before-the-freeze');
+
+      const frozen = await rig.broker.signedFetch('POST', '/freeze', { slot: '0' });
+      expect(frozen.status).toBe(200);
+      expect(await readLease(rig.broker, '0')).toBeNull();
+      const detached = await readSlotState(rig.broker.stateDir, '0' as SlotName);
+      expect(detached.evidence).toBe('detached');
+      expect(detached.retiring).toEqual({ lease: a.lease, host: a.host });
+
+      const res = await rig.broker.signedFetch('POST', '/reset', { slot: '0' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ slot: '0', phase: 'free' });
+      expect(rig.spool.purged).toEqual([a.lease]);
+      expect(await residueOf(rig, a)).toEqual([]);
+    });
+
+    it('a frozen slot whose effects fail ends error, not free, and the retry finishes it', async () => {
+      rig = await startRig();
+      const a = await occupy('aaaa-first', hashOf('one'));
+      await rig.broker.signedFetch('POST', '/freeze', { slot: '0' });
+      rig.knobs.failPurge = true;
+
+      const failed = await rig.broker.signedFetch('POST', '/reset', { slot: '0' });
+
+      expect(failed.status).toBe(503);
+      expect((await readSlotState(rig.broker.stateDir, '0' as SlotName)).retiring).toEqual({
+        lease: a.lease,
+        host: a.host,
+      });
+
+      rig.knobs.failPurge = false;
+      expect((await rig.broker.signedFetch('POST', '/reset', { slot: '0' })).status).toBe(200);
+      expect(await residueOf(rig, a)).toEqual([]);
+    });
+
+    it('a lease record that cannot be read stops the freeze before access is cut, frozen and retryable', async () => {
+      rig = await startRig();
+      await occupy('aaaa-first', hashOf('one'));
+      await writeFile(join(rig.broker.leaseDir, '0.json'), '{not json');
+
+      const res = await rig.broker.signedFetch('POST', '/freeze', { slot: '0' });
+
+      expect(res.status).toBe(503);
+      await expect(stat(join(rig.broker.leaseDir, '0.json'))).resolves.toBeTruthy();
+      expect(await readSlotState(rig.broker.stateDir, '0' as SlotName)).toMatchObject({
+        phase: 'detaching',
+        evidence: 'frozen',
+      });
+      expect((await rig.broker.signedFetch('POST', '/reset', { slot: '0' })).status).toBe(409);
     });
   });
 

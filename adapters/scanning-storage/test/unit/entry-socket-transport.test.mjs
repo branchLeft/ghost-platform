@@ -4,6 +4,7 @@
 // Ghost's storage base and the wrapped adapter are the suite's doubles, as in
 // entry-production-source.test.mjs; everything else is the real entry file.
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -13,6 +14,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { FakeStorageBase } from '../helpers/fake-storage-base.mjs';
 import { FakeWrappedAdapter } from '../helpers/fake-wrapped-adapter.mjs';
 import { startRig } from '../helpers/verdict-host-rig.mjs';
+import { resizedPng, texturedPng } from '../helpers/pictures.ts';
 
 const require = createRequire(import.meta.url);
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src');
@@ -34,10 +36,13 @@ afterAll(() => {
 });
 
 const EntryAdapter = require('../../src/ScanningStorageAdapter.js');
-const { digestBytes } = require('../../src/pdq.js');
+const { digestBytes, pdqHashOfImage } = require('../../src/pdq.js');
+const { hammingDistance } = require('../../src/pdq-ts');
 
-const CLEAN_BYTES = Buffer.from('clean-image-bytes');
-const BAD_BYTES = Buffer.from('known-bad-image-bytes');
+// Real pictures: the adapter asks the hash source about a perceptual hash,
+// and bytes that are not a decodable image have none.
+const CLEAN_BYTES = readFileSync(path.resolve(SRC_DIR, '../test/fixtures/clean.png'));
+const BAD_BYTES = readFileSync(path.resolve(SRC_DIR, '../test/fixtures/bad.png'));
 const WAIT = { timeout: 5000, interval: 10 };
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -106,9 +111,54 @@ describe('the entry file passes the socket transport for verdictSource=productio
 
     await adapter.saveRaw(CLEAN_BYTES, '2026/11/clean.png');
 
-    expect(asked).toEqual([digestBytes(CLEAN_BYTES)]);
+    // The hash source is asked about the perceptual hash, never the content digest.
+    expect(asked).toEqual([(await pdqHashOfImage(CLEAN_BYTES)).hash]);
     expect(adapter.wrapped.savedRaw).toHaveLength(1);
     expect(adapter.wrapped.savedRaw[0].buffer.equals(CLEAN_BYTES)).toBe(true);
+  });
+
+  it('refuse: a resized copy of a listed picture is refused by near match, which a digest key cannot do', async () => {
+    // The hash source matches by distance. Listed: the hash of one picture.
+    // Asked: the same picture at another size, whose bytes (and so whose
+    // SHA-256 digest) are different.
+    const listed = await texturedPng(21, 256);
+    const copy = await resizedPng(listed, 192);
+    expect(digestBytes(copy)).not.toBe(digestBytes(listed));
+    const listedBytes = Buffer.from((await pdqHashOfImage(listed)).hash, 'base64');
+    const { socketPath, asked } = await lineServer((key) => {
+      const bytes = Buffer.from(key, 'base64');
+      const near = bytes.length === 32 && hammingDistance(bytes, listedBytes) <= 31;
+      return near
+        ? { classification: 'csam', matchType: 'near' }
+        : { classification: 'no-known-match' };
+    });
+    const adapter = build({ verdictSource: 'production', verdictSocketPath: socketPath });
+
+    await expect(adapter.saveRaw(copy, '2026/11/copy.png')).rejects.toMatchObject({
+      statusCode: 415,
+    });
+
+    expect(asked).toEqual([(await pdqHashOfImage(copy)).hash]);
+    nothingWritten(adapter);
+  });
+
+  it('allow: an unrelated picture is not near the listed one, and goes through', async () => {
+    const listedBytes = Buffer.from(
+      (await pdqHashOfImage(await texturedPng(21, 256))).hash,
+      'base64'
+    );
+    const { socketPath } = await lineServer((key) => {
+      const bytes = Buffer.from(key, 'base64');
+      const near = bytes.length === 32 && hammingDistance(bytes, listedBytes) <= 31;
+      return near
+        ? { classification: 'csam', matchType: 'near' }
+        : { classification: 'no-known-match' };
+    });
+    const adapter = build({ verdictSource: 'production', verdictSocketPath: socketPath });
+
+    await adapter.saveRaw(await texturedPng(22, 256), '2026/11/other.png');
+
+    expect(adapter.wrapped.savedRaw).toHaveLength(1);
   });
 
   it('refuse: a known match on the socket is refused with the typed 415', async () => {
@@ -138,10 +188,9 @@ describe('the entry file passes the socket transport for verdictSource=productio
   });
 
   it('hold: against the real host end, an upload stays held until a verdict exists', async () => {
-    // The host end accepts only a PDQ key, and the decorator's digest is
-    // still a SHA-256 stand-in (pdq.js), so today the host end refuses the
-    // ask and the upload is held. A hold is the only acceptable outcome:
-    // never an allow, never a refusal as unconfigured.
+    // The host end here has no verdict for the picture's hash, so the ask is
+    // answered as unavailable and the upload is held. A hold is the only
+    // acceptable outcome: never an allow, never a refusal as unconfigured.
     rig = await startRig({ config: { askWaitMs: 100 } });
     const adapter = build({
       verdictSource: 'production',

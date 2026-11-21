@@ -75,7 +75,12 @@ export const queueBatches = sqliteTable(
     // credential later: a batch keeps the lease it was submitted under.
     leaseId: text('lease_id'),
   },
-  (table) => [index('idx_queue_batches_lease').on(table.leaseId)]
+  (table) => [
+    // Finds the batches of one newsletter for one domain, so enqueueBatch can
+    // refuse a replayed recipient. See store.md#a-replayed-batch-is-refused.
+    index('idx_queue_batches_domain_email').on(table.domain, table.emailId),
+    index('idx_queue_batches_lease').on(table.leaseId),
+  ]
 );
 
 // `id` is the drain-facing identity, stable across re-offers; the primary key

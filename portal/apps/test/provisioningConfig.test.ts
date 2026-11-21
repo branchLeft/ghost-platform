@@ -65,6 +65,33 @@ describe('the provisioning API settings', () => {
     expect(config.provisioning?.baseUrl).toBe('http://127.0.0.1:8095');
   });
 
+  it('accept plain http for loopback and for a bare service name, and for nothing else', () => {
+    const withFile = { [FILE_VARIABLE]: CREDENTIALS_FILE };
+    for (const url of [
+      'http://127.0.0.1:8095',
+      'http://localhost:8095',
+      'http://provisioning:8095',
+      'http://provisioning',
+    ]) {
+      expect(loadProvisioningSettings({ [URL_VARIABLE]: url, ...withFile }, read)?.baseUrl).toBe(
+        url
+      );
+    }
+    for (const url of [
+      'http://provisioning.example.test',
+      'http://provisioning.internal:8095',
+      'http://10.20.1.50:8095',
+      'http://[::1]:8095',
+      'http://3232235777',
+      'http://192.168.1.1',
+    ]) {
+      expect(
+        () => loadProvisioningSettings({ [URL_VARIABLE]: url, ...withFile }, read),
+        url
+      ).toThrow('must be https');
+    }
+  });
+
   it('stop the process at start when a URL that is set cannot be used', () => {
     const withFile = { [FILE_VARIABLE]: CREDENTIALS_FILE };
     const bad: Record<string, string>[] = [

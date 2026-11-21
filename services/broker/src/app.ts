@@ -219,7 +219,12 @@ async function handleReconcile(deps: BrokerDeps, body: ReconcileBody): Promise<R
   // `/reconcile`) racing this one sees an occupied slot for the whole
   // attempt, not only after it finishes.
   if (!deps.slotLock.claim(slot)) {
-    return reply(409, { error: `slot "${slot}" is locked by a concurrent request` });
+    // `reason` is what lets the control plane tell "an earlier send of this
+    // reconcile is still running" (retry later) from a refusal, as on /reset.
+    return reply(409, {
+      error: `slot "${slot}" is locked by a concurrent request`,
+      reason: 'locked',
+    });
   }
   try {
     const state = await readSlotState(deps.stateDir, slot);
@@ -797,6 +802,20 @@ async function handleFreeze(deps: BrokerDeps, body: SlotBody): Promise<FreezeRes
         lastHashId: state.lastHashId,
         evidence: 'frozen',
       });
+      // The lease and hostname this occupancy still has to purge and retire
+      // are read before the lease record goes and kept in the state, so a
+      // `/reset` after the detach recycles them as it would have without the
+      // freeze. An unreadable record fails here, before access is cut.
+      const retiring =
+        state.retiring ?? (await readRetiringLease(deps.leaseStoreConfig, slot)) ?? undefined;
+      if (retiring !== undefined) {
+        await writeSlotState(deps.stateDir, slot, {
+          phase: 'detaching' satisfies Phase,
+          lastHashId: state.lastHashId,
+          evidence: 'frozen',
+          retiring,
+        });
+      }
       // T3: cut access, revoking first as `/reset` does. Every step is idempotent.
       await deps.drainFlags.set(slot, 'a');
       await deps.drainFlags.set(slot, 'b');

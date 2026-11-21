@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { TenantDescriptor } from '../src/descriptor.js';
 import { render, renderEdgeSiteBlock, renderIdentity, renderSettings } from '../src/render.js';
+import { FOOTER_CREDIT_TEXT, FOOTER_CREDIT_URL } from '../src/settings.js';
 import { validate } from '../src/validate.js';
 import {
   TEST_ZONES,
@@ -237,6 +238,9 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
     const settings = renderSettings(descriptor, TEST_ZONES);
     expect(settings.codeinjection_head).toContain('analytics-consent');
     expect(settings.codeinjection_foot).toContain('analytics.js');
+    // The credit is its own key, never folded into the injection boxes.
+    expect(settings.codeinjection_foot).not.toContain(FOOTER_CREDIT_TEXT);
+    expect(settings.footerCredit.keepGhostCredit).toBe(true);
   });
 
   it.each([
@@ -260,6 +264,38 @@ describe('renderSettings() — codeInjection continuously reconciled', () => {
       expect(settings.body_font).toBe('');
     }
   );
+
+  it.each([
+    ['demo', demoDescriptor],
+    ['entry tenant', entryTenantDescriptor],
+    ['professional tenant', professionalTenantDescriptor],
+  ] as const)(
+    'carries the default footer credit as the owner placeholders for a %s, keeping Ghost credit',
+    (_label, fixture) => {
+      const settings = renderSettings(validate(fixture(), TEST_ZONES), TEST_ZONES);
+      expect(settings.footerCredit).toEqual({
+        text: 'FOOTER_CREDIT_TEXT',
+        url: 'PUBLICPRESS_MAIN_SITE_URL',
+        keepGhostCredit: true,
+      });
+    }
+  );
+
+  it('renders the footer credit into ghost-settings.json for every kind, and it never touches code injection', () => {
+    for (const fixture of [demoDescriptor, entryTenantDescriptor, professionalTenantDescriptor]) {
+      const artefacts = render(validate(fixture(), TEST_ZONES), TEST_ZONES);
+      const settings = JSON.parse(
+        artefacts.find((a) => a.path === 'ghost-settings.json')!.content
+      ) as Record<string, unknown>;
+      expect(settings.footerCredit).toEqual({
+        text: FOOTER_CREDIT_TEXT,
+        url: FOOTER_CREDIT_URL,
+        keepGhostCredit: true,
+      });
+      expect(settings.codeinjection_head).toBe('');
+      expect(settings.codeinjection_foot).toBe('');
+    }
+  });
 
   it("sets members_support_address to the slot's own sending address", () => {
     const descriptor = validate(entryTenantDescriptor(), TEST_ZONES);
@@ -326,6 +362,7 @@ describe('demo/entry-tenant/professional-tenant compose sanity', () => {
     expect(compose).toContain('storage__images__wrappedConfig__forcePathStyle: true');
     expect(compose).not.toContain("storage__active: 'S3Storage'");
     expect(compose).toContain('privacy__useUpdateCheck: false');
+    expect(compose).toContain('privacy__useGravatar: false');
     expect(compose).toContain('security__allowWebhookInternalIPs: false');
   });
 });
