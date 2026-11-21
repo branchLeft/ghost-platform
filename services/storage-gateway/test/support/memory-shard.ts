@@ -58,7 +58,15 @@ export async function startMemoryShard(bucket: string): Promise<MemoryShard> {
       }
       const method = req.method ?? '';
       if (key === '' && method === 'GET') {
-        const prefix = url.searchParams.get('prefix') ?? '';
+        const requested = url.searchParams.get('prefix') ?? '';
+        if (!/^[A-Za-z0-9._/-]*$/.test(requested)) {
+          res.writeHead(400, { 'content-type': 'application/xml' });
+          res.end(
+            xml('<Error><Code>InvalidArgument</Code><Message>prefix not allowed</Message></Error>')
+          );
+          return;
+        }
+        const prefix: string = requested;
         const delimiter = url.searchParams.get('delimiter');
         const after = url.searchParams.get('start-after') ?? '';
         const matching = [...objects.keys()]
