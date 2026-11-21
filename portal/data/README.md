@@ -500,6 +500,54 @@ extra, and a dropped one is missing. A grant or row-security switch that a
 later migration adds (`added`, `enabledFrom`) is expected only once that
 migration is applied, so a server held back still verifies.
 
+## Tenant erasure requests
+
+`portal.tenant_erasure_request` is a tenant's own request to erase its whole
+site (migration `0015_tenant_erasure_request`): one row per tenant for all time
+(its primary key is the tenant), the database's time of the request, a status
+(`requested`, then `key_destroyed`) and the database's time at which the owner
+role recorded that the tenant's backup key was destroyed. It has no column that
+holds text. A check ties the two together: `requested` never carries a key
+moment and `key_destroyed` always does.
+
+**Who writes and reads it.** `portal_tenant` can `INSERT` its own row
+(`TenantDb.requestOwnErasure`) and `SELECT` it (`TenantDb.ownErasure`). A
+restrictive insert policy admits only a plain `requested` row, so a tenant
+cannot file a request that already says its key is destroyed. `portal_owner`
+can `SELECT` and `UPDATE` (`OwnerDb.listErasureRequests`,
+`OwnerDb.recordKeyDestroyed`). Nothing deletes a row, and the tenant role has
+no `UPDATE`.
+
+**What a row means.** It destroys nothing. The key is destroyed on the control
+host by `erase_tenant_backup_identity.py`, and the owner role is told only from
+that command's own green proof line (the console's erasure recorder).
+`recordKeyDestroyed` moves a `requested` row and nothing else: a tenant that
+never asked cannot be recorded, and a second recording keeps the first moment.
+
+**What it may be shown as.** `deriveErasureView` returns `key_destroyed` only
+for a row that says so and carries its moment; anything else that exists is
+`requested`. A `key_destroyed` view carries the residual window as a constant:
+around 46 days from the moment the key was destroyed, `upperBoundDays: null`
+(typed `null`, not `number`) and the reason code `ANCHOR_DUMP_NEVER_PRUNED`.
+The pruner never deletes the anchor dump however old it is, so there is no
+bound, and no value derived from the clock can read as an end date.
+
+**Other tables erasure must cover.** This table records a request; it is not an
+inventory of what holds a tenant's data. Any store added later that holds
+tenant data (for example reader analytics) is part of an erasure, and its
+design must say how: by the tenant's own backup key, by a per-tenant delete, or
+as data the portal never held.
+
+Control cases (`test/tenantErasure.test.ts`): a tenant files one row with the
+database's clock and a second request records nothing; tenant B sees nothing of
+tenant A's row and cannot file for it; a tenant cannot file an already-destroyed
+row nor update or delete its own; the status is held to the closed list and the
+moment to the status; a tenant that never asked cannot be recorded as erased.
+Sabotage: an `UPDATE` grant to the tenant role lets it declare its own key
+destroyed, a lifted insert restriction lets it file an already-destroyed row,
+and a dropped moment check stores a destroyed row with no moment which is
+still shown as requested; each is restored and refused again.
+
 ## Moderation queue
 
 `portal.moderation_item` holds one row per held subject for a tenant: the

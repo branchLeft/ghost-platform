@@ -71,6 +71,7 @@ export async function startDocumentsRig(
       db: {
         listHealth: () => Promise.resolve([]),
         listSupportRequests: () => Promise.resolve([]),
+        listErasureRequests: () => Promise.resolve([]),
         publishDocument: db.publishDocument.bind(db),
       } as unknown as OwnerDb,
       secureCookies: false,

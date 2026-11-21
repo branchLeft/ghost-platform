@@ -108,6 +108,65 @@ What it writes, and what it never does:
   and one for the run, and never a reason, a clock, a lane or an id. The exit
   status is `0` only when the text was accepted and every write was made.
 
+## Erasing a whole site
+
+`/erasure` is the tenant's own request to erase its whole site, and it is not a
+member's data request: a member's request goes to the tenant, who is the
+controller, and is actioned in Ghost, never here. The page says so beside the
+one button. `POST /erasure/request` files the signed-in tenant's request: the
+handler reads no form field, so no tenant id and no text can travel with it,
+and it destroys nothing. Nothing under `portal/` can reach a host, so the key
+is destroyed where it lives, on the control host, by
+`infra/provisioning/scripts/erase_tenant_backup_identity.py`, run as root.
+
+The page says one of three things, from the tenant's own row and nothing else
+(`TenantDb.ownErasure`):
+
+- no request: the button;
+- a request, key not recorded as destroyed: that it was requested and that
+  **nothing has been erased**, with no residual window and no word for the data
+  being gone or deleted, however long it waits;
+- a request whose key is recorded as destroyed: the time the key was recorded
+  destroyed, the residual window of **around 46 days** counted from that
+  moment, that it has **no upper bound**, and why (the pruner never deletes the
+  anchor dump, however old, so a run of failed nightly dumps stretches it). It
+  prints no date on which the data is gone, because no such date is known.
+
+A row that says it is destroyed without carrying the moment, and a status the
+page does not know, are shown as requested.
+
+### The erasure recorder
+
+`src/erasure/main.ts` is one run of the recorder: it reads the erase command's
+output (its standard output and standard error together) from standard input,
+and records the key as destroyed for the one tenant that output proves. It is
+built into the same image and run inside the console container, as
+`docker exec -i <console> node dist/erasure/main.js`, so it holds no credential
+the console does not already hold (`CONSOLE_DATABASE_URL_FILE`). The container
+has no route to a host, so the host pipes the command's output in; that step is
+the departure flow's, not a hand step.
+
+It records only when all of these hold, and otherwise records nothing and exits
+1:
+
+- the text holds the command's full green proof line, word for word, for
+  exactly one tenant (`proof green: ... hold no copy`). The command's other
+  success line, `no copy of its backup identity was present; nothing to
+  erase`, is not a proof: a tenant that was never enrolled gets it too;
+- the text holds no `ALERT` line, which the command prints for a red proof;
+- the slug is a registered tenant name;
+- that tenant's request is still waiting. A tenant that never asked cannot be
+  recorded as erased, and a second run changes nothing, so the first recorded
+  moment stands (`OwnerDb.recordKeyDestroyed`).
+
+The run log has one line: the slug and the outcome, never any of the text. A
+test reads the command's own source to hold the proof text to it, so a reworded
+command stops the recorder recording rather than recording on a line it no
+longer means. The owner console lists every erasure request, waiting ones first,
+with the recorded moment; it carries no button for it.
+
+All wording is `ALL_CAPS` placeholder until the owner supplies it.
+
 ## Support tickets
 
 A signed-in tenant admin can raise a support ticket from the tenant portal. It
