@@ -5,6 +5,7 @@ import type { SupportMailer, SupportMessage } from './supportMailer.js';
 import type { RecordedScreen } from './supportScreens.js';
 import { SupportTicketError } from './supportTicketError.js';
 import { assertHeaderValue, validateContact, validateMessage } from './supportValidation.js';
+import { NO_RECORDER, type TicketRecorder } from './ticketRecorder.js';
 
 /** Where a sent ticket lands. Fixed: nothing from the request names it. */
 export const SENT_PATH = '/support/sent';
@@ -27,11 +28,13 @@ export interface TicketSubmitterOptions {
   readonly recipient: string;
   readonly sender: string;
   readonly limiter: SupportLimiter;
+  /** Holds the ticket for the owner once the mail has gone; absent, nothing is held. */
+  readonly recorder?: TicketRecorder;
 }
 
 /**
- * Turns one posted form into one email. Only the `contact` and `message`
- * fields are read. The tenant identifier, the health and the version come from
+ * Turns one posted form into one email, and then holds it as a ticket. Only the
+ * `contact` and `message` fields are read. The tenant identifier, the health and the version come from
  * fresh reads bound to the session's scope, and the screen from the caller:
  * nothing else in the request reaches the email.
  */
@@ -66,6 +69,11 @@ export class TicketSubmitter {
       replyTo: contact,
       subject: `${SUBJECT_PREFIX} ${registration.tenantId}`,
       body: renderTicketBody(context, message),
+    });
+    // The mail is the delivery and has gone; the record is the owner's list and never fails the request.
+    await (this.#options.recorder ?? NO_RECORDER).record(registration.tenantId, 'support', {
+      contact,
+      message,
     });
     return SENT_PATH;
   }

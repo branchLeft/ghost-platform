@@ -23,6 +23,7 @@ import { SupportLimiter } from './supportLimiter.js';
 import type { SupportMailer, SupportMessage, SupportSettings } from './supportMailer.js';
 import { SupportTicketError } from './supportTicketError.js';
 import { assertHeaderValue, validateContact, validateMessage } from './supportValidation.js';
+import { NO_RECORDER, type TicketRecorder } from './ticketRecorder.js';
 
 /** The fixed part of every enquiry's subject; the tenant identifier follows. */
 export const ENQUIRY_SUBJECT_PREFIX = 'PROFESSIONAL_ENQUIRY';
@@ -44,11 +45,14 @@ export interface EnquirySubmitterOptions {
   readonly enquiries: EnquiryRecorder;
   /** One line per enquiry that was sent but could not be counted: the error name only. */
   readonly onError?: (line: string) => void;
+  /** Holds the enquiry as a ticket once the mail has gone; absent, nothing is held. */
+  readonly recorder?: TicketRecorder;
 }
 
 /**
  * Turns one posted form into one email, through the support mail path: the
- * same mailer port, the same validation and the same kind of limiter. Only
+ * same mailer port, the same validation and the same kind of limiter, and then
+ * holds it as a ticket for the owner. Only
  * `contact` and `message` are read from the form. The tenant identifier is the
  * session's scope and the tenant's name is never asked for or sent.
  */
@@ -97,6 +101,11 @@ export class EnquirySubmitter {
         })
       );
     }
+    // The mail is the delivery and has gone; the ticket is the owner's list and never fails the request.
+    await (this.#options.recorder ?? NO_RECORDER).record(scope.tenantId, 'professional-enquiry', {
+      contact,
+      message,
+    });
     return PROFESSIONAL_SENT_PATH;
   }
 
@@ -116,17 +125,19 @@ export class EnquirySubmitter {
 }
 
 /**
- * The Professional enquiry: a form and one email, and one row counted for the
- * owner console. It does not call the provisioning API: the email is the
- * enquiry and the row is only its count. With no mail settings the screens do
- * not exist, as for support.
+ * The Professional enquiry: a form and one email, one row counted for the
+ * owner console, and then one ticket held for the owner through the
+ * provisioning API when the portal has it. The email is the enquiry and goes
+ * as it always did; a count or a ticket that cannot be recorded does not fail
+ * the request. With no mail settings the screens do not exist, as for support.
  */
 export function createProfessionalRoutes(
   settings: SupportSettings | undefined,
   reader: KindReader,
   clock: () => number,
   enquiries: EnquiryRecorder,
-  onError?: (line: string) => void
+  onError?: (line: string) => void,
+  recorder?: TicketRecorder
 ): RouteSet {
   if (settings === undefined) return NO_ROUTES;
   const submitter = new EnquirySubmitter({
@@ -137,6 +148,7 @@ export function createProfessionalRoutes(
     limiter: new SupportLimiter(clock),
     enquiries,
     ...(onError === undefined ? {} : { onError }),
+    ...(recorder === undefined ? {} : { recorder }),
   });
   const pages: Record<string, PromotionPage> = {
     [PROFESSIONAL_PATH]: async (scope) =>

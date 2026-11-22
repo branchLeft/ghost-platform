@@ -47,7 +47,7 @@ See `render-core/src/environment.md#widget-origin`.
 `activeColour` (`'a'` or `'b'`, default `'a'`) is passed to `render()`, and the
 rendered `compose.yml` carries that colour's Ghost service only. The idle
 colour is not parked behind a profile: it is absent. This is the owner's Mode A
-ruling of 19 November (branchLeft/workspace#3017). Two Ghosts on one database
+ruling of 19 November. Two Ghosts on one database
 both run `resumeInterruptedSends()` at boot and both poll for welcome mail, so
 a newsletter or a welcome mail can go twice; nothing in the database stops the
 second set of rows. With one service in the file, the generic unit's `docker

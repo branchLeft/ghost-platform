@@ -23,7 +23,7 @@ choice). CLI: `GHOST_ORIGIN=... CSP_DERIVE_PATHS=/,/p/ node csp/gate/theme-hash-
 `judgeRegression` is the verdict on `csp/proof/capture-csp.mjs` output: injected
 script did not run, Portal's email field rendered, exactly one violation and it
 is the inline-script attack, and a script the tenant uploaded did not run
-because the edge refused it (403). The last is one found in the private tracker: `script-src
+because the edge refused it (403). The last is the `script-src
 'self'` allows an uploaded `.js`, so the policy alone cannot stop it.
 `csp-regression-gate.sh` runs it live (Docker, Chromium via `csp/proof`):
 it uploads `x.js` through Ghost's files endpoint (the storage adapter's

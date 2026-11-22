@@ -1,6 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { createSqliteStore, TenantRegistrationRefused, type ShimStore } from './store.js';
+import {
+  createSqliteStore,
+  isLeaseId,
+  TenantRegistrationRefused,
+  type ShimStore,
+} from './store.js';
 
 export interface CliIO {
   stdout: (line: string) => void;
@@ -76,6 +81,8 @@ export async function runCli(
       const senderDomain = senderDomainIndex !== -1 ? rest[senderDomainIndex + 1] : undefined;
       const localPartIndex = rest.indexOf('--sender-local-part');
       const senderLocalPart = localPartIndex !== -1 ? rest[localPartIndex + 1] : undefined;
+      const leaseIndex = rest.indexOf('--lease');
+      const lease = leaseIndex !== -1 ? rest[leaseIndex + 1] : undefined;
       // A flag can never fill the positional slot, and a flag can never be
       // another flag's own value — see looksLikeFlag's own doc comment for
       // the two shapes this refuses.
@@ -89,10 +96,14 @@ export async function runCli(
         (localPartIndex !== -1 &&
           (senderLocalPart === undefined ||
             looksLikeFlag(senderLocalPart) ||
-            !isLocalPart(senderLocalPart)))
+            !isLocalPart(senderLocalPart))) ||
+        (leaseIndex !== -1 && (lease === undefined || !isLeaseId(lease)))
       ) {
         io.stderr(
-          'Usage: register <credential-domain> --sender-domain <domain> [--sender-local-part <local-part>] [--rotate]'
+          'Usage: register <credential-domain> --sender-domain <domain> [--sender-local-part <local-part>] [--lease <lease-id>] [--rotate]'
+        );
+        io.stderr(
+          'With --lease the credential serves that demo lease (a 26-character ULID): every batch it enqueues is stamped with it, so a recycle can purge exactly that lease (purge-lease).'
         );
         io.stderr(
           'Both <credential-domain> and <domain> must be plain lowercase hostnames (e.g. blog.branchleft.co.uk).'
@@ -116,7 +127,7 @@ export async function runCli(
         }
         const apiKey = generateApiKey();
         try {
-          store.registerTenant(domain, apiKey, senderDomain, senderLocalPart ?? null);
+          store.registerTenant(domain, apiKey, senderDomain, senderLocalPart ?? null, lease);
         } catch (err) {
           return reportRefusal(err, io);
         }
@@ -195,6 +206,57 @@ export async function runCli(
           return 1;
         }
         io.stdout(`Bound ${domain} to the From local part ${localPart}.`);
+        return 0;
+      } finally {
+        store.close();
+      }
+    }
+
+    case 'set-lease': {
+      const domain = rest[0];
+      const lease = rest[1];
+      if (
+        !domain ||
+        !lease ||
+        rest.length !== 2 ||
+        looksLikeFlag(domain) ||
+        !isPlainLowercaseHostname(domain) ||
+        !isLeaseId(lease)
+      ) {
+        io.stderr('Usage: set-lease <credential-domain> <lease-id>');
+        io.stderr(
+          '<credential-domain> must be a plain lowercase hostname and <lease-id> a 26-character ULID.'
+        );
+        return 1;
+      }
+      const store = openStore();
+      try {
+        if (!store.setTenantLease(domain, lease)) {
+          io.stderr(`Tenant ${domain} is not registered. Use register to create it.`);
+          return 1;
+        }
+        io.stdout(`Bound ${domain} to lease ${lease}.`);
+        return 0;
+      } finally {
+        store.close();
+      }
+    }
+
+    case 'purge-lease': {
+      // Deletes unsent mail, so it takes the lease id once, exactly: it
+      // names one lease, never a credential domain. See cli.md#purge-lease.
+      const lease = rest[0];
+      if (!lease || rest.length !== 1 || !isLeaseId(lease)) {
+        io.stderr('Usage: purge-lease <lease-id>');
+        io.stderr('<lease-id> must be a 26-character ULID. Nothing was purged.');
+        return 1;
+      }
+      const store = openStore();
+      try {
+        const { recipients, batches } = store.purgeLease(lease);
+        io.stdout(
+          `Purged lease ${lease}: ${recipients} unsent recipient(s) and ${batches} empty batch(es) removed.`
+        );
         return 0;
       } finally {
         store.close();
@@ -285,7 +347,7 @@ export async function runCli(
     default:
       io.stderr(`Unknown command: ${command ?? '(none)'}`);
       io.stderr(
-        'Usage: cli.js <register|set-sender-domain|set-sender-local-part|remove|list|events> ...'
+        'Usage: cli.js <register|set-sender-domain|set-sender-local-part|set-lease|purge-lease|remove|list|events> ...'
       );
       return 1;
   }

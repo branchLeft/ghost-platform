@@ -1,4 +1,4 @@
-# The live-proof origin for branchLeft/workspace#1238: the same
+# The live-proof origin for the strict content policy: the same
 # self-hosted-widgets origin widgets/origin/ builds (so Portal loads from
 # our own origin, not a third-party CDN -- see widgets/README.md), plus a
 # header this story adds on top: the CSP header run-proof.sh sets per pass,

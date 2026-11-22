@@ -1207,7 +1207,7 @@
       "reason": "python3.13 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
       "expires": "2026-12-10",
-      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026"
     },
     {
       "vulnerability": "CVE-2026-19445",
@@ -1216,7 +1216,7 @@
       "reason": "python3.13-minimal 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
       "expires": "2026-12-10",
-      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026"
     },
     {
       "vulnerability": "CVE-2026-19445",
@@ -1225,7 +1225,7 @@
       "reason": "libpython3.13-minimal 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
       "expires": "2026-12-10",
-      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026"
     },
     {
       "vulnerability": "CVE-2026-19445",
@@ -1234,7 +1234,7 @@
       "reason": "libpython3.13-stdlib 3.13.5-2+deb13u5 (trixie). Tracker https://security-tracker.debian.org/tracker/CVE-2026-19445: trixie vulnerable, no fix; only sid 3.13.18-1 fixed. The flaw is a use-after-free in the server-side ssl.SSLContext.sni_callback only. The image runs no Python TLS server and exposes no port. python3 runs only for the build-time install_host_prereqs.py, as an HTTPS client. python3 depends on python3.13.",
       "granted": "2026-11-10",
       "expires": "2026-12-10",
-      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026, https://github.com/branchLeft/workspace/issues/3203#issuecomment-6775616349"
+      "approved-by": "Rob, Desk decision db-recovery-criticals, 10 Nov 2026"
     }
   ]
 }

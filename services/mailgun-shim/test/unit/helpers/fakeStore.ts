@@ -99,6 +99,20 @@ export function createFakeStore(): FakeShimStore {
       });
     },
 
+    // Not modelled: the lease purge is the real store's, covered by
+    // storeLeasePurge.test.ts against SQLite.
+    tenantLease() {
+      throw new Error('fake store does not model leases');
+    },
+
+    setTenantLease() {
+      throw new Error('fake store does not model leases');
+    },
+
+    purgeLease() {
+      throw new Error('fake store does not model leases');
+    },
+
     async verifyTenant(domain, apiKey) {
       const stored = tenants.get(domain);
       return stored !== undefined && stored.apiKey === apiKey

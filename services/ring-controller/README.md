@@ -87,7 +87,7 @@ The narrative is in `src/README.md`.
 
 ## One Ghost colour at a time (Mode A)
 
-The owner's ruling of 19 November (branchLeft/workspace#3017): a tenant never
+The owner's ruling of 19 November: a tenant never
 runs two Ghost colours. Two Ghosts on one database both run
 `resumeInterruptedSends()` at boot and both poll for welcome mail, so a
 newsletter or a welcome mail can go twice, and nothing in the database refuses
@@ -134,7 +134,7 @@ that `compose.yml` never carries two Ghost services, is
 `infra/tenant/one-colour.test.ts`.
 
 What is not here: the real `ColourHost` (the docker and systemd calls on the
-app host, and the scratch-copy migration check, branchLeft/workspace#3134),
+app host, and the scratch-copy migration check),
 and the 03:00 window policy.
 
 ## Unattended minors: the decision, switched off

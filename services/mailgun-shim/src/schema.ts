@@ -21,6 +21,11 @@ export const tenants = sqliteTable(
     // The one From local part this credential may send as, lower-cased; null
     // means any local part at the sender domain. See store.md#sender-local-part.
     senderLocalPart: text('sender_local_part'),
+    // The demo lease this credential currently serves (a ULID), stamped onto
+    // every batch it enqueues so a recycle can purge that lease's unsent mail
+    // and nothing else. Null for a credential that serves no lease. See
+    // store.md#the-lease-a-batch-belongs-to.
+    leaseId: text('lease_id'),
   },
   (table) => [
     // Backstop for the store's own check: one address, one credential. SQLite
@@ -66,11 +71,15 @@ export const queueBatches = sqliteTable(
     payload: text('payload').notNull(),
     createdAt: real('created_at').notNull(),
     completedAt: real('completed_at'),
+    // The submitting credential's lease at enqueue, never read back from the
+    // credential later: a batch keeps the lease it was submitted under.
+    leaseId: text('lease_id'),
   },
   (table) => [
     // Finds the batches of one newsletter for one domain, so enqueueBatch can
     // refuse a replayed recipient. See store.md#a-replayed-batch-is-refused.
     index('idx_queue_batches_domain_email').on(table.domain, table.emailId),
+    index('idx_queue_batches_lease').on(table.leaseId),
   ]
 );
 

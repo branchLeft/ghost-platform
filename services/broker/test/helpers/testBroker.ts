@@ -301,6 +301,12 @@ export async function startTestBroker(options: TestBrokerOptions = {}): Promise<
     drainSource,
     seamReadiness: { notReal: [], interim: [] },
     leaseStoreConfig: { slotsPath, leaseDir, nowMs: () => nowMs },
+    // Resolves harmlessly: a test that cares about the recycle's mail and
+    // hostname residues wraps this through `wrapDeps` (recycle.test.ts).
+    recycle: {
+      async purgeUnsentMail() {},
+      async retireHostname() {},
+    },
     drainFlags: createDrainFlagStore(drainFlagDir),
     imagePush: {
       loader: imageLoader,

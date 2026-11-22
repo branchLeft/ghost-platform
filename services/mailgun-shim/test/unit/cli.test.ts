@@ -742,3 +742,117 @@ describe('runCli — one credential per key and per sender address', () => {
     ]);
   });
 });
+
+describe('runCli — the lease a credential serves, and purging it', () => {
+  const LEASE_1 = '01J9F4Q7ZC3M8V2K6X0R5T1B9D';
+  const LEASE_2 = '01J9F4Q7ZC3M8V2K6X0R5T1B9E';
+  const CREDENTIAL = 'slot-30001.demo-mail.example.test';
+  let dir: string;
+  let dbPath: string;
+  let open: () => ShimStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'shim-cli-lease-'));
+    dbPath = join(dir, 'shim.db');
+    open = () => createSqliteStore(dbPath);
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function lease(): string | null {
+    const store = open();
+    try {
+      return store.tenantLease(CREDENTIAL);
+    } finally {
+      store.close();
+    }
+  }
+
+  it('register --lease binds the credential to the lease, and refuses a malformed one without registering', async () => {
+    const base = ['register', CREDENTIAL, '--sender-domain', 'demo-mail.example.test'];
+
+    const bad = captureIo();
+    expect(await runCli([...base, '--lease', 'nope'], open, bad.io)).toBe(1);
+    expect(bad.stderr[0]).toContain('Usage: register');
+    expect(lease()).toBeNull();
+    const store = open();
+    expect(store.tenantExists(CREDENTIAL)).toBe(false);
+    store.close();
+
+    expect(await runCli([...base, '--lease', LEASE_1], open, captureIo().io)).toBe(0);
+    expect(lease()).toBe(LEASE_1);
+  });
+
+  it('set-lease rebinds a registered credential, and reports an unknown one or a bad lease', async () => {
+    await runCli(
+      ['register', CREDENTIAL, '--sender-domain', 'demo-mail.example.test', '--lease', LEASE_1],
+      open,
+      captureIo().io
+    );
+
+    const moved = captureIo();
+    expect(await runCli(['set-lease', CREDENTIAL, LEASE_2], open, moved.io)).toBe(0);
+    expect(moved.stdout).toEqual([`Bound ${CREDENTIAL} to lease ${LEASE_2}.`]);
+    expect(lease()).toBe(LEASE_2);
+
+    const unknown = captureIo();
+    expect(
+      await runCli(['set-lease', 'slot-39999.demo-mail.example.test', LEASE_2], open, unknown.io)
+    ).toBe(1);
+    expect(unknown.stderr[0]).toContain('is not registered');
+
+    const bad = captureIo();
+    expect(await runCli(['set-lease', CREDENTIAL, 'nope'], open, bad.io)).toBe(1);
+    expect(bad.stderr[0]).toBe('Usage: set-lease <credential-domain> <lease-id>');
+    expect(await runCli(['set-lease', CREDENTIAL], open, captureIo().io)).toBe(1);
+    expect(lease()).toBe(LEASE_2);
+  });
+
+  it('purge-lease removes that lease’s unsent mail and says how much, and refuses a domain in the lease slot', async () => {
+    await runCli(
+      ['register', CREDENTIAL, '--sender-domain', 'demo-mail.example.test', '--lease', LEASE_1],
+      open,
+      captureIo().io
+    );
+    const store = open();
+    store.enqueueBatch({
+      batchId: 'b1',
+      domain: CREDENTIAL,
+      emailId: null,
+      payload: {
+        from: 'a@b.test',
+        subject: 's',
+        html: '',
+        text: '',
+        headers: {},
+        recipientVariables: {},
+      },
+      recipients: ['x@example.test', 'y@example.test'],
+      now: 1,
+    });
+    store.close();
+
+    const refused = captureIo();
+    expect(await runCli(['purge-lease', CREDENTIAL], open, refused.io)).toBe(1);
+    expect(refused.stderr).toEqual([
+      'Usage: purge-lease <lease-id>',
+      '<lease-id> must be a 26-character ULID. Nothing was purged.',
+    ]);
+    const check = open();
+    expect(check.countUndrainedRecipients()).toBe(2);
+    check.close();
+
+    const purged = captureIo();
+    expect(await runCli(['purge-lease', LEASE_1], open, purged.io)).toBe(0);
+    expect(purged.stdout).toEqual([
+      `Purged lease ${LEASE_1}: 2 unsent recipient(s) and 1 empty batch(es) removed.`,
+    ]);
+    const after = open();
+    expect(after.countUndrainedRecipients()).toBe(0);
+    after.close();
+
+    expect(await runCli(['purge-lease', LEASE_1, 'extra'], open, captureIo().io)).toBe(1);
+  });
+});

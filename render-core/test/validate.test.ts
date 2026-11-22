@@ -625,6 +625,143 @@ describe('validate() — mail sending identity', () => {
     expect(() => validate(descriptor, TEST_ZONES)).toThrow(FieldValidationError);
   });
 
+  describe('named sending-domain exception (tenant zero)', () => {
+    const TENANT_ZERO_REPO = 'branchLeft/ghost-tenant-blog';
+    const TENANT_ZERO_DOMAIN = 'blog.branchleft.co.uk';
+    // Real-style owned domains: tenant zero's name sits under an owned
+    // registrable domain, which is the case the exception exists for.
+    const ZONES_OWNING_BRANCHLEFT = {
+      ...TEST_ZONES,
+      ownedDomains: [...TEST_ZONES.ownedDomains, 'branchleft.co.uk'],
+    };
+    // Slug-derived names (database, bucket) must follow the slug, or an
+    // earlier check refuses the descriptor before the mail rule is reached.
+    const blogWithSendingDomain = (domain: string, slug = 'blog'): TenantDescriptor => {
+      const base = tenantDescriptor();
+      const name = slug === 'blog' ? 'blog' : 'acme';
+      return {
+        ...base,
+        slug: slug as TenantDescriptor['slug'],
+        database: { ...base.database, name: `ghost_${name}`, user: `ghost_${name}` },
+        media: { ...base.media, bucket: `branchleft-media-${name}` },
+        mail: {
+          ...base.mail,
+          identity: { kind: 'tenant', domain, dkimSelector: 'bl' },
+        },
+      } as TenantDescriptor;
+    };
+    const mailFieldError = (
+      descriptor: TenantDescriptor,
+      zones: typeof TEST_ZONES,
+      claimantRepo: string | undefined
+    ): unknown => {
+      try {
+        validate(descriptor, zones, { claimantRepo });
+      } catch (error) {
+        if (error instanceof FieldValidationError && error.field === 'mail.identity.domain') {
+          return error;
+        }
+        return undefined;
+      }
+      return undefined;
+    };
+
+    it('accepts tenant zero signing its own blog.branchleft.co.uk domain, as the register entry', () => {
+      expect(() =>
+        validate(blogWithSendingDomain(TENANT_ZERO_DOMAIN), ZONES_OWNING_BRANCHLEFT, {
+          claimantRepo: TENANT_ZERO_REPO,
+        })
+      ).not.toThrow();
+    });
+
+    it('refuses the same sending domain for a slug other than tenant zero', () => {
+      const error = mailFieldError(
+        blogWithSendingDomain(TENANT_ZERO_DOMAIN, 'acme'),
+        ZONES_OWNING_BRANCHLEFT,
+        'branchLeft/ghost-tenant-acme'
+      );
+      expect(error).toBeInstanceOf(FieldValidationError);
+    });
+
+    it('refuses the exception when the caller is not the register repository for tenant zero', () => {
+      expect(() =>
+        validate(blogWithSendingDomain(TENANT_ZERO_DOMAIN), ZONES_OWNING_BRANCHLEFT, {
+          claimantRepo: 'branchLeft/ghost-tenant-other',
+        })
+      ).toThrow();
+    });
+
+    const theirsHostname = (fqdn: string): TenantDescriptor['hostname'] => ({
+      kind: 'theirs',
+      fqdn,
+      verifiedAt: '2026-11-01T21:40:27.000Z' as Instant,
+    });
+    // A `theirs` hostname must match siteUrl exactly, so both move together.
+    const withHostname = (descriptor: TenantDescriptor, fqdn: string): TenantDescriptor =>
+      ({
+        ...descriptor,
+        siteUrl: `https://${fqdn}`,
+        hostname: theirsHostname(fqdn),
+      }) as TenantDescriptor;
+
+    it('accepts tenant zero keeping its blog.branchleft.co.uk hostname under the same exception', () => {
+      expect(() =>
+        validate(
+          withHostname(blogWithSendingDomain(TENANT_ZERO_DOMAIN), TENANT_ZERO_DOMAIN),
+          ZONES_OWNING_BRANCHLEFT,
+          { claimantRepo: TENANT_ZERO_REPO }
+        )
+      ).not.toThrow();
+    });
+
+    it('refuses another tenant on an owned domain, even when it names the exception domain', () => {
+      let caught: unknown;
+      try {
+        validate(
+          withHostname(blogWithSendingDomain('acme.example.test', 'acme'), TENANT_ZERO_DOMAIN),
+          ZONES_OWNING_BRANCHLEFT,
+          { claimantRepo: 'branchLeft/ghost-tenant-acme' }
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+    });
+
+    it('refuses tenant zero hostname subdomains and siblings under an owned domain', () => {
+      for (const fqdn of [`www.${TENANT_ZERO_DOMAIN}`, 'other.branchleft.co.uk']) {
+        let caught: unknown;
+        try {
+          validate(
+            withHostname(blogWithSendingDomain(TENANT_ZERO_DOMAIN), fqdn),
+            ZONES_OWNING_BRANCHLEFT,
+            { claimantRepo: TENANT_ZERO_REPO }
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+      }
+    });
+
+    it('refuses a subdomain and a sibling of the exception domain', () => {
+      expect(
+        mailFieldError(
+          blogWithSendingDomain(`mail.${TENANT_ZERO_DOMAIN}`),
+          ZONES_OWNING_BRANCHLEFT,
+          TENANT_ZERO_REPO
+        )
+      ).toBeInstanceOf(FieldValidationError);
+      expect(
+        mailFieldError(
+          blogWithSendingDomain('other.branchleft.co.uk'),
+          ZONES_OWNING_BRANCHLEFT,
+          TENANT_ZERO_REPO
+        )
+      ).toBeInstanceOf(FieldValidationError);
+    });
+  });
+
   it('rejects a tenant mail.identity.domain equal to a platform-owned domain', () => {
     const descriptor: TenantDescriptor = {
       ...tenantDescriptor(),

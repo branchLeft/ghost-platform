@@ -132,9 +132,9 @@ def _self_test() -> None:
         repository_names=["HETZNER_S3_ACCESS_KEY_ID", "HETZNER_S3_SECRET_ACCESS_KEY"],
     )
     assert not missing and not shadowed, (
-        "expected a pass with HETZNER_S3_* at the repository level and the "
-        "app key environment-scoped -- this is the exact case "
-        "branchLeft/workspace#284 could not construct before the rename"
+        "expected a pass with HETZNER_S3_* at the repository level and "
+        "TENANT_PROVISIONING_APP_PRIVATE_KEY environment-scoped -- this is the exact case "
+        "that could not be constructed before the rename"
     )
 
     # MISSING: nothing has been scoped to the environment yet.

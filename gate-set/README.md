@@ -1,13 +1,13 @@
 # gate-set: the per-digest gate set
 
-Every candidate digest runs six gates against the image built from it. What each
+Every candidate digest runs seven gates against the image built from it. What each
 gate found is written to one record named for the digest. A red gate refuses the
 candidate. The record is what the attestation step reads: a candidate is
 attested only if `verify` says its record is green, complete and for that digest.
 
 Fixed code. No model, no agent and no person in the path.
 
-## The six gates
+## The seven gates
 
 They run cheapest first, all of them, so a red candidate still has a full record.
 
@@ -19,6 +19,7 @@ They run cheapest first, all of them, so a red candidate still has a full record
 | `theme-scan`     | `themes/image/themes.image.test.mjs`                                                              | every bundled theme renders from the image with no outside origin               |
 | `mail`           | `scripts/mail-gate/mail-gate.mjs`                                                                 | a magic link and a newsletter both reach the image's own spool                  |
 | `content-policy` | `csp/gate/csp-regression-gate.sh`                                                                 | a hostile `codeinjection_head` did not run under the policy; the theme-hash gate runs inside this script |
+| `node-env`       | `gate-set/node_env_gate.py`, which runs the image with no NODE_ENV override                       | the process reports `NODE_ENV=production`, read from inside the container        |
 
 A gate passes only by returning `ok: true`. A thrown error, a gate that is not
 wired and any other return value are red.

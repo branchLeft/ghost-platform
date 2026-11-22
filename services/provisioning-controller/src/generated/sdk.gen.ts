@@ -4,7 +4,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client/index.js';
-import type { ApprovePromotionRequestData, ApprovePromotionRequestErrors, ApprovePromotionRequestResponses, CreatePromotionRequestData, CreatePromotionRequestErrors, CreatePromotionRequestResponses, GetDemoData, GetDemoErrors, GetDemoResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListPromotionRequestsData, ListPromotionRequestsErrors, ListPromotionRequestsResponses } from './types.gen.js';
+import type { ApprovePromotionRequestData, ApprovePromotionRequestErrors, ApprovePromotionRequestResponses, CreatePromotionRequestData, CreatePromotionRequestErrors, CreatePromotionRequestResponses, CreateTicketData, CreateTicketErrors, CreateTicketResponses, GetDemoData, GetDemoErrors, GetDemoResponses, GetTenantData, GetTenantErrors, GetTenantResponses, ListPromotionRequestsData, ListPromotionRequestsErrors, ListPromotionRequestsResponses, ListTicketsData, ListTicketsErrors, ListTicketsResponses, MoveTicketData, MoveTicketErrors, MoveTicketResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -67,11 +67,52 @@ export const getDemo = <ThrowOnError extends boolean = false>(options: Options<G
 /**
  * Ask for the Essentials tier, or open the Professional enquiry
  *
- * Records one promotion request against the tenant's demo. `tier` is `essentials` (a request the owner can approve) or `professional-enquiry` (opens the dialogue about the Professional tier; it is recorded and listed for the owner but cannot be approved here). The tenant may have one open request at a time. Asking again for the tier already requested is a replay: it creates nothing and returns the existing request, with the same status as the first ask (201). Asking for the other tier while one is open is refused (409 `request-already-open`). The demo must be in a state it can be promoted from, `LIVE`, `EXTENDED` or `EXPIRING`; otherwise 409 `demo-not-promotable`.
+ * Records one promotion request against the tenant's demo. `tier` is `essentials` (a request the owner can approve) or `professional-enquiry` (opens the dialogue about the Professional tier; it is recorded and listed for the owner but cannot be approved here). The tenant may have one open request at a time. Asking again for the tier already requested is a replay: it creates nothing and returns the existing request, with the same status as the first ask (201). Asking for the other tier while one is open is refused (409 `request-already-open`). The demo must be in a state it can be promoted from, `LIVE`, `EXTENDED` or `EXPIRING`; otherwise 409 `demo-not-promotable`. A request that is newly recorded also records one ticket of the same kind in state `new`, in the same change (see `moveTicket`); a replay records none.
  */
 export const createPromotionRequest = <ThrowOnError extends boolean = false>(options: Options<CreatePromotionRequestData, ThrowOnError>): RequestResult<CreatePromotionRequestResponses, CreatePromotionRequestErrors, ThrowOnError> => (options.client ?? client).post<CreatePromotionRequestResponses, CreatePromotionRequestErrors, ThrowOnError>({
     security: [{ name: 'X-Tenant-Credential', type: 'apiKey' }],
     url: '/tenants/{tenant}/promotion-requests',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Record a support ticket or a Professional enquiry
+ *
+ * Records one contact request the tenant raised from its portal as a ticket in state `new`. `kind` is `support` or `professional-enquiry`; an Essentials request is recorded as a ticket by `createPromotionRequest` itself and cannot be created here. The portal has already sent the mail for the request: this is the owner's record of it, not a second delivery. A tenant may hold at most 50 tickets that are not `closed`; past that the answer is 409 `ticket-limit`.
+ */
+export const createTicket = <ThrowOnError extends boolean = false>(options: Options<CreateTicketData, ThrowOnError>): RequestResult<CreateTicketResponses, CreateTicketErrors, ThrowOnError> => (options.client ?? client).post<CreateTicketResponses, CreateTicketErrors, ThrowOnError>({
+    security: [{ name: 'X-Tenant-Credential', type: 'apiKey' }],
+    url: '/tenants/{tenant}/tickets',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * List tickets, oldest first
+ *
+ * The owner console's ticket list, every contact request at every tier. With `state`, only tickets in that state; with `kind`, only that kind; with both, tickets that match both. Oldest `created_at` first.
+ */
+export const listTickets = <ThrowOnError extends boolean = false>(options?: Options<ListTicketsData, ThrowOnError>): RequestResult<ListTicketsResponses, ListTicketsErrors, ThrowOnError> => (options?.client ?? client).get<ListTicketsResponses, ListTicketsErrors, ThrowOnError>({
+    security: [{ name: 'X-Owner-Credential', type: 'apiKey' }],
+    url: '/tickets',
+    ...options
+});
+
+/**
+ * Move a ticket to another state
+ *
+ * The owner moves a ticket through its lifecycle. The states are `new`, `open`, `replied` and `closed`. A ticket is `new` until the owner first moves it, and is never moved back to `new`. From `new` it may go to `open`, `replied` or `closed`; from `open` to `replied` or `closed`; from `replied` to `open` (the customer wrote again) or `closed`; from `closed` to `open` (reopened). Any other move, including to the state the ticket is already in, is refused (409 `illegal-transition`) and changes nothing. Every move is appended to the ticket's `history`.
+ */
+export const moveTicket = <ThrowOnError extends boolean = false>(options: Options<MoveTicketData, ThrowOnError>): RequestResult<MoveTicketResponses, MoveTicketErrors, ThrowOnError> => (options.client ?? client).post<MoveTicketResponses, MoveTicketErrors, ThrowOnError>({
+    security: [{ name: 'X-Owner-Credential', type: 'apiKey' }],
+    url: '/tickets/{id}/state',
     ...options,
     headers: {
         'Content-Type': 'application/json',

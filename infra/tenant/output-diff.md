@@ -32,7 +32,7 @@ decision.
   where another decision below changes it, and `ghost-b` is its twin on
   `ports.b`.
 - **`one-colour-at-a-time`**: the owner's Mode A ruling of 19 November
-  (branchLeft/workspace#3017): a tenant never has two Ghosts running, because
+  a tenant never has two Ghosts running, because
   two Ghosts on one database send a newsletter or a welcome mail twice. The
   document carries one colour, `ghost-a` unless `activeColour: 'b'`, so
   `compose.serviceNames` reads `ghost-a`, not `ghost-a,ghost-b`. `ghost-b` is

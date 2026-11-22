@@ -14,6 +14,7 @@ export const DRAIN_HANDOVER = 1;
 export const SENDER_DOMAIN = 2;
 export const SENDER_LOCAL_PART = 3;
 export const REPLAY_DEDUPE_INDEX = 4;
+export const DEMO_LEASE = 5;
 
 /** drizzle's own migration ledger, so drizzle-kit and this runner read one history. */
 export const migrationsLedger = sqliteTable('__drizzle_migrations', {

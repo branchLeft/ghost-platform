@@ -11,7 +11,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { zDemo, zPromotionRequest, zTenant } from '../generated/zod.gen.js';
+import { zDemo, zPromotionRequest, zTenant, zTicket } from '../generated/zod.gen.js';
 import type { StoreState } from './store.js';
 
 /**
@@ -31,6 +31,8 @@ const zState = z.strictObject({
   sequence: z.number().int().nonnegative(),
   tenants: z.array(z.strictObject({ tenant: zTenant, demo: zDemo })),
   requests: z.array(zPromotionRequest),
+  // A state written before tickets existed has none.
+  tickets: z.array(zTicket).default([]),
 });
 
 export class StateFileError extends Error {
