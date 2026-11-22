@@ -236,6 +236,9 @@ jobs:
       - name: Workflow permissions test
         run: python3 -m unittest discover -s scripts -p 'test_workflow_permissions.py'
 
+      - name: Apply-gate operands on the ghost-platform calls
+        run: python3 -m unittest discover -s scripts -p 'test_apply_gate_operands.py' -v
+
       # GitHub drops scheduled runs queued for minute 0 of an hour when it is
       # busy. Fails a `cron` entry that fires at minute 0.
       - name: Workflow cron minute test
@@ -343,6 +346,9 @@ jobs:
           verdict-step: noop
           summary-step: Write the plan to the job summary
           plan-file: preview-plan.json
+          required-operands: |
+            github.event_name == 'push'
+            github.ref == 'refs/heads/main'
 
       - name: Check the apply gate (demo host)
         uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
@@ -352,3 +358,6 @@ jobs:
           verdict-step: noop
           summary-step: Write the plan to the job summary
           plan-file: preview-plan.json
+          required-operands: |
+            github.event_name == 'push'
+            github.ref == 'refs/heads/main'
