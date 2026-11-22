@@ -5,13 +5,24 @@ import { demoHostFirewallRules, edge1SshSource } from './firewall';
 const EDGE1 = '95.217.1.1';
 
 describe('demoHostFirewallRules', () => {
-  it('is exactly 22 from edge1, 80 and 443 from anywhere, inbound only', () => {
+  it('is exactly 22 and 9100 from edge1, 80 and 443 from anywhere, inbound only', () => {
     const rules = demoHostFirewallRules(EDGE1).map(({ description: _, ...rule }) => rule);
     expect(rules).toEqual([
       { direction: 'in', protocol: 'tcp', port: '22', sourceIps: ['95.217.1.1/32'] },
+      { direction: 'in', protocol: 'tcp', port: '9100', sourceIps: ['95.217.1.1/32'] },
       { direction: 'in', protocol: 'tcp', port: '80', sourceIps: ['0.0.0.0/0', '::/0'] },
       { direction: 'in', protocol: 'tcp', port: '443', sourceIps: ['0.0.0.0/0', '::/0'] },
     ]);
+  });
+
+  it('admits the metrics port from the one edge1 address and never from anywhere', () => {
+    const metrics = demoHostFirewallRules(EDGE1).filter((rule) => rule.port === '9100');
+    expect(metrics).toHaveLength(1);
+    expect(metrics[0]?.sourceIps).toEqual(['95.217.1.1/32']);
+    const open = demoHostFirewallRules(EDGE1).filter((rule) =>
+      JSON.stringify(rule.sourceIps).includes('/0')
+    );
+    expect(open.map((rule) => rule.port)).toEqual(['80', '443']);
   });
 
   it('carries no outbound rule, so the host keeps NTP and its updates', () => {

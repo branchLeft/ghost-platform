@@ -66,13 +66,14 @@ describe('the demo host program', () => {
     ]);
   });
 
-  it("creates the server behind exactly 22 from edge1's address, and 80 and 443 from anywhere", () => {
+  it("creates the server behind exactly 22 and 9100 from edge1's address, and 80 and 443 from anywhere", () => {
     const firewall = only('hcloud:index/firewall:Firewall');
     const rules = (firewall.inputs['rules'] as Record<string, unknown>[]).map(
       ({ description: _, ...rule }) => rule
     );
     expect(rules).toEqual([
       { direction: 'in', protocol: 'tcp', port: '22', sourceIps: [`${EDGE1}/32`] },
+      { direction: 'in', protocol: 'tcp', port: '9100', sourceIps: [`${EDGE1}/32`] },
       { direction: 'in', protocol: 'tcp', port: '80', sourceIps: ['0.0.0.0/0', '::/0'] },
       { direction: 'in', protocol: 'tcp', port: '443', sourceIps: ['0.0.0.0/0', '::/0'] },
     ]);
