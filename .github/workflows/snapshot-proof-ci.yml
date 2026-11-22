@@ -145,6 +145,34 @@ jobs:
           echo "exit code: $rc (1 is red as expected)"
           test "$rc" = 1
 
+      # The privilege is held only through a role that is not a default role,
+      # so nothing changes at run time and only the grant listing shows it.
+      # The log must name it: a red for another reason is not this one.
+      - name: Red case, BACKUP_ADMIN held through a role
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-backup-admin-through-role.log"
+          SABOTAGE=backup-admin-through-role db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 3,' "$log" | grep -F 'BACKUP_ADMIN'
+
+      # No blog transaction is held across the lock request. Control 1 must
+      # say that no commit was in flight, so the in-flight case is shown to be
+      # observed and not assumed.
+      - name: Red case, no blog transaction in flight
+        if: ${{ !cancelled() }}
+        run: |
+          rc=0
+          log="$RUNNER_TEMP/red-no-inflight-transaction.log"
+          SABOTAGE=no-inflight-transaction db/provision/prove-replication-client.sh >"$log" 2>&1 || rc=$?
+          cat "$log"
+          echo "exit code: $rc (1 is red as expected)"
+          test "$rc" = 1
+          grep -F 'RED control 1,' "$log" | grep -F 'no commit was in flight'
+
       # The Percona Server proof (percona_snapshot_probe.md). The candidate
       # image is the one digest prove-percona-snapshot.sh pins, pulled by digest
       # first so a pull failure shows here. The red cases come before the
