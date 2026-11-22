@@ -63,6 +63,13 @@ export interface StateRoutedRequest {
   readonly key?: string;
   /** The decoded `prefix` of a listing; present only for `ListObjectsV2`. */
   readonly listPrefix?: string;
+  /**
+   * The validated query of a listing, decoded, in the order sent: what the
+   * upstream call is rebuilt from, never the client's own target. It never
+   * carries the SDK's `x-id` marker or `fetch-owner`, so no owner of the
+   * storage project is ever asked for.
+   */
+  readonly listQuery?: ReadonlyArray<readonly [string, string]>;
   /** Where a copy reads from, decoded; present only for `CopyObject`. */
   readonly copySource?: { readonly bucket: string; readonly key: string };
 }
@@ -86,6 +93,8 @@ const LIST_PARAMS = new Set([
   'x-id',
 ]);
 const MAX_KEYS = /^[1-9][0-9]{0,3}$/;
+/** The most bytes a listing's `continuation-token` or `start-after` may carry. */
+const MAX_RESUME_BYTES = 2048;
 
 const refused = (code: RefusalCode): { ok: false; refusal: Refusal } => ({
   ok: false,
@@ -137,7 +146,19 @@ function routeListing(bucket: string, query: Query): StateRouteResult {
   if (delimiter !== undefined && delimiter !== '/') return refused('operation-not-allowed');
   const maxKeys = query.get('max-keys');
   if (maxKeys !== undefined && !MAX_KEYS.test(maxKeys)) return refused('target-malformed');
-  return { ok: true, route: { operation: 'ListObjectsV2', bucket, listPrefix: prefix } };
+  const encoding = query.get('encoding-type');
+  if (encoding !== undefined && encoding !== 'url') return refused('operation-not-allowed');
+  // A resume point is opaque to the gateway: bounded, and nothing more is read into it.
+  for (const name of ['continuation-token', 'start-after']) {
+    const value = query.get(name);
+    if (value !== undefined && new TextEncoder().encode(value).length > MAX_RESUME_BYTES) {
+      return refused('target-malformed');
+    }
+  }
+  const listQuery = [...query.entries()].filter(
+    ([name]) => name !== 'x-id' && name !== 'fetch-owner'
+  );
+  return { ok: true, route: { operation: 'ListObjectsV2', bucket, listPrefix: prefix, listQuery } };
 }
 
 /**

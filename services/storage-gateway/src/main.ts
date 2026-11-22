@@ -3,6 +3,7 @@ import { MasterSecretError } from './credentials/masterSecret.js';
 import { StoreRollbackError } from './credentials/store.js';
 import { createLog } from './logging.js';
 import { startGateway } from './start.js';
+import { startStateGateway } from './start-state.js';
 
 // The process entry: signals and exit codes only. Everything it calls is tested.
 const log = createLog((line) => process.stdout.write(`${line}\n`));
@@ -15,10 +16,13 @@ function describe(error: unknown): string {
 }
 
 try {
-  const running = await startGateway(loadConfig(process.env), {
-    env: process.env,
-    sink: (line) => process.stdout.write(`${line}\n`),
-  });
+  const config = loadConfig(process.env);
+  const options = { env: process.env, sink: (line: string) => process.stdout.write(`${line}\n`) };
+  // One binary, two services: STORAGE_GATEWAY_PROFILE picks which, and each runs as its own process with its own keys.
+  const running =
+    config.profile === 'state'
+      ? await startStateGateway(config, options)
+      : await startGateway(config, options);
   const shutdown = (signal: string): void => {
     log.service({ event: 'service', message: 'signal received', detail: signal });
     running.stop().then(

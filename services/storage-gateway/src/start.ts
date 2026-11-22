@@ -27,14 +27,14 @@ import { createInMemoryUploadBindings } from './uploads.js';
 import { UpstreamCredentials, createUpstream } from './upstream.js';
 
 /** The largest key id or secret the storage service issues, with room to spare. */
-const UPSTREAM_SECRET_FILE_MAX_BYTES = 512;
-const TLS_KEY_FILE_MAX_BYTES = 16 * 1024;
+export const UPSTREAM_SECRET_FILE_MAX_BYTES = 512;
+export const TLS_KEY_FILE_MAX_BYTES = 16 * 1024;
 /** A key id that no credential holds: the readiness check asks the store about it. */
-const READINESS_PROBE_KEY_ID = 'readiness-probe';
+export const READINESS_PROBE_KEY_ID = 'readiness-probe';
 /** The admin interface takes a handful of callers; it needs no more connections than this. */
-const ADMIN_MAX_CONNECTIONS = 16;
+export const ADMIN_MAX_CONNECTIONS = 16;
 
-function limitsOf(config: GatewayConfig): {
+export function limitsOf(config: GatewayConfig): {
   requestTimeoutMs: number;
   headersTimeoutMs: number;
   keepAliveTimeoutMs: number;
@@ -71,7 +71,7 @@ export interface RunningGateway {
   stop(): Promise<{ readonly forced: boolean }>;
 }
 
-function secretText(path: string, label: string): string {
+export function secretText(path: string, label: string): string {
   const raw = readOwnerOnlyFile(path, {
     label,
     expectedUid: process.getuid?.() ?? -1,
@@ -89,6 +89,10 @@ export async function startGateway(
   config: GatewayConfig,
   options: StartOptions
 ): Promise<RunningGateway> {
+  // The state process has its own entry, its own store and its own keys; this one serves media only.
+  if (config.profile !== 'media') {
+    throw new ConfigError('this entry serves the media profile only; use the state entry');
+  }
   const log = createLog(options.sink);
   const master = loadMasterSecret({ env: options.env });
   const upstreamCredentials = new UpstreamCredentials(

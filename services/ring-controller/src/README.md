@@ -94,9 +94,11 @@ after it anything. What follows depends on the call:
   saved-abort `done` record): the machine already turns a throw into
   `failed-unsafe` and pages, so the record is paged by its own machine.
 - `stopColour()` in a `reverted` or `closing` record: nothing pages for a
-  throw there, so the sweep pages the record itself, once, with the dedupe
-  key `${bumpId}:${reason}`, and reports it in `failed` with `paged: true`.
-  The record is left as it is, so the next restart retries the teardown.
+  throw there, whether it threw or missed its limit, so the sweep pages the
+  record itself, once, with the dedupe key `${bumpId}:${reason}`, and
+  reports it in `failed` with `paged: true`. Only an error `stopColour()`
+  itself raised is paged for. The record is left as it is, so the next
+  restart retries the teardown.
 - `verify()` (a recovered `applying` whose migration settled): the machine
   turns a throw into `failed-unsafe` and pages, so the record is paged by
   its own machine and the sweep moves on.
@@ -242,6 +244,13 @@ silently settled. That is the deliberate trade: a duplicate page for
 the same tenant collapses at the pager via `page()`'s own `dedupeKey`;
 a page for a tenant this automation could neither verify nor undo,
 lost to a crash, does not.
+
+A save of `failed-unsafe` that itself fails does not stop the page: the
+record is already unsafe, and one that could not be saved is not one a
+restart can be relied on to find. The page goes out, then the second save
+(`pageSent: true`) is tried. If that save works the failure is healed;
+if not, the save's error is raised after the page, so a sweep reports it
+in `failed` with `paged: true`.
 
 ## bumpStateMachine.ts: `probeApplySettled`
 

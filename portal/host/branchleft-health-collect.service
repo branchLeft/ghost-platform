@@ -1,0 +1,20 @@
+# Carries each tenant's drain-sidecar health into the portal: one run of
+# /usr/local/sbin/branchleft-health-collect. It runs as root on ops1, the only
+# user that may use the Docker socket, and holds no credential of its own: the
+# database URL stays inside the console container. See
+# portal/host/branchleft-health-collect.md.
+[Unit]
+Description=Carry each tenant's site health and version into the portal
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# The tenants and their sidecar addresses, space separated, are the one value in
+# the host file; systemd splits them into one argument each.
+EnvironmentFile=/etc/branchleft/health-collect.env
+ExecStart=/usr/local/sbin/branchleft-health-collect $HEALTH_TENANTS
+NoNewPrivileges=yes
+PrivateTmp=yes
+# One run reads each colour in turn, each bounded at 5 seconds to fetch and 60 to write.
+TimeoutStartSec=5min

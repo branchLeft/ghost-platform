@@ -533,3 +533,30 @@ describe("cross-profile: a credential is refused on the other profile's listener
     delete records['key-odd'];
   });
 });
+
+describe('the listing query the upstream is rebuilt from', () => {
+  const route = (target: string) => {
+    const r = routeStateRequest(req('GET', target));
+    return r.ok ? r.route : undefined;
+  };
+  const base = `/${BUCKET}?list-type=2&prefix=abc%2F.pulumi%2F`;
+
+  it('keeps the validated pairs and drops the SDK marker and the owner request', () => {
+    const r = route(`${base}&delimiter=%2F&max-keys=100&x-id=ListObjectsV2&fetch-owner=true`);
+    expect(r?.listQuery).toEqual([
+      ['list-type', '2'],
+      ['prefix', 'abc/.pulumi/'],
+      ['delimiter', '/'],
+      ['max-keys', '100'],
+    ]);
+  });
+
+  it('accepts a bounded resume point and the url encoding type, and refuses others', () => {
+    expect(route(`${base}&continuation-token=${'a'.repeat(2048)}`)?.listQuery).toBeDefined();
+    expect(route(`${base}&start-after=abc%2F.pulumi%2Fa`)?.listQuery).toBeDefined();
+    expect(route(`${base}&encoding-type=url`)?.listQuery).toBeDefined();
+    expect(route(`${base}&continuation-token=${'a'.repeat(2049)}`)).toBeUndefined();
+    expect(route(`${base}&start-after=${'a'.repeat(2049)}`)).toBeUndefined();
+    expect(route(`${base}&encoding-type=base64`)).toBeUndefined();
+  });
+});
