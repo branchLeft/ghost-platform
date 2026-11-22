@@ -5,6 +5,7 @@ import { writeFileAtomic } from './atomicFile.js';
 import type { DrainFlagStore } from './drainFlag.js';
 import { waitUntilReady, type GhostReadinessChecker } from './ghostReadiness.js';
 import { clearLeaseAndHash, type LeaseStoreConfig } from './leaseStore.js';
+import type { RetiringLease } from './recycle.js';
 import { otherColour, type Colour } from './literals.js';
 import { slotPort } from './slotPorts.js';
 import type { DetachReceipt, SlotWrapper } from './wrapper.js';
@@ -90,6 +91,13 @@ export interface SlotState {
    * with the marker; the held area and ops1's custody row carry the memory.
    */
   readonly heldReceipt?: DetachReceipt;
+  /**
+   * Set by `/reset` before it removes the lease record: the lease and
+   * hostname the recycle must still purge and retire. Carried through every
+   * write until the slot is `free`, so a reset that failed and is retried
+   * still has them. See recycle.md.
+   */
+  readonly retiring?: RetiringLease;
 }
 
 /**
@@ -197,7 +205,18 @@ export async function releaseHeldEvidence(
   slot: SlotName,
   state: Omit<SlotState, 'evidence'>
 ): Promise<void> {
-  await writeFileAtomic(statePath(dir, slot), JSON.stringify({ ...state, evidence: 'detached' }));
+  // A recycle still owed from before the freeze outlives the release, as it
+  // does every other write: a fresh object must not drop it.
+  const existing = await readSlotState(dir, slot);
+  const retiring = state.retiring ?? existing.retiring;
+  await writeFileAtomic(
+    statePath(dir, slot),
+    JSON.stringify({
+      ...state,
+      ...(retiring !== undefined ? { retiring } : {}),
+      evidence: 'detached',
+    })
+  );
 }
 
 /**
@@ -224,7 +243,13 @@ export async function writeSlotState(dir: string, slot: SlotName, state: SlotSta
     state.evidence !== undefined || !holdsUnconfirmedEvidence(existing.evidence)
       ? state
       : { ...state, evidence: existing.evidence };
-  await writeFileAtomic(statePath(dir, slot), JSON.stringify(carried));
+  // A recycle's pending clean-up outlives every failed attempt and ends only
+  // with the slot `free`, or when a write names it afresh.
+  const kept =
+    carried.retiring !== undefined || existing.retiring === undefined || carried.phase === 'free'
+      ? carried
+      : { ...carried, retiring: existing.retiring };
+  await writeFileAtomic(statePath(dir, slot), JSON.stringify(kept));
 }
 
 /** A phase only ever held while `slotLock.ts`'s per-slot lock is claimed, and recovered by
