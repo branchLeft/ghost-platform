@@ -12,7 +12,7 @@ host steps are in `ghost-platform-docs`, `break-glass-runbook.md`.
 
 The script uses Node built-ins only, so it needs no install. On `ops1` it runs
 in the pinned Node image the repo already uses
-(`node:26.13.0-alpine@sha256:b2646ba6…`, as in
+(`node:26.13.1-alpine@sha256:a90bda29…`, as in
 `services/drain-sidecar/Dockerfile`). The container has no network, and the
 key directory is mounted read-only.
 

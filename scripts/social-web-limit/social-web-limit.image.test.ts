@@ -7,8 +7,8 @@
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { GhostAdmin } from '../../services/export-bundler/test/image/ghost-admin.mjs';
-import { GhostContainer } from '../../services/export-bundler/test/image/ghost-container.mjs';
+import { GhostAdmin } from '../../test-support/ghost-admin.mjs';
+import { GhostContainer } from '../../test-support/ghost-container.mjs';
 
 const here = new URL('.', import.meta.url);
 const LIMIT_KEY = 'hostSettings__limits__limitSocialWeb__disabled';

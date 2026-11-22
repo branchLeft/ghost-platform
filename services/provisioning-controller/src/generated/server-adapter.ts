@@ -62,6 +62,14 @@ export interface RouteDefinition {
   readonly responseSchemas?: Readonly<Record<number, ZodType>>;
 }
 
+/**
+ * What a `beforeHandle` hook returns: nothing to continue, or a refusal.
+ * It is `void` rather than `undefined` so an async hook with no return
+ * statement, which only verifies, still type-checks.
+ */
+// eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- a hook with nothing to refuse returns void
+type BeforeHandleResult = void | HandledResponse | Promise<void | HandledResponse>;
+
 /** The default {@link ListenerOptions.maxJsonBodyBytes}: 1 MiB. */
 export const DEFAULT_MAX_JSON_BODY_BYTES = 1024 * 1024;
 
@@ -75,19 +83,17 @@ export interface ListenerOptions {
    */
   readonly maxJsonBodyBytes?: number;
   /**
-   * Runs before any request parsing at all -- path/query/header coercion
-   * and validation, and body parsing -- so a caller verifying a request
-   * signature (or doing auth) sees the request exactly as it arrived and
-   * gets the first chance to reject it, ahead of Speckify's own
-   * validation. `rawBody` carries the exact bytes for a JSON body (signing
-   * covers the raw body, not the parsed value); it is `undefined` for an
-   * octet-stream body, which is never buffered here.
+   * Runs before any request parsing, so a signature or auth check sees the
+   * request as it arrived. `rawBody` is the exact JSON body bytes, or
+   * `undefined` for an octet-stream body. Return nothing to continue, or a
+   * {@link HandledResponse} to refuse: it is sent as is and the handler is
+   * not called. A throw is a 500, reported to `onError`.
    */
   readonly beforeHandle?: (
     rawRequest: IncomingMessage,
     route: RouteDefinition,
     rawBody: Buffer | undefined,
-  ) => void | Promise<void>;
+  ) => BeforeHandleResult;
   readonly onError?: (error: unknown, rawRequest: IncomingMessage) => void;
 }
 
@@ -110,20 +116,84 @@ function sendProblem(res: ServerResponse, status: number, title: string, errors?
  */
 function matchPath(template: string, actual: string): Record<string, string> | undefined {
   const templateParts = template.split('/').filter((part) => part.length > 0);
-  const actualParts = actual.split('/').filter((part) => part.length > 0);
-  if (templateParts.length !== actualParts.length) return undefined;
+  const actualParts = splitRequestPath(actual);
+  if (templateParts.length !== actualParts?.length) return undefined;
 
   const params: Record<string, string> = {};
   for (let i = 0; i < templateParts.length; i += 1) {
     const templatePart = templateParts[i] ?? '';
     const actualPart = actualParts[i] ?? '';
     if (templatePart.startsWith('{') && templatePart.endsWith('}')) {
-      params[templatePart.slice(1, -1)] = decodeURIComponent(actualPart);
+      const value = decodeParam(actualPart);
+      if (value === undefined) return undefined;
+      params[templatePart.slice(1, -1)] = value;
     } else if (templatePart !== actualPart) {
       return undefined;
     }
   }
   return params;
+}
+
+/**
+ * Reduces an absolute-form target to its origin-form part. The scheme and
+ * authority are discarded. A missing host, or a remainder that does not start
+ * with `/`, becomes `''`, which matches no route.
+ */
+function stripAbsoluteForm(target: string): string {
+  const prefix = /^https?:\/\/([^/?#]*)/i.exec(target);
+  if (prefix === null) return target;
+  const authority = prefix[1] ?? '';
+  const host = authority.slice(authority.lastIndexOf('@') + 1);
+  const remainder = target.slice(prefix[0].length);
+  if (host.length === 0 || host.startsWith(':') || !remainder.startsWith('/')) return '';
+  return remainder;
+}
+
+/**
+ * Splits a raw request target into its path and query, without the URL
+ * parser. `new URL` reads a leading `//` as an authority, so it can throw
+ * on the target or match a path the client never sent. The fragment is
+ * dropped, as a client never sends it.
+ * Accepts http and https absolute-form; anything else is refused.
+ */
+function splitTarget(rawTarget: string): { pathname: string; query: URLSearchParams } {
+  const target = stripAbsoluteForm(rawTarget);
+  const hash = target.indexOf('#');
+  const beforeHash = hash === -1 ? target : target.slice(0, hash);
+  const mark = beforeHash.indexOf('?');
+  if (mark === -1) return { pathname: beforeHash, query: new URLSearchParams() };
+  return {
+    pathname: beforeHash.slice(0, mark),
+    query: new URLSearchParams(beforeHash.slice(mark + 1)),
+  };
+}
+
+/**
+ * Splits a request path into its segments. An empty segment (a double slash,
+ * or a trailing slash) is not a segment this API defines, so the whole path
+ * is refused rather than having the empty part silently dropped.
+ */
+function splitRequestPath(actual: string): string[] | undefined {
+  if (actual === '/') return [];
+  const parts = actual.slice(1).split('/');
+  return parts.some((part) => part.length === 0) ? undefined : parts;
+}
+
+/**
+ * Decodes one path parameter. A malformed percent-escape (for example `%zz`)
+ * makes decodeURIComponent throw; that is a request that matches no route,
+ * not a server fault. An escaped slash is refused too, since a decoded `/`
+ * would smuggle a second segment into a single parameter.
+ */
+function decodeParam(raw: string): string | undefined {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return undefined;
+  }
+  if (decoded === '.' || decoded === '..') return undefined;
+  return decoded.includes('/') ? undefined : decoded;
 }
 
 /** Thrown by {@link readJsonBody} when the body crosses `maxBytes` before it ends. */
@@ -266,9 +336,9 @@ function coerceSingleValuedByShape(
 }
 
 /** Groups a URL's query string into `{ key: string[] }`, preserving every repeated occurrence of a key. */
-function multiValuedQuery(url: URL): Record<string, string[]> {
+function multiValuedQuery(params: URLSearchParams): Record<string, string[]> {
   const result: Record<string, string[]> = {};
-  for (const [key, value] of url.searchParams.entries()) {
+  for (const [key, value] of params.entries()) {
     (result[key] ??= []).push(value);
   }
   return result;
@@ -312,11 +382,11 @@ async function handleRequest(
   validateResponses: boolean,
   options: ListenerOptions,
 ): Promise<void> {
-  const url = new URL(req.url ?? '/', 'http://localhost');
+  const { pathname, query: rawQuery } = splitTarget(req.url ?? '/');
   const method = (req.method ?? 'GET').toUpperCase();
 
   const route = routes.find(
-    (candidate) => candidate.method === method && matchPath(candidate.path, url.pathname),
+    (candidate) => candidate.method === method && matchPath(candidate.path, pathname),
   );
   if (!route) {
     sendProblem(res, 404, 'Not Found');
@@ -340,9 +410,14 @@ async function handleRequest(
       throw error;
     }
   }
-  await options.beforeHandle?.(req, route, rawJsonBody);
+  const refusal = await options.beforeHandle?.(req, route, rawJsonBody);
+  if (refusal) {
+    res.writeHead(refusal.status, { 'content-type': 'application/json', ...refusal.headers });
+    res.end(refusal.body === undefined ? undefined : JSON.stringify(refusal.body));
+    return;
+  }
 
-  const rawPathParams = matchPath(route.path, url.pathname) ?? {};
+  const rawPathParams = matchPath(route.path, pathname) ?? {};
   let pathParams: Record<string, unknown> = coerceSingleValuedByShape(
     route.pathSchema,
     rawPathParams,
@@ -356,7 +431,10 @@ async function handleRequest(
     pathParams = result.data as Record<string, unknown>;
   }
 
-  let query: Record<string, unknown> = coerceQueryByShape(route.querySchema, multiValuedQuery(url));
+  let query: Record<string, unknown> = coerceQueryByShape(
+    route.querySchema,
+    multiValuedQuery(rawQuery),
+  );
   if (route.querySchema) {
     const result = route.querySchema.safeParse(query);
     if (!result.success) {

@@ -6,6 +6,7 @@ import type {
   SigningSecretSource,
   VerifyResult,
 } from './contracts.js';
+import { STREAMING_UNSIGNED_TRAILER, parseStreamingTrailer } from './aws-chunked.js';
 
 /** Default tolerance between the request's `x-amz-date` and the gateway clock: five minutes. */
 export const DEFAULT_CLOCK_WINDOW_MS = 5 * 60 * 1000;
@@ -93,6 +94,12 @@ export interface SigV4VerifierOptions {
   readonly secrets: SigningSecretSource;
   /** Milliseconds since the epoch; injectable for tests. Defaults to `Date.now`. */
   readonly now?: () => number;
+  /**
+   * Accept a body sent as unsigned `aws-chunked` with a checksum trailer. The
+   * signature then covers the headers and this verifier leaves the body to the
+   * caller, which must decode and check it. Defaults to false.
+   */
+  readonly acceptUnsignedTrailer?: boolean;
 }
 
 const SIGNATURE_REFUSAL: Refusal = {
@@ -318,10 +325,19 @@ export function requestIdentity(
   }
 }
 
-function checkPayloadHash(headers: ReadonlyMap<string, readonly string[]>): string {
+function checkPayloadHash(
+  headers: ReadonlyMap<string, readonly string[]>,
+  acceptUnsignedTrailer: boolean
+): string {
   const declared = single(headers, 'x-amz-content-sha256');
   if (declared === undefined) return refuse('signed-header-absent');
   if (declared === 'UNSIGNED-PAYLOAD') refuse('payload-unsigned');
+  if (acceptUnsignedTrailer && declared === STREAMING_UNSIGNED_TRAILER) {
+    if (parseStreamingTrailer((name) => headers.get(name)) === undefined) {
+      refuse('payload-streaming');
+    }
+    return declared;
+  }
   if (declared.startsWith('STREAMING-')) refuse('payload-streaming');
   const encoding = (headers.get('content-encoding') ?? []).join(',').toLowerCase();
   if (
@@ -361,6 +377,7 @@ export class SigV4Verifier implements SignatureVerifier {
   readonly clockWindowMs: number;
   private readonly secrets: SigningSecretSource;
   private readonly now: () => number;
+  private readonly acceptUnsignedTrailer: boolean;
 
   constructor(options: SigV4VerifierOptions) {
     this.region = options.region;
@@ -371,6 +388,7 @@ export class SigV4Verifier implements SignatureVerifier {
     }
     this.secrets = options.secrets;
     this.now = options.now ?? Date.now;
+    this.acceptUnsignedTrailer = options.acceptUnsignedTrailer ?? false;
   }
 
   async verify(request: GatewayRequest): Promise<VerifyResult> {
@@ -431,7 +449,7 @@ export class SigV4Verifier implements SignatureVerifier {
     }
     if (Math.abs(this.now() - requestTime) > this.clockWindowMs) refuse('clock-skew');
 
-    const payloadHash = checkPayloadHash(headers);
+    const payloadHash = checkPayloadHash(headers, this.acceptUnsignedTrailer);
     const canonical = canonicalRequest({
       method: request.method,
       path,
@@ -450,6 +468,8 @@ export class SigV4Verifier implements SignatureVerifier {
     );
     if (!digestsEqual(expected, provided)) refuse('signature-mismatch');
 
+    // The body of a streaming request is checked as it is decoded, by the caller.
+    if (payloadHash === STREAMING_UNSIGNED_TRAILER) return { ok: true, keyId };
     const body = request.bodySha256 ?? bodilessDigest(request.method);
     if (!HEX_SHA256.test(body) || !digestsEqual(body, payloadHash)) refuse('body-digest-mismatch');
     return { ok: true, keyId };

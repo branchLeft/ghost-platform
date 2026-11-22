@@ -38,6 +38,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
     // healthy is false because nothing is really listening on the sidecar's
     // health port in this sandbox -- proven distinctly by
@@ -56,6 +57,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 
@@ -907,6 +909,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 

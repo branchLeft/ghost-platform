@@ -29,6 +29,16 @@ always sets — or an explicit --repo, so an operator can copy one straight
 out of a failed run's log rather than reconstructing it by hand during a
 failed provisioning run.
 
+## The tenant's own state credential
+
+The provisioning job holds no state credential of its own. `REQUIRED_SECRETS`
+is the App key alone. `PER_RUN_SECRETS` is the pair the controller mints for the
+tenant being provisioned (`MINTED_STATE_ACCESS_KEY_ID`,
+`MINTED_STATE_SECRET_ACCESS_KEY`): it is not required ahead of a run (the step
+that reads it refuses its absence), but a repository-level copy of it is a
+shadow, like one of the App key, and `--verify-coverage` holds the workflow's
+reads to the union of the two sets.
+
 ## `--verify-coverage`
 
 `REQUIRED_SECRETS` is a hand-kept copy of the names `provision-tenant.yml`

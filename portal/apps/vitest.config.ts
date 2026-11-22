@@ -10,12 +10,13 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
-      // The four process entry points only read the environment and listen
-      // (or read standard input); everything they call is tested directly.
+      // The process entry points only read the environment and listen (or read
+      // standard input); everything they call is tested directly.
       exclude: [
         'src/tenant/main.ts',
         'src/console/main.ts',
         'src/collector/main.ts',
+        'src/collector/healthMain.ts',
         'src/erasure/main.ts',
       ],
       thresholds: { lines: 90, statements: 90, functions: 90, branches: 90 },

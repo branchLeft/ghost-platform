@@ -174,6 +174,11 @@ export class BumpStateMachine {
     return this.state;
   }
 
+  /** Whether the one page has gone out, even if the save that records it then failed. */
+  hasPaged(): boolean {
+    return this.pageSent;
+  }
+
   /**
    * Request an abort. Safe to call at any point in the run; what it does
    * depends on the state the request lands in, per LLD-4 §05's table:
@@ -477,11 +482,30 @@ export class BumpStateMachine {
    */
   private async failUnsafe(reason: string): Promise<BumpState> {
     this.state = 'failed-unsafe';
-    await this.persistSnapshot(reason);
+    // A failed save must not stop the page: this tenant is already
+    // unsafe, and a record that could not be saved as `failed-unsafe`
+    // is not one a restart can be relied on to find. So the save's
+    // failure is held, the page still goes out, and the page is then
+    // recorded with a second save. Only a save still failing after the
+    // page is raised, so it is never silent either.
+    let saveFailure: { error: unknown } | undefined;
+    try {
+      await this.persistSnapshot(reason);
+    } catch (error) {
+      saveFailure = { error };
+    }
     if (!this.pageSent) {
       await this.deps.page(reason, this.dedupeKey(reason));
       this.pageSent = true;
-      await this.persistSnapshot(reason);
+      try {
+        await this.persistSnapshot(reason);
+        saveFailure = undefined;
+      } catch (error) {
+        saveFailure = { error };
+      }
+    }
+    if (saveFailure !== undefined) {
+      throw saveFailure.error;
     }
     return this.state;
   }

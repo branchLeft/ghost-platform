@@ -18,6 +18,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -40,17 +41,36 @@ ROUNDS = 4
 # read and the snapshot, so the gap holds blog writes for certain.
 SABOTAGE_GAP_SECONDS = 0.5
 
+# A blog write transaction is held open while each round's LOCK TABLES is
+# requested, and committed only once the server shows that request queued
+# behind it, so the case of a commit in flight is observed in every round and
+# not argued from lock ordering. The wait it causes must reach this long, or
+# the round did not meet a transaction in flight (the lock was granted at
+# once, as it is when nothing is open).
+QUEUED_SETTLE_SECONDS = 0.15
+MIN_QUEUED_WAIT_SECONDS = 0.1
+# The hold gives up waiting to see the request queue after this long, under
+# the module's 1 s server-side lock wait so a missed sighting is not a retry.
+QUEUE_SIGHTING_SECONDS = 0.8
+
 # A sabotage name maps to the controls it must turn red.
 SABOTAGE_TARGETS = {
     "coordinates-before-lock": (1,),
     "coordinates-after-unlock": (1,),
     "backup-admin-grant": (1, 3),
+    "backup-admin-through-role": (1, 3),
     "reload-grant": (3,),
+    "no-inflight-transaction": (1,),
     "old-path": (2,),
     "other-lock": (2,),
 }
 # Sabotages that work by granting the account one more global privilege.
 GRANT_SABOTAGES = {"backup-admin-grant": "BACKUP_ADMIN", "reload-grant": "RELOAD"}
+# A privilege the account holds only through a role it is granted. The role is
+# not made a default role, so nothing changes at run time and only the grant
+# listing shows it: the privilege check must read through roles to see it.
+ROLE_SABOTAGES = {"backup-admin-through-role": "BACKUP_ADMIN"}
+SABOTAGE_ROLE = "probe_sabotage_role"
 
 EXIT_PASSED = 0
 EXIT_RED = 1
@@ -80,11 +100,15 @@ def grant_shape_verdict(
     errno_instance_lock: int,
     errno_master_status: int,
     privileges: Iterable[str],
+    stray: Sequence[str] = (),
 ) -> Verdict:
     """Control 3. The account reads no other schema (1142), cannot take a
-    global read lock (1227) or the instance backup lock (1227), and can run
-    SHOW MASTER STATUS (0)."""
+    global read lock (1227) or the instance backup lock (1227), can run
+    SHOW MASTER STATUS (0), and holds no grant outside the blog schema
+    (`stray`, from `snapshot_probe.stray_grants`)."""
     problems = []
+    if stray:
+        problems.append(f"grants outside the blog schema: {list(stray)}")
     expected = (
         ("reading the other schema", errno_other_schema, 1142),
         ("FLUSH TABLES WITH READ LOCK", errno_ftwrl, 1227),
@@ -120,6 +144,21 @@ def multiset_verdict(what: str, source: Mapping[str, int], replica: Mapping[str,
             f"(of {len(source)} keys on the source)",
         )
     return Verdict(True, f"{what}: none of {len(source)} keys lost or duplicated")
+
+
+def inflight_verdict(queued: bool, lock_wait_seconds: float) -> Verdict:
+    """The round's lock request must have been seen queued behind the open blog
+    transaction, and have waited for it: a lock granted at once says nothing
+    about a commit in flight."""
+    if not queued:
+        return Verdict(False, "the lock request was never seen queued behind the open blog transaction: no commit was in flight")
+    if lock_wait_seconds < MIN_QUEUED_WAIT_SECONDS:
+        return Verdict(
+            False,
+            f"the lock wait was {lock_wait_seconds * 1000:.0f} ms, under {MIN_QUEUED_WAIT_SECONDS * 1000:.0f} ms: "
+            "the lock was granted without waiting for the open transaction",
+        )
+    return Verdict(True, f"the lock waited {lock_wait_seconds * 1000:.0f} ms behind a blog transaction that committed in flight")
 
 
 def replay_verdict(rows_in_dump: int, rows_final: int) -> Verdict:
@@ -183,6 +222,21 @@ SELF_TEST_CASES: tuple[tuple[str, bool, Callable[[], Verdict]], ...] = (
     ("multiset: a duplicated row", False, lambda: multiset_verdict("emails", {"1": 1}, {"1": 2})),
     ("multiset: blind source", False, lambda: multiset_verdict("emails", {}, {})),
     ("multiset: healthy", True, lambda: multiset_verdict("emails", {"1": 1, "2": 1}, {"1": 1, "2": 1})),
+    (
+        "grant_shape: a grant on another schema",
+        False,
+        lambda: grant_shape_verdict(
+            errno_other_schema=1142,
+            errno_ftwrl=1227,
+            errno_instance_lock=1227,
+            errno_master_status=0,
+            privileges=["REPLICATION CLIENT"],
+            stray=sp.stray_grants(["GRANT SELECT ON `other`.* TO `coord`@`localhost`"], ["`blog`.*"]),
+        ),
+    ),
+    ("inflight: the request was never seen queued", False, lambda: inflight_verdict(False, 0.001)),
+    ("inflight: granted without waiting", False, lambda: inflight_verdict(True, 0.001)),
+    ("inflight: healthy", True, lambda: inflight_verdict(True, 0.18)),
     ("replay: nothing replayed", False, lambda: replay_verdict(500, 500)),
     ("replay: healthy", True, lambda: replay_verdict(500, 530)),
     ("rounds: one failed", False, lambda: rounds_verdict([Verdict(True, "ok"), Verdict(False, "bad")])),
@@ -236,9 +290,13 @@ def seed_account(run: Run) -> None:
     )
 
 
+def account_grants(run: Run) -> list[str]:
+    """Every grant the account has, those reached through a role included."""
+    return sp.effective_grants(lambda sql: [row[0] for row in run.source.query(sql)], f"'{COORD}'@'localhost'")
+
+
 def global_privileges(run: Run) -> frozenset[str]:
-    grants = [row[0] for row in run.source.query(f"SHOW GRANTS FOR '{COORD}'@'localhost';")]
-    return sp.parse_global_privileges(grants)
+    return sp.parse_global_privileges(account_grants(run))
 
 
 def read_master_status(run: Run) -> tuple[str, int]:
@@ -296,6 +354,59 @@ def take_snapshot(
     return report, coordinates, path
 
 
+class InFlightCommit:
+    """A blog write transaction, open before the snapshot starts and committed
+    once the coordinator's LOCK TABLES is seen queued behind it (or when
+    QUEUE_SIGHTING_SECONDS pass without that). `queued` says whether the
+    request was seen, so a round can be told apart from one that met nothing.
+    With `open_transaction=False` nothing is held: the sabotage."""
+
+    def __init__(self, run: Run, number: int, *, open_transaction: bool = True) -> None:
+        self._open = open_transaction
+        self.queued = False
+        self.error: BaseException | None = None
+        self._slug = f"inflight-{number}"
+        self._holder = run.ctx.source.session(database=sp.BLOG) if open_transaction else None
+        self._poller = run.ctx.source.session() if open_transaction else None
+        self._pending_sql = (
+            "SELECT COUNT(*) FROM performance_schema.metadata_locks ml JOIN performance_schema.threads t "
+            f"ON t.THREAD_ID = ml.OWNER_THREAD_ID WHERE t.PROCESSLIST_USER = '{COORD}' AND ml.LOCK_STATUS = 'PENDING';"
+        )
+        self._thread = threading.Thread(target=self._commit_when_queued, daemon=True)
+
+    def __enter__(self) -> "InFlightCommit":
+        if self._holder is not None:
+            self._holder.run(
+                "START TRANSACTION; INSERT INTO posts (title, slug, status, author_id) "
+                f"VALUES ('{self._slug}', '{self._slug}', 'draft', 1);"
+            )
+            self._thread.start()
+        return self
+
+    def _commit_when_queued(self) -> None:
+        try:
+            deadline = time.monotonic() + QUEUE_SIGHTING_SECONDS
+            while time.monotonic() < deadline:
+                rows, _ = self._poller.run(self._pending_sql)
+                if rows and int(rows[0]) > 0:
+                    self.queued = True
+                    time.sleep(QUEUED_SETTLE_SECONDS)
+                    break
+                time.sleep(0.005)
+            self._holder.run("COMMIT;")
+        except BaseException as exc:  # reported by __exit__, in the main thread
+            self.error = exc
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._holder is None:
+            return
+        self._thread.join(timeout=QUEUE_SIGHTING_SECONDS + 10)
+        for session in (self._holder, self._poller):
+            session.close()
+        if self.error is not None and exc_info[0] is None:
+            raise sp.ProofError(f"the in-flight transaction failed: {self.error}")
+
+
 def old_path_dump(run: Run) -> None:
     """The path being retired: `mysqldump --source-data=2` flushes tables and
     takes FLUSH TABLES WITH READ LOCK. Needs RELOAD, granted by the caller."""
@@ -333,7 +444,8 @@ def one_round(run: Run, number: int) -> tuple[Verdict, str]:
     other.start()
     time.sleep(1.0)
     try:
-        report, coordinates, dump_path = take_snapshot(run, f"coord-seed-{number}.sql", ordering=ordering)
+        with InFlightCommit(run, number, open_transaction=not run.sabotaged("no-inflight-transaction")) as inflight:
+            report, coordinates, dump_path = take_snapshot(run, f"coord-seed-{number}.sql", ordering=ordering)
         with open(dump_path, "rb") as handle:
             first_line = handle.readline().decode().rstrip("\n")
         match = extract_tenant_binlog.SOURCE_DATA_PATTERN.match(first_line)
@@ -355,6 +467,7 @@ def one_round(run: Run, number: int) -> tuple[Verdict, str]:
         multiset_verdict("posts by title", counts(ctx.source, POSTS_SQL), counts(ctx.replica, POSTS_SQL)),
         multiset_verdict("emails by post", counts(ctx.source, EMAILS_SQL), counts(ctx.replica, EMAILS_SQL)),
         replay_verdict(rows_in_dump, rows_final),
+        inflight_verdict(inflight.queued, report.lock_wait_seconds),
     ]
     failures = ([failure] if failure is not None else []) + [part.reason for part in parts if not part.passed]
     verdict = Verdict(False, "; ".join(failures)) if failures else Verdict(True, "; ".join(part.reason for part in parts))
@@ -460,13 +573,15 @@ def control_3(run: Run) -> sp.ControlResult:
     instance = run.as_coord("LOCK INSTANCE FOR BACKUP; UNLOCK INSTANCE;")
     master = run.as_coord("SHOW MASTER STATUS;")
     log_status = run.as_coord("SELECT LOCAL FROM performance_schema.log_status;")
-    privileges = global_privileges(run)
+    grants = account_grants(run)
+    privileges = sp.parse_global_privileges(grants)
     verdict = grant_shape_verdict(
         errno_other_schema=sp.parse_errno(other.stderr),
         errno_ftwrl=sp.parse_errno(ftwrl.stderr),
         errno_instance_lock=sp.parse_errno(instance.stderr),
         errno_master_status=sp.parse_errno(master.stderr),
         privileges=privileges,
+        stray=sp.stray_grants(grants, [f"`{sp.BLOG}`.*"]),
     )
     numbers = [
         f"read of {sp.OTHER}.posts: error {sp.parse_errno(other.stderr)}; FTWRL: error {sp.parse_errno(ftwrl.stderr)}; "
@@ -509,6 +624,12 @@ def run_probe(args: argparse.Namespace) -> int:
     extra = GRANT_SABOTAGES.get(args.sabotage or "")
     if extra:
         ctx.source.run(f"GRANT {extra} ON *.* TO '{COORD}'@'localhost';")
+    through_role = ROLE_SABOTAGES.get(args.sabotage or "")
+    if through_role:
+        ctx.source.run(
+            f"CREATE ROLE '{SABOTAGE_ROLE}'; GRANT {through_role} ON *.* TO '{SABOTAGE_ROLE}'; "
+            f"GRANT '{SABOTAGE_ROLE}' TO '{COORD}'@'localhost';"
+        )
     outcomes: dict[int, bool] = {}
     try:
         for number in controls:
@@ -525,6 +646,8 @@ def run_probe(args: argparse.Namespace) -> int:
     finally:
         if extra:
             ctx.source.run(f"REVOKE {extra} ON *.* FROM '{COORD}'@'localhost';", check=False)
+        if through_role:
+            ctx.source.run(f"DROP ROLE '{SABOTAGE_ROLE}';", check=False)
     code = exit_code(outcomes, sabotaged=bool(args.sabotage))
     if code == EXIT_PASSED:
         ctx.say("ALL PASSED: REPLICATION CLIENT alone gives coordinates consistent with the snapshot. BACKUP_ADMIN is not needed.")

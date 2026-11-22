@@ -294,7 +294,8 @@ class SabotageTests(MediaCase):
         self.shard.put(f"{FOLDER_A}/planted.png", versions=1)  # on the shard, never recorded
         with self.assertRaises(em.RedCheck) as caught:
             self.run_erase()
-        self.assertIn("completeness check is RED", str(caught.exception))
+        self.assertIn("not in the ledger", str(caught.exception))
+        self.assertEqual(self.shard.deleted, [], "a plant found before the first delete stops the run")
         self.assertEqual(self.events, [], "the edge purge and backup erasure must not run after a red check")
 
     def test_ledger_entry_the_listing_does_not_show_is_red(self) -> None:
@@ -781,3 +782,40 @@ class MainTests(MediaCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowupTests(MediaCase):
+    def test_a_short_ledger_stops_before_the_first_delete(self) -> None:
+        # The shard holds two objects; the ledger recorded only one of them.
+        self.tenant_writes(FOLDER_A, ["recorded.png"])
+        self.shard.put(f"{FOLDER_A}/unrecorded.png")
+        with self.assertRaises(em.RedCheck) as caught:
+            self.run_erase()
+        self.assertIn("not in the ledger; nothing was deleted", str(caught.exception))
+        self.assertEqual(self.shard.deleted, [])
+        self.assertEqual(len(self.shard.keys_under(FOLDER_A + "/")), 2)
+
+    def test_a_folder_with_a_trailing_newline_is_refused(self) -> None:
+        self.tenant_writes(FOLDER_A, ["a.png"])
+        with self.assertRaises(em.Refusal) as caught:
+            self.run_erase(folder=FOLDER_A + "\n")
+        self.assertIn("not a valid folder name", str(caught.exception))
+        self.assert_nothing_deleted()
+
+    def test_a_key_with_a_dot_segment_stops_before_any_delete(self) -> None:
+        self.tenant_writes(FOLDER_A, ["a.png"])
+        self.tenant_writes(FOLDER_A, ["sub/../b.png"])
+        with self.assertRaises(em.RedCheck) as caught:
+            self.run_erase()
+        self.assertIn("dot path segment", str(caught.exception))
+        self.assertEqual(self.shard.deleted, [])
+
+    def test_a_ledger_path_with_query_and_fragment_characters_is_read(self) -> None:
+        folder_dir = self.tmp / "odd?name#here"
+        folder_dir.mkdir()
+        moved = folder_dir / "ledger.sqlite"
+        shutil.copy(self.ledger_path, moved)
+        self.ledger_path = moved
+        self.record(FOLDER_A, "a.png")
+        found = em.SqliteLedgerReader(str(moved)).object_keys(FOLDER_A)
+        self.assertEqual(found, {f"{FOLDER_A}/a.png"})
