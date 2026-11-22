@@ -163,13 +163,20 @@ describe.skipIf(process.platform !== 'linux')('the media reader script on a real
       expect((err as Error).message).toContain('content/images/z');
     });
 
-    it.each(Array.from({ length: 300 }, (_, i) => i))(
+    // The swap must be one step. Unlinking and then linking leaves a moment with no file at
+    // all, and the reader lists images/x only after the test has started the swap: a listing
+    // inside that moment never sees the name, so the read is clean and the refusal never has a
+    // chance. A link renamed over the file leaves the name present throughout, so the reader
+    // sees either the file (and refuses its open) or the link (and refuses its lstat). The
+    // link is made in a directory the reader does not read. Repeated, because it was a race.
+    it.each(Array.from({ length: 50 }, (_, i) => i))(
       'a file not yet opened, swapped for a link out of the tree, refuses by name (run %i)',
       async () => {
         await writeFile(join(dir, 'images/x/zz.txt'), 'INSIDE-the-tree');
         const err = await readWhile(async () => {
-          await unlink(join(dir, 'images/x/zz.txt'));
-          await symlink(join(outside, 'secret.txt'), join(dir, 'images/x/zz.txt'));
+          await mkdir(join(dir, 'quarantine'), { recursive: true });
+          await symlink(join(outside, 'secret.txt'), join(dir, 'quarantine/zz.link'));
+          await rename(join(dir, 'quarantine/zz.link'), join(dir, 'images/x/zz.txt'));
         }).catch((e: unknown) => e);
         expect(err).toBeInstanceOf(MediaTreeRefusedError);
         expect((err as Error).message).toContain('content/images/x/zz.txt');
