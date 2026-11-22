@@ -77,8 +77,8 @@
     "change": "changed",
     "path": "compose.serviceNames",
     "before": "ghost",
-    "after": "ghost-a,ghost-b",
-    "decision": "blue-green"
+    "after": "ghost-a",
+    "decision": "one-colour-at-a-time"
   },
   {
     "change": "changed",

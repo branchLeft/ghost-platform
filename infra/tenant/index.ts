@@ -14,6 +14,7 @@ import {
   stackName,
   validateTenantStack,
   type Artefact,
+  type Colour,
   type TenantStackDescriptor,
   type WidgetSource,
   type ZoneConfig,
@@ -41,6 +42,13 @@ export interface GhostTenantArgs {
    * `true`, the owner's ruling of 18 November. `false` leaves both to the
    * tenant. No effect without `own-origin`. */
   blockThirdPartyIntegrations?: boolean;
+  /** The one Ghost colour the rendered `compose.yml` carries, `'a'` or `'b'`;
+   * the idle colour is absent from the document, never parked. Defaults to
+   * `'a'`. A tenant never has two Ghosts: the generic unit starts every
+   * service in the file, and two Ghosts on one database send a newsletter or
+   * welcome mail twice. A swap is the same render with the other colour,
+   * applied stop-then-start. See index.md#one-colour-at-a-time. */
+  activeColour?: Colour;
 }
 
 /**
@@ -62,6 +70,8 @@ export interface GhostTenantIdentity {
 }
 
 const DEFAULT_MAX_USER_CONNECTIONS = 10;
+
+const DEFAULT_ACTIVE_COLOUR: Colour = 'a';
 
 const TEMPLATE_KEY_LINE = /^([A-Z][A-Z0-9_]*)=$/;
 
@@ -149,6 +159,7 @@ export class GhostTenant extends pulumi.ComponentResource {
       claimantRepo: process.env['GITHUB_REPOSITORY'],
     });
     const artefacts = render(descriptor, args.zones, undefined, {
+      activeColour: args.activeColour === undefined ? DEFAULT_ACTIVE_COLOUR : args.activeColour,
       ...(args.widgets === undefined ? {} : { widgets: args.widgets }),
       ...(args.blockThirdPartyIntegrations === undefined
         ? {}
@@ -229,6 +240,7 @@ export class GhostTenant extends pulumi.ComponentResource {
 
 export type {
   Artefact,
+  Colour,
   TenantDescriptor,
   TenantStackDescriptor,
   ZoneConfig,
