@@ -21,7 +21,11 @@ import {
 import type { EmailAddress } from './brand.js';
 import type { TenantDescriptor, TenantStackDescriptor } from './descriptor.js';
 import { SECRET_ENV_KEYS } from './environment.js';
-import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
+import {
+  TENANT_NAME_REGISTER,
+  validateDatabaseIdentity,
+  validateSlugAvailability,
+} from './naming.js';
 import type { SlugClaimant } from './naming.js';
 import {
   bareHttpsOrigin,
@@ -744,7 +748,48 @@ const LOCAL_PART_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
  * below, alongside every other kind-fixed-shape rule; this function only
  * checks what is well-formed for whichever arm the descriptor already has.
  */
-function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig): void {
+/**
+ * The one named exception to the owned-domain refusal, for tenant zero only:
+ * it keeps its own name, both as its sending domain and as its `theirs`
+ * hostname. It is in code, not configuration: the slug must be the register's
+ * tenant name, the caller must be that entry's repository, and the name must
+ * be exactly this one (not a subdomain, not a sibling). The from-address and
+ * the mail spool are not covered by it.
+ */
+const NAMED_SENDING_DOMAIN_EXCEPTION = {
+  slug: 'blog',
+  domain: 'blog.branchleft.co.uk',
+} as const;
+
+/**
+ * Matched by identity, not by domain alone: the slug must be the register's
+ * tenant-zero name and the caller must be that entry's repository. Another
+ * tenant on an owned domain fails here whatever domain it names.
+ */
+function isTenantZeroIdentity(slug: string, claimantRepo: string | undefined): boolean {
+  if (slug !== NAMED_SENDING_DOMAIN_EXCEPTION.slug) return false;
+  const entry = TENANT_NAME_REGISTER.find((candidate) => candidate.name === slug);
+  return entry !== undefined && entry.kind === 'tenant' && claimantRepo === entry.repo;
+}
+
+/** The exception applies to tenant zero's identity and its one named domain. */
+function isNamedTenantZeroName(
+  name: string,
+  slug: string,
+  claimantRepo: string | undefined
+): boolean {
+  return (
+    normalizeDomain(name) === NAMED_SENDING_DOMAIN_EXCEPTION.domain &&
+    isTenantZeroIdentity(slug, claimantRepo)
+  );
+}
+
+function validateMailIdentity(
+  mail: TenantDescriptor['mail'],
+  zones: ZoneConfig,
+  slug: string,
+  claimantRepo: string | undefined
+): void {
   if (mail.ceiling > mail.estateCeiling) {
     throw new FieldValidationError(
       'mail.ceiling',
@@ -773,7 +818,10 @@ function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig)
         `name, and not an IP address literal or shorthand for one.`
     );
   }
-  if (!isOutsideOwnedDomains(mail.identity.domain, zones.ownedDomains)) {
+  if (
+    !isOutsideOwnedDomains(mail.identity.domain, zones.ownedDomains) &&
+    !isNamedTenantZeroName(mail.identity.domain, slug, claimantRepo)
+  ) {
     throw new FieldValidationError(
       'mail.identity.domain',
       `mail.identity.domain "${mail.identity.domain}" must be outside every registrable domain ` +
@@ -1067,7 +1115,12 @@ function validateZoneConfig(zones: ZoneConfig): void {
   }
 }
 
-function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneConfig): void {
+function validateHostname(
+  hostname: TenantDescriptor['hostname'],
+  zones: ZoneConfig,
+  slug: string,
+  claimantRepo: string | undefined
+): void {
   if (hostname.kind === 'ours') {
     if (!HOSTNAME_LABEL_PATTERN.test(hostname.sub)) {
       throw new FieldValidationError(
@@ -1086,7 +1139,10 @@ function validateHostname(hostname: TenantDescriptor['hostname'], zones: ZoneCon
         `IP address literal or shorthand for one.`
     );
   }
-  if (!isOutsideOwnedDomains(hostname.fqdn, zones.ownedDomains)) {
+  if (
+    !isOutsideOwnedDomains(hostname.fqdn, zones.ownedDomains) &&
+    !isNamedTenantZeroName(hostname.fqdn, slug, claimantRepo)
+  ) {
     throw new FieldValidationError(
       'hostname.fqdn',
       `hostname.fqdn "${hostname.fqdn}" must be outside every registrable domain the platform ` +
@@ -1597,8 +1653,8 @@ function validateFields(
   validateMedia(descriptor.slug, descriptor.media, zones);
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
-  validateMailIdentity(descriptor.mail, zones);
-  validateHostname(descriptor.hostname, zones);
+  validateMailIdentity(descriptor.mail, zones, descriptor.slug, options.claimantRepo);
+  validateHostname(descriptor.hostname, zones, descriptor.slug, options.claimantRepo);
   validateGate(descriptor.gate);
   validateAnalytics(descriptor);
   validateCodeInjection(descriptor.codeInjection);
