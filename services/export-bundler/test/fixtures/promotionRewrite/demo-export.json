@@ -1,0 +1,104 @@
+{
+  "db": [
+    {
+      "meta": { "exported_on": 1700000000000, "version": "6.0.0" },
+      "data": {
+        "users": [
+          {
+            "id": "u-owner",
+            "name": "Demo Owner",
+            "slug": "demo-owner",
+            "email": "owner@demo.example.test",
+            "profile_image": "http://demo.ghost.test:2368/content/images/2026/11/avatar.png",
+            "cover_image": null
+          },
+          {
+            "id": "u-admin",
+            "name": "Staff Admin",
+            "slug": "staff-admin",
+            "email": "admin@demo.example.test",
+            "profile_image": null,
+            "cover_image": null
+          },
+          {
+            "id": "u-editor",
+            "name": "Staff Editor",
+            "slug": "staff-editor",
+            "email": "editor@demo.example.test",
+            "profile_image": null,
+            "cover_image": null
+          }
+        ],
+        "roles": [
+          { "id": "r-owner", "name": "Owner" },
+          { "id": "r-admin", "name": "Administrator" },
+          { "id": "r-editor", "name": "Editor" }
+        ],
+        "roles_users": [
+          { "id": "ru-1", "role_id": "r-owner", "user_id": "u-owner" },
+          { "id": "ru-2", "role_id": "r-admin", "user_id": "u-admin" },
+          { "id": "ru-3", "role_id": "r-editor", "user_id": "u-editor" }
+        ],
+        "permissions_users": [{ "id": "pu-1", "permission_id": "perm-1", "user_id": "u-admin" }],
+        "posts": [
+          {
+            "id": "post-1",
+            "title": "Demo post",
+            "slug": "demo-post",
+            "created_by": "u-owner",
+            "updated_by": "u-editor",
+            "feature_image": "__GHOST_URL__/content/images/2026/11/hero.jpg",
+            "html": "<p><img src=\"http://demo.ghost.test:2368/content/images/2026/11/my%20photo%20(1).JPG\" alt=\"\"></p><p><a href=\"https://demo.ghost.test/about/\">About</a></p>",
+            "lexical": "{\"root\":{\"children\":[{\"type\":\"image\",\"src\":\"__GHOST_URL__/content/images/2026/11/my photo (1).JPG\"},{\"type\":\"bookmark\",\"thumbnail\":\"__GHOST_URL__/content/images/2026/11/missing.png\"},{\"type\":\"link\",\"url\":\"https://demo.ghost.test/about/\"}]}}"
+          }
+        ],
+        "posts_meta": [
+          {
+            "id": "pm-1",
+            "post_id": "post-1",
+            "og_image": "https://demo.ghost.test/content/images/2026/11/og.png",
+            "twitter_image": "__GHOST_URL__/content/images/2026/11/og.png"
+          }
+        ],
+        "posts_authors": [
+          { "id": "pa-1", "post_id": "post-1", "author_id": "u-owner", "sort_order": 0 },
+          { "id": "pa-2", "post_id": "post-1", "author_id": "u-editor", "sort_order": 1 }
+        ],
+        "tags": [
+          {
+            "id": "tag-1",
+            "name": "News",
+            "feature_image": "__GHOST_URL__/content/images/2026/11/tag.jpg",
+            "og_image": "http://demo.ghost.test:2368/content/images/2026/11/tag-og.jpg",
+            "twitter_image": null
+          }
+        ],
+        "newsletters": [
+          {
+            "id": "nl-1",
+            "name": "Weekly",
+            "header_image": "__GHOST_URL__/content/images/2026/11/nl.png"
+          }
+        ],
+        "settings": [
+          { "id": "s-1", "key": "title", "value": "Demo site" },
+          {
+            "id": "s-2",
+            "key": "navigation",
+            "value": "[{\"label\":\"About\",\"url\":\"https://demo.ghost.test/about/\"}]"
+          },
+          { "id": "s-3", "key": "logo", "value": "__GHOST_URL__/content/images/2026/11/logo.png" },
+          {
+            "id": "s-4",
+            "key": "og_image",
+            "value": "https://demo.ghost.test/content/images/2026/11/site-og.png"
+          },
+          { "id": "s-5", "key": "codeinjection_head", "value": "<script>demo()</script>" },
+          { "id": "s-6", "key": "active_theme", "value": "Source" },
+          { "id": "s-7", "key": "locale", "value": "en" },
+          { "id": "s-8", "key": "timezone", "value": "Europe/London" }
+        ]
+      }
+    }
+  ]
+}
