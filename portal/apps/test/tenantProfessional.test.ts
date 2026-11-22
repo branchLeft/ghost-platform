@@ -139,7 +139,7 @@ describe('the Professional enquiry page', () => {
 });
 
 describe('the Professional enquiry send', () => {
-  it('sends one plain-text email with the session tenant in the body, and counts one enquiry', async () => {
+  it('sends one plain-text email with the session tenant in the body, counts one enquiry and holds it as a ticket', async () => {
     const counted = await countedFor(TENANT_B);
     const browser = await signedIn(app.origin, ORG_B);
     const reply = await postForm(browser, app.origin, '/professional/send', enquiry('HELLO_TEXT'));
@@ -155,8 +155,11 @@ describe('the Professional enquiry send', () => {
     expect(message?.body).toBe(
       `TENANT_ID: ${TENANT_B}\nSCREEN: PROFESSIONAL\n\n${MESSAGE_DELIMITER}\nHELLO_TEXT`
     );
-    // The enquiry is the email: the provisioning API is never asked.
+    // The enquiry is the email, and the owner's list holds it as a ticket. It is not a promotion request.
     expect(api.mock.store.listRequests(undefined)).toHaveLength(0);
+    expect(api.mock.store.listTickets(undefined, undefined)).toMatchObject([
+      { tenant_id: TENANT_B, kind: 'professional-enquiry', state: 'new', message: 'HELLO_TEXT' },
+    ]);
     expect(errorLines).toEqual([]);
   });
 

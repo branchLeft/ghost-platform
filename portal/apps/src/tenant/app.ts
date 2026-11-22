@@ -26,6 +26,7 @@ import type { SupportSettings } from './supportMailer.js';
 import { createThirdPartyOff, type ThirdPartyOffCopy } from './thirdPartyOff.js';
 import { createSiteRoutes } from './site.js';
 import { createSupportRoutes } from './supportRoutes.js';
+import { createTicketRecorder } from './ticketRecorder.js';
 
 export interface TenantPortalOptions {
   readonly issuer: string;
@@ -86,8 +87,12 @@ export function createTenantPortal(options: TenantPortalOptions) {
   });
   const now = (): Date =>
     new Date((options.clock ?? (() => Math.floor(Date.now() / 1000)))() * 1000);
-  const support = createSupportRoutes(options.support, options.db, () =>
-    Math.floor(now().getTime() / 1000)
+  const recorder = createTicketRecorder(options.provisioning, options.onError);
+  const support = createSupportRoutes(
+    options.support,
+    options.db,
+    () => Math.floor(now().getTime() / 1000),
+    recorder
   );
   const thirdPartyOff = createThirdPartyOff({
     ...(options.thirdPartyOffCopy === undefined ? {} : { copy: options.thirdPartyOffCopy }),
@@ -105,7 +110,8 @@ export function createTenantPortal(options: TenantPortalOptions) {
     () => Math.floor(now().getTime() / 1000),
     options.db,
     thirdPartyOff,
-    options.onError
+    options.onError,
+    recorder
   );
   return createShell<TenantScope>({
     issuer: options.issuer,
