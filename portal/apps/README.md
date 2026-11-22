@@ -614,6 +614,40 @@ generated server (`services/provisioning-controller/mock`), with no database:
 `test/ownerRequests*.test.ts`. Build the provisioning controller first, as for
 the other linked packages.
 
+## Tickets (owner console)
+
+Every contact request at every tier is a ticket the console lists at `/tickets`,
+oldest first, from `GET /tickets`: the support form, the Professional enquiry and
+the Essentials request, each with its id, kind (`TICKET_KIND_SUPPORT`,
+`TICKET_KIND_PROFESSIONAL_ENQUIRY`, `TICKET_KIND_ESSENTIALS`), tenant, state, when it
+was raised, the contact and message the tenant gave, and every state change it has
+been through. An Essentials ticket links to `/requests`, where it is approved.
+Nav entry `NAV_TICKETS`. The text a tenant wrote is escaped, and shown as data.
+
+- **Filtered by state.** `/tickets` is all of them; `/tickets/new`, `/tickets/open`,
+  `/tickets/replied` and `/tickets/closed` are one state each (`GET /tickets?state=`).
+  The filter is the path, never a query the page reads.
+- **Moves.** A ticket is new, then the owner moves it: each row carries one button
+  per move the lifecycle allows from its state (`TICKET_MOVE_OPEN`,
+  `TICKET_MOVE_REPLIED`, `TICKET_MOVE_CLOSED`), a form post to `/tickets/move` with the
+  ticket id, the state and the list it came from. It calls `POST /tickets/{id}/state`
+  and returns to that list, where the ticket is now in its new state. The lifecycle
+  is the provisioning controller's (`src/service/ticketLifecycle.ts`); the console
+  writes the same table out for its buttons, `test/ownerTicketLifecycle.test.ts` fails if
+  the two differ, and the API refuses any other move.
+- **Errors.** An id that is not a ticket (or not a UUID: it never reaches the API)
+  redirects to `/tickets/not-found`; a move the lifecycle refuses, or a state it does
+  not name, to `/tickets/move-refused`. Each is a placeholder line and nothing changes.
+  Any other failure of the API is the shell's fixed `FAILED`, with only the error
+  name logged. The list a move returns to is one of the five list paths and nothing a
+  form field invents.
+- **Who, the call and off by default** are as for the promotion requests above: the
+  owner organisation alone, the console's own owner credential, five seconds and no
+  redirect, and without `CONSOLE_PROVISIONING_URL` there is no page, action or nav entry.
+
+The tests are `test/ownerTickets*.test.ts`, against the same in-memory mock with no
+database.
+
 ## Tests
 
 ```sh
