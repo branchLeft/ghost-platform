@@ -60,4 +60,25 @@ describe('major-watcher-run.yml wiring', () => {
     const value = String(runStep?.env?.[CLI_ENV_VARS.STATE_PATH] ?? '');
     expect(value).toContain('steps.state.outputs.path');
   });
+
+  it("takes the filing token from the minted installation token, never from the job's own GITHUB_TOKEN or a PAT secret", async () => {
+    const workflow = await loadRunWorkflow();
+    const steps = workflow.jobs.watch?.steps ?? [];
+    const runStep = steps.find((s) => s.name === 'Run the watcher');
+    const value = String(runStep?.env?.[CLI_ENV_VARS.FILING_TOKEN] ?? '');
+    expect(value).toBe('${{ steps.filing-token.outputs.token }}');
+    expect(steps.some((s) => (s as { id?: string }).id === 'filing-token')).toBe(true);
+  });
+
+  it('limits the minted filing token to the workspace repository and issues: write only', async () => {
+    const workflow = await loadRunWorkflow();
+    const steps = workflow.jobs.watch?.steps ?? [];
+    const mint = steps.find((s) => (s as { id?: string }).id === 'filing-token') as
+      { with?: Record<string, unknown> } | undefined;
+    const withBlock = mint?.with ?? {};
+    expect(withBlock.repositories).toBe('workspace');
+    const permissions = Object.keys(withBlock).filter((k) => k.startsWith('permission-'));
+    expect(permissions).toEqual(['permission-issues']);
+    expect(withBlock['permission-issues']).toBe('write');
+  });
 });

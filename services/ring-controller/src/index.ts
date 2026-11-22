@@ -110,3 +110,10 @@ export {
   resolveRecoveryDeadlines,
 } from './deadlines.js';
 export type { CallDeadlines, RecoveryDeadlines } from './deadlines.js';
+export {
+  applyColourSwitch,
+  colourSwitchDependencies,
+  rollbackColour,
+  switchColour,
+} from './colourSwitch.js';
+export type { Colour, ColourHost, RunningAfter, SwitchPlan, SwitchResult } from './colourSwitch.js';

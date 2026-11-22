@@ -1,6 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { run } from './check.js';
 import { CLI_ENV_VARS } from './env.js';
+import { readFilingConfig } from './issues.js';
 
 // Process wiring -- but unlike a typical thin CLI shim, main() itself is
 // exercised directly by test/unit/cli.test.ts, through this exact
@@ -49,6 +50,11 @@ export async function main(
       statePath,
       ntfy: { url: ntfyUrl, token: env[CLI_ENV_VARS.NTFY_TOKEN] },
       githubToken: env[CLI_ENV_VARS.GITHUB_TOKEN],
+      filingConfig: () =>
+        readFilingConfig(env, {
+          token: CLI_ENV_VARS.FILING_TOKEN,
+          launchItem: CLI_ENV_VARS.LAUNCH_ITEM,
+        }),
     });
     if (result.notified) {
       log(
@@ -56,7 +62,7 @@ export async function main(
       );
       await appendStepSummary(
         env,
-        `Paged: Ghost major line ${result.state.lastNotifiedMajor} announced.`
+        `Paged: Ghost major line ${result.state.lastNotifiedMajor} announced. Tracked item: ${result.filed?.url ?? 'none'}.`
       );
     } else {
       log(`no new major line above ${result.state.lastNotifiedMajor}; nothing sent`);

@@ -117,6 +117,16 @@ jobs:
         env:
           IMAGE: ghost-platform:ci
 
+      # The social web limit, as the rendered tenant environment carries it,
+      # boots in a real Ghost from the built image: admin config reports the
+      # limit on and the Network item is absent, and a second Ghost without
+      # the limit's line shows the item again. One Ghost at a time. Needs no
+      # install -- Node runs the TypeScript directly (22.18 or later).
+      - name: Social web limit against the built image
+        run: node --test scripts/social-web-limit/social-web-limit.image.test.ts
+        env:
+          IMAGE: ghost-platform:ci
+
       # Every bundled theme, activated in a real Ghost from the built image:
       # it lists exactly the manifest's themes, each renders with no outside
       # origin, its stylesheets and scripts answer, and the platform fonts are

@@ -65,8 +65,9 @@ render_demo_site.py --base BASE --site 0=EDGE0.json --site 1=EDGE1.json \
 ## The gates
 
 - **Every path is gated.** There are exactly two handlers: the gate's own
-  login (it carries a body, which `forward_auth` does not forward) and a
-  catch-all that opens with `forward_auth`. No path matcher can stand in front
+  paths, `/__gate/login` and the emailed link's `/__gate/enter` (each carries a
+  body, which `forward_auth` does not forward, and neither can hold a session
+  yet), and a catch-all that opens with `forward_auth`. No path matcher can stand in front
   of the catch-all, so `/ghost/` and `/ghost/api/admin/` cannot be exempted
   without adding a handler, which the unit test counts.
 - **Members import refused, export left alone.** A `POST` to the import

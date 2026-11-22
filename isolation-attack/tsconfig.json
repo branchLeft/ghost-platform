@@ -1,0 +1,29 @@
+{
+  // The strict floor TS-1 asserts (strict, noUnusedLocals, noUnusedParameters,
+  // noImplicitReturns, noFallthroughCasesInSwitch), written inline so that
+  // type-checking this package needs no @branchleft/* package and no token.
+  // render-core and the portal's cookie functions are imported from source, so they
+  // are checked here too; noUncheckedIndexedAccess is left off because render-core
+  // does not set it. This package's own files avoid enums and parameter properties,
+  // so the report command runs under Node's own type stripping with no build step.
+  "compilerOptions": {
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "vitest.attack.config.ts"]
+}

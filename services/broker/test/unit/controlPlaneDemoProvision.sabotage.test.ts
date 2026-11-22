@@ -161,7 +161,7 @@ describe('provisioning control cases: source-mutation sabotage', () => {
     }
   });
 
-  // ---- Debt from the review of the demo provisioning step (workspace#3900) ----
+  // ---- Debt from the review of the demo provisioning step ----
 
   it('a reconcile that outlasts the call deadline: its resend meets the slot lock and is read as a refusal, FAILED with a running slot orphaned; the real client waits and goes LIVE', async () => {
     const mutated = await sabotagedBroker(

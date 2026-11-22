@@ -75,21 +75,28 @@ export function redact(text, secrets = []) {
   return (
     out
       .replace(/(\bauth\s+plain\s+)[A-Za-z0-9+/=]+/gi, '$1[redacted]')
-      // A cookie array, as JSON or util.inspect prints set-cookie: everything up to the `]`, across lines (at most 4000 characters).
-      .replace(/(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*\[)[^\]]{0,4000}/gi, '$1[redacted]')
-      // A scalar cookie: not an array (done above), and not stopped by an escaped quote.
+      // A cookie array, as JSON or util.inspect prints it, under the key cookie(s) or set_cookie: to the `]` that closes it
+      // (a `]` inside an element does not end it), across lines, at most 4000 characters. Unclosed: up to the next `]`.
       .replace(
-        /(\bcookie(?:\\?["'])?\s*(?:=>|[:=])\s*(?:\\?["'])?)(?![\s\[])[^\r\n"'\\]+/gi,
+        /(\b(?:set[-_]?)?cookies?(?:\\?["'])?\s*(?:=>|[:=])\s*\[)(?:[\s\S]{0,4000}?(?=\]\s*[}),])|[^\]]{0,4000})/gi,
+        '$1[redacted]'
+      )
+      // A scalar cookie: not an array (done above), and not stopped by an escaped quote. A quoted value (name="...") is taken whole.
+      .replace(
+        /(\b(?:set[-_]?)?cookies?(?:\\?["'])?\s*(?:=>|[:=])\s*(?:\\?["'])?)(?![\s\[])(?:[^\r\n"'\\]|(?<==)"[^"\r\n\\]*")+/gi,
         '$1[redacted]'
       )
       // rawHeaders: the name and its value are two elements of one array.
       .replace(/(\b(?:set-cookie|cookie)\\?["']\s*,\s*\\?["'])[^"'\\]+/gi, '$1[redacted]')
+      // A magic-link token, once, twice or three times percent-encoded.
       .replace(
-        /((?:[?&;#]|%(?:25)?(?:3F|26|23))token(?:=|%(?:25)?3D))(?:(?!%(?:25)?26)[^&\s"'<>])+/gi,
+        /((?:[?&;#]|%(?:25){0,2}(?:3F|26|23))token(?:=|%(?:25){0,2}3D))(?:(?!%(?:25){0,2}26)[^&\s"'<>])+/gi,
         '$1[redacted]'
       )
-      // The whole value, whatever its scheme word: a bare value must not be read as a scheme.
-      .replace(/(authorization\W{1,8})[^\r\n"'\\]+/gi, '$1[redacted]')
+      // A JSON "token" key with a string value, plain or escaped.
+      .replace(/(\btoken\\?["']\s*:\s*\\?["'])[^"'\\]+/gi, '$1[redacted]')
+      // The whole value, whatever its scheme word: a bare value must not be read as a scheme. A Digest value's quoted parameters are taken whole, and the gap after the name may be wide (up to 256 characters).
+      .replace(/(authorization\W{1,256})(?:[^\r\n"'\\]|(?<==)"[^"\r\n\\]*")+/gi, '$1[redacted]')
   );
 }
 

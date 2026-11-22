@@ -82,6 +82,7 @@
 /themes/lib/                                     @branchLeft/branchleft-admin
 /services/export-bundler/test/image/             @branchLeft/branchleft-admin
 /adapters/stripe-connect-limit/test/image/       @branchLeft/branchleft-admin
+/scripts/social-web-limit/                       @branchLeft/branchleft-admin
 /adapters/sso/test/image/                        @branchLeft/branchleft-admin
 /adapters/sso/test/helpers/                      @branchLeft/branchleft-admin
 /adapters/scanning-storage/test/helpers/docker-ghost.mjs @branchLeft/branchleft-admin

@@ -201,6 +201,7 @@ const DESCRIPTOR_KEYS = [
   'safety',
   'breakGlass',
   'expiresAt',
+  'analytics',
 ] as const;
 /** `DESCRIPTOR_KEYS` without `ownerEmail`: see validateTenantStack. */
 const STACK_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'ownerEmail');
@@ -1399,14 +1400,31 @@ function checkTierVariants(descriptor: TenantStackDescriptor): void {
   if (descriptor.expiresAt === null) {
     throw new TierMismatchError('kind "demo" requires a non-null expiresAt.');
   }
-  // Incidental, decided by the implementing agent: a demo visitor already
-  // holds admin on their own disposable slot, so
-  // there is nothing left for a support identity to reach that the visitor
-  // cannot already reach — the break-glass mechanism exists for a *paying*
-  // tenant's own admin, which a demo has no separate one of.
-  if (descriptor.breakGlass.kind !== 'disabled') {
+}
+
+/**
+ * A demo may carry the sign-in adapter only pinned to its own owner: the
+ * prospect reaches admin by a signed link, never a password. A demo has no
+ * support account, so any other identity is refused. See validate.md#demo-sign-in.
+ */
+function checkDemoBreakGlassIsOwner(
+  descriptor: TenantStackDescriptor,
+  owner: OwnerEmailPlacement
+): void {
+  if (descriptor.kind !== 'demo' || descriptor.breakGlass.kind !== 'enabled') {
+    return;
+  }
+  if (owner !== 'inline') {
     throw new TierMismatchError(
-      `kind "demo" requires breakGlass.kind "disabled", got "${descriptor.breakGlass.kind}".`
+      'kind "demo" with breakGlass.kind "enabled" must carry its ownerEmail inline, so the ' +
+        'identity the adapter is pinned to can be checked against it.'
+    );
+  }
+  const ownerEmail = (descriptor as TenantDescriptor).ownerEmail;
+  if (descriptor.breakGlass.supportIdentity.toLowerCase() !== ownerEmail.toLowerCase()) {
+    throw new TierMismatchError(
+      'kind "demo" requires breakGlass.supportIdentity to equal its own ownerEmail: the adapter ' +
+        "may sign in the demo's owner and nobody else (values withheld)."
     );
   }
 }
@@ -1505,6 +1523,30 @@ export function validateOwnerEmailSecret(value: string): EmailAddress {
 /** Where a descriptor's owner address lives: inline, or in the secrets file. */
 type OwnerEmailPlacement = 'inline' | 'secret';
 
+const LOWER_CASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Analytics is off unless the descriptor says `on`. An `on` tenant needs a
+ * lower-case UUID site identifier (upper case would boot cleanly and then
+ * file every row under a value the database policy never matches), and a
+ * demo never has analytics (LLD-11 section 09).
+ */
+function validateAnalytics(descriptor: TenantStackDescriptor): void {
+  const analytics = descriptor.analytics;
+  if (analytics === undefined || analytics.kind === 'off') {
+    return;
+  }
+  if (descriptor.kind === 'demo') {
+    throw new FieldValidationError('analytics', 'a demo descriptor may not turn analytics on.');
+  }
+  if (!LOWER_CASE_UUID.test(analytics.siteUuid)) {
+    throw new FieldValidationError(
+      'analytics.siteUuid',
+      'analytics.siteUuid must be a lower-case UUID (8-4-4-4-12 hex, no upper-case letters).'
+    );
+  }
+}
+
 function validateFields(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
@@ -1558,6 +1600,7 @@ function validateFields(
   validateMailIdentity(descriptor.mail, zones);
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
+  validateAnalytics(descriptor);
   validateCodeInjection(descriptor.codeInjection);
   validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {
@@ -1570,6 +1613,7 @@ function validateFields(
   checkInv3(descriptor);
   checkCodeInjectionHostnamePrecondition(descriptor);
   checkTierVariants(descriptor);
+  checkDemoBreakGlassIsOwner(descriptor, owner);
   checkHostnameGateConsistency(descriptor);
   checkBreakGlassIdentity(descriptor);
   checkBreakGlassImageOrdering(descriptor, zones);

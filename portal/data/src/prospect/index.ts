@@ -11,7 +11,13 @@ import {
   type DemoRequestInput,
   type OwnRequestView,
 } from '../demoRequest.js';
-import { demoRequest } from '../schema.js';
+import {
+  DemoExtensionExistsError,
+  NoDemoToExtendError,
+  parseDemoExtension,
+  type DemoExtensionInput,
+} from '../demoExtension.js';
+import { demoExtensionRequest, demoRequest } from '../schema.js';
 
 export {
   DemoRequestExistsError,
@@ -20,6 +26,12 @@ export {
   type DemoRequestInput,
   type OwnRequestView,
 } from '../demoRequest.js';
+export {
+  DemoExtensionExistsError,
+  InvalidDemoExtensionError,
+  NoDemoToExtendError,
+  type DemoExtensionInput,
+} from '../demoExtension.js';
 
 /**
  * The front door's path: a separate entry point on purpose, used by the
@@ -96,6 +108,41 @@ export class ProspectDb {
         })
         .from(demoRequest);
       return found === undefined ? undefined : deriveOwnRequestView(found);
+    });
+  }
+
+  /**
+   * Records the signed-in address's request to extend its demo, with the
+   * consent and the wording it was shown, and returns the demo's id. The
+   * demo is found through the address's own request under the row policy, and
+   * the table's insert policy admits the row only for that demo. A request
+   * with no consent is refused before any statement is spent and nothing is
+   * written. The time is the database's.
+   *
+   * @throws InvalidDemoExtensionError
+   * @throws InvalidDemoRequestError when the address is not one the table could hold
+   * @throws NoDemoToExtendError
+   * @throws DemoExtensionExistsError
+   */
+  async requestExtension(
+    verifiedAddress: string,
+    input: DemoExtensionInput
+  ): Promise<{ demoId: string }> {
+    const row = parseDemoExtension(input);
+    const address = parseVerifiedAddress(verifiedAddress);
+    return this.run(async (tx) => {
+      await bind(tx, 'portal.prospect_address', address);
+      const [own] = await tx.select({ demoId: demoRequest.demoId }).from(demoRequest);
+      if (own === undefined) throw new NoDemoToExtendError();
+      try {
+        await tx.insert(demoExtensionRequest).values({ ...row, demoId: own.demoId });
+      } catch (error) {
+        if (readDatabaseError(error)?.code === UNIQUE_VIOLATION) {
+          throw new DemoExtensionExistsError();
+        }
+        throw error;
+      }
+      return { demoId: own.demoId };
     });
   }
 }

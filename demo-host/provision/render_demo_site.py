@@ -34,6 +34,9 @@ GATE_PORT = 8080
 GATE_UPSTREAM = f"{rde.DEMO_EDGE_ADDR}:{GATE_PORT}"
 GATE_VERIFY_URI = "/__gate/verify"
 GATE_LOGIN_PATH = "/__gate/login"
+# The emailed arrival link's two halves: a page that shows a form, and the form's POST.
+GATE_ENTER_PATH = "/__gate/enter"
+GATE_OWN_PATHS = (GATE_LOGIN_PATH, GATE_ENTER_PATH)
 
 # Why the members-import refusal is not one literal path: render_demo_site.md.
 MEMBERS_UPLOAD_PATH = "/ghost/api/admin/members/upload/"
@@ -164,8 +167,8 @@ def render_upload_guard() -> list[str]:
 
 def render_slot_body(slot: str, edge: Mapping[str, Any]) -> list[str]:
     """One slot's gated directives, indented one tab. Every path goes through
-    `forward_auth`; the only route that does not is the gate's own login,
-    which has to carry a body and is the gate's to answer."""
+    `forward_auth`; the only routes that do not are the gate's own login and
+    arrival, which have to carry a body and are the gate's to answer."""
     rde._validate_slot_name(slot)
     gate = edge.get("gate") or {}
     _require(gate.get("kind") == "passphrase",
@@ -190,8 +193,10 @@ def render_slot_body(slot: str, edge: Mapping[str, Any]) -> list[str]:
         f"\t\tmax_size {max_size}",
         "\t}",
         "",
-        "\t# The login form carries a body, which forward_auth does not forward.",
-        f"\thandle {GATE_LOGIN_PATH} {{",
+        "\t# The login form and the arrival link's form carry a body, which forward_auth does",
+        "\t# not forward, and neither can hold a session yet: both are the gate's to answer.",
+        f"\t@gateOwn path {' '.join(GATE_OWN_PATHS)}",
+        "\thandle @gateOwn {",
         f"\t\treverse_proxy {GATE_UPSTREAM}",
         "\t}",
         "",

@@ -19,6 +19,7 @@ export const STEP_IDS = [
   'create-database',
   'mint-media-credential',
   'render-host-secrets',
+  'render-compose-file',
   'register-host-keys',
   'create-app-host-slot',
   'push-first-commit',
@@ -104,6 +105,16 @@ const SPECS: readonly StepSpec[] = [
     inputs: slotOf,
   },
   {
+    // The tenant's compose file and first image pin reach the host only through the host's
+    // `stack` entry point, which refuses a stack its judge refuses. It comes after the secrets
+    // file, which the judge reads, and before the unit is enabled and the slot is created.
+    id: 'render-compose-file',
+    entryPoint: 'app-host',
+    scope: 'setup',
+    dependsOn: ['render-host-secrets'],
+    inputs: slotOf,
+  },
+  {
     id: 'register-host-keys',
     entryPoint: 'controller',
     scope: 'setup',
@@ -114,7 +125,7 @@ const SPECS: readonly StepSpec[] = [
     id: 'create-app-host-slot',
     entryPoint: 'app-host',
     scope: 'setup',
-    dependsOn: ['render-host-secrets', 'register-host-keys'],
+    dependsOn: ['render-compose-file', 'register-host-keys'],
     inputs: slotOf,
   },
   {

@@ -1351,6 +1351,11 @@ def old_path_sequence(ctx: Ctx) -> None:
 # long into the window. Control 2 must go red naming it.
 INJECTED_HOLD_SECONDS = 0.5
 INJECTED_HOLD_DELAY_SECONDS = 3.0
+# Control 3's old-path sabotage: the global lock is held only between FTWRL and
+# UNLOCK TABLES, a few milliseconds per dump, so one sampler catches it only
+# some of the time. Three dumps missed it in one CI run on the same code that
+# caught it in another; 12 cut the chance of a miss sharply.
+OLD_PATH_DUMPS_CONTROL_3 = 12
 
 
 def hold_other_lock(
@@ -1612,7 +1617,7 @@ def control_3(ctx: Ctx) -> ControlResult:
     try:
         if old_path:
             _grant_old_path(ctx)
-        for _ in range(3 if old_path else 10):
+        for _ in range(OLD_PATH_DUMPS_CONTROL_3 if old_path else 10):
             if old_path:
                 old_path_dump(ctx)
             else:

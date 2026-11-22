@@ -66,6 +66,44 @@ and an unset value refuses to start rather than guessing.
 | `PORT`                           | no       | `8080`        | Bounded `1`–`65535`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `LISTEN_HOST`                    | no       | `127.0.0.1`   | Set to `0.0.0.0` in the container image; the address only the edge can reach it on is the operator's decision.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
+## The arrival link
+
+The demo owner's way in. The portal mints a single-use link and emails it; the
+link becomes a gate session, and the same token then signs the owner in to
+Ghost admin through the SSO adapter (`adapters/sso/README.md`, "On a demo").
+No password is shown, and no mail is sent at sign-in. This is off unless
+`GATE_INVITE_PUBLIC_KEY_FILE` is set.
+
+- `GET`/`HEAD /__gate/enter?t=<token>` verifies the token (signature, lifetime,
+  host, expiry), checks it is unused and that the slot's mail path is proved,
+  then shows a form. It spends nothing, so a mail scanner that fetches the link
+  cannot burn it.
+- `POST /__gate/enter` spends the token (the ledger, below) and sets the gate
+  cookie, then `303`s to `/ghost/?bl_break_glass=<token>`, where the adapter
+  makes the admin session. Both are routed to the gate by the edge directly,
+  like `/__gate/login` (`render_demo_site.py`).
+- Refusals: `401` invalid or expired, `410` already used, `503` not ready
+  (`Retry-After: 30`, the link is not spent), `429` once invalid attempts from a
+  source pass the malformed ceiling.
+
+| Variable                          | Required         | Default | Notes                                                                                                 |
+| --------------------------------- | ---------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `GATE_INVITE_PUBLIC_KEY_FILE`     | no               | —       | The portal's Ed25519 public key, base64 SPKI DER (the adapter's `publicKey` form). Setting it enables the route. |
+| `GATE_INVITE_STATE_DIR`           | with the key     | —       | Where the single-use ledger lives. Must outlive the process; refused without the key.                |
+| `GATE_MAIL_PROOF_DIR`             | with the key     | —       | Where `<slot>.mail.json` proofs are read from; refused without the key.                               |
+| `GATE_MAIL_PROOF_MAX_AGE_SECONDS` | no               | `3600`  | Bounded `1`–`86400`. A proof older than this stops counting.                                          |
+
+A link lives at most 900 seconds (a longer claim is refused) and is bound to
+the demo's host. Single use is `usedTokens.md`; the readiness proof is
+`mailProof.md`. The gate only reads the proof: whatever proves that a message
+from the slot's Ghost went through writes `<slot>.mail.json`
+(`{slot, lease, provedAt}`), and it counts only for the slot's current lease.
+
+`test/image/arrival.image.test.ts` runs the whole arrival against a real Ghost
+from the built image, with a sabotaged ledger and a broken mail path, and scans
+the edge access log with `demo-host/provision/scan_edge_access_log.py`
+(`pnpm run test:image`, `IMAGE` names the Ghost image).
+
 ## The signing key file
 
 The container runs as `node` — uid 1000, the user baked into the
