@@ -14,6 +14,7 @@ import {
   DemoExistsError,
   DemoHostnameExistsError,
   EXTENSION_DAYS,
+  ExtensionRefusedError,
   HostnameAllocationRefusedError,
   HostnameRetiredError,
   HostnameReusedError,
@@ -40,7 +41,8 @@ import {
   requestOf,
 } from '../demoReads.js';
 import type { DemoRequestView } from '../demoRequest.js';
-import { demoStateEvent } from '../schema.js';
+import { deriveExtensionView, type DemoExtensionView } from '../demoExtension.js';
+import { demoExtensionRequest, demoStateEvent } from '../schema.js';
 
 export * from '../demoLifecycle.js';
 
@@ -226,6 +228,36 @@ export class ProvisionerDb {
         endsAt: sql`${term.endsAt} + make_interval(hours => ${EXTENSION_DAYS * 24})`,
       };
       return this.append(tx, latest, 'EXTENDED', moved, EXTENSION_DAYS);
+    });
+  }
+
+  /**
+   * Grants the extension a prospect asked for: refuses unless the demo's
+   * recorded extension request carries consent, then moves the term on by 14
+   * days through `extend`. A request is never deleted or altered, so what is
+   * read here still holds when `extend` runs. A demo with no request, or whose
+   * request has no consent wording, moves nothing.
+   *
+   * @throws UnknownDemoError
+   * @throws ExtensionRefusedError
+   * @throws ConcurrentTransitionError
+   */
+  async grantExtension(demoId: string): Promise<DemoEventView> {
+    const asked = await this.extensionRequest(demoId);
+    if (asked === undefined || asked.consentWording.length === 0) {
+      throw new ExtensionRefusedError(demoId, 'consent');
+    }
+    return this.extend(demoId);
+  }
+
+  /** The prospect's extension request for the demo; undefined when there is none. */
+  extensionRequest(demoId: string): Promise<DemoExtensionView | undefined> {
+    return this.run(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(demoExtensionRequest)
+        .where(eq(demoExtensionRequest.demoId, demoId));
+      return row === undefined ? undefined : deriveExtensionView(row);
     });
   }
 

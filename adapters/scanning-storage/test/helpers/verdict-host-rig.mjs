@@ -64,6 +64,10 @@ export async function startRig({
   const fullConfig = {
     socketPath: path.join(directory, 'v.sock'),
     socketMode: 0o600,
+    // The slot's own identity. A test can only run as itself, so the rig's slot
+    // is the user running the test.
+    socketUid: process.geteuid(),
+    socketGid: process.getegid(),
     journalFile: path.join(directory, 'state', 'queue.journal'),
     verifyKeyFile: keys.keyFile,
     metricsFile: path.join(directory, 'metrics', 'verdict_host.prom'),

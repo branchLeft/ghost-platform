@@ -159,6 +159,7 @@ export const STATUS_COLUMNS = {
 } as const;
 const QUEUE = '0013_moderation_item';
 const TENANT_BILLING = '0014_tenant_billing';
+const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
 
 /**
@@ -456,6 +457,20 @@ export function manifest(major: number, database: string): readonly ManifestObje
       ],
       added: [{ since: STATUS_READ, grants: [{ grantee: 'prospectRole', ...STATUS_COLUMNS }] }],
     },
+    // ProspectDb.requestExtension inserts, and the table's row policy admits
+    // the insert only for the demo whose request holds the address the
+    // transaction bound. ProvisionerDb.extensionRequest and grantExtension
+    // read. No role updates or deletes a request, so the consent recorded
+    // with it cannot be altered.
+    {
+      kind: 'table',
+      identity: 'portal.demo_extension_request',
+      since: DEMO_EXTENSION,
+      grants: [
+        { grantee: 'prospectRole', privileges: ['INSERT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
+      ],
+    },
   ];
 }
 
@@ -490,6 +505,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.hostname_retirement': { enabled: false, forced: false },
   // Off until the status migration turns it on: a server held back verifies.
   'portal.demo_request': { enabled: true, forced: false, enabledFrom: STATUS_READ },
+  'portal.demo_extension_request': { enabled: true, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -689,6 +705,25 @@ export const POLICIES: readonly PolicyEntry[] = [
     'portal.demo_request',
     'provisioner_read',
     STATUS_READ,
+    'r',
+    'true',
+    'null',
+    'provisionerRole'
+  ), // The front door files an extension request only for the demo whose request
+  // holds the address its transaction bound; the lifecycle worker reads.
+  policy(
+    'portal.demo_extension_request',
+    'extension_insert',
+    DEMO_EXTENSION,
+    'a',
+    'null',
+    '(EXISTS ( SELECT 1\n   FROM portal.demo_request\n  WHERE (demo_request.demo_id = demo_extension_request.demo_id)))',
+    'prospectRole'
+  ),
+  policy(
+    'portal.demo_extension_request',
+    'provisioner_read',
+    DEMO_EXTENSION,
     'r',
     'true',
     'null',
@@ -1137,6 +1172,33 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'portal.demo_request USING btree (demo_id)',
       'index portal.demo_request_verified_address_unique CREATE UNIQUE INDEX ' +
         'demo_request_verified_address_unique ON portal.demo_request USING btree (verified_address)',
+    ],
+  },
+  'portal.demo_extension_request': {
+    since: DEMO_EXTENSION,
+    lines: [
+      `column audience_size text notnull=true ${PLAIN}`,
+      `column charges_readers boolean notnull=true ${PLAIN}`,
+      `column consent_wording text notnull=true ${PLAIN}`,
+      `column consented_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column demo_id uuid notnull=true ${PLAIN}`,
+      `column move_when text notnull=true ${PLAIN}`,
+      `column still_evaluating text notnull=true ${PLAIN}`,
+      `column what_is_missing text notnull=false ${PLAIN}`,
+      'default consented_at now()',
+      "constraint demo_extension_request_choices_shape CHECK (((audience_size ~ '^[a-z0-9-]{1,40}$'::text) AND " +
+        "(move_when ~ '^[a-z0-9-]{1,40}$'::text)))",
+      'constraint demo_extension_request_consent_wording_length CHECK (((char_length(consent_wording) >= 1) AND ' +
+        '(char_length(consent_wording) <= 2000)))',
+      'constraint demo_extension_request_demo_id_demo_request_demo_id_fk FOREIGN KEY (demo_id) ' +
+        'REFERENCES portal.demo_request(demo_id)',
+      'constraint demo_extension_request_evaluating_length CHECK (((char_length(still_evaluating) >= 1) AND ' +
+        '(char_length(still_evaluating) <= 500)))',
+      'constraint demo_extension_request_missing_length CHECK (((what_is_missing IS NULL) OR ' +
+        '((char_length(what_is_missing) >= 1) AND (char_length(what_is_missing) <= 500))))',
+      'constraint demo_extension_request_pkey PRIMARY KEY (demo_id)',
+      'index portal.demo_extension_request_pkey CREATE UNIQUE INDEX demo_extension_request_pkey ON ' +
+        'portal.demo_extension_request USING btree (demo_id)',
     ],
   },
 };
