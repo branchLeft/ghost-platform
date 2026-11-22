@@ -9,13 +9,15 @@
 # fix. Nothing here needs glibc: the dependencies are pure JavaScript, and
 # every shell step below is POSIX sh.
 # Pinned by digest as well as tag: the digest is the linux/amd64 manifest of
-# node:26.13.0-alpine, read from Docker Hub and confirmed against the registry
-# manifest endpoint, so a re-pointed tag cannot change what ships. Re-read it
-# when the tag is bumped.
-FROM node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a
+# node:26.13.1-alpine, read from the registry manifest list with
+# `docker buildx imagetools inspect`, so a re-pointed tag cannot change what
+# ships. Re-read it when the tag is bumped.
+FROM node:26.13.1-alpine@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c
 
-# zlib carries a critical finding whose fixed release is newer than the base.
-RUN apk upgrade --no-cache zlib
+# zlib, libcrypto3 and libssl3 carry findings whose fixed releases are newer
+# than the base's packages, so they are upgraded explicitly. Node 26.13.0 has
+# high findings fixed in 26.13.1, which the tag bump above takes.
+RUN apk upgrade --no-cache zlib libcrypto3 libssl3
 
 # Node 26 ships without corepack, so pnpm is installed at the version the
 # package.json pins.
