@@ -16,7 +16,7 @@ acts on the announcement besides paging and filing the item.
 On a new major the run does three things in this order: file, page, write
 state. The filing is plain REST, no model:
 
-1. Search the `branchLeft/workspace` issues labelled `upstream-major`, open
+1. Search the tracker's issues labelled `upstream-major`, open
    and closed, for the major's **idempotence key**: the line
    `<!-- upstream-major:N -->` at the end of the item's body. Found: nothing
    is created.
@@ -41,7 +41,7 @@ the next run tries again. Quiet runs need neither value.
 
 Recommended: a **GitHub App installation token** for a dedicated App, with
 repository permission `issues: write` (which also covers adding a sub-issue),
-installed on `branchLeft/workspace` only. Minted per run by
+installed on the tracker repository only. Minted per run by
 `actions/create-github-app-token` in `major-watcher-run.yml`, so it lives
 about an hour and no long-lived token sits in a secret. Why not the
 alternatives: the job's own `GITHUB_TOKEN` cannot write another repository;
@@ -49,7 +49,7 @@ a fine-grained PAT is tied to a person and is long-lived; an existing App
 (the release watcher's) carries `contents: write` and `pull-requests: write`
 this watcher must not hold.
 
-Placing it (owner): create the App and install it on `branchLeft/workspace`;
+Placing it (owner): create the App and install it on the tracker repository;
 set the repository variable `MAJOR_WATCHER_APP_ID`, the repository secret
 `MAJOR_WATCHER_APP_PRIVATE_KEY`, and the repository variable
 `MAJOR_WATCHER_LAUNCH_ITEM` (the workspace issue number of the launch item

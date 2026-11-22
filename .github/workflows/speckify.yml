@@ -177,7 +177,7 @@ jobs:
       # fields are set here on Speckify's own build output and the package is
       # published with npm. The tool's check, plan and build, and the drift
       # guard above, still run. When Speckify writes those fields itself
-      # (workspace#2014), go back to `speckify publish`.
+      # go back to `speckify publish`.
       - name: Link the generated package to this repository
         run: |
           set -euo pipefail

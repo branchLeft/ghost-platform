@@ -101,7 +101,7 @@ merge, and recovery under incident conditions must pull the exact,
 already-verified image the runbook names, not whatever happens to be newest.
 
 There is no `.claude/delivery-paths.json` row for `db/recovery/**` in this
-repo — that file lives in `branchLeft/workspace`, tracked there.
+repo — that file is tracked in the private tracker, not in this repo.
 
 ## Restoring a tenant onto a drained colour
 

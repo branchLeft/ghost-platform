@@ -133,7 +133,7 @@ def _self_test() -> None:
     )
     assert not missing and not shadowed, (
         "expected a pass with HETZNER_S3_* at the repository level and "
-        "TENANT_STATE_S3_* environment-scoped -- this is the exact case "
+        "TENANT_PROVISIONING_APP_PRIVATE_KEY environment-scoped -- this is the exact case "
         "that could not be constructed before the rename"
     )
 
