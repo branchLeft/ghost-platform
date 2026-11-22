@@ -10,8 +10,7 @@
   "exports": {
     ".": "./dist/src/index.js",
     "./provisioning-api": "./dist/src/generated/index.js",
-    "./provisioning-api/server": "./dist/src/generated/server.js",
-    "./ticket-lifecycle": "./dist/src/service/ticketLifecycle.js"
+    "./provisioning-api/server": "./dist/src/generated/server.js"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

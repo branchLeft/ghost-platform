@@ -5,10 +5,6 @@ import {
   type TicketKind,
   type TicketState,
 } from 'ghost-platform-provisioning-controller/provisioning-api';
-import {
-  canMoveTicket,
-  TICKET_STATES,
-} from 'ghost-platform-provisioning-controller/ticket-lifecycle';
 import type { Signed } from '../shell/app.js';
 import { escapeHtml, type NavItem } from '../shell/html.js';
 import { ProvisioningError, QUEUE_PATH, type ProvisioningOptions } from './requestsScreen.js';
@@ -61,6 +57,23 @@ const MOVE_LABEL: Readonly<Record<TicketState, string>> = {
   closed: 'TICKET_MOVE_CLOSED',
 };
 
+/** The four states, in the order a ticket first meets them. */
+export const TICKET_STATES: readonly TicketState[] = ['new', 'open', 'replied', 'closed'];
+
+/**
+ * The moves a button is shown for: the lifecycle the provisioning API holds
+ * (`moveTicket` in its contract), written out here because the controller does
+ * not export it. The API stays the authority: a move it refuses lands on a
+ * placeholder page, and a test compares this table with the controller's own so
+ * the two cannot drift.
+ */
+export const TICKET_MOVES: Readonly<Record<TicketState, readonly TicketState[]>> = {
+  new: ['open', 'replied', 'closed'],
+  open: ['replied', 'closed'],
+  replied: ['open', 'closed'],
+  closed: ['open'],
+};
+
 const NONE: TicketsScreen = { nav: [], pages: {}, actions: {} };
 
 function isState(value: string): value is TicketState {
@@ -78,9 +91,8 @@ function isState(value: string): value is TicketState {
  * The move runs only for a session whose organisation is the owner's: the
  * console's verifier already admits only that organisation holding the owner
  * role, and this checks again before any move is sent. Whether a move is
- * allowed is the API's to say (the lifecycle is held there once); a button is
- * shown only for the moves it allows, and a move it refuses lands on a
- * placeholder page and changes nothing.
+ * allowed is the API's to say; a button is shown only for the moves it allows,
+ * and a move it refuses lands on a placeholder page and changes nothing.
  */
 export function createTicketsScreen(
   provisioning: ProvisioningOptions | undefined,
@@ -178,7 +190,7 @@ function row(ticket: Ticket, here: string): string {
   const history = ticket.history
     .map((change) => `<li>${STATE_LABEL[change.state]} ${escapeHtml(change.at)}</li>`)
     .join('');
-  const moves = TICKET_STATES.filter((to) => canMoveTicket(ticket.state, to))
+  const moves = TICKET_MOVES[ticket.state]
     .map(
       (to) =>
         `<form method="post" action="${MOVE_PATH}"><input type="hidden" name="ticket_id" value="${escapeHtml(ticket.ticket_id)}"><input type="hidden" name="state" value="${to}"><input type="hidden" name="from" value="${escapeHtml(here)}"><button type="submit">${MOVE_LABEL[to]}</button></form>`

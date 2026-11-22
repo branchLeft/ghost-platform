@@ -617,8 +617,9 @@ Nav entry `NAV_TICKETS`. The text a tenant wrote is escaped, and shown as data.
   `TICKET_MOVE_REPLIED`, `TICKET_MOVE_CLOSED`), a form post to `/tickets/move` with the
   ticket id, the state and the list it came from. It calls `POST /tickets/{id}/state`
   and returns to that list, where the ticket is now in its new state. The lifecycle
-  is the provisioning controller's (`ghost-platform-provisioning-controller/ticket-lifecycle`),
-  held once; the API refuses any other move.
+  is the provisioning controller's (`src/service/ticketLifecycle.ts`); the console
+  writes the same table out for its buttons, `test/ownerTicketLifecycle.test.ts` fails if
+  the two differ, and the API refuses any other move.
 - **Errors.** An id that is not a ticket (or not a UUID: it never reaches the API)
   redirects to `/tickets/not-found`; a move the lifecycle refuses, or a state it does
   not name, to `/tickets/move-refused`. Each is a placeholder line and nothing changes.
