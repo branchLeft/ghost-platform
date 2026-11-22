@@ -17,41 +17,76 @@ HERE = pathlib.Path(__file__).parent
 PROGRAM = "branchleft_demo_isolation_probe.py"
 TEST = "test_branchleft_demo_isolation_probe.py"
 
-# (name, old text, new text) -- each edits the program only, in a scratch copy.
-SABOTAGES = [
+CLASSIFY_REFUSED = "    if isinstance(error, (ConnectionRefusedError, TimeoutError)) or error.errno in REFUSED_ERRNOS:\n"
+
+# (name, [(old text, new text), ...]) -- each edits the program only, in a scratch copy.
+# Every old text must occur exactly once in the program.
+SABOTAGES: list[tuple[str, list[tuple[str, str]]]] = [
+    # Item 1: only the four named errors are refusals; every other error is UNCHECKED.
     ("a completed connection is not reported as reached",
-     '            return Outcome("REACHED", route.label)\n    except (OSError, socket.timeout):',
-     '            return Outcome("REFUSED", route.label)\n    except (OSError, socket.timeout):'),
-    ("a dropped or timed-out route is reported as reached",
-     '    except (OSError, socket.timeout):\n        return Outcome("REFUSED", route.label)',
-     '    except (OSError, socket.timeout):\n        return Outcome("REACHED", route.label)'),
+     [('        with socket.create_connection((route.host, route.port), timeout=timeout):\n            return Outcome("REACHED", route.label)',
+       '        with socket.create_connection((route.host, route.port), timeout=timeout):\n            return Outcome("REFUSED", route.label)')]),
+    ("every OS error is a refusal (the verdict's High)",
+     [(CLASSIFY_REFUSED, "    if True:\n")]),
+    ("a name that does not resolve is a refusal",
+     [(CLASSIFY_REFUSED,
+       "    if isinstance(error, (ConnectionRefusedError, TimeoutError, socket.gaierror)) or error.errno in REFUSED_ERRNOS:\n")]),
+    ("a denied connect (EPERM/EACCES) is a refusal",
+     [(CLASSIFY_REFUSED,
+       "    if isinstance(error, (ConnectionRefusedError, TimeoutError)) or error.errno in REFUSED_ERRNOS or isinstance(error, PermissionError):\n")]),
+    ("a timeout is not a refusal",
+     [(CLASSIFY_REFUSED, "    if isinstance(error, ConnectionRefusedError) or error.errno in REFUSED_ERRNOS:\n")]),
+    ("an unreachable network is not a refusal",
+     [(CLASSIFY_REFUSED, "    if isinstance(error, (ConnectionRefusedError, TimeoutError)):\n")]),
+    ("an UNCHECKED route counts as a pass",
+     [('    if any(outcome.verdict == "UNCHECKED" for outcome in outcomes):',
+       "    if False:")]),
+    # Item 2: the positive control must open, or the probe stops with no verdict.
+    ("the control is not required to open",
+     [('    if control_outcome.verdict != "REACHED":', "    if False:")]),
+    # Item 3: every route class is mandatory; --expect-uid is required.
+    ("the gateway is optional",
+     [('"--gateway", required=True,', '"--gateway", default="127.0.0.1",')]),
+    ("the peer ports are optional",
+     [('"--peer-port", type=parse_port, action="append", required=True,',
+       '"--peer-port", type=parse_port, action="append", default=[],')]),
+    ("the host ports are optional",
+     [('"--host-port", type=parse_port, action="append", required=True,',
+       '"--host-port", type=parse_port, action="append", default=[],')]),
+    ("the estate addresses are optional",
+     [('"--estate", type=parse_estate, action="append", required=True,',
+       '"--estate", type=parse_estate, action="append", default=[],')]),
+    ("the spool address is optional",
+     [('parser.add_argument("--spool-address", required=True)',
+       'parser.add_argument("--spool-address", default="127.0.0.1")')]),
+    ("the spool ports are optional",
+     [('"--spool-port", type=parse_port, action="append", required=True)',
+       '"--spool-port", type=parse_port, action="append", default=[])')]),
+    ("the file paths are optional",
+     [('"--file-path", action="append", required=True,', '"--file-path", action="append", default=[],')]),
+    ("--expect-uid is optional",
+     [('"--expect-uid", type=int, required=True,', '"--expect-uid", type=int, default=None,'),
+      ("    if euid != args.expect_uid:\n", "    if args.expect_uid is not None and euid != args.expect_uid:\n")]),
+    # Guarantees from the first cycle, kept.
     ("a readable directory is not reported as reached",
-     "        if os.path.isdir(route.path):\n            os.listdir(route.path)\n        else:\n            with open(route.path, \"rb\") as handle:\n                handle.read(1)\n        return Outcome(\"REACHED\", route.label)",
-     "        if os.path.isdir(route.path):\n            os.listdir(route.path)\n        else:\n            with open(route.path, \"rb\") as handle:\n                handle.read(1)\n        return Outcome(\"REFUSED\", route.label)"),
+     [('        return Outcome("REACHED", route.label)\n    except PermissionError:',
+       '        return Outcome("REFUSED", route.label)\n    except PermissionError:')]),
     ("a missing path counts as refused",
-     '    except OSError as error:\n        return Outcome("UNCHECKED", route.label, type(error).__name__)',
-     '    except OSError as error:\n        return Outcome("REFUSED", route.label)'),
+     [('    except OSError as error:\n        return Outcome("UNCHECKED", route.label, type(error).__name__)',
+       '    except OSError as error:\n        return Outcome("REFUSED", route.label)')]),
     ("the spool's allowed port is probed too",
-     "            if port == spool_allowed_port:\n                continue  # the one drain/submit port is the only allowed route\n",
-     ""),
+     [("        if port == spool_allowed_port:\n            continue  # the one drain/submit port is the control, not a route to refuse\n",
+       "")]),
     ("the public routes are dropped",
-     "    for label, host, port in PUBLIC_ROUTES:\n        routes.append(TcpRoute(label, host, port))\n",
-     ""),
+     [("    for label, host, port in PUBLIC_ROUTES:\n        routes.append(TcpRoute(label, host, port))\n", "")]),
     ("slot ports are probed on loopback only, not the bridge gateway",
-     '        routes.append(TcpRoute(f"slot B port {port} on bridge gateway", gateway, port))\n',
-     ""),
+     [('        routes.append(TcpRoute(f"slot B port {port} on bridge gateway", gateway, port))\n', "")]),
     ("running as root is allowed",
-     "    if euid == 0:\n",
-     "    if False:\n"),
+     [("    if euid == 0:\n", "    if False:\n")]),
     ("a uid other than the expected one is allowed",
-     "    if args.expect_uid is not None and euid != args.expect_uid:\n",
-     "    if False:\n"),
+     [("    if euid != args.expect_uid:\n", "    if False:\n")]),
     ("a reached route still exits zero",
-     "    if any(outcome.verdict == \"REACHED\" for outcome in outcomes):\n        return EXIT_REACHED\n",
-     ""),
-    ("an unchecked route passes",
-     '    if not outcomes or any(outcome.verdict == "UNCHECKED" for outcome in outcomes):',
-     "    if not outcomes:"),
+     [('    if any(outcome.verdict == "REACHED" for outcome in outcomes):\n        return EXIT_REACHED\n', "")]),
 ]
 
 
@@ -81,16 +116,17 @@ def main() -> int:
         print("sabotage: untouched copy green")
 
         failures = 0
-        for index, (name, old, new) in enumerate(SABOTAGES):
+        for index, (name, edits) in enumerate(SABOTAGES):
             copy = scratch_copy(base / f"s{index}")
             text = (copy / PROGRAM).read_text()
-            if text.count(old) != 1:
+            if any(text.count(old) != 1 for old, _ in edits):
                 print(f"sabotage: '{name}' does not apply exactly once; the program changed under it")
                 failures += 1
                 continue
-            (copy / PROGRAM).write_text(text.replace(old, new))
-            code = run_suite(copy)
-            if code == 0:
+            for old, new in edits:
+                text = text.replace(old, new)
+            (copy / PROGRAM).write_text(text)
+            if run_suite(copy) == 0:
                 print(f"sabotage: '{name}' left the suite green; the suite misses it")
                 failures += 1
             else:
