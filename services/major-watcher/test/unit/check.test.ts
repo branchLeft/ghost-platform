@@ -5,6 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import { run } from '../../src/check.js';
 import type { GhostRelease } from '../../src/ghostReleases.js';
+import { fileUpstreamMajor, majorMarker } from '../../src/issues.js';
+import { fakeWorkspace, type FakeWorkspace } from './fakeWorkspace.js';
+
+const FILING_CONFIG = { token: 'filing-token-value', launchItem: 3810 };
+
+// The real filer against the in-memory workspace.
+function filingAgainst(ws: FakeWorkspace) {
+  return {
+    filingConfig: () => FILING_CONFIG,
+    fileItem: (config: typeof FILING_CONFIG, item: Parameters<typeof fileUpstreamMajor>[1]) =>
+      fileUpstreamMajor(config, item, ws.fetch),
+  };
+}
 
 const MAJOR_6_RELEASES: GhostRelease[] = [
   { tagName: 'v5.130.6', publishedAt: '2026-01-08T12:41:13Z', draft: false },
@@ -47,12 +60,14 @@ describe('run (end to end, network and ntfy both faked)', () => {
   it('pages ntfy exactly once for a newly announced major and persists the new state to disk', async () => {
     await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
     const publishNtfy = vi.fn().mockResolvedValue(undefined);
+    const ws = fakeWorkspace();
 
     const result = await run({
       statePath,
       ntfy: { url: 'https://ntfy.example/topic' },
       fetchReleases: async () => MAJOR_6_RELEASES,
       publishNtfy,
+      ...filingAgainst(ws),
     });
 
     expect(result.notified).toBe(true);
@@ -67,14 +82,16 @@ describe('run (end to end, network and ntfy both faked)', () => {
     expect(persisted.lastNotifiedMajor).toBe(6);
   });
 
-  it('replay: running twice in sequence against the same upstream data pages exactly once', async () => {
+  it('replay: running twice in sequence against the same upstream data pages once and files one labelled item', async () => {
     await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
     const publishNtfy = vi.fn().mockResolvedValue(undefined);
+    const ws = fakeWorkspace();
     const opts = {
       statePath,
       ntfy: { url: 'https://ntfy.example/topic' },
       fetchReleases: async () => MAJOR_6_RELEASES,
       publishNtfy,
+      ...filingAgainst(ws),
     };
 
     const first = await run(opts);
@@ -83,6 +100,55 @@ describe('run (end to end, network and ntfy both faked)', () => {
     expect(first.notified).toBe(true);
     expect(second.notified).toBe(false);
     expect(publishNtfy).toHaveBeenCalledTimes(1);
+    expect(ws.issues).toHaveLength(1);
+    expect(ws.issues[0]?.labels).toContain('upstream-major');
+    expect(ws.issues[0]?.body).toContain(majorMarker(6));
+    expect(ws.issues[0]?.parent_issue_url).toMatch(/\/issues\/3810$/);
+  });
+
+  it('a page that failed after the item was filed is retried without a second item', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const before = await readFile(statePath, 'utf8');
+    const ws = fakeWorkspace();
+    const opts = {
+      statePath,
+      ntfy: { url: 'https://ntfy.example/topic' },
+      fetchReleases: async () => MAJOR_6_RELEASES,
+      ...filingAgainst(ws),
+    };
+
+    await expect(
+      run({
+        ...opts,
+        publishNtfy: vi.fn().mockRejectedValue(new Error('ntfy publish failed: 500')),
+      })
+    ).rejects.toThrow(/ntfy publish failed/);
+    expect(await readFile(statePath, 'utf8')).toBe(before);
+    expect(ws.issues).toHaveLength(1);
+
+    const retry = await run({ ...opts, publishNtfy: vi.fn().mockResolvedValue(undefined) });
+
+    expect(retry.notified).toBe(true);
+    expect(retry.filed?.created).toBe(false);
+    expect(ws.issues).toHaveLength(1);
+  });
+
+  it('the page names the filed item and carries no filing command', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const publishNtfy = vi.fn().mockResolvedValue(undefined);
+    const ws = fakeWorkspace();
+
+    await run({
+      statePath,
+      ntfy: { url: 'https://ntfy.example/topic' },
+      fetchReleases: async () => MAJOR_6_RELEASES,
+      publishNtfy,
+      ...filingAgainst(ws),
+    });
+
+    const [, msg] = publishNtfy.mock.calls[0] as [unknown, { message: string }];
+    expect(msg.message).toContain('Tracked item filed under the launch item: https://github.com/');
+    expect(msg.message).not.toContain('gh issue create');
   });
 
   it('does not page and does not rewrite state for a minor release', async () => {
@@ -102,33 +168,84 @@ describe('run (end to end, network and ntfy both faked)', () => {
     expect(await readFile(statePath, 'utf8')).toBe(before);
   });
 
-  it('the page for a new major carries the filing command for its tracked item, within one ntfy message', async () => {
+  it('no filing credential: fails closed (nothing filed), still pages with the by-hand command, fails the run, leaves state unwritten', async () => {
     await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const before = await readFile(statePath, 'utf8');
     const publishNtfy = vi.fn().mockResolvedValue(undefined);
+    const ws = fakeWorkspace();
+    const fileItem = vi.fn();
 
-    await run({
-      statePath,
-      ntfy: { url: 'https://ntfy.example/topic' },
-      fetchReleases: async () => MAJOR_6_RELEASES,
-      publishNtfy,
-    });
+    await expect(
+      run({
+        statePath,
+        ntfy: { url: 'https://ntfy.example/topic' },
+        fetchReleases: async () => MAJOR_6_RELEASES,
+        publishNtfy,
+        fileItem,
+        filingConfig: () => {
+          throw new Error(
+            'MAJOR_WATCHER_FILING_TOKEN is not set: the filing credential is not placed'
+          );
+        },
+      })
+    ).rejects.toThrow(/MAJOR_WATCHER_FILING_TOKEN is not set/);
 
+    expect(fileItem).not.toHaveBeenCalled();
+    expect(ws.calls).toHaveLength(0);
+    expect(await readFile(statePath, 'utf8')).toBe(before);
+    expect(publishNtfy).toHaveBeenCalledTimes(1);
     const [, msg] = publishNtfy.mock.calls[0] as [unknown, { message: string }];
+    expect(msg.message).toContain('FILING FAILED, nothing was filed');
     expect(msg.message).toContain('gh issue create');
-    expect(msg.message).toContain('--label type:platform-story');
-    // The sub-issue sentence is printed as ordinary text before the command,
-    // never as a line inside the block a person pastes.
-    expect(msg.message).toContain('added as a sub-issue of the launch item it belongs to');
+    expect(msg.message).toContain('--label upstream-major');
     const lines = msg.message.split('\n');
     const commandStart = lines.findIndex((line) => line.startsWith('BODY=$(mktemp)'));
     expect(commandStart).toBeGreaterThan(-1);
-    expect(lines.findIndex((line) => line.includes('sub-issue'))).toBeLessThan(commandStart);
     for (const line of lines.slice(commandStart)) {
       expect(line.startsWith('#')).toBe(false);
     }
     // ntfy truncates a message over 4096 bytes into an attachment; the
     // command must arrive whole in the page itself.
     expect(Buffer.byteLength(msg.message, 'utf8')).toBeLessThan(4096);
+  });
+
+  it('no filing wiring at all fails closed the same way', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const publishNtfy = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      run({
+        statePath,
+        ntfy: { url: 'https://ntfy.example/topic' },
+        fetchReleases: async () => MAJOR_6_RELEASES,
+        publishNtfy,
+      })
+    ).rejects.toThrow(/no filing configuration is wired/);
+  });
+
+  it('a filing API failure still pages, fails the run and leaves state unwritten', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const before = await readFile(statePath, 'utf8');
+    const publishNtfy = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      run({
+        statePath,
+        ntfy: { url: 'https://ntfy.example/topic' },
+        fetchReleases: async () => MAJOR_6_RELEASES,
+        publishNtfy,
+        filingConfig: () => FILING_CONFIG,
+        fileItem: async () => {
+          throw new Error('GitHub POST /repos/branchLeft/workspace/issues failed: 403 Forbidden');
+        },
+      })
+    ).rejects.toThrow(/403 Forbidden/);
+
+    expect(publishNtfy).toHaveBeenCalledTimes(1);
+    expect((publishNtfy.mock.calls[0] as [unknown, { message: string }])[1].message).toContain(
+      'FILING FAILED'
+    );
+    expect(await readFile(statePath, 'utf8')).toBe(before);
   });
 
   it('propagates a state read failure rather than silently notifying', async () => {
@@ -182,6 +299,7 @@ describe('run (end to end, network and ntfy both faked)', () => {
         ntfy: { url: 'https://ntfy.example/topic' },
         fetchReleases: async () => MAJOR_6_RELEASES,
         publishNtfy,
+        ...filingAgainst(fakeWorkspace()),
       })
     ).rejects.toThrow(/ntfy publish failed/);
 
@@ -199,6 +317,7 @@ describe('run (end to end, network and ntfy both faked)', () => {
           statePath,
           ntfy: { url: 'https://ntfy.example/topic', timeoutMs: 25 },
           fetchReleases: async () => MAJOR_6_RELEASES,
+          ...filingAgainst(fakeWorkspace()),
         })
       ).rejects.toThrow(new Error('ntfy publish timed out after 25 ms'));
       expect(globalFetch).toHaveBeenCalledTimes(1);
