@@ -65,6 +65,28 @@ class FindRefsTests(unittest.TestCase):
         text = "https://github.com/branchLeft/ghost-platform/issues/12\n"
         self.assertEqual(guard.find_refs(text), [])
 
+    def test_short_form_is_case_insensitive(self) -> None:
+        text = "WORKSPACE#1302 and Workspace#7\n"
+        self.assertEqual(
+            guard.find_refs(text),
+            [(1, "WORKSPACE#1302"), (1, "Workspace#7")],
+        )
+
+    def test_pull_url_form_is_found(self) -> None:
+        text = "see https://github.com/" + REPO + "/pull/12\n"
+        self.assertEqual(guard.find_refs(text), [(1, "github.com/" + REPO + "/pull/12")])
+
+    def test_api_url_form_is_found(self) -> None:
+        text = "https://api.github.com/repos/" + REPO + "/issues/9/comments\n"
+        self.assertEqual(
+            guard.find_refs(text),
+            [(1, "api.github.com/repos/" + REPO + "/issues/9")],
+        )
+
+    def test_lowercased_url_is_found(self) -> None:
+        text = "https://github.com/branchleft/workspace/issues/9\n"
+        self.assertEqual(guard.find_refs(text), [(1, "github.com/branchleft/workspace/issues/9")])
+
 
 class ScanTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -90,19 +112,51 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(findings[0].line, 1)
         self.assertEqual(findings[0].text, SHORT + "7")
 
-    def test_binary_file_is_skipped(self) -> None:
+    def test_binary_file_with_a_reference_is_scanned(self) -> None:
         binary = self._write("blob.bin", b"\x00\x01" + ("x " + SHORT + "9").encode())
-        self.assertEqual(guard.scan_paths([binary]), [])
+        findings = guard.scan_paths([binary])
+        self.assertEqual([f.text for f in findings], [SHORT + "9"])
 
-    def test_missing_file_is_skipped_not_fatal(self) -> None:
+    def test_utf16_le_bom_file_is_scanned(self) -> None:
+        path = self._write("utf16.md", ("x " + SHORT + "1302").encode("utf-16"))
+        self.assertEqual([f.text for f in guard.scan_paths([path])], [SHORT + "1302"])
+
+    def test_utf16_be_bom_file_is_scanned(self) -> None:
+        path = self._write("utf16be.md", b"\xfe\xff" + ("x " + SHORT + "1302").encode("utf-16-be"))
+        self.assertEqual([f.text for f in guard.scan_paths([path])], [SHORT + "1302"])
+
+    def test_utf32_bom_file_is_scanned(self) -> None:
+        path = self._write("utf32.md", ("x " + SHORT + "1302").encode("utf-32"))
+        self.assertEqual([f.text for f in guard.scan_paths([path])], [SHORT + "1302"])
+
+    def test_bomless_utf16_file_is_scanned(self) -> None:
+        path = self._write("bomless.md", ("x " + SHORT + "1302").encode("utf-16-le"))
+        self.assertEqual([f.text for f in guard.scan_paths([path])], [SHORT + "1302"])
+
+    def test_unreadable_file_is_a_finding(self) -> None:
         gone = self.root / "gone.md"
-        self.assertEqual(guard.scan_paths([gone]), [])
+        findings = guard.scan_paths([gone])
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].path, gone)
+        self.assertEqual(findings[0].line, 0)
+
+    def test_allowlisted_path_is_the_only_skip(self) -> None:
+        path = self._write("allowed.bin", b"\x00" + ("x " + SHORT + "9").encode())
+        original = guard.BINARY_ALLOWLIST
+        guard.BINARY_ALLOWLIST = frozenset({str(path)})
+        try:
+            self.assertEqual(guard.scan_paths([path]), [])
+        finally:
+            guard.BINARY_ALLOWLIST = original
 
     def test_main_exit_codes(self) -> None:
         clean = self._write("clean.md", b"ok\n")
         dirty = self._write("dirty.md", ("x " + SHORT + "5").encode())
+        utf16 = self._write("utf16-dirty.md", ("x " + SHORT + "5").encode("utf-16"))
         self.assertEqual(guard.main([str(clean)]), 0)
         self.assertEqual(guard.main([str(dirty)]), 1)
+        self.assertEqual(guard.main([str(utf16)]), 1)
+        self.assertEqual(guard.main([str(self.root / "gone.md")]), 1)
 
 
 class SelfTestTests(unittest.TestCase):
