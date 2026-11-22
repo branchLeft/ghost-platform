@@ -1,5 +1,5 @@
 import { createEssentialsRoutes, type KindReader, type RouteSet } from './essentialsRoutes.js';
-import { createProfessionalRoutes } from './professionalRoutes.js';
+import { createProfessionalRoutes, type EnquiryRecorder } from './professionalRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import type { ThirdPartyOff } from './thirdPartyOff.js';
@@ -15,10 +15,12 @@ export function createPromotionRoutes(
   support: SupportSettings | undefined,
   reader: KindReader,
   clock: () => number,
-  thirdPartyOff?: ThirdPartyOff
+  enquiries: EnquiryRecorder,
+  thirdPartyOff?: ThirdPartyOff,
+  onError?: (line: string) => void
 ): RouteSet {
   const essentials = createEssentialsRoutes(provisioning, reader, thirdPartyOff);
-  const professional = createProfessionalRoutes(support, reader, clock);
+  const professional = createProfessionalRoutes(support, reader, clock, enquiries, onError);
   return {
     nav: [...essentials.nav, ...professional.nav],
     pages: { ...essentials.pages, ...professional.pages },
