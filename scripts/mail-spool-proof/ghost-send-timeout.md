@@ -1,7 +1,7 @@
 # ghost-send-timeout.image.test.mjs
 
 Ghost awaits a reader's transactional send inside the reader's own web request
-(workspace#1952). Against a frozen mail spool, the request waits as long as
+(a private tracker issue). Against a frozen mail spool, the request waits as long as
 nodemailer's defaults allow: a 30 s greeting timeout and a 2 min connection
 timeout.
 

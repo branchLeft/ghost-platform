@@ -98,7 +98,7 @@ const request = (lane = 'incident', identity = undefined) => ({
   tenant: 'tenant-zero',
   identity,
   reason: 'readers see errors',
-  reference: 'workspace#0',
+  reference: 'ticket-0',
 });
 
 const stateFile = (deps, tenant = 'tenant-zero') => path.join(deps.stateDir, `${tenant}.json`);
