@@ -41,7 +41,7 @@ on:
   # A weekly run of the whole tree is the backstop for a read the path lists
   # above miss.
   schedule:
-    - cron: '0 4 * * 1'
+    - cron: '51 4 * * 1'
 
 # `packages: read` because this service takes a dev dependency on
 # `@branchleft/tsconfig`, which is hosted on GitHub Packages and answers 401
