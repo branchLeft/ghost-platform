@@ -21,7 +21,11 @@ import {
 import type { EmailAddress } from './brand.js';
 import type { TenantDescriptor, TenantStackDescriptor } from './descriptor.js';
 import { SECRET_ENV_KEYS } from './environment.js';
-import { validateDatabaseIdentity, validateSlugAvailability } from './naming.js';
+import {
+  TENANT_NAME_REGISTER,
+  validateDatabaseIdentity,
+  validateSlugAvailability,
+} from './naming.js';
 import type { SlugClaimant } from './naming.js';
 import {
   bareHttpsOrigin,
@@ -744,7 +748,37 @@ const LOCAL_PART_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
  * below, alongside every other kind-fixed-shape rule; this function only
  * checks what is well-formed for whichever arm the descriptor already has.
  */
-function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig): void {
+/**
+ * The one named exception to the owned-domain refusal on a tenant's sending
+ * identity: tenant zero keeps its own live sending domain. It is an exact
+ * pair, in code, not configuration: the slug must be the register's tenant
+ * name, the caller must be that entry's repository, and the domain must be
+ * exactly this name (not a subdomain, not a sibling). It changes the sending
+ * domain check and nothing else; the from-address and the mail spool are not
+ * covered by it.
+ */
+const NAMED_SENDING_DOMAIN_EXCEPTION = {
+  slug: 'blog',
+  domain: 'blog.branchleft.co.uk',
+} as const;
+
+function isNamedSendingDomainException(
+  domain: string,
+  slug: string,
+  claimantRepo: string | undefined
+): boolean {
+  if (slug !== NAMED_SENDING_DOMAIN_EXCEPTION.slug) return false;
+  if (normalizeDomain(domain) !== NAMED_SENDING_DOMAIN_EXCEPTION.domain) return false;
+  const entry = TENANT_NAME_REGISTER.find((candidate) => candidate.name === slug);
+  return entry !== undefined && entry.kind === 'tenant' && claimantRepo === entry.repo;
+}
+
+function validateMailIdentity(
+  mail: TenantDescriptor['mail'],
+  zones: ZoneConfig,
+  slug: string,
+  claimantRepo: string | undefined
+): void {
   if (mail.ceiling > mail.estateCeiling) {
     throw new FieldValidationError(
       'mail.ceiling',
@@ -773,7 +807,10 @@ function validateMailIdentity(mail: TenantDescriptor['mail'], zones: ZoneConfig)
         `name, and not an IP address literal or shorthand for one.`
     );
   }
-  if (!isOutsideOwnedDomains(mail.identity.domain, zones.ownedDomains)) {
+  if (
+    !isOutsideOwnedDomains(mail.identity.domain, zones.ownedDomains) &&
+    !isNamedSendingDomainException(mail.identity.domain, slug, claimantRepo)
+  ) {
     throw new FieldValidationError(
       'mail.identity.domain',
       `mail.identity.domain "${mail.identity.domain}" must be outside every registrable domain ` +
@@ -1597,7 +1634,7 @@ function validateFields(
   validateMedia(descriptor.slug, descriptor.media, zones);
   validateBackup(descriptor.backup);
   validateTransport(descriptor.transport);
-  validateMailIdentity(descriptor.mail, zones);
+  validateMailIdentity(descriptor.mail, zones, descriptor.slug, options.claimantRepo);
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
   validateAnalytics(descriptor);
