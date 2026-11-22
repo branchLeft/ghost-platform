@@ -73,3 +73,19 @@ files store's `tier`, which must take video because Ghost's zip import also
 offers a media file to the files store (its extension list holds `.mp4`).
 Run `python3 -m unittest discover -s adapters/scanning-storage/probe` for the
 pure parts.
+
+## Mode `--mode rewrite` (the upload-then-rewrite path)
+
+Uploads each demo file through the tenant's admin upload routes, rewrites every
+demo-form reference in the export JSON to the URL the tenant answered, removes
+the demo's users, points every post at the tenant's owner, drops the settings
+the tenant owns, and imports the JSON alone. It then reads the tenant's export
+back per field class.
+
+- Control: an image on the hash list must be refused at its own upload; the run
+  stops before the import and prints the orphan count.
+- Sabotage: `--sabotage skip-og-image` leaves `og_image` as in the demo and must
+  go red; `--sabotage empty-control-list` must go red on the control.
+- Stored bytes are compared by length only: the S3 double records `bodyBytes`,
+  not a body hash.
+- Author images are not carried: the rewrite removes the demo's owner.
