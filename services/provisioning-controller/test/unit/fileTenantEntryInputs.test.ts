@@ -1,0 +1,370 @@
+import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile, symlink, writeFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  EXIT,
+  FileTenantEntryInputs,
+  MAX_INPUT_BYTES,
+  parseRunConfig,
+  runCli,
+  type StepRequest,
+  type TenantEntryFiles,
+} from '../../src/index.js';
+import { APPROVAL, ENTRY } from '../support/doubles.js';
+import { Workdir } from '../support/workdir.js';
+
+let work: Workdir;
+beforeEach(async () => {
+  work = await Workdir.create();
+});
+afterEach(async () => {
+  await work.remove();
+});
+
+const SLOT = 'acme-blog';
+const CANARY = 'CANARY-5f2e9c1d-value-that-must-never-be-logged';
+const KEY = '/etc/controller/entry_key';
+const KNOWN = '/etc/controller/known_hosts';
+
+const request = (id: StepRequest['id'] = 'render-host-secrets', slot = SLOT): StepRequest => ({
+  key: 'k',
+  id,
+  idempotencyKey: 'k@d',
+  inputs: { slot },
+});
+
+async function files(
+  modes: { secrets?: number; stack?: number; key?: number } = {}
+): Promise<TenantEntryFiles> {
+  return {
+    secretsFile: await work.json(
+      'secrets.json',
+      { template: 'DB_PASSWORD=${DB_PASSWORD}\n', values: { [SLOT]: { DB_PASSWORD: CANARY } } },
+      modes.secrets ?? 0o600
+    ),
+    stackFile: await work.json(
+      'stack.json',
+      {
+        [SLOT]: {
+          size: 'small',
+          mail: false,
+          environment: { database__password: { secret: 'DB_PASSWORD' }, url: 'https://x.test' },
+        },
+      },
+      modes.stack ?? 0o600
+    ),
+    deployKeyFile: await work.json(
+      'deploy_key.json',
+      { [SLOT]: 'ssh-ed25519 AAAAPUBLIC deploy' },
+      modes.key ?? 0o600
+    ),
+  };
+}
+
+describe('FileTenantEntryInputs: what it reads', () => {
+  it('returns the template and values, the three stack parameters and the key, for the slot asked', async () => {
+    const inputs = new FileTenantEntryInputs(await files());
+    expect(await inputs.secrets(request())).toEqual({
+      template: 'DB_PASSWORD=${DB_PASSWORD}\n',
+      values: { DB_PASSWORD: CANARY },
+    });
+    const claim = { uid: 20001, portA: 1, portB: 2, portHealth: 3 };
+    expect(await inputs.stack(request('render-compose-file'), claim)).toEqual({
+      size: 'small',
+      mail: false,
+      environment: { database__password: { secret: 'DB_PASSWORD' }, url: 'https://x.test' },
+    });
+    expect(await inputs.deployKey(request('create-app-host-slot'))).toBe(
+      'ssh-ed25519 AAAAPUBLIC deploy'
+    );
+  });
+
+  it('reads the file again each time: a change is seen at the next call', async () => {
+    const f = await files();
+    const inputs = new FileTenantEntryInputs(f);
+    await work.json('deploy_key.json', { [SLOT]: 'ssh-ed25519 AAAANEW deploy' });
+    expect(await inputs.deployKey(request())).toBe('ssh-ed25519 AAAANEW deploy');
+  });
+
+  it('refuses a slot with no entry, and a stack with a key it does not know', async () => {
+    const f = await files();
+    const inputs = new FileTenantEntryInputs(f);
+    await expect(inputs.secrets(request('render-host-secrets', 'other-slot'))).rejects.toThrow(
+      /no entry for slot other-slot/
+    );
+    await work.json('stack.json', {
+      [SLOT]: { size: 'small', mail: true, environment: {}, image: 'x' },
+    });
+    await expect(
+      inputs.stack(request(), { uid: 1, portA: 1, portB: 2, portHealth: 3 })
+    ).rejects.toThrow(/bad key \(image\)/);
+  });
+});
+
+describe('FileTenantEntryInputs: the files must be trusted', () => {
+  it('accepts a private file, and one its group can read', async () => {
+    for (const mode of [0o600, 0o640]) {
+      const inputs = new FileTenantEntryInputs(await files({ secrets: mode }));
+      await expect(inputs.secrets(request())).resolves.toBeDefined();
+    }
+  });
+
+  it('refuses a secrets file that anyone other than the owner and its group can read or write', async () => {
+    for (const mode of [0o604, 0o606, 0o620, 0o660, 0o666]) {
+      const inputs = new FileTenantEntryInputs(await files({ secrets: mode }));
+      await expect(inputs.secrets(request())).rejects.toThrow(/its mode lets other users/);
+    }
+  });
+
+  it('refuses a stack or key file that the group or others can write', async () => {
+    for (const mode of [0o620, 0o602, 0o666]) {
+      const inputs = new FileTenantEntryInputs(await files({ stack: mode, key: mode }));
+      const claim = { uid: 1, portA: 1, portB: 2, portHealth: 3 };
+      await expect(inputs.stack(request(), claim)).rejects.toThrow(/its mode lets other users/);
+      await expect(inputs.deployKey(request())).rejects.toThrow(/its mode lets other users/);
+    }
+  });
+
+  it('refuses a file owned by a user that may not own it', async () => {
+    const f = await files();
+    const stranger = (process.getuid?.() ?? 0) + 4242;
+    const inputs = new FileTenantEntryInputs(f, [stranger]);
+    await expect(inputs.secrets(request())).rejects.toThrow(/may not own it/);
+  });
+
+  it('refuses a symbolic link, a directory and a file past the size bound', async () => {
+    const f = await files();
+    await symlink(f.secretsFile, work.path('link.json'));
+    await mkdir(work.path('dir.json'));
+    await writeFile(work.path('big.json'), ' '.repeat(MAX_INPUT_BYTES + 1));
+    await chmod(work.path('big.json'), 0o600);
+    const at = (secretsFile: string): FileTenantEntryInputs =>
+      new FileTenantEntryInputs({ ...f, secretsFile });
+    await expect(at(work.path('link.json')).secrets(request())).rejects.toThrow(/symbolic link/);
+    await expect(at(work.path('dir.json')).secrets(request())).rejects.toThrow(
+      /cannot be opened|not a regular file/
+    );
+    await expect(at(work.path('big.json')).secrets(request())).rejects.toThrow(/too large/);
+    await expect(at(work.path('missing.json')).secrets(request())).rejects.toThrow(
+      /cannot be opened/
+    );
+  });
+
+  it('refuses a named pipe at once instead of waiting for a writer', async () => {
+    const f = await files();
+    const pipe = work.path('pipe.json');
+    await promisify(execFile)('mkfifo', [pipe]);
+    const inputs = new FileTenantEntryInputs({
+      ...f,
+      secretsFile: pipe,
+      stackFile: pipe,
+      deployKeyFile: pipe,
+    });
+    const outcome = async (run: Promise<unknown>): Promise<string> => {
+      const timer = new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 1500));
+      return Promise.race([
+        run.then(
+          () => 'accepted',
+          (e: Error) => e.message
+        ),
+        timer,
+      ]);
+    };
+    try {
+      expect(await outcome(inputs.secrets(request()))).toMatch(/not a regular file/);
+      expect(await outcome(inputs.deployKey(request()))).toMatch(/not a regular file/);
+    } finally {
+      // Let a blocked open, if the guard is missing, finish so the test run can end.
+      await open(pipe, constants.O_WRONLY | constants.O_NONBLOCK).then(
+        (h) => h.close(),
+        () => undefined
+      );
+    }
+  });
+});
+
+describe('FileTenantEntryInputs: no value is ever in an error', () => {
+  it('does not quote the file when it is not JSON, nor a value that is not text', async () => {
+    const f = await files();
+    const inputs = new FileTenantEntryInputs(f);
+    await writeFile(f.secretsFile, `{"template": "x", "values": {"${SLOT}": {"A": "${CANARY}" `);
+    const broken = await inputs.secrets(request()).then(
+      () => '',
+      (e: Error) => `${e.name} ${e.message}`
+    );
+    expect(broken).toContain('it is not JSON');
+    expect(broken).not.toContain(CANARY);
+
+    await work.json('secrets.json', { template: 'x', values: { [SLOT]: { [CANARY]: 7 } } });
+    const notText = await inputs.secrets(request()).then(
+      () => '',
+      (e: Error) => `${e.name} ${e.message}`
+    );
+    expect(notText).toContain('is not text');
+    expect(notText).not.toContain(CANARY);
+  });
+});
+
+describe('the sshEntry.inputs configuration has no default', () => {
+  const base = {
+    stateFile: '/var/lib/controller/state.jsonl',
+    approvalsFile: '/var/lib/controller/approvals.json',
+    registerFile: '/var/lib/controller/register.json',
+    hosts: {},
+  };
+  const ssh = (inputs: unknown): Record<string, unknown> => ({
+    keyFile: KEY,
+    knownHostsFile: KNOWN,
+    jumpHops: [],
+    target: { user: 'tenant-entry', host: 'app1.example.test' },
+    ...(inputs !== undefined && { inputs }),
+  });
+  const good = { secretsFile: '/a/s.json', stackFile: '/a/t.json', deployKeyFile: '/a/k.json' };
+
+  it('is parsed beside the transport settings', () => {
+    const config = parseRunConfig({ ...base, sshEntry: ssh(good) });
+    expect(config.tenantEntryFiles).toEqual(good);
+  });
+
+  it('is required, absolute, and closed to other keys', () => {
+    expect(() => parseRunConfig({ ...base, sshEntry: ssh(undefined) })).toThrow(
+      /sshEntry\.inputs is required/
+    );
+    expect(() =>
+      parseRunConfig({ ...base, sshEntry: ssh({ ...good, secretsFile: 'secrets.json' }) })
+    ).toThrow(/sshEntry\.inputs\.secretsFile is not an absolute path/);
+    expect(() => parseRunConfig({ ...base, sshEntry: ssh({ ...good, extra: '/x' }) })).toThrow(
+      /unknown keys: extra/
+    );
+    const { stackFile: _left, ...rest } = good;
+    expect(() => parseRunConfig({ ...base, sshEntry: ssh(rest) })).toThrow(
+      /sshEntry\.inputs\.stackFile is not an absolute path/
+    );
+  });
+});
+
+/** The host's forced command, as a stand-in ssh: remembers each verb's input, answers status from marker files. */
+async function fakeSsh(dir: string): Promise<string> {
+  const pinned = [
+    'stricthostkeychecking true',
+    'batchmode yes',
+    'identitiesonly yes',
+    `userknownhostsfile ${KNOWN}`,
+    'globalknownhostsfile /dev/null',
+    `identityfile ${KEY}`,
+  ];
+  await writeFile(`${dir}/g.out`, `${pinned.join('\n')}\n`);
+  const lines = [
+    '#!/bin/sh',
+    `D=${dir}`,
+    'echo "$*" >> $D/ssh-args.log',
+    'if [ "$1" = "-G" ]; then cat $D/g.out; exit 0; fi',
+    'for a in "$@"; do verb=$slug; slug=$a; done',
+    'cat > $D/payload-$verb.json',
+    'case $verb in',
+    '  status)',
+    '    if [ -f $D/claimed ]; then echo claimed-here=yes; echo uid=20001; echo port_a=20001; echo port_b=20002; echo port_health=20003; echo volumes=yes; else echo claimed-here=no; echo volumes=no; fi',
+    '    for f in secrets stack enabled slot; do if [ -f $D/$f ]; then echo $f=yes; else echo $f=no; fi; done ;;',
+    '  claim) touch $D/claimed ;;',
+    '  secrets) if [ -f $D/refuse ]; then echo "refused: bad-template" >&2; grep -o "CANARY[-a-z0-9]*" $D/payload-secrets.json >&2; exit 1; fi; touch $D/secrets ;;',
+    '  stack) touch $D/stack ;;',
+    '  enable) touch $D/enabled ;;',
+    '  key) touch $D/slot ;;',
+    'esac',
+    'exit 0',
+  ];
+  const program = `${dir}/ssh`;
+  await writeFile(program, `${lines.join('\n')}\n`);
+  await chmod(program, 0o755);
+  return program;
+}
+
+describe('runCli with the file adapter: the shipped wiring end to end', () => {
+  interface Outcome {
+    readonly code: number;
+    readonly stdout: string[];
+    readonly stderr: string[];
+  }
+
+  async function deploy(modes?: { secrets?: number }): Promise<string> {
+    const f = await files(modes);
+    const entry = { ...ENTRY, appHostSlot: SLOT };
+    const config = await work.deployment({
+      sshEntry: {
+        keyFile: KEY,
+        knownHostsFile: KNOWN,
+        jumpHops: [{ user: 'jumper', host: 'edge1.example.test' }],
+        sshConfigFile: '/etc/controller/ssh_config',
+        target: { user: 'tenant-entry', host: 'app1.example.test' },
+        sshProgram: await fakeSsh(work.dir),
+        inputs: f,
+      },
+    });
+    await work.json('register.json', { entries: [entry] });
+    return config;
+  }
+
+  async function run(config: string, withAdapter = true): Promise<Outcome> {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runCli(['--config', config, '--approval-id', APPROVAL.approvalId], {
+      stdout: (l) => stdout.push(l),
+      stderr: (l) => stderr.push(l),
+      env: { PATH: process.env['PATH'] },
+      ...(withAdapter && { tenantEntryInputs: (paths) => new FileTenantEntryInputs(paths) }),
+    });
+    return { code, stdout, stderr };
+  }
+
+  /** Everything the controller wrote or printed, which must never hold a secret value. */
+  async function everythingLogged(o: Outcome): Promise<string> {
+    const read = async (name: string): Promise<string> =>
+      readFile(work.path(name), 'utf8').catch(() => '');
+    return [
+      o.stdout.join('\n'),
+      o.stderr.join('\n'),
+      await read('state.jsonl'),
+      await read('calls.jsonl'),
+      await read('ssh-args.log'),
+    ].join('\n');
+  }
+
+  it('runs the whole approval over ssh, sending the values to the host and nowhere else', async () => {
+    const outcome = await run(await deploy());
+    expect(outcome.code).toBe(EXIT.complete);
+    expect(await readFile(work.path('payload-secrets.json'), 'utf8')).toContain(CANARY);
+    expect(await readFile(work.path('payload-key.json'), 'utf8')).toContain('AAAAPUBLIC');
+    const stack = await readFile(work.path('payload-stack.json'), 'utf8');
+    expect(stack).toContain('"secret":"DB_PASSWORD"');
+    expect(stack).not.toContain(CANARY);
+    expect(await everythingLogged(outcome)).not.toContain(CANARY);
+    expect(await work.calledIds()).not.toContain('render-host-secrets');
+  });
+
+  it('starts in the binary’s shape only when the deployment supplies the adapter', async () => {
+    const outcome = await run(await deploy(), false);
+    expect(outcome.code).toBe(EXIT.usage);
+    expect(outcome.stderr.join('\n')).toContain('no source of the tenant entry inputs');
+  });
+
+  it('stops the step, not the host, over a secrets file others can read, and logs no value', async () => {
+    const outcome = await run(await deploy({ secrets: 0o644 }));
+    expect(outcome.code).toBe(EXIT.stopped);
+    const logged = await everythingLogged(outcome);
+    expect(logged).toContain('its mode lets other users');
+    expect(logged).not.toContain(CANARY);
+    await expect(readFile(work.path('payload-secrets.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('logs no value when the host refuses and echoes what it was sent', async () => {
+    const config = await deploy();
+    await writeFile(work.path('refuse'), '');
+    const outcome = await run(config);
+    expect(outcome.code).toBe(EXIT.stopped);
+    const logged = await everythingLogged(outcome);
+    expect(logged).toContain('refused');
+    expect(logged).not.toContain(CANARY);
+  });
+});

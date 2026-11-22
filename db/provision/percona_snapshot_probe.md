@@ -196,8 +196,10 @@ starts any container, and refuses an unknown `PROOF_SOURCE`.
    would otherwise exit 3.
 3. **No global or write-blocking lock.** A sampler reads
    `performance_schema.metadata_locks` for the dump accounts' threads, unpaced,
-   across the whole run. No `GLOBAL` or `COMMIT` lock and no `TABLE` lock of a
-   write-blocking type (`SHARED_READ_ONLY`, `SHARED_NO_WRITE`,
+   across the whole run, and each dump has its own sampler running from before
+   its process starts until it exits; a dump with no sample fails the control.
+   No `GLOBAL` or `COMMIT` lock may appear in any sample, and no `TABLE` lock of
+   a write-blocking type (`SHARED_READ_ONLY`, `SHARED_NO_WRITE`,
    `SHARED_NO_READ_WRITE`, `EXCLUSIVE`) may appear. A `--single-transaction`
    dump necessarily holds `SHARED_READ` on the tables it reads, which blocks no
    writer, and seeing it is what shows the sampler was not blind. (The ticket

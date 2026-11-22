@@ -379,6 +379,7 @@ const FORBIDDEN_SERVICE_KEYS = [
   'cgroup',
   'cgroup_parent',
   'external_links',
+  'volumes_from',
 ] as const;
 
 const FORBIDDEN_SECURITY_OPTS = [
@@ -601,19 +602,37 @@ function checkVerdictHostNetwork(
   }
 }
 
-/** The target and read-only flag of a service volume string `src:dst[:opts]`. */
-function mountOf(volume: YamlValue): { target: string; readOnly: boolean } | null {
-  if (typeof volume !== 'string') return null;
-  const [, target, options] = volume.split(':');
-  if (target === undefined) return null;
-  return { target, readOnly: (options ?? '').split(',').includes('ro') };
+/** A verdict or journal volume's name: `ghost-<slug>-verdict`, `-verdict-journal`. */
+const VERDICT_VOLUME_SOURCE = /^ghost-.+-verdict(-journal)?$/;
+
+/**
+ * The source, target and read-only flag of a service volume, in the short
+ * string form `src:dst[:opts]` or the long mapping form.
+ */
+function mountOf(
+  volume: YamlValue
+): { source: string | undefined; target: string; readOnly: boolean } | null {
+  if (typeof volume === 'string') {
+    const [source, target, options] = volume.split(':');
+    if (target === undefined) return null;
+    return { source, target, readOnly: (options ?? '').split(',').includes('ro') };
+  }
+  const long = asRecord(volume);
+  if (long === undefined || typeof long.target !== 'string') return null;
+  return {
+    source: typeof long.source === 'string' ? long.source : undefined,
+    target: long.target,
+    readOnly: long.read_only === true,
+  };
 }
 
 /**
  * The verdict volume holds the socket the host end makes. A service that
  * mounts it with no `verdict-host` service to make the socket dials one nobody
  * owns, and a service other than the sidecar may only dial it, never replace
- * it. With no sidecar, no service mounts the volume and none is declared; with
+ * it. A mount is the verdict volume when its source is a verdict or journal
+ * volume name, or its target is the verdict path, whatever the other end is.
+ * With no sidecar, no service mounts the volume and none is declared; with
  * one, every other service mounts it read-only.
  */
 function checkVerdictVolume(
@@ -627,10 +646,14 @@ function checkVerdictVolume(
     const volumes = Array.isArray(service.volumes) ? service.volumes : [];
     for (const volume of volumes) {
       const mount = mountOf(volume);
-      if (mount?.target !== VERDICT_MOUNT_PATH) continue;
+      if (mount === null) continue;
+      const isVerdict =
+        mount.target === VERDICT_MOUNT_PATH ||
+        (mount.source !== undefined && VERDICT_VOLUME_SOURCE.test(mount.source));
+      if (!isVerdict) continue;
       if (!hasSidecar) {
         problems.push(
-          `service "${name}": mounts the verdict volume at \`${VERDICT_MOUNT_PATH}\` but no ` +
+          `service "${name}": mounts the verdict volume at \`${mount.target}\` but no ` +
             `\`${VERDICT_HOST_SERVICE}\` service makes the socket`
         );
       } else if (!mount.readOnly) {
@@ -642,7 +665,7 @@ function checkVerdictVolume(
   }
   if (!hasSidecar) {
     for (const key of Object.keys(asRecord(document.volumes) ?? {})) {
-      if (/^ghost-.+-verdict(-journal)?$/.test(key)) {
+      if (VERDICT_VOLUME_SOURCE.test(key)) {
         problems.push(
           `volume "${key}": a verdict volume is declared but no \`${VERDICT_HOST_SERVICE}\` ` +
             'service uses it'

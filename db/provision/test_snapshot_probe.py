@@ -258,6 +258,9 @@ class ParsingTests(unittest.TestCase):
         self.assertIn("`other`.*", verdict.reason)
         self.assertTrue(sp.scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], []).passed)
 
+    def test_control_three_old_path_runs_enough_dumps_to_catch_the_brief_global_lock(self) -> None:
+        self.assertGreaterEqual(sp.OLD_PATH_DUMPS_CONTROL_3, 12)
+
     def test_exit_codes(self) -> None:
         self.assertEqual(sp.exit_code({1: True, 2: True, 3: True, 4: True, 5: True, 6: True}, sabotaged=False), sp.EXIT_PASSED)
         for number in (1, 2, 3, 4, 5):
@@ -989,7 +992,7 @@ class TmpfsSourceTests(unittest.TestCase):
     def test_control_three_under_the_old_path_takes_its_first_dump_under_a_long_reader_so_the_global_lock_cannot_go_unsampled(self) -> None:
         self.assertEqual(
             self._control_three_events("old-path"),
-            ["reader+", "old-path dump", "reader-", "old-path dump", "old-path dump"],
+            ["reader+", "old-path dump", "reader-"] + ["old-path dump"] * (sp.OLD_PATH_DUMPS_CONTROL_3 - 1),
         )
 
     def test_control_three_without_sabotage_takes_snapshots_and_holds_no_reader(self) -> None:
