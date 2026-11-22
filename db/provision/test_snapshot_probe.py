@@ -225,6 +225,9 @@ class ParsingTests(unittest.TestCase):
         lines.append("GRANT RELOAD, REPLICATION CLIENT ON *.* TO `mover`@`localhost`")
         self.assertEqual(sp.parse_global_privileges(lines), frozenset({"BACKUP_ADMIN", "RELOAD", "REPLICATION CLIENT"}))
 
+    def test_control_three_old_path_runs_enough_dumps_to_catch_the_brief_global_lock(self) -> None:
+        self.assertGreaterEqual(sp.OLD_PATH_DUMPS_CONTROL_3, 12)
+
     def test_exit_codes(self) -> None:
         self.assertEqual(sp.exit_code({1: True, 2: True, 3: True, 4: True, 5: True, 6: True}, sabotaged=False), sp.EXIT_PASSED)
         for number in (1, 2, 3, 4, 5):
