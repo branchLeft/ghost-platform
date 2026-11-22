@@ -76,35 +76,24 @@ provisioning-capable secret on `branchLeft/ghost-platform` must sit on the
 environment's required-reviewer rule. The workflow verifies both the rule and the scoping before it
 creates anything, and refuses if it cannot read either.
 
-**The tenant-state credential is its own Object Storage key pair, not
-`HETZNER_S3_ACCESS_KEY_ID` / `HETZNER_S3_SECRET_ACCESS_KEY`.** Those two names
-are `infra-hosts-ci.yml`'s repository-level credential for
-`branchleft-pulumi-state`, the estate's own state bucket; that workflow's plan
-job declares no `environment:` and can only ever resolve a repository secret,
-so it must keep them at the repository level. Provisioning reaches a
-different bucket, `branchleft-tenant-pulumi-state`, and needs a *second*
-Object Storage credential scoped to it — reusing the estate's would give a
-tenant deployer write access to the checkpoint the production hcloud token
-lives in (branchLeft/workspace#284). Mint it in the Hetzner Cloud Console
-(Object Storage → the project holding `branchleft-tenant-pulumi-state` →
-Credentials → Generate credential).
+**The tenant-state credential is the tenant's own, minted for it alone.** The
+provisioning job holds no state credential of its own: the storage gateway's
+state instance mints one per tenant, confined to that tenant's own prefix in the
+state bucket (`ghost-platform-docs` page 24), and the provisioning controller's
+`mint-state-credential` step delivers it to the two
+`MINTED_STATE_*` environment secrets of `tenant-provisioning` for one run. That
+delivery is not built yet, so until it is the run stops at "Receive the tenant's
+own minted state credential" with a loud error, before anything is created.
+`HETZNER_S3_ACCESS_KEY_ID` / `HETZNER_S3_SECRET_ACCESS_KEY` stay
+`infra-hosts-ci.yml`'s repository-level credential for the estate's own state
+bucket and are never read here.
 
-**A separate credential is not by itself a separate boundary.** Hetzner's
-documented default is that every key pair is valid for every bucket in its own
-project, so there is nothing to scope at mint time and a new credential reaches
-every unfenced bucket in the project, including the estate's database backups.
-What narrows it is a `Deny` on the bucket: fence
-`branchleft-tenant-pulumi-state` per
-[`RUNBOOK-bucket-fencing.md`](RUNBOOK-bucket-fencing.md) section 2.
-
-Set it under its own names:
+Set the App key, and retire the personal token:
 
 ```bash
 read -rsd '' TENANT_PROVISIONING_APP_PRIVATE_KEY   # paste the App private key PEM, then Ctrl-D
 gh secret set TENANT_PROVISIONING_APP_PRIVATE_KEY --repo branchLeft/ghost-platform --env tenant-provisioning <<< "$TENANT_PROVISIONING_APP_PRIVATE_KEY"
 unset TENANT_PROVISIONING_APP_PRIVATE_KEY
-gh secret set TENANT_STATE_S3_ACCESS_KEY_ID     --repo branchLeft/ghost-platform --env tenant-provisioning
-gh secret set TENANT_STATE_S3_SECRET_ACCESS_KEY --repo branchLeft/ghost-platform --env tenant-provisioning
 gh secret delete GH_PAT_TENANT_PROVISIONING     --repo branchLeft/ghost-platform
 ```
 
@@ -152,7 +141,8 @@ DB1_PRIVATE_IP=$(hcloud server describe db1 -o format='{{(index .PrivateNet 0).I
 gh variable set PLATFORM_DB_PRIVATE_IP     --repo branchLeft/ghost-platform --body "$DB1_PRIVATE_IP"
 gh variable set PLATFORM_MEDIA_ENDPOINT    --repo branchLeft/ghost-platform --body 'https://hel1.your-objectstorage.com'
 gh variable set PLATFORM_MEDIA_REGION      --repo branchLeft/ghost-platform --body 'hel1'
-gh variable set HETZNER_PULUMI_BACKEND_URL --repo branchLeft/ghost-platform --body 's3://<tenant-state-bucket>?endpoint=<region>.your-objectstorage.com&s3ForcePathStyle=true&region=<region>'
+gh variable set STATE_GATEWAY_BUCKET       --repo branchLeft/ghost-platform --body '<state shard bucket>'
+gh variable set STATE_GATEWAY_REGION       --repo branchLeft/ghost-platform --body '<state shard region>'
 ```
 
 **There is no `PLATFORM_MEDIA_BUCKET` or `PLATFORM_MEDIA_PUBLIC_BASE_URL`, and
@@ -191,14 +181,11 @@ has lapsed fails the read-back, and the run stops before any state credential is
 written. Both attestations are the owner's spend and change only by a reviewed
 pull request. A personal Mac never qualifies as the dedicated runner.
 
-The endpoint host and the region must name the same location: against Ceph RGW
-the region is part of the SigV4 credential scope, so a mismatch is an opaque 403
-that reads as a credential problem rather than as an addressing one.
-`HETZNER_PULUMI_BACKEND_URL` must **not** be
-`branchleft-pulumi-state` — that bucket holds the estate's own checkpoint, and
-the S3 credential is not scoped per stack, so pointing tenants at it would give
-every tenant deployer write access to the checkpoint the production hcloud token
-lives in. The workflow refuses that bucket by name.
+The tenant's backend URL is built by the workflow from those two variables and
+the `state_prefix` dispatch input, with the gateway's public state name as the
+endpoint (`render-tenant-state-backend.py`). `STATE_GATEWAY_BUCKET` must **not**
+be `branchleft-pulumi-state`: that bucket holds the estate's own checkpoint, and
+the workflow refuses it by name.
 
 ---
 
@@ -365,7 +352,8 @@ gh workflow run "Provision tenant" --repo branchLeft/ghost-platform \
   -f host_port=<port from step 3> \
   -f app_host_private_ip="$APP1_PRIVATE_IP" \
   -f app_host_ssh_address="$APP1_IPV4" \
-  -f image_ref=ghcr.io/branchleft/ghost-tenant@sha256:<digest>
+  -f image_ref=ghcr.io/branchleft/ghost-tenant@sha256:<digest> \
+  -f state_prefix=<this tenant's state prefix from the tenant register>
 ```
 
 The image must be in `ghcr.io/branchleft/`; `provision-tenant.yml` refuses any

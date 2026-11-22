@@ -18,6 +18,7 @@ export const STEP_IDS = [
   'escrow-stack-passphrase',
   'create-database',
   'mint-media-credential',
+  'mint-state-credential',
   'render-host-secrets',
   'render-compose-file',
   'register-host-keys',
@@ -96,6 +97,17 @@ const SPECS: readonly StepSpec[] = [
     scope: 'setup',
     dependsOn: ['confirm-register-assignment'],
     inputs: (e) => ({ bucket: e.mediaBucket, prefix: e.mediaFolder }),
+  },
+  {
+    // The tenant's own state credential, from the gateway's state instance,
+    // confined to its own prefix in the state bucket. The bucket is not an
+    // input: the state instance names the one bucket it serves, so a plan
+    // cannot steer a credential at another. Nothing here is a secret value.
+    id: 'mint-state-credential',
+    entryPoint: 'storage-gateway',
+    scope: 'setup',
+    dependsOn: ['confirm-register-assignment'],
+    inputs: (e) => ({ prefix: e.stateFolder }),
   },
   {
     id: 'render-host-secrets',

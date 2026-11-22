@@ -27,11 +27,23 @@ REPO_PLACEHOLDER = "<owner>/<repo>"
 # estate's hosts-stack credential and must stay readable at the repository
 # level for infra-hosts-ci.yml, which declares no `environment:` on its plan
 # job and so can only ever resolve a repository secret.
-REQUIRED_SECRETS = frozenset(
+#
+# This job holds no state credential of its own: the tenant state key is the
+# new tenant's own, minted for that tenant alone (see PER_RUN_SECRETS), so the
+# provisioning job never holds a key that reaches another tenant's state.
+REQUIRED_SECRETS = frozenset({"TENANT_PROVISIONING_APP_PRIVATE_KEY"})
+
+# The pair the controller mints for the tenant being provisioned and delivers
+# to this environment for one run. They exist only while a run is in flight,
+# so they are not REQUIRED (their absence is refused by the step that reads
+# them, before anything is created). They are still checked for a
+# repository-level copy: `secrets.X` falls back to one, and a per-tenant
+# credential readable by every run in the repository is the exact reach the
+# per-tenant key exists to remove.
+PER_RUN_SECRETS = frozenset(
     {
-        "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-        "TENANT_STATE_S3_ACCESS_KEY_ID",
-        "TENANT_STATE_S3_SECRET_ACCESS_KEY",
+        "MINTED_STATE_ACCESS_KEY_ID",
+        "MINTED_STATE_SECRET_ACCESS_KEY",
     }
 )
 
@@ -43,7 +55,7 @@ def check(
     env_set = frozenset(environment_names)
     repo_set = frozenset(repository_names)
     missing = REQUIRED_SECRETS - env_set
-    shadowed = REQUIRED_SECRETS & repo_set
+    shadowed = (REQUIRED_SECRETS | PER_RUN_SECRETS) & repo_set
     return missing, shadowed
 
 
@@ -96,35 +108,32 @@ def verify_coverage(workflow_text: str) -> list[str]:
     workflow never reads, or a name the workflow reads that REQUIRED_SECRETS
     does not cover. Empty means the two sets agree."""
     used = workflow_secret_names(workflow_text)
+    covered = REQUIRED_SECRETS | PER_RUN_SECRETS
     findings = [
-        f"REQUIRED_SECRETS names {name}, but the workflow never reads secrets.{name}. "
-        "The guard is checking a name nothing uses: remove it from REQUIRED_SECRETS "
+        f"REQUIRED_SECRETS or PER_RUN_SECRETS names {name}, but the workflow never reads secrets.{name}. "
+        "The guard is checking a name nothing uses: remove it from the set "
         "or restore the reference."
-        for name in sorted(REQUIRED_SECRETS - used)
+        for name in sorted(covered - used)
     ]
     findings += [
-        f"the workflow reads secrets.{name}, but REQUIRED_SECRETS does not cover it. "
-        "Add it to REQUIRED_SECRETS so the scoping check sees it."
-        for name in sorted(used - REQUIRED_SECRETS)
+        f"the workflow reads secrets.{name}, but neither REQUIRED_SECRETS nor PER_RUN_SECRETS covers it. "
+        "Add it to the right one so the scoping check sees it."
+        for name in sorted(used - covered)
     ]
     return findings
 
 
 def _self_test() -> None:
     # The passing case, and the one the pre-rename names could never reach:
-    # the estate's hosts secrets sit at the repository level, ours are
-    # environment-scoped, and the two required sets no longer intersect.
+    # the estate's hosts secrets sit at the repository level, ours is
+    # environment-scoped, and the two names no longer intersect.
     missing, shadowed = check(
-        environment_names=[
-            "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-            "TENANT_STATE_S3_ACCESS_KEY_ID",
-            "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-        ],
+        environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
         repository_names=["HETZNER_S3_ACCESS_KEY_ID", "HETZNER_S3_SECRET_ACCESS_KEY"],
     )
     assert not missing and not shadowed, (
-        "expected a pass with HETZNER_S3_* at the repository level and "
-        "TENANT_STATE_S3_* environment-scoped -- this is the exact case "
+        "expected a pass with HETZNER_S3_* at the repository level and the "
+        "app key environment-scoped -- this is the exact case "
         "branchLeft/workspace#284 could not construct before the rename"
     )
 
@@ -133,27 +142,31 @@ def _self_test() -> None:
     assert missing == REQUIRED_SECRETS
     assert not shadowed
 
+    # The per-run pair is not required to exist ahead of a run.
+    missing, _ = check(environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"], repository_names=[])
+    assert not missing
+
     # SHADOWED: a required secret was moved to the environment but its
     # repository-level copy was never deleted.
     missing, shadowed = check(
-        environment_names=[
-            "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-            "TENANT_STATE_S3_ACCESS_KEY_ID",
-            "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-        ],
-        repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
+        environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
+        repository_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
     )
     assert not missing
-    assert shadowed == {"TENANT_STATE_S3_ACCESS_KEY_ID"}
+    assert shadowed == {"TENANT_PROVISIONING_APP_PRIVATE_KEY"}
+
+    # SHADOWED, per-run: a repository-level copy of the minted pair is as bad
+    # as one of the app key.
+    _, shadowed = check(
+        environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
+        repository_names=["MINTED_STATE_SECRET_ACCESS_KEY"],
+    )
+    assert shadowed == {"MINTED_STATE_SECRET_ACCESS_KEY"}
 
     # A repository secret unrelated to this set (like the estate's hosts
     # credential, or something else entirely) is never a shadow.
     missing, shadowed = check(
-        environment_names=[
-            "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-            "TENANT_STATE_S3_ACCESS_KEY_ID",
-            "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-        ],
+        environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
         repository_names=["SOME_OTHER_SECRET"],
     )
     assert not missing and not shadowed
