@@ -310,6 +310,7 @@ export const zStatusResponse = z.object({
     interim: z.array(z.string()),
     notReal: z.array(z.string()),
     phase: zPhase,
+    productionVerdictSource: z.boolean(),
     slot: zSlotName
 });
 
