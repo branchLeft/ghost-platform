@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The demo host's go-live step: refuse to open the demo to visitors while any
-test stand-in is loaded by the broker, or while the clock is unsynchronised.
+test stand-in is loaded by the broker, while any slot's rendered configuration
+names no production verdict source, or while the clock is unsynchronised.
 
 Usage: demo_go_live.py --broker-url URL --caddyfile SRC --install DEST
 
@@ -22,6 +23,11 @@ from render_demo_edge import write_generated_file
 from render_slot_sudoers import SLOT_NAMES
 
 STATUS_TIMEOUT_SECONDS = 5
+
+# The broker's per-slot answer to "does this slot's rendered configuration name
+# the production verdict source" (services/broker/src/verdictSourceReport.ts).
+# Only a JSON `true` passes.
+VERDICT_KEY = "productionVerdictSource"
 
 
 class GoLiveRefused(Exception):
@@ -54,28 +60,75 @@ def _clean(name: str) -> str:
     return "".join(c if c.isprintable() else f"\\x{ord(c):02x}" for c in name)
 
 
+def _read_status(
+    broker_url: str,
+    slot: str,
+    fetch: Callable[[str, str], object],
+    reasons: list[str],
+) -> dict | None:
+    """One slot's status as an object, or None after adding the reason it could
+    not be read as one to `reasons`. A slot is never skipped without a reason."""
+    try:
+        status = fetch(broker_url, slot)
+    except Exception as error:  # any failure to read is a refusal
+        reasons.append(f"slot {slot}: broker status unreadable ({type(error).__name__})")
+        return None
+    if not isinstance(status, dict):
+        reasons.append(f"slot {slot}: broker status is not an object")
+        return None
+    return status
+
+
+def verdict_source_reasons(slot: str, status: dict) -> list[str]:
+    """Why one slot's status does not show a production verdict source, or an
+    empty list when it does. Fails closed: the field must be present and exactly
+    `true`; absent, `false`, a string and `1` are each a refusal, so a broker
+    that does not report it cannot let a demo with no scanner open."""
+    if VERDICT_KEY not in status:
+        return [f"slot {slot}: broker status carries no {VERDICT_KEY}"]
+    if status[VERDICT_KEY] is not True:
+        return [f"slot {slot}: no production verdict source is rendered (uploads would scan nothing)"]
+    return []
+
+
+def check_verdict_source(
+    broker_url: str,
+    slots: Sequence[str] = SLOT_NAMES,
+    fetch: Callable[[str, str], object] = None,  # type: ignore[assignment]
+) -> None:
+    """Refuses unless every slot's status reports a production verdict source.
+    This is the check the go-live step and the checkpoint evidence share
+    (`demo_verdict_evidence.py`). Every offending slot is named in one refusal."""
+    fetch = fetch or fetch_status
+    if not slots:
+        raise GoLiveRefused("no slots to check, so nothing was verified")
+    reasons: list[str] = []
+    for slot in slots:
+        status = _read_status(broker_url, slot, fetch, reasons)
+        if status is None:
+            continue
+        reasons.extend(verdict_source_reasons(slot, status))
+    if reasons:
+        raise GoLiveRefused("; ".join(reasons))
+
+
 def check_seams(
     broker_url: str,
     slots: Sequence[str] = SLOT_NAMES,
     fetch: Callable[[str, str], object] = None,  # type: ignore[assignment]
 ) -> None:
     """Refuses unless every slot's status reports both seam lists present and
-    empty. Fails closed: an unreachable broker, a body that is not an object,
-    or a list that is missing is a refusal, never an assumption of clean.
-    Every offending slot is reported in the one refusal, so a single run names
-    every stand-in."""
+    empty, and a production verdict source. Fails closed: an unreachable
+    broker, a body that is not an object, or a list or the verdict field that
+    is missing is a refusal, never an assumption of clean. Every offending
+    slot is reported in the one refusal, so a single run names every stand-in."""
     fetch = fetch or fetch_status
     reasons: list[str] = []
     if not slots:
         raise GoLiveRefused("no slots to check, so nothing was verified")
     for slot in slots:
-        try:
-            status = fetch(broker_url, slot)
-        except Exception as error:  # any failure to read is a refusal
-            reasons.append(f"slot {slot}: broker status unreadable ({type(error).__name__})")
-            continue
-        if not isinstance(status, dict):
-            reasons.append(f"slot {slot}: broker status is not an object")
+        status = _read_status(broker_url, slot, fetch, reasons)
+        if status is None:
             continue
         for key, why in (("notReal", "test stand-in loaded"), ("interim", "interim module loaded")):
             names = status.get(key)
@@ -83,6 +136,7 @@ def check_seams(
                 reasons.append(f"slot {slot}: broker status carries no usable {key} list")
             elif names:
                 reasons.append(f"slot {slot}: {why}: {', '.join(_clean(n) for n in sorted(names))}")
+        reasons.extend(verdict_source_reasons(slot, status))
     if reasons:
         raise GoLiveRefused("; ".join(reasons))
 

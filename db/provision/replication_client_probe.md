@@ -53,8 +53,14 @@ python3 db/provision/replication_client_probe.py --self-test
    no key lost and none duplicated; and the replay applied at least one blog
    write the dump did not hold (a replay of nothing proves nothing). A
    duplicated write also stops the replica's SQL thread on the unique slug,
-   and that stop is a failure. The control first checks the account's global
-   privileges are exactly `REPLICATION CLIENT`.
+   and that stop is a failure. In every round a blog write transaction is
+   opened before the snapshot starts and committed only once the server
+   shows the module's `LOCK TABLES` queued behind it
+   (`performance_schema.metadata_locks`, `PENDING`), so the commit in flight
+   is observed in every round and not argued from lock ordering; the round
+   fails if the request was never seen queued, or waited under 100 ms. The
+   control first checks the account's global privileges, read through any
+   role the account holds, are exactly `REPLICATION CLIENT`.
 2. **Another tenant is not blocked.** A `SELECT SLEEP(10)` holds
    `other.posts` while the blog is snapshotted repeatedly; `other`'s writer's
    worst statement stays under 100 ms. In a second phase a sampler reads
@@ -65,8 +71,10 @@ python3 db/provision/replication_client_probe.py --self-test
    allowance of `snapshot_probe.md`.
 3. **Scoped grants.** The account reading `other` gets error 1142,
    `FLUSH TABLES WITH READ LOCK` and `LOCK INSTANCE FOR BACKUP` get error
-   1227, `SHOW MASTER STATUS` is allowed, and `REPLICATION CLIENT` is the
-   only global privilege. Recorded: reading `performance_schema.log_status`.
+   1227, `SHOW MASTER STATUS` is allowed, `REPLICATION CLIENT` is the
+   only global privilege (read through any role the account holds, with
+   `SHOW GRANTS ... USING`), and the account holds no grant outside the
+   blog's schema. Recorded: reading `performance_schema.log_status`.
 
 ## Red cases
 
@@ -78,7 +86,9 @@ exists to see.
 | `coordinates-before-lock`  | reads `SHOW MASTER STATUS` 0.5 s before the module takes its lock; the replica replays writes the dump already holds | 1 |
 | `coordinates-after-unlock` | reads it 0.5 s after the module has released; the replica misses writes the dump lacks | 1 |
 | `backup-admin-grant`       | grants the account `BACKUP_ADMIN`, so a pass would not show `REPLICATION CLIENT` is enough | 1, 3 |
+| `backup-admin-through-role` | grants `BACKUP_ADMIN` to a role the account holds, not as a default role: nothing changes at run time and only the grant listing shows it | 1, 3 |
 | `reload-grant`             | grants `RELOAD`; `FLUSH TABLES WITH READ LOCK` is accepted                       | 3 |
+| `no-inflight-transaction`  | opens no blog transaction across the lock request; the red line says `no commit was in flight` | 1 |
 | `old-path`                 | `RELOAD` plus `mysqldump --source-data=2`: its `FLUSH TABLES` waits for the long reader and `other`'s writes queue behind it | 2 |
 | `other-lock`               | holds a real `LOCK TABLES other.posts READ` in its own session for 500 ms, 3 s into the window; `other`'s writer waits it out. The red line names `control 2` and `held lock on other.posts (injected hold, 500 ms)` | 2 |
 
@@ -119,7 +129,7 @@ snapshot inside the 0.6 s hold bound. Native, the same control saw 5.2 ms.
 
 | Control | Measured, correct ordering                                                                                  | Sabotaged (red)                                                                                      |
 | ------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| 1       | 4 of 4 rounds clean: 14 tables match, no key lost or duplicated, 94 to 108 blog rows replayed past each dump; lock wait 3 to 13 ms, hold 151 to 394 ms | before the lock: 4 of 4 rounds red, replica SQL thread stopped on error 1062 (duplicate); after the unlock: 4 of 4 rounds red, 5 to 8 blog rows lost each; with `BACKUP_ADMIN` held: red on the privilege check |
+| 1       | native CI: 4 of 4 rounds clean: 14 tables match, no key lost or duplicated, 88 to 89 blog rows replayed past each dump; each round's lock request queued behind an open blog transaction and waited 152 to 158 ms for it, hold 50 to 53 ms (local emulation, for comparison: wait 201 to 253 ms, hold 239 to 597 ms) | before the lock: 4 of 4 rounds red, replica SQL thread stopped on error 1062 (duplicate); after the unlock: 4 of 4 rounds red, 5 to 8 blog rows lost each; with `BACKUP_ADMIN` held: red on the privilege check; with `BACKUP_ADMIN` held through a role: red on the privilege check; with no transaction in flight: 4 of 4 rounds red, lock wait 1 ms |
 | 2       | native CI: `other`'s worst statement 5.2 ms over 468 (limit 100 ms, baseline 1.8 ms) while 26 snapshots ran; no `GLOBAL` or `COMMIT` lock over 3616 samples; blog writer wait inside 1.8 s | old path (local): 9099.5 ms, and `GLOBAL/SHARED` and `COMMIT/SHARED` granted                          |
 | 3       | error 1142 on `other`, 1227 on FTWRL and on `LOCK INSTANCE FOR BACKUP`, `SHOW MASTER STATUS` allowed, `REPLICATION CLIENT` the only global privilege | `LOCK INSTANCE FOR BACKUP` accepted (error 0) and `BACKUP_ADMIN` listed                              |
 
@@ -141,7 +151,8 @@ No `BACKUP_ADMIN`, no `RELOAD`, no `EVENT`, and no `SELECT` on
 this account runs. The caller of the move's snapshot must pass
 `coordinates="master_status"`. On db1 the account also needs `REQUIRE SSL`
 and a specific host part, as `require_secure_transport` is on
-(`snapshot_probe.md`, findings).
+(`require_secure_transport = ON` in `db/stack/conf.d/branchleft.cnf`, and the
+TLS check in `db/RUNBOOK-db.md` that expects it).
 
 ## Not in scope
 

@@ -9,22 +9,17 @@ typo'd search string, for example) fails loudly instead of quietly testing
 the unmodified real module.
 
 The mutated copy is written one directory deeper than `src/`
-(`test/.sabotage-tmp/`), so every one of its own `from './x.js'` imports is
+(a fresh `test/.sabotage-XXXXXX/` per call, removed in the same call's
+`finally`), so every one of its own `from './x.js'` imports is
 rewritten to `from '../../src/x.js'` first — everything the mutated module
 itself imports still resolves to the real, unmutated source, which is the
 point: exactly one function changes.
 
 ## cleanupSabotageTmp
 
-Removes `test/.sabotage-tmp/` -- but only if it is already empty. Every
-`importSabotaged` call above removes its own throwaway file in its own
-`finally`, so by the time one test file's tests finish, this shared
-directory is normally empty already; a non-recursive `rmdirSync` only ever
-succeeds in that case. Vitest runs test files concurrently by default, and
-every file that sabotages a source module shares this one directory (it is
-not namespaced per file) -- a recursive, forced removal here would delete a
-sibling file's still-in-flight sabotage copy out from under it the moment
-two files' sabotage calls overlapped, which is exactly the failure this
-non-recursive form cannot cause: it either finds the directory empty and
-removes it, or finds it non-empty (another file mid-write) and leaves it
-alone.
+Removes the pre-namespacing `test/.sabotage-tmp/`, but only if it is empty.
+Nothing creates that directory any more: each `importSabotaged` call owns a
+fresh `test/.sabotage-XXXXXX/` and removes only that directory, so no call can
+delete another file's in-flight copy. The function is kept so existing
+callers stay valid; a non-recursive `rmdirSync` on a missing or non-empty
+directory is harmless. Regression: `test/sourceSabotage.race.test.ts`.

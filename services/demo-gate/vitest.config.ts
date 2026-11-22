@@ -2,7 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['test/**/*.test.ts'],
+    // The image test needs Docker and a built image: `pnpm run test:image`.
+    include: ['test/unit/**/*.test.ts'],
     testTimeout: 15000,
     coverage: {
       provider: 'v8',

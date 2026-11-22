@@ -1,4 +1,5 @@
 export const LOGIN_PATH = '/__gate/login';
+export const ENTER_PATH = '/__gate/enter';
 
 const MAX_RETURN_PATH = 2048;
 
@@ -50,4 +51,44 @@ ${notice}
 </body>
 </html>
 `;
+}
+
+/** The arrival notices, each an ALL_CAPS placeholder; the wording is written separately. */
+export type ArrivalNotice =
+  | 'DEMO_ARRIVAL_LINK_INVALID'
+  | 'DEMO_ARRIVAL_LINK_EXPIRED'
+  | 'DEMO_ARRIVAL_LINK_USED'
+  | 'DEMO_ARRIVAL_NOT_READY'
+  | 'DEMO_ARRIVAL_TOO_MANY_ATTEMPTS';
+
+function arrivalShell(body: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow"><title>DEMO_ARRIVAL_TITLE</title></head>
+<body>
+<main>
+<h1>DEMO_ARRIVAL_HEADING</h1>
+${body}
+</main>
+</body>
+</html>
+`;
+}
+
+/**
+ * The page a valid, unused link opens. It only shows a form: a link is
+ * followed by mail scanners and previewers that fetch it without a person, and
+ * following it must not use it up. The token is spent by the form's POST.
+ */
+export function arrivalPage(token: string): string {
+  return arrivalShell(`<p>DEMO_ARRIVAL_READY</p>
+<form method="post" action="${ENTER_PATH}">
+<input type="hidden" name="t" value="${escapeHtml(token)}">
+<button type="submit">DEMO_ARRIVAL_SUBMIT</button>
+</form>`);
+}
+
+export function arrivalNoticePage(notice: ArrivalNotice): string {
+  return arrivalShell(`<p role="alert">${notice}</p>`);
 }

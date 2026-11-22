@@ -390,6 +390,7 @@ describe('GET /status and the held-evidence marker', () => {
       'interim',
       'notReal',
       'phase',
+      'productionVerdictSource',
       'slot',
     ]);
   });

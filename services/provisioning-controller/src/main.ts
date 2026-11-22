@@ -1,12 +1,20 @@
 import { parseArgs } from 'node:util';
-import { commandHostPorts, childEnvironment, type Env } from './commandHost.js';
+import { childEnvironment, type Env } from './commandHost.js';
+import {
+  composeHostPorts,
+  SshEntryStartupError,
+  type HostComposition,
+} from './composeHostPorts.js';
 import { ApprovalRequiredError, ApprovalScopeError } from './errors.js';
 import { executeOnboarding } from './executeOnboarding.js';
 import type { Clock, ConsoleReporter, ExecutePorts, RunOptions } from './executePorts.js';
 import { FileApprovalLedger, FileRegisterReader } from './fileReaders.js';
+import type { TenantEntryFiles } from './fileTenantEntryInputs.js';
 import { FileStateStore } from './fileStateStore.js';
 import { redactSecrets } from './redact.js';
 import { parseRunConfig, RunConfigError } from './runConfig.js';
+import type { RunConfig } from './runConfig.js';
+import type { TenantEntryInputs } from './tenantEntryHost.js';
 import { readTrustedJson, TrustedFileError } from './trustedFile.js';
 
 /** What the caller sees: 0 the run is complete, 1 it stopped, 2 the approval refused it, 3 bad input, 4 anything else. */
@@ -18,6 +26,11 @@ export interface CliIo {
   /** One line per progress event, then one line for an error. */
   readonly stderr: (line: string) => void;
   readonly env: Env;
+  /**
+   * Builds the tenant entry inputs from the files the `sshEntry` section names. Absent, a
+   * configured `sshEntry` refuses to start: nothing supplies the inputs.
+   */
+  readonly tenantEntryInputs?: (files: TenantEntryFiles) => TenantEntryInputs;
 }
 
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -27,6 +40,13 @@ const systemClock: Clock = {
   now: () => new Date().toISOString(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
+
+/** The inputs source only when the configuration names its files and the deployment supplied a builder. */
+function composition(config: RunConfig, io: CliIo): HostComposition {
+  const build = io.tenantEntryInputs;
+  if (config.tenantEntryFiles === undefined || build === undefined) return {};
+  return { tenantEntryInputs: build(config.tenantEntryFiles) };
+}
 
 const lineConsole = (write: (line: string) => void): ConsoleReporter => ({
   report: async (event) => {
@@ -78,7 +98,7 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
     ports = {
       approvals: new FileApprovalLedger(config.approvalsFile),
       register: new FileRegisterReader(config.registerFile),
-      hosts: commandHostPorts(config.hosts, childEnvironment(io.env)),
+      hosts: await composeHostPorts(config, childEnvironment(io.env), composition(config, io)),
       state: new FileStateStore(config.stateFile),
       console: lineConsole(io.stderr),
       clock: systemClock,
@@ -88,7 +108,10 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
       ...(config.reportTimeoutMs !== undefined && { reportTimeoutMs: config.reportTimeoutMs }),
     };
   } catch (e) {
-    const bad = e instanceof RunConfigError || e instanceof TrustedFileError;
+    const bad =
+      e instanceof RunConfigError ||
+      e instanceof TrustedFileError ||
+      e instanceof SshEntryStartupError;
     io.stderr(JSON.stringify({ error: bad ? (e as Error).name : 'Error', message: describe(e) }));
     return EXIT.usage;
   }

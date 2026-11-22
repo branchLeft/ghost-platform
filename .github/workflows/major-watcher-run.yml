@@ -8,7 +8,10 @@ name: Major watcher run
 # monitoring, not an agent in operations -- nothing here runs a model.
 #
 # Every 6 hours, well inside a day-long alerting SLA even allowing for a
-# missed run.
+# missed run. The minute is 43, not 0: GitHub drops scheduled runs queued
+# for the top of the hour when it is busy, and a `0 */6 * * *` schedule here
+# never fired once, while the release watcher's `17 */6 * * *` fires every
+# time. scripts/test_workflow_cron_minute.py fails a minute-0 schedule.
 #
 # Dedupe state (see services/major-watcher/README.md "State") lives on its
 # own branch, `state/major-watcher`, never on `main` -- `main` requires
@@ -21,7 +24,7 @@ name: Major watcher run
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '43 */6 * * *'
   # Manual runs are safe here in a way they are not in recovery-image.yml
   # or registry-push.yml: this workflow ships no artifact and merges
   # nothing, so there is no review gate a dispatched run could bypass.
@@ -107,6 +110,29 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # On a new major the watcher also files one tracked item in the workspace
+      # repository, idempotent per major (services/major-watcher/src/issues.ts).
+      # The ambient token of this job cannot write another repository and is
+      # never used for filing.
+      #
+      # The filing identity: an installation token for the App named by the
+      # repository variable MAJOR_WATCHER_APP_ID, limited to the workspace
+      # repository and to issues: write, which also covers adding a sub-issue.
+      # Owed, like NTFY_URL: until the variable is set no token is minted,
+      # the watcher fails closed on the first new major (it still pages, files
+      # nothing, and the run goes red) and every quiet run is unaffected. See
+      # services/major-watcher/README.md "Filing credential".
+      - name: Mint the filing token
+        id: filing-token
+        if: ${{ vars.MAJOR_WATCHER_APP_ID != '' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.MAJOR_WATCHER_APP_ID }}
+          private-key: ${{ secrets.MAJOR_WATCHER_APP_PRIVATE_KEY }}
+          owner: branchLeft
+          repositories: workspace
+          permission-issues: write
+
       # NTFY_URL and NTFY_TOKEN are owed -- see README.md "Owed". Until
       # NTFY_URL is set, src/cli.ts exits 0 with one log line rather than
       # going red every 6 hours; once it is set, a real failure (GitHub
@@ -119,6 +145,8 @@ jobs:
           NTFY_URL: ${{ secrets.NTFY_URL }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAJOR_WATCHER_FILING_TOKEN: ${{ steps.filing-token.outputs.token }}
+          MAJOR_WATCHER_LAUNCH_ITEM: ${{ vars.MAJOR_WATCHER_LAUNCH_ITEM }}
         run: node dist/cli.js
 
       - name: Push updated state, only if it changed

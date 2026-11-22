@@ -210,7 +210,12 @@ The key is `~/.ssh/id_ed25519_hetzner`, as in `shared-infra/hetzner/RUNBOOK-edge
    `GET /status/<slot>` lists any loaded module not marked real (a test
    stand-in, or anything unmarked) under `notReal`, and any interim module
    under `interim`. The host is not ready to go live until both lists are
-   empty; with this template, both are. **Never set `LISTEN_HOST`** --
+   empty; with this template, both are. The same answer carries
+   `productionVerdictSource`, per slot: `true` only when the `compose.yml`
+   render-core rendered into the slot names the production verdict source
+   for images, media and files. The demo's go-live step refuses until every
+   slot reports `true`, and no render names one yet, so a fresh host reads
+   `false` and stays closed to visitors. **Never set `LISTEN_HOST`** --
    `test/unit/listenHostDefault.test.ts` is the guard that keeps this file's
    own committed template from regressing that.
 

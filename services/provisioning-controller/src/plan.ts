@@ -18,7 +18,9 @@ export const STEP_IDS = [
   'escrow-stack-passphrase',
   'create-database',
   'mint-media-credential',
+  'mint-state-credential',
   'render-host-secrets',
+  'render-compose-file',
   'register-host-keys',
   'create-app-host-slot',
   'push-first-commit',
@@ -97,10 +99,31 @@ const SPECS: readonly StepSpec[] = [
     inputs: (e) => ({ bucket: e.mediaBucket, prefix: e.mediaFolder }),
   },
   {
+    // The tenant's own state credential, from the gateway's state instance,
+    // confined to its own prefix in the state bucket. The bucket is not an
+    // input: the state instance names the one bucket it serves, so a plan
+    // cannot steer a credential at another. Nothing here is a secret value.
+    id: 'mint-state-credential',
+    entryPoint: 'storage-gateway',
+    scope: 'setup',
+    dependsOn: ['confirm-register-assignment'],
+    inputs: (e) => ({ prefix: e.stateFolder }),
+  },
+  {
     id: 'render-host-secrets',
     entryPoint: 'app-host',
     scope: 'setup',
     dependsOn: ['create-database', 'mint-media-credential', 'escrow-stack-passphrase'],
+    inputs: slotOf,
+  },
+  {
+    // The tenant's compose file and first image pin reach the host only through the host's
+    // `stack` entry point, which refuses a stack its judge refuses. It comes after the secrets
+    // file, which the judge reads, and before the unit is enabled and the slot is created.
+    id: 'render-compose-file',
+    entryPoint: 'app-host',
+    scope: 'setup',
+    dependsOn: ['render-host-secrets'],
     inputs: slotOf,
   },
   {
@@ -114,7 +137,7 @@ const SPECS: readonly StepSpec[] = [
     id: 'create-app-host-slot',
     entryPoint: 'app-host',
     scope: 'setup',
-    dependsOn: ['render-host-secrets', 'register-host-keys'],
+    dependsOn: ['render-compose-file', 'register-host-keys'],
     inputs: slotOf,
   },
   {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { filingCommand, upstreamMajorItem } from '../../src/filing.js';
+import { majorMarker } from '../../src/issues.js';
 
 const ITEM_INPUT = {
   major: 6,
@@ -32,6 +33,13 @@ describe('upstreamMajorItem', () => {
     expect(item.body).not.toContain('public preview');
   });
 
+  it('ends with the idempotence key for its major, so an item filed by hand is found by the filer', () => {
+    const item = upstreamMajorItem(ITEM_INPUT);
+
+    expect(item.major).toBe(6);
+    expect(item.body.split('\n').at(-1)).toBe(majorMarker(6));
+  });
+
   it('states that the watcher starts nothing', () => {
     const item = upstreamMajorItem(ITEM_INPUT);
 
@@ -43,9 +51,10 @@ describe('filingCommand', () => {
   const item = upstreamMajorItem(ITEM_INPUT);
   const command = filingCommand(item);
 
-  it('runs gh issue create in the workspace repo with the platform-story and ghost-platform labels', () => {
+  it('runs gh issue create in the workspace repo with the upstream-major, platform-story and ghost-platform labels', () => {
     expect(command).toContain('gh issue create');
     expect(command).toContain('--repo branchLeft/workspace');
+    expect(command).toContain('--label upstream-major');
     expect(command).toContain('--label type:platform-story');
     expect(command).toContain('--label repo:ghost-platform');
   });

@@ -38,6 +38,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
     // healthy is false because nothing is really listening on the sidecar's
     // health port in this sandbox -- proven distinctly by
@@ -56,6 +57,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 
@@ -85,7 +87,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
     expect(invocations).toEqual([['2', 'a', 'start']]);
 
     // The recycle contract this story was told to honour verbatim
-    // (workspace#1302 comment 5799768388 / render-core/src/lease.ts):
+    // (the owner's words in the private tracker / render-core/src/lease.ts):
     // the lease record's hashId is hashIdOf() of the exact hash written to
     // the slots file for this host.
     const leaseText = await readFile(`${broker.leaseDir}/2.json`, 'utf8');
@@ -907,6 +909,7 @@ describe('the broker HTTP endpoints (LLD-2 §03)', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 

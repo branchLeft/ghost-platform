@@ -34,7 +34,7 @@ class SabotageFixturesTests(unittest.TestCase):
         by_verdict: dict[str, set[bool]] = {}
         for label, expected, _ in rcp.SELF_TEST_CASES:
             by_verdict.setdefault(label.split(":")[0], set()).add(expected)
-        self.assertEqual(set(by_verdict), {"privileges", "grant_shape", "multiset", "replay", "rounds"})
+        self.assertEqual(set(by_verdict), {"privileges", "grant_shape", "multiset", "replay", "rounds", "inflight"})
         for name, outcomes in by_verdict.items():
             self.assertEqual(outcomes, {True, False}, f"{name} needs both a sabotage and a healthy fixture")
 
@@ -79,6 +79,75 @@ class VerdictTests(unittest.TestCase):
         )
         self.assertFalse(verdict.passed)
         self.assertIn("LOCK INSTANCE FOR BACKUP gave error 0", verdict.reason)
+
+
+class InFlightTests(unittest.TestCase):
+    def test_a_lock_never_seen_queued_is_not_a_commit_in_flight(self) -> None:
+        verdict = rcp.inflight_verdict(False, 0.4)
+        self.assertFalse(verdict.passed)
+        self.assertIn("no commit was in flight", verdict.reason)
+
+    def test_a_lock_granted_at_once_did_not_wait_for_the_transaction(self) -> None:
+        verdict = rcp.inflight_verdict(True, 0.001)
+        self.assertFalse(verdict.passed)
+        self.assertIn("1 ms", verdict.reason)
+
+    def test_the_wait_must_reach_the_minimum(self) -> None:
+        self.assertFalse(rcp.inflight_verdict(True, rcp.MIN_QUEUED_WAIT_SECONDS - 0.01).passed)
+        self.assertTrue(rcp.inflight_verdict(True, rcp.MIN_QUEUED_WAIT_SECONDS).passed)
+
+    def test_the_hold_commits_inside_the_servers_own_lock_wait(self) -> None:
+        # Past it the coordinator would give the attempt up and retry, and the
+        # retry would meet no open transaction.
+        self.assertLess(rcp.QUEUE_SIGHTING_SECONDS + rcp.QUEUED_SETTLE_SECONDS, rcp.bs.LOCK_WAIT_TIMEOUT_SECONDS)
+
+
+class GrantReachTests(unittest.TestCase):
+    def test_a_grant_on_another_schema_fails_the_grant_check(self) -> None:
+        stray = sp.stray_grants(
+            ["GRANT USAGE ON *.* TO `coord`@`localhost`", "GRANT SELECT ON `other`.* TO `coord`@`localhost`"], ["`blog`.*"]
+        )
+        verdict = rcp.grant_shape_verdict(
+            errno_other_schema=1142, errno_ftwrl=1227, errno_instance_lock=1227, errno_master_status=0,
+            privileges=["REPLICATION CLIENT"], stray=stray,
+        )
+        self.assertFalse(verdict.passed)
+        self.assertIn("`other`.*", verdict.reason)
+
+    def test_a_privilege_reached_through_a_role_is_read(self) -> None:
+        asked: list[str] = []
+
+        def query(sql: str) -> list[str]:
+            asked.append(sql)
+            if "USING" not in sql:
+                return [
+                    "GRANT REPLICATION CLIENT ON *.* TO `coord`@`localhost`",
+                    "GRANT `probe_role`@`%` TO `coord`@`localhost`",
+                ]
+            return [
+                "GRANT REPLICATION CLIENT, BACKUP_ADMIN ON *.* TO `coord`@`localhost`",
+                "GRANT `probe_role`@`%` TO `coord`@`localhost`",
+            ]
+
+        grants = sp.effective_grants(query, "'coord'@'localhost'")
+        self.assertEqual(asked[1], "SHOW GRANTS FOR 'coord'@'localhost' USING `probe_role`@`%`;")
+        verdict = rcp.privileges_verdict(sp.parse_global_privileges(grants))
+        self.assertFalse(verdict.passed)
+        self.assertIn("BACKUP_ADMIN", verdict.reason)
+
+    def test_an_account_with_no_role_is_asked_once(self) -> None:
+        asked: list[str] = []
+
+        def query(sql: str) -> list[str]:
+            asked.append(sql)
+            return ["GRANT REPLICATION CLIENT ON *.* TO `coord`@`localhost`"]
+
+        sp.effective_grants(query, "'coord'@'localhost'")
+        self.assertEqual(len(asked), 1)
+
+    def test_a_role_sabotage_is_a_known_sabotage_that_turns_the_privilege_control_red(self) -> None:
+        self.assertTrue(set(rcp.ROLE_SABOTAGES) <= set(rcp.SABOTAGE_TARGETS))
+        self.assertIn(3, rcp.SABOTAGE_TARGETS["backup-admin-through-role"])
 
 
 class ExitCodeTests(unittest.TestCase):
@@ -211,6 +280,12 @@ class CiTests(unittest.TestCase):
     def test_a_red_step_shows_its_log_before_it_judges_it(self) -> None:
         for step in (step for step in _steps() if "SABOTAGE=" in step):
             self.assertLess(step.index('cat "$log"'), step.index('test "$rc" = 1'), step.splitlines()[0])
+
+    def test_the_new_red_steps_require_the_reason_in_the_log(self) -> None:
+        (role,) = _red_steps("backup-admin-through-role", "prove-replication-client.sh")
+        self.assertIn("grep -F 'RED control 3,' \"$log\" | grep -F 'BACKUP_ADMIN'", role)
+        (inflight,) = _red_steps("no-inflight-transaction", "prove-replication-client.sh")
+        self.assertIn("grep -F 'RED control 1,' \"$log\" | grep -F 'no commit was in flight'", inflight)
 
     def test_the_job_timeout_is_sized_for_the_red_steps(self) -> None:
         self.assertIn("timeout-minutes: 45", _CI)

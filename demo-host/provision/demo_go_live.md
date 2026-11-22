@@ -3,7 +3,7 @@
 ## What it does
 
 The step that opens the demo: it places the rendered Caddyfile where the edge
-reads it, and only after two checks pass. On any refusal it exits non-zero,
+reads it, and only after three checks pass. On any refusal it exits non-zero,
 prints one `REFUSED:` line and writes nothing (a previous file is untouched).
 
 1. **No test stand-in is loaded.** For every slot it reads the broker's
@@ -12,7 +12,14 @@ prints one `REFUSED:` line and writes nothing (a previous file is untouched).
    module counts as real only with an exact `real: true`, so
    `noop-admin-api.mjs` and `noop-drain-source.mjs` (which carry none) are
    reported, and so is any hand-written module that forgot the marker.
-2. **The host clock is synchronised** (`timedatectl`'s `NTPSynchronized`),
+2. **A production verdict source is wired for every slot.** The broker's
+   status carries `productionVerdictSource`, built from the `compose.yml`
+   render-core rendered into the slot (`services/broker/src/verdictSourceReport.md`),
+   and it must be exactly `true`. The owner's hard gate of 10 October 2026: a
+   demo does not open to visitors with an upload route that scans nothing.
+   Absent, `false` or any other value refuses. The same check is
+   `demo_verdict_evidence.py`, for checkpoint evidence.
+3. **The host clock is synchronised** (`timedatectl`'s `NTPSynchronized`),
    because gate cookies and break-glass tokens both expire.
 
 ## Fails closed

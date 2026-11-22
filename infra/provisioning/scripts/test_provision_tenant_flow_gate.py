@@ -485,7 +485,7 @@ class TheGateCannotBeOpenedAroundItsScript(unittest.TestCase):
 # of these leaks it. The escrow ciphertext is deliberately not on this list.
 _IDENTITY_VARIABLE = re.compile(
     r"\$\{?(TENANT|TENANT_REPO|TENANT_UID|HOST_PORT|APP_HOST_[A-Z_]+"
-    r"|TENANT_BACKEND_URL|PLATFORM_MEDIA_ENDPOINT|config)\b\}?"
+    r"|TENANT_BACKEND_URL|TENANT_STATE_PREFIX|PLATFORM_MEDIA_ENDPOINT|config)\b\}?"
     r"|branchleft-media-")
 
 # A line that writes to the log, the job summary or the step's annotations.

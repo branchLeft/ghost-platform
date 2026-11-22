@@ -181,6 +181,15 @@ class MasterStatusTests(_Fixture):
         self.fakes.configure(master_status=["garbled"])
         self.assertIn("no binary-log position", str(self.snapshot_error_master()))
 
+    def test_a_server_that_no_longer_has_show_master_status_fails_closed(self) -> None:
+        """MySQL 8.4 replaced it with SHOW BINARY LOG STATUS. An upgraded
+        server must refuse, not dump without a position."""
+        self.fakes.configure(master_status_error=True)
+        error = self.snapshot_error_master()
+        self.assertEqual((error.attempts, error.aborted_attempts), (1, 0))
+        self.assertIn("1064", str(error))
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
+
     def snapshot_error_master(self) -> bs.SnapshotError:
         with self.assertRaises(bs.SnapshotError) as ctx:
             self.snapshot_master()
@@ -263,7 +272,7 @@ class HoldBoundTests(_Fixture):
     def test_a_changed_table_set_is_aborted(self) -> None:
         self.fakes.configure(tables_under_lock=[["ghost_blog", "settings"]])
         error = self.snapshot_error()
-        self.assertIn("set of tables changed", str(error))
+        self.assertIn("changed while the lock was requested", str(error))
 
 
 class ReleaseTests(_Fixture):
@@ -285,6 +294,48 @@ class ReleaseTests(_Fixture):
         self.fakes.configure(lock=["timeout", "ok"], kill="unknown")
         _, report = self.snapshot()
         self.assertEqual(report.aborted_attempts, 1)
+
+
+class EngineRefusalTests(_Fixture):
+    """The dump's snapshot and the binary-log position agree only for
+    transactional tables: a table read after the unlock would be dumped with
+    rows the log then replays a second time."""
+
+    TABLES = [["ghost_blog", "settings"], ["ghost_blog", "users"]]
+
+    def test_a_table_that_is_not_innodb_is_refused_before_anything_is_locked(self) -> None:
+        self.fakes.configure(engines={"ghost_blog.users": "MyISAM"})
+        error = self.snapshot_error()
+        self.assertIn("ghost_blog.users (MyISAM)", str(error))
+        self.assertNotIn("ghost_blog.settings", str(error))
+        self.assertEqual((error.attempts, error.aborted_attempts), (1, 0))
+        self.assertFalse([s for s in self.fakes.statements() if s.startswith("LOCK TABLES")])
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
+
+    def test_the_refusal_covers_the_whole_user_scope_too(self) -> None:
+        self.fakes.configure(engines={"ghost_blog.users": "MEMORY"})
+        with self.assertRaises(bs.SnapshotError) as ctx:
+            self.snapshot(schemas=None)
+        self.assertIn("ghost_blog.users (MEMORY)", str(ctx.exception))
+
+    def test_a_row_with_no_engine_is_refused_not_passed(self) -> None:
+        self.fakes.configure(engines={"ghost_blog.users": ""})
+        self.assertIn("ghost_blog.users (no engine)", str(self.snapshot_error()))
+
+    def test_the_engine_name_is_matched_whatever_its_case(self) -> None:
+        self.fakes.configure(engines={"ghost_blog.users": "innodb"})
+        _, report = self.snapshot()
+        self.assertEqual(report.tables_locked, 2)
+
+    def test_an_engine_changed_between_the_listing_and_the_lock_is_not_dumped(self) -> None:
+        self.fakes.configure(engines_under_lock={"ghost_blog.users": "MyISAM"})
+        error = self.snapshot_error()
+        self.assertIn("engine, changed", str(error))
+        self.assertEqual(self.fakes.starts("mysqldump"), [])
+
+    def test_the_listing_asks_for_the_engine_in_the_same_scope_it_locks(self) -> None:
+        self.assertIn("IFNULL(ENGINE, '')", bs.list_tables_sql(["ghost_blog"]))
+        self.assertIn("TABLE_SCHEMA IN ('ghost_blog')", bs.list_tables_sql(["ghost_blog"]))
 
 
 class SetupFailureTests(_Fixture):

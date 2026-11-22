@@ -112,6 +112,8 @@ describe('FileRegisterReader', () => {
       { entries: [{ ...ENTRY, hostnames: 'host.example.invalid' }] },
     ],
     ['a hostname that is not text', { entries: [{ ...ENTRY, hostnames: [1] }] }],
+    ['a state folder that is missing', { entries: [{ ...ENTRY, stateFolder: undefined }] }],
+    ['a state folder that is not text', { entries: [{ ...ENTRY, stateFolder: 7 }] }],
     ['the same tenant twice', { entries: [ENTRY, ENTRY] }],
   ])('refuses a file with %s', async (_name, content) => {
     const file = await work.json('register.json', content);

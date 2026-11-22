@@ -51,7 +51,7 @@ It sets no policy (the origin in front of Ghost does) and renders no verdict
 The flow, each step recorded only when it really happened:
   1. create a free member through the Admin API and follow the sign-in link
      Ghost's Admin API issues for it (NOT the magic-link email: that round
-     trip waits on the mail programme and is not proven here)
+     trip is proven by csp/gate/csp-magic-link-gate.md, not here)
   2. confirm Ghost now serves a member session
   3. open Portal's plan chooser, pick the paid plan, and land on the hosted
      checkout page (csp/proof/fake-stripe.mjs, its own origin)

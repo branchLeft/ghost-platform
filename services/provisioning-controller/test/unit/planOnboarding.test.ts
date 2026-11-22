@@ -16,6 +16,7 @@ import {
 const ENTRY: RegisterEntry = {
   tenantId: 'TENANT_ID_PLACEHOLDER',
   mediaFolder: 'MEDIA_FOLDER_PLACEHOLDER',
+  stateFolder: 'STATE_FOLDER_PLACEHOLDER',
   mediaBucket: 'BUCKET_PLACEHOLDER',
   appHostSlot: 'SLOT_PLACEHOLDER',
   appHostPort: 20001,
@@ -93,6 +94,11 @@ describe('planOnboarding', () => {
       bucket: 'BUCKET_PLACEHOLDER',
       prefix: 'MEDIA_FOLDER_PLACEHOLDER',
     });
+    const state = plan.steps.find((s) => s.id === 'mint-state-credential');
+    expect(state?.entryPoint).toBe('storage-gateway');
+    expect(state?.scope).toBe('setup');
+    expect(state?.dependsOn).toEqual(['confirm-register-assignment']);
+    expect(state?.inputs).toEqual({ prefix: 'STATE_FOLDER_PLACEHOLDER' });
     const edge = plan.steps.find((s) => s.id === 'publish-hostnames');
     expect(edge?.inputs['hostnames']).toEqual(ENTRY.hostnames);
   });
@@ -160,6 +166,7 @@ describe('planOnboarding', () => {
     const entry: RegisterEntry = {
       ...ENTRY,
       mediaFolder: '',
+      stateFolder: '',
       mediaBucket: 'has space',
       appHostSlot: '',
       appHostPort: 80,
@@ -173,12 +180,27 @@ describe('planOnboarding', () => {
     expect(err).toBeInstanceOf(RegisterEntryInvalidError);
     expect((err as RegisterEntryInvalidError).fields).toEqual([
       'mediaFolder',
+      'stateFolder',
       'mediaBucket',
       'appHostSlot',
       'appHostPort',
       'appHostUid',
       'hostnames',
     ]);
+  });
+
+  it.each([
+    ['the tenant id', { stateFolder: 'tenant_id_placeholder' }],
+    ['the media folder', { stateFolder: 'MEDIA_FOLDER_PLACEHOLDER' }],
+    ['a value containing the slot', { stateFolder: 'x-slot_placeholder-y' }],
+    ['a value with a slash', { stateFolder: 'STATE/OTHER' }],
+  ])('refuses a state folder that is %s', async (_name, change) => {
+    const err = await planOnboarding(
+      APPROVAL.approvalId,
+      doubles({ approval: APPROVAL, entry: { ...ENTRY, ...change } })
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RegisterEntryInvalidError);
+    expect((err as RegisterEntryInvalidError).fields).toEqual(['stateFolder']);
   });
 
   it('refuses an empty hostname list', async () => {

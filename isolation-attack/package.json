@@ -1,0 +1,21 @@
+{
+  "name": "ghost-platform-isolation-attack",
+  "version": "0.0.0",
+  "private": true,
+  "license": "SEE LICENSE IN ../LICENSE",
+  "packageManager": "pnpm@11.17.0",
+  "description": "A targeted browser attack suite for tenant isolation on the shared tenant domain: one control per case, run against two local disposable tenants or, by a base-URL parameter, a deployed shared domain, with a dated report that carries the image digests.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "attack": "vitest run --config vitest.attack.config.ts",
+    "report": "node src/reportCli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "playwright": "1.63.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.11"
+  }
+}
