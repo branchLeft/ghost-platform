@@ -37,6 +37,11 @@ control port (`--gateway-control-port`), which must open. If it does not, every 
 gateway reads `UNCHECKED` (never `REFUSED`), and the probe exits 2. The route lines through the gateway
 are therefore only read as refusals when the gateway itself was shown to answer.
 
+UDP control: before any UDP route, the probe sends the same minimal query to a UDP port the slot must
+reach (`--udp-control ADDRESS:PORT`). Until it answers, every UDP route reads `UNCHECKED` and the probe
+exits 2. Silence from the resolver (`--dns-resolver`) reads `REFUSED` only after the control has answered,
+because a dead or dropping path is silent too. The control and the resolver must be different addresses.
+
 Search without read: a directory the slot can search (`x`) but not list (`r`) reads `UNCHECKED`, never
 `REFUSED`, because its listing being denied proves nothing about the files under it. A file under such
 a directory is tested by naming it as a file route, which reads the file itself: a readable one is
@@ -56,7 +61,8 @@ a directory is tested by naming it as a file route, which reads the file itself:
   probed; the gateway always probed; root and a wrong uid refused; a reached route exits 1; a route
   through the gateway read as a refusal only when the gateway control opened; the gateway control
   required; a search-only directory never read as `REFUSED`; the IPv6 routes and UDP DNS probed; an
-  answered UDP route read as `REACHED`.
+  answered UDP route read as `REACHED`; silence on a UDP route read as `REFUSED` only after the UDP
+  control answered.
 
 ## What it does not prove
 
@@ -81,7 +87,8 @@ a directory is tested by naming it as a file route, which reads the file itself:
 ```
 python3 -I branchleft_demo_isolation_probe.py --gateway 172.20.0.1 --gateway-control-port 2525 \
   --peer-port 9303 --host-port 22 --host-port 9100 --estate 10.0.0.2:443 \
-  --ipv6-route '[fd00::2]:443' --dns-resolver 10.0.0.53:53 --spool-address 172.20.0.1 \
+  --ipv6-route '[fd00::2]:443' --udp-control 172.20.0.1:53 --dns-resolver 10.0.0.53:53 \
+  --spool-address 172.20.0.1 \
   --spool-port 2525 --spool-allowed-port 2525 --file-path /opt/branchleft/demo-1 \
   --expect-uid 2001
 ```

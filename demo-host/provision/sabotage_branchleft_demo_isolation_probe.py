@@ -74,7 +74,11 @@ SABOTAGES: list[tuple[str, list[tuple[str, str]]]] = [
      [('"--gateway-control-port", type=parse_port, required=True,', '"--gateway-control-port", type=parse_port, default=1,')]),
     # Search without read: a directory whose listing is denied but which is searchable is UNCHECKED, never REFUSED.
     ("a search-only directory is REFUSED (its denied listing taken as isolation)",
-     [("        if os.path.isdir(route.path) and os.access(route.path, os.X_OK):", "        if False:")]),
+     [("        if os.path.isdir(route.path) and os.access(route.path, os.X_OK, effective_ids=True):", "        if False:")]),
+    # UDP silence: a UDP route is tried only after the UDP control answered; otherwise it reads UNCHECKED.
+    ("a UDP route is tried, and silence read as REFUSED, before the UDP control answered",
+     [("    if udp_ok:\n        outcomes.append(probe_udp(udp_route, args.timeout))\n",
+       "    if True:\n        outcomes.append(probe_udp(udp_route, args.timeout))\n")]),
     # IPv6 and UDP DNS: each is its own route class, probed and printed.
     ("the IPv6 routes are not probed",
      [('    for address, port in ipv6:\n        routes.append(TcpRoute(f"IPv6 route [{address}]:{port}", address, port))\n', "")]),

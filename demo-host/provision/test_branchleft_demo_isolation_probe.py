@@ -52,6 +52,44 @@ def closed_udp_port() -> int:
         return int(sock.getsockname()[1])
 
 
+class UdpResponder:
+    """A real loopback UDP port that answers every datagram: a UDP route to it is REACHED."""
+
+    def __enter__(self) -> int:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.1)
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+        return int(self.sock.getsockname()[1])
+
+    def serve(self) -> None:
+        while not self.stop.is_set():
+            try:
+                query, peer = self.sock.recvfrom(512)
+            except TimeoutError:
+                continue
+            self.sock.sendto(query, peer)
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop.set()
+        self.thread.join(timeout=3)
+        self.sock.close()
+
+
+class SilentUdpPort:
+    """A real loopback UDP port that never answers: a datagram to it is silence, as from a dropping resolver."""
+
+    def __enter__(self) -> int:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        return int(self.sock.getsockname()[1])
+
+    def __exit__(self, *exc: object) -> None:
+        self.sock.close()
+
+
 def ipv6_loopback_available() -> bool:
     try:
         with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
@@ -89,9 +127,12 @@ def run_main(argv: list[str], geteuid: Callable[[], int] = lambda: 1000) -> tupl
     return code, out.getvalue()
 
 
-def argv_pairs(control: int, closed: int, denied: str, uid: str = "1000") -> list[tuple[str, str]]:
+def argv_pairs(control: int, closed: int, denied: str, uid: str = "1000",
+               udp_control: int | None = None) -> list[tuple[str, str]]:
     # Every route class present: the control is the allowed spool port, and it is also the only
     # spool port, so nothing else on the spool is probed. The gateway control is the same loopback port.
+    # The UDP control is a closed UDP port unless the caller says otherwise, so by default it does not answer.
+    udp = closed_udp_port() if udp_control is None else udp_control
     return [
         ("--gateway", "127.0.0.1"),
         ("--gateway-control-port", str(control)),
@@ -103,6 +144,7 @@ def argv_pairs(control: int, closed: int, denied: str, uid: str = "1000") -> lis
         ("--spool-allowed-port", str(control)),
         ("--file-path", denied),
         ("--ipv6-route", f"[::1]:{closed}"),
+        ("--udp-control", f"127.0.0.1:{udp}"),
         ("--dns-resolver", f"127.0.0.1:{closed_udp_port()}"),
         ("--expect-uid", uid),
         ("--timeout", "1"),
@@ -395,13 +437,66 @@ class IpAndUdpRouteTests(unittest.TestCase):
     def test_the_ipv6_and_udp_routes_are_each_printed(self) -> None:
         # The run prints a verdict line for the IPv6 route and for UDP DNS, not only for TCP routes.
         denied = os.path.join(self.tmp.name, "absent")
-        with Listener() as control:
-            pairs = argv_pairs(control, closed_loopback_port(), denied)
+        with Listener() as control, UdpResponder() as udp_control:
+            pairs = argv_pairs(control, closed_loopback_port(), denied, udp_control=udp_control)
             code, out = run_main(to_argv(pairs))
         lines = out.splitlines()
         self.assertIn(f"REFUSED IPv6 route {value_of(pairs, '--ipv6-route')}", lines, out)
         self.assertIn(f"REFUSED UDP DNS to resolver {value_of(pairs, '--dns-resolver')}", lines, out)
         self.assertEqual(code, 2, out)  # the absent path is UNCHECKED, so the run is never a pass
+
+
+class UdpControlTests(unittest.TestCase):
+    """Silence on a UDP route reads REFUSED only after a UDP control the slot must reach has answered."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch.object(probe, "PUBLIC_ROUTES", ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_with_udp(self, udp_control: int, dns: int) -> tuple[int, list[str]]:
+        with Listener() as control:
+            pairs = argv_pairs(control, closed_loopback_port(), os.path.join(self.tmp.name, "absent"),
+                               udp_control=udp_control)
+            pairs = replaced(pairs, "--dns-resolver", f"127.0.0.1:{dns}")
+            code, out = run_main(to_argv(pairs))
+        return code, out.splitlines()
+
+    def test_silence_on_the_dns_route_is_unchecked_when_the_udp_control_is_silent(self) -> None:
+        # The control is silent too, so silence on the DNS route proves nothing about the policy.
+        with SilentUdpPort() as udp_control, SilentUdpPort() as dns:
+            code, lines = self.run_with_udp(udp_control, dns)
+        self.assertEqual(code, 2)
+        self.assertTrue(any(line.startswith(f"UNCHECKED UDP DNS to resolver 127.0.0.1:{dns}") for line in lines), lines)
+        self.assertFalse(any(line.startswith("REFUSED UDP DNS") for line in lines), lines)
+
+    def test_silence_on_the_dns_route_is_refused_once_the_udp_control_answered(self) -> None:
+        with UdpResponder() as udp_control, SilentUdpPort() as dns:
+            _, lines = self.run_with_udp(udp_control, dns)
+        self.assertIn(f"REFUSED UDP DNS to resolver 127.0.0.1:{dns}", lines, lines)
+
+    def test_a_udp_control_that_answers_is_printed_as_reached(self) -> None:
+        with UdpResponder() as udp_control, SilentUdpPort() as dns:
+            _, lines = self.run_with_udp(udp_control, dns)
+        self.assertIn("CONTROL REACHED control: UDP port the slot must reach", lines, lines)
+
+    def test_a_refused_udp_control_leaves_the_dns_route_unchecked(self) -> None:
+        # A UDP control with nothing listening is refused; the DNS route is then not tried at all.
+        code, lines = self.run_with_udp(closed_udp_port(), closed_udp_port())
+        self.assertEqual(code, 2)
+        self.assertTrue(any(line.startswith("UNCHECKED UDP DNS to resolver") for line in lines), lines)
+        self.assertFalse(any(line.startswith("REFUSED UDP DNS") for line in lines), lines)
+
+    def test_the_udp_control_must_not_be_the_dns_route(self) -> None:
+        # If they were the same address, a control that answers would make the DNS route REACHED.
+        with Listener() as control:
+            pairs = argv_pairs(control, closed_loopback_port(), os.path.join(self.tmp.name, "absent"))
+            same = value_of(pairs, "--dns-resolver")
+            code, out = run_main(to_argv(replaced(pairs, "--udp-control", same)))
+        self.assertEqual(code, 2)
+        self.assertIn("different", out)
 
 
 class MainTests(unittest.TestCase):
@@ -418,8 +513,8 @@ class MainTests(unittest.TestCase):
     def test_all_refused_exits_zero_and_prints_one_line_per_route(self) -> None:
         denied = denied_directory(self.tmp.name)
         self.addCleanup(os.chmod, denied, 0o755)
-        with Listener() as control:
-            code, out = run_main(to_argv(argv_pairs(control, closed_loopback_port(), denied)))
+        with Listener() as control, UdpResponder() as udp_control:
+            code, out = run_main(to_argv(argv_pairs(control, closed_loopback_port(), denied, udp_control=udp_control)))
         self.assertEqual(code, 0, out)
         self.assertIn("CONTROL REACHED", out)
         self.assertIn("REFUSED slot B port", out)
@@ -488,7 +583,8 @@ class MainTests(unittest.TestCase):
         with Listener() as control:
             full = argv_pairs(control, closed_loopback_port(), denied)
             for flag in ("--gateway", "--gateway-control-port", "--peer-port", "--host-port", "--estate",
-                         "--spool-address", "--spool-port", "--file-path", "--ipv6-route", "--dns-resolver",
+                         "--spool-address", "--spool-port", "--file-path", "--ipv6-route", "--udp-control",
+                         "--dns-resolver",
                          "--expect-uid"):
                 with self.subTest(omitted=flag):
                     code, out = run_main(to_argv(without(full, flag)))
