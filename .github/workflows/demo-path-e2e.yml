@@ -1,0 +1,137 @@
+name: Demo path end to end
+
+# Drives the demo path as a prospect would, in a test environment that exists
+# only for the run: the demo edge as demo-host/provision/render_demo_site.py
+# renders it for production, the demo-gate image built from this checkout, and
+# stand-in colours, all as containers on the runner. It touches no public slot,
+# no host and no credential beyond the registry read the gate's build needs.
+#
+# The result is read from this run, not inferred: the run step's exit code and
+# the JSON reports it uploads say which stage held. Two properties are proven
+# on every run, in this order:
+#   1. the path run on a clean environment is green;
+#   2. the control case: each built stage is broken in turn, in the real
+#      environment, and the run must go red at that stage and at no other.
+#
+# The path has stages that are not built yet (a landing page, the form,
+# provisioning, arrival and the rest). They are listed as pending in every
+# report, so a green run is a green slice, never the whole path. The epic's
+# Done needs every stage built; `--require-complete` is the flag that makes a
+# pending stage a failure, and is switched on when the last stage lands.
+# The tool and what each stage covers: test-support/demo-path-e2e/README.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'test-support/demo-path-e2e/**'
+      - 'services/demo-gate/**'
+      - 'services/request-guard/**'
+      - 'demo-host/provision/render_demo_site.py'
+      - 'demo-host/provision/render_demo_edge.py'
+      - 'demo-host/provision/render_slot_sudoers.py'
+      - 'render-core/test/golden/demo.edge.json'
+      - 'scripts/demo-edge-proof/**'
+      - '.github/workflows/demo-path-e2e.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'test-support/demo-path-e2e/**'
+      - 'services/demo-gate/**'
+      - 'services/request-guard/**'
+      - 'demo-host/provision/render_demo_site.py'
+      - 'demo-host/provision/render_demo_edge.py'
+      - 'demo-host/provision/render_slot_sudoers.py'
+      - 'render-core/test/golden/demo.edge.json'
+      - 'scripts/demo-edge-proof/**'
+      - '.github/workflows/demo-path-e2e.yml'
+  workflow_dispatch:
+
+# `packages: read` because the gate image's build installs render-core and the
+# shared tsconfig from GitHub Packages, read-only.
+permissions:
+  contents: read
+  packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  path:
+    name: Demo path, clean run and control case
+    runs-on: ubuntu-latest
+    # The gate image's build, one clean run and one run per sabotage, each
+    # starting three containers.
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned, as in repo-tooling-ci.yml: the tool's syntax needs 3.12.
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: .python-version
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s test-support/demo-path-e2e -p 'test_*.py' -v
+
+      # A wheel only, at an exact version: nothing is built or run at install.
+      - name: Type check (mypy, strict)
+        working-directory: test-support/demo-path-e2e
+        run: |
+          python3 -m pip install --disable-pip-version-check --only-binary :all: mypy==2.4.1
+          python3 -m mypy .
+
+      # The same build as demo-gate-image.yml: from the repository root, the
+      # registry token as a build secret that enters no layer.
+      - name: Build gate image (linux/amd64)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            -f services/demo-gate/Dockerfile \
+            --secret id=node_auth_token,env=NODE_AUTH_TOKEN \
+            --tag demo-gate:ci \
+            .
+
+      - name: Drive the path on a clean environment
+        working-directory: test-support/demo-path-e2e
+        run: python3 -m demo_path_e2e run --gate-image demo-gate:ci --report "$RUNNER_TEMP/reports/clean.json"
+
+      - name: Control case, break each built stage in turn
+        working-directory: test-support/demo-path-e2e
+        run: python3 -m demo_path_e2e prove-sabotage --gate-image demo-gate:ci --report-dir "$RUNNER_TEMP/reports/sabotage"
+
+      # From the files the steps above wrote, also when they failed: the
+      # verdict on the run's page is the reports', never a line of the log.
+      - name: Summary of what was driven
+        if: ${{ always() }}
+        working-directory: test-support/demo-path-e2e
+        run: |
+          set -eu
+          reports="$(find "$RUNNER_TEMP/reports" -name '*.json' 2>/dev/null | sort)"
+          if [ -z "$reports" ]; then
+            echo 'No report was written: the environment did not start.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          python3 -m demo_path_e2e summary $reports >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo-path-e2e-reports
+          path: ${{ runner.temp }}/reports/**/*.json
+          if-no-files-found: warn
+          retention-days: 30
