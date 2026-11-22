@@ -133,3 +133,63 @@ class FixtureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RewriteTest(unittest.TestCase):
+    def demo(self) -> m.Json:
+        image = f"{m.PLACEHOLDER}/content/images/2026/11/probe-lex-image.png"
+        og = f"{m.PLACEHOLDER}/content/images/2026/11/probe-post-og.png"
+        return export(
+            users=[{"id": "demo-owner", "slug": "owner"}],
+            roles_users=[{"user_id": "demo-owner", "role_id": "r"}],
+            posts=[
+                {"id": "p1", "title": "Probe post", "lexical": f'{{"src":"{image}"}}',
+                 "og_image": og, "created_by": "demo-owner"},
+            ],
+            posts_authors=[{"post_id": "p1", "author_id": "demo-owner"}],
+            settings=[
+                {"key": "codeinjection_head", "value": "x"},
+                {"key": "og_image", "value": og},
+                {"key": "title", "value": f"see {image}"},
+            ],
+        )
+
+    def replacements(self) -> dict[str, str]:
+        return {f"{m.PLACEHOLDER}/content/images/2026/11/probe-lex-image.png": "https://media/t/a.png",
+                f"{m.PLACEHOLDER}/content/images/2026/11/probe-post-og.png": "https://media/t/og.png"}
+
+    def test_references_replaced_and_users_removed(self) -> None:
+        out = m.rewrite_export(self.demo(), self.replacements(), "tenant-owner")
+        text = json.dumps(out)
+        self.assertNotIn("__GHOST_URL__", text)
+        data = m.as_obj(m.dig(out, "db", 0, "data"))
+        self.assertNotIn("users", data)
+        self.assertEqual(data["roles_users"], [])
+        self.assertEqual(m.rows_of(out, "posts")[0]["created_by"], "tenant-owner")
+        self.assertEqual(m.rows_of(out, "posts_authors")[0]["author_id"], "tenant-owner")
+
+    def test_tenant_owned_settings_dropped(self) -> None:
+        keys = [r["key"] for r in m.rows_of(m.rewrite_export(self.demo(), {}, "o"), "settings")]
+        self.assertNotIn("codeinjection_head", keys)
+        self.assertIn("title", keys)
+
+    def test_skip_leaves_og_image_as_in_the_demo(self) -> None:
+        out = m.rewrite_export(self.demo(), self.replacements(), "o", frozenset({"og_image"}))
+        self.assertIn("__GHOST_URL__/content/images/2026/11/probe-post-og.png",
+                      m.as_str(m.rows_of(out, "posts")[0]["og_image"]))
+        settings = {r["key"]: r["value"] for r in m.rows_of(out, "settings")}
+        self.assertIn("__GHOST_URL__", m.as_str(settings["og_image"]))
+        self.assertNotIn("__GHOST_URL__", m.as_str(settings["title"]))
+
+    def test_posts_on_removed_users_found_before_rewrite(self) -> None:
+        self.assertEqual(m.posts_by_removed_users(self.demo(), {"demo-owner"}), ["Probe post"])
+        self.assertEqual(m.posts_by_removed_users(self.demo(), {"someone-else"}), [])
+
+    def test_is_file_field_excludes_page_links_and_regex_rows(self) -> None:
+        self.assertTrue(m.is_file_field("post og_image"))
+        self.assertFalse(m.is_file_field("setting navigation (link to the demo's own page)"))
+        self.assertFalse(m.is_file_field("regex name: post html"))
+        self.assertFalse(m.is_file_field("author profile_image"))
+
+    def test_demo_forms_cover_three_spellings(self) -> None:
+        self.assertEqual(len(m.demo_forms("images/a.png")), 3)

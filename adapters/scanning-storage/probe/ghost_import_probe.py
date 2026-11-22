@@ -13,6 +13,7 @@ import hashlib
 import http.client
 import io
 import json
+import mimetypes
 import os
 import secrets
 import shutil
@@ -33,6 +34,7 @@ from probe_model import (
     PAGE_PATH,
     REGEX_NAME,
     REGEX_TITLE,
+    REWRITTEN,
     STAFF,
     TENANT_PREFIX,
     TENANT_SITE,
@@ -40,6 +42,12 @@ from probe_model import (
     ProbeError,
     Row,
     add_staff_and_regex_name,
+    demo_forms,
+    is_file_field,
+    posts_by_removed_users,
+    removed_user_ids,
+    rewrite_export,
+    storage_key,
     as_list,
     as_obj,
     as_str,
@@ -335,11 +343,14 @@ class Ghost:
         )
 
     def import_zip(self, zip_path: Path) -> Reply:
-        """Upload the zip as the admin client does, streamed so a large one is not held."""
+        return self.import_file(zip_path, "probe.zip", "application/zip")
+
+    def import_file(self, zip_path: Path, name: str, ctype: str) -> Reply:
+        """Upload an export file as the admin client does, streamed so a large one is not held."""
         boundary = "probe" + secrets.token_hex(12)
         head = (
             f'--{boundary}\r\nContent-Disposition: form-data; name="importfile"; '
-            f'filename="probe.zip"\r\nContent-Type: application/zip\r\n\r\n'
+            f'filename="{name}"\r\nContent-Type: {ctype}\r\n\r\n'
         ).encode()
         tail = f"\r\n--{boundary}--\r\n".encode()
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=900)
@@ -944,6 +955,198 @@ def probe(args: argparse.Namespace, res: Resources, work: Path, failures: list[s
             handle.write(f"### Ghost zip import probe\n\n```\n{report}\n```\n")
 
 
+# ------------------------------------------------------------------ mode 2: upload, rewrite, JSON-only import
+
+
+@dataclasses.dataclass
+class Upload:
+    rel: str
+    size: int
+    status: int
+    url: str
+
+
+def upload_all(tenant: Ghost, content: Path, stop_at_refusal: bool) -> list[Upload]:
+    """Upload every original through the admin's own routes, in order."""
+    found: list[Upload] = []
+    for path in served_files(content):
+        rel = path.relative_to(content)
+        folder = rel.parts[0]
+        data = path.read_bytes()
+        ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        reply = tenant.upload(f"{folder}/upload/", path.name, ctype, data)
+        refused = reply.status >= 400
+        url = "" if refused else upload_url(reply, f"upload {path.name}", folder)
+        found.append(Upload(rel.as_posix(), len(data), reply.status, url))
+        if refused:
+            if not stop_at_refusal:
+                raise ProbeError(
+                    f"upload of {path.name} refused: HTTP {reply.status} {reply.text()[:300]}"
+                )
+            break
+    return found
+
+
+def tenant_posts(tenant: Ghost) -> int:
+    return len(as_list(dig(ok(tenant.api("GET", "posts/?limit=all&fields=id"), "posts"), "posts")))
+
+
+def measure_authors(tenant: Ghost) -> list[Row]:
+    posts = as_list(
+        dig(
+            ok(tenant.api("GET", "posts/?include=authors&limit=all&fields=title"), "posts"), "posts"
+        )
+    )
+    rows: list[Row] = []
+    for item in posts:
+        post = as_obj(item)
+        names = ", ".join(as_str(as_obj(a)["slug"]) for a in as_list(post["authors"]))
+        rows.append(Row(f"authors of post '{post['title']}'", names or "none"))
+    return rows
+
+
+def probe_control(
+    res: Resources, image: str, demo: Demo, victim: Path, sabotage: str | None, failures: list[str]
+) -> dict[str, str]:
+    """An image on the hash list must be refused at its own upload; nothing is imported."""
+    digest = hashlib.sha256(victim.read_bytes()).hexdigest()
+    listed: Json = (
+        {}
+        if sabotage == "empty-control-list"
+        else {digest: {"classification": "harmful-abusive-material", "matchType": "exact"}}
+    )
+    double = Double(res, image)
+    tenant = start_ghost(res, image, "control", TENANT_SITE, tenant_storage(double, listed))
+    try:
+        tenant.setup_owner("Tenant Site")
+        uploads = upload_all(tenant, demo.content, stop_at_refusal=True)
+        victim_rel = victim.relative_to(demo.content).as_posix()
+        hit = next((u for u in uploads if u.rel == victim_rel), None)
+        answered = sum(1 for u in uploads if u.status < 400)
+        written = len(double.put_keys())
+        posts_left = tenant_posts(tenant)
+    finally:
+        res.remove(tenant.name)
+        res.remove(double.name)
+    if hit is None or hit.status < 400:
+        failures.append("CONTROL: the image on the hash list was accepted by its upload")
+    return {
+        "image on the list": victim.name,
+        "its upload": "refused HTTP " + str(hit.status) if hit and hit.status >= 400 else "accepted",
+        "uploads answered before it": str(answered),
+        "orphans: objects written before the refusal": str(written),
+        "posts in the tenant (its own only)": str(posts_left),
+        "import": "not run (the run stops at the refusal)",
+    }
+
+
+def probe_rewrite(
+    args: argparse.Namespace, res: Resources, work: Path, failures: list[str]
+) -> None:
+    res.create_network()
+    demo = run_demo(res, args.image, work)
+    victim = next(p for p in served_files(demo.content) if "post-feature" in p.name)
+    control = probe_control(res, args.image, demo, victim, args.sabotage, failures)
+
+    double = Double(res, args.image)
+    tenant = start_ghost(res, args.image, "tenant", TENANT_SITE, tenant_storage(double, {}))
+    try:
+        tenant.setup_owner("Tenant Site")
+        before = tenant.export()
+        owner_id = as_str(dig(ok(tenant.api("GET", "users/me/"), "me"), "users", 0, "id"))
+        uploads = upload_all(tenant, demo.content, stop_at_refusal=False)
+        replacements: dict[str, str] = {}
+        for up in uploads:
+            for form in demo_forms(up.rel):
+                replacements[form] = up.url
+        stranded = posts_by_removed_users(demo.export, removed_user_ids(demo.export))
+        skip = frozenset({"og_image"}) if args.sabotage == "skip-og-image" else frozenset()
+        rewritten = rewrite_export(demo.export, replacements, owner_id, skip)
+        json_path = work / "rewritten.json"
+        json_path.write_text(json.dumps(rewritten), encoding="utf-8")
+        reply = tenant.import_file(json_path, "probe.json", "application/json")
+        if reply.status >= 300:
+            raise ProbeError(f"the JSON import was refused: HTTP {reply.status} {reply.text()[:300]}")
+        tenant.wait_jobs(1)
+        if tenant.job_failed():
+            raise ProbeError(f"the JSON import failed:\n{tenant.logs()[-4000:]}")
+        after = tenant.export()
+        stored = double.put_keys()
+        sizes = {
+            as_str(req["path"]).split("/", 2)[2]: int(str(req["bodyBytes"]))
+            for req in double.requests()
+            if req["shape"] == "PutObject"
+        }
+        refs = [
+            r
+            for r in measure_references(demo.export, after, stored)
+            if not r.item.startswith("regex name")
+        ]
+        for row in refs:
+            if is_file_field(row.item) and (row.result != REWRITTEN or row.extra != "object there"):
+                failures.append(f"REWRITE: {row.item} is {row.result} ({row.extra})")
+        same_length = sum(
+            1 for up in uploads if sizes.get(storage_key(up.url) or "") == up.size
+        )
+        if same_length != len(uploads):
+            failures.append(f"STORAGE: {len(uploads) - same_length} stored objects differ in length")
+        extra = {
+            "uploads answered (by folder)": ", ".join(
+                f"{kind}={sum(1 for u in uploads if u.rel.startswith(kind + '/'))}"
+                for kind in ("images", "media", "files")
+            ),
+            "objects by folder": ", ".join(
+                f"{kind}={sum(1 for k in stored if f'/content/{kind}/' in k)}"
+                for kind in ("images", "media", "files")
+            ),
+            "stored objects of the same length as the demo's": f"{same_length} of {len(uploads)}",
+            "objects outside the tenant prefix": str(
+                sum(1 for k in stored if not k.startswith(f"{TENANT_PREFIX}/"))
+            ),
+            "posts in the tenant before / after the import": (
+                f"{len(rows_of(before, 'posts'))} / {len(rows_of(after, 'posts'))}"
+            ),
+            "posts in the demo export (incl. its default post)": str(len(rows_of(demo.export, "posts"))),
+            "posts whose author the rewrite removed": ", ".join(stranded) or "none",
+            "import reply": f"HTTP {reply.status} {reply.text()[:100]}",
+        }
+        settings = measure_settings(demo.export, before, after)
+        authors = measure_authors(tenant)
+    finally:
+        res.remove(tenant.name)
+        res.remove(double.name)
+    report = "\n".join(
+        [
+            f"Ghost {demo.version}: upload through the admin routes, rewritten export, JSON-only import",
+            "",
+            "Control: one image of the demo is on the hash list",
+            table(["Measure", "Value"], list(control.items())),
+            "",
+            "References after the JSON-only import",
+            table(
+                ["Field class", "Result", "Reference as stored", "Object"],
+                [(r.item, r.result, r.detail, r.extra) for r in refs],
+            ),
+            "",
+            "Settings",
+            table(["Key", "Result", "Values"], [(r.item, r.result, r.detail) for r in settings]),
+            "",
+            "Posts and authors",
+            table(["Item", "Result", "Detail"], [(r.item, r.result, r.detail) for r in authors]),
+            "",
+            "Storage",
+            table(["Measure", "Value"], list(extra.items())),
+        ]
+    )
+    print(report)
+    if args.report:
+        args.report.write_text(report + "\n", encoding="utf-8")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write(f"### Ghost upload-then-rewrite probe\n\n```\n{report}\n```\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Probe Ghost's own zip import against the built image."
@@ -957,16 +1160,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, help="also write the report to this file")
     parser.add_argument(
         "--sabotage",
-        choices=["empty-control-list"],
-        help="run the control with nothing listed, which must fail",
+        choices=["empty-control-list", "skip-og-image"],
+        help="empty-control-list: the control must go red; skip-og-image: leave og_image as in the demo, the table must go red",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["zip", "rewrite"],
+        default="zip",
+        help="zip: Ghost's own zip import; rewrite: uploads through the admin routes, then a rewritten JSON-only import",
     )
     args = parser.parse_args(argv)
+    if args.mode == "zip" and args.sabotage == "skip-og-image":
+        parser.error("skip-og-image applies to --mode rewrite only")
 
     res = Resources()
     work = Path(tempfile.mkdtemp(prefix="ghost-import-probe-"))
     failures: list[str] = []
     try:
-        probe(args, res, work, failures)
+        if args.mode == "rewrite":
+            probe_rewrite(args, res, work, failures)
+        else:
+            probe(args, res, work, failures)
     except (ProbeError, OSError, subprocess.SubprocessError) as err:
         failures.append(f"PROBE: {err}")
     finally:

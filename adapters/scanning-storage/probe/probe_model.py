@@ -434,3 +434,122 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
 
     rule = "|-" + "-|-".join("-" * w for w in widths) + "-|"
     return "\n".join([line(headers), rule, *(line(r) for r in body)])
+
+
+# ------------------------------------------------------------------ mode 2: rewrite
+
+TENANT_OWNED_SETTINGS = ("codeinjection_head", "codeinjection_foot", "active_theme")
+NON_FILE_FIELDS = (
+    "post lexical: link to the demo's own page",
+    "post lexical: html card link, another spelling of the demo host",
+    "setting navigation (link to the demo's own page)",
+)
+
+
+# The demo's owner is removed by the rewrite, so the images on that user are not carried.
+REMOVED_WITH_USERS = ("author profile_image", "author cover_image")
+
+
+def is_file_field(name: str) -> bool:
+    """A field that holds a reference to an uploaded file, not a page link, a regex-name
+    row, or an image on the demo's removed owner."""
+    return (
+        not name.startswith("regex name")
+        and name not in NON_FILE_FIELDS
+        and name not in REMOVED_WITH_USERS
+    )
+
+
+def demo_forms(rel: str) -> list[str]:
+    """The spellings the demo's export holds a content path in."""
+    return [
+        f"{PLACEHOLDER}/content/{rel}",
+        f"{DEMO_SITE}/content/{rel}",
+        f"https://{DEMO_HOST}/content/{rel}",
+    ]
+
+
+def removed_user_ids(export: Json) -> set[str]:
+    return {as_str(u.get("id")) for u in rows_of(export, "users")}
+
+
+def posts_by_removed_users(export: Json, removed: set[str]) -> list[str]:
+    """Titles of the posts that have at least one author the rewrite removes."""
+    ids = {as_str(post.get("id")) for post in rows_of(export, "posts")}
+    titles: list[str] = []
+    linked = {
+        as_str(row.get("post_id"))
+        for row in rows_of(export, "posts_authors")
+        if row.get("author_id") in removed
+    }
+    for post in rows_of(export, "posts"):
+        if as_str(post.get("id")) in linked and as_str(post.get("id")) in ids:
+            titles.append(as_str(post.get("title")))
+    return titles
+
+
+def _rewrite(
+    value: object, pairs: Sequence[tuple[str, str]], skip: frozenset[str], field: str | None
+) -> object:
+    if isinstance(value, str):
+        if field in skip:
+            return value
+        text: str = value
+        for form, url in pairs:
+            text = text.replace(form, url)
+        return text
+    if isinstance(value, dict):
+        row = cast(Json, value)
+        named = row.get("key")
+        out: Json = {}
+        for key, item in row.items():
+            name = named if key == "value" and isinstance(named, str) else key
+            out[key] = _rewrite(item, pairs, skip, name)
+        return out
+    if isinstance(value, list):
+        return [_rewrite(item, pairs, skip, field) for item in cast(list[object], value)]
+    return value
+
+
+def rewrite_export(
+    export: Json,
+    replacements: dict[str, str],
+    owner_id: str,
+    skip: frozenset[str] = frozenset(),
+) -> Json:
+    """The demo's export, rewritten for a JSON-only import into the tenant.
+
+    Every demo spelling of a content path becomes the URL the tenant answered
+    for that file. The demo's users go, every post and author link points at the
+    tenant's owner, and the settings the tenant owns are dropped. `skip` names
+    fields left as in the demo: the sabotage that must turn the table red.
+    """
+    pairs = sorted(replacements.items(), key=lambda pair: len(pair[0]), reverse=True)
+    rewritten = cast(Json, json.loads(json.dumps(export)))
+    data = as_obj(dig(rewritten, "db", 0, "data"))
+    removed = {as_str(as_obj(u).get("id")) for u in as_list(data.pop("users", []))}
+    for table in ("roles_users", "permissions_users"):
+        if table in data:
+            data[table] = [
+                r for r in as_list(data[table]) if as_obj(r).get("user_id") not in removed
+            ]
+    for item in as_list(data.get("posts", [])):
+        post = as_obj(item)
+        for column in ("created_by", "updated_by"):
+            if post.get(column) in removed:
+                post[column] = owner_id
+    seen: set[object] = set()
+    authors: list[object] = []
+    for item in as_list(data.get("posts_authors", [])):
+        link = as_obj(item)
+        link["author_id"] = owner_id
+        marker = link.get("post_id")
+        if marker not in seen:
+            seen.add(marker)
+            authors.append(link)
+    if "posts_authors" in data:
+        data["posts_authors"] = authors
+    data["settings"] = [
+        r for r in as_list(data.get("settings", [])) if as_obj(r).get("key") not in TENANT_OWNED_SETTINGS
+    ]
+    return cast(Json, _rewrite(rewritten, pairs, skip, None))

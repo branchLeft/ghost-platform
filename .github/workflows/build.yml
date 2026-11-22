@@ -101,6 +101,13 @@ jobs:
           python3 -m unittest discover -s adapters/scanning-storage/probe -p 'test_*.py'
           python3 adapters/scanning-storage/probe/ghost_import_probe.py --image ghost-platform:ci
 
+      # The upload-then-rewrite path: uploads each demo file through Ghost's admin
+      # routes, imports a rewritten export JSON alone, and reads the tenant's data back.
+      # Runs after the zip probe, one Docker-heavy probe at a time.
+      - name: Upload-then-rewrite probe against the built image
+        run: |
+          python3 adapters/scanning-storage/probe/ghost_import_probe.py --mode rewrite --image ghost-platform:ci
+
       # An export is verified by using it: Ghost's own export is taken from a
       # seeded Ghost and re-imported into a fresh one, and named posts, tags,
       # members and settings must be there. The same check against a Ghost
