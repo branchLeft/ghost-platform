@@ -274,8 +274,18 @@ again before the mailer is called. The message is trimmed, refused when empty,
 and bounded at 1000 characters. Each refusal is a `SupportTicketError` with a
 fixed message that never holds what was posted, which the shell turns into its
 plain `REFUSED`; the shell logs the error name only. A rejected read of the
-register row or the health reading is one too (`READ_FAILED`): nothing is sent. Nothing is echoed back and
-no ticket is stored.
+register row or the health reading is one too (`READ_FAILED`): nothing is sent. Nothing is echoed back.
+
+Once the mail has gone, the ticket is also held for the owner: with the
+provisioning API configured (see "Ask for Essentials" below) the portal calls its
+`createTicket` with the bound tenant, the contact and the message, and the owner
+console lists it as a ticket in state `new`. The email stays the delivery. A ticket
+the API does not take (no credential issued for the tenant, the API down, refused,
+or the tenant at its limit of open tickets) never fails the request: the tenant
+still lands on the sent page, and stderr gets one `portal.error` line with the
+step and the error name `TicketRecordError`, and nothing the tenant wrote. Without
+the provisioning settings nothing is held, as before. A refused or unsent ticket
+is never held.
 
 Abuse is bounded by a per-tenant fixed window held in memory and driven by the
 portal's clock: five tickets an hour (`MAX_TICKETS_PER_WINDOW`,
@@ -366,22 +376,27 @@ path: the same `SupportMailer`, the same `validateContact` and `validateMessage`
 with the same ceiling (five an hour per tenant, then `/professional/limited`).
 The subject is `PROFESSIONAL_ENQUIRY <tenant id>` and the body is `TENANT_ID` and
 `SCREEN: PROFESSIONAL` lines, the delimiter and the message. The tenant id is
-the session's; no tenant name is asked for or sent. It does not call the
-provisioning API: the email is the enquiry, so an open Essentials request never
-blocks it. After the email is sent, the action records one row for the bound
-tenant (`TenantDb.recordProfessionalEnquiry`, `portal.professional_enquiry`), which
-is the count the owner console shows as `PROFESSIONAL_ENQUIRIES`. A limited or
-refused enquiry records nothing. A failed record does not fail the send, because
-the tenant would then submit again and send a second email: the sent page is
-shown and one line `professional_enquiry_not_counted` names the error only, so
-the count can run one short of the emails when the database is down. Without the
+the session's; no tenant name is asked for or sent. The email is the enquiry, so
+an open Essentials request never blocks it. After the email is sent, the action
+records one row for the bound tenant (`TenantDb.recordProfessionalEnquiry`,
+`portal.professional_enquiry`), which is the count the owner console shows as
+`PROFESSIONAL_ENQUIRIES`, and, through the provisioning API, holds the enquiry
+as a `professional-enquiry` ticket for the owner with the same best-effort rule
+as a support ticket (it is not a promotion request and is never queued for
+approval). The Essentials request is held as an `essentials` ticket by the API
+itself, in the same change as its promotion request. A limited or refused
+enquiry records nothing. A failed count does not fail the send, because the
+tenant would then submit again and send a second email: the sent page is shown
+and one line `professional_enquiry_not_counted` names the error only, so the
+count can run one short of the emails when the database is down. Without the
 `support` settings the page, the action and `NAV_PROFESSIONAL` are absent (404),
 as for support.
 
 The code is `src/tenant/promotionRoutes.ts` (assembly), `essentialsRoutes.ts`,
-`professionalRoutes.ts`, `provisioningSettings.ts` (the one place that calls the
-generated client) and `promotionPages.ts`. Tests: `test/tenantEssentials.test.ts`,
-`test/tenantProfessional.test.ts`, `test/provisioningSettings.test.ts` and
+`professionalRoutes.ts`, `ticketRecorder.ts` (holds a support ticket or an enquiry
+through the generated client), `provisioningSettings.ts` and `promotionPages.ts`. Tests: `test/tenantEssentials.test.ts`,
+`test/tenantProfessional.test.ts`, `test/tenantTickets.test.ts`,
+`test/ticketRecorder.test.ts`, `test/provisioningSettings.test.ts` and
 `test/promotionSabotage.test.ts`. They run against the in-memory mock served
 through the generated `createServer` (built from `services/provisioning-controller`,
 imported by tests only), never a hand-rolled fetch.
