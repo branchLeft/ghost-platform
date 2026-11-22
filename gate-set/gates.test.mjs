@@ -54,6 +54,7 @@ const COMMANDS = {
   'theme-scan': 'themes/image/themes.image.test.mjs',
   mail: 'scripts/mail-gate/mail-gate.mjs',
   'content-policy': 'csp/gate/csp-regression-gate.sh',
+  'node-env': 'gate-set/node_env_gate.py',
 };
 
 for (const [name, fragment] of Object.entries(COMMANDS)) {

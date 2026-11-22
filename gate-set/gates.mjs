@@ -1,4 +1,4 @@
-// The six real gates. Each is one existing check run against the candidate
+// The seven real gates. Each is one existing check run against the candidate
 // image; this file adds no verdict logic of its own except the overlay check.
 // A gate passes only when every command it runs exits 0. Which command stands
 // behind which gate, and what is not covered: gate-set/README.md.
@@ -187,6 +187,15 @@ export function realGates({ repoRoot, exec = spawnExec, readFile = fs.readFileSy
           cwd: repoRoot,
         });
         return { ok: policyRun.code === 0, detail: policyRun.code === 0 ? '' : policyRun.output };
+      },
+    },
+    {
+      name: 'node-env',
+      async run({ image }) {
+        const envRun = await exec(['python3', at('gate-set', 'node_env_gate.py'), image], {
+          cwd: repoRoot,
+        });
+        return { ok: envRun.code === 0, detail: envRun.code === 0 ? '' : envRun.output };
       },
     },
   ];
