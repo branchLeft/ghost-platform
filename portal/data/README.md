@@ -156,6 +156,13 @@ row, an older or future-dated one, and a state outside the closed list all come
 back `unknown` with no deadline. `closed` is returned only for a fresh reading
 that says `closed`, so a host that has stopped reporting never reads as closed.
 
+`portal.professional_enquiry` holds one row per Professional enquiry the tenant
+portal has sent: the tenant, the database-clock time and nothing else, no contact and
+no text. `TenantDb.recordProfessionalEnquiry` inserts the bound tenant's row (the
+tenant role's `tenant_isolation` policy and `INSERT` grant only; it cannot read the
+table). `OwnerDb.countProfessionalEnquiries` counts every row for the owner console's
+landing page. Migration `0017_professional_enquiry`. Nothing updates or deletes a row.
+
 `portal.support_access_request` holds a tenant's requests: each row has its own
 id, the tenant id, the database-clock time and a `status` (`open` or
 `dealt_with`, default `open`, held by a CHECK), and no column that holds text.

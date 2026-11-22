@@ -66,6 +66,7 @@ import {
   moderationItem,
   tenantBilling,
   moderationSetting,
+  professionalEnquiry,
   supportAccessReading,
   supportAccessRequest,
   tenantErasureRequest,
@@ -250,6 +251,17 @@ export class TenantDb {
   async ownErasure(scope: TenantScope): Promise<ErasureView> {
     const rows = await this.run(scope, (tx) => tx.select().from(tenantErasureRequest));
     return deriveErasureView(rows[0] ?? null);
+  }
+
+  /**
+   * Records one Professional enquiry the portal has sent for the bound tenant:
+   * its own row, with the database's clock and no text. Each call files one
+   * row; the count is what the owner console shows.
+   */
+  async recordProfessionalEnquiry(scope: TenantScope): Promise<void> {
+    await this.run(scope, (tx) =>
+      tx.insert(professionalEnquiry).values({ tenantId: scope.tenantId })
+    );
   }
 
   /**

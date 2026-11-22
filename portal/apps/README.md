@@ -367,11 +367,16 @@ with the same ceiling (five an hour per tenant, then `/professional/limited`).
 The subject is `PROFESSIONAL_ENQUIRY <tenant id>` and the body is `TENANT_ID` and
 `SCREEN: PROFESSIONAL` lines, the delimiter and the message. The tenant id is
 the session's; no tenant name is asked for or sent. It does not call the
-provisioning API and records nothing: the email is the enquiry, so an open
-Essentials request never blocks it. The contract's `professional-enquiry` tier is
-for the console to count enquiries, which needs the screen to record one: left
-for a later step if the owner wants that count. Without the `support` settings
-the page, the action and `NAV_PROFESSIONAL` are absent (404), as for support.
+provisioning API: the email is the enquiry, so an open Essentials request never
+blocks it. After the email is sent, the action records one row for the bound
+tenant (`TenantDb.recordProfessionalEnquiry`, `portal.professional_enquiry`), which
+is the count the owner console shows as `PROFESSIONAL_ENQUIRIES`. A limited or
+refused enquiry records nothing. A failed record does not fail the send, because
+the tenant would then submit again and send a second email: the sent page is
+shown and one line `professional_enquiry_not_counted` names the error only, so
+the count can run one short of the emails when the database is down. Without the
+`support` settings the page, the action and `NAV_PROFESSIONAL` are absent (404),
+as for support.
 
 The code is `src/tenant/promotionRoutes.ts` (assembly), `essentialsRoutes.ts`,
 `professionalRoutes.ts`, `provisioningSettings.ts` (the one place that calls the

@@ -161,6 +161,7 @@ const QUEUE = '0013_moderation_item';
 const TENANT_BILLING = '0014_tenant_billing';
 const DEMO_EXTENSION = '0016_demo_extension_request';
 const TENANT_ERASURE = '0015_tenant_erasure_request';
+const PROFESSIONAL_ENQUIRY = '0017_professional_enquiry';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -319,6 +320,18 @@ export function manifest(major: number, database: string): readonly ManifestObje
       grants: [
         { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
+      ],
+    },
+    // TenantDb.recordProfessionalEnquiry inserts one row per enquiry the portal
+    // sent, for the bound tenant; OwnerDb.countProfessionalEnquiries counts them.
+    // Nothing updates or deletes a row, and the table holds no text.
+    {
+      kind: 'table',
+      identity: 'portal.professional_enquiry',
+      since: PROFESSIONAL_ENQUIRY,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['INSERT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
     },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
@@ -492,6 +505,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.health_reading': { enabled: true, forced: false },
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
+  'portal.professional_enquiry': { enabled: true, forced: false },
   'portal.tenant_billing': { enabled: true, forced: false },
   'portal.tenant_erasure_request': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
@@ -653,6 +667,14 @@ export const POLICIES: readonly PolicyEntry[] = [
     "(status = 'open'::text)",
     'tenantRole',
     false
+  ),
+  policy(
+    'portal.professional_enquiry',
+    'tenant_isolation',
+    PROFESSIONAL_ENQUIRY,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
   ),
   policy(
     'portal.document_acceptance',
@@ -886,6 +908,21 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         "(tenant_id) WHERE (status = 'open'::text)",
       'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +
         'ON portal.support_access_request USING btree (request_id)',
+    ],
+  },
+  'portal.professional_enquiry': {
+    since: PROFESSIONAL_ENQUIRY,
+    lines: [
+      `column enquiry_id uuid notnull=true ${PLAIN}`,
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column recorded_at timestamp with time zone notnull=true ${PLAIN}`,
+      'default enquiry_id gen_random_uuid()',
+      'default recorded_at now()',
+      'constraint professional_enquiry_pkey PRIMARY KEY (enquiry_id)',
+      'constraint professional_enquiry_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.professional_enquiry_pkey CREATE UNIQUE INDEX professional_enquiry_pkey ' +
+        'ON portal.professional_enquiry USING btree (enquiry_id)',
     ],
   },
   'portal.tenant_erasure_request': {
