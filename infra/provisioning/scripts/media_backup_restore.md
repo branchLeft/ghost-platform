@@ -233,6 +233,12 @@ dated generation, then writes the generation's manifest last as its
 completion marker. The only calls made against `backup_bucket` are PUTs, so
 the put-only key is enough. It never deletes, anywhere.
 
+Reads the live bucket at `endpoint` and `region` and writes the backup bucket
+at `backup_endpoint` and `backup_region`, each of which falls back to the live
+one when it is not given, so the live and backup buckets can sit at different
+endpoints with their own credentials. The weekly program
+(`media_backup_weekly.py`) is the caller that sets them.
+
 Signs the manifest with the private key at `manifest_signing_key_path` before
 encrypting it (see "The manifest is signed, because age is not"); it cannot be
 called without one, and a signer that fails or returns nothing aborts the run

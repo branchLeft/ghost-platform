@@ -42,6 +42,25 @@ container only when the host's `compose.yml` is replaced with the new
 `composeFile` output and the stack restarts; the image pin does not carry it.
 See `render-core/src/environment.md#widget-origin`.
 
+## One colour at a time
+
+`activeColour` (`'a'` or `'b'`, default `'a'`) is passed to `render()`, and the
+rendered `compose.yml` carries that colour's Ghost service only. The idle
+colour is not parked behind a profile: it is absent. This is the owner's Mode A
+ruling of 19 November. Two Ghosts on one database
+both run `resumeInterruptedSends()` at boot and both poll for welcome mail, so
+a newsletter or a welcome mail can go twice; nothing in the database stops the
+second set of rows. With one service in the file, the generic unit's `docker
+compose up -d --remove-orphans --wait` cannot start two Ghosts, at deploy, at
+boot or on a restart.
+
+A colour swap is this render with the other colour, applied stop-then-start by
+the host's swap step (`services/ring-controller/src/colourSwitch.ts`, which
+refuses to start a colour until the other has exited). Leaving `activeColour`
+unset is not the old two-service document: it is colour `a`. A consumer that
+wants both colours in one file (the demo host's per-colour units) calls the
+render core directly.
+
 ## Secrets on the host
 
 **The tenant stack holds no secret value.** Since 8.0.0 the component takes no

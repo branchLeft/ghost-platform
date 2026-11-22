@@ -119,7 +119,7 @@ prints: it passes them to a child only in that child's environment (Ghost gets
   `sk_test_`, and any card but the published test card). The real page is
   proven only by the owner's run in real test mode above.
 - **The magic-link email round trip.** The member signs in through an Admin API
-  sign-in link, not the email. That half waits on the mail programme.
+  sign-in link, not the email. That half is `csp-magic-link-gate.md`.
 - **Anything deployed.** Nothing passes `payments: stripe` to a deployed edge
   yet; wiring it through the broker and provisioner is separate work.
 

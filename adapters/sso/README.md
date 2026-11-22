@@ -13,9 +13,15 @@ Ghost config, normally set as environment variables on the tenant's container:
 | `adapters__sso__active=BreakGlassSSO` | Selects this adapter. Unset, Ghost uses its own no-op adapter. |
 | `adapters__sso__BreakGlassSSO__publicKey` | Ed25519 public key, base64 SPKI DER. Only the public half is ever on a tenant. |
 | `adapters__sso__BreakGlassSSO__tenant` | This tenant's name. A token's `aud` must equal it. |
-| `adapters__sso__BreakGlassSSO__supportIdentity` | The one account the adapter can produce: the support account on a paying site. A demo never carries break-glass. |
+| `adapters__sso__BreakGlassSSO__supportIdentity` | The one account the adapter can produce: the support account on a paying site, or the owner's own address on a demo (see "On a demo" below). |
 
 If any of the three is missing, is not a string, or the key is not an Ed25519 key, the adapter logs `break-glass: disabled (<reason>)` once at boot and refuses every token. The site boots regardless. Ghost parses environment values as JSON where it can, so a tenant name such as `2024` arrives as a number and disables break-glass. The renderer should never produce one.
+
+## On a demo
+
+A demo carries the adapter pinned to its owner, so the prospect signs in to Ghost admin from the emailed link and no password is ever shown. The pin is the same: `supportIdentity` is the one account the adapter can produce, and here it is the demo's own owner. The descriptor refuses any other identity on a demo (`render-core`, `validate()`), so a demo never carries a support account. The owner account is created by the broker with a password nobody holds, and it is active, which is what the adapter's status check needs. The token is the one the gate's arrival link carries (`services/demo-gate/src/invitation.md`): the gate exchanges it for a session, then sends the browser to `/ghost/` with the same token, and this adapter turns it into an Administrator session.
+
+`services/demo-gate/test/image/arrival.image.test.ts` proves it against the built image: the link, the gate session, an owner signed in to admin with no mail sent, and the replay refused by both the gate and this adapter.
 
 ## Token
 

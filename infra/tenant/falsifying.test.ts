@@ -43,7 +43,9 @@ beforeAll(async () => {
 
 function artefacts(descriptor: TenantDescriptor): Map<string, string> {
   return new Map(
-    render(validate(descriptor, TEST_ZONES), TEST_ZONES).map((a) => [a.path, a.content])
+    render(validate(descriptor, TEST_ZONES), TEST_ZONES, undefined, { activeColour: 'a' }).map(
+      (a) => [a.path, a.content]
+    )
   );
 }
 

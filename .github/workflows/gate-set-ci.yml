@@ -129,6 +129,32 @@ jobs:
           test -n "$digest"
           node gate-set/gate-set.mjs verify --report "$RUNNER_TEMP/gate-report-${digest#sha256:}.json" --digest "$digest"
 
+      # The magic-link round trip (csp/gate/csp-magic-link-gate.md): a reader signs up
+      # through Portal, follows the link in the mail the tenant sent to a stand-in
+      # spool, and is signed in, under the strict policy, with zero violations. Not
+      # one of the six gates and not in the attestation: it runs on the candidate
+      # beside them, and a red run fails the job like any other.
+      - name: Magic-link round trip under the strict policy
+        env:
+          CSP_MAGIC_LINK_SPOOL_IMAGE: spool-standin:ci
+        run: python3 csp/gate/magic_link_gate.py ghost-platform:ci
+
+      # Each sabotage breaks one thing the page needs and must go red with exit 1: a
+      # refusal (2) or a green run is a gate that cannot fail, and fails the job.
+      - name: Magic-link sabotage (each mode must go red)
+        env:
+          CSP_MAGIC_LINK_SPOOL_IMAGE: spool-standin:ci
+        run: |
+          set -euo pipefail
+          for mode in no-inline-style no-self-script portal-on-cdn; do
+            status=0
+            python3 csp/gate/magic_link_gate.py "--sabotage=${mode}" ghost-platform:ci || status=$?
+            if [ "${status}" -ne 1 ]; then
+              echo "sabotage ${mode} exited ${status}, not 1: the gate cannot fail" >&2
+              exit 1
+            fi
+          done
+
       - name: Keep the record
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

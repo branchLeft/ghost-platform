@@ -1,15 +1,42 @@
+import type { KeyObject } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { SlotName } from '@branchleft/ghost-platform-render-core';
 import { verifyPassphrase, type Argon2idHash } from './argon2id.js';
 import type { AttemptCeiling } from 'ghost-platform-request-guard/dist/index.js';
 import { readGateCookies, setCookieHeader, signCookie, verifyCookie } from './cookie.js';
 import { DerivationGateFullError, type DerivationGate } from './derivationGate.js';
-import { LOGIN_PATH, passphrasePage, safeReturnPath } from './page.js';
+import { verifyInvitation, type InvitationClaims } from './invitation.js';
+import { mailPathProved, type MailProof } from './mailProof.js';
+import type { InvitationLedger } from './usedTokens.js';
+import {
+  arrivalNoticePage,
+  arrivalPage,
+  ENTER_PATH,
+  LOGIN_PATH,
+  passphrasePage,
+  safeReturnPath,
+  type ArrivalNotice,
+} from './page.js';
 import type { CurrentLease, GatedHost } from './slots.js';
 import type { SourceResolver } from 'ghost-platform-request-guard/dist/index.js';
 import type { TrafficCounterStore } from './trafficCounter.js';
 
 export const VERIFY_PATH = '/__gate/verify';
+
+/** The query parameter the Ghost image's SSO adapter reads its token from, on any `/ghost/` URL. */
+export const ADMIN_ENTRY_PATH = '/ghost/';
+export const ADMIN_ENTRY_PARAM = 'bl_break_glass';
+
+/**
+ * What the emailed link needs, kept apart so a gate not given it simply has no
+ * arrival route. See ../README.md#the-arrival-link.
+ */
+export interface ArrivalDeps {
+  readonly publicKey: KeyObject;
+  readonly ledger: InvitationLedger;
+  readonly mailProofOf: (slot: SlotName) => Promise<MailProof>;
+  readonly mailProofMaxAgeSeconds: number;
+}
 
 const MAX_BODY_BYTES = 2048;
 const MAX_PASSPHRASE_LENGTH = 256;
@@ -63,6 +90,8 @@ export interface GateDeps {
    * that never permits a stop -- never one that silently skips the check.
    */
   readonly trafficCounter?: TrafficCounterStore;
+  /** Absent: `/__gate/enter` answers 404, and the passphrase form is the only way in. */
+  readonly arrival?: ArrivalDeps;
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -279,6 +308,140 @@ async function login(deps: GateDeps, req: IncomingMessage, res: ServerResponse):
   });
 }
 
+type Refusal = {
+  readonly ok: false;
+  readonly status: number;
+  readonly notice: ArrivalNotice;
+  /** Whether the attempt counts against the source's malformed ceiling. */
+  readonly charge: boolean;
+};
+type Admission =
+  | {
+      readonly ok: true;
+      readonly claims: InvitationClaims;
+      readonly gated: GatedHost;
+      readonly current: CurrentLease;
+    }
+  | Refusal;
+
+const refuse = (status: number, notice: ArrivalNotice, charge: boolean): Refusal => ({
+  ok: false,
+  status,
+  notice,
+  charge,
+});
+
+/**
+ * Everything both halves of the arrival need to know before they act, in the
+ * order that matters: the link is genuine and for this host, it is unused,
+ * the slot has a lease, and the mail path has been proved for that lease.
+ * Nothing here records anything.
+ */
+async function admission(
+  deps: GateDeps,
+  arrival: ArrivalDeps,
+  req: IncomingMessage,
+  token: string
+): Promise<Admission> {
+  const host = hostOf(req);
+  const gated = host === null ? undefined : (await deps.slots()).get(host);
+  if (host === null || gated === undefined) return refuse(401, 'DEMO_ARRIVAL_LINK_INVALID', true);
+
+  const nowSeconds = Math.floor(deps.nowMs() / 1000);
+  const verdict = verifyInvitation(arrival.publicKey, token, host, nowSeconds);
+  if (!verdict.ok) {
+    deps.log(`arrival refused: ${verdict.reason}`);
+    return refuse(
+      401,
+      verdict.reason === 'expired' ? 'DEMO_ARRIVAL_LINK_EXPIRED' : 'DEMO_ARRIVAL_LINK_INVALID',
+      true
+    );
+  }
+  if (await arrival.ledger.isUsed(verdict.claims.jti)) {
+    deps.log('arrival refused: used');
+    return refuse(410, 'DEMO_ARRIVAL_LINK_USED', false);
+  }
+
+  const current = await currentLease(deps, gated.slot);
+  const proof = await arrival.mailProofOf(gated.slot).catch(() => null);
+  if (
+    current === null ||
+    !mailPathProved(proof, current.lease, nowSeconds, arrival.mailProofMaxAgeSeconds)
+  ) {
+    deps.log('arrival refused: not ready');
+    return refuse(503, 'DEMO_ARRIVAL_NOT_READY', false);
+  }
+  return { ok: true, claims: verdict.claims, gated, current };
+}
+
+function refuseArrival(
+  deps: GateDeps,
+  res: ServerResponse,
+  source: string,
+  refusal: Refusal
+): void {
+  if (refusal.charge) {
+    const verdict = deps.malformedCeiling.attempt(source, deps.nowMs());
+    if (!verdict.allowed) {
+      return send(res, 429, arrivalNoticePage('DEMO_ARRIVAL_TOO_MANY_ATTEMPTS'), {
+        ...PAGE_HEADERS,
+        'Retry-After': String(verdict.retryAfterSeconds),
+      });
+    }
+  }
+  const headers = refusal.status === 503 ? { ...PAGE_HEADERS, 'Retry-After': '30' } : PAGE_HEADERS;
+  send(res, refusal.status, arrivalNoticePage(refusal.notice), headers);
+}
+
+async function enter(
+  deps: GateDeps,
+  arrival: ArrivalDeps,
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  const source = deps.sources.resolve(req.socket.remoteAddress, req.headers['x-forwarded-for']);
+  if (source === null) {
+    deps.log('refused an arrival whose source could not be established');
+    return send(res, 403);
+  }
+
+  let token: string;
+  if (req.method === 'POST') {
+    const contentType = headerValue(req.headers['content-type']) ?? '';
+    const body =
+      contentType.split(';')[0]?.trim().toLowerCase() === 'application/x-www-form-urlencoded'
+        ? await readBody(req)
+        : null;
+    if (body === null) return refuseMalformed(deps, res, source);
+    token = new URLSearchParams(body).get('t') ?? '';
+  } else {
+    token = new URLSearchParams((req.url ?? '').split('?')[1] ?? '').get('t') ?? '';
+  }
+
+  const verdict = await admission(deps, arrival, req, token);
+  if (!verdict.ok) return refuseArrival(deps, res, source, verdict);
+  if (req.method !== 'POST') return send(res, 200, arrivalPage(token), PAGE_HEADERS);
+
+  // The one place a link is spent, after every other check and before the
+  // cookie. `consume` answers true to exactly one of any number of requests
+  // carrying the same token.
+  const nowSeconds = Math.floor(deps.nowMs() / 1000);
+  if (!(await arrival.ledger.consume(verdict.claims.jti, verdict.claims.exp, nowSeconds))) {
+    deps.log('arrival refused: used');
+    return send(res, 410, arrivalNoticePage('DEMO_ARRIVAL_LINK_USED'), PAGE_HEADERS);
+  }
+  const cookie = signCookie(deps.signingKey, {
+    slot: verdict.gated.slot,
+    lease: verdict.current.lease,
+    exp: nowSeconds + deps.cookieTtlSeconds,
+  });
+  deps.log('arrival admitted');
+  send(res, 303, '', {
+    Location: `${ADMIN_ENTRY_PATH}?${ADMIN_ENTRY_PARAM}=${encodeURIComponent(token)}`,
+    'Set-Cookie': setCookieHeader(cookie, deps.cookieTtlSeconds),
+  });
+}
+
 /**
  * Every failure path answers with a non-2xx status, and an unexpected throw
  * becomes a 500, so the edge's forward_auth -- which admits only on 2xx --
@@ -293,6 +456,13 @@ export function createGateHandler(deps: GateDeps): Handler {
       }
       if (path === LOGIN_PATH && req.method === 'POST') {
         return await login(deps, req, res);
+      }
+      if (
+        deps.arrival !== undefined &&
+        path === ENTER_PATH &&
+        (req.method === 'GET' || req.method === 'HEAD' || req.method === 'POST')
+      ) {
+        return await enter(deps, deps.arrival, req, res);
       }
       send(res, 404);
     } catch (err) {

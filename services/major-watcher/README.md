@@ -9,7 +9,52 @@ a new *minor* and never pages.
 Constraint this is built to (two earlier stories,
 and D38/D39/D42): a scheduled watcher that pages a human is monitoring,
 not an agent in operations. Nothing here runs a model, and nothing here
-acts on the announcement besides paging.
+acts on the announcement besides paging and filing the item.
+
+## Filing the tracked item (`src/issues.ts`)
+
+On a new major the run does three things in this order: file, page, write
+state. The filing is plain REST, no model:
+
+1. Search the `branchLeft/workspace` issues labelled `upstream-major`, open
+   and closed, for the major's **idempotence key**: the line
+   `<!-- upstream-major:N -->` at the end of the item's body. Found: nothing
+   is created.
+2. Not found: create one issue with the labels `upstream-major`,
+   `type:platform-story` and `repo:ghost-platform`.
+3. Add it as a sub-issue of the launch item (`MAJOR_WATCHER_LAUNCH_ITEM`). A
+   found item that has no parent is attached too, so a run that died between
+   the create and the attach is repaired by the next run.
+
+Because the filing is idempotent, any failure after it (the page, the state
+write) leaves state unwritten and the next scheduled run retries with no
+second item. Proven by sabotage in `test/unit/issues.test.ts`: remove the key
+lookup and five tests go red (a repeat run files a second item).
+
+**Fails closed.** With no `MAJOR_WATCHER_FILING_TOKEN`, an unusable
+`MAJOR_WATCHER_LAUNCH_ITEM`, or a refused API call, nothing is filed, the page
+still goes out saying `FILING FAILED` with the by-hand command (`src/filing.ts`),
+the run exits 1 with an `::error::` annotation, and state is not written, so
+the next run tries again. Quiet runs need neither value.
+
+### Filing credential (a decision; placing it is the owner's)
+
+Recommended: a **GitHub App installation token** for a dedicated App, with
+repository permission `issues: write` (which also covers adding a sub-issue),
+installed on `branchLeft/workspace` only. Minted per run by
+`actions/create-github-app-token` in `major-watcher-run.yml`, so it lives
+about an hour and no long-lived token sits in a secret. Why not the
+alternatives: the job's own `GITHUB_TOKEN` cannot write another repository;
+a fine-grained PAT is tied to a person and is long-lived; an existing App
+(the release watcher's) carries `contents: write` and `pull-requests: write`
+this watcher must not hold.
+
+Placing it (owner): create the App and install it on `branchLeft/workspace`;
+set the repository variable `MAJOR_WATCHER_APP_ID`, the repository secret
+`MAJOR_WATCHER_APP_PRIVATE_KEY`, and the repository variable
+`MAJOR_WATCHER_LAUNCH_ITEM` (the workspace issue number of the launch item
+the filed item belongs to). Until the variable is set no token is
+minted and the first new major fails closed as above.
 
 ## Signal
 

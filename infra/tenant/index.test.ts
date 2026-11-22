@@ -32,7 +32,9 @@ function build(
 
 function rendered(descriptor: TenantStackDescriptor = tenantZeroEquivalent()): Map<string, string> {
   return new Map(
-    render(validateTenantStack(descriptor, TEST_ZONES), TEST_ZONES).map((a) => [a.path, a.content])
+    render(validateTenantStack(descriptor, TEST_ZONES), TEST_ZONES, undefined, {
+      activeColour: 'a',
+    }).map((a) => [a.path, a.content])
   );
 }
 
@@ -104,7 +106,7 @@ describe('GhostTenant widgets', () => {
     }).composeFile;
   }
 
-  it('leaves the compose file byte-identical when no widget option is given', () => {
+  it('leaves the compose file byte-identical to colour a when no widget option is given', () => {
     expect(composeWith({})).toBe(rendered().get('compose.yml'));
     expect(composeWith({})).not.toContain('/bl-assets/');
   });
@@ -122,6 +124,7 @@ describe('GhostTenant widgets', () => {
   it('matches what render() returns for the same options', () => {
     const expected = new Map(
       render(validateTenantStack(tenantZeroEquivalent(), TEST_ZONES), TEST_ZONES, undefined, {
+        activeColour: 'a',
         widgets: 'own-origin',
       }).map((a) => [a.path, a.content])
     );
