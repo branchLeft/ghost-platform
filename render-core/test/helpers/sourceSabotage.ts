@@ -6,13 +6,16 @@
  * only mutates a string inside the test, never the source, is not evidence
  * the source itself would be caught if it regressed.
  */
-import { mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url)); // render-core/test/helpers
 const srcDir = join(here, '..', '..', 'src'); // render-core/src
-const tmpDir = join(here, '..', '.sabotage-tmp'); // render-core/test/.sabotage-tmp -- one level under test/, matching the "../../src/" rewrite below
+// render-core/test -- each call makes its own `.sabotage-XXXXXX/` directory one level under test/, matching the "../../src/" rewrite below
+const testDir = join(here, '..');
+// Pre-namespacing shared directory. Nothing creates it now; cleanupSabotageTmp still removes it if an old run left it empty.
+const legacySharedDir = join(testDir, '.sabotage-tmp');
 
 /**
  * `relPath` names a file under `src/`; `mutate` must return changed text or
@@ -32,13 +35,14 @@ export async function importSabotaged<T>(
     );
   }
   const rewritten = mutated.replace(/from '\.\//g, "from '../../src/");
-  mkdirSync(tmpDir, { recursive: true });
-  const outPath = join(tmpDir, `${Date.now()}-${Math.random().toString(36).slice(2)}-${relPath}`);
-  writeFileSync(outPath, rewritten);
+  // A directory of this call's own: no other test file can remove it between mkdir and write.
+  const callDir = mkdtempSync(join(testDir, '.sabotage-'));
+  const outPath = join(callDir, relPath);
   try {
+    writeFileSync(outPath, rewritten);
     return (await import(/* @vite-ignore */ outPath)) as T;
   } finally {
-    rmSync(outPath, { force: true });
+    rmSync(callDir, { recursive: true, force: true });
   }
 }
 
@@ -50,7 +54,7 @@ export async function importSabotaged<T>(
  */
 export function cleanupSabotageTmp(): void {
   try {
-    rmdirSync(tmpDir);
+    rmdirSync(legacySharedDir);
   } catch (error) {
     const code = (error as { code?: string }).code;
     if (code !== 'ENOENT' && code !== 'ENOTEMPTY') {
