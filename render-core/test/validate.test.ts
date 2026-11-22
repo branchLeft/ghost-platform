@@ -691,6 +691,59 @@ describe('validate() — mail sending identity', () => {
       ).toThrow();
     });
 
+    const theirsHostname = (fqdn: string): TenantDescriptor['hostname'] => ({
+      kind: 'theirs',
+      fqdn,
+      verifiedAt: '2026-11-01T21:40:27.000Z' as Instant,
+    });
+    // A `theirs` hostname must match siteUrl exactly, so both move together.
+    const withHostname = (descriptor: TenantDescriptor, fqdn: string): TenantDescriptor =>
+      ({
+        ...descriptor,
+        siteUrl: `https://${fqdn}`,
+        hostname: theirsHostname(fqdn),
+      }) as TenantDescriptor;
+
+    it('accepts tenant zero keeping its blog.branchleft.co.uk hostname under the same exception', () => {
+      expect(() =>
+        validate(
+          withHostname(blogWithSendingDomain(TENANT_ZERO_DOMAIN), TENANT_ZERO_DOMAIN),
+          ZONES_OWNING_BRANCHLEFT,
+          { claimantRepo: TENANT_ZERO_REPO }
+        )
+      ).not.toThrow();
+    });
+
+    it('refuses another tenant on an owned domain, even when it names the exception domain', () => {
+      let caught: unknown;
+      try {
+        validate(
+          withHostname(blogWithSendingDomain('acme.example.test', 'acme'), TENANT_ZERO_DOMAIN),
+          ZONES_OWNING_BRANCHLEFT,
+          { claimantRepo: 'branchLeft/ghost-tenant-acme' }
+        );
+      } catch (error) {
+        caught = error;
+      }
+      expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+    });
+
+    it('refuses tenant zero hostname subdomains and siblings under an owned domain', () => {
+      for (const fqdn of [`www.${TENANT_ZERO_DOMAIN}`, 'other.branchleft.co.uk']) {
+        let caught: unknown;
+        try {
+          validate(
+            withHostname(blogWithSendingDomain(TENANT_ZERO_DOMAIN), fqdn),
+            ZONES_OWNING_BRANCHLEFT,
+            { claimantRepo: TENANT_ZERO_REPO }
+          );
+        } catch (error) {
+          caught = error;
+        }
+        expect((caught as FieldValidationError).field).toBe('hostname.fqdn');
+      }
+    });
+
     it('refuses a subdomain and a sibling of the exception domain', () => {
       expect(
         mailFieldError(

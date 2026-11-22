@@ -123,13 +123,13 @@ for a tenant descriptor only when this equals the repository the register
 records for it, and a demo never gets one. Omitted, a registered tenant name is
 refused (see `naming.md#validateslugavailability-and-the-claimant`).
 
-The owned-domain refusal on a tenant's `mail.identity.domain` has one named
-exception: tenant zero may sign `blog.branchleft.co.uk`. It is an exact pair
-in code, not configuration: the slug must be `blog`, the claimant must be the
-register's repository for it, and the domain must be exactly that name, so a
-subdomain, a sibling, or the same domain under any other slug is still refused.
-It changes the sending-domain check only. The tenant's `hostname` rule is
-separate and is not excepted here.
+The owned-domain refusal has one named exception, for tenant zero only: it
+keeps `blog.branchleft.co.uk`, both as its `mail.identity.domain` and as its
+`theirs` `hostname.fqdn`. It is matched by identity (the slug must be `blog`
+and the claimant must be the register's repository for it), and the name must
+be exactly that domain, so a subdomain, a sibling, or any other tenant on an
+owned domain is still refused. The from-address and the mail spool are not
+covered.
 
 ## Demo sign-in
 
