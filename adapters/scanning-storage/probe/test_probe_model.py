@@ -170,7 +170,9 @@ class RewriteTest(unittest.TestCase):
 
     def test_tenant_owned_settings_dropped(self) -> None:
         keys = [r["key"] for r in m.rows_of(m.rewrite_export(self.demo(), {}, "o"), "settings")]
-        self.assertNotIn("codeinjection_head", keys)
+        for key in m.TENANT_OWNED_SETTINGS:
+            self.assertNotIn(key, keys)
+        self.assertEqual(len(m.TENANT_OWNED_SETTINGS), 6)
         self.assertIn("title", keys)
 
     def test_skip_leaves_og_image_as_in_the_demo(self) -> None:

@@ -438,7 +438,15 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
 
 # ------------------------------------------------------------------ mode 2: rewrite
 
-TENANT_OWNED_SETTINGS = ("codeinjection_head", "codeinjection_foot", "active_theme")
+# The six keys issue branchLeft/workspace#3904 names: the tenant's own, never the demo's.
+TENANT_OWNED_SETTINGS = (
+    "codeinjection_head",
+    "codeinjection_foot",
+    "accent_color",
+    "active_theme",
+    "locale",
+    "timezone",
+)
 NON_FILE_FIELDS = (
     "post lexical: link to the demo's own page",
     "post lexical: html card link, another spelling of the demo host",
