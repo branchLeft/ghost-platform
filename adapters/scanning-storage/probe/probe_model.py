@@ -438,7 +438,7 @@ def table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
 
 # ------------------------------------------------------------------ mode 2: rewrite
 
-# The six keys issue branchLeft/workspace#3904 names: the tenant's own, never the demo's.
+# The six keys the tenant owns (named in the tracked issue for this probe): the tenant's own, never the demo's.
 TENANT_OWNED_SETTINGS = (
     "codeinjection_head",
     "codeinjection_foot",
