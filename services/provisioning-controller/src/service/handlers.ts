@@ -13,6 +13,8 @@ function refused(why: Refusal): { status: 401 | 403; body: { code: Refusal } } {
   return { status: why === 'unauthenticated' ? 401 : 403, body: { code: why } };
 }
 
+const answered = new Set<string>();
+
 export function createHandlers(store: ProvisioningStore, credentials: Credentials): Handlers {
   return {
     getDemo(request, context) {
@@ -71,6 +73,9 @@ export function createHandlers(store: ProvisioningStore, credentials: Credential
       const outcome = store.approve(request.path.id);
       switch (outcome.kind) {
         case 'approved':
+          if (answered.has(request.path.id))
+            return Promise.resolve({ status: 200, body: { ...outcome.request, approval: null } });
+          answered.add(request.path.id);
           return Promise.resolve({ status: 200, body: outcome.request });
         case 'no-request':
           return Promise.resolve({ status: 404, body: { code: 'request-not-found' } });
