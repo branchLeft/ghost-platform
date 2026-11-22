@@ -128,7 +128,7 @@ def probe_path(route: PathRoute) -> Outcome:
                 handle.read(1)
         return Outcome("REACHED", route.label)
     except PermissionError:
-        if os.path.isdir(route.path) and os.access(route.path, os.X_OK):
+        if os.path.isdir(route.path) and os.access(route.path, os.X_OK, effective_ids=True):
             # Search without read: the listing is refused, but a file under the directory still opens
             # by name. This route cannot name those files, so a refused listing proves nothing here.
             return Outcome("UNCHECKED", route.label, "listing denied but search allowed; name the files under it")
@@ -207,8 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="an estate private address as ADDRESS:PORT")
     parser.add_argument("--ipv6-route", type=parse_ipv6_route, action="append", required=True,
                         help="an IPv6 route the slot can see, as [ADDRESS]:PORT")
+    parser.add_argument("--udp-control", type=parse_estate, required=True,
+                        help="a UDP port the slot must reach, as ADDRESS:PORT: until it answers, every UDP route is UNCHECKED")
     parser.add_argument("--dns-resolver", type=parse_estate, required=True,
-                        help="the resolver the slot is allowed to query, as ADDRESS:PORT, probed over UDP")
+                        help="a UDP resolver the slot must NOT reach, as ADDRESS:PORT: an answer is REACHED; "
+                             "silence or a refusal is REFUSED, but only once the UDP control has answered")
     parser.add_argument("--spool-address", required=True)
     parser.add_argument("--spool-port", type=parse_port, action="append", required=True)
     parser.add_argument("--spool-allowed-port", type=parse_port, required=True,
@@ -231,6 +234,11 @@ def main(argv: list[str], geteuid: Callable[[], int] = os.geteuid) -> int:
         return EXIT_USAGE
     if euid != args.expect_uid:
         print(f"branchleft-demo-isolation-probe: running as uid {euid}, expected {args.expect_uid}",
+              file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.udp_control == args.dns_resolver:
+        print("branchleft-demo-isolation-probe: --udp-control and --dns-resolver must be different addresses",
               file=sys.stderr)
         return EXIT_USAGE
 
@@ -268,9 +276,24 @@ def main(argv: list[str], geteuid: Callable[[], int] = os.geteuid) -> int:
         else:
             outcomes.append(probe_tcp(route, args.timeout))
     outcomes += [probe_path(PathRoute(f"file {path}", path)) for path in args.file_path]
+    # Silence from a UDP route looks the same whether the policy drops it or the path is dead, so a UDP
+    # route is tried only after a UDP control the slot must reach has answered.
+    udp_control_address, udp_control_port = args.udp_control
+    udp_control = UdpRoute("control: UDP port the slot must reach", udp_control_address, udp_control_port)
+    udp_control_outcome = probe_udp(udp_control, args.timeout)
+    udp_ok = udp_control_outcome.verdict == "REACHED"
+    if udp_ok:
+        print(f"CONTROL REACHED {udp_control.label}", flush=True)
+    else:
+        print(f"CONTROL NOT REACHED {udp_control.label} ({udp_control_outcome.verdict.lower()}): UDP routes "
+              "are UNCHECKED", file=sys.stderr)
+
     resolver_address, resolver_port = args.dns_resolver
     udp_route = UdpRoute(f"UDP DNS to resolver {resolver_address}:{resolver_port}", resolver_address, resolver_port)
-    outcomes.append(probe_udp(udp_route, args.timeout))
+    if udp_ok:
+        outcomes.append(probe_udp(udp_route, args.timeout))
+    else:
+        outcomes.append(Outcome("UNCHECKED", udp_route.label, "UDP control not reached"))
 
     for outcome in outcomes:
         print(outcome.line(), flush=True)
