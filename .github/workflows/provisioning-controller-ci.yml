@@ -81,3 +81,9 @@ jobs:
       # output, and answers each of the contract's five operations over HTTP.
       - name: The built mock answers every operation
         run: python3 mock/smoke.py
+
+      # The real service is started on the built output from files of its own,
+      # answers the same journey over HTTP, is stopped and started again, and
+      # still has the approval.
+      - name: The built service answers every operation and keeps its state
+        run: python3 contract/smoke_service.py

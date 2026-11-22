@@ -280,6 +280,35 @@ export const supportAccessRequest = portal
   .enableRLS();
 
 /**
+ * One row per Professional enquiry the tenant portal has sent: the tenant and
+ * the database-clock time, and nothing else. It holds no contact and no text:
+ * the email is the enquiry, and this row is only the count the owner console
+ * shows. The tenant role may insert its own row; the owner role reads the
+ * count. No role updates or deletes a row.
+ */
+export const professionalEnquiry = portal
+  .table(
+    'professional_enquiry',
+    {
+      enquiryId: uuid('enquiry_id').primaryKey().defaultRandom(),
+      tenantId: uuid('tenant_id')
+        .notNull()
+        .references(() => tenantRegister.tenantId),
+      recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+    },
+    (table) => [
+      pgPolicy('tenant_isolation', {
+        as: 'permissive',
+        for: 'all',
+        to: portalTenant,
+        using: sql`${table.tenantId} = public.bound_tenant()`,
+        withCheck: sql`${table.tenantId} = public.bound_tenant()`,
+      }),
+    ]
+  )
+  .enableRLS();
+
+/**
  * A tenant's own request to erase its whole site: one row per tenant for all
  * time, with the database-clock time of the request, a status (`requested`,
  * then `key_destroyed`) and the database-clock time at which the owner role

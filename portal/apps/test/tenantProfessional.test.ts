@@ -8,6 +8,7 @@ import {
   TENANT_B,
   type Fixture,
 } from '../../data/test/helpers.js';
+import { professionalEnquiry } from '../../data/src/schema.js';
 import { MESSAGE_DELIMITER } from '../src/tenant/supportContext.js';
 import { MAX_TICKETS_PER_WINDOW, WINDOW_SECONDS } from '../src/tenant/supportLimiter.js';
 import { MAX_CONTACT_LENGTH, MAX_MESSAGE_CHARACTERS } from '../src/tenant/supportValidation.js';
@@ -71,6 +72,19 @@ const enquiry = (message = 'MESSAGE_TEXT'): Record<string, string> => ({
   message,
 });
 
+/** How many enquiries the count holds for one tenant. */
+async function countedFor(tenantId: string): Promise<number> {
+  const rows = await fixture.adminDb.select().from(professionalEnquiry);
+  return rows.filter((row) => row.tenantId === tenantId).length;
+}
+
+/** A tenant database whose count cannot be written, for the failure after a sent email. */
+class UncountedDb extends TenantDb {
+  override async recordProfessionalEnquiry(): Promise<void> {
+    throw new Error('SECRET_DB_TEXT');
+  }
+}
+
 describe('the Professional enquiry page', () => {
   it('shows a demo tenant a form with the contact and the message as its only inputs, and a navigation entry', async () => {
     const browser = await signedIn(app.origin, ORG_B);
@@ -125,11 +139,13 @@ describe('the Professional enquiry page', () => {
 });
 
 describe('the Professional enquiry send', () => {
-  it('sends one plain-text email with the session tenant in the body, and records nothing', async () => {
+  it('sends one plain-text email with the session tenant in the body, and counts one enquiry', async () => {
+    const counted = await countedFor(TENANT_B);
     const browser = await signedIn(app.origin, ORG_B);
     const reply = await postForm(browser, app.origin, '/professional/send', enquiry('HELLO_TEXT'));
     expect(reply.status).toBe(303);
     expect(reply.location).toBe('/professional/sent');
+    expect(await countedFor(TENANT_B)).toBe(counted + 1);
     expect(mailer.sent).toHaveLength(1);
     const [message] = mailer.sent;
     expect(message?.to).toBe(FAKE_RECIPIENT);
@@ -198,6 +214,7 @@ describe('the Professional enquiry send', () => {
     const reply = await postForm(browser, app.origin, '/professional/send', enquiry());
     expect(reply.status).toBe(400);
     expect(mailer.sent).toHaveLength(0);
+    expect(await countedFor(TENANT_A)).toBe(0);
     expect(errorLines.join('\n')).toContain('PromotionError');
   });
 
@@ -227,14 +244,42 @@ describe('the Professional enquiry send', () => {
 
   it('answers a refusal and logs the error name only when the mailer fails', async () => {
     mailer.failure = new Error('SECRET_SMTP_TEXT');
+    const counted = await countedFor(TENANT_B);
     const browser = await signedIn(app.origin, ORG_B);
     const reply = await postForm(browser, app.origin, '/professional/send', enquiry());
     expect(reply.status).toBe(400);
     expect(errorLines.join('\n')).toContain('SupportTicketError');
     expect(errorLines.join('\n')).not.toContain('SECRET_SMTP_TEXT');
+    expect(await countedFor(TENANT_B)).toBe(counted);
+  });
+
+  it('still shows the sent page, and logs the error name only, when the email went but was not counted', async () => {
+    const broken = await serve((origin) =>
+      portalOn(
+        origin,
+        new UncountedDb(fixture.tenant),
+        {
+          clock: () => now,
+          provisioning: settingsFor(api.baseUrl),
+          support: { mailer, recipient: FAKE_RECIPIENT, sender: FAKE_SENDER },
+        },
+        errorLines
+      )
+    );
+    try {
+      const browser = await signedIn(broken.origin, ORG_B);
+      const reply = await postForm(browser, broken.origin, '/professional/send', enquiry());
+      expect(reply.location).toBe('/professional/sent');
+      expect(mailer.sent).toHaveLength(1);
+      expect(errorLines.join('\n')).toContain('professional_enquiry_not_counted');
+      expect(errorLines.join('\n')).not.toContain('SECRET_DB_TEXT');
+    } finally {
+      await broken.close();
+    }
   });
 
   it('stops at the same ceiling as a support ticket and sends nothing past it', async () => {
+    const counted = await countedFor(TENANT_B);
     const browser = await signedIn(app.origin, ORG_B);
     for (let sent = 0; sent < MAX_TICKETS_PER_WINDOW; sent += 1) {
       const reply = await postForm(browser, app.origin, '/professional/send', enquiry());
@@ -244,6 +289,8 @@ describe('the Professional enquiry send', () => {
     expect(over.status).toBe(303);
     expect(over.location).toBe('/professional/limited');
     expect(mailer.sent).toHaveLength(MAX_TICKETS_PER_WINDOW);
+    // A limited enquiry is neither sent nor counted.
+    expect(await countedFor(TENANT_B)).toBe(counted + MAX_TICKETS_PER_WINDOW);
   });
 });
 

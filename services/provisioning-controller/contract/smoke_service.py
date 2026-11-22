@@ -110,15 +110,18 @@ def main() -> int:
             _, queue = walker.call(
                 base, "GET", "/promotion-requests", ("X-Owner-Credential", SMOKE_OWNER_CREDENTIAL)
             )
-            ids = [item["request_id"] for item in queue["items"]]
-            status, first = walker.call(
-                base,
-                "POST",
-                f"/promotion-requests/{ids[0]}/approve",
-                ("X-Owner-Credential", SMOKE_OWNER_CREDENTIAL),
-            )
-            if status != 200 or first["state"] != "approved":
-                problems.append("an approved request was not still approved after a restart")
+            items = queue.get("items") if isinstance(queue, dict) else None
+            if not isinstance(items, list) or not items:
+                problems.append("the approval queue was empty after a restart")
+            else:
+                status, first = walker.call(
+                    base,
+                    "POST",
+                    f"/promotion-requests/{items[0]['request_id']}/approve",
+                    ("X-Owner-Credential", SMOKE_OWNER_CREDENTIAL),
+                )
+                if status != 200 or first["state"] != "approved":
+                    problems.append("an approved request was not still approved after a restart")
         finally:
             again.terminate()
             again.wait(timeout=10)
