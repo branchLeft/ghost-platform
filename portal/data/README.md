@@ -500,6 +500,50 @@ extra, and a dropped one is missing. A grant or row-security switch that a
 later migration adds (`added`, `enabledFrom`) is expected only once that
 migration is applied, so a server held back still verifies.
 
+## The demo extension request
+
+A prospect whose demo is running may ask for more time. The request is
+`portal.demo_extension_request` (migration `0016_demo_extension_request`): what
+they are still evaluating, what is missing, an audience-size band, whether they
+charge readers, when they would move, their consent to be contacted, the exact
+consent wording they were shown and the database's own time. It is keyed on the
+demo id and references the demo's request, so it is one row per demo for all
+time, matching the demo's one self-service extension.
+
+**Who writes and reads it.** `portal_prospect` can `INSERT` (`ProspectDb.requestExtension`)
+and holds nothing else on the table. An insert policy admits the row only when
+the demo's own request is one the front door can see: it holds no SELECT on the
+address column, so the policy names the demo alone and the request table's own-row
+policy (the address the transaction bound) narrows what it finds. A prospect
+cannot file for another address's demo; with nothing bound it is
+refused. `portal_provisioner` can `SELECT` (`ProvisionerDb.extensionRequest`).
+No role updates or deletes a row, so consent once recorded cannot be altered.
+
+**The grant.** `ProvisionerDb.grantExtension(demoId)` refuses unless the demo
+has a request carrying consent wording, then calls `extend`: the end of the
+term moves on by 14 days and the demo goes to `EXTENDED`, under the existing
+rules (only from LIVE or EXPIRING, once). A demo with no request moves
+nothing (`ExtensionRefusedError`, reason `consent`). `extend` itself is
+unchanged, so the lifecycle worker's own use of it is not gated by a request.
+
+**Consent.** `parseDemoExtension` refuses first on consent: anything but
+boolean `true` is `InvalidDemoExtensionError('consent')` before a statement is
+spent, so a request without consent writes no row. The wording stored is the
+one the caller passes (the front door's own constant, never a browser field);
+the table refuses an empty wording. The audience bands and move horizons are
+placeholders in `src/curatedLists.ts` until the owner rules on them.
+
+Whether an extension may be repeated is for the design revision to settle; today
+the one-per-demo rule stands.
+
+Control cases (`test/demoExtension.test.ts`): the request recorded with every
+answer and the database's time; a granted request moving the term by exactly 14
+days; a request without consent refused with no row and no lifecycle row; a
+grant with no request refused; a second request, a second grant and a grant
+outside LIVE or EXPIRING refused; the front door refused another address's demo
+and an unbound insert; the front door's read, update and delete and the
+worker's update and delete refused with `42501`.
+
 ## Tenant erasure requests
 
 `portal.tenant_erasure_request` is a tenant's own request to erase its whole

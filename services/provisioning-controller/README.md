@@ -94,6 +94,51 @@ step already complete under different inputs; the approval check and the host
 call are never atomic, so a revocation that lands between them is seen at the
 next check.
 
+### The app host's tenant entry point (`src/tenantEntryHost.ts`)
+
+`TenantEntryHost` is a `HostEntryPoint` for the app host's forced command (the
+`tenant_entry` role in branchLeft/shared-infra holds its verbs, order and exit
+codes). It serves three steps and passes every other step to a fallback entry
+point, so the owner's single approval is the only hand step for a new tenant:
+
+| Step                   | Verbs sent                                                         |
+| ---------------------- | ------------------------------------------------------------------ |
+| `render-host-secrets`  | `claim`, then `secrets`                                            |
+| `render-compose-file`  | `stack`: three parameters (`size`, `mail`, `environment`) only     |
+| `create-app-host-slot` | `enable`, then `key`                                               |
+
+- **Parameters, not text.** The host builds the compose file from its own
+  template, the claim's uid and ports and these parameters, and judges it. The
+  adapter sends exactly `size`, `mail` and `environment` (a literal, or a
+  `{ secret: NAME }` reference to a key of the secrets file); it picks those
+  three fields, so nothing else a provider returns is sent. It never sends
+  compose text and never an image pin: the first pin is written by
+  `branchleft-deploy` after it verifies the image's attestation, in the plan's
+  `first-deploy` step, which runs after `create-app-host-slot`.
+- **The host's claim.** `status` carries the uid and ports `claim` gave the slug.
+  `TenantEntryInputs.stack` is given them, and `claimOf(slug)` returns them to
+  any deployment step that needs the host's numbers (they are not the
+  register's).
+- **Plan order.** `render-compose-file` depends on `render-host-secrets` and
+  `create-app-host-slot` depends on it, so a unit is never enabled before its
+  compose file is in place. `status`'s `stack=yes` means the compose file alone.
+- **Idempotent.** Each step first asks `status` and sends only what is left, so
+  a resume or a retry after a lost reply sends nothing twice. The host also
+  accepts the same `stack` parameters again.
+- **Errors.** A refusal (exit 1) is a `PermanentStepError` naming the verb and
+  the host's word, with the host's sentences as detail; a usage error (2) is
+  permanent; busy (3), a failed step (4) and an unknown code are retried. Values
+  the request carried are withheld from any detail.
+- **Inputs and transport are ports** (`TenantEntryInputs`, `EntryTransport`):
+  the template, values, parameters and deploy key come from the deployment;
+  none is kept.
+
+Known limits: the SSH transport and its file-based inputs are wired (see "Running it"), but
+something must still write those files on the controller host; `publish-hostnames` still takes
+its port from the register, not from the claim (`claimOf` is the way a
+deployment's edge step reads the host's number); the `owner` verb and the first
+deploy go through the fallback.
+
 ## Part 3: the provisioning API contract and its mock
 
 `openapi.yaml` is the contract the customer portal and the owner console are
@@ -199,7 +244,7 @@ the service is.
 `SshEntryTransport` (`src/sshEntryTransport.ts`) is the real transport behind a host
 adapter's `EntryTransport` port: `send(verb, slug, payload?)` runs one ssh client, which
 runs the host's forced command `VERB SLUG` once, with the payload as one JSON object on
-standard input. It is not wired into `main` or `runConfig` yet.
+standard input. It is selected for the app host only when the configuration has an `sshEntry` section (below).
 
 - **Argument vector only.** `child_process.spawn` with `shell: false`; the verb is checked
   against a closed list and the slug against the register's slot pattern before a process
@@ -221,7 +266,7 @@ standard input. It is not wired into `main` or `runConfig` yet.
   `sshConfigFile` is refused (`invalid-config`), as is one with no `jumpHops` list at all.
   `hopConfigProblems(config)` asks the real client (`ssh -G`) what it applies to each hop and
   names any setting that is not strict host keys, batch mode, the pinned known-hosts file
-  alone, identities only and the key; the first live wiring runs it before a send.
+  alone, identities only and the key; `composeHostPorts` runs it at startup and refuses to start on any problem.
 - **Argument vector.** `-F CONFIG -o BatchMode=yes -o StrictHostKeyChecking=yes
 -o UserKnownHostsFile=KNOWN -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
 -o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ConnectTimeout=N -T
@@ -236,9 +281,26 @@ or to the step that stopped it. The approval id is the only per-run input.
 
 - **Configuration** (`src/runConfig.ts`): absolute `stateFile`, `approvalsFile`
   and `registerFile`; `hosts`, a map from entry point to `{ argv, timeoutMs? }`;
-  optional `retry` and `reportTimeoutMs`. A key it does not know is refused.
+  optional `sshEntry`, `retry` and `reportTimeoutMs`. A key it does not know is refused.
   `argv[0]` must be an absolute path: the program is started directly, never
   through a shell and never found on the path.
+- **SSH entry point** (`src/sshEntryConfig.ts`, `src/composeHostPorts.ts`): off unless the
+  configuration has an `sshEntry` section, and it has no default host, key path or hop. It names
+  `keyFile`, `knownHostsFile`, `jumpHops` (empty for a direct host) and `target`, and optionally
+  `sshConfigFile`, `sshProgram` and the transport's limits; every value is checked as the
+  transport checks it. When present, startup asks `ssh -G` about each hop and refuses to run
+  (exit 3, no step started) on any hop that is not pinned, and when the deployment supplies no
+  inputs builder (`CliIo.tenantEntryInputs`; `bin.ts` supplies `FileTenantEntryInputs`). The app
+  host is then the tenant entry adapter over the ssh transport; the program configured for
+  `app-host` serves the steps it does not.
+- **Tenant entry inputs** (`src/fileTenantEntryInputs.ts`): `sshEntry.inputs` names three
+  absolute paths, with no default: `secretsFile` (`{ "template", "values": { SLOT: { NAME:
+  VALUE } } }`), `stackFile` (`{ SLOT: { size, mail, environment } }`) and `deployKeyFile`
+  (`{ SLOT: PUBLIC_KEY }`). Each is opened without following a link and refused unless it is a
+  regular file under 1 MiB, owned by root or the controller's user, with no group or other
+  write; the secrets file is also refused if others can read it (a group may). Each file is read
+  when a verb needs it and kept never. An error names the path, the slot and the field, never
+  anything the file held, and not the parser's message.
 - **Trusted files** (`src/trustedFile.ts`): the configuration, the approvals
   file (`{ "approvals": [...] }`) and the register file (`{ "entries": [...] }`)
   are refused unless they are regular files, not links, owned by the user the
