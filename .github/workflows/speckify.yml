@@ -8,7 +8,7 @@ name: Speckify
 # from each spec to GitHub Packages, from this job and this workflow file, with
 # the run's own GITHUB_TOKEN and nothing else.
 #
-# Speckify is checked out at the commit its v0.1.0 tag points at, built from its
+# Speckify is checked out at the commit its v0.1.2 tag points at, built from its
 # lockfile, and run directly. Its composite action is not used: called as
 # `uses: branchLeft/speckify@<sha>` it hands an absolute `github.action_path` to
 # setup-node's `node-version-file`, which setup-node joins onto the workspace, and
@@ -63,11 +63,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout Speckify v0.1.0
+      - name: Checkout Speckify v0.1.2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: branchLeft/speckify
-          ref: 50fe4d8d95bc74331be8c481ee35d202b1d4ec0f
+          ref: b9be3996ac8684f44bc6ff53dbc4d5cc787816bd
           path: .speckify-tool
           persist-credentials: false
 
@@ -122,11 +122,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout Speckify v0.1.0
+      - name: Checkout Speckify v0.1.2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: branchLeft/speckify
-          ref: 50fe4d8d95bc74331be8c481ee35d202b1d4ec0f
+          ref: b9be3996ac8684f44bc6ff53dbc4d5cc787816bd
           path: .speckify-tool
           persist-credentials: false
 
