@@ -2,10 +2,12 @@
 # Run from inside one demo slot's network namespace, as that slot's own uid.
 # Tries every route from the slot to another slot, the demo host and the
 # estate, and every file path a slot must not read. Prints one line per route:
-#   REFUSED <route>     the route did not open
+#   REFUSED <route>     the route did not open (a refusal, a timeout, no route)
 #   REACHED <route>     the route opened: isolation is broken
 #   UNCHECKED <route>   the route could not be tried, so it proves nothing
-# Exit 0 only when every route was tried and every one was refused.
+# First it tries a control route that must open (the spool's allowed port); if
+# it does not, the namespace is not the slot's and nothing is printed as a verdict.
+# Exit 0 only when the control opened and every other route was tried and refused.
 # What it checks, and what it does not: branchleft_demo_isolation_probe.md.
 #
 # Standard library only, and no shell.
@@ -13,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import socket
 import sys
@@ -27,6 +30,10 @@ PUBLIC_ROUTES: tuple[tuple[str, str, int], ...] = (
     ("public DNS", "1.1.1.1", 53),
     ("public address", "1.1.1.1", 443),
 )
+
+# An unreachable network or host is a refusal to reach it. Every other OS error
+# (a name that does not resolve, a denied connect, no descriptors) is UNCHECKED.
+REFUSED_ERRNOS = frozenset({errno.EHOSTUNREACH, errno.ENETUNREACH})
 
 EXIT_OK = 0
 EXIT_REACHED = 1
@@ -58,14 +65,19 @@ class Outcome:
         return f"{self.verdict} {self.label}"
 
 
+def classify_tcp_error(label: str, error: OSError) -> Outcome:
+    if isinstance(error, (ConnectionRefusedError, TimeoutError)) or error.errno in REFUSED_ERRNOS:
+        return Outcome("REFUSED", label)
+    code = "" if error.errno is None else f" {errno.errorcode.get(error.errno, str(error.errno))}"
+    return Outcome("UNCHECKED", label, f"{type(error).__name__}{code}")
+
+
 def probe_tcp(route: TcpRoute, timeout: float) -> Outcome:
-    # A refused connection and a dropped one (a timeout) both mean the route
-    # did not open. Only a completed connection is REACHED.
     try:
         with socket.create_connection((route.host, route.port), timeout=timeout):
             return Outcome("REACHED", route.label)
-    except (OSError, socket.timeout):
-        return Outcome("REFUSED", route.label)
+    except OSError as error:
+        return classify_tcp_error(route.label, error)
 
 
 def probe_path(route: PathRoute) -> Outcome:
@@ -89,9 +101,9 @@ def tcp_routes(
     peer_ports: list[int],
     host_ports: list[int],
     estate: list[tuple[str, int]],
-    spool_address: str | None,
+    spool_address: str,
     spool_ports: list[int],
-    spool_allowed_port: int | None,
+    spool_allowed_port: int,
 ) -> list[TcpRoute]:
     routes: list[TcpRoute] = []
     for port in peer_ports:
@@ -101,11 +113,10 @@ def tcp_routes(
         routes.append(TcpRoute(f"host service {port} on bridge gateway", gateway, port))
     for address, port in estate:
         routes.append(TcpRoute(f"estate address {address}:{port}", address, port))
-    if spool_address is not None:
-        for port in spool_ports:
-            if port == spool_allowed_port:
-                continue  # the one drain/submit port is the only allowed route
-            routes.append(TcpRoute(f"mail spool {spool_address}:{port}", spool_address, port))
+    for port in spool_ports:
+        if port == spool_allowed_port:
+            continue  # the one drain/submit port is the control, not a route to refuse
+        routes.append(TcpRoute(f"mail spool {spool_address}:{port}", spool_address, port))
     for label, host, port in PUBLIC_ROUTES:
         routes.append(TcpRoute(label, host, port))
     return routes
@@ -126,20 +137,23 @@ def parse_estate(text: str) -> tuple[str, int]:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # Every route class is required: a class left out is a usage error, never a shorter run that passes.
     parser = argparse.ArgumentParser(prog="branchleft-demo-isolation-probe")
     parser.add_argument("--gateway", required=True, help="the slot's bridge gateway address")
-    parser.add_argument("--peer-port", type=parse_port, action="append", default=[],
+    parser.add_argument("--peer-port", type=parse_port, action="append", required=True,
                         help="a port of another slot (Ghost, health router, sidecar)")
-    parser.add_argument("--host-port", type=parse_port, action="append", default=[],
+    parser.add_argument("--host-port", type=parse_port, action="append", required=True,
                         help="a port the host serves on the bridge gateway")
-    parser.add_argument("--estate", type=parse_estate, action="append", default=[],
+    parser.add_argument("--estate", type=parse_estate, action="append", required=True,
                         help="an estate private address as ADDRESS:PORT")
-    parser.add_argument("--spool-address")
-    parser.add_argument("--spool-port", type=parse_port, action="append", default=[])
-    parser.add_argument("--spool-allowed-port", type=parse_port)
-    parser.add_argument("--file-path", action="append", default=[],
+    parser.add_argument("--spool-address", required=True)
+    parser.add_argument("--spool-port", type=parse_port, action="append", required=True)
+    parser.add_argument("--spool-allowed-port", type=parse_port, required=True,
+                        help="the one spool port a slot may use: the control, which must open")
+    parser.add_argument("--file-path", action="append", required=True,
                         help="a path this slot must not list or read")
-    parser.add_argument("--expect-uid", type=int, help="refuse to run as any other uid")
+    parser.add_argument("--expect-uid", type=int, required=True,
+                        help="refuse to run as any other uid")
     parser.add_argument("--timeout", type=float, default=3.0)
     return parser
 
@@ -152,10 +166,18 @@ def main(argv: list[str], geteuid: Callable[[], int] = os.geteuid) -> int:
         print("branchleft-demo-isolation-probe: refuses to run as root; run as the slot's own uid",
               file=sys.stderr)
         return EXIT_USAGE
-    if args.expect_uid is not None and euid != args.expect_uid:
+    if euid != args.expect_uid:
         print(f"branchleft-demo-isolation-probe: running as uid {euid}, expected {args.expect_uid}",
               file=sys.stderr)
         return EXIT_USAGE
+
+    control = TcpRoute("control: mail spool allowed port", args.spool_address, args.spool_allowed_port)
+    control_outcome = probe_tcp(control, args.timeout)
+    if control_outcome.verdict != "REACHED":
+        print(f"CONTROL NOT REACHED {control.label} ({control_outcome.verdict.lower()}): the namespace "
+              "or the spool is not as expected, so nothing is proven", file=sys.stderr)
+        return EXIT_USAGE
+    print(f"CONTROL REACHED {control.label}", flush=True)
 
     routes = tcp_routes(
         gateway=args.gateway,
@@ -175,7 +197,7 @@ def main(argv: list[str], geteuid: Callable[[], int] = os.geteuid) -> int:
 
     if any(outcome.verdict == "REACHED" for outcome in outcomes):
         return EXIT_REACHED
-    if not outcomes or any(outcome.verdict == "UNCHECKED" for outcome in outcomes):
+    if any(outcome.verdict == "UNCHECKED" for outcome in outcomes):
         print("branchleft-demo-isolation-probe: a route was not tried; nothing is proven", file=sys.stderr)
         return EXIT_USAGE
     return EXIT_OK
