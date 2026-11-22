@@ -30,7 +30,7 @@ function steppedClock() {
   return () => (t += 5);
 }
 
-test('the six gates the node names are the required set, in cheapest-first order', () => {
+test('the seven gates the node names are the required set, in cheapest-first order', () => {
   assert.deepEqual(REQUIRED_GATES, [
     'overlay-check',
     'smoke',
@@ -38,6 +38,7 @@ test('the six gates the node names are the required set, in cheapest-first order
     'theme-scan',
     'mail',
     'content-policy',
+    'node-env',
   ]);
 });
 

@@ -1,4 +1,4 @@
-// The per-digest gate set. One candidate digest runs six gates, and what each
+// The per-digest gate set. One candidate digest runs seven gates, and what each
 // one found is written down against that digest, so the attestation step can
 // refuse a candidate whose record is red, incomplete or for another digest.
 // Narrative, report shape and exit codes: gate-set/README.md.
@@ -17,6 +17,7 @@ export const REQUIRED_GATES = [
   'theme-scan',
   'mail',
   'content-policy',
+  'node-env',
 ];
 
 const DETAIL_LIMIT = 600;

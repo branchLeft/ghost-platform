@@ -48,6 +48,8 @@ export const CASES = [
   ['theme-scan/exit-ignored', 'gates.mjs', 'ok: themeRun.code === 0', 'ok: true'],
   ['mail/exit-ignored', 'gates.mjs', 'ok: mailRun.code === 0', 'ok: true'],
   ['content-policy/exit-ignored', 'gates.mjs', 'ok: policyRun.code === 0', 'ok: true'],
+  ['node-env/exit-ignored', 'gates.mjs', 'ok: envRun.code === 0', 'ok: true'],
+  ['node-env/judge-always-true', 'node_env_gate.py', 'return reported == EXPECTED', 'return True'],
   // The runner: a candidate is refused unless every gate said true.
   [
     'runner/truthy-passes',

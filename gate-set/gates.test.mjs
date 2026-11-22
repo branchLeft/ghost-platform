@@ -3,6 +3,7 @@
 // given, and be red when that check exits non-zero.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,6 +55,7 @@ const COMMANDS = {
   'theme-scan': 'themes/image/themes.image.test.mjs',
   mail: 'scripts/mail-gate/mail-gate.mjs',
   'content-policy': 'csp/gate/csp-regression-gate.sh',
+  'node-env': 'gate-set/node_env_gate.py',
 };
 
 for (const [name, fragment] of Object.entries(COMMANDS)) {
@@ -209,4 +211,14 @@ test('judgeOverlays: matching bytes give no problems; other bytes and absent fil
     'b: not in the image',
   ]);
   assert.deepEqual(judgeOverlays(expected, ''), ['a: not in the image', 'b: not in the image']);
+});
+
+// The node-env verdict is Python, so its unit tests run here, in the node suite
+// CI already runs. A judge() that returns true for any value fails them.
+test('node-env: the Python verdict tests pass (judge is exact; usage errors exit 2)', () => {
+  const run = spawnSync('python3', ['-m', 'unittest', 'test_node_env_gate.py'], {
+    cwd: path.join(ROOT, 'gate-set'),
+    encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
 });
