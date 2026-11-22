@@ -66,6 +66,12 @@ def ensure_jump(tool, chain, *rule):
         say(f"{tool} inserted into {chain}: {' '.join(rule)}")
 
 
+def uses_nftables(tool):
+    version = run_tool([tool, "--version"], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, text=True)
+    return "nf_tables" in version.stdout
+
+
 def apply_family(tool):
     if shutil.which(tool) is None:
         die(f"{tool} is not installed -- Docker brings it; install Docker first")
@@ -75,7 +81,15 @@ def apply_family(tool):
     probe = run_tool([tool, "-t", "filter", "-S", "DOCKER-USER"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if probe.returncode != 0:
-        die(f"no DOCKER-USER chain in {tool} -- either Docker is not running yet or its nftables backend is active, and this policy has no safe substitute chain")
+        # Docker creates this chain when dockerd starts, and dockerd starts the
+        # slot containers that carry a restart policy. At boot the unit runs
+        # before dockerd, so the chain is made here and Docker finds it there.
+        # Docker keeps its own chains in nftables when that backend is active,
+        # and a chain made in the legacy tables would then guard nothing.
+        if uses_nftables(tool):
+            die(f"{tool} uses the nftables backend, so a DOCKER-USER chain made here would not be the one Docker forwards through -- this policy has no safe substitute there")
+        must([tool, "-t", "filter", "-N", "DOCKER-USER"])
+        say(f"{tool} made DOCKER-USER before Docker starts, so the policy is in force when Docker starts its containers")
 
     must([restore, "--noflush"], input=ruleset(), text=True)
     ensure_jump(tool, "DOCKER-USER", "-j", FORWARD_CHAIN)
