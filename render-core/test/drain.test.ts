@@ -10,13 +10,9 @@ import { validate } from '../src/validate.js';
 import type { TenantDescriptor } from '../src/descriptor.js';
 import { importSabotaged } from './helpers/sourceSabotage.js';
 
-// No `afterAll(cleanupSabotageTmp)` here: `importSabotaged` already removes
-// its own temp file in a `finally` (see that helper's own doc comment), and
-// `test/.sabotage-tmp/` is shared with `sourceMutation.sabotage.test.ts`,
-// which runs concurrently in a separate vitest worker — a second caller
-// deleting the whole shared directory raced the other file's in-flight
-// write and produced a real, observed ENOENT. One owner of the whole-
-// directory cleanup is enough.
+// No `afterAll(cleanupSabotageTmp)` here: `importSabotaged` removes its own
+// per-call directory in a `finally` (see that helper's doc comment), so there
+// is no shared directory for this file to clean up.
 
 function withHost(descriptor: TenantDescriptor, appHostIp: string): TenantDescriptor {
   return { ...descriptor, appHostIp: appHostIp as TenantDescriptor['appHostIp'] };

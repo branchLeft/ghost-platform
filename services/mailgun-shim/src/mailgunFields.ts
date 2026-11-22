@@ -412,7 +412,7 @@ function isDeliverableListUnsubscribeEntry(entry: string): boolean {
  * variable. A value with no angle-bracketed entries is returned unchanged.
  * Returns '' when every entry was dropped, so the caller can omit the header.
  *
- * Out of scope, by decision on workspace#3542: Mailgun tokens other than
+ * Out of scope, by a decision recorded in the private tracker: Mailgun tokens other than
  * `%tag_*%` and `%recipient.*%` are not recognised, and RFC 2369 comments
  * outside angle brackets are still stripped. Ghost sends neither.
  */

@@ -1,9 +1,11 @@
 """Unit tests for branchleft_demo_isolation_probe.py against real loopback sockets, real file modes and
 mocked connect errors; see branchleft_demo_isolation_probe.md, "Proof". The directory-permission
-case is skipped when the suite runs as root, because root reads every file and the probe refuses root."""
+cases are skipped when the suite runs as root, because root reads every file and the probe refuses root.
+The IPv6 cases are skipped where the host has no IPv6 loopback."""
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import errno
 import importlib.util
@@ -12,6 +14,7 @@ import os
 import socket
 import sys
 import tempfile
+import threading
 import unittest
 from collections.abc import Callable
 from types import ModuleType
@@ -20,6 +23,7 @@ from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "branchleft_demo_isolation_probe.py")
+ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 
 
 def load_program() -> ModuleType:
@@ -39,6 +43,64 @@ def closed_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def closed_udp_port() -> int:
+    # A UDP port with nothing bound: a datagram to it comes back as ICMP port unreachable.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+class UdpResponder:
+    """A real loopback UDP port that answers every datagram: a UDP route to it is REACHED."""
+
+    def __enter__(self) -> int:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.1)
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+        return int(self.sock.getsockname()[1])
+
+    def serve(self) -> None:
+        while not self.stop.is_set():
+            try:
+                query, peer = self.sock.recvfrom(512)
+            except TimeoutError:
+                continue
+            self.sock.sendto(query, peer)
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop.set()
+        self.thread.join(timeout=3)
+        self.sock.close()
+
+
+class SilentUdpPort:
+    """A real loopback UDP port that never answers: a datagram to it is silence, as from a dropping resolver."""
+
+    def __enter__(self) -> int:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        return int(self.sock.getsockname()[1])
+
+    def __exit__(self, *exc: object) -> None:
+        self.sock.close()
+
+
+def ipv6_loopback_available() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+IPV6_LOOPBACK = ipv6_loopback_available()
+NO_IPV6 = "this host has no IPv6 loopback"
 
 
 class Listener:
@@ -65,11 +127,15 @@ def run_main(argv: list[str], geteuid: Callable[[], int] = lambda: 1000) -> tupl
     return code, out.getvalue()
 
 
-def argv_pairs(control: int, closed: int, denied: str, uid: str = "1000") -> list[tuple[str, str]]:
+def argv_pairs(control: int, closed: int, denied: str, uid: str = "1000",
+               udp_control: int | None = None) -> list[tuple[str, str]]:
     # Every route class present: the control is the allowed spool port, and it is also the only
-    # spool port, so nothing else on the spool is probed.
+    # spool port, so nothing else on the spool is probed. The gateway control is the same loopback port.
+    # The UDP control is a closed UDP port unless the caller says otherwise, so by default it does not answer.
+    udp = closed_udp_port() if udp_control is None else udp_control
     return [
         ("--gateway", "127.0.0.1"),
+        ("--gateway-control-port", str(control)),
         ("--peer-port", str(closed)),
         ("--host-port", str(closed)),
         ("--estate", f"127.0.0.1:{closed}"),
@@ -77,6 +143,9 @@ def argv_pairs(control: int, closed: int, denied: str, uid: str = "1000") -> lis
         ("--spool-port", str(control)),
         ("--spool-allowed-port", str(control)),
         ("--file-path", denied),
+        ("--ipv6-route", f"[::1]:{closed}"),
+        ("--udp-control", f"127.0.0.1:{udp}"),
+        ("--dns-resolver", f"127.0.0.1:{closed_udp_port()}"),
         ("--expect-uid", uid),
         ("--timeout", "1"),
     ]
@@ -88,6 +157,14 @@ def to_argv(pairs: list[tuple[str, str]]) -> list[str]:
 
 def without(pairs: list[tuple[str, str]], flag: str) -> list[tuple[str, str]]:
     return [pair for pair in pairs if pair[0] != flag]
+
+
+def replaced(pairs: list[tuple[str, str]], flag: str, value: str) -> list[tuple[str, str]]:
+    return [(name, value if name == flag else old) for name, old in pairs]
+
+
+def value_of(pairs: list[tuple[str, str]], flag: str) -> str:
+    return next(value for name, value in pairs if name == flag)
 
 
 def denied_directory(tmp: str) -> str:
@@ -157,7 +234,7 @@ class PathRouteTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads every file")
+    @unittest.skipIf(ROOT, "root reads every file")
     def test_a_directory_with_no_mode_bits_is_refused(self) -> None:
         target = denied_directory(self.tmp.name)
         self.addCleanup(os.chmod, target, 0o755)
@@ -176,6 +253,30 @@ class PathRouteTests(unittest.TestCase):
         outcome = probe.probe_path(probe.PathRoute("gone", missing))
         self.assertEqual(outcome.verdict, "UNCHECKED")
 
+    @unittest.skipIf(ROOT, "root reads every directory")
+    def test_a_search_only_directory_is_not_refused(self) -> None:
+        # Search without read: the listing is denied, but names under the directory still open.
+        # Nothing here names those files, so the route cannot be called REFUSED: it is UNCHECKED.
+        target = os.path.join(self.tmp.name, "slot")
+        os.mkdir(target)
+        os.chmod(target, 0o311)
+        self.addCleanup(os.chmod, target, 0o755)
+        outcome = probe.probe_path(probe.PathRoute("slot dir", target))
+        self.assertEqual(outcome.verdict, "UNCHECKED")
+        self.assertIn("search allowed", outcome.reason)
+
+    def test_a_readable_file_under_a_search_only_directory_is_reached(self) -> None:
+        # Item 2, named file: the file route reads the object it names, so the leak is REACHED.
+        target = os.path.join(self.tmp.name, "slot")
+        os.mkdir(target)
+        named = os.path.join(target, "secret")
+        with open(named, "w") as handle:
+            handle.write("x")
+        os.chmod(target, 0o311)
+        self.addCleanup(os.chmod, target, 0o755)
+        outcome = probe.probe_path(probe.PathRoute("slot file", named))
+        self.assertEqual(outcome.verdict, "REACHED")
+
 
 class RouteBuildTests(unittest.TestCase):
     def test_peer_ports_are_probed_on_loopback_and_the_gateway(self) -> None:
@@ -185,6 +286,14 @@ class RouteBuildTests(unittest.TestCase):
         )
         hosts = sorted((route.host, route.port) for route in routes if "slot B" in route.label)
         self.assertEqual(hosts, [("127.0.0.1", 9303), ("172.20.0.1", 9303)])
+
+    def test_the_gateway_routes_are_marked_as_gateway_routes(self) -> None:
+        routes = probe.tcp_routes(
+            gateway="172.20.0.1", peer_ports=[9303], host_ports=[22], estate=[],
+            spool_address="172.20.0.1", spool_ports=[], spool_allowed_port=0,
+        )
+        marked = sorted(route.label for route in routes if route.via_gateway)
+        self.assertEqual(marked, ["host service 22 on bridge gateway", "slot B port 9303 on bridge gateway"])
 
     def test_the_public_routes_are_always_present(self) -> None:
         routes = probe.tcp_routes(
@@ -204,6 +313,191 @@ class RouteBuildTests(unittest.TestCase):
         spool = [route.port for route in routes if route.label.startswith("mail spool")]
         self.assertEqual(spool, [25])
 
+    def test_ipv6_routes_are_their_own_route_class(self) -> None:
+        # Each IPv6 route the caller names is probed over IPv6, labelled as such.
+        routes = probe.tcp_routes(
+            gateway="172.20.0.1", peer_ports=[], host_ports=[], estate=[],
+            spool_address="172.20.0.1", spool_ports=[], spool_allowed_port=0,
+            ipv6=[("fd00::1", 9303)],
+        )
+        ipv6 = [(route.label, route.host, route.port) for route in routes if route.label.startswith("IPv6")]
+        self.assertEqual(ipv6, [("IPv6 route [fd00::1]:9303", "fd00::1", 9303)])
+
+
+class GatewayControlTests(unittest.TestCase):
+    """A route through the bridge gateway is REFUSED only when the gateway's own control port opened."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch.object(probe, "PUBLIC_ROUTES", ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_with_gateway(self, gateway: str, gateway_control: int, closed: int, control: int) -> tuple[int, list[str]]:
+        pairs = argv_pairs(control, closed, os.path.join(self.tmp.name, "absent"))
+        pairs = replaced(pairs, "--gateway", gateway)
+        pairs = replaced(pairs, "--gateway-control-port", str(gateway_control))
+        code, out = run_main(to_argv(pairs))
+        return code, out.splitlines()
+
+    def test_a_gateway_that_does_not_answer_its_control_reads_unchecked_not_refused(self) -> None:
+        # A valid but unused gateway address: the control cannot open, so the gateway routes prove nothing.
+        closed = closed_loopback_port()
+        with Listener() as control:
+            code, lines = self.run_with_gateway("127.0.0.2", closed, closed, control)
+        self.assertEqual(code, 2)
+        self.assertTrue(any(line.startswith(f"UNCHECKED slot B port {closed} on bridge gateway") for line in lines), lines)
+        self.assertTrue(any(line.startswith(f"UNCHECKED host service {closed} on bridge gateway") for line in lines), lines)
+        self.assertFalse(any(line.startswith("REFUSED") and "on bridge gateway" in line for line in lines), lines)
+
+    def test_a_gateway_that_answers_its_control_is_probed_and_refused(self) -> None:
+        closed = closed_loopback_port()
+        with Listener() as control, Listener() as gateway_port:
+            code, lines = self.run_with_gateway("127.0.0.1", gateway_port, closed, control)
+        self.assertIn(f"REFUSED slot B port {closed} on bridge gateway", lines)
+        self.assertNotIn(f"UNCHECKED slot B port {closed} on bridge gateway", lines)
+
+
+class GatewayControlArgumentTests(unittest.TestCase):
+    def test_the_gateway_control_port_is_a_required_argument(self) -> None:
+        code, out = run_main(["--gateway", "127.0.0.1"])
+        self.assertEqual(code, 2)
+        self.assertIn("--gateway-control-port", out)
+
+
+class IpAndUdpRouteTests(unittest.TestCase):
+    """IPv6 TCP routes and UDP DNS to the resolver are probed, each as REFUSED, REACHED or UNCHECKED."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch.object(probe, "PUBLIC_ROUTES", ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_an_ipv6_route_must_be_bracketed_and_ipv6(self) -> None:
+        self.assertEqual(probe.parse_ipv6_route("[::1]:9303"), ("::1", 9303))
+        for bad in ("127.0.0.1:9303", "[127.0.0.1]:9303", "[::1]", "[::1]:70000"):
+            with self.subTest(bad=bad), self.assertRaises(argparse.ArgumentTypeError):
+                probe.parse_ipv6_route(bad)
+
+    @unittest.skipUnless(IPV6_LOOPBACK, NO_IPV6)
+    def test_a_listening_ipv6_port_is_reached(self) -> None:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as server:
+            server.bind(("::1", 0))
+            server.listen(4)
+            port = int(server.getsockname()[1])
+            outcome = probe.probe_tcp(probe.TcpRoute("v6", "::1", port), timeout=3)
+        self.assertEqual(outcome.verdict, "REACHED")
+
+    @unittest.skipUnless(IPV6_LOOPBACK, NO_IPV6)
+    def test_a_closed_ipv6_port_is_refused(self) -> None:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+            port = int(sock.getsockname()[1])
+        outcome = probe.probe_tcp(probe.TcpRoute("v6", "::1", port), timeout=3)
+        self.assertEqual(outcome.verdict, "REFUSED")
+
+    def test_a_udp_resolver_that_answers_is_reached(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(server.close)
+        server.bind(("127.0.0.1", 0))
+        server.settimeout(3)
+        port = int(server.getsockname()[1])
+
+        def answer() -> None:
+            query, peer = server.recvfrom(512)
+            server.sendto(query, peer)
+
+        thread = threading.Thread(target=answer, daemon=True)
+        thread.start()
+        outcome = probe.probe_udp(probe.UdpRoute("udp", "127.0.0.1", port), timeout=3)
+        thread.join(timeout=3)
+        self.assertEqual(outcome.verdict, "REACHED")
+
+    def test_a_udp_resolver_with_nothing_listening_is_refused(self) -> None:
+        outcome = probe.probe_udp(probe.UdpRoute("udp", "127.0.0.1", closed_udp_port()), timeout=3)
+        self.assertEqual(outcome.verdict, "REFUSED")
+
+    def test_a_silent_udp_resolver_is_refused_like_a_tcp_timeout(self) -> None:
+        # A dropped datagram looks like a timeout, which the TCP probe already reads as REFUSED.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as silent:
+            silent.bind(("127.0.0.1", 0))
+            port = int(silent.getsockname()[1])
+            outcome = probe.probe_udp(probe.UdpRoute("udp", "127.0.0.1", port), timeout=0.5)
+        self.assertEqual(outcome.verdict, "REFUSED")
+
+    def test_a_udp_resolver_error_other_than_a_refusal_is_unchecked(self) -> None:
+        with mock.patch("socket.socket.send", side_effect=PermissionError(errno.EPERM, "denied")):
+            outcome = probe.probe_udp(probe.UdpRoute("udp", "127.0.0.1", 53), timeout=1)
+        self.assertEqual(outcome.verdict, "UNCHECKED")
+
+    @unittest.skipUnless(IPV6_LOOPBACK, NO_IPV6)
+    def test_the_ipv6_and_udp_routes_are_each_printed(self) -> None:
+        # The run prints a verdict line for the IPv6 route and for UDP DNS, not only for TCP routes.
+        denied = os.path.join(self.tmp.name, "absent")
+        with Listener() as control, UdpResponder() as udp_control:
+            pairs = argv_pairs(control, closed_loopback_port(), denied, udp_control=udp_control)
+            code, out = run_main(to_argv(pairs))
+        lines = out.splitlines()
+        self.assertIn(f"REFUSED IPv6 route {value_of(pairs, '--ipv6-route')}", lines, out)
+        self.assertIn(f"REFUSED UDP DNS to resolver {value_of(pairs, '--dns-resolver')}", lines, out)
+        self.assertEqual(code, 2, out)  # the absent path is UNCHECKED, so the run is never a pass
+
+
+class UdpControlTests(unittest.TestCase):
+    """Silence on a UDP route reads REFUSED only after a UDP control the slot must reach has answered."""
+
+    def setUp(self) -> None:
+        patcher = mock.patch.object(probe, "PUBLIC_ROUTES", ())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def run_with_udp(self, udp_control: int, dns: int) -> tuple[int, list[str]]:
+        with Listener() as control:
+            pairs = argv_pairs(control, closed_loopback_port(), os.path.join(self.tmp.name, "absent"),
+                               udp_control=udp_control)
+            pairs = replaced(pairs, "--dns-resolver", f"127.0.0.1:{dns}")
+            code, out = run_main(to_argv(pairs))
+        return code, out.splitlines()
+
+    def test_silence_on_the_dns_route_is_unchecked_when_the_udp_control_is_silent(self) -> None:
+        # The control is silent too, so silence on the DNS route proves nothing about the policy.
+        with SilentUdpPort() as udp_control, SilentUdpPort() as dns:
+            code, lines = self.run_with_udp(udp_control, dns)
+        self.assertEqual(code, 2)
+        self.assertTrue(any(line.startswith(f"UNCHECKED UDP DNS to resolver 127.0.0.1:{dns}") for line in lines), lines)
+        self.assertFalse(any(line.startswith("REFUSED UDP DNS") for line in lines), lines)
+
+    def test_silence_on_the_dns_route_is_refused_once_the_udp_control_answered(self) -> None:
+        with UdpResponder() as udp_control, SilentUdpPort() as dns:
+            _, lines = self.run_with_udp(udp_control, dns)
+        self.assertIn(f"REFUSED UDP DNS to resolver 127.0.0.1:{dns}", lines, lines)
+
+    def test_a_udp_control_that_answers_is_printed_as_reached(self) -> None:
+        with UdpResponder() as udp_control, SilentUdpPort() as dns:
+            _, lines = self.run_with_udp(udp_control, dns)
+        self.assertIn("CONTROL REACHED control: UDP port the slot must reach", lines, lines)
+
+    def test_a_refused_udp_control_leaves_the_dns_route_unchecked(self) -> None:
+        # A UDP control with nothing listening is refused; the DNS route is then not tried at all.
+        code, lines = self.run_with_udp(closed_udp_port(), closed_udp_port())
+        self.assertEqual(code, 2)
+        self.assertTrue(any(line.startswith("UNCHECKED UDP DNS to resolver") for line in lines), lines)
+        self.assertFalse(any(line.startswith("REFUSED UDP DNS") for line in lines), lines)
+
+    def test_the_udp_control_must_not_be_the_dns_route(self) -> None:
+        # If they were the same address, a control that answers would make the DNS route REACHED.
+        with Listener() as control:
+            pairs = argv_pairs(control, closed_loopback_port(), os.path.join(self.tmp.name, "absent"))
+            same = value_of(pairs, "--dns-resolver")
+            code, out = run_main(to_argv(replaced(pairs, "--udp-control", same)))
+        self.assertEqual(code, 2)
+        self.assertIn("different", out)
+
 
 class MainTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -214,12 +508,13 @@ class MainTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads every file")
+    @unittest.skipIf(ROOT, "root reads every file")
+    @unittest.skipUnless(IPV6_LOOPBACK, NO_IPV6)
     def test_all_refused_exits_zero_and_prints_one_line_per_route(self) -> None:
         denied = denied_directory(self.tmp.name)
         self.addCleanup(os.chmod, denied, 0o755)
-        with Listener() as control:
-            code, out = run_main(to_argv(argv_pairs(control, closed_loopback_port(), denied)))
+        with Listener() as control, UdpResponder() as udp_control:
+            code, out = run_main(to_argv(argv_pairs(control, closed_loopback_port(), denied, udp_control=udp_control)))
         self.assertEqual(code, 0, out)
         self.assertIn("CONTROL REACHED", out)
         self.assertIn("REFUSED slot B port", out)
@@ -262,7 +557,7 @@ class MainTests(unittest.TestCase):
                 code, out = run_main(to_argv(argv_pairs(control, closed_loopback_port(), denied)))
         self.assertEqual(code, 2)
         self.assertIn("UNCHECKED", out)
-        self.assertNotIn("REFUSED", out)
+        self.assertNotIn("REFUSED slot B", out)  # the EPERM peer route is UNCHECKED, never a refusal
 
     def test_root_is_refused_and_nothing_is_probed(self) -> None:
         # A real, open control, so only the root check can make this run exit 2.
@@ -279,19 +574,22 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertNotIn("REFUSED", out)
 
-    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root reads every file")
+    @unittest.skipIf(ROOT, "root reads every file")
     def test_each_route_class_is_mandatory(self) -> None:
         # Item 3: leaving out any class is a usage error (exit 2), never a shorter run that passes.
-        # Every route is a real refusal, so an omitted class can only pass by being silently dropped.
+        # The usage error must name the omitted flag, so a class that is quietly optional is caught too.
         denied = denied_directory(self.tmp.name)
         self.addCleanup(os.chmod, denied, 0o755)
         with Listener() as control:
             full = argv_pairs(control, closed_loopback_port(), denied)
-            for flag in ("--gateway", "--peer-port", "--host-port", "--estate", "--spool-address",
-                         "--spool-port", "--file-path", "--expect-uid"):
+            for flag in ("--gateway", "--gateway-control-port", "--peer-port", "--host-port", "--estate",
+                         "--spool-address", "--spool-port", "--file-path", "--ipv6-route", "--udp-control",
+                         "--dns-resolver",
+                         "--expect-uid"):
                 with self.subTest(omitted=flag):
                     code, out = run_main(to_argv(without(full, flag)))
                     self.assertEqual(code, 2, out)
+                    self.assertIn(f"required: {flag}", out)
 
     def test_a_port_out_of_range_is_a_usage_error(self) -> None:
         denied = os.path.join(self.tmp.name, "absent")

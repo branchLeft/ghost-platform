@@ -211,6 +211,44 @@ def dump_lock_verdict(rows: Iterable[Sequence[str]]) -> Verdict:
     return Verdict(True, "locks seen: " + ", ".join("/".join(kind) for kind in kinds) + "; no GLOBAL, COMMIT or write-blocking TABLE lock")
 
 
+def watch_while(
+    take: Callable[[], Iterable[Sequence[str]]],
+    finished: Callable[[], bool],
+    deadline: float,
+    now: Callable[[], float] = time.monotonic,
+) -> list[list[tuple[str, str, str]]]:
+    """Control 3's sampling of one dump: take a sample, then another, until the
+    dump has finished or the deadline has passed. It always takes at least one
+    sample, even when the dump ends first, so no dump goes unwatched."""
+    samples: list[list[tuple[str, str, str]]] = []
+    while True:
+        samples.append([(row[0], row[1], row[2]) for row in take()])
+        if finished() or now() >= deadline:
+            return samples
+
+
+def dump_lock_window_verdict(
+    dumps: Sequence[Sequence[Iterable[Sequence[str]]]],
+    *,
+    pass_rows: Iterable[Sequence[str]] = (),
+) -> Verdict:
+    """Control 3 over every dump. `dumps` holds, per dump, each sample taken
+    while that dump ran; `pass_rows` are the rows of the sampler that ran over
+    the whole pass. A GLOBAL, COMMIT or write-blocking TABLE lock seen in any
+    sample of any of them fails the control, whichever sample saw it: a sample
+    that missed a brief lock adds nothing to the verdict and removes nothing
+    from it. A dump with no sample was not watched, so it is a blind probe."""
+    if not dumps:
+        return Verdict(False, "no dump was watched, so no lock could be seen")
+    unwatched = [number for number, samples in enumerate(dumps, 1) if not samples]
+    if unwatched:
+        return Verdict(False, f"dump(s) {unwatched} took no sample of their locks, so they were not watched")
+    rows = [tuple(row) for samples in dumps for sample in samples for row in sample] + [tuple(row) for row in pass_rows]
+    verdict = dump_lock_verdict(rows)
+    taken = sum(len(samples) for samples in dumps)
+    return Verdict(verdict.passed, f"{len(dumps)} dumps watched over {taken} samples; {verdict.reason}")
+
+
 def grant_verdict(
     *,
     errno_ftwrl: int,
@@ -1105,9 +1143,10 @@ class Scenario:
     # limit is the candidate's only where it overlaps its own tenant's window.
     round_slow: dict[int, dict[str, list[SlowWrite]]] = dataclasses.field(default_factory=dict)
     round_windows: dict[int, dict[str, list[DumpWindow]]] = dataclasses.field(default_factory=dict)
-    lock_rows: set[tuple[str, str, str]] = dataclasses.field(default_factory=set)
-    lock_samples: int = 0
-    lock_table_samples: int = 0
+    # Control 3: the pass-long sampler's rows, and each dump's own samples.
+    lock_pass_rows: set[tuple[str, str, str]] = dataclasses.field(default_factory=set)
+    lock_pass_samples: int = 0
+    lock_dumps: list[list[list[tuple[str, str, str]]]] = dataclasses.field(default_factory=list)
     snapshots: int = 0
     oracle: OracleCount = dataclasses.field(default_factory=OracleCount)
 
@@ -1120,6 +1159,8 @@ class Run:
     failure: Exception | None = None
     # What the source's datadir was checked to be, for control 2's report.
     source_note: str = ""
+    # Control 3's samples, one list per dump, each taken while that dump ran.
+    dump_samples: list[list[list[tuple[str, str, str]]]] = dataclasses.field(default_factory=list)
 
     @property
     def sabotage(self) -> str | None:
@@ -1202,6 +1243,40 @@ def source_gtid_executed(server: sp.Server) -> str:
     return normalize_gtid_set(server.query("SELECT @@GLOBAL.gtid_executed;")[0][0])
 
 
+DUMP_WATCH_SECONDS = 300
+
+
+class DumpLockWatch(threading.Thread):
+    """Control 3's sampler for one dump: it samples the dump account's metadata
+    locks from before the dump starts until `finish()`, so the dump's own
+    lifetime is covered, not only the pass's gaps between dumps."""
+
+    def __init__(self, server: sp.Server, account: str) -> None:
+        super().__init__(daemon=True)
+        self.sql = sp.LockSampler.sql_for([account])
+        self.samples: list[list[tuple[str, str, str]]] = []
+        self.error: Exception | None = None
+        self._done = threading.Event()
+        self._session = server.session()
+
+    def run(self) -> None:
+        try:
+            self.samples = watch_while(
+                lambda: [line.split("\t") for line in self._session.run(self.sql)[0]],
+                self._done.is_set,
+                time.monotonic() + DUMP_WATCH_SECONDS,
+            )
+        except Exception as exc:
+            self.error = exc
+
+    def finish(self) -> None:
+        self._done.set()
+        self.join(timeout=60)
+        self._session.close()
+        if self.error is not None:
+            raise sp.ProofError(f"dump lock watch died: {type(self.error).__name__}: {self.error}")
+
+
 def dump_tenant(run: Run, tenant: str, name: str, *, coordinates: bool = False) -> DumpRecord:
     """One tenant's dump. Under `commit-before-coordinates` a committed
     transaction is forced into every table of the tenant after the dump
@@ -1209,8 +1284,14 @@ def dump_tenant(run: Run, tenant: str, name: str, *, coordinates: bool = False) 
     start point: the order the design exists to close, with no lock between
     the two."""
     ctx = run.ctx
-    process = ctx.source.popen(dump_argv(run, tenant, coordinates=coordinates), run.password, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    out, err = process.communicate(timeout=300)
+    watch = DumpLockWatch(ctx.source, run.account(tenant))
+    watch.start()
+    try:
+        process = ctx.source.popen(dump_argv(run, tenant, coordinates=coordinates), run.password, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = process.communicate(timeout=300)
+    finally:
+        watch.finish()
+    run.dump_samples.append(watch.samples)
     path = ctx.workdir / name
     path.write_bytes(out)
     text = out.decode(errors="replace")
@@ -1560,9 +1641,9 @@ def get_scenario(run: Run) -> Scenario:
         if run.mode == "old-path":
             revoke_old_path(run)
         sampler.finish()
-    scenario.lock_rows = sampler.rows
-    scenario.lock_samples = sampler.samples
-    scenario.lock_table_samples = sampler.table_lock_samples
+    scenario.lock_pass_rows = set(sampler.rows)
+    scenario.lock_pass_samples = sampler.samples
+    scenario.lock_dumps = list(run.dump_samples)
     run.scenario = scenario
     return scenario
 
@@ -1682,11 +1763,12 @@ def control_3(run: Run) -> sp.ControlResult:
     """No GLOBAL or COMMIT lock and no write-blocking table lock is held by a
     dump account, sampled across the whole run."""
     scenario = get_scenario(run)
-    verdict = dump_lock_verdict(scenario.lock_rows)
+    verdict = dump_lock_window_verdict(scenario.lock_dumps, pass_rows=scenario.lock_pass_rows)
+    kinds = {tuple(row) for samples in scenario.lock_dumps for sample in samples for row in sample} | scenario.lock_pass_rows
     numbers = [
-        f"{scenario.lock_samples} samples of metadata_locks over {scenario.snapshots} dumps; "
-        f"{scenario.lock_table_samples} saw a granted table lock",
-        "lock kinds seen (object/lock/status): " + ", ".join("/".join(kind) for kind in sorted(scenario.lock_rows)),
+        f"{scenario.lock_pass_samples} pass-long samples and {sum(len(samples) for samples in scenario.lock_dumps)} samples "
+        f"during {len(scenario.lock_dumps)} dumps of metadata_locks",
+        "lock kinds seen (object/lock/status): " + ", ".join("/".join(kind) for kind in sorted(kinds)),
     ]
     return sp.ControlResult(3, "no global or write-blocking lock held", verdict, numbers)
 
