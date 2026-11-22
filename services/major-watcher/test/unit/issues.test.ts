@@ -24,11 +24,11 @@ function seeded(major: number, overrides: Partial<FakeIssue> = {}): FakeIssue {
   return {
     id: 777,
     number: 4001,
-    html_url: 'https://github.com/branchLeft/workspace/issues/4001',
+    html_url: 'https://github.com/example-org/tracker/issues/4001',
     body: `earlier body\n\n${majorMarker(major)}`,
     labels: ['upstream-major'],
     state: 'open',
-    parent_issue_url: 'https://api.github.com/repos/branchLeft/workspace/issues/3810',
+    parent_issue_url: 'https://api.github.com/repos/example-org/tracker/issues/3810',
     ...overrides,
   };
 }
@@ -68,7 +68,7 @@ describe('fileUpstreamMajor', () => {
 
     expect(filed).toEqual({
       number: 4001,
-      url: 'https://github.com/branchLeft/workspace/issues/4001',
+      url: 'https://github.com/example-org/tracker/issues/4001',
       created: false,
     });
     expect(ws.calls.some((c) => c.method === 'POST')).toBe(false);

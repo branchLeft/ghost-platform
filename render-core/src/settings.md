@@ -64,5 +64,5 @@ injection: the code-injection posture stays blocked and empty, and the credit
 is not folded into `codeinjection_foot`. Ghost has no setting that holds it, so
 this artefact names it and the theme layer renders it; the broker's Admin API
 write names only the Ghost keys. Whether a tenant may turn it off, and on which
-tier, is the owner's open question on branchLeft/workspace#1819; there is no
+tier, is the owner's open question on a tracked issue; there is no
 off switch and no descriptor field for it until that is answered.

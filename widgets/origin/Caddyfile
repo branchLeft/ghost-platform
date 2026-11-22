@@ -5,8 +5,8 @@
 # Portal, search, comments and the signup form.
 #
 # This is deliberately NOT the estate's production edge (that is LLD-5's own
-# job, built in a later story once epic branchLeft/workspace#1160's tenant
-# edge or branchLeft/workspace#1254's demo edge exists). It exists so this
+# job, built in a later story once the tenant-edge epic's tenant
+# edge or the demo edge exists). It exists so this
 # story's claim -- zero third-party origins -- can be proven against a real
 # container rather than asserted from config. Whichever edge lands in
 # production is expected to fold the file_server block below into its own

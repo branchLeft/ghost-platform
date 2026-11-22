@@ -2,7 +2,7 @@
 
 ## What this proves
 
-LLD-6 §03 and ISSUE branchLeft/workspace#1264: the demo host runs one mail
+LLD-6 §03: the demo host runs one mail
 spool, a slot's Ghost submits to it on both paths, it has no route off the
 host, and its queue survives a reboot. The proof runs the stack
 `render-core` renders (`renderMailSpoolStack`) in a privileged

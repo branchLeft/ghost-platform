@@ -1,13 +1,12 @@
 # major-watcher
 
 Alerts the platform owner when a new Ghost major version, or its public
-preview, is announced upstream (branchLeft/workspace#1301), and files the
-one tracked item that announcement is (branchLeft/workspace#3367). Nothing
-else: no PR, no merge, no deploy, no upgrade started. Compare with the
+preview, is announced upstream. Nothing else:
+no PR, no merge, no deploy, no other system touched. Compare with the
 sibling release watcher (`services/release-watcher`), which opens a PR for
 a new *minor* and never pages.
 
-Constraint this is built to (branchLeft/workspace#1274, branchLeft/workspace#1159,
+Constraint this is built to (two earlier stories,
 and D38/D39/D42): a scheduled watcher that pages a human is monitoring,
 not an agent in operations. Nothing here runs a model, and nothing here
 acts on the announcement besides paging and filing the item.
@@ -17,7 +16,7 @@ acts on the announcement besides paging and filing the item.
 On a new major the run does three things in this order: file, page, write
 state. The filing is plain REST, no model:
 
-1. Search the `branchLeft/workspace` issues labelled `upstream-major`, open
+1. Search the tracker's issues labelled `upstream-major`, open
    and closed, for the major's **idempotence key**: the line
    `<!-- upstream-major:N -->` at the end of the item's body. Found: nothing
    is created.
@@ -42,7 +41,7 @@ the next run tries again. Quiet runs need neither value.
 
 Recommended: a **GitHub App installation token** for a dedicated App, with
 repository permission `issues: write` (which also covers adding a sub-issue),
-installed on `branchLeft/workspace` only. Minted per run by
+installed on the tracker repository only. Minted per run by
 `actions/create-github-app-token` in `major-watcher-run.yml`, so it lives
 about an hour and no long-lived token sits in a secret. Why not the
 alternatives: the job's own `GITHUB_TOKEN` cannot write another repository;
@@ -50,7 +49,7 @@ a fine-grained PAT is tied to a person and is long-lived; an existing App
 (the release watcher's) carries `contents: write` and `pull-requests: write`
 this watcher must not hold.
 
-Placing it (owner): create the App and install it on `branchLeft/workspace`;
+Placing it (owner): create the App and install it on the tracker repository;
 set the repository variable `MAJOR_WATCHER_APP_ID`, the repository secret
 `MAJOR_WATCHER_APP_PRIVATE_KEY`, and the repository variable
 `MAJOR_WATCHER_LAUNCH_ITEM` (the workspace issue number of the launch item
@@ -146,7 +145,7 @@ The schedule (`major-watcher-run.yml`, every 6 hours) needs no separate step
 to enable it. Until `NTFY_URL` is set, each run is a deliberate, clean no-op
 (exit 0) rather than a red run: a schedule failing every 6 hours while ntfy
 is not configured would desensitise exactly the signal this exists to protect, the
-same failure class branchLeft/workspace#1163 calls out ("the control plane
+same failure class an earlier story calls out ("the control plane
 stops, nothing pages, because the thing that would page is the thing that
 is down"). A red run stays reserved for something actually wrong once the
 secret exists: an unreachable GitHub API, a corrupt state file, or ntfy
@@ -186,8 +185,7 @@ bypass actor, mirroring the shape of this repo's existing
 ## Known limitations
 
 - **GitHub disables a scheduled workflow after 60 days with no repository
-  activity in it** (the same trap branchLeft/workspace#1252's own story
-  names for its watcher). Nothing here defends against or alerts on it --
+  activity in it** (the same trap an earlier story names for its watcher). Nothing here defends against or alerts on it --
   a silently disabled schedule and "nothing new to report" look the same
   from outside the Actions UI.
 - **The signal is a published GitHub Release object, never a bare git

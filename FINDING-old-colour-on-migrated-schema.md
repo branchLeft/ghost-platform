@@ -1,4 +1,4 @@
-# branchLeft/workspace#1249 — does the old colour keep serving on a schema the new one migrated?
+# Does the old colour keep serving on a schema the new one migrated?
 
 Measured 2026-09-27 against real containers: `ghost:6.55.0-alpine` (blue) and
 `ghost:6-alpine` (green, resolved to `6.65.0` at pull time — Docker Hub's

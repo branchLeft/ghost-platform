@@ -268,8 +268,7 @@ option that is not a valid answer, so it cannot be left unanswered.
 
 Tell the tenant, in the same conversation, how their readers' data requests
 work: a reader asks the publication, and the publication acts in its own Ghost
-admin. The platform has no request form and routes nothing (owner ruling on
-[branchLeft/workspace#1336](https://github.com/branchLeft/workspace/issues/1336),
+admin. The platform has no request form and routes nothing (owner ruling of
 20 November). Only the tenant's own request to erase its whole site comes to
 us, and it runs the key-destruction path in `infra/provisioning/scripts`, not
 this runbook. The wording the tenant passes to its readers is the owner's
@@ -829,8 +828,7 @@ If it names anything other than the tenant you are onboarding — `website`,
 `edge`, `db`, `monitoring` — stop.
 
 Changing the check's shape so the flag is not routine on the normal path is
-[branchLeft/workspace#279](https://github.com/branchLeft/workspace/issues/279);
-until it lands, this two-step is the procedure.
+an open owner item; until it lands, this two-step is the procedure.
 
 **Verify the slot before going further.** Nothing in CI can exercise the path a
 slot key takes — sshd forced command → `$SHELL -c` → `sudo -n` with no
