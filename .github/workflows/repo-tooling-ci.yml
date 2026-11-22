@@ -190,6 +190,12 @@ jobs:
       - name: Demo host export release sabotage proof
         run: python3 demo-host/provision/sabotage_export_release.py
 
+      # The demo isolation probe (demo-host/provision/branchleft_demo_isolation_probe.py):
+      # each guarantee broken in a scratch copy, the suite red for every one and
+      # green on the real copy. Its tests run in the discover step above.
+      - name: Demo isolation probe sabotage proof
+        run: python3 demo-host/provision/sabotage_branchleft_demo_isolation_probe.py
+
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
 
