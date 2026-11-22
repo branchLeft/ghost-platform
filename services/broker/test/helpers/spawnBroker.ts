@@ -79,19 +79,55 @@ export interface SpawnedBroker {
   stop(): void;
 }
 
-export function spawnBroker(env: Record<string, string | undefined>): SpawnedBroker {
+/** How many times `waitListening` spawns the broker before it gives up. */
+export const MAX_BIND_ATTEMPTS = 3;
+
+export interface SpawnBrokerOptions {
+  /**
+   * Chooses the port a retry binds to after the broker exits with
+   * EADDRINUSE. Defaults to `findFreePort`; a test injects its own to make
+   * the collision deterministic.
+   */
+  pickPort?: () => Promise<number>;
+}
+
+interface Attempt {
+  proc: ChildProcess;
+  combined: string;
+}
+
+/**
+ * Spawns `dist/server.js`. A caller's `PORT` can be taken between the probe
+ * in `findFreePort` and the broker's own `listen` (a parallel test grabs it
+ * in that gap), so when the broker exits with EADDRINUSE before listening,
+ * `waitListening` picks a new port and respawns it. At most
+ * MAX_BIND_ATTEMPTS spawns; after that it throws, naming every port tried.
+ */
+export function spawnBroker(
+  env: Record<string, string | undefined>,
+  options: SpawnBrokerOptions = {}
+): SpawnedBroker {
   ensureBuilt();
-  const proc = spawn(process.execPath, [DIST_SERVER], {
-    env: { ...process.env, ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let combined = '';
-  proc.stdout?.on('data', (d: Buffer) => {
-    combined += d.toString();
-  });
-  proc.stderr?.on('data', (d: Buffer) => {
-    combined += d.toString();
-  });
+  const pickPort = options.pickPort ?? findFreePort;
+
+  function launch(childEnv: Record<string, string | undefined>): Attempt {
+    const proc = spawn(process.execPath, [DIST_SERVER], {
+      env: { ...process.env, ...childEnv },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const attempt: Attempt = { proc, combined: '' };
+    proc.stdout?.on('data', (d: Buffer) => {
+      attempt.combined += d.toString();
+    });
+    proc.stderr?.on('data', (d: Buffer) => {
+      attempt.combined += d.toString();
+    });
+    return attempt;
+  }
+
+  let childEnv: Record<string, string | undefined> = env;
+  const portsTried: string[] = [String(env.PORT)];
+  let current = launch(childEnv);
 
   async function poll(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
     const start = Date.now();
@@ -99,33 +135,55 @@ export function spawnBroker(env: Record<string, string | undefined>): SpawnedBro
       if (predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    throw new Error(`timed out ${label}. Output so far:\n${combined}`);
+    throw new Error(`timed out ${label}. Output so far:\n${current.combined}`);
   }
 
   return {
-    proc,
+    get proc() {
+      return current.proc;
+    },
     async waitListening(timeoutMs = 8000) {
-      await poll(
-        () => /broker listening on [^:]+:(\d+)/.test(combined) || proc.exitCode !== null,
-        timeoutMs,
-        'waiting for the broker to report listening'
-      );
-      if (proc.exitCode !== null) {
-        throw new Error(
-          `process exited (code ${proc.exitCode}) before listening. Output:\n${combined}`
+      for (;;) {
+        const attempt = current;
+        await poll(
+          () =>
+            /broker listening on [^:]+:(\d+)/.test(attempt.combined) ||
+            attempt.proc.exitCode !== null,
+          timeoutMs,
+          'waiting for the broker to report listening'
         );
+        if (attempt.proc.exitCode === null) {
+          const match = /broker listening on [^:]+:(\d+)/.exec(attempt.combined);
+          if (!match?.[1]) throw new Error(`no listen line found. Output:\n${attempt.combined}`);
+          return { port: Number(match[1]) };
+        }
+        if (!attempt.combined.includes('EADDRINUSE')) {
+          throw new Error(
+            `process exited (code ${attempt.proc.exitCode}) before listening. Output:\n${attempt.combined}`
+          );
+        }
+        if (portsTried.length >= MAX_BIND_ATTEMPTS) {
+          throw new Error(
+            `broker could not bind a free port in ${MAX_BIND_ATTEMPTS} attempts ` +
+              `(EADDRINUSE on ports ${portsTried.join(', ')}). Output:\n${attempt.combined}`
+          );
+        }
+        childEnv = { ...childEnv, PORT: String(await pickPort()) };
+        portsTried.push(String(childEnv.PORT));
+        current = launch(childEnv);
       }
-      const match = /broker listening on [^:]+:(\d+)/.exec(combined);
-      if (!match?.[1]) throw new Error(`no listen line found. Output:\n${combined}`);
-      return { port: Number(match[1]) };
     },
     async waitExit(timeoutMs = 8000) {
-      await poll(() => proc.exitCode !== null, timeoutMs, 'waiting for the process to exit');
-      return proc.exitCode;
+      await poll(
+        () => current.proc.exitCode !== null,
+        timeoutMs,
+        'waiting for the process to exit'
+      );
+      return current.proc.exitCode;
     },
-    output: () => combined,
+    output: () => current.combined,
     stop: () => {
-      proc.kill('SIGKILL');
+      current.proc.kill('SIGKILL');
     },
   };
 }
