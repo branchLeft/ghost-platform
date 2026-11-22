@@ -240,6 +240,11 @@ jobs:
       - name: Demo site block sabotage proof
         run: python3 demo-host/provision/sabotage_render_demo_site.py
 
+      # The edge access-log scan (demo-host/provision/scan_edge_access_log.py):
+      # each detection dropped in a scratch copy must turn its test red.
+      - name: Edge access-log scan sabotage proof
+        run: python3 demo-host/provision/sabotage_scan_edge_access_log.py
+
       # The control host's backup-worker installer. Its tests also tie the
       # units and the required environment to the scripts they run, so a
       # change on either side fails here rather than on the host.
