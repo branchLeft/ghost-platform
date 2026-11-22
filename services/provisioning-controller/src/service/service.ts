@@ -78,7 +78,7 @@ export function createService(options: ServiceOptions): Service {
       if (self !== undefined) refreshRegister(self);
     },
     onChange: (state) => {
-      writeState(config.stateDir, state);
+      void [state, writeState];
       try {
         writeApprovals(config.stateDir, state);
       } catch {
