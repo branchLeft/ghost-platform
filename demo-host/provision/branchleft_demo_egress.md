@@ -67,10 +67,15 @@ bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`.
   The program keeps `DOCKER-USER` and its jump in `FORWARD` as Docker left them.
 - **Refuses to run.** It refuses on any host not named `demo1`. On an app
   host it would be an outage, because tenants need outbound mail, and edge1
-  forwards the estate's egress. It also refuses where the nftables backend is
-  active, because Docker would then keep its chains in nftables, and a chain
-  made in the legacy tables would guard nothing. No other chain is a safe
-  substitute, because the order of `FORWARD` is Docker's to rewrite.
+  forwards the estate's egress. It also refuses where Docker itself is set to
+  the nftables firewall backend (`firewall-backend` in `/etc/docker/daemon.json`,
+  or `DOCKER_FIREWALL_BACKEND` in its environment), because Docker would then keep
+  its rules in nftables and the iptables tables this policy writes would guard
+  nothing. It decides from Docker's setting, never from the iptables binary's
+  variant: Debian 13's iptables 1.8.11 prints `(nf_tables)` while Docker still
+  writes iptables rules. An unreadable `daemon.json` is a refusal, not a guess.
+  No other chain is a safe substitute, because the order of `FORWARD` is Docker's
+  to rewrite.
 - **Installed as** `/usr/local/sbin/branchleft-demo-egress`, and re-run by
   `branchleft-demo-egress.service` at every boot and every Docker restart.
 - **Python 3, standard library only, no shell.** Its shebang is

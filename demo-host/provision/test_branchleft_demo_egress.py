@@ -43,7 +43,7 @@ FAKE_TABLES = fake(lines(
     "if '-S DOCKER-USER' in args and os.environ.get('FAKE_HANG'):",
     "    time.sleep(5)",
     "if '--version' in args:",
-    "    print(os.environ.get('FAKE_VERSION', 'iptables v1.8.9 (legacy)'))",
+    "    print(os.environ.get('FAKE_VERSION', 'iptables v1.8.11 (nf_tables)'))",
     "    sys.exit(0)",
     "if '-S DOCKER-USER' in args:",
     "    sys.exit(int(os.environ['FAKE_V4_DOCKER_USER_EXIT' if tool == 'iptables' else 'FAKE_V6_DOCKER_USER_EXIT']))",
@@ -99,8 +99,15 @@ class DemoEgressTests(unittest.TestCase):
         self.log = os.path.join(self.dir, "calls.log")
         install_fakes(self.bin)
 
+    def write_daemon_json(self, text):
+        path = os.path.join(self.dir, "daemon.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
     def run_script(self, v4_chain=0, v6_chain=0, jumps_present=False, restore_exit=0,
-                   expected_host=THIS_HOST, version="iptables v1.8.9 (legacy)"):
+                   expected_host=THIS_HOST, version="iptables v1.8.11 (nf_tables)",
+                   daemon_json=None, extra_env=None):
         # A constructed environment, never os.environ: this shell may carry
         # live credentials, and nothing here needs any of them.
         env = {
@@ -112,10 +119,14 @@ class DemoEgressTests(unittest.TestCase):
             "FAKE_CHECK_EXIT": "0" if jumps_present else "1",
             "FAKE_RESTORE_EXIT": str(restore_exit),
             "FAKE_VERSION": version,
+            # Never the real /etc/docker/daemon.json: absent unless a test writes one.
+            "BRANCHLEFT_DEMO_EGRESS_DAEMON_JSON": daemon_json or os.path.join(self.dir, "absent.json"),
         }
         # None leaves the variable unset, so the program's own default applies.
         if expected_host is not None:
             env["BRANCHLEFT_DEMO_EGRESS_HOST"] = expected_host
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run([sys.executable, SCRIPT], env=env, capture_output=True,
                               text=True, check=False)
 
@@ -186,11 +197,41 @@ class DemoEgressTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ip6tables -t filter -N DOCKER-USER", self.calls())
 
-    def test_refuses_the_nftables_backend_and_writes_nothing(self):
-        result = self.run_script(v4_chain=1, version="iptables v1.8.9 (nf_tables)")
+    def test_debian13_iptables_on_the_nf_tables_variant_still_applies_when_docker_is_legacy(self):
+        # Debian 13 ships iptables 1.8.11, which prints (nf_tables) while Docker keeps
+        # its rules in iptables. The variant alone must not refuse.
+        # v4_chain=1: Docker has not started, so the chain is missing and the check runs.
+        result = self.run_script(v4_chain=1, version="iptables v1.8.11 (nf_tables)")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.restored("iptables"), EXPECTED_RULESET)
+
+    def test_applies_when_daemon_json_names_the_iptables_backend(self):
+        path = self.write_daemon_json('{"firewall-backend": "iptables"}')
+        result = self.run_script(v4_chain=1, version="iptables v1.8.11 (nf_tables)", daemon_json=path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_when_daemon_json_sets_docker_to_nftables_and_writes_nothing(self):
+        path = self.write_daemon_json('{"firewall-backend": "nftables"}')
+        result = self.run_script(v4_chain=1, daemon_json=path)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("nftables backend", result.stderr)
+        self.assertIn("firewall-backend", result.stderr)
         self.assertEqual([c for c in self.calls() if "-N " in c or "-restore" in c or " -I " in c], [])
+
+    def test_refuses_when_the_docker_environment_sets_nftables(self):
+        result = self.run_script(v4_chain=1, extra_env={"DOCKER_FIREWALL_BACKEND": "nftables"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("firewall-backend", result.stderr)
+        self.assertEqual([c for c in self.calls() if "-N " in c or "-restore" in c or " -I " in c], [])
+
+    def test_refuses_an_unreadable_daemon_json_rather_than_guessing(self):
+        path = self.write_daemon_json("{not json")
+        result = self.run_script(daemon_json=path)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot read", result.stderr)
+        self.assertEqual(self.restored_calls(), [])
+
+    def restored_calls(self):
+        return [c for c in self.calls() if "-restore" in c or " -I " in c]
 
     def test_refuses_when_ip6tables_is_missing(self):
         os.remove(os.path.join(self.bin, "ip6tables"))
@@ -241,6 +282,7 @@ class HungToolTests(unittest.TestCase):
             "FAKE_CHECK_EXIT": "1",
             "FAKE_RESTORE_EXIT": "0",
             "BRANCHLEFT_DEMO_EGRESS_HOST": THIS_HOST,
+            "BRANCHLEFT_DEMO_EGRESS_DAEMON_JSON": os.path.join(tmp.name, "absent.json"),
         }
         err = io.StringIO()
         with mock.patch.dict(os.environ, env, clear=True), redirect_stderr(err):

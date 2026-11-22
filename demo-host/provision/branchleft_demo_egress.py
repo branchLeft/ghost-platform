@@ -6,12 +6,15 @@
 # Standard library only, and no shell: every tool is run from an argv list,
 # never through a shell.
 
+import json
 import os
 import shutil
 import socket
 import subprocess
 import sys
 
+# Docker's own configuration, which names its firewall backend.
+DAEMON_JSON = "/etc/docker/daemon.json"
 FORWARD_CHAIN = "BRANCHLEFT-DEMO-EGRESS"
 INPUT_CHAIN = "BRANCHLEFT-DEMO-INPUT"
 # docker0 is the default bridge; br-+ is every user-defined bridge network.
@@ -66,10 +69,28 @@ def ensure_jump(tool, chain, *rule):
         say(f"{tool} inserted into {chain}: {' '.join(rule)}")
 
 
-def uses_nftables(tool):
-    version = run_tool([tool, "--version"], stdout=subprocess.PIPE,
-                       stderr=subprocess.DEVNULL, text=True)
-    return "nf_tables" in version.stdout
+def daemon_json_path():
+    # Read at call time, so a test can name a file of its own.
+    return os.environ.get("BRANCHLEFT_DEMO_EGRESS_DAEMON_JSON") or DAEMON_JSON
+
+
+def docker_uses_nftables():
+    # Docker decides where it keeps its rules, from its own setting. The iptables
+    # binary's variant does not decide it: Debian 13 prints (nf_tables) for
+    # iptables 1.8.11 while Docker still writes iptables rules.
+    if os.environ.get("DOCKER_FIREWALL_BACKEND") == "nftables":
+        return True
+    path = daemon_json_path()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError) as error:
+        die(f"cannot read {path} ({error}) -- its firewall-backend decides where Docker keeps its rules, and this policy will not guess")
+    if not isinstance(config, dict):
+        die(f"{path} is not a JSON object -- its firewall-backend decides where Docker keeps its rules, and this policy will not guess")
+    return config.get("firewall-backend") == "nftables"
 
 
 def apply_family(tool):
@@ -84,10 +105,6 @@ def apply_family(tool):
         # Docker creates this chain when dockerd starts, and dockerd starts the
         # slot containers that carry a restart policy. At boot the unit runs
         # before dockerd, so the chain is made here and Docker finds it there.
-        # Docker keeps its own chains in nftables when that backend is active,
-        # and a chain made in the legacy tables would then guard nothing.
-        if uses_nftables(tool):
-            die(f"{tool} uses the nftables backend, so a DOCKER-USER chain made here would not be the one Docker forwards through -- this policy has no safe substitute there")
         must([tool, "-t", "filter", "-N", "DOCKER-USER"])
         say(f"{tool} made DOCKER-USER before Docker starts, so the policy is in force when Docker starts its containers")
 
@@ -102,6 +119,11 @@ def main():
     this_host = socket.gethostname().split(".", 1)[0]
     if this_host != expected_host:
         die(f"this host is '{this_host}', not '{expected_host}' -- the demo container egress policy belongs on the demo host only")
+
+    # Docker set to nftables keeps its rules there, so a policy written to the
+    # iptables tables would guard nothing. Refused before anything is written.
+    if docker_uses_nftables():
+        die("Docker is set to the nftables firewall backend (firewall-backend in daemon.json, or DOCKER_FIREWALL_BACKEND), so the iptables tables this policy writes are not the ones Docker forwards through -- this policy has no safe substitute there")
 
     apply_family("iptables")
     apply_family("ip6tables")
