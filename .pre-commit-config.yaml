@@ -85,3 +85,14 @@ repos:
         entry: python3 infra/scripts/assert-no-committed-pulumi-secrets.py
         language: system
         files: '^(.*/)?Pulumi\.[^/]+\.yaml$'
+
+  - repo: local
+    hooks:
+      # Public source names no private tracker issue (the owner's ruling, recorded
+      # in the private tracker). The guard reads only the files staged for a commit;
+      # the tree-wide run belongs in CI.
+      - id: no-private-tracker-refs
+        name: no private tracker reference in source
+        entry: python3 scripts/assert-no-private-tracker-refs.py
+        language: system
+        pass_filenames: true
