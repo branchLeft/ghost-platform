@@ -19,7 +19,7 @@ spool's front doors: the Mailgun route's URL domain
 (`bulkEmail__mailgun__domain`) and the SMTP username
 (`mail__options__auth__user`). One value, `credentialDomainOf`, feeds both.
 
-**Decision (workspace#1740).** A demo slot's credential domain is
+**Decision (recorded in the private tracker).** A demo slot's credential domain is
 `slot-<uid>.<zones.demoMailDomain>`. A paying tenant's stays its own sending
 domain, so this change leaves a tenant's rendered output unchanged.
 

@@ -22,7 +22,7 @@ describe('validateSlotLiteral', () => {
   });
 
   it('refuses a value shaped to smuggle a second argument past a naive check', () => {
-    // The exact shape workspace#1188's review reproduced against real sudo:
+    // The exact shape a review reproduced against real sudo:
     // one string holding a space, which downstream code must never treat
     // as an already-split pair of tokens.
     expect(() => validateSlotLiteral('0 reset', SEVEN)).toThrow();

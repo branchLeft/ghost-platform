@@ -1,6 +1,6 @@
 # branchleft_demo_isolation_probe.py: isolation probe for one demo slot
 
-Issue: branchLeft/workspace#4045, part of #3814 (demo isolation). Design: ghost-platform-docs
+Issue: a part of the demo-isolation work, tracked in the private tracker. Design: ghost-platform-docs
 `19-try-it-now-design/02-broker-and-slot.html` and `00-high-level-design.html`.
 
 ## What it does
