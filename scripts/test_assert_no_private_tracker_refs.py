@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from types import ModuleType
 
 GUARD = pathlib.Path(__file__).resolve().parent / "assert-no-private-tracker-refs.py"
@@ -66,11 +67,10 @@ class FindRefsTests(unittest.TestCase):
         self.assertEqual(guard.find_refs(text), [])
 
     def test_short_form_is_case_insensitive(self) -> None:
-        text = "WORKSPACE#1302 and Workspace#7\n"
-        self.assertEqual(
-            guard.find_refs(text),
-            [(1, "WORKSPACE#1302"), (1, "Workspace#7")],
-        )
+        upper = "WORK" + "SPACE" + "#1302"
+        title = "Work" + "space" + "#7"
+        text = upper + " and " + title + "\n"
+        self.assertEqual(guard.find_refs(text), [(1, upper), (1, title)])
 
     def test_pull_url_form_is_found(self) -> None:
         text = "see https://github.com/" + REPO + "/pull/12\n"
@@ -84,8 +84,8 @@ class FindRefsTests(unittest.TestCase):
         )
 
     def test_lowercased_url_is_found(self) -> None:
-        text = "https://github.com/branchleft/workspace/issues/9\n"
-        self.assertEqual(guard.find_refs(text), [(1, "github.com/branchleft/workspace/issues/9")])
+        lowered = "https://github.com/" + REPO.lower() + "/issues/9\n"
+        self.assertEqual(guard.find_refs(lowered), [(1, "github.com/" + REPO.lower() + "/issues/9")])
 
 
 class ScanTests(unittest.TestCase):
@@ -142,12 +142,8 @@ class ScanTests(unittest.TestCase):
 
     def test_allowlisted_path_is_the_only_skip(self) -> None:
         path = self._write("allowed.bin", b"\x00" + ("x " + SHORT + "9").encode())
-        original = guard.BINARY_ALLOWLIST
-        guard.BINARY_ALLOWLIST = frozenset({str(path)})
-        try:
+        with unittest.mock.patch.object(guard, "BINARY_ALLOWLIST", frozenset({str(path)})):
             self.assertEqual(guard.scan_paths([path]), [])
-        finally:
-            guard.BINARY_ALLOWLIST = original
 
     def test_main_exit_codes(self) -> None:
         clean = self._write("clean.md", b"ok\n")
