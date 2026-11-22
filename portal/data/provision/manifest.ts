@@ -148,8 +148,19 @@ const CUSTOM_DOMAIN = '0009_custom_domain';
 const DEMO_REQUEST = '0010_demo_request';
 const SUPPORT_ACCESS = '0011_support_access';
 export const STATUS_READ = '0012_demo_request_status_read';
+/**
+ * The columns the front door may read of a request (M07): the demo id, the
+ * publication name and the time it was recorded, which is what a status page
+ * shows. Every other column stays out of its reach.
+ */
+export const STATUS_COLUMNS = {
+  privileges: ['SELECT'],
+  columns: ['demo_id', 'publication_name', 'submitted_at'],
+} as const;
 const QUEUE = '0013_moderation_item';
 const TENANT_BILLING = '0014_tenant_billing';
+const DEMO_EXTENSION = '0016_demo_extension_request';
+const TENANT_ERASURE = '0015_tenant_erasure_request';
 
 /**
  * Schema `public` (OID 2200) is a system object the manifest manages: one
@@ -295,6 +306,21 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'ownerRole', privileges: ['INSERT', 'SELECT', 'UPDATE'] },
       ],
     },
+    // TenantDb.requestOwnErasure inserts the tenant's one row (its primary key
+    // is the tenant, so a second request records nothing) and ownErasure reads
+    // it; OwnerDb.listErasureRequests reads and recordKeyDestroyed updates the
+    // status. The tenant role holds no UPDATE, so it cannot mark its own key
+    // destroyed. Nothing deletes a request, and the table has no column that
+    // holds text.
+    {
+      kind: 'table',
+      identity: 'portal.tenant_erasure_request',
+      since: TENANT_ERASURE,
+      grants: [
+        { grantee: 'tenantRole', privileges: ['INSERT', 'SELECT'] },
+        { grantee: 'ownerRole', privileges: ['SELECT', 'UPDATE'] },
+      ],
+    },
     // TenantDb reads the published versions; OwnerDb.publishDocument inserts
     // and reads. Nothing updates or deletes a version, so what a tenant
     // accepted cannot change under it.
@@ -411,9 +437,14 @@ export function manifest(major: number, database: string): readonly ManifestObje
       ],
     },
     // ProspectDb.submit inserts. ProspectDb.ownRequest reads once the status
-    // migration has given the front door SELECT, and the table's row policy
-    // shows it only the row whose address the transaction bound; it cannot
-    // change a request or remove one. ProvisionerDb.request and
+    // migration has given the front door SELECT on the three columns a status
+    // page shows, and the table's row policy shows it only the row whose
+    // address the transaction bound; it cannot change a request or remove one.
+    // The grant is by column because a session on the front door's connection
+    // can set the address the policy reads: a compromised front door could
+    // then read any row it can name an address for, and the columns it holds
+    // are all it could read from it. The address, the subject, the wording and
+    // the answers are not among them. ProvisionerDb.request and
     // OwnerDb.listRequests read. No role updates or deletes a request.
     {
       kind: 'table',
@@ -424,8 +455,20 @@ export function manifest(major: number, database: string): readonly ManifestObje
         { grantee: 'provisionerRole', privileges: ['SELECT'] },
         { grantee: 'ownerRole', privileges: ['SELECT'] },
       ],
-      added: [
-        { since: STATUS_READ, grants: [{ grantee: 'prospectRole', privileges: ['SELECT'] }] },
+      added: [{ since: STATUS_READ, grants: [{ grantee: 'prospectRole', ...STATUS_COLUMNS }] }],
+    },
+    // ProspectDb.requestExtension inserts, and the table's row policy admits
+    // the insert only for the demo whose request holds the address the
+    // transaction bound. ProvisionerDb.extensionRequest and grantExtension
+    // read. No role updates or deletes a request, so the consent recorded
+    // with it cannot be altered.
+    {
+      kind: 'table',
+      identity: 'portal.demo_extension_request',
+      since: DEMO_EXTENSION,
+      grants: [
+        { grantee: 'prospectRole', privileges: ['INSERT'] },
+        { grantee: 'provisionerRole', privileges: ['SELECT'] },
       ],
     },
   ];
@@ -450,6 +493,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.support_access_reading': { enabled: true, forced: false },
   'portal.support_access_request': { enabled: true, forced: false },
   'portal.tenant_billing': { enabled: true, forced: false },
+  'portal.tenant_erasure_request': { enabled: true, forced: false },
   'portal.document_version': { enabled: false, forced: false },
   'portal.document_acceptance': { enabled: true, forced: false },
   'portal.moderation_setting': { enabled: true, forced: false },
@@ -461,6 +505,7 @@ export const ROW_SECURITY: Record<string, RowSecurity> = {
   'portal.hostname_retirement': { enabled: false, forced: false },
   // Off until the status migration turns it on: a server held back verifies.
   'portal.demo_request': { enabled: true, forced: false, enabledFrom: STATUS_READ },
+  'portal.demo_extension_request': { enabled: true, forced: false },
   'drizzle.__drizzle_migrations': { enabled: false, forced: false },
 };
 
@@ -570,6 +615,26 @@ export const POLICIES: readonly PolicyEntry[] = [
     `(${BOUND})`
   ),
   policy(
+    'portal.tenant_erasure_request',
+    'tenant_isolation',
+    TENANT_ERASURE,
+    '*',
+    `(${BOUND})`,
+    `(${BOUND})`
+  ),
+  // The restrictive half: whatever else lets a tenant insert, the row it files
+  // is a plain request. Only the owner role's UPDATE records a destroyed key.
+  policy(
+    'portal.tenant_erasure_request',
+    'tenant_insert_requested',
+    TENANT_ERASURE,
+    'a',
+    'null',
+    "((status = 'requested'::text) AND (key_destroyed_at IS NULL))",
+    'tenantRole',
+    false
+  ),
+  policy(
     'portal.support_access_request',
     'tenant_isolation',
     SUPPORT_ACCESS,
@@ -640,6 +705,25 @@ export const POLICIES: readonly PolicyEntry[] = [
     'portal.demo_request',
     'provisioner_read',
     STATUS_READ,
+    'r',
+    'true',
+    'null',
+    'provisionerRole'
+  ), // The front door files an extension request only for the demo whose request
+  // holds the address its transaction bound; the lifecycle worker reads.
+  policy(
+    'portal.demo_extension_request',
+    'extension_insert',
+    DEMO_EXTENSION,
+    'a',
+    'null',
+    '(EXISTS ( SELECT 1\n   FROM portal.demo_request\n  WHERE (demo_request.demo_id = demo_extension_request.demo_id)))',
+    'prospectRole'
+  ),
+  policy(
+    'portal.demo_extension_request',
+    'provisioner_read',
+    DEMO_EXTENSION,
     'r',
     'true',
     'null',
@@ -802,6 +886,26 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         "(tenant_id) WHERE (status = 'open'::text)",
       'index portal.support_access_request_pkey CREATE UNIQUE INDEX support_access_request_pkey ' +
         'ON portal.support_access_request USING btree (request_id)',
+    ],
+  },
+  'portal.tenant_erasure_request': {
+    since: TENANT_ERASURE,
+    lines: [
+      `column tenant_id uuid notnull=true ${PLAIN}`,
+      `column requested_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column status text notnull=true ${PLAIN}`,
+      `column key_destroyed_at timestamp with time zone notnull=false ${PLAIN}`,
+      'default requested_at now()',
+      "default status 'requested'::text",
+      "constraint tenant_erasure_request_destroyed_moment CHECK ((((status = 'requested'::text) AND " +
+        "(key_destroyed_at IS NULL)) OR ((status = 'key_destroyed'::text) AND (key_destroyed_at IS NOT NULL))))",
+      'constraint tenant_erasure_request_pkey PRIMARY KEY (tenant_id)',
+      "constraint tenant_erasure_request_status_known CHECK ((status = ANY (ARRAY['requested'::text, " +
+        "'key_destroyed'::text])))",
+      'constraint tenant_erasure_request_tenant_id_tenant_register_tenant_id_fk FOREIGN KEY ' +
+        '(tenant_id) REFERENCES portal.tenant_register(tenant_id)',
+      'index portal.tenant_erasure_request_pkey CREATE UNIQUE INDEX tenant_erasure_request_pkey ' +
+        'ON portal.tenant_erasure_request USING btree (tenant_id)',
     ],
   },
   'portal.document_version': {
@@ -1068,6 +1172,33 @@ export const TABLE_SHAPES: Record<string, TableShape> = {
         'portal.demo_request USING btree (demo_id)',
       'index portal.demo_request_verified_address_unique CREATE UNIQUE INDEX ' +
         'demo_request_verified_address_unique ON portal.demo_request USING btree (verified_address)',
+    ],
+  },
+  'portal.demo_extension_request': {
+    since: DEMO_EXTENSION,
+    lines: [
+      `column audience_size text notnull=true ${PLAIN}`,
+      `column charges_readers boolean notnull=true ${PLAIN}`,
+      `column consent_wording text notnull=true ${PLAIN}`,
+      `column consented_at timestamp with time zone notnull=true ${PLAIN}`,
+      `column demo_id uuid notnull=true ${PLAIN}`,
+      `column move_when text notnull=true ${PLAIN}`,
+      `column still_evaluating text notnull=true ${PLAIN}`,
+      `column what_is_missing text notnull=false ${PLAIN}`,
+      'default consented_at now()',
+      "constraint demo_extension_request_choices_shape CHECK (((audience_size ~ '^[a-z0-9-]{1,40}$'::text) AND " +
+        "(move_when ~ '^[a-z0-9-]{1,40}$'::text)))",
+      'constraint demo_extension_request_consent_wording_length CHECK (((char_length(consent_wording) >= 1) AND ' +
+        '(char_length(consent_wording) <= 2000)))',
+      'constraint demo_extension_request_demo_id_demo_request_demo_id_fk FOREIGN KEY (demo_id) ' +
+        'REFERENCES portal.demo_request(demo_id)',
+      'constraint demo_extension_request_evaluating_length CHECK (((char_length(still_evaluating) >= 1) AND ' +
+        '(char_length(still_evaluating) <= 500)))',
+      'constraint demo_extension_request_missing_length CHECK (((what_is_missing IS NULL) OR ' +
+        '((char_length(what_is_missing) >= 1) AND (char_length(what_is_missing) <= 500))))',
+      'constraint demo_extension_request_pkey PRIMARY KEY (demo_id)',
+      'index portal.demo_extension_request_pkey CREATE UNIQUE INDEX demo_extension_request_pkey ON ' +
+        'portal.demo_extension_request USING btree (demo_id)',
     ],
   },
 };

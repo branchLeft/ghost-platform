@@ -47,6 +47,7 @@ export const SECRET_ENV_KEYS = {
   mailPassword: 'GHOST_MAIL_PASSWORD',
   bulkEmailApiKey: 'GHOST_BULK_EMAIL_API_KEY',
   ownerEmail: 'GHOST_OWNER_EMAIL',
+  analyticsSigningKey: 'GHOST_TINYBIRD_ADMIN_TOKEN',
 } as const;
 
 const MULTIPART_UPLOAD_THRESHOLD_BYTES = 10485760; // 10 MiB
@@ -133,6 +134,12 @@ function verdictEnvironment(safety: SafetySpec): Record<string, string | number 
     for (const feature of STORAGE_FEATURES) {
       env[`storage__${feature}__verdictSource`] = 'production';
       env[`storage__${feature}__verdictSocketPath`] = VERDICT_SOCKET_PATH;
+    }
+    // The host end's own setting names. Its certificate and key paths are
+    // host-local and never rendered here; the pin is made by the host end.
+    if (safety.inbound !== undefined) {
+      env.VERDICT_HOST_INBOUND_PORT = String(safety.inbound.port);
+      env.VERDICT_HOST_INBOUND_TLS = safety.inbound.tls;
     }
   }
   return env;
@@ -551,6 +558,35 @@ function hostStripeEnvironment(kind: TenantKind): Record<string, boolean> {
   return kind === 'demo' ? { hostSettings__limits__limitStripeConnect__disabled: true } : {};
 }
 
+/** True only for an explicit `on`; an absent analytics field is off. */
+function analyticsOn(
+  descriptor: Pick<TenantDescriptor, 'analytics'>
+): descriptor is { analytics: { kind: 'on'; siteUuid: string } } {
+  return descriptor.analytics?.kind === 'on';
+}
+
+/**
+ * The five tinybird keys Ghost reads when analytics is on (LLD-11 section 01).
+ * Off renders none of them. The signing key is never rendered here: it is
+ * read from the secrets file by `required()` after escaping, like every other
+ * secret. `workspaceId` is a JWT claim, not a secret, so the site identifier
+ * stands in for it.
+ */
+function analyticsEnvironment(
+  descriptor: Pick<TenantDescriptor, 'analytics' | 'siteUrl'>
+): Record<string, string> {
+  if (!analyticsOn(descriptor)) {
+    return {};
+  }
+  const base = descriptor.siteUrl.replace(/\/$/, '');
+  return {
+    tinybird__tracker__endpoint: `${base}/.ghost/analytics/api/v1/page_hit`,
+    tinybird__workspaceId: descriptor.analytics.siteUuid,
+    tinybird__stats__endpoint: `${base}/.ghost/analytics`,
+    tinybird__stats__endpointBrowser: `${base}/.ghost/analytics`,
+  };
+}
+
 /**
  * The `environment:` block of the rendered Compose service, for every kind.
  * `secretsFilePath` only appears inside a `${…:?}` reference's own failure
@@ -559,6 +595,7 @@ function hostStripeEnvironment(kind: TenantKind): Record<string, boolean> {
 export function tenantEnvironment(
   descriptor: Pick<
     TenantDescriptor,
+    | 'analytics'
     | 'slug'
     | 'uid'
     | 'kind'
@@ -585,6 +622,7 @@ export function tenantEnvironment(
     ...transportEnvironment(descriptor.transport, descriptor.mail, zones, descriptor.uid),
     ...bulkMailEnvironment(descriptor.mail, zones, descriptor.uid),
     ...hostLimitsEnvironment(descriptor.limits),
+    ...analyticsEnvironment(descriptor),
     ...breakGlassEnvironment(descriptor.breakGlass),
 
     security__allowWebhookInternalIPs: false,
@@ -616,6 +654,9 @@ export function tenantEnvironment(
   // Appended after escaping: `required()`'s own `${VAR:?…}` syntax is the
   // one deliberate interpolation in this document and must reach Compose
   // unescaped, or the reference itself would stop working.
+  if (analyticsOn(descriptor)) {
+    escaped.tinybird__adminToken = required('analyticsSigningKey', secretsFilePath);
+  }
   if (descriptor.database.kind === 'mysql') {
     escaped.database__connection__password = required('databasePassword', secretsFilePath);
   }

@@ -223,10 +223,24 @@ export interface SafetySpec {
    * environment.md#verdict-source.
    */
   readonly verdictSource?: VerdictSourceKind;
+  /**
+   * The inbound listener the safety service dials on the host end. Names the
+   * port and that the host end serves its own certificate. It carries no
+   * address (the private address is a host-side matter) and no key or
+   * certificate path. Only with `verdictSource: 'production'`. See
+   * environment.md#verdict-source.
+   */
+  readonly inbound?: VerdictInboundSpec;
 }
 
 /** The values `safety.verdictSource` may take. See SafetySpec. */
 export type VerdictSourceKind = 'none' | 'production';
+
+/** The values `safety.inbound` names. See SafetySpec. */
+export interface VerdictInboundSpec {
+  readonly port: number;
+  readonly tls: 'pinned-private';
+}
 
 /**
  * The break-glass triple: the broker's Ed25519 public key, the tenant name a
@@ -246,6 +260,15 @@ export type BreakGlassSpec =
       readonly tenant: string;
       readonly supportIdentity: EmailAddress;
     };
+
+/**
+ * Tenant analytics. Off by default: an absent field and `kind: 'off'` mean
+ * the same thing, and render no analytics keys at all. `on` names the
+ * tenant's site identifier, which must be a lower-case UUID and is refused
+ * for a demo. See environment.ts (analyticsEnvironment) and LLD-11 section 09.
+ */
+export type AnalyticsSpec =
+  { readonly kind: 'off' } | { readonly kind: 'on'; readonly siteUuid: string };
 
 export interface TenantDescriptor {
   /**
@@ -276,6 +299,8 @@ export interface TenantDescriptor {
   readonly safety: SafetySpec;
   readonly breakGlass: BreakGlassSpec;
   readonly expiresAt: Instant | null;
+  /** Absent means off (LLD-11 section 09). */
+  readonly analytics?: AnalyticsSpec;
 }
 
 /**

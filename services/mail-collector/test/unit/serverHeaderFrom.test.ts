@@ -178,7 +178,7 @@ describe('dist/server.js -- the header From check is on and has a scope', () => 
     shim.enqueue(message('second', 'slot-one@demo.example'));
     await start(DEMO, {
       COLLECTOR_DEMO_MAIL_DOMAIN: 'demo.example',
-      COLLECTOR_DEMO_SLOT_CEILING: '1',
+      COLLECTOR_DEMO_SLOT_TRANSACTIONAL_CEILING: '1',
     });
     await until(
       () => acked().includes('first') && acked().includes('second'),

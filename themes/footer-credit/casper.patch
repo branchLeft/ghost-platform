@@ -1,0 +1,13 @@
+--- a/default.hbs
++++ b/default.hbs
+@@ -97,7 +97,9 @@
+                     {{navigation type="secondary"}}
+                 </nav>
+             </div>
+-            <div class="gh-powered-by"><a href="https://ghost.org/" target="_blank" rel="noopener">{{t "Powered by Ghost"}}</a></div>
++            <div class="gh-powered-by"><a href="https://ghost.org/" target="_blank" rel="noopener">{{t "Powered by Ghost"}}</a>
++                {{> platform-footer-credit}}
++            </div>
+         </div>
+     </footer>
+ 

@@ -42,14 +42,35 @@ function logUnavailable(logger, reason, digest, cause) {
   }
 }
 
-// The hash primitive is injected rather than fixed, so a different
-// perceptual hash can replace it without touching this Check's shape.
+// The verdict key of these bytes, or null when they have none. A primitive that
+// throws or resolves to anything but a usable hash is the same as no hash:
+// the check must not throw, and bytes without a key are never allowed.
+async function hashOrNone(computeVerdictKey, buffer, logger, digest) {
+  try {
+    const keyed = await computeVerdictKey(buffer);
+    if (keyed && typeof keyed.hash === 'string' && keyed.hash.length > 0) return keyed.hash;
+    logUnavailable(logger, `no-perceptual-hash(${describe(keyed && keyed.reason, 40)})`, digest);
+  } catch (error) {
+    logUnavailable(logger, 'error', digest, error);
+  }
+  return null;
+}
+
+// Two things name an upload here and they are never confused. `computeDigest`
+// (SHA-256) names the exact bytes: the evidence of every verdict, and what the
+// quarantine files are filed under. `computeVerdictKey` is what the hash source
+// is asked about: a perceptual hash, the same for near-identical pictures. It
+// resolves to `{hash, reason}` and never rejects; a null hash (bytes that are
+// not a decodable image) is not asked about at all and is never allowed on that
+// basis: the verdict is `unavailable`, which the policy holds.
+// Both primitives are injected, so a different hash can replace either.
 // `metrics`, when given, is told each outcome and how long it took.
 // `logger`, when given, gets one error line per failed lookup.
 function createPdqKnownMaterialCheck(
   verdictClient,
   {
     computeDigest,
+    computeVerdictKey,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     metrics = null,
     now = Date.now,
@@ -58,6 +79,9 @@ function createPdqKnownMaterialCheck(
 ) {
   if (typeof computeDigest !== 'function') {
     throw new Error('createPdqKnownMaterialCheck requires a computeDigest(buffer) function');
+  }
+  if (typeof computeVerdictKey !== 'function') {
+    throw new Error('createPdqKnownMaterialCheck requires a computeVerdictKey(buffer) function');
   }
 
   return {
@@ -68,17 +92,30 @@ function createPdqKnownMaterialCheck(
     // outage cannot crash the save() call around it.
     async run(subject) {
       const digest = computeDigest(subject.buffer);
+      const key = await hashOrNone(computeVerdictKey, subject.buffer, logger, digest);
+      if (key === null) {
+        // No question was put to the hash source, so no latency or error is
+        // recorded: only the outcome.
+        const none = {
+          classification: 'unavailable',
+          source: 'no-perceptual-hash',
+          evidence: digest,
+        };
+        if (metrics) metrics.recordVerdict(none.classification);
+        return none;
+      }
       const started = now();
       let errorKind = null;
       let result;
       try {
-        const answer = await withTimeout(verdictClient.getVerdict(digest), timeoutMs);
+        const answer = await withTimeout(verdictClient.getVerdict(key), timeoutMs);
         if (answer === TIMED_OUT) {
           errorKind = 'timeout';
           logUnavailable(logger, 'timeout', digest);
           result = { classification: 'unavailable', source: 'timeout', evidence: digest };
         } else {
-          result = { ...answer, evidence: answer.evidence ?? digest };
+          // The evidence is always the content digest, whatever the client echoes.
+          result = { ...answer, evidence: digest };
         }
       } catch (error) {
         errorKind = 'error';

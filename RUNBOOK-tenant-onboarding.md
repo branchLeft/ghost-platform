@@ -279,6 +279,15 @@ tenant — the repository, and its name, say that they are a customer — so it 
 their answer to give, before anything is created. The dispatch form opens on an
 option that is not a valid answer, so it cannot be left unanswered.
 
+Tell the tenant, in the same conversation, how their readers' data requests
+work: a reader asks the publication, and the publication acts in its own Ghost
+admin. The platform has no request form and routes nothing (owner ruling on
+[branchLeft/workspace#1336](https://github.com/branchLeft/workspace/issues/1336),
+20 November). Only the tenant's own request to erase its whole site comes to
+us, and it runs the key-destruction path in `infra/provisioning/scripts`, not
+this runbook. The wording the tenant passes to its readers is the owner's
+prose, held as ALL_CAPS placeholders until the owner writes it.
+
 ### 2. Put the provisioning scripts on the hosts
 
 **Do this before step 3, every time.** Three different directories in two

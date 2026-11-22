@@ -445,8 +445,20 @@ others; `request_insert` lets it `INSERT`; `provisioner_read` lets
 bound, so an unbound statement sees no request. It returns the request's demo
 id, the publication name and the time it was recorded, which is what a status
 page needs; the lifecycle state is not here, because the front door cannot read
-it. The `SELECT` privilege is table-wide, so the policy is what narrows it: a
-statement that skips the typed read still sees one row at most.
+it. The `SELECT` privilege is by column, on those three columns alone
+(`demo_id`, `publication_name`, `submitted_at`), and the policy narrows the
+rows: a statement that skips the typed read still sees one row at most, and a
+statement that names any other column, or `*`, is refused with `42501`.
+
+*Why by column.* A session on the front door's connection can set
+`portal.prospect_address` to any value, so the row policy alone does not stop a
+compromised front door reading the row of an address it can guess. The column
+grant caps that: the address, the subject, the consent wording and the answers
+are out of its reach whatever it binds. The manifest records the grant with
+`columns`, and the provisioning check (M07) pins it exactly, so a table-wide
+grant (M06) or a grant on a fourth column (M07) is refused. The tenant binding
+(`portal.tenant_id`) has the same property and is the isolation the tenant
+tables rest on; it is not changed here.
 
 **One request per verified address.** The verified address is unique over all
 time: a second submission for an address is refused by the table
@@ -487,6 +499,98 @@ rewritten to `true`, a second permissive policy, or a policy for `PUBLIC` is an
 extra, and a dropped one is missing. A grant or row-security switch that a
 later migration adds (`added`, `enabledFrom`) is expected only once that
 migration is applied, so a server held back still verifies.
+
+## The demo extension request
+
+A prospect whose demo is running may ask for more time. The request is
+`portal.demo_extension_request` (migration `0016_demo_extension_request`): what
+they are still evaluating, what is missing, an audience-size band, whether they
+charge readers, when they would move, their consent to be contacted, the exact
+consent wording they were shown and the database's own time. It is keyed on the
+demo id and references the demo's request, so it is one row per demo for all
+time, matching the demo's one self-service extension.
+
+**Who writes and reads it.** `portal_prospect` can `INSERT` (`ProspectDb.requestExtension`)
+and holds nothing else on the table. An insert policy admits the row only when
+the demo's own request is one the front door can see: it holds no SELECT on the
+address column, so the policy names the demo alone and the request table's own-row
+policy (the address the transaction bound) narrows what it finds. A prospect
+cannot file for another address's demo; with nothing bound it is
+refused. `portal_provisioner` can `SELECT` (`ProvisionerDb.extensionRequest`).
+No role updates or deletes a row, so consent once recorded cannot be altered.
+
+**The grant.** `ProvisionerDb.grantExtension(demoId)` refuses unless the demo
+has a request carrying consent wording, then calls `extend`: the end of the
+term moves on by 14 days and the demo goes to `EXTENDED`, under the existing
+rules (only from LIVE or EXPIRING, once). A demo with no request moves
+nothing (`ExtensionRefusedError`, reason `consent`). `extend` itself is
+unchanged, so the lifecycle worker's own use of it is not gated by a request.
+
+**Consent.** `parseDemoExtension` refuses first on consent: anything but
+boolean `true` is `InvalidDemoExtensionError('consent')` before a statement is
+spent, so a request without consent writes no row. The wording stored is the
+one the caller passes (the front door's own constant, never a browser field);
+the table refuses an empty wording. The audience bands and move horizons are
+placeholders in `src/curatedLists.ts` until the owner rules on them.
+
+Whether an extension may be repeated is for the design revision to settle; today
+the one-per-demo rule stands.
+
+Control cases (`test/demoExtension.test.ts`): the request recorded with every
+answer and the database's time; a granted request moving the term by exactly 14
+days; a request without consent refused with no row and no lifecycle row; a
+grant with no request refused; a second request, a second grant and a grant
+outside LIVE or EXPIRING refused; the front door refused another address's demo
+and an unbound insert; the front door's read, update and delete and the
+worker's update and delete refused with `42501`.
+
+## Tenant erasure requests
+
+`portal.tenant_erasure_request` is a tenant's own request to erase its whole
+site (migration `0015_tenant_erasure_request`): one row per tenant for all time
+(its primary key is the tenant), the database's time of the request, a status
+(`requested`, then `key_destroyed`) and the database's time at which the owner
+role recorded that the tenant's backup key was destroyed. It has no column that
+holds text. A check ties the two together: `requested` never carries a key
+moment and `key_destroyed` always does.
+
+**Who writes and reads it.** `portal_tenant` can `INSERT` its own row
+(`TenantDb.requestOwnErasure`) and `SELECT` it (`TenantDb.ownErasure`). A
+restrictive insert policy admits only a plain `requested` row, so a tenant
+cannot file a request that already says its key is destroyed. `portal_owner`
+can `SELECT` and `UPDATE` (`OwnerDb.listErasureRequests`,
+`OwnerDb.recordKeyDestroyed`). Nothing deletes a row, and the tenant role has
+no `UPDATE`.
+
+**What a row means.** It destroys nothing. The key is destroyed on the control
+host by `erase_tenant_backup_identity.py`, and the owner role is told only from
+that command's own green proof line (the console's erasure recorder).
+`recordKeyDestroyed` moves a `requested` row and nothing else: a tenant that
+never asked cannot be recorded, and a second recording keeps the first moment.
+
+**What it may be shown as.** `deriveErasureView` returns `key_destroyed` only
+for a row that says so and carries its moment; anything else that exists is
+`requested`. A `key_destroyed` view carries the residual window as a constant:
+around 46 days from the moment the key was destroyed, `upperBoundDays: null`
+(typed `null`, not `number`) and the reason code `ANCHOR_DUMP_NEVER_PRUNED`.
+The pruner never deletes the anchor dump however old it is, so there is no
+bound, and no value derived from the clock can read as an end date.
+
+**Other tables erasure must cover.** This table records a request; it is not an
+inventory of what holds a tenant's data. Any store added later that holds
+tenant data (for example reader analytics) is part of an erasure, and its
+design must say how: by the tenant's own backup key, by a per-tenant delete, or
+as data the portal never held.
+
+Control cases (`test/tenantErasure.test.ts`): a tenant files one row with the
+database's clock and a second request records nothing; tenant B sees nothing of
+tenant A's row and cannot file for it; a tenant cannot file an already-destroyed
+row nor update or delete its own; the status is held to the closed list and the
+moment to the status; a tenant that never asked cannot be recorded as erased.
+Sabotage: an `UPDATE` grant to the tenant role lets it declare its own key
+destroyed, a lifted insert restriction lets it file an already-destroyed row,
+and a dropped moment check stores a destroyed row with no moment which is
+still shown as requested; each is restored and refused again.
 
 ## Moderation queue
 

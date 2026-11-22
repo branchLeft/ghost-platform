@@ -71,6 +71,9 @@ None of these is a flag:
   bundler is given the public half only. The fingerprint goes to the manifest
   and the audit record as for any recipient. Removing the ciphertext once `ops1`
   has pulled it is the promotion's step; the bundler has no code that deletes it.
+  `demo-host/provision/export_release.py` is that step on the demo host: it
+  removes the archive only when `ops1` reports the SHA-256 of the bytes it pulled
+  and that equals the archive's digest now.
 
 The descriptor's slug must match the stack's name and the adapter's tenant
 audience.

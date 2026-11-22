@@ -317,7 +317,7 @@ describe('executeOnboarding: a changed register', () => {
     const changed = key('push-first-commit');
     expect(result.status).toBe('stopped');
     expect(result.stoppedAt).toEqual({ key: changed, reason: 'input-changed' });
-    expect(result.skipped).toEqual(ALL_KEYS.slice(0, 7));
+    expect(result.skipped).toEqual(ALL_KEYS.slice(0, ALL_KEYS.indexOf(changed)));
     expect(world.calls).toHaveLength(callsBefore);
     const refusal = world.state.records.find((r) => r.event === 'digest-mismatch');
     expect(refusal?.key).toBe(changed);
@@ -433,7 +433,8 @@ describe('executeOnboarding: the approval gate', () => {
     await expect(executeOnboarding(APPROVAL.approvalId, world.ports())).rejects.toBeInstanceOf(
       ApprovalScopeError
     );
-    expect(world.calls).toHaveLength(8);
+    // Every step whose scope is still granted ran before the first one that is not: nine are `setup`.
+    expect(world.calls).toHaveLength(9);
   });
 
   it('runs nothing when the ledger answers with a different approval than the one asked for', async () => {

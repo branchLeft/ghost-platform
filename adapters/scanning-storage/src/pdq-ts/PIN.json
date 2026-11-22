@@ -1,0 +1,16 @@
+{
+  "package": "pdq-ts",
+  "repository": "https://github.com/branchLeft/pdq-ts",
+  "commit": "30c34210abda177e8f7cab144a6eb095af8ab4f4",
+  "built_with": "tsc -p tsconfig.build.json (TypeScript 6.0.3, CommonJS), then the four .js files copied unchanged",
+  "published": "no: the package is private and unpublished at this commit, so it is vendored, not installed",
+  "upstream": "facebook/ThreatExchange pdq/ at bd0108ff1745135a421856586d19d820dd62c6de (BSD, see NOTICE)",
+  "sha256": {
+    "index.js": "b2d96ba82941ea05cbcd78144d5e86a7ba276367b0fc4d19ad1884d3b2185378",
+    "pdq.js": "7a54cb869666ff8522d636956878b28495491c99b72beed30211bb75c889b57a",
+    "hash.js": "2f53bb7823ed79d2c92c5c9883fc027ee62efea919f6b1ac10f2225d175cbc18",
+    "dct-table.js": "050672ca97fb8ca38527c3475006c6be6edeae4e53eb1497a07dca64df359a0e",
+    "LICENSE": "13dc0ef35f7599fe17c8ca9477a785304d88c373fb645884139b1cc95b9606a7",
+    "NOTICE": "7f41ac401d53765a27bf20efd4d9f56d3cf51d163d0064541237ffea92ae7013"
+  }
+}

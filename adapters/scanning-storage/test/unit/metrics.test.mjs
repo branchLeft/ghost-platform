@@ -23,6 +23,11 @@ const { defineScanningStorageAdapter } = require('../../src/scanning-storage.js'
 const { FakeVerdictClient, UnconfiguredVerdictClient } = require('../../src/verdict-client.js');
 const { SafetyPolicy } = require('../../src/policy.js');
 const { createPdqKnownMaterialCheck } = require('../../src/checks.js');
+// These tests ask fakes keyed by the content digest, so the verdict key is the
+// digest here; the perceptual hash is tested in pdq.test.ts.
+const keyByDigest = async (buffer) => ({
+  hash: require('node:crypto').createHash('sha256').update(buffer).digest('hex'),
+});
 const { digestBytes } = require('../../src/pdq.js');
 const GhostErrors = require('@tryghost/errors');
 
@@ -406,7 +411,12 @@ describe('the check reports what it sees', () => {
         return { classification: 'no-known-match', source: 's', evidence: digest };
       },
     };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, metrics, now: () => clock });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeVerdictKey: keyByDigest,
+      computeDigest,
+      metrics,
+      now: () => clock,
+    });
     await check.run({ buffer: Buffer.from('x') });
     const text = metrics.render();
     expect(
@@ -421,7 +431,12 @@ describe('the check reports what it sees', () => {
   it('counts a timeout as an error of kind timeout and an unavailable verdict', async () => {
     const metrics = new ScannerMetrics();
     const client = { getVerdict: () => new Promise(() => {}) };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, metrics, timeoutMs: 20 });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeVerdictKey: keyByDigest,
+      computeDigest,
+      metrics,
+      timeoutMs: 20,
+    });
     const verdict = await check.run({ buffer: Buffer.from('x') });
     expect(verdict).toMatchObject({ classification: 'unavailable', source: 'timeout' });
     const text = metrics.render();
@@ -438,7 +453,11 @@ describe('the check reports what it sees', () => {
         throw new Error('channel unreachable');
       },
     };
-    const check = createPdqKnownMaterialCheck(client, { computeDigest, metrics });
+    const check = createPdqKnownMaterialCheck(client, {
+      computeVerdictKey: keyByDigest,
+      computeDigest,
+      metrics,
+    });
     await check.run({ buffer: Buffer.from('x') });
     const text = metrics.render();
     expect(valueOf(text, 'scanning_storage_verdict_errors_total', { kind: 'error' })).toBe(1);
@@ -457,7 +476,12 @@ describe('the decorator reports through an injected registry', () => {
       wrappedConfig: { storagePath: 'wrapped' },
       quarantinePath: quarantinePath ?? path.join(tmpDir, 'quarantine'),
       checks: [
-        createPdqKnownMaterialCheck(client, { computeDigest: digestBytes, metrics, timeoutMs }),
+        createPdqKnownMaterialCheck(client, {
+          computeVerdictKey: keyByDigest,
+          computeDigest: digestBytes,
+          metrics,
+          timeoutMs,
+        }),
       ],
       policy: new SafetyPolicy(),
       computeDigest: digestBytes,

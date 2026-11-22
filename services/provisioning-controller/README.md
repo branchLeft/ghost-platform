@@ -94,14 +94,58 @@ step already complete under different inputs; the approval check and the host
 call are never atomic, so a revocation that lands between them is seen at the
 next check.
 
+### The app host's tenant entry point (`src/tenantEntryHost.ts`)
+
+`TenantEntryHost` is a `HostEntryPoint` for the app host's forced command (the
+`tenant_entry` role in branchLeft/shared-infra holds its verbs, order and exit
+codes). It serves three steps and passes every other step to a fallback entry
+point, so the owner's single approval is the only hand step for a new tenant:
+
+| Step                   | Verbs sent                                                         |
+| ---------------------- | ------------------------------------------------------------------ |
+| `render-host-secrets`  | `claim`, then `secrets`                                            |
+| `render-compose-file`  | `stack`: three parameters (`size`, `mail`, `environment`) only     |
+| `create-app-host-slot` | `enable`, then `key`                                               |
+
+- **Parameters, not text.** The host builds the compose file from its own
+  template, the claim's uid and ports and these parameters, and judges it. The
+  adapter sends exactly `size`, `mail` and `environment` (a literal, or a
+  `{ secret: NAME }` reference to a key of the secrets file); it picks those
+  three fields, so nothing else a provider returns is sent. It never sends
+  compose text and never an image pin: the first pin is written by
+  `branchleft-deploy` after it verifies the image's attestation, in the plan's
+  `first-deploy` step, which runs after `create-app-host-slot`.
+- **The host's claim.** `status` carries the uid and ports `claim` gave the slug.
+  `TenantEntryInputs.stack` is given them, and `claimOf(slug)` returns them to
+  any deployment step that needs the host's numbers (they are not the
+  register's).
+- **Plan order.** `render-compose-file` depends on `render-host-secrets` and
+  `create-app-host-slot` depends on it, so a unit is never enabled before its
+  compose file is in place. `status`'s `stack=yes` means the compose file alone.
+- **Idempotent.** Each step first asks `status` and sends only what is left, so
+  a resume or a retry after a lost reply sends nothing twice. The host also
+  accepts the same `stack` parameters again.
+- **Errors.** A refusal (exit 1) is a `PermanentStepError` naming the verb and
+  the host's word, with the host's sentences as detail; a usage error (2) is
+  permanent; busy (3), a failed step (4) and an unknown code are retried. Values
+  the request carried are withheld from any detail.
+- **Inputs and transport are ports** (`TenantEntryInputs`, `EntryTransport`):
+  the template, values, parameters and deploy key come from the deployment;
+  none is kept.
+
+Known limits: the SSH transport and its file-based inputs are wired (see "Running it"), but
+something must still write those files on the controller host; `publish-hostnames` still takes
+its port from the register, not from the claim (`claimOf` is the way a
+deployment's edge step reads the host's number); the `owner` verb and the first
+deploy go through the fallback.
+
 ## Part 3: the provisioning API contract and its mock
 
 `openapi.yaml` is the contract the customer portal and the owner console are
 built against: read a demo, ask for the Essentials tier or open the Professional
 enquiry, list the requests waiting on the owner, approve one, and read a
 tenant. It is registered in `speckify.yaml` as `provisioning-api`. Nothing serves
-it for real yet; the executor above is not wired to HTTP, and the real service is
-a later waypoint's. The spec itself settles how a demo is named, the two
+it but the service in Part 4; the executor above is not wired to HTTP. The spec itself settles how a demo is named, the two
 credentials, and what Approve records.
 
 - **Generated client and server.** `src/generated/` is Speckify's output,
@@ -137,6 +181,7 @@ credentials, and what Approve records.
   Approving a request finishes provisioning at once (the tenant is `live`, with
   a placeholder invoice reference and hostname); `createMock({ settleOnApprove: false })`
   holds it at `provisioning` until `store.settle` is called.
+
 - **What the generated server does not do.** It validates the path, query and
   body before any handler runs, so a request that is both invalid and
   unauthenticated is answered 400, not 401. It does not enforce
@@ -151,6 +196,84 @@ credentials, and what Approve records.
   lacks fails. `test/unit/provisioningMock.test.ts` runs the journey through the
   generated client.
 
+## Part 4: the real service
+
+`src/service/` is the contract served for real: the generated `createServer`
+over the same rules the mock has (`src/service/store.ts`, which the mock also
+uses), with these differences. The mock is for tests and is not in the image;
+the service is.
+
+- **Credentials are files, read on every call.** `PROVISIONING_OWNER_CREDENTIAL_FILE`
+  holds the owner console's credential; `PROVISIONING_TENANT_CREDENTIALS_FILE`
+  holds lines of `<tenant uuid>=<credential>`, the file format the portal reads
+  (`PORTAL_PROVISIONING_CREDENTIALS_FILE`), so one file can serve both. A credential under 16
+  characters, a credential shared by two tenants or equal to the owner's, an empty or
+  malformed file or a missing one means no credential is valid: every call answers 401
+  and the problem is logged as a code, never a value. A credential the owner places or
+  changes takes effect on the next call. The checks are `src/service/auth.ts`: a tenant
+  credential on an owner call, the owner's on a tenant call and one tenant's on another's
+  path are each 403, and nothing a tenant presents lets it past its own paths.
+- **Tenants come from a register of demos** (`PROVISIONING_DEMOS_FILE`): `{"demos":
+[{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
+  never in the repository, refused if other users can write it, and looked at again
+  whenever the file changes. Until a tenant is promoted its demo is what the register says;
+  after, the service's own record is. A database adapter for the demo register is later work.
+- **State survives a restart.** `PROVISIONING_STATE_DIR` holds `state.json` (replaced whole by
+  a rename after the new content is on disk, mode 0600, refused at start if damaged,
+  linked or readable by others) and `approvals.json`, the approval ledger in the shape
+  `FileApprovalLedger` reads, so the executor can be given an approval the console recorded.
+  A change that cannot be written down is undone and answered 500.
+- **Approve starts the move and does not finish it.** The tenant is `essentials` in state
+  `provisioning` and the demo is `PROMOTING` until the executor, which is not wired to this
+  service, says otherwise. `invoice_ref` stays null until something raises the invoice.
+- **Run it** from this directory after `pnpm run build`, with the four paths and
+  `LISTEN_HOST` (loopback by default; the container sets `0.0.0.0` and publishes no
+  port): `PROVISIONING_STATE_DIR=... PROVISIONING_DEMOS_FILE=... pnpm run service`. It
+  answers `GET /healthz` with no credential. `contract/smoke_service.py` does this
+  from files of its own, walks the journey, restarts it and checks it kept its state.
+- **Seen on the real portal** (the done check of branchLeft/workspace#3818): sign in to the
+  tenant portal as a demo tenant's admin; `/demo` shows the register's address and
+  state; `/essentials` asks and shows pending; in the owner console `/requests` lists the
+  request and Approve takes it off the queue; the portal's `/site` then shows `provisioning`
+  and the tier; a second Approve changes nothing. The service's log shows no problem code.
+- **Not here**: the host programs the executor runs, wiring the executor to an approval,
+  settling a tenant to `live`, and a source for the register other than a file.
+
+## The SSH transport to a tenant host
+
+`SshEntryTransport` (`src/sshEntryTransport.ts`) is the real transport behind a host
+adapter's `EntryTransport` port: `send(verb, slug, payload?)` runs one ssh client, which
+runs the host's forced command `VERB SLUG` once, with the payload as one JSON object on
+standard input. It is selected for the app host only when the configuration has an `sshEntry` section (below).
+
+- **Argument vector only.** `child_process.spawn` with `shell: false`; the verb is checked
+  against a closed list and the slug against the register's slot pattern before a process
+  starts. `BatchMode=yes` and `StrictHostKeyChecking=yes` are fixed, the only known-hosts
+  file is the pinned one, `-F` always names a file (`/dev/null` unless configured).
+- **Configuration, never a request.** Key file, known-hosts file, ssh config file, the jump
+  chain (ops1, edge1, edge-t) and the target account and host come from `SshEntryConfig`;
+  every path and name is validated when the transport is made.
+- **Bounded.** A timeout kills the client; each output stream has a byte bound that kills
+  it too; the payload has one. The client inherits only `PATH`, `HOME` and `LANG`.
+- **Result.** The host program's own exit code and streams are returned for the adapter to
+  map (0 done, 1 refused, 2 usage, 3 busy, 4 failed). A call that never reached the program
+  is thrown: `SshTransportError` (retryable: timeout, connection, signal) or
+  `SshTransportRefusedError`, a `PermanentStepError` (bad request, client cannot start,
+  host key not matching the pin, output over the bound). Remote text is never put in an
+  error message.
+- **Hops need an ssh config file.** ssh takes a hop's key and host-key settings from its
+  config file, not from the command line, so a configuration with `jumpHops` and no
+  `sshConfigFile` is refused (`invalid-config`), as is one with no `jumpHops` list at all.
+  `hopConfigProblems(config)` asks the real client (`ssh -G`) what it applies to each hop and
+  names any setting that is not strict host keys, batch mode, the pinned known-hosts file
+  alone, identities only and the key; `composeHostPorts` runs it at startup and refuses to start on any problem.
+- **Argument vector.** `-F CONFIG -o BatchMode=yes -o StrictHostKeyChecking=yes
+-o UserKnownHostsFile=KNOWN -o GlobalKnownHostsFile=/dev/null -o IdentitiesOnly=yes
+-o ForwardAgent=no -o ClearAllForwardings=yes -o LogLevel=ERROR -o ConnectTimeout=N -T
+-i KEY [-p PORT] [-J HOPS] USER@HOST VERB SLUG`; the payload is one JSON object on standard
+  input. Each `send` runs exactly one client, which runs the host's forced command once.
+- **Not here**: the key and known-hosts files themselves.
+
 ## Running it
 
 `node dist/bin.js --config <file> --approval-id <id>` runs one approval to done
@@ -158,9 +281,26 @@ or to the step that stopped it. The approval id is the only per-run input.
 
 - **Configuration** (`src/runConfig.ts`): absolute `stateFile`, `approvalsFile`
   and `registerFile`; `hosts`, a map from entry point to `{ argv, timeoutMs? }`;
-  optional `retry` and `reportTimeoutMs`. A key it does not know is refused.
+  optional `sshEntry`, `retry` and `reportTimeoutMs`. A key it does not know is refused.
   `argv[0]` must be an absolute path: the program is started directly, never
   through a shell and never found on the path.
+- **SSH entry point** (`src/sshEntryConfig.ts`, `src/composeHostPorts.ts`): off unless the
+  configuration has an `sshEntry` section, and it has no default host, key path or hop. It names
+  `keyFile`, `knownHostsFile`, `jumpHops` (empty for a direct host) and `target`, and optionally
+  `sshConfigFile`, `sshProgram` and the transport's limits; every value is checked as the
+  transport checks it. When present, startup asks `ssh -G` about each hop and refuses to run
+  (exit 3, no step started) on any hop that is not pinned, and when the deployment supplies no
+  inputs builder (`CliIo.tenantEntryInputs`; `bin.ts` supplies `FileTenantEntryInputs`). The app
+  host is then the tenant entry adapter over the ssh transport; the program configured for
+  `app-host` serves the steps it does not.
+- **Tenant entry inputs** (`src/fileTenantEntryInputs.ts`): `sshEntry.inputs` names three
+  absolute paths, with no default: `secretsFile` (`{ "template", "values": { SLOT: { NAME:
+  VALUE } } }`), `stackFile` (`{ SLOT: { size, mail, environment } }`) and `deployKeyFile`
+  (`{ SLOT: PUBLIC_KEY }`). Each is opened without following a link and refused unless it is a
+  regular file under 1 MiB, owned by root or the controller's user, with no group or other
+  write; the secrets file is also refused if others can read it (a group may). Each file is read
+  when a verb needs it and kept never. An error names the path, the slot and the field, never
+  anything the file held, and not the parser's message.
 - **Trusted files** (`src/trustedFile.ts`): the configuration, the approvals
   file (`{ "approvals": [...] }`) and the register file (`{ "entries": [...] }`)
   are refused unless they are regular files, not links, owned by the user the

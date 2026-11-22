@@ -201,6 +201,7 @@ const DESCRIPTOR_KEYS = [
   'safety',
   'breakGlass',
   'expiresAt',
+  'analytics',
 ] as const;
 /** `DESCRIPTOR_KEYS` without `ownerEmail`: see validateTenantStack. */
 const STACK_DESCRIPTOR_KEYS = DESCRIPTOR_KEYS.filter((key) => key !== 'ownerEmail');
@@ -235,7 +236,8 @@ const CODE_INJECTION_GRANTED_KEYS = ['kind', 'by', 'reason', 'until'] as const;
 const CODE_INJECTION_MANAGED_KEYS = ['kind', 'head', 'foot'] as const;
 const LIMITS_KEYS = ['membersCap', 'staffCap'] as const;
 const CAPS_KEYS = ['cpus', 'cpuShares', 'pidsLimit', 'nofile'] as const;
-const SAFETY_KEYS = ['near', 'exact', 'verdictSource'] as const;
+const SAFETY_KEYS = ['near', 'exact', 'verdictSource', 'inbound'] as const;
+const VERDICT_INBOUND_KEYS = ['port', 'tls'] as const;
 const BREAK_GLASS_DISABLED_KEYS = ['kind'] as const;
 const BREAK_GLASS_ENABLED_KEYS = ['kind', 'publicKey', 'tenant', 'supportIdentity'] as const;
 
@@ -511,6 +513,7 @@ function assertShape(descriptor: TenantStackDescriptor, owner: OwnerEmailPlaceme
   assertBoolean(descriptor.safety.near, 'safety.near');
   assertBoolean(descriptor.safety.exact, 'safety.exact');
   assertVerdictSource(descriptor.safety);
+  assertVerdictInbound(descriptor.safety);
 
   // Presence of all three, not just their type: a `breakGlass.kind` of
   // "enabled" missing `tenant` (say) fails here with a named error, before
@@ -1162,6 +1165,49 @@ function assertVerdictSource(safety: Record<string, unknown>): void {
 }
 
 /**
+ * `safety.inbound` is optional and only meaningful with `verdictSource
+ * "production"`. When present it is an object of exactly `port` (a whole
+ * number, 1 to 65535) and `tls` (the one literal "pinned-private"). Nothing
+ * else: no address, no key or certificate path.
+ */
+function assertVerdictInbound(safety: Record<string, unknown>): void {
+  if (!('inbound' in safety)) return;
+  const inbound = safety.inbound;
+  if (typeof inbound !== 'object' || inbound === null || Array.isArray(inbound)) {
+    throw new FieldValidationError(
+      'safety.inbound',
+      `safety.inbound must be an object, got ${describeType(inbound)}.`
+    );
+  }
+  assertNoUnknownKeys(inbound, VERDICT_INBOUND_KEYS, 'safety.inbound');
+  if (!('port' in inbound)) {
+    throw new FieldValidationError('safety.inbound.port', 'safety.inbound.port is required.');
+  }
+  const port = inbound.port;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new FieldValidationError(
+      'safety.inbound.port',
+      `safety.inbound.port must be a whole number from 1 to 65535, got ${JSON.stringify(port)}.`
+    );
+  }
+  if (!('tls' in inbound)) {
+    throw new FieldValidationError('safety.inbound.tls', 'safety.inbound.tls is required.');
+  }
+  if (inbound.tls !== 'pinned-private') {
+    throw new FieldValidationError(
+      'safety.inbound.tls',
+      `safety.inbound.tls must be "pinned-private", got ${JSON.stringify(inbound.tls)}.`
+    );
+  }
+  if (safety.verdictSource !== 'production') {
+    throw new FieldValidationError(
+      'safety.inbound',
+      'safety.inbound is only allowed with safety.verdictSource "production".'
+    );
+  }
+}
+
+/**
  * Both flags are on for every tenant today — see SafetySpec's own doc
  * comment. A demo may not name the production verdict source: its upload
  * route stays refusing until the demo's own go-live gate reads a real
@@ -1460,6 +1506,30 @@ export function validateOwnerEmailSecret(value: string): EmailAddress {
 /** Where a descriptor's owner address lives: inline, or in the secrets file. */
 type OwnerEmailPlacement = 'inline' | 'secret';
 
+const LOWER_CASE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Analytics is off unless the descriptor says `on`. An `on` tenant needs a
+ * lower-case UUID site identifier (upper case would boot cleanly and then
+ * file every row under a value the database policy never matches), and a
+ * demo never has analytics (LLD-11 section 09).
+ */
+function validateAnalytics(descriptor: TenantStackDescriptor): void {
+  const analytics = descriptor.analytics;
+  if (analytics === undefined || analytics.kind === 'off') {
+    return;
+  }
+  if (descriptor.kind === 'demo') {
+    throw new FieldValidationError('analytics', 'a demo descriptor may not turn analytics on.');
+  }
+  if (!LOWER_CASE_UUID.test(analytics.siteUuid)) {
+    throw new FieldValidationError(
+      'analytics.siteUuid',
+      'analytics.siteUuid must be a lower-case UUID (8-4-4-4-12 hex, no upper-case letters).'
+    );
+  }
+}
+
 function validateFields(
   descriptor: TenantStackDescriptor,
   zones: ZoneConfig,
@@ -1513,6 +1583,7 @@ function validateFields(
   validateMailIdentity(descriptor.mail, zones);
   validateHostname(descriptor.hostname, zones);
   validateGate(descriptor.gate);
+  validateAnalytics(descriptor);
   validateCodeInjection(descriptor.codeInjection);
   validateBreakGlass(descriptor.breakGlass);
   if (descriptor.expiresAt !== null) {

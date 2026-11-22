@@ -35,6 +35,7 @@ import {
   supportAccessReading,
   supportAccessRequest,
   tenantBilling,
+  tenantErasureRequest,
   tenantRegister,
 } from '../schema.js';
 import {
@@ -43,6 +44,7 @@ import {
   type SupportRequestStatus,
   type SupportRequestView,
 } from '../supportAccess.js';
+import { deriveErasureView, type ErasureRequestView } from '../tenantErasure.js';
 
 export { MalformedScrapeError, type HealthView } from '../reading.js';
 export {
@@ -56,6 +58,16 @@ export {
 export { InvalidTenantKindError, TENANT_KINDS, type TenantKind } from '../tenantKind.js';
 export type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.js';
 export type { DemoRequestView } from '../demoRequest.js';
+export {
+  ERASURE_RESIDUAL_AROUND_DAYS,
+  ERASURE_RESIDUAL_REASON,
+  ERASURE_STATUSES,
+  RESIDUAL_WINDOW,
+  type ErasureRequestView,
+  type ErasureStatus,
+  type ErasureView,
+  type ResidualWindow,
+} from '../tenantErasure.js';
 export {
   InvalidSupportReadingError,
   SUPPORT_READING_FRESH_SECONDS,
@@ -372,6 +384,51 @@ export class OwnerDb {
         .set({ status: 'dealt_with' })
         .where(and(eq(supportAccessRequest.tenantId, id), eq(supportAccessRequest.status, 'open')))
         .returning({ tenantId: supportAccessRequest.tenantId })
+    );
+    return changed.length > 0;
+  }
+
+  /**
+   * Every tenant erasure request: those still waiting for their key to be
+   * destroyed first, then the rest, each group oldest first. The console's
+   * read; it has no paging.
+   */
+  async listErasureRequests(): Promise<ErasureRequestView[]> {
+    return this.run(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(tenantErasureRequest)
+        .orderBy(
+          desc(sql`${tenantErasureRequest.status} <> 'key_destroyed'`),
+          asc(tenantErasureRequest.requestedAt),
+          asc(tenantErasureRequest.tenantId)
+        );
+      return rows.flatMap((row) => {
+        const view = deriveErasureView(row);
+        return view.state === 'none' ? [] : [{ tenantId: row.tenantId, view }];
+      });
+    });
+  }
+
+  /**
+   * Records that a tenant's backup key has been destroyed, at the database's
+   * clock. It moves a `requested` row and nothing else: a tenant that never
+   * asked, and a request already recorded, change nothing and return false, so
+   * a tenant that did not ask to be erased can never be shown as erased and the
+   * first recorded moment is never overwritten. The caller holds the proof (the
+   * erase command's own green line); this method cannot check it, and the
+   * console's recorder is the only caller.
+   */
+  async recordKeyDestroyed(tenantId: string): Promise<boolean> {
+    const id = parseTenantId(tenantId);
+    const changed = await this.run((tx) =>
+      tx
+        .update(tenantErasureRequest)
+        .set({ status: 'key_destroyed', keyDestroyedAt: sql`now()` })
+        .where(
+          and(eq(tenantErasureRequest.tenantId, id), eq(tenantErasureRequest.status, 'requested'))
+        )
+        .returning({ tenantId: tenantErasureRequest.tenantId })
     );
     return changed.length > 0;
   }

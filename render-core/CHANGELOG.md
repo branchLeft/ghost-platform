@@ -4,6 +4,14 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 
 ## Unreleased
 
+- **Fixed:** `assertRuntimePosture()` refuses a non-sidecar service that mounts a verdict or journal
+  volume at any target, in short or long syntax, and `volumes_from` is a forbidden service key. The
+  check keyed on the mount target only, so `ghost-<slug>-verdict:/elsewhere` and `volumes_from:
+  [verdict-host]` passed. No rendered stack emitted either shape; this closes the gap for a later
+  change.
+
+## 0.7.0
+
 - **Additive:** `renderSettings()` names `footerCredit` (`text`, `url`, `keepGhostCredit: true`) in
   `ghost-settings.json` for every kind: the default footer credit that extends Ghost's own
   "Powered by Ghost". `text` and `url` are the placeholders `FOOTER_CREDIT_TEXT` and
@@ -101,6 +109,12 @@ All notable changes to `@branchleft/ghost-platform-render-core` are recorded her
 - **Rollout:** the volume is `external`, and nothing listens on the socket
   until the slot's verdict host end runs. Do not set the switch on a
   descriptor before both exist, or uploads are held, never served.
+- **Additive: the host end's inbound listener.** `safety.inbound`
+  (`{ port, tls: "pinned-private" }`) is optional and needs
+  `verdictSource: "production"`. A paying tenant then also renders
+  `VERDICT_HOST_INBOUND_PORT` and `VERDICT_HOST_INBOUND_TLS`. No address and no
+  key or certificate path is rendered. New export `VerdictInboundSpec`. See
+  src/environment.md#verdict-source.
 
 **The strict content policy can carry Stripe.**
 

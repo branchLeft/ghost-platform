@@ -8,6 +8,7 @@ import type { TokenVerifierOptions } from 'ghost-platform-identity/dist/index.js
 import { TenantDb, type DocumentKind, type TenantScope } from 'ghost-platform-portal-data/tenant';
 import { renderDocuments } from '../shell/documentsHtml.js';
 import { renderHealth } from '../shell/healthHtml.js';
+import { renderErasure } from '../shell/erasureHtml.js';
 import { escapeHtml } from '../shell/html.js';
 import { renderSupportAccess } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
@@ -22,6 +23,7 @@ import { moderationBody, saveModeration } from './moderationSettings.js';
 import { createPromotionRoutes } from './promotionRoutes.js';
 import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
+import { createThirdPartyOff, type ThirdPartyOffCopy } from './thirdPartyOff.js';
 import { createSiteRoutes } from './site.js';
 import { createSupportRoutes } from './supportRoutes.js';
 
@@ -53,6 +55,14 @@ export interface TenantPortalOptions {
    * served: no page, no action and no navigation entry.
    */
   readonly provisioning?: ProvisioningSettings;
+  /**
+   * True only for a ring under inspection, where an unfilled placeholder in the
+   * third-party-off copy may be read. Absent or false, a tenant is never shown one:
+   * the block and the line are left out.
+   */
+  readonly allowPlaceholderCopy?: boolean;
+  /** The third-party-off copy; absent, the owner's copy in `thirdPartyOff.ts`. */
+  readonly thirdPartyOffCopy?: ThirdPartyOffCopy;
 }
 
 /**
@@ -79,10 +89,21 @@ export function createTenantPortal(options: TenantPortalOptions) {
   const support = createSupportRoutes(options.support, options.db, () =>
     Math.floor(now().getTime() / 1000)
   );
-  const site = createSiteRoutes(options.provisioning, { onError: options.onError });
+  const thirdPartyOff = createThirdPartyOff({
+    ...(options.thirdPartyOffCopy === undefined ? {} : { copy: options.thirdPartyOffCopy }),
+    allowPlaceholders: options.allowPlaceholderCopy === true,
+  });
+  const site = createSiteRoutes(options.provisioning, {
+    onError: options.onError,
+    thirdPartyOff,
+  });
   const demo = createDemoRoutes(options.provisioning);
-  const promotion = createPromotionRoutes(options.provisioning, options.support, options.db, () =>
-    Math.floor(now().getTime() / 1000)
+  const promotion = createPromotionRoutes(
+    options.provisioning,
+    options.support,
+    options.db,
+    () => Math.floor(now().getTime() / 1000),
+    thirdPartyOff
   );
   return createShell<TenantScope>({
     issuer: options.issuer,
@@ -99,6 +120,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
       { label: 'NAV_DOCUMENTS', href: '/documents' },
       { label: 'NAV_MODERATION', href: '/moderation' },
       { label: 'NAV_SITE_ACCESS', href: '/site-access' },
+      { label: 'NAV_ERASURE', href: '/erasure' },
       ...demo.nav,
       ...site.nav,
       ...support.nav,
@@ -149,6 +171,7 @@ export function createTenantPortal(options: TenantPortalOptions) {
         ]);
         return renderSupportAccess(access, request);
       },
+      '/erasure': async (scope) => renderErasure(await options.db.ownErasure(scope)),
       '/documents': async (scope) => {
         const at = now();
         const [documents, pending, accepted, upcoming] = await Promise.all([
@@ -186,6 +209,14 @@ export function createTenantPortal(options: TenantPortalOptions) {
       '/site-access/request': async (scope) => {
         await options.db.requestSupportAccess(scope);
         return '/site-access';
+      },
+      // The tenant's own request to erase its whole site. It reads no field of
+      // the form, so nothing the visitor sends reaches it, and it destroys
+      // nothing: it records the request, and the page keeps saying nothing has
+      // been erased until the owner records the key as destroyed.
+      '/erasure/request': async (scope) => {
+        await options.db.requestOwnErasure(scope);
+        return '/erasure';
       },
       '/documents/accept': async (scope, identity, form) => {
         const kind = form.get('kind') ?? '';

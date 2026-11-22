@@ -68,6 +68,7 @@ import {
   moderationSetting,
   supportAccessReading,
   supportAccessRequest,
+  tenantErasureRequest,
   tenantRegister,
 } from '../schema.js';
 import {
@@ -75,6 +76,7 @@ import {
   type SupportAccessView,
   type SupportRequestStatus,
 } from '../supportAccess.js';
+import { deriveErasureView, type ErasureView } from '../tenantErasure.js';
 import { parseTenantId } from '../tenantId.js';
 import { assertBindingIntact } from './binding.js';
 import { parseTenantKind, type TenantKind } from '../tenantKind.js';
@@ -220,6 +222,34 @@ export class TenantDb {
         .returning({ tenantId: supportAccessRequest.tenantId })
     );
     return inserted.length > 0;
+  }
+
+  /**
+   * Records the bound tenant's own request to erase its whole site: its own
+   * row, with the database's clock and no text. A tenant has one such row for
+   * all time, so a second request records nothing and returns false. The row
+   * opens nothing and destroys nothing; it is a request the owner acts on.
+   */
+  async requestOwnErasure(scope: TenantScope): Promise<boolean> {
+    const inserted = await this.run(scope, (tx) =>
+      tx
+        .insert(tenantErasureRequest)
+        .values({ tenantId: scope.tenantId })
+        .onConflictDoNothing()
+        .returning({ tenantId: tenantErasureRequest.tenantId })
+    );
+    return inserted.length > 0;
+  }
+
+  /**
+   * The bound tenant's erasure request as it may be shown: `none`, `requested`
+   * (nothing has been erased) or `key_destroyed` with the honest residual
+   * window. `key_destroyed` comes only from a row that says so and carries the
+   * moment; anything the row cannot prove is shown as `requested`.
+   */
+  async ownErasure(scope: TenantScope): Promise<ErasureView> {
+    const rows = await this.run(scope, (tx) => tx.select().from(tenantErasureRequest));
+    return deriveErasureView(rows[0] ?? null);
   }
 
   /**

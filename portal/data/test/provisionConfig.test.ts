@@ -529,10 +529,14 @@ describe('the statements the command writes', () => {
     const table = manifest(14, 'portal').find((o) => o.identity === 'portal.demo_request')!;
     const status = '0012_demo_request_status_read';
     expect(addedGrantStatements(table, status, names)).toEqual([
-      'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"',
+      'GRANT SELECT ("demo_id", "publication_name", "submitted_at") ON TABLE portal.demo_request TO "portal_prospect"',
     ]);
     expect(addedGrantStatements(table, '0010_demo_request', names)).toEqual([]);
     expect(grantStatements(table, names, 14)).not.toContain(
+      'GRANT SELECT ("demo_id", "publication_name", "submitted_at") ON TABLE portal.demo_request TO "portal_prospect"'
+    );
+    // The front door is never given the whole table: only the status columns.
+    expect(addedGrantStatements(table, status, names).join('\n')).not.toContain(
       'GRANT SELECT ON TABLE portal.demo_request TO "portal_prospect"'
     );
     const plain = manifest(14, 'portal').find((o) => o.identity === 'portal.tenant_register')!;
@@ -604,6 +608,7 @@ describe('the statements the command writes', () => {
       'GRANT SELECT ON TABLE portal.hostname_retirement TO "portal_provisioner"',
       'GRANT INSERT ("label") ON TABLE portal.hostname_retirement TO "portal_provisioner"',
       'GRANT SELECT ON TABLE portal.demo_request TO "portal_provisioner"',
+      'GRANT SELECT ON TABLE portal.demo_extension_request TO "portal_provisioner"',
     ]);
     for (const stamp of ['recorded_at', 'allocated_at', 'retired_at']) {
       expect(all.filter((s) => s.includes(stamp))).toEqual([]);
@@ -639,6 +644,7 @@ describe('the statements the command writes', () => {
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.support_access_reading TO "portal_owner"',
       'GRANT SELECT, UPDATE ON TABLE portal.support_access_request TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.tenant_billing TO "portal_owner"',
+      'GRANT SELECT, UPDATE ON TABLE portal.tenant_erasure_request TO "portal_owner"',
       'GRANT INSERT, SELECT, UPDATE ON TABLE portal.moderation_setting TO "portal_tenant"',
     ]);
   });

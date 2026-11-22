@@ -22,7 +22,10 @@ const root = path.resolve(import.meta.dirname, '../..');
 
 // ---- 1. No code that dials ------------------------------------------------
 
-const ALLOWED_BUILTINS = new Set(['crypto', 'events', 'fs', 'http', 'net', 'os', 'path']);
+// tls is for the listener that serves the host end's own certificate. It is
+// let in as a module only: a tls client call is still a connect() and is
+// still caught below, and the guard refuses tls.connect at run time.
+const ALLOWED_BUILTINS = new Set(['crypto', 'events', 'fs', 'http', 'net', 'os', 'path', 'tls']);
 // Only the guard may name the modules it patches.
 const GUARD_ONLY_BUILTINS = new Set(['dgram', 'dns', 'net']);
 const NET_ALLOWED_MEMBERS = new Set(['createServer', 'isIPv4']);
@@ -97,7 +100,8 @@ describe('no code that dials', () => {
       "const net = require('node:net'); net.connect(80);",
       "require('node:https').get('x');",
       "require('node:dns').lookup('x');",
-      "require('node:tls');",
+      "require('node:https');",
+      "require('node:tls').connect(443);",
       "http.request('http://x');",
       'fetch(url);',
       'socket.connect(80);',
@@ -106,6 +110,9 @@ describe('no code that dials', () => {
       'new net.Socket();',
     ];
     for (const source of cases) expect(dialFindings('x.js', source), source).not.toEqual([]);
+    expect(
+      dialFindings('x.js', "const tls = require('node:tls'); tls.createServer({}, () => {});")
+    ).toEqual([]);
     expect(
       dialFindings('x.js', "// net.connect(1)\nconst a = require('node:net'); a.createServer;")
     ).toEqual([]);
@@ -154,6 +161,21 @@ describe('the guard', () => {
     expect(refused).toEqual([]);
     expect(canary.connections).toEqual([]);
     expect(guard.refusedCount()).toBeGreaterThanOrEqual(10);
+  });
+
+  it('refuses tls.connect with the guard error itself, and the canary sees nothing', async () => {
+    canary = await startCanary();
+    guard = installNoEgress();
+    let caught;
+    try {
+      tls.connect(canary.port, '127.0.0.1');
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(EgressRefusedError);
+    expect(caught.code).toBe('EGRESS_REFUSED');
+    expect(guard.refusedCount()).toBe(1);
+    expect(canary.connections).toEqual([]);
   });
 
   it('still lets the process listen and accept, which is all it does', async () => {

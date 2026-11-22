@@ -1,0 +1,10 @@
+--- a/default.hbs
++++ b/default.hbs
+@@ -90,6 +90,7 @@
+             </div>
+             <div class="gh-powered-by">
+                 {{{t "Powered by {ghostlink}" ghostlink="<a href=\"https://ghost.org/\" target=\"_blank\" rel=\"noopener\">Ghost</a>"}}}
++                {{> platform-footer-credit}}
+             </div>
+         </div>
+     </footer>
