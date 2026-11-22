@@ -67,6 +67,21 @@ SABOTAGES: list[tuple[str, list[tuple[str, str]]]] = [
     ("--expect-uid is optional",
      [('"--expect-uid", type=int, required=True,', '"--expect-uid", type=int, default=None,'),
       ("    if euid != args.expect_uid:\n", "    if args.expect_uid is not None and euid != args.expect_uid:\n")]),
+    # Gateway control: a route through the bridge gateway is read only when the gateway's own control opened.
+    ("a route through the bridge gateway is probed when its control did not open (REFUSED instead of UNCHECKED)",
+     [("        if route.via_gateway and not gateway_ok:", "        if False:")]),
+    ("the gateway control port is optional",
+     [('"--gateway-control-port", type=parse_port, required=True,', '"--gateway-control-port", type=parse_port, default=1,')]),
+    # Search without read: a directory whose listing is denied but which is searchable is UNCHECKED, never REFUSED.
+    ("a search-only directory is REFUSED (its denied listing taken as isolation)",
+     [("        if os.path.isdir(route.path) and os.access(route.path, os.X_OK):", "        if False:")]),
+    # IPv6 and UDP DNS: each is its own route class, probed and printed.
+    ("the IPv6 routes are not probed",
+     [('    for address, port in ipv6:\n        routes.append(TcpRoute(f"IPv6 route [{address}]:{port}", address, port))\n', "")]),
+    ("the UDP DNS route to the resolver is not probed",
+     [("    outcomes.append(probe_udp(udp_route, args.timeout))\n", "")]),
+    ("an answered UDP route is not REACHED",
+     [('            sock.recv(512)\n        return Outcome("REACHED", route.label)', '            sock.recv(512)\n        return Outcome("REFUSED", route.label)')]),
     # Guarantees from the first cycle, kept.
     ("a readable directory is not reported as reached",
      [('        return Outcome("REACHED", route.label)\n    except PermissionError:',
@@ -80,7 +95,7 @@ SABOTAGES: list[tuple[str, list[tuple[str, str]]]] = [
     ("the public routes are dropped",
      [("    for label, host, port in PUBLIC_ROUTES:\n        routes.append(TcpRoute(label, host, port))\n", "")]),
     ("slot ports are probed on loopback only, not the bridge gateway",
-     [('        routes.append(TcpRoute(f"slot B port {port} on bridge gateway", gateway, port))\n', "")]),
+     [('        routes.append(TcpRoute(f"slot B port {port} on bridge gateway", gateway, port, via_gateway=True))\n', "")]),
     ("running as root is allowed",
      [("    if euid == 0:\n", "    if False:\n")]),
     ("a uid other than the expected one is allowed",
