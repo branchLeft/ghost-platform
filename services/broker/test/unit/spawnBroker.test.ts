@@ -1,8 +1,23 @@
 import { existsSync, statSync, utimesSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { ensureBuilt } from '../helpers/spawnBroker.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { makeTempDir } from '../../src/atomicFile.js';
+import { baseBrokerEnv } from '../helpers/brokerEnv.js';
+import {
+  writeValidAdminApiPlugin,
+  writeValidDrainSourcePlugin,
+  writeValidImageLoaderPlugin,
+  writeValidRendererPlugin,
+} from '../helpers/pluginFixtures.js';
+import {
+  ensureBuilt,
+  findFreePort,
+  MAX_BIND_ATTEMPTS,
+  spawnBroker,
+  type SpawnedBroker,
+} from '../helpers/spawnBroker.js';
 
 const SERVICE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const DIST_SERVER = join(SERVICE_ROOT, 'dist', 'server.js');
@@ -56,5 +71,69 @@ describe('ensureBuilt (a stale dist/ must not pass as built)', () => {
       utimesSync(A_SOURCE_FILE, originalSrcMtime, originalSrcMtime);
       ensureBuilt();
     }
+  });
+});
+
+/**
+ * A port another process already holds makes the broker exit with
+ * EADDRINUSE before it listens. `waitListening` must then pick a new port
+ * and respawn, and give up with a clear error after MAX_BIND_ATTEMPTS.
+ */
+describe('spawnBroker retries a port taken before the broker can listen', () => {
+  let occupier: Server | undefined;
+  let broker: SpawnedBroker | undefined;
+
+  afterEach(() => {
+    broker?.stop();
+    broker = undefined;
+    occupier?.close();
+    occupier = undefined;
+  });
+
+  /** A valid environment for the broker: the same four plugin seams server.test wires. */
+  async function envWithPlugins(): Promise<Record<string, string>> {
+    const { env } = await baseBrokerEnv();
+    const root = await makeTempDir('broker-retry-');
+    return {
+      ...env,
+      BROKER_RENDERER_MODULE: await writeValidRendererPlugin(root),
+      BROKER_ADMIN_API_MODULE: await writeValidAdminApiPlugin(root),
+      BROKER_DRAIN_SOURCE_MODULE: await writeValidDrainSourcePlugin(root),
+      BROKER_IMAGE_LOADER_MODULE: await writeValidImageLoaderPlugin(root),
+    };
+  }
+
+  async function occupyPort(): Promise<number> {
+    occupier = createServer();
+    await new Promise<void>((resolve) => occupier?.listen(0, '127.0.0.1', resolve));
+    return (occupier.address() as { port: number }).port;
+  }
+
+  it('binds a second port when the first is occupied', async () => {
+    const taken = await occupyPort();
+    const env = await envWithPlugins();
+    let picks = 0;
+    broker = spawnBroker(
+      { ...env, PORT: String(taken) },
+      {
+        pickPort: async () => {
+          picks += 1;
+          return findFreePort();
+        },
+      }
+    );
+    const { port } = await broker.waitListening(8000);
+    expect(port).not.toBe(taken);
+    expect(picks).toBe(1);
+    expect(broker.output()).toMatch(/broker listening on [^:]+:\d+/);
+  });
+
+  it('fails clearly after MAX_BIND_ATTEMPTS when every port is taken', async () => {
+    const taken = await occupyPort();
+    const env = await envWithPlugins();
+    broker = spawnBroker({ ...env, PORT: String(taken) }, { pickPort: async () => taken });
+    await expect(broker.waitListening(8000)).rejects.toThrow(
+      `could not bind a free port in ${MAX_BIND_ATTEMPTS} attempts`
+    );
   });
 });

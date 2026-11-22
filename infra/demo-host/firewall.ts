@@ -41,7 +41,7 @@ export function edge1SshSource(address: string): string {
   if (!DOTTED_QUAD.test(address)) {
     throw new Error(
       `edge1's public address must be one dotted-quad IPv4 address, got ${JSON.stringify(address)}. ` +
-        'It becomes the only source allowed to reach port 22 on demo1.'
+        'It becomes the only source allowed to reach ports 22 and 9100 on demo1.'
     );
   }
   const value = toInt(address);
@@ -62,6 +62,13 @@ export function demoHostFirewallRules(edge1PublicIpv4: string): Rule[] {
       port: '22',
       sourceIps: [edge1SshSource(edge1PublicIpv4)],
       description: 'SSH from edge1 only: the owner via jump host, ops1 via NAT',
+    },
+    {
+      direction: 'in',
+      protocol: 'tcp',
+      port: '9100',
+      sourceIps: [edge1SshSource(edge1PublicIpv4)],
+      description: 'node_exporter over TLS with client-certificate verification, from edge1 only',
     },
     {
       direction: 'in',
