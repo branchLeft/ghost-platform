@@ -10,7 +10,9 @@ info:
     provisioning, and nothing else: read a demo, ask for the Essentials tier
     or open the Professional enquiry, list the requests waiting on the owner,
     approve one, and read a tenant's tier, state, invoice reference and
-    hostnames. Approve is the platform's one human gate.
+    hostnames. Approve is the platform's one human gate. Every contact request
+    a tenant raises, at any tier, is also held as a ticket the owner moves
+    through `new`, `open`, `replied` and `closed`.
 
     This is the contract the screens are built against. It has two
     implementations that must stay interchangeable behind it: an in-memory
@@ -105,7 +107,9 @@ paths:
         the existing request, with the same status as the first ask (201). Asking for the other tier while one is open
         is refused (409 `request-already-open`). The demo must be in a state it
         can be promoted from, `LIVE`, `EXTENDED` or `EXPIRING`; otherwise 409
-        `demo-not-promotable`.
+        `demo-not-promotable`. A request that is newly recorded also records
+        one ticket of the same kind in state `new`, in the same change (see
+        `moveTicket`); a replay records none.
       security:
         - tenantCredential: []
       parameters:
@@ -273,6 +277,147 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /tenants/{tenant}/tickets:
+    post:
+      operationId: createTicket
+      summary: Record a support ticket or a Professional enquiry
+      description: >-
+        Records one contact request the tenant raised from its portal as a
+        ticket in state `new`. `kind` is `support` or `professional-enquiry`;
+        an Essentials request is recorded as a ticket by `createPromotionRequest`
+        itself and cannot be created here. The portal has already sent the mail
+        for the request: this is the owner's record of it, not a second
+        delivery. A tenant may hold at most 50 tickets that are not `closed`;
+        past that the answer is 409 `ticket-limit`.
+      security:
+        - tenantCredential: []
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: >-
+            The platform tenant id, taken from the scope bound at sign-in,
+            never from a request field.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTicket'
+      responses:
+        '201':
+          description: The ticket, in state `new`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: >-
+            `ticket-limit`: the tenant already holds 50 tickets that are not
+            `closed`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /tickets:
+    get:
+      operationId: listTickets
+      summary: List tickets, oldest first
+      description: >-
+        The owner console's ticket list, every contact request at every tier.
+        With `state`, only tickets in that state; with `kind`, only that kind;
+        with both, tickets that match both. Oldest `created_at` first.
+      security:
+        - ownerCredential: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Only tickets in this state.
+          schema:
+            $ref: '#/components/schemas/TicketState'
+        - name: kind
+          in: query
+          required: false
+          description: Only tickets of this kind.
+          schema:
+            $ref: '#/components/schemas/TicketKind'
+      responses:
+        '200':
+          description: The matching tickets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketList'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /tickets/{id}/state:
+    post:
+      operationId: moveTicket
+      summary: Move a ticket to another state
+      description: >-
+        The owner moves a ticket through its lifecycle. The states are `new`,
+        `open`, `replied` and `closed`. A ticket is `new` until the owner first
+        moves it, and is never moved back to `new`. From `new` it may go to
+        `open`, `replied` or `closed`; from `open` to `replied` or `closed`;
+        from `replied` to `open` (the customer wrote again) or `closed`; from
+        `closed` to `open` (reopened). Any other move, including to the state
+        the ticket is already in, is refused (409 `illegal-transition`) and
+        changes nothing. Every move is appended to the ticket's `history`.
+      security:
+        - ownerCredential: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The ticket's `ticket_id`.
+          schema:
+            $ref: '#/components/schemas/Uuid'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveTicket'
+      responses:
+        '200':
+          description: The ticket, in its new state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+        '400':
+          $ref: '#/components/responses/Rejected'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No such ticket (`ticket-not-found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: >-
+            `illegal-transition`: the lifecycle does not allow this move from
+            the ticket's current state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
 components:
   securitySchemes:
     tenantCredential:
@@ -330,6 +475,9 @@ components:
         - demo-not-promotable
         - request-already-open
         - not-approvable
+        - ticket-not-found
+        - illegal-transition
+        - ticket-limit
       description: >-
         A machine-readable reason. A caller branches on this and never on
         wording; the service sends no prose.
@@ -461,6 +609,108 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PromotionRequest'
+      additionalProperties: false
+    TicketKind:
+      type: string
+      enum: [essentials, professional-enquiry, support]
+      description: >-
+        What the tenant raised. `essentials` is a request for the Essentials
+        tier, recorded with its promotion request. `professional-enquiry` opens
+        the dialogue about the Professional tier. `support` is a support
+        ticket.
+    TicketState:
+      type: string
+      enum: [new, open, replied, closed]
+    TicketStateChange:
+      type: object
+      description: One entry in a ticket's history.
+      required: [state, at]
+      properties:
+        state:
+          $ref: '#/components/schemas/TicketState'
+        at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    CreateTicket:
+      type: object
+      required: [kind, contact, message]
+      properties:
+        kind:
+          type: string
+          enum: [professional-enquiry, support]
+        contact:
+          type: string
+          minLength: 3
+          maxLength: 254
+          description: The address the owner replies to.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+      additionalProperties: false
+    MoveTicket:
+      type: object
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/TicketState'
+      additionalProperties: false
+    Ticket:
+      type: object
+      required:
+        - ticket_id
+        - tenant_id
+        - kind
+        - state
+        - contact
+        - message
+        - request_id
+        - created_at
+        - updated_at
+        - history
+      properties:
+        ticket_id:
+          $ref: '#/components/schemas/Uuid'
+        tenant_id:
+          $ref: '#/components/schemas/Uuid'
+        kind:
+          $ref: '#/components/schemas/TicketKind'
+        state:
+          $ref: '#/components/schemas/TicketState'
+        contact:
+          type: [string, 'null']
+          description: The address the tenant gave; null for an Essentials request, which has no form.
+        message:
+          type: [string, 'null']
+          description: What the tenant wrote; null for an Essentials request.
+        request_id:
+          description: The promotion request an Essentials ticket belongs to; null for any other kind.
+          oneOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: When the ticket last changed state; its `created_at` until it first does.
+        history:
+          type: array
+          minItems: 1
+          description: Every state the ticket has been in, oldest first, beginning with `new`.
+          items:
+            $ref: '#/components/schemas/TicketStateChange'
+      additionalProperties: false
+    TicketList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Ticket'
       additionalProperties: false
     TenantTier:
       type: string

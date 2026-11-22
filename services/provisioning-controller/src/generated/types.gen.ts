@@ -29,6 +29,15 @@ export type CreatePromotionRequest = {
     tier: PromotionTier;
 };
 
+export type CreateTicket = {
+    /**
+     * The address the owner replies to.
+     */
+    contact: string;
+    kind: 'professional-enquiry' | 'support';
+    message: string;
+};
+
 export type Demo = {
     /**
      * The demo's hostname, or null before one is allocated.
@@ -54,7 +63,11 @@ export type ErrorBody = {
 /**
  * A machine-readable reason. A caller branches on this and never on wording; the service sends no prose.
  */
-export type ErrorCode = 'unauthenticated' | 'forbidden' | 'tenant-not-found' | 'demo-not-found' | 'request-not-found' | 'demo-not-promotable' | 'request-already-open' | 'not-approvable';
+export type ErrorCode = 'unauthenticated' | 'forbidden' | 'tenant-not-found' | 'demo-not-found' | 'request-not-found' | 'demo-not-promotable' | 'request-already-open' | 'not-approvable' | 'ticket-not-found' | 'illegal-transition' | 'ticket-limit';
+
+export type MoveTicket = {
+    state: TicketState;
+};
 
 /**
  * The generated server's own `application/problem+json` answer to a request the spec forbids.
@@ -103,6 +116,53 @@ export type Tenant = {
 export type TenantState = 'provisioning' | 'live';
 
 export type TenantTier = 'demo' | 'essentials';
+
+export type Ticket = {
+    /**
+     * The address the tenant gave; null for an Essentials request, which has no form.
+     */
+    contact: string | null;
+    created_at: string;
+    /**
+     * Every state the ticket has been in, oldest first, beginning with `new`.
+     */
+    history: Array<TicketStateChange>;
+    kind: TicketKind;
+    /**
+     * What the tenant wrote; null for an Essentials request.
+     */
+    message: string | null;
+    /**
+     * The promotion request an Essentials ticket belongs to; null for any other kind.
+     */
+    request_id: Uuid | null;
+    state: TicketState;
+    tenant_id: Uuid;
+    ticket_id: Uuid;
+    /**
+     * When the ticket last changed state; its `created_at` until it first does.
+     */
+    updated_at: string;
+};
+
+/**
+ * What the tenant raised. `essentials` is a request for the Essentials tier, recorded with its promotion request. `professional-enquiry` opens the dialogue about the Professional tier. `support` is a support ticket.
+ */
+export type TicketKind = 'essentials' | 'professional-enquiry' | 'support';
+
+export type TicketList = {
+    items: Array<Ticket>;
+};
+
+export type TicketState = 'new' | 'open' | 'replied' | 'closed';
+
+/**
+ * One entry in a ticket's history.
+ */
+export type TicketStateChange = {
+    at: string;
+    state: TicketState;
+};
 
 /**
  * A canonical lower-case UUID.
@@ -322,3 +382,133 @@ export type CreatePromotionRequestResponses = {
 };
 
 export type CreatePromotionRequestResponse = CreatePromotionRequestResponses[keyof CreatePromotionRequestResponses];
+
+export type CreateTicketData = {
+    body: CreateTicket;
+    path: {
+        /**
+         * The platform tenant id, taken from the scope bound at sign-in, never from a request field.
+         */
+        tenant: Uuid;
+    };
+    query?: never;
+    url: '/tenants/{tenant}/tickets';
+};
+
+export type CreateTicketErrors = {
+    /**
+     * The request does not match this spec (a path, query or body the spec forbids). Answered by the generated server before any handler runs.
+     */
+    400: ProblemBody;
+    /**
+     * No credential, or one nobody issued (`unauthenticated`).
+     */
+    401: ErrorBody;
+    /**
+     * A real credential of the wrong kind for this call, or a tenant credential on another tenant's path (`forbidden`).
+     */
+    403: ErrorBody;
+    /**
+     * `ticket-limit`: the tenant already holds 50 tickets that are not `closed`.
+     */
+    409: ErrorBody;
+};
+
+export type CreateTicketError = CreateTicketErrors[keyof CreateTicketErrors];
+
+export type CreateTicketResponses = {
+    /**
+     * The ticket, in state `new`.
+     */
+    201: Ticket;
+};
+
+export type CreateTicketResponse = CreateTicketResponses[keyof CreateTicketResponses];
+
+export type ListTicketsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Only tickets in this state.
+         */
+        state?: TicketState;
+        /**
+         * Only tickets of this kind.
+         */
+        kind?: TicketKind;
+    };
+    url: '/tickets';
+};
+
+export type ListTicketsErrors = {
+    /**
+     * The request does not match this spec (a path, query or body the spec forbids). Answered by the generated server before any handler runs.
+     */
+    400: ProblemBody;
+    /**
+     * No credential, or one nobody issued (`unauthenticated`).
+     */
+    401: ErrorBody;
+    /**
+     * A real credential of the wrong kind for this call, or a tenant credential on another tenant's path (`forbidden`).
+     */
+    403: ErrorBody;
+};
+
+export type ListTicketsError = ListTicketsErrors[keyof ListTicketsErrors];
+
+export type ListTicketsResponses = {
+    /**
+     * The matching tickets.
+     */
+    200: TicketList;
+};
+
+export type ListTicketsResponse = ListTicketsResponses[keyof ListTicketsResponses];
+
+export type MoveTicketData = {
+    body: MoveTicket;
+    path: {
+        /**
+         * The ticket's `ticket_id`.
+         */
+        id: Uuid;
+    };
+    query?: never;
+    url: '/tickets/{id}/state';
+};
+
+export type MoveTicketErrors = {
+    /**
+     * The request does not match this spec (a path, query or body the spec forbids). Answered by the generated server before any handler runs.
+     */
+    400: ProblemBody;
+    /**
+     * No credential, or one nobody issued (`unauthenticated`).
+     */
+    401: ErrorBody;
+    /**
+     * A real credential of the wrong kind for this call, or a tenant credential on another tenant's path (`forbidden`).
+     */
+    403: ErrorBody;
+    /**
+     * No such ticket (`ticket-not-found`).
+     */
+    404: ErrorBody;
+    /**
+     * `illegal-transition`: the lifecycle does not allow this move from the ticket's current state.
+     */
+    409: ErrorBody;
+};
+
+export type MoveTicketError = MoveTicketErrors[keyof MoveTicketErrors];
+
+export type MoveTicketResponses = {
+    /**
+     * The ticket, in its new state.
+     */
+    200: Ticket;
+};
+
+export type MoveTicketResponse = MoveTicketResponses[keyof MoveTicketResponses];

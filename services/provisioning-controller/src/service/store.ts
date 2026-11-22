@@ -7,7 +7,11 @@ import type {
   PromotionRequestState,
   PromotionTier,
   Tenant,
+  Ticket,
+  TicketKind,
+  TicketState,
 } from '../generated/index.js';
+import { canMoveTicket, OPEN_TICKET_LIMIT } from './ticketLifecycle.js';
 
 /**
  * The provisioning API's rules over a set of tenants and their requests, in
@@ -15,6 +19,10 @@ import type {
  * real service (./service.ts) adds `onChange`, which is called with the whole
  * state after every change so it can be written down, and restores it at start.
  * The rules below are the ones the contract (openapi.yaml) states, nothing more.
+ *
+ * Tickets are the owner's record of every contact request a tenant raised. A
+ * promotion request records its own ticket in the same change; a support
+ * ticket or an enquiry is recorded by `createTicket`.
  */
 
 /** The demo states a promotion can be asked from (the portal's `demoPromotion` precondition). */
@@ -38,6 +46,7 @@ export interface StoreState {
   readonly sequence: number;
   readonly tenants: readonly TenantRecord[];
   readonly requests: readonly PromotionRequest[];
+  readonly tickets: readonly Ticket[];
 }
 
 export interface StoreOptions {
@@ -45,6 +54,8 @@ export interface StoreOptions {
   readonly now?: () => Date;
   /** Id source; a test passes a counter. */
   readonly newId?: () => string;
+  /** Id source for tickets alone, so recording one never moves the ids of requests. */
+  readonly newTicketId?: () => string;
   /**
    * Whether approving also finishes provisioning, so the tenant is `live` the
    * moment the request is approved. Off, the tenant stays `provisioning` until
@@ -73,11 +84,27 @@ export type ApproveOutcome =
   | { readonly kind: 'no-request' }
   | { readonly kind: 'not-approvable' };
 
+export type CreateTicketOutcome =
+  { readonly kind: 'recorded'; readonly ticket: Ticket } | { readonly kind: 'limit' };
+
+export type MoveTicketOutcome =
+  | { readonly kind: 'moved'; readonly ticket: Ticket }
+  | { readonly kind: 'no-ticket' }
+  | { readonly kind: 'illegal' };
+
+/** What a tenant wrote on a form; an Essentials request has none. */
+export interface TicketText {
+  readonly contact: string;
+  readonly message: string;
+}
+
 export class ProvisioningStore {
   private readonly tenants = new Map<string, TenantRecord>();
   private readonly requests = new Map<string, PromotionRequest>();
+  private readonly tickets = new Map<string, Ticket>();
   private readonly now: () => Date;
   private readonly newId: () => string;
+  private readonly newTicketId: () => string;
   private readonly settleOnApprove: boolean;
   private readonly onChange: ((state: StoreState) => void) | undefined;
   private readonly refresh: (() => void) | undefined;
@@ -86,6 +113,7 @@ export class ProvisioningStore {
   constructor(options: StoreOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.newId = options.newId ?? randomUUID;
+    this.newTicketId = options.newTicketId ?? randomUUID;
     this.settleOnApprove = options.settleOnApprove ?? true;
     this.onChange = options.onChange;
     this.refresh = options.refresh;
@@ -98,6 +126,7 @@ export class ProvisioningStore {
       sequence: this.sequence,
       tenants: [...this.tenants.values()].map((record) => structuredClone(record)),
       requests: [...this.requests.values()].map((request) => structuredClone(request)),
+      tickets: [...this.tickets.values()].map((ticket) => structuredClone(ticket)),
     };
   }
 
@@ -105,10 +134,12 @@ export class ProvisioningStore {
   restore(state: StoreState): void {
     this.tenants.clear();
     this.requests.clear();
+    this.tickets.clear();
     for (const record of state.tenants)
       this.tenants.set(record.tenant.tenant_id, structuredClone(record));
     for (const request of state.requests)
       this.requests.set(request.request_id, structuredClone(request));
+    for (const ticket of state.tickets) this.tickets.set(ticket.ticket_id, structuredClone(ticket));
     this.sequence = state.sequence;
   }
 
@@ -215,14 +246,99 @@ export class ProvisioningStore {
       requested_at: this.now().toISOString(),
       approval: null,
     };
+    const ticket = this.newTicket(tenantId, tier, request.requested_at, null, request.request_id);
     this.requests.set(request.request_id, request);
+    this.tickets.set(ticket.ticket_id, ticket);
     try {
       this.persist();
     } catch (error) {
       this.requests.delete(request.request_id);
+      this.tickets.delete(ticket.ticket_id);
       throw error;
     }
     return { kind: 'recorded', request };
+  }
+
+  private newTicket(
+    tenantId: string,
+    kind: TicketKind,
+    at: string,
+    text: TicketText | null,
+    requestId: string | null
+  ): Ticket {
+    return {
+      ticket_id: this.newTicketId(),
+      tenant_id: tenantId,
+      kind,
+      state: 'new',
+      contact: text?.contact ?? null,
+      message: text?.message ?? null,
+      request_id: requestId,
+      created_at: at,
+      updated_at: at,
+      history: [{ state: 'new', at }],
+    };
+  }
+
+  /** Every ticket, oldest first, optionally only those in one state and of one kind. */
+  listTickets(state: TicketState | undefined, kind: TicketKind | undefined): Ticket[] {
+    this.refresh?.();
+    return [...this.tickets.values()]
+      .filter((ticket) => state === undefined || ticket.state === state)
+      .filter((ticket) => kind === undefined || ticket.kind === kind)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }
+
+  /**
+   * Records a support ticket or an enquiry for a tenant, in state `new`. A tenant
+   * that already holds the limit of tickets that are not closed records nothing.
+   */
+  createTicket(
+    tenantId: string,
+    kind: Exclude<TicketKind, 'essentials'>,
+    text: TicketText
+  ): CreateTicketOutcome {
+    this.refresh?.();
+    const held = [...this.tickets.values()].filter(
+      (ticket) => ticket.tenant_id === tenantId && ticket.state !== 'closed'
+    ).length;
+    if (held >= OPEN_TICKET_LIMIT) return { kind: 'limit' };
+    const ticket = this.newTicket(tenantId, kind, this.now().toISOString(), text, null);
+    this.tickets.set(ticket.ticket_id, ticket);
+    try {
+      this.persist();
+    } catch (error) {
+      this.tickets.delete(ticket.ticket_id);
+      throw error;
+    }
+    return { kind: 'recorded', ticket };
+  }
+
+  /**
+   * Moves a ticket to another state if the lifecycle allows it, and records the
+   * move in its history. A move the lifecycle refuses, to the state the ticket
+   * is already in included, changes nothing.
+   */
+  moveTicket(ticketId: string, to: TicketState): MoveTicketOutcome {
+    this.refresh?.();
+    const existing = this.tickets.get(ticketId);
+    if (existing === undefined) return { kind: 'no-ticket' };
+    if (!canMoveTicket(existing.state, to)) return { kind: 'illegal' };
+    const at = this.now().toISOString();
+    const moved: Ticket = {
+      ...existing,
+      state: to,
+      updated_at: at,
+      history: [...existing.history, { state: to, at }],
+    };
+    this.tickets.set(ticketId, moved);
+    try {
+      this.persist();
+    } catch (error) {
+      this.tickets.set(ticketId, existing);
+      throw error;
+    }
+    return { kind: 'moved', ticket: moved };
   }
 
   /**
