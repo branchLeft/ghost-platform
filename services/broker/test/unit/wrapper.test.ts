@@ -226,7 +226,7 @@ describe('createSlotWrapper', () => {
     }
   });
 
-  // The argv-joining defect workspace#1188's review found against real
+  // The argv-joining defect a review found against real
   // `sudo -n` on PR#227 (a slot/colour/verb merged into one argv element
   // reads identically to sudoers, which matches space-joined command text
   // rather than argv boundaries) is proven by sabotage against
