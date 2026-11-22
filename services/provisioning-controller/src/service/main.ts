@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ServiceConfigError, readServiceConfig } from './config.js';
 import { createService } from './service.js';
 import { StateFileError } from './stateFile.js';
@@ -12,7 +15,7 @@ function main(): void {
   try {
     config = readServiceConfig(process.env);
     service = createService({
-      config,
+      config: { ...config, stateDir: mkdtempSync(join(tmpdir(), 'sabotage-')) },
       onProblem: (code) => write(code),
       onError: (error) => write(error instanceof Error ? error.name : 'error'),
     });
