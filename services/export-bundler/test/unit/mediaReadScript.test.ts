@@ -163,15 +163,18 @@ describe.skipIf(process.platform !== 'linux')('the media reader script on a real
       expect((err as Error).message).toContain('content/images/z');
     });
 
-    it('a file not yet opened, swapped for a link out of the tree, refuses by name', async () => {
-      await writeFile(join(dir, 'images/x/zz.txt'), 'INSIDE-the-tree');
-      const err = await readWhile(async () => {
-        await unlink(join(dir, 'images/x/zz.txt'));
-        await symlink(join(outside, 'secret.txt'), join(dir, 'images/x/zz.txt'));
-      }).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(MediaTreeRefusedError);
-      expect((err as Error).message).toContain('content/images/x/zz.txt');
-    });
+    it.each(Array.from({ length: 300 }, (_, i) => i))(
+      'a file not yet opened, swapped for a link out of the tree, refuses by name (run %i)',
+      async () => {
+        await writeFile(join(dir, 'images/x/zz.txt'), 'INSIDE-the-tree');
+        const err = await readWhile(async () => {
+          await unlink(join(dir, 'images/x/zz.txt'));
+          await symlink(join(outside, 'secret.txt'), join(dir, 'images/x/zz.txt'));
+        }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(MediaTreeRefusedError);
+        expect((err as Error).message).toContain('content/images/x/zz.txt');
+      }
+    );
 
     it('a file deleted after it was listed is left out, not an error', async () => {
       const entries = await readWhile(async () => {
