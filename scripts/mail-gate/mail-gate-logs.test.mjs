@@ -181,3 +181,66 @@ test('text that only looks like the new shapes passes through unchanged', () => 
     assert.equal(redact(line, []), line);
   }
 });
+
+// Sibling spellings of the shapes above, one test each. Every value is an obvious fake.
+test('a set_cookie key with an underscore is replaced', () => {
+  const out = redact('{"set_cookie":"ghost-admin.session=under-score-FAKE; Path=/"}', []);
+  assert.equal(out.includes('under-score-FAKE'), false, out);
+});
+
+test('a cookies key, in the plural, is replaced', () => {
+  const out = redact('cookies: ghost-admin.session=plural-FAKE', []);
+  assert.equal(out.includes('plural-FAKE'), false, out);
+});
+
+test('a quoted Cookie value is replaced to its closing quote', () => {
+  const out = redact('Cookie: a="quoted-FAKE"', []);
+  assert.equal(out.includes('quoted-FAKE'), false, out);
+});
+
+test('a `]` inside a cookie array element does not end the redaction early', () => {
+  const out = redact('{"set-cookie":["a=arr-ten]FAKE-tail; Path=/","b=after-FAKE"]}', []);
+  assert.equal(out.includes('FAKE-tail'), false, out);
+  assert.equal(out.includes('after-FAKE'), false, out);
+});
+
+test('a Digest Authorization value is replaced in every parameter', () => {
+  const out = redact(
+    'Authorization: Digest username="dig-user", realm="r.example.test", nonce="dig-nonce-FAKE", response="dig-resp-FAKE"',
+    []
+  );
+  assert.equal(out.includes('dig-nonce-FAKE'), false, out);
+  assert.equal(out.includes('dig-resp-FAKE'), false, out);
+});
+
+test('an Authorization value after a gap of more than 8 non-word characters is replaced', () => {
+  const out = redact(`authorization${'"'.repeat(12)}Bearer wide-gap-FAKE`, []);
+  assert.equal(out.includes('wide-gap-FAKE'), false, out);
+});
+
+test('an Authorization value inside double-escaped JSON is replaced', () => {
+  const e = '\\\\\\"'; // three backslashes and a quote: one escape level below the log's own
+  const out = redact(`{"log":"{${e}authorization${e}:${e}Bearer dbl-esc-FAKE${e}}"}`, []);
+  assert.equal(out.includes('dbl-esc-FAKE'), false, out);
+});
+
+test('a token after a plain ampersand is replaced', () => {
+  const out = redact('https://gate.example.test/?action=signin&token=amp-plain-FAKE&x=1', []);
+  assert.equal(out.includes('amp-plain-FAKE'), false, out);
+  assert.ok(out.includes('x=1'), out);
+});
+
+test('a magic-link token percent-encoded three times is replaced, the rest kept', () => {
+  const out = redact(
+    'https://r.example.test/go?u=https%25253A%25252F%25252Fg.example.test%25252F%25253Ftoken%25253Dtriple-FAKE%252526x%25253D1',
+    []
+  );
+  assert.equal(out.includes('triple-FAKE'), false, out);
+  assert.ok(out.includes('x%25253D1'), out);
+});
+
+test('a JSON "token" key with a string value is replaced', () => {
+  const out = redact('{"token":"json-tok-FAKE","expires":60}', []);
+  assert.equal(out.includes('json-tok-FAKE'), false, out);
+  assert.ok(out.includes('"expires":60'), out);
+});

@@ -266,6 +266,11 @@ jobs:
       # `closed`. Real local HTTP servers and a stand-in docker; no Docker, no
       # root. The sabotage cases break the real source and require the matching
       # check red.
+      #
+      # The same directory holds the health collector's native half
+      # (portal/host/branchleft-health-collect.py): a colour it cannot read must
+      # be reported as null, never left out, so the portal writes `unknown` and
+      # not the last good reading.
       - name: Support-access collector host program tests and sabotage proof
         run: python3 -m unittest discover -s portal/host -p 'test_*.py' -v
 
@@ -325,7 +330,7 @@ jobs:
       # gets its own step here: the infra workflows are path-filtered, and a
       # check there would not run on a pull request that breaks the gate.
       - name: Check the apply gate (hosts)
-        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           workflow: .github/workflows/infra-hosts-ci.yml
           pairs: plan:apply
@@ -334,7 +339,7 @@ jobs:
           plan-file: preview-plan.json
 
       - name: Check the apply gate (demo host)
-        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           workflow: .github/workflows/infra-demo-host-ci.yml
           pairs: plan:apply

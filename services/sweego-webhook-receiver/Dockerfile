@@ -52,6 +52,11 @@ RUN pnpm run build
 # imports Node's built-ins alone, so the shipped image carries no packages.
 RUN pnpm prune --prod && rm -rf src
 
+# The state directory is the one path the non-root process writes to. The image
+# creates it owned by the runtime user, so a fresh named volume mounted here
+# inherits that ownership rather than root's.
+RUN mkdir -p /state && chown node:node /state
+
 USER node
 
 # The webhook listener and the drain listener. Both bind to the addresses in

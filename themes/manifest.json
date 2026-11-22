@@ -1017,6 +1017,7 @@
     {
       "family": "Inter",
       "dir": "inter",
+      "fallback": "sans-serif",
       "upstream": "https://github.com/rsms/inter",
       "commit": "e3a3d4c57d5ecc01453a575621882a384c1995a3",
       "release": "v4.1",
@@ -1051,6 +1052,7 @@
     {
       "family": "Lora",
       "dir": "lora",
+      "fallback": "serif",
       "upstream": "https://github.com/cyrealtype/Lora-Cyrillic",
       "commit": "0caf2e6389163dd49e5f973d7ed8bf42e60d83a2",
       "release": "v3.021",
@@ -1085,6 +1087,7 @@
     {
       "family": "EB Garamond",
       "dir": "eb-garamond",
+      "fallback": "serif",
       "upstream": "https://github.com/octaviopardo/EBGaramond12",
       "commit": "106a4a6d377987459ae5e68673a4570f13b957fb",
       "licence": {
@@ -1118,6 +1121,7 @@
     {
       "family": "Mulish",
       "dir": "mulish",
+      "fallback": "sans-serif",
       "upstream": "https://github.com/googlefonts/mulish",
       "commit": "f6e7d9355bb88edbf33b01b23f5375909109c7f9",
       "licence": {
@@ -1179,6 +1183,7 @@
     {
       "family": "JetBrains Mono",
       "dir": "jetbrains-mono",
+      "fallback": "monospace",
       "upstream": "https://github.com/JetBrains/JetBrainsMono",
       "commit": "cd5227bd1f61dff3bbd6c814ceaf7ffd95e947d9",
       "release": "v2.304",
@@ -1234,6 +1239,7 @@
     {
       "family": "Source Serif 4",
       "dir": "source-serif-4",
+      "fallback": "serif",
       "upstream": "https://github.com/adobe-fonts/source-serif",
       "commit": "17cfec64bc132c81255dda15ea64a0bf27ef4da9",
       "release": "4.005R",
@@ -1270,6 +1276,7 @@
     {
       "family": "IBM Plex Sans",
       "dir": "ibm-plex-sans",
+      "fallback": "sans-serif",
       "upstream": "https://github.com/IBM/plex",
       "commit": "242c4cccd37e87985a5337815c99b960ef13c65c",
       "release": "v6.4.2",
@@ -1332,6 +1339,7 @@
     {
       "family": "IBM Plex Serif",
       "dir": "ibm-plex-serif",
+      "fallback": "serif",
       "upstream": "https://github.com/IBM/plex",
       "commit": "242c4cccd37e87985a5337815c99b960ef13c65c",
       "release": "v6.4.2",
@@ -1394,6 +1402,7 @@
     {
       "family": "IBM Plex Mono",
       "dir": "ibm-plex-mono",
+      "fallback": "monospace",
       "upstream": "https://github.com/IBM/plex",
       "commit": "242c4cccd37e87985a5337815c99b960ef13c65c",
       "release": "v6.4.2",
@@ -1450,6 +1459,33 @@
           "style": "italic",
           "weight": "700",
           "sha256": "b0bfaa05c90c662c164ca0515ec42baddac93129eab1af067f8872d84f10df46"
+        }
+      ]
+    },
+    {
+      "family": "Space Grotesk",
+      "dir": "space-grotesk",
+      "fallback": "sans-serif",
+      "upstream": "https://github.com/floriankarsten/space-grotesk",
+      "commit": "03507d024a01282884232081fc6011c09ff4e849",
+      "licence": {
+        "spdx": "OFL-1.1",
+        "file": "OFL.txt",
+        "copyright": "Copyright 2020 The Space Grotesk Project Authors (https://github.com/floriankarsten/space-grotesk)",
+        "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72"
+      },
+      "reservedFontName": null,
+      "modification": "none",
+      "source": {
+        "kind": "git-file"
+      },
+      "files": [
+        {
+          "from": "fonts/woff2/SpaceGrotesk[wght].woff2",
+          "to": "SpaceGrotesk-Variable.woff2",
+          "style": "normal",
+          "weight": "300 700",
+          "sha256": "8e085aa438094f11487a836652edd5c054fa6a96f63fc7c282105ee3a4b08c07"
         }
       ]
     }

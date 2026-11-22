@@ -42,63 +42,57 @@ class CheckTests(unittest.TestCase):
         # same two strings, so this configuration could never pass -- that
         # was the whole conflict the rename exists to resolve.
         missing, shadowed = guard.check(
-            environment_names=[
-                "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-                "TENANT_STATE_S3_ACCESS_KEY_ID",
-                "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-            ],
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
             repository_names=["HETZNER_S3_ACCESS_KEY_ID", "HETZNER_S3_SECRET_ACCESS_KEY"],
         )
         self.assertFalse(missing)
         self.assertFalse(shadowed)
+
+    def test_the_job_holds_no_shared_state_credential_of_its_own(self):
+        names = guard.REQUIRED_SECRETS | guard.PER_RUN_SECRETS
+        self.assertFalse({n for n in names if n.startswith("TENANT_STATE_S3_")})
+        self.assertFalse({n for n in names if n.startswith("HETZNER_S3_")})
 
     def test_all_required_secrets_missing(self):
         missing, shadowed = guard.check(environment_names=[], repository_names=[])
         self.assertEqual(missing, guard.REQUIRED_SECRETS)
         self.assertFalse(shadowed)
 
-    def test_one_required_secret_missing(self):
+    def test_the_per_run_pair_is_not_required_ahead_of_a_run(self):
         missing, shadowed = guard.check(
-            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY", "TENANT_STATE_S3_ACCESS_KEY_ID"],
-            repository_names=[],
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"], repository_names=[]
         )
-        self.assertEqual(missing, {"TENANT_STATE_S3_SECRET_ACCESS_KEY"})
+        self.assertFalse(missing)
         self.assertFalse(shadowed)
 
     def test_shadowed_even_though_present_in_the_environment(self):
         # Present is not the whole story: `secrets.X` would still resolve the
         # repository copy for a run this environment never gated.
         missing, shadowed = guard.check(
-            environment_names=[
-                "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-                "TENANT_STATE_S3_ACCESS_KEY_ID",
-                "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-            ],
-            repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
+            repository_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
         )
         self.assertFalse(missing)
-        self.assertEqual(shadowed, {"TENANT_STATE_S3_ACCESS_KEY_ID"})
+        self.assertEqual(shadowed, {"TENANT_PROVISIONING_APP_PRIVATE_KEY"})
+
+    def test_a_repository_level_copy_of_the_minted_pair_is_shadowed(self):
+        _, shadowed = guard.check(
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
+            repository_names=["MINTED_STATE_ACCESS_KEY_ID", "MINTED_STATE_SECRET_ACCESS_KEY"],
+        )
+        self.assertEqual(shadowed, guard.PER_RUN_SECRETS)
 
     def test_missing_and_shadowed_can_both_fire_at_once(self):
-        # Scoped for one secret, never touched for the other two, one of
-        # which also has a stale repository-level copy -- nothing about the
-        # two checks is mutually exclusive.
         missing, shadowed = guard.check(
-            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
-            repository_names=["TENANT_STATE_S3_ACCESS_KEY_ID"],
+            environment_names=[],
+            repository_names=["MINTED_STATE_ACCESS_KEY_ID"],
         )
-        self.assertEqual(
-            missing, {"TENANT_STATE_S3_ACCESS_KEY_ID", "TENANT_STATE_S3_SECRET_ACCESS_KEY"}
-        )
-        self.assertEqual(shadowed, {"TENANT_STATE_S3_ACCESS_KEY_ID"})
+        self.assertEqual(missing, guard.REQUIRED_SECRETS)
+        self.assertEqual(shadowed, {"MINTED_STATE_ACCESS_KEY_ID"})
 
     def test_an_unrelated_repository_secret_is_never_a_shadow(self):
         missing, shadowed = guard.check(
-            environment_names=[
-                "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-                "TENANT_STATE_S3_ACCESS_KEY_ID",
-                "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-            ],
+            environment_names=["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
             repository_names=["SOME_OTHER_SECRET", "HCLOUD_TOKEN_ESTATE"],
         )
         self.assertFalse(missing)
@@ -126,11 +120,7 @@ class MainTests(unittest.TestCase):
             env_file = self._write(
                 directory,
                 "env.txt",
-                [
-                    "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-                    "TENANT_STATE_S3_ACCESS_KEY_ID",
-                    "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                ],
+                ["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
             )
             repo_file = self._write(
                 directory, "repo.txt", ["HETZNER_S3_ACCESS_KEY_ID", "HETZNER_S3_SECRET_ACCESS_KEY"]
@@ -159,13 +149,9 @@ class MainTests(unittest.TestCase):
             env_file = self._write(
                 directory,
                 "env.txt",
-                [
-                    "TENANT_PROVISIONING_APP_PRIVATE_KEY",
-                    "TENANT_STATE_S3_ACCESS_KEY_ID",
-                    "TENANT_STATE_S3_SECRET_ACCESS_KEY",
-                ],
+                ["TENANT_PROVISIONING_APP_PRIVATE_KEY"],
             )
-            repo_file = self._write(directory, "repo.txt", ["TENANT_STATE_S3_ACCESS_KEY_ID"])
+            repo_file = self._write(directory, "repo.txt", ["MINTED_STATE_ACCESS_KEY_ID"])
             stderr = io.StringIO()
             with redirect_stderr(stderr):
                 rc = guard.main(["--environment-secrets", env_file, "--repository-secrets", repo_file])
@@ -197,7 +183,7 @@ class MessageFunctionsTests(unittest.TestCase):
         self.assertIn("gh secret set <NAME> --repo acme/widgets --env tenant-provisioning", message)
 
     def test_shadowed_message_interpolates_the_given_repo(self):
-        message = guard._shadowed_message(frozenset({"TENANT_STATE_S3_ACCESS_KEY_ID"}), "acme/widgets")
+        message = guard._shadowed_message(frozenset({"MINTED_STATE_ACCESS_KEY_ID"}), "acme/widgets")
         self.assertIn("gh secret delete <NAME> --repo acme/widgets", message)
 
 
@@ -255,8 +241,8 @@ name: fixture
 jobs:
   provision:
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.TENANT_STATE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY }}
+      MINTED_ID: ${{ secrets.MINTED_STATE_ACCESS_KEY_ID }}
+      MINTED_SECRET: ${{ secrets.MINTED_STATE_SECRET_ACCESS_KEY }}
     steps:
       - name: Mint
         env:
@@ -292,15 +278,15 @@ class VerifyCoverageTests(unittest.TestCase):
 
     def test_renamed_workflow_secret_is_red_and_names_both_sides(self):
         renamed = WORKFLOW_FIXTURE.replace(
-            "secrets.TENANT_STATE_S3_SECRET_ACCESS_KEY", "secrets.TENANT_STATE_S3_SECRET_KEY"
+            "secrets.MINTED_STATE_SECRET_ACCESS_KEY", "secrets.MINTED_STATE_SECRET_KEY"
         )
         rc, _, stderr = self._run(self._workflow(renamed))
         self.assertEqual(rc, 1)
         self.assertIn("::error::", stderr)
         # The workflow now reads a name the guard does not cover...
-        self.assertIn("TENANT_STATE_S3_SECRET_KEY", stderr)
-        # ...and the guard still requires a name the workflow no longer reads.
-        self.assertIn("TENANT_STATE_S3_SECRET_ACCESS_KEY", stderr)
+        self.assertIn("MINTED_STATE_SECRET_KEY", stderr)
+        # ...and the guard still covers a name the workflow no longer reads.
+        self.assertIn("MINTED_STATE_SECRET_ACCESS_KEY", stderr)
 
     def test_stale_required_entry_is_red(self):
         with patch.object(guard, "REQUIRED_SECRETS", guard.REQUIRED_SECRETS | {"TENANT_RETIRED_SECRET"}):

@@ -133,3 +133,14 @@ jobs:
 
       - name: Run provisioning scripts' unit tests
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      # Check 3 of the per-tenant state design, run on the real file and on its
+      # seeded control. The self-test requires the seeded fixture to be reported;
+      # the second command requires the real workflow to pass.
+      - name: Check that no workflow names the shared state key
+        run: |
+          python3 scripts/assert-no-shared-state-secret-writes.py --self-test
+          python3 scripts/assert-no-shared-state-secret-writes.py ../../.github/workflows/provision-tenant.yml
+
+      - name: Check the tenant-state sweep against its seeded control
+        run: python3 scripts/sweep-tenant-state-secrets.py --self-test

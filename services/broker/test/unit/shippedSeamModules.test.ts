@@ -193,6 +193,7 @@ describe('stand-ins are reported, the shipped modules carry their markers', () =
         healthy: false,
         notReal: ['adminApi'],
         interim: ['adminApi'],
+        productionVerdictSource: false,
       });
     });
   });

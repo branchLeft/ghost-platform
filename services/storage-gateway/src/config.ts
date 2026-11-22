@@ -16,6 +16,8 @@ export class ConfigError extends Error {
 
 /** Every variable the service reads. Secrets are named by file, never by value. */
 export const ENV = {
+  profile: 'STORAGE_GATEWAY_PROFILE',
+  stateBucket: 'STORAGE_GATEWAY_STATE_BUCKET',
   region: 'STORAGE_GATEWAY_REGION',
   listenHost: 'STORAGE_GATEWAY_LISTEN_HOST',
   listenPort: 'STORAGE_GATEWAY_LISTEN_PORT',
@@ -64,6 +66,18 @@ export const MAX_BODY_CAP_MIB = MAX_UPLOAD_CEILING_MIB;
  */
 export const DEFAULT_TENANT_RATE_PER_SECOND = 100;
 
+/**
+ * The body cap of a state process when none is set: a tenant's largest Pulumi
+ * checkpoint is a few hundred kilobytes, so this is more than an order of
+ * magnitude above it and still far below a media upload.
+ */
+export const DEFAULT_STATE_BODY_MIB = 8;
+/** The most a state process may be set to accept in one body. */
+export const MAX_STATE_BODY_MIB = 64;
+
+/** Which service this process is. `media` is the media listener; `state` is a tenant's Pulumi state. */
+export type GatewayProfile = 'media' | 'state';
+
 export interface ListenConfig {
   readonly host: string;
   readonly port: number;
@@ -81,6 +95,10 @@ export interface AdminConfig extends ListenConfig {
 }
 
 export interface GatewayConfig {
+  /** Which service this process is. Absent in the environment means `media`. */
+  readonly profile: GatewayProfile;
+  /** The state shard's bucket, which every state credential names. Present exactly when `profile` is `state`. */
+  readonly stateBucket?: string;
   /** The region every tenant's credential scope must name. */
   readonly region: string;
   readonly listen: ListenConfig;
@@ -121,6 +139,7 @@ export interface GatewayConfig {
 
 type Env = Readonly<Record<string, string | undefined>>;
 
+const STATE_BUCKET_PATTERN = /^(?!.*\.\.)[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const LOOPBACK: ReadonlySet<string> = new Set(['127.0.0.1', '::1', 'localhost']);
 const TRUE = 'true';
 
@@ -194,6 +213,24 @@ export function loadConfig(env: Env): GatewayConfig {
   }
   const behindProxy = proxyFlag === TRUE;
 
+  const profileRaw = text(env, ENV.profile);
+  if (profileRaw !== undefined && profileRaw !== 'media' && profileRaw !== 'state') {
+    throw new ConfigError(`${ENV.profile} must be media or state`);
+  }
+  const profile: GatewayProfile = profileRaw === 'state' ? 'state' : 'media';
+  const stateBucketRaw = text(env, ENV.stateBucket);
+  if (profile === 'state') {
+    if (stateBucketRaw === undefined) {
+      throw new ConfigError(`${ENV.stateBucket} is not set; refusing to start`);
+    }
+    if (!STATE_BUCKET_PATTERN.test(stateBucketRaw)) {
+      throw new ConfigError(`${ENV.stateBucket} is not a bucket name`);
+    }
+  } else if (stateBucketRaw !== undefined) {
+    // A media process that is given a state bucket is a misconfigured state process.
+    throw new ConfigError(`${ENV.stateBucket} is only for ${ENV.profile}=state`);
+  }
+
   const region = required(env, ENV.region);
   const listen: ListenConfig = {
     host: text(env, ENV.listenHost) ?? '127.0.0.1',
@@ -202,9 +239,9 @@ export function loadConfig(env: Env): GatewayConfig {
   checkTransport(ENV.listenHost, listen.host, tls, behindProxy);
 
   const maxBodyMib = whole(env, ENV.maxBodyMib, {
-    fallback: MAX_BODY_CAP_MIB,
+    fallback: profile === 'state' ? DEFAULT_STATE_BODY_MIB : MAX_BODY_CAP_MIB,
     min: 1,
-    max: MAX_BODY_CAP_MIB,
+    max: profile === 'state' ? MAX_STATE_BODY_MIB : MAX_BODY_CAP_MIB,
   });
   const thresholdRaw = text(env, ENV.spoolThresholdBytes);
 
@@ -280,6 +317,8 @@ export function loadConfig(env: Env): GatewayConfig {
       : absolutePath(env, ENV.writeSwitchesFile);
 
   return {
+    profile,
+    ...(stateBucketRaw === undefined ? {} : { stateBucket: stateBucketRaw }),
     region,
     listen,
     ...(tls === undefined ? {} : { tls }),

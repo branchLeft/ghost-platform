@@ -36,7 +36,7 @@ if (!IMAGE) {
 // The Node image the minter runs in on ops1 (break-glass-mint.md, "Running it").
 const NODE_IMAGE =
   process.env.NODE_IMAGE ??
-  'node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a';
+  'node:26.13.1-alpine@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c';
 const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts');
 
 const TENANT = `bg-lanes-${crypto.randomBytes(3).toString('hex')}`;

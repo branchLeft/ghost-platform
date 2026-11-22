@@ -51,6 +51,7 @@ import {
   type SlotState,
 } from './stateStore.js';
 import { errorLogText, isDetachReceipt, type DetachReceipt, type SlotWrapper } from './wrapper.js';
+import { slotNamesProductionVerdictSource } from './verdictSourceReport.js';
 import { writeArtefacts } from './writeArtefacts.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -824,6 +825,7 @@ async function handleStatus(deps: BrokerDeps, slotParam: string): Promise<Status
     healthy,
     notReal: deps.seamReadiness.notReal.slice(),
     interim: deps.seamReadiness.interim.slice(),
+    productionVerdictSource: await slotNamesProductionVerdictSource(deps.slotDirBase, slot),
   });
 }
 

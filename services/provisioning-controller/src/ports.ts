@@ -27,6 +27,12 @@ export interface ApprovalLedger {
 export interface RegisterEntry {
   readonly tenantId: string;
   readonly mediaFolder: string;
+  /**
+   * The tenant's opaque prefix in the shared state bucket: a random
+   * identifier, never the slug, assigned once and never reissued. The tenant's
+   * state credential is confined to it by the gateway.
+   */
+  readonly stateFolder: string;
   readonly mediaBucket: string;
   readonly appHostSlot: string;
   readonly appHostPort: number;

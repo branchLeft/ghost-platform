@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Unit tests for demo_go_live: a stand-in loaded anywhere refuses, and a
-refusal writes nothing."""
+"""Unit tests for demo_go_live and demo_verdict_evidence: a stand-in loaded
+anywhere refuses, a slot whose rendered configuration names no production
+verdict source refuses, and a refusal writes nothing."""
 
 from __future__ import annotations
 
@@ -16,8 +17,13 @@ import threading
 import unittest
 
 import demo_go_live as dgl
+import demo_verdict_evidence as dve
 
-CLEAN = {"slot": "0", "phase": "running", "healthy": True, "notReal": [], "interim": []}
+CLEAN = {
+    "slot": "0", "phase": "running", "healthy": True, "notReal": [], "interim": [],
+    "productionVerdictSource": True,
+}
+UNWIRED = {**CLEAN, "productionVerdictSource": False}
 
 
 def serve(**per_slot):
@@ -98,7 +104,9 @@ class GoLiveTests(unittest.TestCase):
         self.assertFalse(self.dest.exists())
 
     def test_status_without_the_lists_refuses(self):
-        for body in ({}, {"slot": "0"}, {"notReal": []}, {"interim": []}, {"notReal": "x", "interim": []}, [], "ok"):
+        wired = {"productionVerdictSource": True}
+        for body in ({}, {"slot": "0", **wired}, {"notReal": [], **wired}, {"interim": [], **wired},
+                     {"notReal": "x", "interim": [], **wired}, [], "ok"):
             with self.subTest(body=body):
                 with self.assertRaises(dgl.GoLiveRefused):
                     self.attempt(serve(**{"0": body}))
@@ -115,6 +123,51 @@ class GoLiveTests(unittest.TestCase):
     def test_an_empty_slots_sequence_is_refused_not_passed(self):
         with self.assertRaisesRegex(dgl.GoLiveRefused, "no slots"):
             dgl.check_seams("http://broker.invalid", slots=(), fetch=serve())
+
+    def test_a_slot_with_no_production_verdict_source_refuses_and_writes_nothing(self):
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "slot 0: no production verdict source"):
+            self.attempt(serve(**{"0": UNWIRED}))
+        self.assertFalse(self.dest.exists())
+
+    def test_an_unwired_slot_on_any_slot_refuses(self):
+        for slot in dgl.SLOT_NAMES:
+            with self.subTest(slot=slot):
+                with self.assertRaisesRegex(dgl.GoLiveRefused, f"slot {slot}: no production verdict source"):
+                    self.attempt(serve(**{slot: UNWIRED}))
+                self.assertFalse(self.dest.exists())
+
+    def test_a_status_that_does_not_report_the_verdict_source_refuses(self):
+        without = {k: v for k, v in CLEAN.items() if k != "productionVerdictSource"}
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "carries no productionVerdictSource"):
+            self.attempt(serve(**{"2": without}))
+        self.assertFalse(self.dest.exists())
+
+    def test_only_a_json_true_counts_as_wired(self):
+        for value in (False, None, "true", "yes", 1, 0, [], {}, [True]):
+            with self.subTest(value=value):
+                with self.assertRaises(dgl.GoLiveRefused):
+                    self.attempt(serve(**{"1": {**CLEAN, "productionVerdictSource": value}}))
+                self.assertFalse(self.dest.exists())
+
+    def test_every_unwired_slot_is_named_alongside_a_stand_in(self):
+        with self.assertRaises(dgl.GoLiveRefused) as caught:
+            self.attempt(serve(**{
+                "0": {**UNWIRED, "notReal": ["noop-admin-api"]},
+                "6": UNWIRED,
+            }))
+        message = str(caught.exception)
+        for needle in ("slot 0: test stand-in loaded", "slot 0: no production verdict source",
+                       "slot 6: no production verdict source"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, message)
+
+    def test_a_wired_status_with_a_stand_in_still_refuses(self):
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "noop-drain-source"):
+            self.attempt(serve(**{"4": {**CLEAN, "notReal": ["noop-drain-source"]}}))
+
+    def test_a_wired_status_with_an_unsynchronised_clock_still_refuses(self):
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "clock"):
+            self.attempt(serve(), clock=lambda: False)
 
     def test_unsynchronised_clock_refuses_and_writes_nothing(self):
         with self.assertRaisesRegex(dgl.GoLiveRefused, "clock"):
@@ -145,16 +198,28 @@ class GoLiveTests(unittest.TestCase):
         self.assertIn("noop-drain-source", stderr)
         self.assertFalse(self.dest.exists())
 
+    def test_cli_refuses_an_unwired_demo_with_a_nonzero_exit_and_the_reason(self):
+        code, stderr = self.run_cli(UNWIRED)
+        self.assertNotEqual(code, 0)
+        self.assertIn("no production verdict source", stderr)
+        self.assertFalse(self.dest.exists())
+
     def test_cli_control_a_clean_broker_exits_zero(self):
         code, _ = self.run_cli(CLEAN)
         self.assertEqual(code, 0)
         self.assertTrue(self.dest.exists())
 
 
-def broker_body(slot, not_real=(), interim=()):
+def broker_body(slot, not_real=(), interim=(), wired=True):
     """The body `services/broker/src/app.ts` `handleStatus` sends: slot, phase,
-    healthy, then the two seam lists from `seamReadiness.ts`."""
-    return {"slot": slot, "phase": "running", "healthy": True, "notReal": list(not_real), "interim": list(interim)}
+    healthy, the two seam lists from `seamReadiness.ts`, then whether the slot's
+    rendered configuration names the production verdict source (the test
+    double for the verdict source is `wired=True`)."""
+    return {
+        "slot": slot, "phase": "running", "healthy": True,
+        "notReal": list(not_real), "interim": list(interim),
+        "productionVerdictSource": wired,
+    }
 
 
 class FakeBroker:
@@ -239,6 +304,89 @@ class FetchStatusTests(unittest.TestCase):
         broker.close()
         with self.assertRaises(dgl.GoLiveRefused):
             dgl.check_seams(url)
+
+
+class VerdictEvidenceTests(unittest.TestCase):
+    """The checkpoint-evidence check, over real HTTP: it fails while no slot is
+    wired and passes once the verdict source double reports every slot wired."""
+
+    def start(self, bodies):
+        broker = FakeBroker(bodies)
+        self.addCleanup(broker.close)
+        return broker
+
+    def run_cli(self, url):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = dve.main(["--broker-url", url])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_fails_while_unwired_and_names_every_slot(self):
+        broker = self.start({slot: broker_body(slot, wired=False) for slot in dgl.SLOT_NAMES})
+        code, stdout, stderr = self.run_cli(broker.url)
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        for slot in dgl.SLOT_NAMES:
+            with self.subTest(slot=slot):
+                self.assertIn(f"slot {slot}: no production verdict source", stderr)
+
+    def test_passes_once_every_slot_is_wired(self):
+        broker = self.start(clean_bodies())
+        code, stdout, stderr = self.run_cli(broker.url)
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(stdout.strip(), "VERDICT SOURCE WIRED: slots " + ", ".join(dgl.SLOT_NAMES))
+        self.assertEqual(broker.requested, [f"/status/{slot}" for slot in dgl.SLOT_NAMES])
+
+    def test_one_unwired_slot_is_enough_to_fail(self):
+        bodies = clean_bodies()
+        bodies["3"] = broker_body("3", wired=False)
+        code, _, stderr = self.run_cli(self.start(bodies).url)
+        self.assertEqual(code, 1)
+        self.assertIn("slot 3:", stderr)
+        self.assertNotIn("slot 2:", stderr)
+
+    def test_a_broker_that_does_not_report_the_field_fails(self):
+        bodies = clean_bodies()
+        del bodies["0"]["productionVerdictSource"]
+        code, _, stderr = self.run_cli(self.start(bodies).url)
+        self.assertEqual(code, 1)
+        self.assertIn("carries no productionVerdictSource", stderr)
+
+    def test_a_dead_broker_fails(self):
+        broker = self.start(clean_bodies())
+        url = broker.url
+        broker.close()
+        code, _, stderr = self.run_cli(url)
+        self.assertEqual(code, 1)
+        self.assertIn("unreadable", stderr)
+
+    def test_an_empty_slot_list_is_refused_not_passed(self):
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "no slots"):
+            dgl.check_verdict_source("http://broker.invalid", slots=(), fetch=serve())
+
+    def test_go_live_end_to_end_refuses_an_unwired_demo_over_real_http(self):
+        broker = self.start({**clean_bodies(), "5": broker_body("5", wired=False)})
+        with self.assertRaisesRegex(dgl.GoLiveRefused, "slot 5: no production verdict source"):
+            dgl.check_seams(broker.url)
+
+
+class BrokerContractTests(unittest.TestCase):
+    """The broker's side of the field this step reads, checked in the source so
+    a rename on either side goes red here."""
+
+    ROOT = pathlib.Path(__file__).resolve().parents[2] / "services" / "broker"
+
+    def test_the_spec_requires_the_field_in_every_status_answer(self):
+        spec = (self.ROOT / "openapi.yaml").read_text(encoding="utf-8")
+        block = spec.split("    StatusResponse:", 1)[1].split("\n    QueuedMailItem:", 1)[0]
+        required = next(line for line in block.splitlines() if line.strip().startswith("required:"))
+        self.assertIn(dgl.VERDICT_KEY, required)
+        self.assertIn(f"{dgl.VERDICT_KEY}:\n          description:", block)
+
+    def test_the_status_handler_sends_it(self):
+        app = (self.ROOT / "src" / "app.ts").read_text(encoding="utf-8")
+        handler = app.split("async function handleStatus(", 1)[1].split("\n}\n", 1)[0]
+        self.assertRegex(handler, rf"\b{dgl.VERDICT_KEY}: await slotNamesProductionVerdictSource\(")
 
 
 class ClockReaderTests(unittest.TestCase):

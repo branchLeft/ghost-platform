@@ -48,8 +48,10 @@ into every page of the site, which the platform's rule that a tenant page
 requests nothing from another origin forbids. Both are writable through the
 Admin API (they are in Ghost's settings-input allowlist), so, like the two
 code-injection boxes, they are named on every apply: a font chosen by hand is
-cleared again. The platform's own self-hosted fonts are a separate path
-(`themes/README.md`, "How the fonts are served").
+cleared again. A tenant's font choice is a separate path: a theme setting, served from
+the tenant's own origin (`themes/README.md`, "How a tenant chooses a font"). The
+platform's own self-hosted fonts are on another path (`themes/README.md`, "How the
+fonts are served").
 
 **`footerCredit` is the default footer credit, the same for every kind and
 tier.** Ghost's own "Powered by Ghost" line stays: `keepGhostCredit` is always

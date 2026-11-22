@@ -121,7 +121,7 @@ handler for.
 ## The container
 
 `grant`, `revoke`, `status` and `expire` run in the same pinned Node image the
-`ops1` minter uses (`node:26.13.0-alpine@sha256:b2646ba6…`, as in
+`ops1` minter uses (`node:26.13.1-alpine@sha256:a90bda29…`, as in
 `services/drain-sidecar`). The wrapper and the expire unit start it with the
 same options, and a unit test holds the two together:
 
