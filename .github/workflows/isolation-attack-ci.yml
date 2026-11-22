@@ -1,0 +1,75 @@
+name: Isolation attack suite CI
+
+# Type-checks and unit-tests the tenant-isolation attack suite
+# (isolation-attack/): the verdict rules, the report generator, the target
+# parameters and the edge rendering. The live suite needs Docker, Chromium and a
+# built platform image, so it is run by hand against the local rig or a deployed
+# shared domain (isolation-attack/README.md), never from here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'isolation-attack/**'
+      - 'render-core/src/**'
+      - 'portal/apps/src/shell/cookies.ts'
+      - 'csp/derive/derive-script-hashes.mjs'
+      - 'csp/derive/derive-script-hashes.d.mts'
+      - '.github/workflows/isolation-attack-ci.yml'
+  # A pull request starts this only when its diff touches something the job
+  # reads: the package, and the three files it imports from elsewhere.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'isolation-attack/**'
+      - 'render-core/src/**'
+      - 'portal/apps/src/shell/cookies.ts'
+      - 'csp/derive/derive-script-hashes.mjs'
+      - 'csp/derive/derive-script-hashes.d.mts'
+      - '.github/workflows/isolation-attack-ci.yml'
+  # A weekly run of the whole tree is the backstop for a read the path lists
+  # above miss.
+  schedule:
+    - cron: '47 4 * * 1'
+
+# No private package: everything this package installs is on the public registry.
+permissions:
+  contents: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Isolation attack suite type check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: isolation-attack
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: isolation-attack/.nvmrc
+          cache: pnpm
+          cache-dependency-path: isolation-attack/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm run test:unit
