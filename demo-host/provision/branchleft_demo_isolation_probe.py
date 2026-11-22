@@ -1,13 +1,16 @@
 #!/usr/bin/python3 -I
 # Run from inside one demo slot's network namespace, as that slot's own uid.
 # Tries every route from the slot to another slot, the demo host and the
-# estate, and every file path a slot must not read. Prints one line per route:
+# estate, every IPv6 route the caller names, UDP DNS to the resolver, and every
+# file path a slot must not read. Prints one line per route:
 #   REFUSED <route>     the route did not open (a refusal, a timeout, no route)
 #   REACHED <route>     the route opened: isolation is broken
 #   UNCHECKED <route>   the route could not be tried, so it proves nothing
 # First it tries a control route that must open (the spool's allowed port); if
 # it does not, the namespace is not the slot's and nothing is printed as a verdict.
-# Exit 0 only when the control opened and every other route was tried and refused.
+# Then it tries the bridge gateway's own control port; if that does not open, every
+# route through the bridge gateway is UNCHECKED, never REFUSED.
+# Exit 0 only when every control opened and every other route was tried and refused.
 # What it checks, and what it does not: branchleft_demo_isolation_probe.md.
 #
 # Standard library only, and no shell.
@@ -16,10 +19,11 @@ from __future__ import annotations
 
 import argparse
 import errno
+import ipaddress
 import os
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 # Public addresses a slot must never reach. Fixed literals, not estate data.
@@ -29,6 +33,16 @@ PUBLIC_ROUTES: tuple[tuple[str, str, int], ...] = (
     ("cloud metadata", "169.254.169.254", 80),
     ("public DNS", "1.1.1.1", 53),
     ("public address", "1.1.1.1", 443),
+)
+
+# A minimal DNS query for a reserved name, sent over UDP. Any answer is enough to
+# show the route opened; a refusal, an unreachable network or silence is not.
+DNS_QUERY = (
+    b"\x12\x34"  # transaction id
+    b"\x01\x00"  # flags: recursion desired
+    b"\x00\x01\x00\x00\x00\x00\x00\x00"  # one question, no other records
+    b"\x07example\x03com\x00"
+    b"\x00\x01\x00\x01"  # type A, class IN
 )
 
 # An unreachable network or host is a refusal to reach it. Every other OS error
@@ -42,6 +56,14 @@ EXIT_USAGE = 2
 
 @dataclass(frozen=True)
 class TcpRoute:
+    label: str
+    host: str
+    port: int
+    via_gateway: bool = False  # a route through the bridge gateway, which its own control must vouch for
+
+
+@dataclass(frozen=True)
+class UdpRoute:
     label: str
     host: str
     port: int
@@ -80,6 +102,21 @@ def probe_tcp(route: TcpRoute, timeout: float) -> Outcome:
         return classify_tcp_error(route.label, error)
 
 
+def probe_udp(route: UdpRoute, timeout: float) -> Outcome:
+    # An answer means the route opened. A refusal (ICMP port unreachable), an unreachable network
+    # or no answer at all (a dropped datagram looks like a timeout) is judged as a TCP connect is.
+    family = socket.AF_INET6 if ":" in route.host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect((route.host, route.port))
+            sock.send(DNS_QUERY)
+            sock.recv(512)
+        return Outcome("REACHED", route.label)
+    except OSError as error:
+        return classify_tcp_error(route.label, error)
+
+
 def probe_path(route: PathRoute) -> Outcome:
     # Listing a directory, or reading a file, must be denied. Only a permission
     # refusal counts as REFUSED; a missing or odd path is UNCHECKED.
@@ -91,6 +128,10 @@ def probe_path(route: PathRoute) -> Outcome:
                 handle.read(1)
         return Outcome("REACHED", route.label)
     except PermissionError:
+        if os.path.isdir(route.path) and os.access(route.path, os.X_OK):
+            # Search without read: the listing is refused, but a file under the directory still opens
+            # by name. This route cannot name those files, so a refused listing proves nothing here.
+            return Outcome("UNCHECKED", route.label, "listing denied but search allowed; name the files under it")
         return Outcome("REFUSED", route.label)
     except OSError as error:
         return Outcome("UNCHECKED", route.label, type(error).__name__)
@@ -104,13 +145,14 @@ def tcp_routes(
     spool_address: str,
     spool_ports: list[int],
     spool_allowed_port: int,
+    ipv6: Sequence[tuple[str, int]] = (),
 ) -> list[TcpRoute]:
     routes: list[TcpRoute] = []
     for port in peer_ports:
         routes.append(TcpRoute(f"slot B port {port} on loopback", "127.0.0.1", port))
-        routes.append(TcpRoute(f"slot B port {port} on bridge gateway", gateway, port))
+        routes.append(TcpRoute(f"slot B port {port} on bridge gateway", gateway, port, via_gateway=True))
     for port in host_ports:
-        routes.append(TcpRoute(f"host service {port} on bridge gateway", gateway, port))
+        routes.append(TcpRoute(f"host service {port} on bridge gateway", gateway, port, via_gateway=True))
     for address, port in estate:
         routes.append(TcpRoute(f"estate address {address}:{port}", address, port))
     for port in spool_ports:
@@ -119,6 +161,8 @@ def tcp_routes(
         routes.append(TcpRoute(f"mail spool {spool_address}:{port}", spool_address, port))
     for label, host, port in PUBLIC_ROUTES:
         routes.append(TcpRoute(label, host, port))
+    for address, port in ipv6:
+        routes.append(TcpRoute(f"IPv6 route [{address}]:{port}", address, port))
     return routes
 
 
@@ -136,16 +180,35 @@ def parse_estate(text: str) -> tuple[str, int]:
     return address, parse_port(port)
 
 
+def parse_ipv6_route(text: str) -> tuple[str, int]:
+    if not text.startswith("["):
+        raise argparse.ArgumentTypeError(f"'{text}' is not [ADDRESS]:PORT")
+    address, separator, port = text[1:].partition("]:")
+    if not separator:
+        raise argparse.ArgumentTypeError(f"'{text}' is not [ADDRESS]:PORT")
+    try:
+        ipaddress.IPv6Address(address)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"'{address}' is not an IPv6 address") from error
+    return address, parse_port(port)
+
+
 def build_parser() -> argparse.ArgumentParser:
     # Every route class is required: a class left out is a usage error, never a shorter run that passes.
     parser = argparse.ArgumentParser(prog="branchleft-demo-isolation-probe")
     parser.add_argument("--gateway", required=True, help="the slot's bridge gateway address")
+    parser.add_argument("--gateway-control-port", type=parse_port, required=True,
+                        help="a port the bridge gateway must answer: until it does, routes through the gateway are UNCHECKED")
     parser.add_argument("--peer-port", type=parse_port, action="append", required=True,
                         help="a port of another slot (Ghost, health router, sidecar)")
     parser.add_argument("--host-port", type=parse_port, action="append", required=True,
                         help="a port the host serves on the bridge gateway")
     parser.add_argument("--estate", type=parse_estate, action="append", required=True,
                         help="an estate private address as ADDRESS:PORT")
+    parser.add_argument("--ipv6-route", type=parse_ipv6_route, action="append", required=True,
+                        help="an IPv6 route the slot can see, as [ADDRESS]:PORT")
+    parser.add_argument("--dns-resolver", type=parse_estate, required=True,
+                        help="the resolver the slot is allowed to query, as ADDRESS:PORT, probed over UDP")
     parser.add_argument("--spool-address", required=True)
     parser.add_argument("--spool-port", type=parse_port, action="append", required=True)
     parser.add_argument("--spool-allowed-port", type=parse_port, required=True,
@@ -179,6 +242,15 @@ def main(argv: list[str], geteuid: Callable[[], int] = os.geteuid) -> int:
         return EXIT_USAGE
     print(f"CONTROL REACHED {control.label}", flush=True)
 
+    gateway_control = TcpRoute("control: bridge gateway", args.gateway, args.gateway_control_port)
+    gateway_outcome = probe_tcp(gateway_control, args.timeout)
+    gateway_ok = gateway_outcome.verdict == "REACHED"
+    if gateway_ok:
+        print(f"CONTROL REACHED {gateway_control.label}", flush=True)
+    else:
+        print(f"CONTROL NOT REACHED {gateway_control.label} ({gateway_outcome.verdict.lower()}): routes "
+              "through the bridge gateway are UNCHECKED", file=sys.stderr)
+
     routes = tcp_routes(
         gateway=args.gateway,
         peer_ports=args.peer_port,
@@ -187,11 +259,19 @@ def main(argv: list[str], geteuid: Callable[[], int] = os.geteuid) -> int:
         spool_address=args.spool_address,
         spool_ports=args.spool_port,
         spool_allowed_port=args.spool_allowed_port,
+        ipv6=args.ipv6_route,
     )
-    paths = [PathRoute(f"file {path}", path) for path in args.file_path]
+    outcomes: list[Outcome] = []
+    for route in routes:
+        if route.via_gateway and not gateway_ok:
+            outcomes.append(Outcome("UNCHECKED", route.label, "bridge gateway control not reached"))
+        else:
+            outcomes.append(probe_tcp(route, args.timeout))
+    outcomes += [probe_path(PathRoute(f"file {path}", path)) for path in args.file_path]
+    resolver_address, resolver_port = args.dns_resolver
+    udp_route = UdpRoute(f"UDP DNS to resolver {resolver_address}:{resolver_port}", resolver_address, resolver_port)
+    outcomes.append(probe_udp(udp_route, args.timeout))
 
-    outcomes = [probe_tcp(route, args.timeout) for route in routes]
-    outcomes += [probe_path(route) for route in paths]
     for outcome in outcomes:
         print(outcome.line(), flush=True)
 

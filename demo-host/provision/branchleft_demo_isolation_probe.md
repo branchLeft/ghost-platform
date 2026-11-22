@@ -28,7 +28,19 @@ is required, and the probe refuses to run as root, because root reads every file
 Network routes: the other slot's ports (Ghost, health router, sidecar) on loopback and on the bridge
 gateway; the host's own services on the gateway (`--host-port`); estate private addresses
 (`--estate ADDRESS:PORT`); the mail spool on each port given except its allowed port, which is the
-control; and the cloud metadata address, public DNS and a public address, which are always probed.
+control; the IPv6 routes the caller names (`--ipv6-route [ADDRESS]:PORT`); UDP DNS to the resolver
+(`--dns-resolver ADDRESS:PORT`, a minimal query, where any answer is `REACHED`); and the cloud metadata
+address, public DNS and a public address, which are always probed.
+
+Gateway control: before any route through the bridge gateway, the probe tries the gateway's own
+control port (`--gateway-control-port`), which must open. If it does not, every route through the
+gateway reads `UNCHECKED` (never `REFUSED`), and the probe exits 2. The route lines through the gateway
+are therefore only read as refusals when the gateway itself was shown to answer.
+
+Search without read: a directory the slot can search (`x`) but not list (`r`) reads `UNCHECKED`, never
+`REFUSED`, because its listing being denied proves nothing about the files under it. A file under such
+a directory is tested by naming it as a file route, which reads the file itself: a readable one is
+`REACHED`.
 
 ## Proof
 
@@ -41,7 +53,10 @@ control; and the cloud metadata address, public DNS and a public address, which 
   an unreachable network); an UNCHECKED route never a pass; the control required to open; every
   route class and `--expect-uid` required; a completed connection, a readable directory and a missing
   path each read the right way; the spool's allowed port never probed; the public routes always
-  probed; the gateway always probed; root and a wrong uid refused; a reached route exits 1.
+  probed; the gateway always probed; root and a wrong uid refused; a reached route exits 1; a route
+  through the gateway read as a refusal only when the gateway control opened; the gateway control
+  required; a search-only directory never read as `REFUSED`; the IPv6 routes and UDP DNS probed; an
+  answered UDP route read as `REACHED`.
 
 ## What it does not prove
 
@@ -56,18 +71,17 @@ control; and the cloud metadata address, public DNS and a public address, which 
 
 ## Follow-ups, not in this change
 
-- IPv6 and UDP. Every route is IPv4 TCP. DNS is probed on TCP 53 only, so a slot with a UDP or IPv6
-  route out is not caught here.
-- Directory traversal. A directory with search (`x`) but no read (`r`) permission refuses `listdir`
-  and reads as `REFUSED`, though files under it may still open by name.
+- The IPv6 and UDP routes are only the ones the caller names. The probe does not discover what the
+  slot can see, so an IPv6 route or resolver left off the command line is not tried.
 - A FIFO on a file route would block `open()` with no timeout.
 - The default `geteuid` binding in `main` has no test of its own.
 
 ## Running it
 
 ```
-python3 -I branchleft_demo_isolation_probe.py --gateway 172.20.0.1 --peer-port 9303 \
-  --host-port 22 --host-port 9100 --estate 10.0.0.2:443 --spool-address 172.20.0.1 \
+python3 -I branchleft_demo_isolation_probe.py --gateway 172.20.0.1 --gateway-control-port 2525 \
+  --peer-port 9303 --host-port 22 --host-port 9100 --estate 10.0.0.2:443 \
+  --ipv6-route '[fd00::2]:443' --dns-resolver 10.0.0.53:53 --spool-address 172.20.0.1 \
   --spool-port 2525 --spool-allowed-port 2525 --file-path /opt/branchleft/demo-1 \
   --expect-uid 2001
 ```
