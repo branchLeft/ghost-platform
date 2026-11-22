@@ -2,7 +2,7 @@
 
 Deploying the shared MySQL 8 host, provisioning a tenant database, and the
 restore drill both amendment scenarios on
-the tracked issue
+the amendment scenarios recorded in the private tracker
 require.
 
 **Connection model, stated once up front because it shapes every step
@@ -770,7 +770,7 @@ disk -- and every un-shipped binlog on it -- is gone.
 decrypts using a key copied from `db1` or from a developer's own agent
 session proves nothing about whether the *escrowed* copy is the one that
 actually decrypts a real artifact -- which is exactly the failure mode
-the tracked issue
+(a private tracker issue)
 exists to close. Retrieve it the way an operator recovering from a real
 loss would: from the password-manager entry, cold.
 

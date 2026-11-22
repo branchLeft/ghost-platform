@@ -2,7 +2,7 @@
 
 ## The per-slot spool credential
 
-Proves workspace#1740: two demo slots render two different spool credentials,
+Proves the per-slot decision recorded in the private tracker: two demo slots render two different spool credentials,
 `slot-<uid>.<demoMailDomain>`, on both the SMTP username and the Mailgun-route
 domain, while `mail__from` stays `<localPart>@<demoMailDomain>`. The credential
 is keyed on the uid and not on the local part, so a slot keeps its credential

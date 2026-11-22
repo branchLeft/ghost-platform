@@ -231,7 +231,7 @@ the service is.
   port): `PROVISIONING_STATE_DIR=... PROVISIONING_DEMOS_FILE=... pnpm run service`. It
   answers `GET /healthz` with no credential. `contract/smoke_service.py` does this
   from files of its own, walks the journey, restarts it and checks it kept its state.
-- **Seen on the real portal** (the done check of branchLeft/workspace#3818): sign in to the
+- **Seen on the real portal** (the done check of a private tracker item): sign in to the
   tenant portal as a demo tenant's admin; `/demo` shows the register's address and
   state; `/essentials` asks and shows pending; in the owner console `/requests` lists the
   request and Approve takes it off the queue; the portal's `/site` then shows `provisioning`

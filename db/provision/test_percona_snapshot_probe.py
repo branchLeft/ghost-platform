@@ -142,6 +142,61 @@ class VerdictTests(unittest.TestCase):
         self.assertFalse(psp.dump_lock_verdict([("SCHEMA", "INTENTION_EXCLUSIVE", "GRANTED")]).passed)
         self.assertFalse(psp.dump_lock_verdict([("TABLE", "SHARED_READ", "PENDING")]).passed)
 
+    def _scripted_dump(self, samples: list[list[list[str]]]) -> list[list[tuple[str, str, str]]]:
+        """Drives watch_while with a fake sampler: one scripted sample per take,
+        and the dump finishes after the last one."""
+        taken: list[list[list[str]]] = []
+
+        def take() -> list[list[str]]:
+            taken.append(samples[len(taken)])
+            return samples[len(taken) - 1]
+
+        return psp.watch_while(take, lambda: len(taken) >= len(samples), deadline=float("inf"), now=lambda: 0.0)
+
+    def test_a_global_lock_seen_only_in_a_middle_sample_of_a_dump_is_red(self) -> None:
+        shared = ["TABLE", "SHARED_READ", "GRANTED"]
+        dump = self._scripted_dump([[shared], [shared, ["GLOBAL", "SHARED", "GRANTED"]], [shared]])
+        self.assertEqual(len(dump), 3)
+        verdict = psp.dump_lock_window_verdict([dump])
+        self.assertFalse(verdict.passed)
+        self.assertIn("GLOBAL/SHARED/GRANTED", verdict.reason)
+
+    def test_a_dump_whose_samples_never_show_a_global_lock_reads_clean(self) -> None:
+        shared = ["TABLE", "SHARED_READ", "GRANTED"]
+        intention = ["SCHEMA", "INTENTION_EXCLUSIVE", "GRANTED"]
+        dump = self._scripted_dump([[shared], [shared, intention], [shared]])
+        self.assertTrue(psp.dump_lock_window_verdict([dump]).passed)
+
+    def test_a_write_blocking_table_lock_seen_in_any_one_dump_is_red(self) -> None:
+        shared = ["TABLE", "SHARED_READ", "GRANTED"]
+        clean = self._scripted_dump([[shared]])
+        blocking = self._scripted_dump([[shared], [shared, ["TABLE", "EXCLUSIVE", "GRANTED"]]])
+        self.assertFalse(psp.dump_lock_window_verdict([clean, blocking]).passed)
+
+    def test_a_global_lock_seen_only_by_the_pass_long_sampler_is_red(self) -> None:
+        shared = ["TABLE", "SHARED_READ", "GRANTED"]
+        dump = self._scripted_dump([[shared]])
+        verdict = psp.dump_lock_window_verdict([dump], pass_rows=[["GLOBAL", "SHARED", "GRANTED"]])
+        self.assertFalse(verdict.passed)
+
+    def test_a_dump_with_no_sample_was_not_watched_and_is_red(self) -> None:
+        verdict = psp.dump_lock_window_verdict([[]])
+        self.assertFalse(verdict.passed)
+        self.assertIn("took no sample", verdict.reason)
+
+    def test_no_dump_at_all_is_red(self) -> None:
+        self.assertFalse(psp.dump_lock_window_verdict([]).passed)
+
+    def test_a_dump_that_ends_before_the_first_sample_still_takes_one(self) -> None:
+        self.assertEqual(len(self._scripted_dump([[["TABLE", "SHARED_READ", "GRANTED"]]])), 1)
+        samples = psp.watch_while(lambda: [], lambda: True, deadline=float("inf"), now=lambda: 0.0)
+        self.assertEqual(len(samples), 1)
+
+    def test_sampling_stops_at_the_deadline(self) -> None:
+        ticks = iter([0.0, 5.0, 11.0])
+        samples = psp.watch_while(lambda: [], lambda: False, deadline=10.0, now=lambda: next(ticks))
+        self.assertEqual(len(samples), 3)
+
     def test_an_accepted_flush_tables_with_read_lock_fails_the_grant_control(self) -> None:
         verdict = psp.grant_verdict(errno_ftwrl=0, errno_lock_tables=1044, global_privileges=[], grant_lines=[], dumps_succeeded=[True])
         self.assertFalse(verdict.passed)
