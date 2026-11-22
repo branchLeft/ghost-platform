@@ -1,11 +1,6 @@
 import type { ApplyLock } from './applyLock.js';
 import { BumpStateMachine, type BumpDependencies, type BumpState } from './bumpStateMachine.js';
-import {
-  DeadlineExceededError,
-  resolveRecoveryDeadlines,
-  withDeadline,
-  type RecoveryDeadlines,
-} from './deadlines.js';
+import { resolveRecoveryDeadlines, withDeadline, type RecoveryDeadlines } from './deadlines.js';
 import type { PersistedTenantState, TenantStateStore } from './tenantStateStore.js';
 
 export interface RecoveredTenant {
@@ -18,7 +13,7 @@ export interface RecoveredTenant {
 export interface RecoveryFailure {
   tenantId: string;
   error: unknown;
-  /** True when the failure was a call that missed its limit and the sweep paged the tenant for it. False when it was not paged: another kind of failure, or the page itself failed or missed its limit (the record is then still owed it). */
+  /** True when the tenant was paged for this failure: by the sweep, for a `stopColour()` that threw or missed its limit, or by the record's own machine, when a later save then failed. False when it was not paged: another kind of failure, or the page itself failed or missed its limit (the record is then still owed it). */
   paged: boolean;
 }
 
@@ -35,6 +30,12 @@ export interface RecoverySweepResult {
  */
 const NO_ACTION_STATES: ReadonlySet<BumpState> = new Set(['closed', 'backup-failed', 'cancelled']);
 
+interface BoundedDeps {
+  deps: BumpDependencies;
+  /** The last `stopColour()` failure, a throw or a missed limit alike, if any. */
+  teardownError(): { error: unknown } | undefined;
+}
+
 /**
  * The calls recovery makes through a record's machine that nothing else
  * bounds (`revertTraffic`, `stopColour`, `verify`, `page` and `persist`), each held to its
@@ -42,7 +43,8 @@ const NO_ACTION_STATES: ReadonlySet<BumpState> = new Set(['closed', 'backup-fail
  * machine and the sweep already treat as any other throw. Every member is
  * named, not spread, so a `deps` that is a class instance keeps its `this`.
  */
-function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): BumpDependencies {
+function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): BoundedDeps {
+  let teardownFailure: { error: unknown } | undefined;
   const bounded: BumpDependencies = {
     backup: () => deps.backup(),
     apply: () => deps.apply(),
@@ -50,8 +52,14 @@ function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): 
     verify: () => withDeadline(deps.verify(), limits.verifyMs, 'verify()'),
     revertTraffic: () =>
       withDeadline(deps.revertTraffic(), limits.revertTrafficMs, 'revertTraffic()'),
-    stopColour: (which) =>
-      withDeadline(deps.stopColour(which), limits.stopColourMs, 'stopColour()'),
+    stopColour: async (which) => {
+      try {
+        await withDeadline(deps.stopColour(which), limits.stopColourMs, 'stopColour()');
+      } catch (error) {
+        teardownFailure = { error };
+        throw error;
+      }
+    },
     page: (reason, dedupeKey) =>
       withDeadline(deps.page(reason, dedupeKey), limits.pageMs, 'page()'),
   };
@@ -60,7 +68,7 @@ function boundedForRecovery(deps: BumpDependencies, limits: RecoveryDeadlines): 
     bounded.persist = (snapshot) =>
       withDeadline(persist.call(deps, snapshot), limits.persistMs, 'persist()');
   }
-  return bounded;
+  return { deps: bounded, teardownError: () => teardownFailure };
 }
 
 /**
@@ -107,10 +115,11 @@ export async function recoverPersistedTenants(
     // must never be silent either: its own page (if it was owed one) is
     // now stuck until the next restart, and the caller needs to be able
     // to tell "nothing left to recover" from "recovery itself failed".
-    let deps: BumpDependencies | undefined;
+    let bounded: BoundedDeps | undefined;
+    let machine: BumpStateMachine | undefined;
     try {
-      deps = boundedForRecovery(buildDeps(record.tenantId), limits);
-      const machine = new BumpStateMachine(deps, lock, {
+      bounded = boundedForRecovery(buildDeps(record.tenantId), limits);
+      machine = new BumpStateMachine(bounded.deps, lock, {
         // Read back the exact bumpId the live process persisted, so the
         // dedupe key a recovery page carries is identical to the one a
         // live page for the same bump already used -- falling back to
@@ -133,7 +142,10 @@ export async function recoverPersistedTenants(
       failed.push({
         tenantId: record.tenantId,
         error,
-        paged: deps !== undefined && (await pageForTimeout(record, error, deps)),
+        paged:
+          // The machine paged, then a save failed: the page is out, so say so.
+          (machine !== undefined && !record.pageSent && machine.hasPaged()) ||
+          (bounded !== undefined && (await pageForTeardown(record, error, bounded))),
       });
     }
   }
@@ -142,32 +154,36 @@ export async function recoverPersistedTenants(
 }
 
 /**
- * A `stopColour()` that missed its limit leaves a record (`reverted`,
- * `closing`) the machine does not turn into a page of its own, and nothing
- * else retries it until the next restart. So the sweep pages it, once, with
- * the same `${bumpId}:${reason}` dedupe key shape a machine page uses. The
- * record is left as it is, so the next restart retries the teardown. A
- * `page()` that itself missed its limit cannot be paged for: the record
- * stays owed its page (`failed-unsafe` with `pageSent: false` is retried on
- * the next restart) and the failure says `paged: false`. A `revertTraffic()`
- * that missed its limit never gets here: the machine turns it into
- * `failed-unsafe` and pages it.
+ * A `stopColour()` that threw, or missed its limit, leaves a record
+ * (`reverted`, `closing`) the machine does not turn into a page of its own,
+ * and nothing else retries it until the next restart. So the sweep pages it,
+ * once, with the same `${bumpId}:${reason}` dedupe key shape a machine page
+ * uses. The record is left as it is, so the next restart retries the
+ * teardown. Only the error `stopColour()` itself raised is paged for: any
+ * other failure (a save, a page) is not a teardown that went wrong. A
+ * `page()` that itself threw or missed its limit cannot be paged for: the
+ * record stays owed its page (`failed-unsafe` with `pageSent: false` is
+ * retried on the next restart) and the failure says `paged: false`. A
+ * `revertTraffic()` that missed its limit never gets here: the machine turns
+ * it into `failed-unsafe` and pages it.
  */
-async function pageForTimeout(
+async function pageForTeardown(
   record: PersistedTenantState,
   error: unknown,
-  deps: BumpDependencies
+  bounded: BoundedDeps
 ): Promise<boolean> {
-  if (!(error instanceof DeadlineExceededError) || error.call !== 'stopColour()') {
+  const teardown = bounded.teardownError();
+  if (teardown === undefined || teardown.error !== error) {
     return false;
   }
-  const reason = `recovery of '${record.state}' did not finish: ${error.message}`;
+  const detail = error instanceof Error ? error.message : String(error);
+  const reason = `recovery of '${record.state}' did not finish: ${detail}`;
   try {
-    await deps.page(reason, `${record.bumpId ?? record.tenantId}:${reason}`);
+    await bounded.deps.page(reason, `${record.bumpId ?? record.tenantId}:${reason}`);
     return true;
   } catch (pageError) {
     console.error(
-      `ring-controller: could not page for tenant '${record.tenantId}' after its recovery timed out`,
+      `ring-controller: could not page for tenant '${record.tenantId}' after its teardown failed in recovery`,
       pageError
     );
     return false;
