@@ -1,9 +1,17 @@
 import { chmod, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, ENV, MAX_BODY_CAP_MIB, loadConfig } from '../src/config.js';
+import {
+  ConfigError,
+  DEFAULT_STATE_BODY_MIB,
+  ENV,
+  MAX_BODY_CAP_MIB,
+  MAX_STATE_BODY_MIB,
+  loadConfig,
+} from '../src/config.js';
 import { MAX_UPLOAD_CEILING_MIB } from '../src/credentials/admin.js';
 import { MasterSecretError } from '../src/credentials/masterSecret.js';
 import { startGateway } from '../src/start.js';
+import { startStateGateway } from '../src/start-state.js';
 import { MIB, startRig } from './support/gateway-rig.js';
 
 const GOOD: Record<string, string> = {
@@ -263,5 +271,49 @@ describe('startGateway refuses to start on a bad secret or directory', () => {
     } finally {
       await rig.stop();
     }
+  });
+});
+
+describe('the state profile settings', () => {
+  const STATE = { ...GOOD, [ENV.profile]: 'state', [ENV.stateBucket]: 'state-shard-a' };
+
+  it('defaults to media and carries no state bucket', () => {
+    const config = loadConfig(GOOD);
+    expect(config.profile).toBe('media');
+    expect(config).not.toHaveProperty('stateBucket');
+  });
+
+  it('reads a state process: the shard bucket and a body cap far below a media upload', () => {
+    const config = loadConfig(STATE);
+    expect(config.profile).toBe('state');
+    expect(config.stateBucket).toBe('state-shard-a');
+    expect(config.maxBodyBytes).toBe(DEFAULT_STATE_BODY_MIB * MIB);
+    expect(DEFAULT_STATE_BODY_MIB).toBeLessThan(MAX_BODY_CAP_MIB);
+    expect(
+      loadConfig({ ...STATE, [ENV.maxBodyMib]: String(MAX_STATE_BODY_MIB) }).maxBodyBytes
+    ).toBe(MAX_STATE_BODY_MIB * MIB);
+    expect(() =>
+      loadConfig({ ...STATE, [ENV.maxBodyMib]: String(MAX_STATE_BODY_MIB + 1) })
+    ).toThrow(/between 1 and/);
+  });
+
+  it('refuses a state process with no shard bucket or a bad one', () => {
+    const { [ENV.stateBucket]: _gone, ...noBucket } = STATE;
+    expect(() => loadConfig(noBucket)).toThrow(new RegExp(ENV.stateBucket));
+    expect(() => loadConfig({ ...STATE, [ENV.stateBucket]: 'Not_A_Bucket' })).toThrow(ConfigError);
+  });
+
+  it('refuses a media process that is given a state bucket, and an unknown profile', () => {
+    expect(() => loadConfig({ ...GOOD, [ENV.stateBucket]: 'state-shard-a' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...GOOD, [ENV.profile]: 'admin' })).toThrow(ConfigError);
+  });
+
+  it('keeps each entry to its own profile', async () => {
+    await expect(
+      startGateway(loadConfig(STATE), { env: {}, sink: () => undefined })
+    ).rejects.toThrow(/media profile only/);
+    await expect(
+      startStateGateway(loadConfig(GOOD), { env: {}, sink: () => undefined })
+    ).rejects.toThrow(/state profile only/);
   });
 });

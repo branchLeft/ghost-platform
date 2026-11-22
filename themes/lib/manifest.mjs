@@ -24,6 +24,12 @@ export const EXCLUSION_REASONS = [
 // bundled theme that the manifest does not list.
 export const FONT_EXTENSIONS = /\.(woff2?|ttf|otf|eot|ttc)$/i;
 
+// The generic family a font stack ends in, per font, and the one value of the
+// font theme setting that means "no choice" (the theme's own fonts).
+export const FONT_FALLBACKS = ['sans-serif', 'serif', 'monospace'];
+export const NO_FONT_CHOICE = 'Theme default';
+const FONT_FAMILY_NAME = /^[A-Za-z][A-Za-z0-9]*(?: [A-Za-z0-9]+)*$/;
+
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -111,6 +117,13 @@ export function validateManifest(m) {
     if (typeof f.family !== 'string' || f.family === '') problems.push('font: family required');
     if (families.has(f.family)) problems.push(`${where}: duplicate family`);
     families.add(f.family);
+    // The family name is written into the generated partial, the theme setting's
+    // option list and a CSS stack, so it may carry nothing but letters, digits
+    // and single spaces. "Theme default" is the setting's own no-choice value.
+    if (!FONT_FAMILY_NAME.test(f.family ?? '') || f.family === NO_FONT_CHOICE)
+      problems.push(`${where}: family must be letters, digits and single spaces`);
+    if (!FONT_FALLBACKS.includes(f.fallback))
+      problems.push(`${where}: fallback must be one of ${FONT_FALLBACKS.join(', ')}`);
     if (!SLUG.test(f.dir ?? '')) problems.push(`${where}: dir must be a lowercase slug`);
     if (!GITHUB.test(f.upstream ?? ''))
       problems.push(`${where}: upstream must be a github.com repository URL`);

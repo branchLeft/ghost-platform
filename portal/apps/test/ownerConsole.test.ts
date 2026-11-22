@@ -12,6 +12,7 @@ import {
 } from '../../data/test/helpers.js';
 import {
   demoStateEvent,
+  professionalEnquiry,
   supportAccessRequest,
   tenantErasureRequest,
 } from '../../data/src/schema.js';
@@ -74,6 +75,7 @@ beforeAll(async () => {
         listSupportRequests: () => db.listSupportRequests(),
         listErasureRequests: () => db.listErasureRequests(),
         waitingCount: () => db.waitingCount(),
+        countProfessionalEnquiries: () => db.countProfessionalEnquiries(),
         markSupportRequestDealtWith: (tenantId: string) => db.markSupportRequestDealtWith(tenantId),
       } as OwnerDb,
       secureCookies: false,
@@ -188,6 +190,20 @@ describe('the owner console', () => {
       expect((await browser.request('/')).body).toContain('DEMOS_WAITING 1');
     } finally {
       await fixture.adminDb.delete(demoStateEvent);
+    }
+  });
+
+  it('shows how many Professional enquiries have been sent, and the count rises by one', async () => {
+    const browser = new Browser(app.origin);
+    await browser.finish(issuer.issue(ownerToken()));
+    expect((await browser.request('/')).body).toContain('PROFESSIONAL_ENQUIRIES 0');
+    try {
+      await fixture.adminDb.insert(professionalEnquiry).values({ tenantId: TENANT_A });
+      expect((await browser.request('/')).body).toContain('PROFESSIONAL_ENQUIRIES 1');
+      await fixture.adminDb.insert(professionalEnquiry).values({ tenantId: TENANT_A });
+      expect((await browser.request('/')).body).toContain('PROFESSIONAL_ENQUIRIES 2');
+    } finally {
+      await fixture.adminDb.delete(professionalEnquiry);
     }
   });
 

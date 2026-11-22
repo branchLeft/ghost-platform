@@ -93,6 +93,14 @@ jobs:
             printf '%s\n' "$output" | grep -q 'ConfigError' || { echo "::error::$entry entry point did not reach its configuration check: $output"; exit 1; }
           done
 
+      # The provisioning API's service is the same image's third program, run by
+      # the control-plane stack by its path in the image. With no configuration
+      # it must stop at its own configuration check, never at a missing module.
+      - name: The provisioning service reaches its configuration check
+        run: |
+          output="$(docker run --rm portal-apps:ci node /app/services/provisioning-controller/dist/src/service/main.js 2>&1 || true)"
+          printf '%s\n' "$output" | grep -q 'PROVISIONING_.*is not set' || { echo "::error::the provisioning service did not reach its configuration check: $output"; exit 1; }
+
       # The screens import the provisioning-API client from the built
       # controller package, by its package name, from the portal's own directory.
       # A missing built file or export fails here, at import, rather than later.
@@ -190,7 +198,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
     with:
       image: ${{ needs.push.outputs.image }}
 
@@ -224,7 +232,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Attest and verify the pushed image
-        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           image: ${{ env.IMAGE }}
           digest: ${{ needs.push.outputs.digest }}

@@ -1,4 +1,4 @@
-# The strict content policy (branchLeft/workspace#1238)
+# The strict content policy
 
 Ghost's own front end emits inline scripts (the theme's helpers, a JSON-LD
 block), so `script-src 'self'` alone would block them alongside a

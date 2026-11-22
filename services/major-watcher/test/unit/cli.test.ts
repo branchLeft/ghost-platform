@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../../src/cli.js';
 import { CLI_ENV_VARS } from '../../src/env.js';
+import { fakeWorkspace, type FakeWorkspace } from './fakeWorkspace.js';
 
 // Exercises main() directly -- the exact function the built dist/cli.js
 // invokes, not a parallel reimplementation of its logic. Review cycle 1's
@@ -15,14 +16,21 @@ import { CLI_ENV_VARS } from '../../src/env.js';
 
 const GITHUB_RELEASES_HOST = 'api.github.com';
 
-function fetchStub(githubBody: unknown, ntfyOk = true) {
-  return vi.fn(async (url: string | URL) => {
+function fetchStub(githubBody: unknown, ntfyOk = true, workspace?: FakeWorkspace) {
+  return vi.fn(async (url: string | URL, init?: Parameters<typeof fetch>[1]) => {
     // An exact hostname match, not a substring check -- a substring like
     // `href.includes('api.github.com')` would also match an attacker host
     // such as `api.github.com.evil.example`, which is exactly what this
     // stub must not model: it fakes ghostReleases.ts's real request
     // target, so it needs the same precision that code has to have.
-    const { hostname } = new URL(String(url));
+    const { hostname, pathname } = new URL(String(url));
+    if (
+      workspace &&
+      hostname === GITHUB_RELEASES_HOST &&
+      pathname.startsWith('/repos/branchLeft/')
+    ) {
+      return workspace.fetch(url, init);
+    }
     if (hostname === GITHUB_RELEASES_HOST) {
       return { ok: true, status: 200, statusText: 'OK', json: async () => githubBody } as Response;
     }
@@ -110,13 +118,18 @@ describe('main (the real CLI entry point)', () => {
     await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
     const log = vi.fn();
     const error = vi.fn();
-    const fetchImpl = fetchStub([
-      { tag_name: 'v6.0.0-alpha.1', published_at: '2025-07-16T10:54:47Z', draft: false },
-    ]);
+    const ws = fakeWorkspace();
+    const fetchImpl = fetchStub(
+      [{ tag_name: 'v6.0.0-alpha.1', published_at: '2025-07-16T10:54:47Z', draft: false }],
+      true,
+      ws
+    );
     vi.stubGlobal('fetch', fetchImpl);
     const env = {
       [CLI_ENV_VARS.STATE_PATH]: statePath,
       [CLI_ENV_VARS.NTFY_URL]: 'https://ntfy.example/topic',
+      [CLI_ENV_VARS.FILING_TOKEN]: 'filing-token-value',
+      [CLI_ENV_VARS.LAUNCH_ITEM]: '3810',
       GITHUB_STEP_SUMMARY: summaryPath,
     };
 
@@ -125,11 +138,72 @@ describe('main (the real CLI entry point)', () => {
     expect(code).toBe(0);
     expect(error).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/^notified: new major line 6/));
-    expect(await readFile(summaryPath, 'utf8')).toMatch(/^Paged: Ghost major line 6 announced\.$/m);
+    expect(await readFile(summaryPath, 'utf8')).toMatch(
+      /^Paged: Ghost major line 6 announced\. Tracked item: https:\/\/github\.com\/branchLeft\/workspace\/issues\/\d+\.$/m
+    );
+    expect(ws.issues).toHaveLength(1);
+    expect(ws.issues[0]?.parent_issue_url).toMatch(/\/issues\/3810$/);
     const persisted = JSON.parse(await readFile(statePath, 'utf8')) as {
       lastNotifiedMajor: number;
     };
     expect(persisted.lastNotifiedMajor).toBe(6);
+  });
+
+  it('a new major with no filing credential: the page goes, nothing is filed, ::error:: names the variable, exit 1, state unwritten', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 5 }));
+    const log = vi.fn();
+    const error = vi.fn();
+    const ws = fakeWorkspace();
+    const fetchImpl = fetchStub(
+      [{ tag_name: 'v6.0.0-alpha.1', published_at: '2025-07-16T10:54:47Z', draft: false }],
+      true,
+      ws
+    );
+    vi.stubGlobal('fetch', fetchImpl);
+    const env = {
+      [CLI_ENV_VARS.STATE_PATH]: statePath,
+      [CLI_ENV_VARS.NTFY_URL]: 'https://ntfy.example/topic',
+      [CLI_ENV_VARS.LAUNCH_ITEM]: '3810',
+      GITHUB_STEP_SUMMARY: summaryPath,
+    };
+
+    const code = await main(env, log, error);
+
+    expect(code).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringMatching(/^::error::.*MAJOR_WATCHER_FILING_TOKEN is not set/)
+    );
+    expect(await readFile(summaryPath, 'utf8')).toMatch(
+      /^:x: major-watcher failed:.*MAJOR_WATCHER_FILING_TOKEN is not set/
+    );
+    expect(ws.calls).toHaveLength(0);
+    const ntfyCalls = fetchImpl.mock.calls.filter(
+      ([url]) => new URL(String(url)).hostname === 'ntfy.example'
+    );
+    expect(ntfyCalls).toHaveLength(1);
+    expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({ lastNotifiedMajor: 5 });
+  });
+
+  it('a quiet run needs no filing credential and touches no workspace', async () => {
+    await writeFile(statePath, JSON.stringify({ lastNotifiedMajor: 6 }));
+    const ws = fakeWorkspace();
+    vi.stubGlobal(
+      'fetch',
+      fetchStub(
+        [{ tag_name: 'v6.65.0', published_at: '2026-09-22T15:28:40Z', draft: false }],
+        true,
+        ws
+      )
+    );
+    const env = {
+      [CLI_ENV_VARS.STATE_PATH]: statePath,
+      [CLI_ENV_VARS.NTFY_URL]: 'https://ntfy.example/topic',
+    };
+
+    const code = await main(env, vi.fn(), vi.fn());
+
+    expect(code).toBe(0);
+    expect(ws.calls).toHaveLength(0);
   });
 
   it('happy path, nothing new: plain log, no annotation, no summary write, exit 0', async () => {

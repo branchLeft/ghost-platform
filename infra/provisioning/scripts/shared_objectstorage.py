@@ -47,6 +47,9 @@ parse_owner_id = _module.parse_owner_id
 request_url = _module.request_url
 signed_request = _module.signed_request
 urllib_request = _module.urllib_request
+# The transport that also returns the response headers, so a caller that paces its
+# requests can wrap the same call `get_object_with_content_type` makes by default.
+urllib_get_with_headers = _module._urllib_get_with_headers
 delete_object = _module.delete_object
 get_object = _module.get_object
 get_object_with_content_type = _module.get_object_with_content_type

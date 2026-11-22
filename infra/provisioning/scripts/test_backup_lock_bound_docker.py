@@ -483,6 +483,42 @@ class BackupLockBoundAgainstDb1sImageTests(unittest.TestCase):
         self.assertGreaterEqual(report.aborted_attempts, 1)
         self.assertGreaterEqual(len(backoffs), 1)
 
+    def test_a_table_that_is_not_innodb_stops_the_dump_before_it_locks_anything(self) -> None:
+        """The dump reads InnoDB tables inside one snapshot and the position
+        under the lock, so a MyISAM table would be read after the unlock and
+        its rows then replayed from the log a second time. The refusal is read
+        from the real catalog, so a predicate that stopped matching (an engine
+        name, a scope, a NULL) shows here and not only in the fake's answers.
+        The table is in its own schema, which db1's nightly dump reaches as one
+        more user schema."""
+        self.container.root_ok(
+            "CREATE DATABASE ghost_legacy; CREATE TABLE ghost_legacy.old_cache (id INT PRIMARY KEY) ENGINE=MyISAM;"
+        )
+        self.addCleanup(self.container.root_ok, "DROP DATABASE ghost_legacy;")
+        self.container.root_ok("TRUNCATE mysql.general_log;")
+        with self.assertRaises(dump_nightly.DumpError) as refused:
+            self._db1_dump()
+        self.assertIn("ghost_legacy.old_cache (MyISAM)", str(refused.exception))
+        for tenant in TENANTS:
+            self.assertNotIn(f"ghost_{tenant}.", str(refused.exception))
+        locks = self.container.root_ok(
+            "SELECT argument FROM mysql.general_log WHERE user_host LIKE 'backup%' AND argument LIKE 'LOCK TABLES%ghost_legacy%';"
+        )
+        self.assertEqual(locks.strip(), "")
+
+    def test_a_partitioned_innodb_table_and_a_view_are_not_refused(self) -> None:
+        """The engine of a partitioned InnoDB table is InnoDB in the catalog
+        and a view is not a base table: neither is a false refusal."""
+        self.container.root_ok(
+            "CREATE DATABASE ghost_shapes; "
+            "CREATE TABLE ghost_shapes.parted (id INT NOT NULL, PRIMARY KEY (id)) ENGINE=InnoDB PARTITION BY HASH(id) PARTITIONS 2; "
+            "CREATE VIEW ghost_shapes.parted_view AS SELECT id FROM ghost_shapes.parted;"
+        )
+        self.addCleanup(self.container.root_ok, "DROP DATABASE ghost_shapes;")
+        report, plaintext = self._db1_dump()
+        self.assertIn("ghost_shapes", plaintext)
+        self.assertGreaterEqual(len(report.sections), len(TENANTS) + 1)
+
     @staticmethod
     def _checksums(container: _Container, schema: str) -> dict[str, str]:
         tables = [f"{schema}.{name}" for name in ("users", "settings", "posts")]

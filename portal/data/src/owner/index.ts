@@ -32,6 +32,7 @@ import type { DemoEventView, DemoSummary, HostnameView } from '../demoLifecycle.
 import {
   documentVersion,
   healthReading,
+  professionalEnquiry,
   supportAccessReading,
   supportAccessRequest,
   tenantBilling,
@@ -368,6 +369,18 @@ export class OwnerDb {
         requestedAt: row.requestedAt,
         status: row.status as SupportRequestStatus,
       }));
+    });
+  }
+
+  /**
+   * How many Professional enquiries the tenant portal has sent, across every
+   * tenant. One row per enquiry sent; the console shows this count and nothing
+   * about the enquiries themselves.
+   */
+  async countProfessionalEnquiries(): Promise<number> {
+    return this.run(async (tx) => {
+      const rows = await tx.select({ count: sql<number>`count(*)::int` }).from(professionalEnquiry);
+      return rows[0]?.count ?? 0;
     });
   }
 

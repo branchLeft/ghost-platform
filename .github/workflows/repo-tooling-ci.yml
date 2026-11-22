@@ -141,6 +141,16 @@ jobs:
       - name: CSP checkout gate runner tests
         run: python3 -m unittest discover -s csp/gate -p 'test_*.py' -v
 
+      # The magic-link gate's TypeScript (csp/proof/*.ts: the browser capture, the
+      # mail-link reader, the widget-address printer): type-checked, then the mail
+      # reader's tests. Needs render-core built (the step above) for its types. The
+      # gate's runner and verdict are Python and run in the step above; the live run
+      # is gate-set-ci's.
+      - name: CSP magic-link TypeScript checks
+        run: |
+          (cd csp/proof && pnpm install --frozen-lockfile --ignore-scripts && pnpm run typecheck)
+          node --test csp/proof/mail-link.test.ts
+
       # Self-test first: a matcher that has quietly stopped matching passes
       # every file, so prove it still works before trusting a pass. The scan
       # then walks the tree rather than taking a list of changed files --
@@ -190,6 +200,12 @@ jobs:
       - name: Demo host export release sabotage proof
         run: python3 demo-host/provision/sabotage_export_release.py
 
+      # The demo isolation probe (demo-host/provision/branchleft_demo_isolation_probe.py):
+      # each guarantee broken in a scratch copy, the suite red for every one and
+      # green on the real copy. Its tests run in the discover step above.
+      - name: Demo isolation probe sabotage proof
+        run: python3 demo-host/provision/sabotage_branchleft_demo_isolation_probe.py
+
       - name: App host provisioning script tests
         run: python3 -m unittest discover -s app/provision -p 'test_*.py'
 
@@ -220,10 +236,20 @@ jobs:
       - name: Workflow permissions test
         run: python3 -m unittest discover -s scripts -p 'test_workflow_permissions.py'
 
+      # GitHub drops scheduled runs queued for minute 0 of an hour when it is
+      # busy. Fails a `cron` entry that fires at minute 0.
+      - name: Workflow cron minute test
+        run: python3 -m unittest discover -s scripts -p 'test_workflow_cron_minute.py'
+
       # Each gate of the demo site block broken in a scratch copy: the suite must
       # go red for every one, and green on the real copy.
       - name: Demo site block sabotage proof
         run: python3 demo-host/provision/sabotage_render_demo_site.py
+
+      # The edge access-log scan (demo-host/provision/scan_edge_access_log.py):
+      # each detection dropped in a scratch copy must turn its test red.
+      - name: Edge access-log scan sabotage proof
+        run: python3 demo-host/provision/sabotage_scan_edge_access_log.py
 
       # The control host's backup-worker installer. Its tests also tie the
       # units and the required environment to the scripts they run, so a
@@ -246,6 +272,11 @@ jobs:
       # `closed`. Real local HTTP servers and a stand-in docker; no Docker, no
       # root. The sabotage cases break the real source and require the matching
       # check red.
+      #
+      # The same directory holds the health collector's native half
+      # (portal/host/branchleft-health-collect.py): a colour it cannot read must
+      # be reported as null, never left out, so the portal writes `unknown` and
+      # not the last good reading.
       - name: Support-access collector host program tests and sabotage proof
         run: python3 -m unittest discover -s portal/host -p 'test_*.py' -v
 
@@ -305,7 +336,7 @@ jobs:
       # gets its own step here: the infra workflows are path-filtered, and a
       # check there would not run on a pull request that breaks the gate.
       - name: Check the apply gate (hosts)
-        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           workflow: .github/workflows/infra-hosts-ci.yml
           pairs: plan:apply
@@ -314,7 +345,7 @@ jobs:
           plan-file: preview-plan.json
 
       - name: Check the apply gate (demo host)
-        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           workflow: .github/workflows/infra-demo-host-ci.yml
           pairs: plan:apply

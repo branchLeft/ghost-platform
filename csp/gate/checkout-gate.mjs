@@ -3,7 +3,7 @@
 // checkout on a real Ghost behind the edge policy; this module is the verdict on
 // what it observed. Observation lives in csp/proof/capture-checkout.mjs; the
 // live runner is csp-checkout-gate.py. The magic-link email round trip is NOT
-// judged here (it waits on the mail programme): the member signs in through the
+// judged here (csp/gate/csp-magic-link-gate.md judges it): the member signs in through the
 // sign-in link Ghost's Admin API issues.
 //
 // The sibling of csp-regression-gate.mjs (which judges the ATTACK side:

@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
 _HERE = pathlib.Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -501,10 +501,12 @@ def scoped_grant_verdict(
     errno_ftwrl: int,
     plugins: Sequence[str],
     global_privileges: Iterable[str] | None = None,
+    stray: Sequence[str] | None = None,
 ) -> Verdict:
     """Control 4. 1142 reading the other schema, 1227 on FLUSH TABLES WITH
     READ LOCK, no clone plugin, and (when read) BACKUP_ADMIN as the only
-    global privilege."""
+    global privilege and no grant outside the blog schema and the one
+    `log_status` table (`stray`, from `stray_grants`)."""
     problems = []
     if errno_other_schema != 1142:
         problems.append(f"reading the other schema gave error {errno_other_schema}, not 1142")
@@ -517,6 +519,8 @@ def scoped_grant_verdict(
         privileges = sorted(set(global_privileges))
         if privileges != ["BACKUP_ADMIN"]:
             problems.append(f"global privileges are {privileges}, not exactly ['BACKUP_ADMIN']")
+    if stray:
+        problems.append(f"grants outside the design: {list(stray)}")
     if problems:
         return Verdict(False, "; ".join(problems))
     return Verdict(True, "error 1142 on the other schema, error 1227 on FTWRL, no clone plugin, BACKUP_ADMIN the only global privilege")
@@ -613,6 +617,48 @@ def parse_global_privileges(grant_lines: Iterable[str]) -> frozenset[str]:
     return frozenset(privileges)
 
 
+_ROLE_GRANT_LINE = re.compile(r"^GRANT (?P<roles>`[^`]*`(?:@`[^`]*`)?(?:, ?`[^`]*`(?:@`[^`]*`)?)*) TO ")
+_SCOPED_GRANT_LINE = re.compile(r"^GRANT (?P<privs>.+?) ON (?P<scope>.+?) TO ")
+
+
+def parse_role_grants(grant_lines: Iterable[str]) -> list[str]:
+    """The roles `SHOW GRANTS` lists as `GRANT role TO account`, each as the
+    account-name form `SHOW GRANTS ... USING` takes. A role's own privileges
+    are not in that output."""
+    roles: list[str] = []
+    for line in grant_lines:
+        match = _ROLE_GRANT_LINE.match(line)
+        if match:
+            roles.extend(part.strip() for part in match.group("roles").split(", "))
+    return roles
+
+
+def effective_grants(query: Callable[[str], list[str]], account: str) -> list[str]:
+    """What the account can do, not only what is granted to it by name: a
+    role it holds is expanded with `SHOW GRANTS ... USING`, so a privilege
+    reached through a role shows up beside the direct ones. `account` is the
+    quoted name, as in `'mover'@'localhost'`."""
+    lines = query(f"SHOW GRANTS FOR {account};")
+    roles = parse_role_grants(lines)
+    if not roles:
+        return lines
+    return query(f"SHOW GRANTS FOR {account} USING {', '.join(roles)};")
+
+
+def stray_grants(grant_lines: Iterable[str], allowed_scopes: Iterable[str]) -> list[str]:
+    """Every grant that is neither global (`*.*`, judged by
+    `parse_global_privileges`) nor on one of `allowed_scopes`, written as
+    `SHOW GRANTS` writes a scope: a schema grant on another schema or a table
+    grant on a table outside the design shows up here."""
+    allowed = set(allowed_scopes)
+    strays = []
+    for line in grant_lines:
+        match = _SCOPED_GRANT_LINE.match(line)
+        if match and match.group("scope") != "*.*" and match.group("scope") not in allowed:
+            strays.append(line)
+    return strays
+
+
 def pinned_image(runbook_text: str) -> str:
     """The one mysql:8.0 digest db/RUNBOOK-db.md pins."""
     pins = set(re.findall(r"mysql:8\.0@sha256:[0-9a-f]{64}", runbook_text))
@@ -666,7 +712,12 @@ SELF_TEST_CASES: tuple[tuple[str, bool, Callable[[], Verdict]], ...] = (
     ("scoped_grant: other schema readable", False, lambda: scoped_grant_verdict(0, 1227, [])),
     ("scoped_grant: clone plugin loaded", False, lambda: scoped_grant_verdict(1142, 1227, ["clone"])),
     ("scoped_grant: RELOAD granted", False, lambda: scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN", "RELOAD"])),
-    ("scoped_grant: healthy", True, lambda: scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"])),
+    (
+        "scoped_grant: a schema grant on another schema",
+        False,
+        lambda: scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], stray_grants(["GRANT SELECT ON `other`.* TO `mover`@`localhost`"], [])),
+    ),
+    ("scoped_grant: healthy", True, lambda: scoped_grant_verdict(1142, 1227, [], ["BACKUP_ADMIN"], [])),
     (
         "bounded_wait: a writer waiting 10 s",
         False,
@@ -1608,6 +1659,44 @@ def control_2(ctx: Ctx) -> ControlResult:
     return ControlResult(2, "another schema's writes are not blocked", verdict, [on_tmpfs.texts["control_2_source"], *numbers])
 
 
+# How long the long reader holds the other schema's table while the retired
+# path's first sampled dump runs, in control 3.
+OLD_PATH_LOCK_HOLD_SECONDS = 4
+
+
+@contextlib.contextmanager
+def long_reader(ctx: Ctx, seconds: int) -> Iterator[None]:
+    """A SELECT SLEEP(`seconds`) over the other schema's table on its own
+    session, started and seen running before the body, and waited for after
+    it, so a FLUSH TABLES inside the body has something to wait for."""
+    reader = ctx.source.session(database=OTHER)
+    finished = threading.Event()
+    failures: list[ProofError] = []
+
+    def hold() -> None:
+        try:
+            reader.run(f"SELECT SLEEP({seconds}) FROM posts LIMIT 1;")
+        except ProofError as exc:
+            failures.append(exc)
+        finally:
+            finished.set()
+
+    threading.Thread(target=hold, daemon=True).start()
+    try:
+        for _ in range(100):
+            if ctx.source.query(f"SELECT COUNT(*) FROM performance_schema.processlist WHERE INFO LIKE 'SELECT SLEEP({seconds})%';")[0][0] != "0":
+                break
+            time.sleep(0.1)
+        else:
+            raise ProofError("the long reader never started")
+        yield
+    finally:
+        finished.wait(timeout=seconds + 60)
+        reader.close()
+    if failures:
+        raise failures[0]
+
+
 def control_3(ctx: Ctx) -> ControlResult:
     """No GLOBAL metadata lock held by the move account."""
     old_path = ctx.sabotaged("old-path")
@@ -1617,8 +1706,16 @@ def control_3(ctx: Ctx) -> ControlResult:
     try:
         if old_path:
             _grant_old_path(ctx)
-        for _ in range(OLD_PATH_DUMPS_CONTROL_3 if old_path else 10):
-            if old_path:
+        for run_number in range(OLD_PATH_DUMPS_CONTROL_3 if old_path else 10):
+            if old_path and run_number == 0:
+                # The retired path's lock is held for a few milliseconds when
+                # nothing is reading, which a sampler can miss on a loaded
+                # runner. Under a long reader its FLUSH TABLES waits for
+                # seconds with the GLOBAL lock already granted, so the first
+                # dump is taken under one and cannot go unseen.
+                with long_reader(ctx, OLD_PATH_LOCK_HOLD_SECONDS):
+                    old_path_dump(ctx)
+            elif old_path:
                 old_path_dump(ctx)
             else:
                 take_snapshot(ctx, "sampled.sql")
@@ -1657,14 +1754,15 @@ def control_4(ctx: Ctx) -> ControlResult:
         as_mover = {"user": MOVER, "password": ctx.passwords.mover, "check": False}
         other = ctx.source.run(f"SELECT * FROM {OTHER}.posts LIMIT 1;", **as_mover)
         ftwrl = ctx.source.run("FLUSH TABLES WITH READ LOCK; UNLOCK TABLES;", **as_mover)
-        grants = [row[0] for row in ctx.source.query(f"SHOW GRANTS FOR '{MOVER}'@'localhost';")]
+        grants = effective_grants(lambda sql: [row[0] for row in ctx.source.query(sql)], f"'{MOVER}'@'localhost'")
     finally:
         if sabotage:
             ctx.source.run(f"REVOKE RELOAD ON *.* FROM '{MOVER}'@'localhost';", check=False)
     plugins = [row[0] for row in ctx.source.query("SELECT PLUGIN_NAME FROM information_schema.PLUGINS WHERE PLUGIN_NAME LIKE '%clone%';")]
     privileges = parse_global_privileges(grants)
     errno_other, errno_ftwrl = parse_errno(other.stderr), parse_errno(ftwrl.stderr)
-    verdict = scoped_grant_verdict(errno_other, errno_ftwrl, plugins, privileges)
+    stray = stray_grants(grants, [f"`{BLOG}`.*", "`performance_schema`.`log_status`"])
+    verdict = scoped_grant_verdict(errno_other, errno_ftwrl, plugins, privileges, stray)
     numbers = [
         f"read of {OTHER}.posts: error {errno_other}; FLUSH TABLES WITH READ LOCK: error {errno_ftwrl}",
         f"clone plugin rows in information_schema.PLUGINS: {len(plugins)}; global privileges: {sorted(privileges)}",

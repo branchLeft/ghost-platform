@@ -214,7 +214,7 @@ the service is.
   credential on an owner call, the owner's on a tenant call and one tenant's on another's
   path are each 403, and nothing a tenant presents lets it past its own paths.
 - **Tenants come from a register of demos** (`PROVISIONING_DEMOS_FILE`): `{"demos":
-[{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
+  [{"tenantId", "demoId", "address", "state", "expiresAt"}]}`, written by the owner's tooling,
   never in the repository, refused if other users can write it, and looked at again
   whenever the file changes. Until a tenant is promoted its demo is what the register says;
   after, the service's own record is. A database adapter for the demo register is later work.
@@ -231,7 +231,7 @@ the service is.
   port): `PROVISIONING_STATE_DIR=... PROVISIONING_DEMOS_FILE=... pnpm run service`. It
   answers `GET /healthz` with no credential. `contract/smoke_service.py` does this
   from files of its own, walks the journey, restarts it and checks it kept its state.
-- **Seen on the real portal** (the done check of branchLeft/workspace#3818): sign in to the
+- **Seen on the real portal** (the done check of a private tracker item): sign in to the
   tenant portal as a demo tenant's admin; `/demo` shows the register's address and
   state; `/essentials` asks and shows pending; in the owner console `/requests` lists the
   request and Approve takes it off the queue; the portal's `/site` then shows `provisioning`

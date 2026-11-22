@@ -59,8 +59,8 @@ export interface GatewayServerDeps {
   readonly newRequestId?: () => string;
 }
 
-const BODY_METHODS: ReadonlySet<string> = new Set(['PUT', 'POST', 'PATCH']);
-const XML = { 'content-type': 'application/xml' } as const;
+export const BODY_METHODS: ReadonlySet<string> = new Set(['PUT', 'POST', 'PATCH']);
+export const XML = { 'content-type': 'application/xml' } as const;
 const SIGNED_PREFIX = 'AWS4-HMAC-SHA256 ';
 
 /** The signature a request holds in the replay guard, once it has claimed one. */
@@ -69,7 +69,7 @@ interface ReplayHold {
 }
 
 /** What is sent back, and what the request log learns about the request. */
-interface Outcome {
+export interface Outcome {
   readonly answer: UpstreamAnswer;
   /** The request body was not read to its end, so the connection cannot be reused. */
   readonly closeAfter: boolean;
@@ -78,12 +78,15 @@ interface Outcome {
   readonly bytesIn?: number;
 }
 
-function refusalAnswer(code: RefusalCode): UpstreamAnswer {
+export function refusalAnswer(code: RefusalCode): UpstreamAnswer {
   const r = refusal(code);
   return { status: r.status, headers: XML, body: refusalBody(r), refusal: r };
 }
 
-function gatewayRequestOf(req: IncomingMessage, bodySha256: string | undefined): GatewayRequest {
+export function gatewayRequestOf(
+  req: IncomingMessage,
+  bodySha256: string | undefined
+): GatewayRequest {
   // Built from the distinct headers: Node's merged `headers` would join a repeated header.
   const headers: Record<string, string | readonly string[]> = {};
   for (const [name, values] of Object.entries(req.headersDistinct)) {
@@ -99,24 +102,24 @@ function gatewayRequestOf(req: IncomingMessage, bodySha256: string | undefined):
 }
 
 /** The body's real digest against the one the signature covered, compared without an early exit. */
-function digestMatches(actual: string, declared: string | undefined): boolean {
+export function digestMatches(actual: string, declared: string | undefined): boolean {
   if (declared === undefined || declared.length !== actual.length) return false;
   return timingSafeEqual(Buffer.from(actual, 'utf8'), Buffer.from(declared, 'utf8'));
 }
 
 /** A request that carries no header-signature at all is turned away before any body is read. */
-function carriesSignature(req: IncomingMessage): boolean {
+export function carriesSignature(req: IncomingMessage): boolean {
   const values = req.headersDistinct.authorization;
   return values?.length === 1 && (values[0] as string).startsWith(SIGNED_PREFIX);
 }
 
-function declaresBody(req: IncomingMessage): boolean {
+export function declaresBody(req: IncomingMessage): boolean {
   const length = req.headers['content-length'];
   return req.headers['transfer-encoding'] !== undefined || (length !== undefined && length !== '0');
 }
 
 /** The declared length, NaN when it is not one plain number (which the body stage refuses). */
-function declaredLengthOf(req: IncomingMessage): number | undefined {
+export function declaredLengthOf(req: IncomingMessage): number | undefined {
   if (req.headers['transfer-encoding'] !== undefined) return undefined;
   const values = req.headersDistinct['content-length'];
   if (values === undefined) return undefined;
@@ -129,7 +132,7 @@ function declaredLengthOf(req: IncomingMessage): number | undefined {
  * request itself would close the socket, and the client would see a reset in
  * place of the refusal.
  */
-function guardedBody(req: IncomingMessage): Readable {
+export function guardedBody(req: IncomingMessage): Readable {
   const out = new PassThrough();
   req.pipe(out);
   req.once('error', (error) => out.destroy(error));

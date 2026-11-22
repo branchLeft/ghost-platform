@@ -310,6 +310,10 @@ export type StatusResponse = {
      */
     notReal: Array<string>;
     phase: Phase;
+    /**
+     * Per-slot: `true` only when the slot's rendered `compose.yml` names `verdictSource: production` for every one of the three storage features (images, media, files) and names no other value for any of them. It is read from what render-core rendered into the slot's directory, never from a flag a caller can set; a slot that has not been rendered, a file that cannot be read and a missing or different value all read `false`. The demo's go-live step refuses while it is not `true`.
+     */
+    productionVerdictSource: boolean;
     slot: SlotName;
 };
 

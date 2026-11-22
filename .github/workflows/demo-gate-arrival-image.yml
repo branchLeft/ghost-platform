@@ -1,0 +1,95 @@
+name: Demo gate arrival image
+
+# The emailed link, proved against a real Ghost: the gate turns a single-use
+# link into a gate session, the SSO adapter inside the built Ghost image turns
+# the same token into an Administrator session, no password is shown and no
+# mail is sent. Single use, expiry, host binding and the mail-path readiness
+# are each proved by sabotage in the same run (services/demo-gate/test/image/).
+#
+# It builds the Ghost image from the repository root and runs the gate's
+# image test against it. The gate's tests install from GitHub Packages
+# (`@branchleft/tsconfig`), which is why this is its own workflow: build.yml
+# is credential-free and installs nothing.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/demo-gate/**'
+      - 'services/request-guard/**'
+      - 'adapters/sso/**'
+      - 'test-support/image-harness.mjs'
+      - 'demo-host/provision/scan_edge_access_log.py'
+      - 'Dockerfile'
+      - '.github/workflows/demo-gate-arrival-image.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/demo-gate/**'
+      - 'services/request-guard/**'
+      - 'adapters/sso/**'
+      - 'test-support/image-harness.mjs'
+      - 'demo-host/provision/scan_edge_access_log.py'
+      - 'Dockerfile'
+      - '.github/workflows/demo-gate-arrival-image.yml'
+
+# Read-only, stated rather than inherited. `packages: read` for the dev
+# dependency on `@branchleft/tsconfig`.
+permissions:
+  contents: read
+  packages: read
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# merge_group, schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  arrival:
+    name: Arrival link against the built image
+    runs-on: ubuntu-latest
+    # Generous bound: an image build, a Ghost boot, and about a dozen
+    # arrivals, a few of them waiting on a mail path that is meant to fail.
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        run: docker build --tag ghost-platform:ci .
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/demo-gate/.nvmrc
+          registry-url: https://npm.pkg.github.com
+          scope: '@branchleft'
+          cache: pnpm
+          cache-dependency-path: |
+            services/demo-gate/pnpm-lock.yaml
+            services/request-guard/pnpm-lock.yaml
+
+      - name: Build request-guard
+        working-directory: services/request-guard
+        run: pnpm install --frozen-lockfile && pnpm run build
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        working-directory: services/demo-gate
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Arrival link, sabotage and access-log scan against the built image
+        working-directory: services/demo-gate
+        run: pnpm run test:image
+        env:
+          IMAGE: ghost-platform:ci

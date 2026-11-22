@@ -123,6 +123,15 @@ for a tenant descriptor only when this equals the repository the register
 records for it, and a demo never gets one. Omitted, a registered tenant name is
 refused (see `naming.md#validateslugavailability-and-the-claimant`).
 
+## Demo sign-in
+
+A demo may carry `breakGlass.kind = "enabled"` only pinned to its own owner:
+`supportIdentity` must equal `ownerEmail`, compared without regard to letter
+case, and `ownerEmail` must be inline. The prospect signs in to Ghost admin from
+the emailed link through the SSO adapter, and a demo has no support account, so
+any other identity on a demo is refused. The refusal names neither address. The
+image-pin ordering rule applies to a demo as it does to a tenant.
+
 ## validateTenantStack
 
 `validate()` for a paying tenant's `TenantStackDescriptor`: the same checks

@@ -38,16 +38,30 @@ stdin) and one dump session (`mysqldump`), both as the backup account.
 
 1. Coordinator: `SET SESSION lock_wait_timeout = 1` and
    `SET SESSION wait_timeout = 2`, then `SELECT CONNECTION_ID()`.
-2. Coordinator: list the base tables to lock from
-   `information_schema.TABLES`: one tenant's schema, or (no caller passes it
-   now) every schema except `mysql`, `sys`, `performance_schema` and
-   `information_schema`.
+2. Coordinator: list the base tables to lock, with each one's storage
+   engine, from `information_schema.TABLES`: one tenant's schema, or (no
+   caller passes it now) every schema except `mysql`, `sys`,
+   `performance_schema` and `information_schema`. A table whose engine is
+   not InnoDB (MyISAM, MEMORY, CSV, or none reported) is refused here, with
+   its name and engine, before anything is locked and with no retry: the
+   snapshot is a transaction and the position is read under the lock, so a
+   table that is not transactional would be read after the unlock, and its
+   rows would then be replayed again from the binary log. This holds for
+   both nightly paths. On the tenant backup worker (one schema per run) it
+   stops that schema's dump. On db1's nightly path (`dump_nightly.py`, every
+   user schema in one run) the refusal is a `SnapshotError` for a schema that
+   still exists, which fails the whole run: one such table in any schema on
+   db1 means no tenant on db1 is backed up until it is converted. That is the
+   accepted behaviour, loud by design (`DbNightlyDumpFailed`,
+   `DbNightlyDumpStale`), and the owner's pre-delivery query in the pull
+   request checks for it.
 3. Coordinator: `LOCK TABLES … READ` on exactly those tables. This takes
    no flush. A long-running read does not block it, because a read lock
    and a running read are compatible. It waits only for write
    transactions in flight on those tables, and while it waits, new writes
    to them queue behind it. That wait is what the bounds below limit.
-4. Under the lock: list the tables again (a mismatch aborts the attempt),
+4. Under the lock: list the tables again (a mismatch, an engine included,
+   aborts the attempt, and the next attempt's refusal then stands),
    then read `SELECT LOCAL FROM performance_schema.log_status` for the
    binary-log file and position.
 5. Start `mysqldump -v --single-transaction …` with no `--source-data`,

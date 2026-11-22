@@ -83,16 +83,17 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
       : { clientLimit: { trustedProxies: options.trustedProxies } }),
     bind: async () => true,
     landing: async () => {
-      const [tenants, requests, waiting, erasures] = await Promise.all([
+      const [tenants, requests, waiting, erasures, enquiries] = await Promise.all([
         options.db.listHealth(),
         options.db.listSupportRequests(),
         options.db.waitingCount(),
         options.db.listErasureRequests(),
+        options.db.countProfessionalEnquiries(),
       ]);
       const rows = tenants
         .map((t) => `<li><code>${escapeHtml(t.tenantId)}</code>${renderHealth(t.health)}</li>`)
         .join('');
-      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><p>DEMOS_WAITING ${waiting}</p><ul>${rows}</ul>${renderSupportQueue(requests)}${renderErasureQueue(erasures)}`;
+      return `<h1>LANDING_PLACEHOLDER</h1><p>TENANTS_REGISTERED ${tenants.length}</p><p>DEMOS_WAITING ${waiting}</p><p>PROFESSIONAL_ENQUIRIES ${enquiries}</p><ul>${rows}</ul>${renderSupportQueue(requests)}${renderErasureQueue(erasures)}`;
     },
     actions: {
       ...requests.actions,

@@ -103,7 +103,9 @@ export function createTenantPortal(options: TenantPortalOptions) {
     options.support,
     options.db,
     () => Math.floor(now().getTime() / 1000),
-    thirdPartyOff
+    options.db,
+    thirdPartyOff,
+    options.onError
   );
   return createShell<TenantScope>({
     issuer: options.issuer,

@@ -24,6 +24,7 @@ import { World } from '../support/doubles.js';
 const DEMO: RegisterEntry = {
   tenantId: 'demo-tenant',
   mediaFolder: 'demo-tenant',
+  stateFolder: 'STATE_FOLDER_PLACEHOLDER',
   mediaBucket: 'branchleft-media-demo-tenant',
   appHostSlot: 'demo-tenant',
   appHostPort: 8101,

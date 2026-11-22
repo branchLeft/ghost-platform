@@ -8,7 +8,7 @@ name: Speckify
 # from each spec to GitHub Packages, from this job and this workflow file, with
 # the run's own GITHUB_TOKEN and nothing else.
 #
-# Speckify is checked out at the commit its v0.1.0 tag points at, built from its
+# Speckify is checked out at the commit its v0.1.2 tag points at, built from its
 # lockfile, and run directly. Its composite action is not used: called as
 # `uses: branchLeft/speckify@<sha>` it hands an absolute `github.action_path` to
 # setup-node's `node-version-file`, which setup-node joins onto the workspace, and
@@ -63,11 +63,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout Speckify v0.1.0
+      - name: Checkout Speckify v0.1.2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: branchLeft/speckify
-          ref: 50fe4d8d95bc74331be8c481ee35d202b1d4ec0f
+          ref: b9be3996ac8684f44bc6ff53dbc4d5cc787816bd
           path: .speckify-tool
           persist-credentials: false
 
@@ -122,11 +122,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout Speckify v0.1.0
+      - name: Checkout Speckify v0.1.2
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: branchLeft/speckify
-          ref: 50fe4d8d95bc74331be8c481ee35d202b1d4ec0f
+          ref: b9be3996ac8684f44bc6ff53dbc4d5cc787816bd
           path: .speckify-tool
           persist-credentials: false
 
@@ -177,7 +177,7 @@ jobs:
       # fields are set here on Speckify's own build output and the package is
       # published with npm. The tool's check, plan and build, and the drift
       # guard above, still run. When Speckify writes those fields itself
-      # (a tracked fix in the private tracker), go back to `speckify publish`.
+      # (the private tracker item for it), go back to `speckify publish`.
       - name: Link the generated package to this repository
         run: |
           set -euo pipefail
@@ -227,7 +227,7 @@ jobs:
 
       - name: Attest the tarball
         if: steps.pack.outputs.publish == 'true'
-        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@231e592397f4c94668c64646c14160d9d497bdde # v1.2.2
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
         with:
           tarball: ${{ steps.pack.outputs.tarball }}
           repo: branchLeft/ghost-platform

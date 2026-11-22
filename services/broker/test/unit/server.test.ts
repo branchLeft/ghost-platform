@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import { buildDeps, loadPlugin } from '../../src/server.js';
 import type { BrokerConfig } from '../../src/config.js';
 import { makeTempDir } from '../../src/atomicFile.js';
 import { imagePushManifest } from '../../src/imagePush.js';
+import { baseBrokerEnv } from '../helpers/brokerEnv.js';
 import { generateTestKeyPair, signHeaders } from '../helpers/signer.js';
 import {
   writeShapelessPlugin,
@@ -157,46 +158,8 @@ describe('the real dist/server.js entrypoint', () => {
     drainFlagDir: string;
     slotsPath: string;
   }> {
-    const root = await makeTempDir('broker-spawn-');
-    const keyPair = generateTestKeyPair();
-    const keyPath = join(root, 'verify.key');
-    await writeFile(keyPath, keyPair.publicKeyRaw);
-    const stateDir = join(root, 'state');
-    const leaseDir = join(root, 'lease');
-    const drainFlagDir = join(root, 'drain');
-    const slotDirBase = join(root, 'slots');
-    const slotsPath = join(root, 'slots.json');
-    const imageTmpDir = join(root, 'image-tmp');
-    await mkdir(stateDir, { recursive: true });
-    await mkdir(leaseDir, { recursive: true });
-    await mkdir(drainFlagDir, { recursive: true });
-    await mkdir(slotDirBase, { recursive: true });
-    await mkdir(imageTmpDir, { recursive: true });
-    return {
-      keyPair,
-      stateDir,
-      leaseDir,
-      drainFlagDir,
-      slotsPath,
-      env: {
-        PORT: String(await findFreePort()),
-        LISTEN_HOST: '127.0.0.1',
-        BROKER_VERIFY_KEY_FILE: keyPath,
-        BROKER_SLOTS_FILE: slotsPath,
-        BROKER_LEASE_DIR: leaseDir,
-        BROKER_STATE_DIR: stateDir,
-        BROKER_DRAIN_FLAG_DIR: drainFlagDir,
-        BROKER_SLOT_DIR_BASE: slotDirBase,
-        BROKER_IMAGE_TMP_DIR: imageTmpDir,
-        BROKER_DEMO_ZONE: TEST_ZONES.demoZone,
-        BROKER_PLATFORM_ZONE: TEST_ZONES.platformZone,
-        BROKER_OWNED_DOMAINS: TEST_ZONES.ownedDomains.join(','),
-        BROKER_DEMO_MAIL_DOMAIN: TEST_ZONES.demoMailDomain,
-        BROKER_WRAPPER_COMMAND: join(process.cwd(), 'test/helpers/fakeWrapper.mjs'),
-        BROKER_WRAPPER_PREFIX: process.execPath,
-        BROKER_SLOT_LITERALS: '0,1,2,3,4,5,6',
-      },
-    };
+    const base = await baseBrokerEnv();
+    return { ...base, env: { PORT: String(await findFreePort()), ...base.env } };
   }
 
   it('exits non-zero and never listens when no plugin module is configured', async () => {
@@ -324,6 +287,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 
@@ -351,6 +315,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: [],
       interim: [],
+      productionVerdictSource: false,
     });
     broker.stop();
 
@@ -629,6 +594,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
+      productionVerdictSource: false,
     });
 
     await new Promise((resolve) => setTimeout(resolve, 1100)); // past item 2's same-second floor
@@ -650,6 +616,7 @@ describe('the real dist/server.js entrypoint', () => {
       healthy: false,
       notReal: ['adminApi', 'drainSource', 'imageLoader', 'renderer'],
       interim: [],
+      productionVerdictSource: false,
     });
   });
 

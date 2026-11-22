@@ -29,11 +29,13 @@ CI. The program keeps `Host`'s create-time decisions instead:
 
 ## The firewall (`firewall.ts`)
 
-Exactly three inbound rules, from the owner's ruling of 2026-09-28:
+Exactly four inbound rules, three from the owner's ruling of 2026-09-28 and
+the metrics port added for monitoring:
 
 | Port | Source | Why |
 |---|---|---|
 | 22/tcp | edge1's public IPv4, `/32` | The owner reaches demo1 by jumping through edge1. ops1 has no public address and leaves through edge1's NAT, so its SSH tunnel to the broker arrives from the same address. |
+| 9100/tcp | edge1's public IPv4, `/32` | The host's metrics. ops1 has no public address and is scraped through edge1's NAT, so the source is the same address as SSH. The exporter serves TLS and accepts only a client certificate signed by the estate's monitoring CA; that certificate check is the control, the firewall narrows who can try. Never open to anywhere. |
 | 80/tcp | anywhere | The demo edge: HTTP-01 and the redirect. |
 | 443/tcp | anywhere | The demo edge. |
 

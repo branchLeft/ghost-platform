@@ -51,6 +51,7 @@ function asEntry(path: string, raw: unknown): RegisterEntry {
     !isRecord(raw) ||
     !isText(raw['tenantId']) ||
     typeof raw['mediaFolder'] !== 'string' ||
+    typeof raw['stateFolder'] !== 'string' ||
     typeof raw['mediaBucket'] !== 'string' ||
     typeof raw['appHostSlot'] !== 'string' ||
     typeof raw['appHostPort'] !== 'number' ||
@@ -63,6 +64,7 @@ function asEntry(path: string, raw: unknown): RegisterEntry {
   return {
     tenantId: raw['tenantId'],
     mediaFolder: raw['mediaFolder'],
+    stateFolder: raw['stateFolder'],
     mediaBucket: raw['mediaBucket'],
     appHostSlot: raw['appHostSlot'],
     appHostPort: raw['appHostPort'],

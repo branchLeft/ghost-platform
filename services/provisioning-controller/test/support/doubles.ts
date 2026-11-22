@@ -16,6 +16,7 @@ import type {
 export const ENTRY: RegisterEntry = {
   tenantId: 'TENANT_ID_PLACEHOLDER',
   mediaFolder: 'MEDIA_FOLDER_PLACEHOLDER',
+  stateFolder: 'STATE_FOLDER_PLACEHOLDER',
   mediaBucket: 'BUCKET_PLACEHOLDER',
   appHostSlot: 'SLOT_PLACEHOLDER',
   appHostPort: 20001,

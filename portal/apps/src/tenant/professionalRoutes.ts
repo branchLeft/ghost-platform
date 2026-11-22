@@ -30,12 +30,20 @@ export const ENQUIRY_SUBJECT_PREFIX = 'PROFESSIONAL_ENQUIRY';
 /** The screen line in the body, so a reader can tell an enquiry from a support ticket at a glance. */
 export const ENQUIRY_SCREEN = 'PROFESSIONAL';
 
+/** Counts one sent enquiry for the bound tenant: the owner console's count. */
+export interface EnquiryRecorder {
+  recordProfessionalEnquiry(scope: TenantScope): Promise<void>;
+}
+
 export interface EnquirySubmitterOptions {
   readonly reader: KindReader;
   readonly mailer: SupportMailer;
   readonly recipient: string;
   readonly sender: string;
   readonly limiter: SupportLimiter;
+  readonly enquiries: EnquiryRecorder;
+  /** One line per enquiry that was sent but could not be counted: the error name only. */
+  readonly onError?: (line: string) => void;
 }
 
 /**
@@ -76,6 +84,19 @@ export class EnquirySubmitter {
       subject: `${ENQUIRY_SUBJECT_PREFIX} ${scope.tenantId}`,
       body: `TENANT_ID: ${scope.tenantId}\nSCREEN: ${ENQUIRY_SCREEN}\n\n${MESSAGE_DELIMITER}\n${message}`,
     });
+    // The email is sent, so the enquiry is made. A count that fails to record
+    // must not send the tenant back to submit again, which would send a second
+    // email: the failure is logged by name and the tenant sees the sent page.
+    try {
+      await this.#options.enquiries.recordProfessionalEnquiry(scope);
+    } catch (error) {
+      this.#options.onError?.(
+        JSON.stringify({
+          event: 'professional_enquiry_not_counted',
+          error: error instanceof Error ? error.name : typeof error,
+        })
+      );
+    }
     return PROFESSIONAL_SENT_PATH;
   }
 
@@ -95,14 +116,17 @@ export class EnquirySubmitter {
 }
 
 /**
- * The Professional enquiry: a form and one email. It does not call the
- * provisioning API, and nothing is recorded: the email is the enquiry. With no
- * mail settings the screens do not exist, as for support.
+ * The Professional enquiry: a form and one email, and one row counted for the
+ * owner console. It does not call the provisioning API: the email is the
+ * enquiry and the row is only its count. With no mail settings the screens do
+ * not exist, as for support.
  */
 export function createProfessionalRoutes(
   settings: SupportSettings | undefined,
   reader: KindReader,
-  clock: () => number
+  clock: () => number,
+  enquiries: EnquiryRecorder,
+  onError?: (line: string) => void
 ): RouteSet {
   if (settings === undefined) return NO_ROUTES;
   const submitter = new EnquirySubmitter({
@@ -111,6 +135,8 @@ export function createProfessionalRoutes(
     recipient: settings.recipient,
     sender: settings.sender,
     limiter: new SupportLimiter(clock),
+    enquiries,
+    ...(onError === undefined ? {} : { onError }),
   });
   const pages: Record<string, PromotionPage> = {
     [PROFESSIONAL_PATH]: async (scope) =>

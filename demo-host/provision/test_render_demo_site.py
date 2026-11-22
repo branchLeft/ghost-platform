@@ -79,17 +79,23 @@ class GateTests(unittest.TestCase):
         for slot in ("0", "1"):
             section = slot_section(text, slot)
             handles = [line.strip() for line in section if line.strip().startswith("handle")]
-            self.assertEqual(handles, ["handle /__gate/login {", "handle {"])
+            self.assertEqual(handles, ["handle @gateOwn {", "handle {"])
             catch_all = "\n".join(section).split("\t\thandle {\n", 1)[1]
             self.assertLess(catch_all.index("forward_auth"), catch_all.index(f"import slot{slot}-upstream"))
             self.assertLess(catch_all.index("forward_auth"), catch_all.index("respond"))
         forward_auths = [line for line in text.splitlines() if line.strip().startswith("forward_auth ")]
         self.assertEqual(len(forward_auths), 2)
 
-    def test_only_the_login_path_skips_forward_auth(self):
-        login = block().split("handle /__gate/login {", 1)[1].split("}", 1)[0]
-        self.assertNotIn("forward_auth", login)
-        self.assertNotIn("slot0-upstream", login)
+    def test_only_the_gates_own_paths_skip_forward_auth(self):
+        own = block().split("handle @gateOwn {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("forward_auth", own)
+        self.assertNotIn("slot0-upstream", own)
+        self.assertIn(f"reverse_proxy {rds.GATE_UPSTREAM}", own)
+
+    def test_exactly_the_login_and_arrival_paths_are_the_gates_own(self):
+        matchers = [line.strip() for line in block().splitlines() if line.strip().startswith("@gateOwn ")]
+        self.assertEqual(matchers, ["@gateOwn path /__gate/login /__gate/enter"])
+        self.assertEqual(rds.GATE_OWN_PATHS, ("/__gate/login", "/__gate/enter"))
 
     def test_gate_verify_uri(self):
         self.assertIn("uri /__gate/verify", block())
@@ -321,7 +327,7 @@ class UploadGuardTests(unittest.TestCase):
     def test_the_guard_adds_no_handler(self):
         for slot in ("0", "1"):
             handles = [line.strip() for line in slot_section(self.text, slot) if line.strip().startswith("handle")]
-            self.assertEqual(handles, ["handle /__gate/login {", "handle {"])
+            self.assertEqual(handles, ["handle @gateOwn {", "handle {"])
 
     def test_the_print_flag_prints_the_guard_alone(self):
         out = io.StringIO()

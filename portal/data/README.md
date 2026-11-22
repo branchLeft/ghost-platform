@@ -129,7 +129,10 @@ takes the colours' scrape texts. Only the undrained colour answers: its version
 and match are the tenant's, a drained colour's are never read, and with no
 scrape, no undrained colour or two the reading is `unknown` (`src/reading.ts`).
 `OwnerDb.listHealth()` is the console's cross-tenant read. The collector that
-fetches the scrapes is separate work. The grants on `portal.health_reading`
+writes the readings is `portal/apps/src/collector/healthMain.ts`, fed by the
+native program in `portal/host/branchleft-health-collect.py` (see
+`portal/apps/README.md`). It writes `unknown`, with no scrape at all, for a
+tenant when any of its colours could not be read. The grants on `portal.health_reading`
 (tenant `SELECT`, owner `SELECT, INSERT, UPDATE`) are in the manifest,
 `provision/manifest.ts`.
 
@@ -152,6 +155,13 @@ believed for `SUPPORT_READING_FRESH_SECONDS` (900) either side of `now`: no
 row, an older or future-dated one, and a state outside the closed list all come
 back `unknown` with no deadline. `closed` is returned only for a fresh reading
 that says `closed`, so a host that has stopped reporting never reads as closed.
+
+`portal.professional_enquiry` holds one row per Professional enquiry the tenant
+portal has sent: the tenant, the database-clock time and nothing else, no contact and
+no text. `TenantDb.recordProfessionalEnquiry` inserts the bound tenant's row (the
+tenant role's `tenant_isolation` policy and `INSERT` grant only; it cannot read the
+table). `OwnerDb.countProfessionalEnquiries` counts every row for the owner console's
+landing page. Migration `0017_professional_enquiry`. Nothing updates or deletes a row.
 
 `portal.support_access_request` holds a tenant's requests: each row has its own
 id, the tenant id, the database-clock time and a `status` (`open` or

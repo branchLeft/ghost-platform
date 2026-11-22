@@ -22,7 +22,7 @@ export interface LeaseStoreConfig {
 
 /**
  * The recycle contract this story was told to honour verbatim
- * (workspace#1302 comment 5799768388, mirrored in `render-core/src/lease.ts`):
+ * (the owner's words in the private tracker, mirrored in `render-core/src/lease.ts`):
  * every recycle replaces the slot's hash, and the lease record it writes
  * must carry `hashIdOf` of that same hash, computed the one way
  * `render-core` defines it -- never re-derived. Both writes happen here,

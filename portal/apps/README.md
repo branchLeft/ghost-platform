@@ -108,6 +108,33 @@ What it writes, and what it never does:
   and one for the run, and never a reason, a clock, a lane or an id. The exit
   status is `0` only when the text was accepted and every write was made.
 
+### The health collector
+
+`src/collector/healthMain.ts` is one run of the health collector, built into the
+same image and run the same way
+(`docker exec -i <console> node dist/collector/healthMain.js`). Its input is the
+report of `portal/host/branchleft-health-collect.py`, the native program that
+fetches each tenant colour's drain-sidecar `GET /metrics` (a container on ops1
+has no route to a host): for each tenant, the text of each colour, or `null`
+where one could not be read. For each tenant that is registered under the
+report's slug it calls `OwnerDb.recordReading`, which keeps only the undrained
+colour's version and match.
+
+What it writes, and what it never does:
+
+- When any colour of a tenant is `null`, or its text has no drain flag, the
+  reading written is `unknown` with no scrape at all. The colour that did answer
+  is not used alone, and the last reading is replaced, so a stopped sidecar or a
+  host that is down cannot keep showing the last good reading as healthy.
+- A tenant the report does not name is not written; one that is not registered
+  is left out and logged.
+- A report that is not exactly the contract (not JSON, an extra key, a slug that
+  is not a slug, a slug twice, no colours or more than two, a colour longer than
+  16 KiB) is refused whole: nothing is written from it.
+- The run log has one line per tenant and one for the run, and never a scrape, a
+  version or an id. The exit status is `0` only when the report was accepted and
+  every write was made.
+
 ## Erasing a whole site
 
 `/erasure` is the tenant's own request to erase its whole site, and it is not a
@@ -340,11 +367,16 @@ with the same ceiling (five an hour per tenant, then `/professional/limited`).
 The subject is `PROFESSIONAL_ENQUIRY <tenant id>` and the body is `TENANT_ID` and
 `SCREEN: PROFESSIONAL` lines, the delimiter and the message. The tenant id is
 the session's; no tenant name is asked for or sent. It does not call the
-provisioning API and records nothing: the email is the enquiry, so an open
-Essentials request never blocks it. The contract's `professional-enquiry` tier is
-for the console to count enquiries, which needs the screen to record one: left
-for a later step if the owner wants that count. Without the `support` settings
-the page, the action and `NAV_PROFESSIONAL` are absent (404), as for support.
+provisioning API: the email is the enquiry, so an open Essentials request never
+blocks it. After the email is sent, the action records one row for the bound
+tenant (`TenantDb.recordProfessionalEnquiry`, `portal.professional_enquiry`), which
+is the count the owner console shows as `PROFESSIONAL_ENQUIRIES`. A limited or
+refused enquiry records nothing. A failed record does not fail the send, because
+the tenant would then submit again and send a second email: the sent page is
+shown and one line `professional_enquiry_not_counted` names the error only, so
+the count can run one short of the emails when the database is down. Without the
+`support` settings the page, the action and `NAV_PROFESSIONAL` are absent (404),
+as for support.
 
 The code is `src/tenant/promotionRoutes.ts` (assembly), `essentialsRoutes.ts`,
 `professionalRoutes.ts`, `provisioningSettings.ts` (the one place that calls the
