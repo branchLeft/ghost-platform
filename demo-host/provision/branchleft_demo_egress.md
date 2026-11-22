@@ -40,13 +40,13 @@ bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`.
 
 ## Known limits
 
-- **A window at every boot.** The unit runs after `docker.service`, and
-  containers with a restart policy start with dockerd. For those few seconds
-  at each boot, slots have unrestricted egress.
 - **A failed unit is quiet.** A failure shows only in the journal, and nothing
-  alerts on it.
+  alerts on it. Unless `docker.service` requires this unit (the demo host's
+  Docker drop-in does, in `branchLeft/shared-infra`), dockerd still starts after
+  a failure, and the slots run without the policy.
 - **The proof has no systemd.** It runs in Docker-in-Docker, so neither a
-  reboot nor a dockerd restart is exercised.
+  reboot nor a dockerd restart through systemd is exercised; the unit's order is
+  checked by `test_branchleft_demo_egress.py` alone.
 - **IPv6 is checked by rule presence only.** Both families get the same
   ruleset text, but no IPv6 traffic is sent.
 
@@ -60,11 +60,21 @@ bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`.
 - **IPv4 and IPv6.** Both families are covered and neither is optional. A
   network created with IPv6 would otherwise give its containers a route out
   that the policy never saw.
+- **Before Docker starts.** `branchleft-demo-egress.service` is `Before=docker.service`,
+  because dockerd starts the slot containers that carry a restart policy. Docker
+  creates `DOCKER-USER` when it starts, so where the chain is missing the program
+  makes it first, and Docker finds it there. Docker's own chains are not touched.
+  The program keeps `DOCKER-USER` and its jump in `FORWARD` as Docker left them.
 - **Refuses to run.** It refuses on any host not named `demo1`. On an app
   host it would be an outage, because tenants need outbound mail, and edge1
-  forwards the estate's egress. It also refuses where `DOCKER-USER` is
-  missing, whether Docker is not up yet or its nftables backend is active. No
-  other chain is a safe substitute, because the order of `FORWARD` is Docker's
+  forwards the estate's egress. It also refuses where Docker itself is set to
+  the nftables firewall backend (`firewall-backend` in `/etc/docker/daemon.json`,
+  or `DOCKER_FIREWALL_BACKEND` in its environment), because Docker would then keep
+  its rules in nftables and the iptables tables this policy writes would guard
+  nothing. It decides from Docker's setting, never from the iptables binary's
+  variant: Debian 13's iptables 1.8.11 prints `(nf_tables)` while Docker still
+  writes iptables rules. An unreadable `daemon.json` is a refusal, not a guess.
+  No other chain is a safe substitute, because the order of `FORWARD` is Docker's
   to rewrite.
 - **Installed as** `/usr/local/sbin/branchleft-demo-egress`, and re-run by
   `branchleft-demo-egress.service` at every boot and every Docker restart.
@@ -89,3 +99,10 @@ bridge gateway, needs an explicit accept in `BRANCHLEFT-DEMO-INPUT`.
   which shows the same probe reaching the same target. The host is still
   checked afterwards: it reaches the outside and the published slot port, and
   containers still reach each other within a network.
+- `scripts/demo_boot_egress_proof.py` proves the boot window closes. A slot with
+  a restart policy starts with dockerd and tries the outside for ten seconds,
+  recording whether any try got through. Applying the policy after dockerd (the
+  order before this change) must record a success (the red control); applying
+  it before dockerd must record none (green). It needs a real systemd boot to
+  prove the unit's own ordering, so it runs on a VM or demo1, not on a developer
+  machine.
