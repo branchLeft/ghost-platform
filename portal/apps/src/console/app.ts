@@ -13,6 +13,7 @@ import { renderSupportQueue } from '../shell/supportAccessHtml.js';
 import { createShell } from '../shell/app.js';
 import { createDocumentsScreen } from './documentsScreen.js';
 import { createRequestsScreen, type ProvisioningOptions } from './requestsScreen.js';
+import { createTicketsScreen } from './ticketsScreen.js';
 
 export interface OwnerConsoleOptions {
   readonly issuer: string;
@@ -24,8 +25,8 @@ export interface OwnerConsoleOptions {
   readonly ownerOrgId: string;
   readonly db: OwnerDb;
   /**
-   * The provisioning API and the owner credential. Absent, the request queue
-   * and Approve are not served and have no nav entry.
+   * The provisioning API and the owner credential. Absent, the request queue,
+   * Approve and the ticket list are not served and have no nav entry.
    */
   readonly provisioning?: ProvisioningOptions;
   readonly secureCookies: boolean;
@@ -59,6 +60,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     fetchKeys: options.fetchKeys,
   });
   const requests = createRequestsScreen(options.provisioning, options.ownerOrgId);
+  const tickets = createTicketsScreen(options.provisioning, options.ownerOrgId);
   const documents = createDocumentsScreen(options.db, options.ownerOrgId);
   return createShell<true>({
     issuer: options.issuer,
@@ -70,8 +72,8 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     verifier,
     secureCookies: options.secureCookies,
     title: 'OWNER_CONSOLE',
-    nav: [{ label: 'NAV_HOME', href: '/' }, ...requests.nav, ...documents.nav],
-    pages: { ...requests.pages, ...documents.pages },
+    nav: [{ label: 'NAV_HOME', href: '/' }, ...requests.nav, ...tickets.nav, ...documents.nav],
+    pages: { ...requests.pages, ...tickets.pages, ...documents.pages },
     formLimits: documents.formLimits,
     signOutLabel: 'SIGN_OUT',
     clock: options.clock,
@@ -97,6 +99,7 @@ export function createOwnerConsole(options: OwnerConsoleOptions) {
     },
     actions: {
       ...requests.actions,
+      ...tickets.actions,
       ...documents.actions,
       // The only thing the queue can do: mark one tenant's open request dealt
       // with. It writes the status and nothing else, and deletes nothing.

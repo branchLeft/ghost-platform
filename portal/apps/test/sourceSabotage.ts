@@ -25,6 +25,11 @@ export const REQUESTS: Target = {
   folder: 'console',
 };
 
+export const TICKETS: Target = {
+  file: fileURLToPath(new URL('../src/console/ticketsScreen.ts', import.meta.url)),
+  folder: 'console',
+};
+
 export const DOCUMENTS: Target = {
   file: fileURLToPath(new URL('../src/console/documentsScreen.ts', import.meta.url)),
   folder: 'console',
