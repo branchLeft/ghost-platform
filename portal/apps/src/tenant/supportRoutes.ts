@@ -2,6 +2,7 @@ import type { TenantScope } from 'ghost-platform-portal-data/tenant';
 import type { NavItem } from '../shell/html.js';
 import { SupportLimiter } from './supportLimiter.js';
 import type { SupportSettings } from './supportMailer.js';
+import type { TicketRecorder } from './ticketRecorder.js';
 import {
   renderSupportForm,
   renderSupportLink,
@@ -53,7 +54,8 @@ const OFF: SupportRoutes = { nav: [], pages: {}, actions: {}, linkFrom: () => ''
 export function createSupportRoutes(
   settings: SupportSettings | undefined,
   reader: SupportReader,
-  clock: () => number
+  clock: () => number,
+  recorder?: TicketRecorder
 ): SupportRoutes {
   if (settings === undefined) return OFF;
   const submitter = new TicketSubmitter({
@@ -62,6 +64,7 @@ export function createSupportRoutes(
     recipient: settings.recipient,
     sender: settings.sender,
     limiter: new SupportLimiter(clock),
+    ...(recorder === undefined ? {} : { recorder }),
   });
   const pages: Record<string, SupportPage> = {
     [SENT_PATH]: async () => renderTicketSent(),

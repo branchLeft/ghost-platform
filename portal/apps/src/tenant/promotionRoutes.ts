@@ -3,6 +3,7 @@ import { createProfessionalRoutes, type EnquiryRecorder } from './professionalRo
 import type { ProvisioningSettings } from './provisioningSettings.js';
 import type { SupportSettings } from './supportMailer.js';
 import type { ThirdPartyOff } from './thirdPartyOff.js';
+import type { TicketRecorder } from './ticketRecorder.js';
 
 /**
  * The two promotion screens the tenant portal adds: ask for Essentials (needs
@@ -17,10 +18,18 @@ export function createPromotionRoutes(
   clock: () => number,
   enquiries: EnquiryRecorder,
   thirdPartyOff?: ThirdPartyOff,
-  onError?: (line: string) => void
+  onError?: (line: string) => void,
+  recorder?: TicketRecorder
 ): RouteSet {
   const essentials = createEssentialsRoutes(provisioning, reader, thirdPartyOff);
-  const professional = createProfessionalRoutes(support, reader, clock, enquiries, onError);
+  const professional = createProfessionalRoutes(
+    support,
+    reader,
+    clock,
+    enquiries,
+    onError,
+    recorder
+  );
   return {
     nav: [...essentials.nav, ...professional.nav],
     pages: { ...essentials.pages, ...professional.pages },
