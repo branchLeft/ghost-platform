@@ -143,8 +143,9 @@ deploy go through the fallback.
 
 `openapi.yaml` is the contract the customer portal and the owner console are
 built against: read a demo, ask for the Essentials tier or open the Professional
-enquiry, list the requests waiting on the owner, approve one, and read a
-tenant. It is registered in `speckify.yaml` as `provisioning-api`. Nothing serves
+enquiry, list the requests waiting on the owner, approve one, read a
+tenant, and hold every contact request as a ticket the owner moves through its
+lifecycle. It is registered in `speckify.yaml` as `provisioning-api`. Nothing serves
 it but the service in Part 4; the executor above is not wired to HTTP. The spec itself settles how a demo is named, the two
 credentials, and what Approve records.
 
@@ -177,7 +178,7 @@ credentials, and what Approve records.
   `LIVE` demo. Presenting the tenant credential on the tenant's own paths,
   for example `GET /tenants/<tenant id>/demo` with `X-Tenant-Credential`, and the
   owner credential on `/promotion-requests` with `X-Owner-Credential`, walks the
-  five operations. `mock/smoke.py` does exactly that against a running mock.
+  demo and promotion operations. `mock/smoke.py` does exactly that against a running mock.
   Approving a request finishes provisioning at once (the tenant is `live`, with
   a placeholder invoice reference and hostname); `createMock({ settleOnApprove: false })`
   holds it at `provisioning` until `store.settle` is called.
@@ -223,6 +224,21 @@ the service is.
   linked or readable by others) and `approvals.json`, the approval ledger in the shape
   `FileApprovalLedger` reads, so the executor can be given an approval the console recorded.
   A change that cannot be written down is undone and answered 500.
+- **Tickets: every contact request, at every tier.** The state holds a `tickets` list beside
+  the requests (a state file written before it existed starts with none). A ticket has a kind
+  (`essentials`, `professional-enquiry` or `support`), the contact address and message the
+  tenant gave (null for an Essentials request, which has no form), and a state: `new`, `open`,
+  `replied` or `closed`, with every change kept in its `history`. An Essentials request or an
+  enquiry made through `createPromotionRequest` records its ticket in the same change, a
+  replay records none; the portal records a support ticket or a Professional enquiry with
+  `createTicket` after it has sent the mail, which stays the delivery. The owner lists them
+  with `listTickets` (filter by `state` and `kind`, oldest first) and moves one with
+  `moveTicket`. The lifecycle is `src/service/ticketLifecycle.ts`: from `new` to `open`,
+  `replied` or `closed`; from `open` to `replied` or `closed`; from `replied` to `open` or
+  `closed`; from `closed` to `open`; never back to `new`, and a move to the state a ticket is
+  in is refused. Any refused move is 409 `illegal-transition` and changes nothing. A tenant
+  may hold 50 tickets that are not closed (409 `ticket-limit`). Approving a request does not
+  move its ticket: the owner does.
 - **Approve starts the move and does not finish it.** The tenant is `essentials` in state
   `provisioning` and the demo is `PROMOTING` until the executor, which is not wired to this
   service, says otherwise. `invoice_ref` stays null until something raises the invoice.

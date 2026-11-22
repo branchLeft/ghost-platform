@@ -44,6 +44,42 @@ export function createHandlers(store: ProvisioningStore, credentials: Credential
       }
     },
 
+    createTicket(request, context) {
+      const { tenant } = request.path;
+      const why = authorizeTenant(credentials, context.rawRequest, tenant);
+      if (why !== undefined) return Promise.resolve(refused(why));
+      const { kind, contact, message } = request.body;
+      const outcome = store.createTicket(tenant, kind, { contact, message });
+      return Promise.resolve(
+        outcome.kind === 'recorded'
+          ? { status: 201, body: outcome.ticket }
+          : { status: 409, body: { code: 'ticket-limit' } }
+      );
+    },
+
+    listTickets(request, context) {
+      const why = authorizeOwner(credentials, context.rawRequest);
+      if (why !== undefined) return Promise.resolve(refused(why));
+      return Promise.resolve({
+        status: 200,
+        body: { items: store.listTickets(request.query?.state, request.query?.kind) },
+      });
+    },
+
+    moveTicket(request, context) {
+      const why = authorizeOwner(credentials, context.rawRequest);
+      if (why !== undefined) return Promise.resolve(refused(why));
+      const outcome = store.moveTicket(request.path.id, request.body.state);
+      switch (outcome.kind) {
+        case 'moved':
+          return Promise.resolve({ status: 200, body: outcome.ticket });
+        case 'no-ticket':
+          return Promise.resolve({ status: 404, body: { code: 'ticket-not-found' } });
+        case 'illegal':
+          return Promise.resolve({ status: 409, body: { code: 'illegal-transition' } });
+      }
+    },
+
     getTenant(request, context) {
       const { tenant } = request.path;
       const why = authorizeTenant(credentials, context.rawRequest, tenant);

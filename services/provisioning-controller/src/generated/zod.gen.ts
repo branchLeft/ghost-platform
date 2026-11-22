@@ -13,6 +13,12 @@ export const zApprovalScope = z.enum([
     'first-deploy'
 ]);
 
+export const zCreateTicket = z.object({
+    contact: z.string().min(3).max(254),
+    kind: z.enum(['professional-enquiry', 'support']),
+    message: z.string().min(1).max(1000)
+});
+
 /**
  * The demo lifecycle state (portal/data demoStates.ts), by name.
  */
@@ -44,7 +50,10 @@ export const zErrorCode = z.enum([
     'request-not-found',
     'demo-not-promotable',
     'request-already-open',
-    'not-approvable'
+    'not-approvable',
+    'ticket-not-found',
+    'illegal-transition',
+    'ticket-limit'
 ]);
 
 export const zErrorBody = z.object({
@@ -74,6 +83,34 @@ export const zCreatePromotionRequest = z.object({
 export const zTenantState = z.enum(['provisioning', 'live']);
 
 export const zTenantTier = z.enum(['demo', 'essentials']);
+
+/**
+ * What the tenant raised. `essentials` is a request for the Essentials tier, recorded with its promotion request. `professional-enquiry` opens the dialogue about the Professional tier. `support` is a support ticket.
+ */
+export const zTicketKind = z.enum([
+    'essentials',
+    'professional-enquiry',
+    'support'
+]);
+
+export const zTicketState = z.enum([
+    'new',
+    'open',
+    'replied',
+    'closed'
+]);
+
+export const zMoveTicket = z.object({
+    state: zTicketState
+});
+
+/**
+ * One entry in a ticket's history.
+ */
+export const zTicketStateChange = z.object({
+    at: z.iso.datetime(),
+    state: zTicketState
+});
 
 /**
  * A canonical lower-case UUID.
@@ -123,6 +160,23 @@ export const zTenant = z.object({
     tier: zTenantTier
 });
 
+export const zTicket = z.object({
+    contact: z.string().nullable(),
+    created_at: z.iso.datetime(),
+    history: z.array(zTicketStateChange).min(1),
+    kind: zTicketKind,
+    message: z.string().nullable(),
+    request_id: zUuid.nullable(),
+    state: zTicketState,
+    tenant_id: zUuid,
+    ticket_id: zUuid,
+    updated_at: z.iso.datetime()
+});
+
+export const zTicketList = z.object({
+    items: z.array(zTicket)
+});
+
 export const zListPromotionRequestsQuery = z.object({
     state: zPromotionRequestState.optional()
 });
@@ -169,3 +223,35 @@ export const zCreatePromotionRequestPath = z.object({
  * The request, in state `pending`. Also the answer to a replay (the tenant already had this exact request open): nothing new is created and the body is the existing request.
  */
 export const zCreatePromotionRequestResponse = zPromotionRequest;
+
+export const zCreateTicketBody = zCreateTicket;
+
+export const zCreateTicketPath = z.object({
+    tenant: zUuid
+});
+
+/**
+ * The ticket, in state `new`.
+ */
+export const zCreateTicketResponse = zTicket;
+
+export const zListTicketsQuery = z.object({
+    state: zTicketState.optional(),
+    kind: zTicketKind.optional()
+});
+
+/**
+ * The matching tickets.
+ */
+export const zListTicketsResponse = zTicketList;
+
+export const zMoveTicketBody = zMoveTicket;
+
+export const zMoveTicketPath = z.object({
+    id: zUuid
+});
+
+/**
+ * The ticket, in its new state.
+ */
+export const zMoveTicketResponse = zTicket;

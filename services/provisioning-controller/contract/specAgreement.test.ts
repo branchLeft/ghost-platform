@@ -54,13 +54,16 @@ const operations: Operation[] = Object.entries(spec.paths).flatMap(([path, item]
 const sorted = (values: string[]): string[] => [...values].sort();
 
 describe('the spec, the generated routes and the mock name the same operations', () => {
-  it('the spec has the five operations the journey needs, each behind one credential', () => {
+  it('the spec has the eight operations the journey needs, each behind one credential', () => {
     expect(sorted(operations.map((o) => o.id))).toEqual([
       'approvePromotionRequest',
       'createPromotionRequest',
+      'createTicket',
       'getDemo',
       'getTenant',
       'listPromotionRequests',
+      'listTickets',
+      'moveTicket',
     ]);
     for (const operation of operations) {
       expect(['tenantCredential', 'ownerCredential'], operation.id).toContain(operation.scheme);
@@ -131,10 +134,12 @@ function sweep(
 
     function request(operation: Operation, headers: Record<string, string>) {
       const path = operation.path.replace('{tenant}', TENANT_A).replace('{id}', TENANT_A);
-      const body =
-        operation.id === 'createPromotionRequest'
-          ? JSON.stringify({ tier: 'essentials' })
-          : undefined;
+      const bodies: Record<string, unknown> = {
+        createPromotionRequest: { tier: 'essentials' },
+        createTicket: { kind: 'support', contact: 'a@example.test', message: 'TEST_MESSAGE' },
+        moveTicket: { state: 'open' },
+      };
+      const body = operation.id in bodies ? JSON.stringify(bodies[operation.id]) : undefined;
       return raw(running.baseUrl, operation.method, path, {
         headers: {
           ...headers,
