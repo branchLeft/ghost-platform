@@ -29,7 +29,7 @@ const FILE_VARIABLES = {
 
 function pathFrom(env: Readonly<Record<string, string | undefined>>, name: string): string {
   const value = env[name];
-  if (value === undefined || value === '') throw new ServiceConfigError(`${name} is not set`);
+  if (value === undefined || value === '') throw new ServiceConfigError(`${name} is absent`);
   if (!isAbsolute(value)) throw new ServiceConfigError(`${name} must be an absolute path`);
   return value;
 }
