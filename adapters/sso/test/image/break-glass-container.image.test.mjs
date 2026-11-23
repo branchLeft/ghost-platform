@@ -322,6 +322,9 @@ describe(
     const tenant = new Tenant();
 
     before(async () => {
+      // The wrapper runs with --pull never, so the pinned Node image must be present before
+      // its first call. Pulling here, not in the wrapper, keeps production's --pull never.
+      docker('pull', NODE_IMAGE);
       docker('volume', 'create', ...LABEL, volume);
       await tenant.start();
       await tenant.setupOwner();
