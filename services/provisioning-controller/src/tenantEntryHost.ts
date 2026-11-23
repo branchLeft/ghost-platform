@@ -17,13 +17,13 @@ import type { StepId } from './plan.js';
  *   `branchleft-deploy`, after it has verified the image's attestation, in the
  *   plan's `first-deploy` step.
  * - `create-app-host-slot`: `enable`, then `key`.
+ * - `create-owner-account`: `owner`, once the unit is enabled: display name, site title and
+ *   address, and colour, never the owner's address (the host's script reads that from the secrets
+ *   file; see the README, "The owner"). A run again is answered as already set up.
  *
- * Every step first asks the host how far the slug has got (`status`) and does
- * only what is left, so a step that is run again after the host took effect
- * (the executor's resume, or a retry after a lost reply) sends nothing twice.
- * The host's order is enforced by the host; this adapter also refuses to enable
- * a unit whose stack is not in place, so the plan's order is kept even against
- * a host that would allow it.
+ * Every step first asks the host how far the slug has got (`status`) and sends only what is
+ * left, so a step run again after the host took effect sends nothing twice. The host enforces
+ * its own order; this adapter also refuses to enable a unit whose stack is not in place.
  */
 
 /** The verbs the host program accepts. */
@@ -86,6 +86,23 @@ export interface StackParameters {
   readonly environment: Readonly<Record<string, EnvironmentValue>>;
 }
 
+/** What an `owner` request may carry, and all of it: the host refuses any other key. */
+export interface OwnerParameters {
+  /** Which running colour to ask; the owner lives in the tenant's one database, so either does. */
+  readonly colour: 'a' | 'b';
+  /** The owner's display name, not their address. */
+  readonly name: string;
+  /** The address Ghost is configured with (`https://` and a host name), as the host's pattern. */
+  readonly siteUrl: string;
+  readonly siteTitle: string;
+}
+
+// The host's own patterns (`branchleft_tenant_entry.py`): printable ASCII, not starting with a dash.
+const OWNER_TEXT = /^(?!-)[ -~]+$/;
+const SITE_URL = /^https:\/\/[a-z0-9]([a-z0-9.-]{0,250}[a-z0-9])?$/;
+const OWNER_NAME_LIMIT = 64;
+const OWNER_TITLE_LIMIT = 120;
+
 /**
  * What the verbs need that the plan's inputs, which carry names and register
  * values and never a secret, do not: the template and values of the tenant's
@@ -95,12 +112,22 @@ export interface StackParameters {
  * anything that depends on the uid or a port uses the host's numbers.
  */
 export interface TenantEntryInputs {
+  /**
+   * What the `owner` verb needs besides the secrets file: the site's address (the one Ghost is
+   * configured with), the owner's display name and the site's title. Never the owner's address.
+   */
+  owner(request: StepRequest): Promise<OwnerParameters>;
   secrets(request: StepRequest): Promise<{
     readonly template: string;
     readonly values: Readonly<Record<string, string>>;
   }>;
   stack(request: StepRequest, claim: EntryClaim): Promise<StackParameters>;
   deployKey(request: StepRequest): Promise<string>;
+  /**
+   * Called once the host has the tenant's secrets file in place (just written, or found already
+   * there), so a deployment can drop any copy it held to get the values there.
+   */
+  delivered?(request: StepRequest): Promise<void>;
 }
 
 export interface TenantEntryHostOptions {
@@ -126,10 +153,25 @@ const SERVED: ReadonlySet<StepId> = new Set<StepId>([
   'render-host-secrets',
   'render-compose-file',
   'create-app-host-slot',
+  'create-owner-account',
 ]);
+
+/** A refusal that is only a matter of time: the colour's container is not yet running. */
+const RETRIED_REFUSALS: ReadonlySet<string> = new Set(['container-not-running']);
 
 const DETAIL_LIMIT = 150;
 const WORD = /^[a-z][a-z-]{0,40}$/;
+
+/** Names what is wrong with the owner parameters, or undefined: the host's own limits, kept here so a bad value stops before it is sent. */
+function ownerProblem(owner: OwnerParameters): string | undefined {
+  if (owner.colour !== 'a' && owner.colour !== 'b') return 'colour';
+  if (!OWNER_TEXT.test(owner.name) || owner.name.length > OWNER_NAME_LIMIT) return 'name';
+  if (!OWNER_TEXT.test(owner.siteTitle) || owner.siteTitle.length > OWNER_TITLE_LIMIT) {
+    return 'site title';
+  }
+  if (!SITE_URL.test(owner.siteUrl)) return 'site address';
+  return undefined;
+}
 
 const yes = (lines: ReadonlyMap<string, string>, key: string): boolean => lines.get(key) === 'yes';
 
@@ -172,7 +214,8 @@ function parseStatus(reply: EntryReply): SlugStatus {
 
 /** A line of the host's message with no control characters and none of the values the request carried. */
 function clean(text: string, withheld: readonly string[]): string {
-  let out = text.replace(/\p{Cc}+/gu, ' ');
+  // An address in a message is withheld whoever's it is: the owner's is never the adapter's to repeat.
+  let out = text.replace(/\p{Cc}+/gu, ' ').replace(/[^\s@]+@[^\s@]+/g, '[address]');
   for (const value of withheld) {
     if (value.length > 0) out = out.split(value).join('[withheld]');
   }
@@ -193,6 +236,8 @@ export class TenantEntryHost implements HostEntryPoint {
         return this.renderHostSecrets(request, slug);
       case 'render-compose-file':
         return this.renderComposeFile(request, slug);
+      case 'create-owner-account':
+        return this.createOwnerAccount(request, slug);
       default:
         return this.createAppHostSlot(request, slug);
     }
@@ -209,9 +254,13 @@ export class TenantEntryHost implements HostEntryPoint {
         `the host's claim for ${request.id} is not whole: its volumes are missing`
       );
     }
-    if (status.secrets) return;
+    if (status.secrets) {
+      await this.options.inputs.delivered?.(request);
+      return;
+    }
     const { template, values } = await this.options.inputs.secrets(request);
     await this.call('secrets', slug, { template, values }, Object.values(values));
+    await this.options.inputs.delivered?.(request);
   }
 
   private async renderComposeFile(request: StepRequest, slug: string): Promise<void> {
@@ -242,6 +291,26 @@ export class TenantEntryHost implements HostEntryPoint {
     await this.call('key', slug, { public_key: publicKey }, [publicKey]);
   }
 
+  private async createOwnerAccount(request: StepRequest, slug: string): Promise<void> {
+    const status = await this.status(slug);
+    if (!status.claimed || !status.secrets || !status.stack || !status.enabled) {
+      throw new PermanentStepError(
+        'the unit is not enabled on the host with its secrets and stack; no owner is created'
+      );
+    }
+    const owner = await this.options.inputs.owner(request);
+    const problem = ownerProblem(owner);
+    if (problem !== undefined) throw new PermanentStepError(`the owner's ${problem} is not usable`);
+    // Exactly the four fields, picked here. The owner's address is the host script's to read from
+    // the tenant's secrets file; this step has no input, field or log line for it.
+    await this.call('owner', slug, {
+      colour: owner.colour,
+      name: owner.name,
+      site_url: owner.siteUrl,
+      site_title: owner.siteTitle,
+    });
+  }
+
   /**
    * The uid and ports the host gave a slug, read from its status, or null for a slug it never
    * claimed. For a deployment's other steps (the edge's port, for one), which must use the host's
@@ -269,6 +338,8 @@ export class TenantEntryHost implements HostEntryPoint {
       const word = first.replace(/^refused: /, '');
       const named = WORD.test(word) ? word : 'unreadable';
       const detail = clean(rest.join('; '), withheld);
+      if (RETRIED_REFUSALS.has(named))
+        throw new Error(`tenant entry ${verb} refused with ${named}`);
       throw new PermanentStepError(
         `tenant entry refused ${verb} with ${named}${detail === '' ? '' : ` (${detail})`}`
       );

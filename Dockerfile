@@ -12,6 +12,26 @@
 # ghost:6.76.0-alpine` resolves to this digest as of 2026-11-11.
 FROM ghost:6.78.0-alpine@sha256:baa6dbff91a28ba36c526d1f6e761deb2efe3c238c630c3f318b62f258c2d76e
 
+# Alpine 3.24 userland. The Ghost image is built on Alpine 3.23, which carries
+# openssl 3.5.9-r0 and will not get a later build; the fixes for four High
+# findings (CVE-2026-107496, CVE-2026-88823, CVE-2026-95691, CVE-2026-95692)
+# are in 3.5.9-r1, published on Alpine 3.24 only. No Ghost image is built on
+# Alpine 3.24 yet, and the release watcher, the pin check and the digest-line
+# check all require this to stay a single `FROM ghost:...` line, so the base
+# is moved with Alpine's own release upgrade (repositories to v3.24, then
+# `apk upgrade --available`), which also makes /etc/os-release say 3.24: the
+# image scan reads the distro from it, and on a 3.23 label it matches openssl
+# by upstream version and reports the fixed CVEs again. Node is untouched (it
+# is a binary under /usr/local, not an apk package). The asserts fail the
+# build if the upgrade did not land, instead of shipping a 3.23 userland.
+# Remove this block when the pinned Ghost image is itself built on 3.24.
+RUN set -eux; \
+    sed -i 's#/alpine/v3\.23/#/alpine/v3.24/#' /etc/apk/repositories; \
+    apk upgrade --no-cache --available; \
+    grep -q '^3\.24\.' /etc/alpine-release; \
+    grep -q '^VERSION_ID=3\.24\.' /etc/os-release; \
+    apk add --no-cache 'libcrypto3>=3.5.9-r1' 'libssl3>=3.5.9-r1'
+
 # Ghost's built-in S3Storage adapter (core/server/adapters/storage/S3Storage.js)
 # and its dependency, @aws-sdk/client-s3, already ship inside every official
 # Ghost 6.x image — confirmed by inspecting this exact image's

@@ -18,4 +18,4 @@ concurrency:
 
 jobs:
   docs-lint:
-    uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.2.4
+    uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7

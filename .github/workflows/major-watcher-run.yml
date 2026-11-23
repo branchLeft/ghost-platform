@@ -90,16 +90,10 @@ jobs:
           fi
           echo "path=/tmp/state-branch/services/major-watcher/state/dedupe-state.json" >> "$GITHUB_OUTPUT"
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-
-      - name: Setup Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Set up pnpm and Node
+        uses: ./.github/actions/setup-pnpm-node
         with:
           node-version-file: services/major-watcher/.nvmrc
-          registry-url: https://npm.pkg.github.com
-          scope: '@branchleft'
-          cache: pnpm
           cache-dependency-path: services/major-watcher/pnpm-lock.yaml
 
       - name: Install and build
@@ -125,7 +119,7 @@ jobs:
       - name: Mint the filing token
         id: filing-token
         if: ${{ vars.MAJOR_WATCHER_APP_ID != '' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ vars.MAJOR_WATCHER_APP_ID }}
           private-key: ${{ secrets.MAJOR_WATCHER_APP_PRIVATE_KEY }}

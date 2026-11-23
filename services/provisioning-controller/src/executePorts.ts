@@ -31,6 +31,7 @@ export type HostPorts = Readonly<Record<EntryPoint, HostEntryPoint>>;
 export const STEP_EVENTS = [
   'started',
   'complete',
+  'not-applicable',
   'attempt-failed',
   'step-failed',
   'digest-mismatch',
@@ -64,6 +65,7 @@ export const PROGRESS_TYPES = [
   'step-started',
   'step-complete',
   'step-skipped',
+  'step-not-applicable',
   'step-retrying',
   'step-failed',
   'step-refused',
@@ -128,7 +130,9 @@ export interface RunResult {
   readonly tenantId: string;
   /** Steps this call carried out, in order. */
   readonly ran: readonly string[];
-  /** Steps already recorded complete with the same input digest. */
+  /** Steps this call recorded as not applicable, in order; they were never run. */
+  readonly notApplicable: readonly string[];
+  /** Steps already recorded complete (or not applicable) with the same input digest. */
   readonly skipped: readonly string[];
   readonly stoppedAt?: { readonly key: string; readonly reason: StopReason };
   /** Console reports that could not be delivered; the state store has them all. */

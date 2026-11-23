@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
 
@@ -14,9 +15,6 @@ const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
 // createCommitOnBranch or verification.verified -- as this guard's own
 // header, and generate-lockfile.yml's, both do -- must never be mistaken
 // for the executable check it's describing.
-function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 // Scans step-by-step (from one `- name:` line to the next, or EOF), not the
 // whole file: a verified read-back belonging to a different step can't be

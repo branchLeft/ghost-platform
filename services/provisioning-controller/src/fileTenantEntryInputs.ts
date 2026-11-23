@@ -4,16 +4,19 @@ import { PermanentStepError } from './errors.js';
 import type { StepRequest } from './executePorts.js';
 import type {
   EntryClaim,
+  OwnerParameters,
   StackParameters,
   StackSize,
   TenantEntryInputs,
 } from './tenantEntryHost.js';
+import type { SlotKeys } from './slotKeys.js';
 import { TrustedFileError } from './trustedFile.js';
 
 /**
- * The deployment adapter behind `TenantEntryInputs`: the secrets template and values, the stack
- * parameters and the deploy key's public half, each read from a file the controller host is given.
- * The paths come from the `sshEntry.inputs` configuration and have no default.
+ * The deployment adapter behind `TenantEntryInputs`: the secrets template and literals, the stack
+ * parameters (each read from a file the controller host is given) and the deploy key's public half
+ * (made by the controller, read from its slot keys). The paths come from the `sshEntry.inputs`
+ * configuration and have no default.
  *
  * - **Trusted files.** Each is opened without following a link, and refused unless it is a regular
  *   file, owned by root or by the user the controller runs as, writable by that owner alone
@@ -26,15 +29,17 @@ import { TrustedFileError } from './trustedFile.js';
  *
  * Each file is one JSON object keyed by the slot name:
  *
- * - `secretsFile`: `{ "template": TEXT, "values": { SLOT: { NAME: VALUE } } }`
- * - `stackFile`: `{ SLOT: { "size", "mail", "environment" } }`
- * - `deployKeyFile`: `{ SLOT: PUBLIC_KEY }`
+ * - `secretsFile`: `{ "template": TEXT, "literals": { SLOT: { NAME: VALUE } } }`. The template names
+ *   keys and holds no value. Literals are values that are not secrets (the owner's address); the
+ *   controller makes every secret itself (`GeneratedTenantEntryInputs`), and refuses a literal for one.
+ * - `stackFile`: `{ SLOT: { "size", "mail", "environment", "owner"? } }`. `owner` is `{ "name",
+ *   "siteTitle", "colour"? }`, read by the owner step alone; its site address is `environment.url`.
+ *   No email address is held there (README, "The owner").
  */
 
 export interface TenantEntryFiles {
   readonly secretsFile: string;
   readonly stackFile: string;
-  readonly deployKeyFile: string;
 }
 
 export const MAX_INPUT_BYTES = 1_048_576;
@@ -113,6 +118,7 @@ function entryFor(path: string, doc: unknown, slot: string, where: string): unkn
 export class FileTenantEntryInputs implements TenantEntryInputs {
   constructor(
     private readonly files: TenantEntryFiles,
+    private readonly slotKeys: Pick<SlotKeys, 'publicKey'>,
     private readonly owners: readonly number[] = defaultOwners()
   ) {}
 
@@ -128,9 +134,20 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
     if (!isRecord(doc) || typeof doc['template'] !== 'string' || doc['template'] === '') {
       throw new TrustedFileError(path, 'it has no "template" text');
     }
-    const raw = entryFor(path, doc, slot, 'values');
+    if (doc['values'] !== undefined) {
+      throw new TrustedFileError(
+        path,
+        'it has a "values" section, which the controller no longer reads'
+      );
+    }
+    // Literals are optional: a template with no literal key needs none.
+    const container = doc['literals'];
+    if (container !== undefined && !isRecord(container)) {
+      throw new TrustedFileError(path, 'it has no "literals" object');
+    }
+    const raw = container !== undefined && Object.hasOwn(container, slot) ? container[slot] : {};
     if (!isRecord(raw))
-      throw new TrustedFileError(path, `the values for slot ${slot} are not an object`);
+      throw new TrustedFileError(path, `the literals for slot ${slot} are not an object`);
     const values: Record<string, string> = {};
     for (const [name, value] of Object.entries(raw)) {
       if (typeof value !== 'string') {
@@ -149,7 +166,9 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
     const problem = (field: string): TrustedFileError =>
       new TrustedFileError(path, `the stack for slot ${slot} has a bad ${field}`);
     if (!isRecord(raw)) throw problem('shape');
-    const extra = Object.keys(raw).filter((k) => !['size', 'mail', 'environment'].includes(k));
+    const extra = Object.keys(raw).filter(
+      (k) => !['size', 'mail', 'environment', 'owner'].includes(k)
+    );
     if (extra.length > 0) throw problem(`key (${extra.join(', ')})`);
     const { size, mail, environment } = raw;
     if (typeof size !== 'string' || !SIZES.includes(size)) throw problem('size');
@@ -164,14 +183,30 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
     return { size: size as StackSize, mail, environment } as StackParameters;
   }
 
-  async deployKey(request: StepRequest): Promise<string> {
+  async owner(request: StepRequest): Promise<OwnerParameters> {
     const slot = slotOf(request);
-    const path = this.files.deployKeyFile;
+    const path = this.files.stackFile;
     const doc = await readInputJson(path, { forbidden: GROUP_OR_OTHER_WRITE, owners: this.owners });
-    const key = entryFor(path, doc, slot, '');
-    if (typeof key !== 'string' || key === '') {
-      throw new TrustedFileError(path, `the deploy key for slot ${slot} is not text`);
-    }
-    return key;
+    const raw = entryFor(path, doc, slot, '');
+    const problem = (field: string): TrustedFileError =>
+      new TrustedFileError(path, `the owner for slot ${slot} has a bad ${field}`);
+    if (!isRecord(raw) || !isRecord(raw['owner'])) throw problem('shape');
+    const given = raw['owner'];
+    const extra = Object.keys(given).filter((k) => !['name', 'siteTitle', 'colour'].includes(k));
+    if (extra.length > 0) throw problem(`key (${extra.join(', ')})`);
+    const { name, siteTitle } = given;
+    const colour = given['colour'] ?? 'a';
+    if (typeof name !== 'string') throw problem('name');
+    if (typeof siteTitle !== 'string') throw problem('siteTitle');
+    if (colour !== 'a' && colour !== 'b') throw problem('colour');
+    // The address Ghost is configured with. A reference to a secret is not an address.
+    const environment = raw['environment'];
+    const siteUrl = isRecord(environment) ? environment['url'] : undefined;
+    if (typeof siteUrl !== 'string') throw problem('site address (environment.url)');
+    return { colour, name, siteUrl, siteTitle };
+  }
+
+  async deployKey(request: StepRequest): Promise<string> {
+    return this.slotKeys.publicKey(slotOf(request));
   }
 }

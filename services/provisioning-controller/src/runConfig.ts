@@ -3,7 +3,7 @@ import { type CommandSpec } from './commandHost.js';
 import type { RetryPolicy } from './executePorts.js';
 import { ENTRY_POINTS, type EntryPoint } from './plan.js';
 import type { TenantEntryFiles } from './fileTenantEntryInputs.js';
-import { parseSshEntry } from './sshEntryConfig.js';
+import { parseDbEntry, parseSshEntry, type ParsedDbEntry } from './sshEntryConfig.js';
 import type { SshEntryConfig } from './sshEntryTransport.js';
 
 /** What one deployment decides: where the files are and which program serves each entry point. */
@@ -16,6 +16,8 @@ export interface RunConfig {
   readonly sshEntry?: SshEntryConfig;
   /** The files the tenant entry inputs are read from; present exactly when `sshEntry` is. */
   readonly tenantEntryFiles?: TenantEntryFiles;
+  /** The tenant database host and the hand-over directory; present exactly when `sshEntry` is. */
+  readonly dbEntry?: ParsedDbEntry;
   readonly retry?: RetryPolicy;
   readonly reportTimeoutMs?: number;
 }
@@ -33,6 +35,7 @@ const TOP_KEYS = [
   'registerFile',
   'hosts',
   'sshEntry',
+  'dbEntry',
   'retry',
   'reportTimeoutMs',
 ];
@@ -105,6 +108,19 @@ export function parseRunConfig(value: unknown): RunConfig {
   const ssh =
     value['sshEntry'] === undefined ? undefined : parseSshEntry(value['sshEntry'], problems);
 
+  const rawDb = value['dbEntry'];
+  if (ssh !== undefined && rawDb === undefined) {
+    problems.push(
+      'dbEntry is required with sshEntry: nothing else can supply the database password'
+    );
+  }
+  if (value['sshEntry'] === undefined && rawDb !== undefined)
+    problems.push('dbEntry needs sshEntry');
+  const db =
+    ssh !== undefined && rawDb !== undefined
+      ? parseDbEntry(rawDb, ssh.transport, problems)
+      : undefined;
+
   let retry: RetryPolicy | undefined;
   const rawRetry = value['retry'];
   if (rawRetry !== undefined) {
@@ -135,6 +151,7 @@ export function parseRunConfig(value: unknown): RunConfig {
     registerFile: value['registerFile'] as string,
     hosts,
     ...(ssh !== undefined && { sshEntry: ssh.transport, tenantEntryFiles: ssh.files }),
+    ...(db !== undefined && { dbEntry: db }),
     ...(retry !== undefined && { retry }),
     ...(reportTimeoutMs !== undefined && { reportTimeoutMs: reportTimeoutMs as number }),
   };

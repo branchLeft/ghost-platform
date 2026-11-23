@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const WORKFLOW = path.join(import.meta.dirname, '.github', 'workflows', 'release-watcher-run.yml');
 
@@ -14,10 +15,6 @@ const MINT_ACTION = 'actions/create-github-app-token';
 // verified against (the release is more than two weeks old).
 const MINT_USES =
   /uses:\s*actions\/create-github-app-token@([0-9a-f]{40})\s+#\s+v\d+\.\d+\.\d+\s*$/m;
-
-function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 export function readWorkflow() {
   return stripCommentLines(fs.readFileSync(WORKFLOW, 'utf8'));
@@ -53,10 +50,10 @@ test('the token is minted by create-github-app-token pinned to a commit sha with
   assert.match(step.body, MINT_USES);
 });
 
-test('the pinned sha is the one verified against the v3.3.0 release', () => {
+test('the pinned sha is the one verified against the v3.4.0 release', () => {
   const step = mintStep(readWorkflow());
-  assert.equal(MINT_USES.exec(step.body)[1], '64ab729a6294000f5aa4a4bc0b73d1f32bc45510');
-  assert.match(step.body, /# v3\.3\.0/);
+  assert.equal(MINT_USES.exec(step.body)[1], 'f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc');
+  assert.match(step.body, /# v3\.4\.0/);
 });
 
 test('the mint step reads the App id from a variable and the key from a secret', () => {
@@ -132,10 +129,10 @@ test('the workflow permissions block is contents: write and nothing broader', ()
 });
 
 test('the matcher refuses a workflow that mints with an unpinned ref or an extra permission', () => {
-  assert.doesNotMatch('uses: actions/create-github-app-token@v3 # v3.3.0\n', MINT_USES);
+  assert.doesNotMatch('uses: actions/create-github-app-token@v3 # v3.4.0\n', MINT_USES);
   assert.doesNotMatch('uses: actions/create-github-app-token@' + 'a'.repeat(40) + '\n', MINT_USES);
   assert.match(
-    'uses: actions/create-github-app-token@' + 'a'.repeat(40) + ' # v3.3.0\n',
+    'uses: actions/create-github-app-token@' + 'a'.repeat(40) + ' # v3.4.0\n',
     MINT_USES
   );
 });
