@@ -1253,6 +1253,11 @@ class ReadingWhatAJobRuns(unittest.TestCase):
     def test_a_package_manager_in_a_directory_needs_its_manifests_owned(self) -> None:
         self.assertGreaterEqual(self.inputs("pnpm install", "app"), {"app/package.json", "app/pnpm-workspace.yaml"})
 
+    def test_the_shared_pnpm_setup_action_reads_the_root_package_json_as_pnpm_action_setup_does(self) -> None:
+        text = self.HEAD + "      - uses: ./.github/actions/setup-pnpm-node\n"
+        found = unowned_inputs({"w.yml": text}, _tree({**self.FILES, "package.json": "{}"}), [], {})
+        self.assertIn("package.json", {item.path for item in found})
+
     def test_unittest_discover_reads_the_start_directory_and_pattern(self) -> None:
         self.assertGreaterEqual(
             self.inputs("python3 -m unittest discover -s checks -p 'test_*.py'"),
