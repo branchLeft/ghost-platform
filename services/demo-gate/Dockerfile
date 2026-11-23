@@ -13,11 +13,13 @@
 #
 # Pinned by digest: the linux/amd64 manifest of node:26.13.0-alpine, read from
 # the registry. A re-pointed tag cannot change what ships.
-FROM node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a
+FROM node:26.13.1-alpine3.24@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c
 
 # zlib 1.3.2 in this base has CVE-2026-4738 (critical), fixed in zlib 1.4-r0.
-# Remove this line once the pinned base carries the fixed package.
-RUN apk upgrade --no-cache zlib
+# libcrypto3 and libssl3 3.5.9-r0 carry high CVEs fixed in 3.5.9-r1.
+# node 26.13.0 carried high CVEs fixed in 26.13.1, so the base moved there.
+# Remove this line once the pinned base carries the fixed packages.
+RUN apk upgrade --no-cache zlib libcrypto3 libssl3
 
 WORKDIR /app
 
