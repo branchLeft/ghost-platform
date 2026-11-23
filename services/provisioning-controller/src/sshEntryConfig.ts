@@ -126,3 +126,43 @@ export function parseSshEntry(raw: unknown, problems: string[]): ParsedSshEntry 
   for (const name of invalidSshSettings(settings)) problems.push(`sshEntry.${name} is not usable`);
   return problems.length > before ? undefined : { transport: settings, files };
 }
+
+/** Where the tenant database host is reached and where the controller holds a minted password. */
+export interface ParsedDbEntry {
+  readonly target: SshEndpoint;
+  readonly handOverDir: string;
+}
+
+/**
+ * The `dbEntry` section: the tenant database host's account and the directory for the hand-over copy.
+ * The key, pinned known-hosts file, hops and limits are `sshEntry`'s: one key reaches both targets.
+ */
+export function parseDbEntry(
+  raw: unknown,
+  ssh: SshEntryConfig,
+  problems: string[]
+): ParsedDbEntry | undefined {
+  const before = problems.length;
+  if (!isRecord(raw)) {
+    problems.push('dbEntry is not an object');
+    return undefined;
+  }
+  const unknown = Object.keys(raw).filter((k) => k !== 'target' && k !== 'handOverDir');
+  if (unknown.length > 0) problems.push(`dbEntry has unknown keys: ${unknown.join(', ')}`);
+  const dir = raw['handOverDir'];
+  if (typeof dir !== 'string' || dir.length === 0 || dir.includes('\0') || !isAbsolute(dir)) {
+    problems.push('dbEntry.handOverDir is not an absolute path');
+  }
+  const target =
+    raw['target'] === undefined
+      ? undefined
+      : parseEndpoint('dbEntry.target', raw['target'], problems);
+  if (raw['target'] === undefined) problems.push('dbEntry.target is required');
+  if (target !== undefined) {
+    for (const name of invalidSshSettings({ ...ssh, target })) {
+      if (name.startsWith('target')) problems.push(`dbEntry.${name} is not usable`);
+    }
+  }
+  if (problems.length > before || target === undefined) return undefined;
+  return { target, handOverDir: dir as string };
+}
