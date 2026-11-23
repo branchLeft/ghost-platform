@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseJobs, withoutComments } from './test-support/publish-job-checks.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 const ROOT = import.meta.dirname;
 const read = (file) => fs.readFileSync(path.join(ROOT, file), 'utf8');
@@ -182,10 +183,6 @@ export function exemptionProblems(document, image = IMAGE) {
 }
 
 const has = (list, expected) => list.some((p) => p.includes(expected));
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
-};
 
 const dockerfile = read('db/percona/Dockerfile');
 const workflow = read('.github/workflows/percona-image.yml');

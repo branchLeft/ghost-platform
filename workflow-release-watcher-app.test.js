@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const WORKFLOW = path.join(import.meta.dirname, '.github', 'workflows', 'release-watcher-run.yml');
 
@@ -14,10 +15,6 @@ const MINT_ACTION = 'actions/create-github-app-token';
 // verified against (the release is more than two weeks old).
 const MINT_USES =
   /uses:\s*actions\/create-github-app-token@([0-9a-f]{40})\s+#\s+v\d+\.\d+\.\d+\s*$/m;
-
-function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 export function readWorkflow() {
   return stripCommentLines(fs.readFileSync(WORKFLOW, 'utf8'));
