@@ -37,8 +37,26 @@ export interface RegisterEntry {
   readonly appHostSlot: string;
   readonly appHostPort: number;
   readonly appHostUid: number;
+  /** Empty for a private slot with no public name; the steps that need one are then not applicable. */
   readonly hostnames: readonly string[];
+  /** Whether the tenant sends mail. Absent means yes; `false` makes the mail DNS step not applicable. */
+  readonly mail?: boolean;
+  /**
+   * Where media credentials come from. Absent or `gateway`: the storage gateway mints them.
+   * `s3`: the tenant boots on placeholder values and the gateway's two mints are not applicable.
+   */
+  readonly mediaMode?: MediaMode;
+  /** Whether backups are enrolled. Absent means yes; `false` makes the backup step not applicable. */
+  readonly backups?: boolean;
+  /**
+   * The image the first deploy pins, as `sha256:` and 64 hex digits. Assigned by the register, never
+   * typed at a run; the first deploy is refused without it.
+   */
+  readonly imageDigest?: string;
 }
+
+export const MEDIA_MODES = ['gateway', 's3'] as const;
+export type MediaMode = (typeof MEDIA_MODES)[number];
 
 export interface TenantRegisterReader {
   read(tenantId: string): Promise<RegisterEntry | undefined>;

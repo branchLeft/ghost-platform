@@ -1,8 +1,9 @@
-import type { RegisterEntry } from './ports.js';
+import { MEDIA_MODES, type RegisterEntry } from './ports.js';
 
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/;
 const OPAQUE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const MAX_PORT = 65535;
+const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
 
 const isId = (n: number, min: number, max: number): boolean =>
   Number.isInteger(n) && n >= min && n <= max;
@@ -30,8 +31,18 @@ export function invalidFields(entry: RegisterEntry): string[] {
   if (!OPAQUE.test(entry.appHostSlot)) bad.push('appHostSlot');
   if (!isId(entry.appHostPort, 1024, MAX_PORT)) bad.push('appHostPort');
   if (!isId(entry.appHostUid, 1000, 2 ** 31 - 1)) bad.push('appHostUid');
-  if (entry.hostnames.length === 0 || !entry.hostnames.every((h) => HOSTNAME.test(h))) {
-    bad.push('hostnames');
+  // An empty list is a private slot: the steps that need a public name are recorded not applicable.
+  if (!entry.hostnames.every((h) => HOSTNAME.test(h))) bad.push('hostnames');
+  if (entry.mail !== undefined && typeof entry.mail !== 'boolean') bad.push('mail');
+  if (entry.backups !== undefined && typeof entry.backups !== 'boolean') bad.push('backups');
+  if (
+    entry.mediaMode !== undefined &&
+    !(MEDIA_MODES as readonly unknown[]).includes(entry.mediaMode)
+  ) {
+    bad.push('mediaMode');
+  }
+  if (entry.imageDigest !== undefined && !IMAGE_DIGEST.test(entry.imageDigest)) {
+    bad.push('imageDigest');
   }
   return bad;
 }

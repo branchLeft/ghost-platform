@@ -14,7 +14,7 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
 const REQUIRED_KEYS = ['keyFile', 'knownHostsFile', 'jumpHops', 'target', 'inputs'] as const;
-const INPUT_KEYS = ['secretsFile', 'stackFile', 'deployKeyFile'] as const;
+const INPUT_KEYS = ['secretsFile', 'stackFile'] as const;
 
 /** What the section holds: the transport's settings, and the files the tenant entry inputs are read from. */
 export interface ParsedSshEntry {
@@ -45,7 +45,6 @@ function parseInputFiles(raw: unknown, problems: string[]): TenantEntryFiles | u
   return {
     secretsFile: raw['secretsFile'] as string,
     stackFile: raw['stackFile'] as string,
-    deployKeyFile: raw['deployKeyFile'] as string,
   };
 }
 const OPTIONAL_KEYS = [
