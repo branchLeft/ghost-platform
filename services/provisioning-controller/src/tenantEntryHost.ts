@@ -17,20 +17,13 @@ import type { StepId } from './plan.js';
  *   `branchleft-deploy`, after it has verified the image's attestation, in the
  *   plan's `first-deploy` step.
  * - `create-app-host-slot`: `enable`, then `key`.
- * - `create-owner-account`: `owner`, once the unit is enabled. The host's own script makes the
- *   Ghost owner from the owner's address in the tenant's secrets file on the host. This step
- *   never sees the address (it is read once, at the secrets step, and sent on that verb's standard
- *   input): the request carries the owner's display name, the site's title and address, and which
- *   colour to ask, and nothing else. A run again after the
- *   host took effect sends it again and the script reports the owner already set up; a Ghost
- *   claimed by a different address is refused by the script and the step fails.
+ * - `create-owner-account`: `owner`, once the unit is enabled: display name, site title and
+ *   address, and colour, never the owner's address (the host's script reads that from the secrets
+ *   file; see the README, "The owner"). A run again is answered as already set up.
  *
- * Every step first asks the host how far the slug has got (`status`) and does
- * only what is left, so a step that is run again after the host took effect
- * (the executor's resume, or a retry after a lost reply) sends nothing twice.
- * The host's order is enforced by the host; this adapter also refuses to enable
- * a unit whose stack is not in place, so the plan's order is kept even against
- * a host that would allow it.
+ * Every step first asks the host how far the slug has got (`status`) and sends only what is
+ * left, so a step run again after the host took effect sends nothing twice. The host enforces
+ * its own order; this adapter also refuses to enable a unit whose stack is not in place.
  */
 
 /** The verbs the host program accepts. */

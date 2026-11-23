@@ -30,12 +30,9 @@ import { TrustedFileError } from './trustedFile.js';
  * - `secretsFile`: `{ "template": TEXT, "literals": { SLOT: { NAME: VALUE } } }`. The template names
  *   keys and holds no value. Literals are values that are not secrets (the owner's address); the
  *   controller makes every secret itself (`GeneratedTenantEntryInputs`), and refuses a literal for one.
- * - `stackFile`: `{ SLOT: { "size", "mail", "environment", "owner"? } }`. `owner` is
- *   `{ "name", "siteTitle", "colour"? }`, read only by the owner step. The site's address is not
- *   repeated there: it is the stack's own `environment.url`, the address Ghost is configured
- *   with, so the two cannot drift. The owner step does not read the owner's email address: the
- *   only place the controller reads it is the `secrets` step (`GeneratedTenantEntryInputs`), which
- *   puts it on the standard input of the host's secrets verb.
+ * - `stackFile`: `{ SLOT: { "size", "mail", "environment", "owner"? } }`. `owner` is `{ "name",
+ *   "siteTitle", "colour"? }`, read by the owner step alone; its site address is `environment.url`.
+ *   No email address is held there (README, "The owner").
  * - `deployKeyFile`: `{ SLOT: PUBLIC_KEY }`
  */
 
