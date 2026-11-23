@@ -834,7 +834,9 @@ def job_inputs(job: Job, tree: Tree, dynamic: Mapping[str, tuple[str, ...]]) -> 
                             yield emit(path, f"run by package script {script}")
                             for dependency in _import_closure(path, tree):
                                 yield emit(dependency, f"imported by {path}")
-        if step.uses.startswith("pnpm/action-setup") and "package.json" in tree.members:
+        # The shared composite runs pnpm/action-setup, so it reads the same field.
+        pnpm_setup = step.uses.startswith(("pnpm/action-setup", "./.github/actions/setup-pnpm-node"))
+        if pnpm_setup and "package.json" in tree.members:
             yield emit("package.json", "pnpm/action-setup reads the packageManager field")
         for build in _docker_builds(step, tree, workdirs):
             kind = "docker build mounts a secret" if build.secret else "docker build in this job"
