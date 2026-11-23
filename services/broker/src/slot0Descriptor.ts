@@ -31,8 +31,6 @@ import { slotAllocation } from './slotPorts.js';
 export const SLOT0_NAME = '0';
 /** Slot 0's one tenancy name. It becomes the public host `slot-0.<demo zone>`, so it is fixed and never a visitor's name. */
 export const SLOT0_SLUG = 'slot-0';
-/** demo1's private address on the estate (edge1's `ansible/owner_vars/edge1.yml` lists it). */
-export const DEMO1_APP_HOST_IP = '10.20.1.50';
 /** The argon2id parameters new gate hashes are minted with: the same as services/demo-gate's DEFAULT_PARAMETERS. */
 const GATE_MEMORY_KIB = 64 * 1024;
 const GATE_PASSES = 3;
@@ -52,6 +50,8 @@ export class Slot0InputError extends Error {
 export interface Slot0DescriptorInput {
   /** `sha256:<64 lowercase hex>`: the manifest digest the slot image was pushed and attested under. */
   readonly imageDigest: string;
+  /** The demo host's private address, supplied by the owner at run time. */
+  readonly appHostIp: string;
   /** The demo owner's address. The broker creates the owner account from it. */
   readonly ownerEmail: string;
   /** An argon2id PHC string from `mintGateHash`. */
@@ -89,7 +89,7 @@ export function renderSlot0Descriptor(input: Slot0DescriptorInput): TenantDescri
       b: allocation.ports.b as Port,
       health: allocation.ports.health as Port,
     },
-    appHostIp: DEMO1_APP_HOST_IP as PrivateIpV4,
+    appHostIp: input.appHostIp as PrivateIpV4,
     database: { kind: 'sqlite', path: `/data/${SLOT0_SLUG}/ghost.db` },
     media: {
       kind: 'local',

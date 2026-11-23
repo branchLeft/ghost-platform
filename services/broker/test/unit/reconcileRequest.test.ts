@@ -6,15 +6,16 @@ import { generateTestKeyPair } from '../helpers/signer.js';
 
 const descriptor = renderSlot0Descriptor({
   imageDigest: `sha256:${'8c9f2dc488c03454609e6573674f10f27ca162a440ff3f5910eaab48bafd9f3d'}`,
+  appHostIp: '10.0.0.10',
   ownerEmail: 'owner@example.test',
   gateArgon2idHash:
     '$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0c2FsdA$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA',
   expiresAt: '2027-01-31T00:00:00.000Z',
   zones: {
-    demoZone: 'demo.trypublicpress.co.uk',
-    platformZone: 'sites.publicpress.co.uk',
-    ownedDomains: ['demo.trypublicpress.co.uk', 'publicpress.co.uk'],
-    demoMailDomain: 'demo.trypublicpress.co.uk',
+    demoZone: 'demo.example.test',
+    platformZone: 'platform.example.test',
+    ownedDomains: ['demo.example.test', 'platform.example.test'],
+    demoMailDomain: 'demo.example.test',
   },
 });
 

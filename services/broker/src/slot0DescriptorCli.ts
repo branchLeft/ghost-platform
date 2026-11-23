@@ -4,7 +4,7 @@
  * read from stdin, never argv. Environment wiring only, so it is excluded
  * from coverage like server.ts; the logic is in slot0Descriptor.ts.
  *
- * Reads: SLOT0_IMAGE_DIGEST, SLOT0_OWNER_EMAIL, SLOT0_EXPIRES_AT,
+ * Reads: SLOT0_IMAGE_DIGEST, SLOT0_APP_HOST_IP, SLOT0_OWNER_EMAIL, SLOT0_EXPIRES_AT,
  * DESCRIPTOR_OUT, and the four zone variables zonesFromEnv reads.
  */
 import { writeFile } from 'node:fs/promises';
@@ -28,6 +28,7 @@ const passphrase = Buffer.concat(chunks)
 const outPath = required('DESCRIPTOR_OUT');
 const descriptor = renderSlot0Descriptor({
   imageDigest: required('SLOT0_IMAGE_DIGEST'),
+  appHostIp: required('SLOT0_APP_HOST_IP'),
   ownerEmail: required('SLOT0_OWNER_EMAIL'),
   expiresAt: required('SLOT0_EXPIRES_AT'),
   gateArgon2idHash: await mintGateHash(passphrase),
