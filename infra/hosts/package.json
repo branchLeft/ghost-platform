@@ -12,7 +12,7 @@
   "dependencies": {
     "@branchleft/hetzner-host": "0.3.0",
     "@pulumi/hcloud": "1.43.4",
-    "@pulumi/pulumi": "^3.276.0"
+    "@pulumi/pulumi": "^3.277.0"
   },
   "devDependencies": {
     "@branchleft/tsconfig": "^0.8.8",
