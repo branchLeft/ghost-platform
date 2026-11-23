@@ -10,6 +10,7 @@ import {
   withoutComments,
 } from './test-support/publish-job-checks.mjs';
 import { compareReports, problems as pinProblems, readPins } from './scripts/demo-edge-pins.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 // A production host runs this image, so two things are controls: the pins in
 // services/demo-edge/Dockerfile (Caddy and the Hetzner module) must agree with
@@ -46,13 +47,6 @@ const OBSERVED = {
     '',
   ].join('\n'),
   arch: 'amd64',
-};
-
-// Replace text that must be there: a mutation that silently changed nothing
-// would let its case pass without proving anything.
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
 };
 
 function demoEdgeProblems(source) {
@@ -314,7 +308,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     [inPush('      packages: write\n', '      packages: read\n'), 'lacks packages: write'],
     [
       inPush(
-        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@b1092eafc16f34551fd2fd99328966beceb565e0 # v1.2.5\n',
+        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7\n',
         '      - name: Attest and verify the pushed image\n        run: true\n'
       ),
       'shared attest and verify action',

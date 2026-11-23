@@ -11,15 +11,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseJobs } from './test-support/publish-job-checks.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 const ROOT = import.meta.dirname;
 const WORKFLOWS = path.join(ROOT, '.github', 'workflows');
 const REPO = 'branchLeft/ghost-platform';
 
-// The commit the signed tag v1.2.5 of branchLeft/github-workflows points at.
-const PIN = 'b1092eafc16f34551fd2fd99328966beceb565e0';
-const SCAN_USES = `branchLeft/github-workflows/.github/workflows/image-scan.yml@${PIN} # v1.2.5`;
-const ATTEST_USES = `branchLeft/github-workflows/.github/actions/attest-and-verify-image@${PIN} # v1.2.5`;
+// The commit the signed tag v1.2.7 of branchLeft/github-workflows points at.
+const PIN = 'f559ca696956d3d58440f56666d85f36c829c08b';
+const SCAN_USES = `branchLeft/github-workflows/.github/workflows/image-scan.yml@${PIN} # v1.2.7`;
+const ATTEST_USES = `branchLeft/github-workflows/.github/actions/attest-and-verify-image@${PIN} # v1.2.7`;
 
 // workflow file -> the image it pushes.
 const PUBLISHERS = {
@@ -48,7 +49,7 @@ const PUSHES =
 
 const read = (file) => fs.readFileSync(path.join(WORKFLOWS, file), 'utf8');
 // Whole-line comments go, so text inside a comment can never satisfy a check.
-// Trailing comments stay: the `# v1.2.5` beside a pin is part of what is checked.
+// Trailing comments stay: the `# v1.2.7` beside a pin is part of what is checked.
 const uncommented = (text) => text.replace(/^[ \t]*#.*$/gm, '');
 
 function permissionsOf(jobText) {
@@ -122,7 +123,7 @@ export function problems(source, { file, image }) {
   if (!/^ {4}needs: push\s*$/m.test(scan.text)) found.push('scan job does not wait on push');
   const scanUses = /^ {4}uses: (.+)$/m.exec(scan.text);
   if (!scanUses || scanUses[1].trim() !== SCAN_USES) {
-    found.push('scan job does not call image-scan.yml at the pinned v1.2.5');
+    found.push('scan job does not call image-scan.yml at the pinned v1.2.7');
   }
   const scanWith = withKeys(scan.text);
   if (scanWith.image !== '${{ needs.push.outputs.image }}') {
@@ -152,7 +153,7 @@ export function problems(source, { file, image }) {
   }
   const attestUses = [...attest.text.matchAll(/^\s*uses: (\S.*)$/gm)].map((m) => m[1].trim());
   if (!attestUses.includes(ATTEST_USES)) {
-    found.push('attest job does not call attest-and-verify-image at the pinned v1.2.5');
+    found.push('attest job does not call attest-and-verify-image at the pinned v1.2.7');
   }
   if (!/^ {10}digest: \$\{\{ needs\.push\.outputs\.digest \}\}$/m.test(attest.text)) {
     found.push('attest job does not attest the pushed digest');
@@ -192,21 +193,14 @@ export function problems(source, { file, image }) {
 
   // Every reference to the shared repository is the one pin.
   for (const m of text.matchAll(/uses: (branchLeft\/github-workflows\/\S+)(.*)$/gm)) {
-    if (`${m[1]}${m[2]}` !== `${m[1]} # v1.2.5` || !m[1].endsWith(`@${PIN}`)) {
-      found.push(`github-workflows reference is not pinned to v1.2.5: ${m[0]}`);
+    if (`${m[1]}${m[2]}` !== `${m[1]} # v1.2.7` || !m[1].endsWith(`@${PIN}`)) {
+      found.push(`github-workflows reference is not pinned to v1.2.7: ${m[0]}`);
     }
   }
   return found;
 }
 
 const hasProblem = (list, expected) => list.some((p) => p.includes(expected));
-
-// Replace text that must be there: a mutation that silently changed nothing
-// would let its case pass without proving anything.
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
-};
 
 for (const [file, image] of Object.entries(PUBLISHERS)) {
   const real = read(file);
@@ -268,11 +262,11 @@ for (const [file, image] of Object.entries(PUBLISHERS)) {
         ),
         'input other than the image',
       ],
-      [swap(real, `image-scan.yml@${PIN} # v1.2.5`, `image-scan.yml@${PIN}`), 'pinned to v1.2.5'],
-      [swap(real, `image-scan.yml@${PIN} # v1.2.5`, 'image-scan.yml@v1.0.6'), 'pinned to v1.2.5'],
+      [swap(real, `image-scan.yml@${PIN} # v1.2.7`, `image-scan.yml@${PIN}`), 'pinned to v1.2.7'],
+      [swap(real, `image-scan.yml@${PIN} # v1.2.7`, 'image-scan.yml@v1.0.6'), 'pinned to v1.2.7'],
       [
-        swap(real, `attest-and-verify-image@${PIN} # v1.2.5`, 'attest-and-verify-image@main'),
-        'pinned to v1.2.5',
+        swap(real, `attest-and-verify-image@${PIN} # v1.2.7`, 'attest-and-verify-image@main'),
+        'pinned to v1.2.7',
       ],
       // A copy of the attest comes back, or the signing grant moves.
       [

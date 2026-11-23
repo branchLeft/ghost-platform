@@ -9,28 +9,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { jobBlock } from './test-support/workflow-text.ts';
 
 const ROOT = import.meta.dirname;
 const REPO = 'branchLeft/ghost-platform';
 const ACTION = 'branchLeft/github-workflows/.github/actions/attest-npm-tarball';
-const ACTION_SHA = 'b1092eafc16f34551fd2fd99328966beceb565e0';
-const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.5`;
+const ACTION_SHA = 'f559ca696956d3d58440f56666d85f36c829c08b';
+const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.7`;
 const SIGNING = ['id-token: write', 'attestations: write'];
 
 const uncommented = (file) =>
   fs.readFileSync(path.join(ROOT, file), 'utf-8').replace(/^[ \t]*#.*$/gm, '');
-
-// The text of one job: from its `  name:` line to the next job or the end.
-function jobBlock(text, name) {
-  const jobsAt = text.indexOf('\njobs:');
-  assert.ok(jobsAt > -1, 'workflow has a jobs section');
-  const jobs = text.slice(jobsAt + 1);
-  const start = jobs.search(new RegExp(`^  ${name}:\\n`, 'm'));
-  assert.ok(start > -1, `workflow has a ${name} job`);
-  const rest = jobs.slice(start + 1);
-  const next = rest.search(/^  [a-z][\w-]*:\n/m);
-  return next === -1 ? jobs.slice(start) : jobs.slice(start, start + 1 + next);
-}
 
 // The steps of a job as { name, text }, in order.
 function steps(job) {

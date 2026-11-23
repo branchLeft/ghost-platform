@@ -6,13 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
 const FREE = 'production-free';
-
-function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 function routed(owner) {
   return `\${{ needs.plan.outputs.apply_environment == '${FREE}' && '${FREE}' || '${owner}' }}`;

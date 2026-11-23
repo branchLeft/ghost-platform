@@ -146,7 +146,7 @@ never signed. This repository has no exemption file: a finding with no fix goes
 through the exemption route there, never a lowered threshold. The signing
 step, and the check that it verifies and that a wrong identity is rejected, is
 that repository's `attest-and-verify-image` action; both are pinned to its
-`v1.2.5` release and no copy lives here. To verify an image yourself, name it
+`v1.2.7` release and no copy lives here. To verify an image yourself, name it
 by digest:
 
 ```sh

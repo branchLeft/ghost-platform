@@ -20,7 +20,7 @@ const workflow = readFileSync(
 /** The multi-architecture index of node:26.13.0-alpine that the base-image scan was run against. */
 const BASE =
   'node:26.13.0-alpine@sha256:8996bb5821d62a8fd9bb27c1cb07462f3fdce6e47d640c6a881ead0b064ce216';
-const RELEASE_SHA = 'b1092eafc16f34551fd2fd99328966beceb565e0';
+const RELEASE_SHA = 'f559ca696956d3d58440f56666d85f36c829c08b';
 
 const withoutComments = (text: string): string =>
   text
@@ -172,7 +172,7 @@ describe('the publish workflow', () => {
     expect(text).not.toMatch(/:latest/);
   });
 
-  it('scans the pushed digest, then attests only a scanned one, both at the v1.2.5 release', () => {
+  it('scans the pushed digest, then attests only a scanned one, both at the v1.2.7 release', () => {
     expect(all.scan).toMatch(/needs: push/);
     expect(all.scan).toContain(
       `uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@${RELEASE_SHA}`

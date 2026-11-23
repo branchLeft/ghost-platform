@@ -13,16 +13,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const WORKFLOWS = path.join(import.meta.dirname, '.github', 'workflows');
 const GROUP = '${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}';
 const CANCEL = "${{ github.event_name == 'pull_request' }}";
 const BLOCK = `concurrency:\n  group: ${GROUP}\n  cancel-in-progress: ${CANCEL}\n`;
 const PR_TRIGGERS = new Set(['pull_request', 'pull_request_target']);
-
-export function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 // The names under the top-level `on:` mapping. Any other form of the trigger
 // block throws, so a workflow written in a shape this test cannot read fails

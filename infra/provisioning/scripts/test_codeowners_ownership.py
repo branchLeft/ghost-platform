@@ -834,7 +834,9 @@ def job_inputs(job: Job, tree: Tree, dynamic: Mapping[str, tuple[str, ...]]) -> 
                             yield emit(path, f"run by package script {script}")
                             for dependency in _import_closure(path, tree):
                                 yield emit(dependency, f"imported by {path}")
-        if step.uses.startswith("pnpm/action-setup") and "package.json" in tree.members:
+        # The shared composite runs pnpm/action-setup, so it reads the same field.
+        pnpm_setup = step.uses.startswith(("pnpm/action-setup", "./.github/actions/setup-pnpm-node"))
+        if pnpm_setup and "package.json" in tree.members:
             yield emit("package.json", "pnpm/action-setup reads the packageManager field")
         for build in _docker_builds(step, tree, workdirs):
             kind = "docker build mounts a secret" if build.secret else "docker build in this job"
@@ -1250,6 +1252,11 @@ class ReadingWhatAJobRuns(unittest.TestCase):
 
     def test_a_package_manager_in_a_directory_needs_its_manifests_owned(self) -> None:
         self.assertGreaterEqual(self.inputs("pnpm install", "app"), {"app/package.json", "app/pnpm-workspace.yaml"})
+
+    def test_the_shared_pnpm_setup_action_reads_the_root_package_json_as_pnpm_action_setup_does(self) -> None:
+        text = self.HEAD + "      - uses: ./.github/actions/setup-pnpm-node\n"
+        found = unowned_inputs({"w.yml": text}, _tree({**self.FILES, "package.json": "{}"}), [], {})
+        self.assertIn("package.json", {item.path for item in found})
 
     def test_unittest_discover_reads_the_start_directory_and_pattern(self) -> None:
         self.assertGreaterEqual(

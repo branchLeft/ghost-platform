@@ -205,7 +205,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@b1092eafc16f34551fd2fd99328966beceb565e0 # v1.2.5
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
     with:
       image: ${{ needs.push.outputs.image }}
 
@@ -239,7 +239,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Attest and verify the pushed image
-        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@b1092eafc16f34551fd2fd99328966beceb565e0 # v1.2.5
+        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7
         with:
           image: ${{ env.IMAGE }}
           digest: ${{ needs.push.outputs.digest }}
