@@ -52,6 +52,14 @@ FAKE_TABLES = fake(lines(
     "sys.exit(0)",
 ))
 
+# Stands in for systemctl. It prints what the test sets, else a loaded unit with no backend named.
+FAKE_SYSTEMCTL = fake(lines(
+    "import os",
+    "import sys",
+    "sys.stdout.write(os.environ.get('FAKE_SYSTEMCTL_OUT', 'LoadState=loaded\\n'))",
+    "sys.exit(int(os.environ.get('FAKE_SYSTEMCTL_EXIT', '0')))",
+))
+
 FAKE_RESTORE = fake(lines(
     "import os",
     "import sys",
@@ -75,7 +83,8 @@ JUMP_INSERTS = [
 
 def install_fakes(bin_dir):
     for name, content in (("iptables", FAKE_TABLES), ("ip6tables", FAKE_TABLES),
-                          ("iptables-restore", FAKE_RESTORE), ("ip6tables-restore", FAKE_RESTORE)):
+                          ("iptables-restore", FAKE_RESTORE), ("ip6tables-restore", FAKE_RESTORE),
+                          ("systemctl", FAKE_SYSTEMCTL)):
         path = os.path.join(bin_dir, name)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(content)
@@ -222,6 +231,37 @@ class DemoEgressTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("firewall-backend", result.stderr)
         self.assertEqual([c for c in self.calls() if "-N " in c or "-restore" in c or " -I " in c], [])
+
+    def test_refuses_when_the_docker_unit_command_line_sets_nftables(self):
+        out = "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd --firewall-backend=nftables -H fd:// ; }\nLoadState=loaded\n"
+        result = self.run_script(v4_chain=1, extra_env={"FAKE_SYSTEMCTL_OUT": out})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("firewall-backend", result.stderr)
+        self.assertEqual(self.restored_calls(), [])
+
+    def test_refuses_when_a_systemd_drop_in_sets_docker_environment_to_nftables(self):
+        out = "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// ; }\nEnvironment=DOCKER_FIREWALL_BACKEND=nftables\nLoadState=loaded\n"
+        result = self.run_script(v4_chain=1, extra_env={"FAKE_SYSTEMCTL_OUT": out})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("firewall-backend", result.stderr)
+        self.assertEqual(self.restored_calls(), [])
+
+    def test_applies_when_the_docker_unit_names_the_iptables_backend(self):
+        out = "ExecStart={ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd --firewall-backend iptables ; }\nLoadState=loaded\n"
+        result = self.run_script(v4_chain=1, extra_env={"FAKE_SYSTEMCTL_OUT": out})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_refuses_when_systemd_cannot_show_the_docker_unit(self):
+        result = self.run_script(extra_env={"FAKE_SYSTEMCTL_EXIT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot tell", result.stderr)
+        self.assertEqual(self.restored_calls(), [])
+
+    def test_refuses_when_the_docker_unit_is_not_loaded(self):
+        result = self.run_script(extra_env={"FAKE_SYSTEMCTL_OUT": "LoadState=not-found\n"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot tell", result.stderr)
+        self.assertEqual(self.restored_calls(), [])
 
     def test_refuses_an_unreadable_daemon_json_rather_than_guessing(self):
         path = self.write_daemon_json("{not json")

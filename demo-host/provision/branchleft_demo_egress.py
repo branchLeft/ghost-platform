@@ -8,6 +8,7 @@
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -15,6 +16,8 @@ import sys
 
 # Docker's own configuration, which names its firewall backend.
 DAEMON_JSON = "/etc/docker/daemon.json"
+# The unit that starts dockerd. Its drop-ins and command line are read from systemd.
+DOCKER_UNIT = "docker.service"
 FORWARD_CHAIN = "BRANCHLEFT-DEMO-EGRESS"
 INPUT_CHAIN = "BRANCHLEFT-DEMO-INPUT"
 # docker0 is the default bridge; br-+ is every user-defined bridge network.
@@ -74,6 +77,22 @@ def daemon_json_path():
     return os.environ.get("BRANCHLEFT_DEMO_EGRESS_DAEMON_JSON") or DAEMON_JSON
 
 
+def systemd_docker_backends():
+    # The backend named on dockerd's command line or in its unit environment, drop-ins
+    # included, as systemd reports the unit. A unit systemd cannot show is a refusal.
+    try:
+        done = run_tool(["systemctl", "show", DOCKER_UNIT, "--no-pager",
+                         "--property=LoadState", "--property=ExecStart", "--property=Environment"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        die("systemctl is not installed -- cannot tell which firewall backend dockerd runs with, and this policy will not guess")
+    if done.returncode != 0 or "LoadState=loaded" not in done.stdout:
+        die(f"systemd does not show {DOCKER_UNIT} as loaded -- cannot tell which firewall backend dockerd runs with, and this policy will not guess")
+    backends = [m.group(1) for m in re.finditer(r"--firewall-backend[=\s]+(\S+)", done.stdout)]
+    backends += [m.group(1) for m in re.finditer(r"DOCKER_FIREWALL_BACKEND=(\S+)", done.stdout)]
+    return backends
+
+
 def docker_uses_nftables():
     # Docker decides where it keeps its rules, from its own setting. The iptables
     # binary's variant does not decide it: Debian 13 prints (nf_tables) for
@@ -85,12 +104,14 @@ def docker_uses_nftables():
         with open(path, encoding="utf-8") as handle:
             config = json.load(handle)
     except FileNotFoundError:
-        return False
+        config = {}
     except (OSError, ValueError) as error:
         die(f"cannot read {path} ({error}) -- its firewall-backend decides where Docker keeps its rules, and this policy will not guess")
     if not isinstance(config, dict):
         die(f"{path} is not a JSON object -- its firewall-backend decides where Docker keeps its rules, and this policy will not guess")
-    return config.get("firewall-backend") == "nftables"
+    if config.get("firewall-backend") == "nftables":
+        return True
+    return "nftables" in systemd_docker_backends()
 
 
 def apply_family(tool):
@@ -123,7 +144,7 @@ def main():
     # Docker set to nftables keeps its rules there, so a policy written to the
     # iptables tables would guard nothing. Refused before anything is written.
     if docker_uses_nftables():
-        die("Docker is set to the nftables firewall backend (firewall-backend in daemon.json, or DOCKER_FIREWALL_BACKEND), so the iptables tables this policy writes are not the ones Docker forwards through -- this policy has no safe substitute there")
+        die("Docker is set to the nftables firewall backend (firewall-backend in daemon.json, --firewall-backend or DOCKER_FIREWALL_BACKEND in its systemd unit, or DOCKER_FIREWALL_BACKEND in this environment), so the iptables tables this policy writes are not the ones Docker forwards through -- this policy has no safe substitute there")
 
     apply_family("iptables")
     apply_family("ip6tables")
