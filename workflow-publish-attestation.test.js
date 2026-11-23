@@ -14,8 +14,8 @@ import { jobBlock } from './test-support/workflow-text.ts';
 const ROOT = import.meta.dirname;
 const REPO = 'branchLeft/ghost-platform';
 const ACTION = 'branchLeft/github-workflows/.github/actions/attest-npm-tarball';
-const ACTION_SHA = '0aa3335097d9b1bb7e5d53dcfddf405bc6c53905';
-const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.4`;
+const ACTION_SHA = 'f559ca696956d3d58440f56666d85f36c829c08b';
+const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.7`;
 const SIGNING = ['id-token: write', 'attestations: write'];
 
 const uncommented = (file) =>
