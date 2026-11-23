@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { problems as publishProblems } from './test-support/publish-job-checks.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 const ROOT = import.meta.dirname;
 const DOCKERFILE = path.join(ROOT, 'services', 'mysqld-exporter', 'Dockerfile');
@@ -220,13 +221,6 @@ const commandFlags = (service) =>
   [...service.matchAll(/^ {6}- (--[\w.-]+)=(\S+)$/gm)].map((m) => [m[1], m[2]]);
 
 const hasProblem = (list, expected) => list.some((p) => p.includes(expected));
-
-// Replace text that must be there: a mutation that silently changed nothing
-// would let its case pass without proving anything.
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
-};
 
 const real = fs.readFileSync(DOCKERFILE, 'utf8');
 const digest = /@sha256:[0-9a-f]{64}/;

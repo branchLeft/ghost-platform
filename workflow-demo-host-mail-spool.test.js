@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { swap } from './test-support/workflow-text.ts';
 
 // The mail spool proof pulls the spool image, a private GHCR package, inside a
 // Docker-in-Docker stand-in. Three things keep that pull honest: the workflow
@@ -16,10 +17,6 @@ const WORKFLOW = fs.readFileSync(
 );
 const SCRIPT = fs.readFileSync(path.join(ROOT, 'scripts', 'test-demo-mail-spool.sh'), 'utf8');
 
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
-};
 const uncommented = (text) => text.replace(/^\s*#.*$/gm, '');
 
 function workflowProblems(source) {

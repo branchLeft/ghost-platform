@@ -10,6 +10,7 @@ import {
   withoutComments,
 } from './test-support/publish-job-checks.mjs';
 import { compareReports, problems as pinProblems, readPins } from './scripts/demo-edge-pins.mjs';
+import { swap } from './test-support/workflow-text.ts';
 
 // A production host runs this image, so two things are controls: the pins in
 // services/demo-edge/Dockerfile (Caddy and the Hetzner module) must agree with
@@ -46,13 +47,6 @@ const OBSERVED = {
     '',
   ].join('\n'),
   arch: 'amd64',
-};
-
-// Replace text that must be there: a mutation that silently changed nothing
-// would let its case pass without proving anything.
-const swap = (text, from, to) => {
-  assert.ok(text.includes(from), `the real text contains ${JSON.stringify(from)}`);
-  return text.replace(from, to);
 };
 
 function demoEdgeProblems(source) {

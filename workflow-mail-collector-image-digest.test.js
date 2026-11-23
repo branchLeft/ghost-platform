@@ -5,12 +5,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { stripCommentLines } from './test-support/workflow-text.ts';
 
 const FILE = path.join(import.meta.dirname, '.github', 'workflows', 'mail-collector-image.yml');
-
-function stripCommentLines(text) {
-  return text.replace(/^[ \t]*#.*$/gm, '');
-}
 
 // A job is the text from its two-space-indented key to the next one.
 function jobBlock(text, job) {
