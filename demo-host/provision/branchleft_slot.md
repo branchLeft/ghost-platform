@@ -166,7 +166,7 @@ digest>` does not resolve; the spool role fails closed the same way.
 ## A loaded image is tagged by the reference the host pins
 
 The drain sidecar loads unnamed too, and the colour unit starts it from
-`DEMO_SIDECAR_IMAGE=ghcr.io/branchleft/drain-sidecar@sha256:<digest>` with
+`DEMO_SIDECAR_IMAGE=branchleft/drain-sidecar@sha256:<digest>` with
 `--pull never`, so that reference must resolve locally. The wrapper is still
 given no digest, so it reads the one the host already pins: after the load and
 the engine's id check, `_name_for_loaded_image` reads
@@ -179,9 +179,12 @@ that file pins, and with `SLOT_IMAGE_NAME` otherwise. The tag is
 The file is believed only when `_pinned_sidecar_id` finds it a regular file
 opened `O_NOFOLLOW | O_NONBLOCK`, owned by root (`SIDECAR_IMAGE_ENV_OWNER_UID`),
 writable by neither group nor others, whose whole content is one line
-`DEMO_SIDECAR_IMAGE=ghcr.io/branchleft/drain-sidecar@sha256:<64 lowercase hex>`
-(at most 4096 bytes are read). The repository name is the wrapper's own
-literal, so the file chooses a digest and never a name. A missing file or any
+`DEMO_SIDECAR_IMAGE=branchleft/drain-sidecar@sha256:<64 lowercase hex>`
+(at most 4096 bytes are read). The name is the wrapper's own literal, so the file chooses a digest and never a
+name. It is the host's own label for the image, the broker's `SIDECAR_IMAGE_REF`
+without its registry host: demo1 reaches no registry, and the role that writes the
+file names none (the line the push CLI prints, with the registry, is not the line
+the host holds). A missing file or any
 other shape answers "no pin", and the image is tagged as a slot image as it
 was before: nothing new can be named, and the colour unit still refuses to
 start a sidecar that does not resolve.

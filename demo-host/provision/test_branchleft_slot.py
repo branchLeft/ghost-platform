@@ -193,14 +193,16 @@ class SidecarImagePinDriftGuardTests(unittest.TestCase):
     """The wrapper is installed alone, so the sidecar's name, the pin file's
     path and its variable are copies; each is held to the file that owns it."""
 
-    def test_the_sidecar_image_name_is_the_one_the_broker_pushes_it_under(self):
+    def test_the_sidecar_image_name_is_the_broker_s_repository_path_without_its_registry(self):
         source = (
             Path(__file__).resolve().parents[2]
             / "services/broker/src/controlPlaneSidecarPush.ts"
         ).read_text(encoding="utf-8")
         found = re.search(r"export const SIDECAR_IMAGE_REF = '([^']+)';", source)
         self.assertIsNotNone(found)
-        self.assertEqual(bs.SIDECAR_IMAGE_NAME, found.group(1))
+        registry, _, path = found.group(1).partition("/")
+        self.assertIn(".", registry)
+        self.assertEqual(bs.SIDECAR_IMAGE_NAME, path)
 
     def test_the_pin_file_path_is_the_one_the_colour_unit_reads(self):
         import render_colour_units

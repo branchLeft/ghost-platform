@@ -97,14 +97,16 @@ _LOADED_ID_LINE = re.compile(r"Loaded image ID: (sha256:[0-9a-f]{64})")
 # The drain sidecar's name, and the host file that pins its digest. The colour
 # unit reads `DEMO_SIDECAR_IMAGE=<name>@sha256:<digest>` from that file and
 # starts the sidecar with `--pull never`, so the reference must resolve
-# locally. `load` tags a loaded image under the sidecar's name when, and only
+# locally. The name is the host's own label for the image: demo1 reaches no
+# registry, and shared-infra's role names none (it is the repository path of
+# the broker's `SIDECAR_IMAGE_REF` without the registry host). `load` tags a loaded image under the sidecar's name when, and only
 # when, its id is the digest that root-owned file pins; every other image is
 # tagged under `SLOT_IMAGE_NAME` as before. Duplicated like every literal here
 # (`SidecarImageNameDriftGuardTests` pins the name to
 # `controlPlaneSidecarPush.ts`, and the file's path and variable to
 # `render_colour_units.py` and `demo_sidecar.py`). Reasons:
 # branchleft_slot.md#a-loaded-image-is-tagged-by-the-reference-the-host-pins.
-SIDECAR_IMAGE_NAME = "ghcr.io/branchleft/drain-sidecar"
+SIDECAR_IMAGE_NAME = "branchleft/drain-sidecar"
 SIDECAR_IMAGE_ENV_PATH = "/etc/branchleft/demo-sidecar.image.env"
 SIDECAR_IMAGE_VARIABLE = "DEMO_SIDECAR_IMAGE"
 # Owner of the pin file the wrapper trusts: root, the account this runs as.
