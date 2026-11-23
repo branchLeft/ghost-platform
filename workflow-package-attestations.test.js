@@ -16,8 +16,8 @@ import path from 'node:path';
 
 const FILE = '.github/workflows/package-attestations-ci.yml';
 const ACTION = 'branchLeft/github-workflows/.github/actions/verify-package-attestations';
-const ACTION_SHA = '0aa3335097d9b1bb7e5d53dcfddf405bc6c53905';
-const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.4`;
+const ACTION_SHA = 'b1092eafc16f34551fd2fd99328966beceb565e0';
+const ACTION_LINE = `${ACTION}@${ACTION_SHA} # v1.2.5`;
 const GRANTS = ['contents: read', 'packages: read'];
 
 const uncommented = (text) => text.replace(/^[ \t]*#.*$/gm, '');
@@ -120,8 +120,8 @@ function breaks(name, edit) {
 breaks('the verify step removed', (t) =>
   t.replace(/\n {6}- name: Verify package attestations\n.*\n/, '\n')
 );
-breaks('a tag pin instead of the commit', (t) => t.replace(`@${ACTION_SHA} # v1.2.4`, '@v1.2.4'));
-breaks('the version comment dropped', (t) => t.replace(' # v1.2.4\n', '\n'));
+breaks('a tag pin instead of the commit', (t) => t.replace(`@${ACTION_SHA} # v1.2.5`, '@v1.2.5'));
+breaks('the version comment dropped', (t) => t.replace(' # v1.2.5\n', '\n'));
 breaks('an older commit', (t) => t.replace(ACTION_SHA, 'a2175a416b57f950fed891837f88f2d1a31e00f4'));
 breaks('a third job permission', (t) =>
   t.replace('      packages: read\n', '      packages: read\n      actions: read\n')
@@ -136,7 +136,7 @@ breaks('a missing job permissions block', (t) =>
   t.replace('    permissions:\n      contents: read\n      packages: read\n', '')
 );
 breaks('a narrowed root', (t) =>
-  t.replace(/(v1\.2\.4\n)$/, '$1        with:\n          root: render-core\n')
+  t.replace(/(v1\.2\.5\n)$/, '$1        with:\n          root: render-core\n')
 );
 breaks('a condition on the step', (t) =>
   t.replace(

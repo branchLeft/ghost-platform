@@ -99,7 +99,7 @@ jobs:
           echo "ref=refs/tags/v${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Attest the tarball
-        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@b1092eafc16f34551fd2fd99328966beceb565e0 # v1.2.5
         with:
           tarball: ${{ steps.pack.outputs.tarball }}
           repo: branchLeft/ghost-platform
