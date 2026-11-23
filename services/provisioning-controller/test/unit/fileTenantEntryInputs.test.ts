@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { chmod, mkdir, open, readFile, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -25,6 +26,9 @@ afterEach(async () => {
 
 const SLOT = 'acme-blog';
 const CANARY = 'CANARY-5f2e9c1d-value-that-must-never-be-logged';
+const OWNER = 'owner@example.invalid';
+const TEMPLATE =
+  'GHOST_DB_PASSWORD=\nGHOST_OWNER_EMAIL=\nGHOST_ADMIN_KEY=\nGHOST_S3_ACCESS_KEY_ID=\n';
 const KEY = '/etc/controller/entry_key';
 const KNOWN = '/etc/controller/known_hosts';
 
@@ -41,7 +45,7 @@ async function files(
   return {
     secretsFile: await work.json(
       'secrets.json',
-      { template: 'DB_PASSWORD=${DB_PASSWORD}\n', values: { [SLOT]: { DB_PASSWORD: CANARY } } },
+      { template: TEMPLATE, literals: { [SLOT]: { GHOST_OWNER_EMAIL: OWNER } } },
       modes.secrets ?? 0o600
     ),
     stackFile: await work.json(
@@ -63,12 +67,27 @@ async function files(
   };
 }
 
+/** The files under `dir` (any depth) whose bytes hold `needle`, except those named in `except`. */
+async function filesHolding(
+  dir: string,
+  needle: string,
+  except: readonly string[]
+): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true, recursive: true })) {
+    if (!entry.isFile() || except.includes(entry.name)) continue;
+    const path = join(entry.parentPath, entry.name);
+    if ((await readFile(path, 'utf8')).includes(needle)) found.push(path);
+  }
+  return found;
+}
+
 describe('FileTenantEntryInputs: what it reads', () => {
-  it('returns the template and values, the three stack parameters and the key, for the slot asked', async () => {
+  it('returns the template and literals, the three stack parameters and the key, for the slot asked', async () => {
     const inputs = new FileTenantEntryInputs(await files());
     expect(await inputs.secrets(request())).toEqual({
-      template: 'DB_PASSWORD=${DB_PASSWORD}\n',
-      values: { DB_PASSWORD: CANARY },
+      template: TEMPLATE,
+      values: { GHOST_OWNER_EMAIL: OWNER },
     });
     const claim = { uid: 20001, portA: 1, portB: 2, portHealth: 3 };
     expect(await inputs.stack(request('render-compose-file'), claim)).toEqual({
@@ -91,9 +110,15 @@ describe('FileTenantEntryInputs: what it reads', () => {
   it('refuses a slot with no entry, and a stack with a key it does not know', async () => {
     const f = await files();
     const inputs = new FileTenantEntryInputs(f);
-    await expect(inputs.secrets(request('render-host-secrets', 'other-slot'))).rejects.toThrow(
-      /no entry for slot other-slot/
-    );
+    // A slot with no literals needs none: the template may name no literal key.
+    await expect(inputs.secrets(request('render-host-secrets', 'other-slot'))).resolves.toEqual({
+      template: TEMPLATE,
+      values: {},
+    });
+    await work.json('secrets.json', { template: 'x', values: { [SLOT]: { A: 'b' } } });
+    await expect(inputs.secrets(request())).rejects.toThrow(/no longer reads/);
+    await work.json('secrets.json', { template: 'x', literals: [] });
+    await expect(inputs.secrets(request())).rejects.toThrow(/no "literals" object/);
     await work.json('stack.json', {
       [SLOT]: { size: 'small', mail: true, environment: {}, image: 'x' },
     });
@@ -189,7 +214,7 @@ describe('FileTenantEntryInputs: no value is ever in an error', () => {
   it('does not quote the file when it is not JSON, nor a value that is not text', async () => {
     const f = await files();
     const inputs = new FileTenantEntryInputs(f);
-    await writeFile(f.secretsFile, `{"template": "x", "values": {"${SLOT}": {"A": "${CANARY}" `);
+    await writeFile(f.secretsFile, `{"template": "x", "literals": {"${SLOT}": {"A": "${CANARY}" `);
     const broken = await inputs.secrets(request()).then(
       () => '',
       (e: Error) => `${e.name} ${e.message}`
@@ -197,12 +222,14 @@ describe('FileTenantEntryInputs: no value is ever in an error', () => {
     expect(broken).toContain('it is not JSON');
     expect(broken).not.toContain(CANARY);
 
-    await work.json('secrets.json', { template: 'x', values: { [SLOT]: { [CANARY]: 7 } } });
+    await work.json('secrets.json', { template: 'x', literals: { [SLOT]: { [CANARY]: 7 } } });
     const notText = await inputs.secrets(request()).then(
       () => '',
       (e: Error) => `${e.name} ${e.message}`
     );
     expect(notText).toContain('is not text');
+    await work.json('secrets.json', { template: 'x', literals: { [SLOT]: 7 } });
+    await expect(inputs.secrets(request())).rejects.toThrow(/are not an object/);
     expect(notText).not.toContain(CANARY);
   });
 });
@@ -213,6 +240,10 @@ describe('the sshEntry.inputs configuration has no default', () => {
     approvalsFile: '/var/lib/controller/approvals.json',
     registerFile: '/var/lib/controller/register.json',
     hosts: {},
+    dbEntry: {
+      target: { user: 'tenantdb', host: 'db1.example.test' },
+      handOverDir: '/var/lib/controller/hand-over',
+    },
   };
   const ssh = (inputs: unknown): Record<string, unknown> => ({
     keyFile: KEY,
@@ -267,6 +298,9 @@ async function fakeSsh(dir: string): Promise<string> {
     '  status)',
     '    if [ -f $D/claimed ]; then echo claimed-here=yes; echo uid=20001; echo port_a=20001; echo port_b=20002; echo port_health=20003; echo volumes=yes; else echo claimed-here=no; echo volumes=no; fi',
     '    for f in secrets stack enabled slot; do if [ -f $D/$f ]; then echo $f=yes; else echo $f=no; fi; done ;;',
+    '  create-tenant-db)',
+    '    if [ -f $D/dbexists ] || [ -f $D/dbmade ]; then echo "branchleft-tenant-db-entry: refused reason=exists" >&2; exit 3; fi',
+    `    touch $D/dbmade; printf 'database=ghost_acme_blog\\nuser=ghost_acme_blog@10.20.1.201\\npassword=${CANARY}\\n' ;;`,
     '  claim) touch $D/claimed ;;',
     '  secrets) if [ -f $D/refuse ]; then echo "refused: bad-template" >&2; grep -o "CANARY[-a-z0-9]*" $D/payload-secrets.json >&2; exit 1; fi; touch $D/secrets ;;',
     '  stack) touch $D/stack ;;',
@@ -291,6 +325,8 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
   async function deploy(modes?: { secrets?: number }): Promise<string> {
     const f = await files(modes);
     const entry = { ...ENTRY, appHostSlot: SLOT };
+    const handOver = work.path('hand-over');
+    await mkdir(handOver, { mode: 0o700 });
     const config = await work.deployment({
       sshEntry: {
         keyFile: KEY,
@@ -301,6 +337,7 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
         sshProgram: await fakeSsh(work.dir),
         inputs: f,
       },
+      dbEntry: { target: { user: 'tenantdb', host: 'db1.example.test' }, handOverDir: handOver },
     });
     await work.json('register.json', { entries: [entry] });
     return config;
@@ -331,16 +368,32 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
     ].join('\n');
   }
 
-  it('runs the whole approval over ssh, sending the values to the host and nowhere else', async () => {
+  it('runs the whole approval over ssh: the host gets the minted password and generated values, and nothing logs one', async () => {
     const outcome = await run(await deploy());
     expect(outcome.code).toBe(EXIT.complete);
-    expect(await readFile(work.path('payload-secrets.json'), 'utf8')).toContain(CANARY);
+    const sent = JSON.parse(await readFile(work.path('payload-secrets.json'), 'utf8')) as {
+      values: Record<string, string>;
+    };
+    expect(Object.keys(sent.values).sort()).toEqual(
+      ['GHOST_ADMIN_KEY', 'GHOST_DB_PASSWORD', 'GHOST_OWNER_EMAIL', 'GHOST_S3_ACCESS_KEY_ID'].sort()
+    );
+    expect(sent.values['GHOST_DB_PASSWORD']).toBe(CANARY);
+    expect(sent.values['GHOST_OWNER_EMAIL']).toBe(OWNER);
+    expect(sent.values['GHOST_S3_ACCESS_KEY_ID']).toContain('placeholder-not-a-credential-');
+    const generated = sent.values['GHOST_ADMIN_KEY'] ?? '';
+    expect(generated).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(await readFile(work.path('payload-key.json'), 'utf8')).toContain('AAAAPUBLIC');
     const stack = await readFile(work.path('payload-stack.json'), 'utf8');
-    expect(stack).toContain('"secret":"DB_PASSWORD"');
     expect(stack).not.toContain(CANARY);
-    expect(await everythingLogged(outcome)).not.toContain(CANARY);
+    const logged = await everythingLogged(outcome);
+    expect(logged).not.toContain(CANARY);
+    expect(logged).not.toContain(generated);
+    // The hand-over copy is gone, and the password is in no file but the stand-in host's received payload.
+    expect(await readdir(work.path('hand-over'))).toEqual([]);
+    expect(await filesHolding(work.dir, CANARY, ['ssh', 'payload-secrets.json'])).toEqual([]);
+    expect(await filesHolding(work.dir, generated, ['payload-secrets.json'])).toEqual([]);
     expect(await work.calledIds()).not.toContain('render-host-secrets');
+    expect(await work.calledIds()).not.toContain('create-database');
   });
 
   it('starts in the binary’s shape only when the deployment supplies the adapter', async () => {
@@ -366,5 +419,17 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
     const logged = await everythingLogged(outcome);
     expect(logged).toContain('refused');
     expect(logged).not.toContain(CANARY);
+    // The password is held for the retry, in the one private file, and nowhere else.
+    expect(await readdir(work.path('hand-over'))).toEqual(['db-handover-acme-blog.json']);
+    expect(await filesHolding(work.dir, CANARY, ['ssh', 'payload-secrets.json'])).toEqual([
+      work.path('hand-over/db-handover-acme-blog.json'),
+    ]);
+    // The host takes the secrets on the next run, which makes no second database and drops the copy.
+    await rm(work.path('refuse'));
+    await rm(work.path('state.jsonl'));
+    const again = await run(config);
+    expect(again.code).toBe(EXIT.complete);
+    expect(await readdir(work.path('hand-over'))).toEqual([]);
+    expect(await everythingLogged(again)).not.toContain(CANARY);
   });
 });

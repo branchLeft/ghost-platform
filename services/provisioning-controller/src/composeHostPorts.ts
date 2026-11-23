@@ -1,7 +1,10 @@
 import { commandHostPorts, type Env } from './commandHost.js';
+import { DbEntryHost } from './dbEntryHost.js';
+import { FileDatabaseHandOver } from './dbHandOver.js';
 import type { HostPorts } from './executePorts.js';
 import type { RunConfig } from './runConfig.js';
-import { SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
+import { GeneratedTenantEntryInputs } from './generatedSecrets.js';
+import { DB_ENTRY_VERBS, SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
 import { TenantEntryHost, type TenantEntryInputs } from './tenantEntryHost.js';
 
 /**
@@ -16,6 +19,8 @@ import { TenantEntryHost, type TenantEntryInputs } from './tenantEntryHost.js';
 export interface HostComposition {
   /** Where the tenant entry adapter gets the secrets template and values, the stack parameters and the deploy key. */
   readonly tenantEntryInputs?: TenantEntryInputs;
+  /** The source of generated secret values; the operating system's random source when absent. */
+  readonly random?: () => string;
 }
 
 /** The run must not start: the ssh entry point is configured and something about it is not usable. */
@@ -41,18 +46,32 @@ export async function composeHostPorts(
   if (ssh === undefined) return commands;
 
   const problems = await hopConfigProblems(ssh, env);
+  const db = config.dbEntry;
+  const handOver = db === undefined ? undefined : new FileDatabaseHandOver(db.handOverDir);
+  if (db === undefined || handOver === undefined) {
+    problems.push('no dbEntry: nothing can supply the tenant database password');
+  } else {
+    problems.push(...(await handOver.problems()));
+  }
   if (problems.length > 0) throw new SshEntryStartupError(problems);
   if (composition.tenantEntryInputs === undefined) {
     throw new SshEntryStartupError([
       'no source of the tenant entry inputs (secrets, stack parameters, deploy key) is available',
     ]);
   }
+  if (db === undefined || handOver === undefined) throw new SshEntryStartupError(['no dbEntry']);
   const transport = new SshEntryTransport(ssh, env);
+  const dbTransport = new SshEntryTransport({ ...ssh, target: db.target }, env, DB_ENTRY_VERBS);
   return {
     ...commands,
+    'db-host': new DbEntryHost({ transport: dbTransport, handOver }),
     'app-host': new TenantEntryHost({
       transport,
-      inputs: composition.tenantEntryInputs,
+      inputs: new GeneratedTenantEntryInputs(
+        composition.tenantEntryInputs,
+        handOver,
+        composition.random
+      ),
       fallback: commands['app-host'],
     }),
   };
