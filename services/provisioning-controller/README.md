@@ -147,6 +147,43 @@ point, so the owner's single approval is the only hand step for a new tenant:
   the template, values, parameters and deploy key come from the deployment;
   none is kept.
 
+### The database host's entry point and the hand-over (`src/dbEntryHost.ts`, `src/dbHandOver.ts`, `src/generatedSecrets.ts`)
+
+`DbEntryHost` serves the plan's `create-database` step over the same ssh transport, to db-t1's
+forced command (the `db_t1_tenant_entry` role in branchLeft/shared-infra). It sends `create-tenant-db
+NAME` (the only request that program accepts) and reads the three lines it prints once
+(`database=`, `user=`, `password=`). No person is in the path: the password goes from that reply to
+the app host's secrets file by the controller alone.
+
+- **Exit codes.** 0 created; 2 a refused request, permanent; 3 `exists`, permanent (and it says
+  that no copy is held here, which is the one case a person has to clear on db-t1); 4 busy and 5
+  failed, retried; any other code retried.
+- **The hand-over.** db-t1 prints the password once and refuses a second create, so a crash between
+  the create and the `secrets` verb would lose it. `FileDatabaseHandOver` holds it for that window
+  in one file per slot, `db-handover-SLOT.json`, in `dbEntry.handOverDir` (the controller's own
+  state directory): mode 0600, owned by the controller's user, one link, opened without following a
+  link; the directory may not be written by group or other, nor reached by other. It is written the
+  moment the reply is read (a temporary file, synced, then linked in, so it never exists half
+  written and is never replaced), and discarded once the app host has the secrets file in place
+  (just written, or found already there). Startup refuses a directory that is not usable.
+- **Resume.** A `create-database` step run again finds the copy and sends nothing, so a crash
+  between the create and the secrets, or before the step was recorded, completes without a second
+  create.
+- **The other secrets.** `GeneratedTenantEntryInputs` fills the render core's template at the
+  `secrets` step: `GHOST_DB_PASSWORD` from the hand-over; the object-store keys as generated
+  placeholders marked `placeholder-not-a-credential-` (the slot boots and uploads are refused until
+  the storage gateway issues real keys); `GHOST_OWNER_EMAIL`, which is not a secret, from the
+  secrets file's `literals`; every other key from the operating system's random source. Values go
+  to the host on the verb's standard input and are kept nowhere. A typed value for any key the
+  controller fills itself is refused, and so is a `values` section in the secrets file.
+- **No value in a log.** Nothing here writes a log line. The adapter's errors are fixed text and a
+  fixed reason code; `redactSecrets` stays as the backstop. `test/unit/dbHandOver.test.ts` runs the
+  whole plan with a scan of the output, the state file, the console events and every file under the
+  working directory for the password and each generated value, and checks that the scan finds one
+  put there on purpose.
+- **Configuration.** `dbEntry` is required with `sshEntry`: `target` (the db host's account and
+  address) and `handOverDir`. The key, pinned known-hosts file, hops and limits are `sshEntry`'s.
+
 Known limits: the SSH transport and its file-based inputs are wired (see "Running it"), but
 something must still write those files on the controller host; `publish-hostnames` still takes
 its port from the register, not from the claim (`claimOf` is the way a
@@ -168,9 +205,10 @@ do `confirm-register-assignment` and `escrow-stack-passphrase`, which have no pr
   (`sha256:` and 64 hex digits), carried into the step's inputs; a step with none is refused, and
   nothing typed at a run reaches it. The wrapper's exit 1 or 2 is permanent; anything else is retried.
   A repeated call re-pins the same digest, which the host handles as the same pin.
-- **Placeholder media values** (`src/placeholders.ts`): random values that start with `PLACEHOLDER-`,
-  one for each name in `MEDIA_PLACEHOLDER_NAMES`, for the secrets step of a tenant whose media mode
-  is `s3`. Nothing here writes them to a host; the secrets hand-over does.
+- **Placeholder media values** are made by `GeneratedTenantEntryInputs`, the one generator (see
+  "The other secrets"). `MEDIA_PLACEHOLDER_NAMES` (in `src/plan.ts`) names the two secrets it fills
+  for an `s3` media tenant, and the media step carries those names, never a value; `isPlaceholder`
+  tells a stand-in from a real key by its `placeholder-not-a-credential-` mark.
 
 ## Part 3: the provisioning API contract and its mock
 
@@ -300,7 +338,7 @@ standard input. It is selected for the app host only when the configuration has 
   starts. `BatchMode=yes` and `StrictHostKeyChecking=yes` are fixed, the only known-hosts
   file is the pinned one, `-F` always names a file (`/dev/null` unless configured).
 - **Configuration, never a request.** Key file, known-hosts file, ssh config file, the jump
-  chain (edge1, edge-t: the controller runs on ops1, so ops1 is where the call starts) and the target account and host come from `SshEntryConfig`;
+  chain (the controller runs on ops1, so the hops are edge1 and edge-t) and the target account and host come from `SshEntryConfig`;
   every path and name is validated when the transport is made.
 - **Bounded.** A timeout kills the client; each output stream has a byte bound that kills
   it too; the payload has one. The client inherits only `PATH`, `HOME` and `LANG`.
@@ -335,7 +373,7 @@ or to the step that stopped it. The approval id is the only per-run input.
   through a shell and never found on the path.
 - **SSH entry point** (`src/sshEntryConfig.ts`, `src/composeHostPorts.ts`): off unless the
   configuration has an `sshEntry` section, and it has no default host, key path or hop. It names
-  `keyFile`, `knownHostsFile`, `jumpHops` (empty for a direct host) and `target`, and optionally
+  `keyFile`, `knownHostsFile`, `jumpHops` (empty for a direct host), `target` and `inputs`, and optionally
   `sshConfigFile`, `sshProgram` and the transport's limits; every value is checked as the
   transport checks it. When present, startup asks `ssh -G` about each hop and refuses to run
   (exit 3, no step started) on any hop that is not pinned, and when the deployment supplies no
@@ -343,8 +381,10 @@ or to the step that stopped it. The approval id is the only per-run input.
   host is then the tenant entry adapter over the ssh transport; the program configured for
   `app-host` serves the steps it does not.
 - **Tenant entry inputs** (`src/fileTenantEntryInputs.ts`): `sshEntry.inputs` names two
-  absolute paths, with no default: `secretsFile` (`{ "template", "values": { SLOT: { NAME:
-VALUE } } }`), `stackFile` (`{ SLOT: { size, mail, environment } }`). The deploy key is not a file: the controller makes it. Each file is opened without following a link and refused unless it is a
+  absolute paths, with no default: `secretsFile` (`{ "template", "literals": { SLOT: { NAME:
+  VALUE } } }`: key names and non-secret values only; no secret is ever written there) and
+  `stackFile` (`{ SLOT: { size, mail, environment } }`). The deploy key is not a file: the
+  controller makes it (`slotKeys`). Each file is opened without following a link and refused unless it is a
   regular file under 1 MiB, owned by root or the controller's user, with no group or other
   write; the secrets file is also refused if others can read it (a group may). Each file is read
   when a verb needs it and kept never. An error names the path, the slot and the field, never

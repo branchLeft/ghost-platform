@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +14,7 @@ import {
   type SlotKeys,
   type TenantEntryInputs,
 } from '../../src/index.js';
+import { DbEntryHost } from '../../src/dbEntryHost.js';
 import { TenantEntryHost } from '../../src/tenantEntryHost.js';
 import { APPROVAL } from '../support/doubles.js';
 import { Workdir } from '../support/workdir.js';
@@ -23,6 +24,7 @@ let work: Workdir;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'pc-compose-'));
   work = await Workdir.create();
+  await mkdir(join(dir, 'hand-over'), { mode: 0o700 });
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -67,13 +69,23 @@ const sshEntry = (program: string): Record<string, unknown> => ({
   sshProgram: program,
 });
 
-const configWith = (entry?: Record<string, unknown>): RunConfig =>
+const dbEntry = (): Record<string, unknown> => ({
+  target: { user: 'tenantdb', host: 'db1.example.test' },
+  handOverDir: join(dir, 'hand-over'),
+});
+
+const configBase = {
+  stateFile: '/var/lib/controller/state.jsonl',
+  approvalsFile: '/var/lib/controller/approvals.json',
+  registerFile: '/var/lib/controller/register.json',
+  hosts: {},
+};
+
+const configWith = (entry?: Record<string, unknown>, db: unknown = dbEntry()): RunConfig =>
   parseRunConfig({
-    stateFile: '/var/lib/controller/state.jsonl',
-    approvalsFile: '/var/lib/controller/approvals.json',
-    registerFile: '/var/lib/controller/register.json',
-    hosts: {},
+    ...configBase,
     ...(entry !== undefined && { sshEntry: entry }),
+    ...(entry !== undefined && db !== undefined && { dbEntry: db }),
   });
 
 const INPUTS: TenantEntryInputs = {
@@ -130,7 +142,7 @@ describe('composeHostPorts: the hop check runs at startup', () => {
     const program = await fakeSsh(PINNED);
     const hosts = await composeHostPorts(configWith(sshEntry(program)), ENV, WITH_INPUTS);
     expect(hosts['app-host']).toBeInstanceOf(TenantEntryHost);
-    expect(hosts['db-host']).not.toBeInstanceOf(TenantEntryHost);
+    expect(hosts['db-host']).toBeInstanceOf(DbEntryHost);
     expect(hosts['controller']).toBeInstanceOf(ControllerHost);
     const calls = await sshCalls();
     expect(calls).toHaveLength(1);
@@ -161,6 +173,48 @@ describe('composeHostPorts: the hop check runs at startup', () => {
       /no source of the tenant entry inputs/
     );
   });
+
+  it('refuses to start when there is no place to make and keep the slot deploy keys', async () => {
+    const program = await fakeSsh(PINNED);
+    await expect(
+      composeHostPorts(configWith(sshEntry(program)), ENV, { tenantEntryInputs: INPUTS })
+    ).rejects.toThrow(/no place to make and keep the slot deploy keys/);
+  });
+});
+
+describe('composeHostPorts: the database entry', () => {
+  it('is required with sshEntry, needs it, and is closed to other keys', () => {
+    const ssh = sshEntry('/usr/bin/ssh');
+    expect(() => parseRunConfig({ ...configBase, sshEntry: ssh })).toThrow(
+      /dbEntry is required with sshEntry/
+    );
+    expect(() => parseRunConfig({ ...configBase, dbEntry: dbEntry() })).toThrow(
+      /dbEntry needs sshEntry/
+    );
+    expect(() => configWith(ssh, { ...dbEntry(), agent: true })).toThrow(
+      /dbEntry has unknown keys: agent/
+    );
+    expect(() => configWith(ssh, 'x')).toThrow(/dbEntry is not an object/);
+    expect(() => configWith(ssh, { handOverDir: '/a' })).toThrow(/dbEntry\.target is required/);
+    expect(() => configWith(ssh, { ...dbEntry(), handOverDir: 'relative' })).toThrow(
+      /dbEntry\.handOverDir is not an absolute path/
+    );
+    expect(() =>
+      configWith(ssh, { ...dbEntry(), target: { user: 'a b', host: 'db1.example.test' } })
+    ).toThrow(/dbEntry\.target\.user is not usable/);
+  });
+
+  it('refuses to start over a hand-over directory others can reach, or one that is missing', async () => {
+    const program = await fakeSsh(PINNED);
+    await chmod(join(dir, 'hand-over'), 0o755);
+    const open = composeHostPorts(configWith(sshEntry(program)), ENV, WITH_INPUTS);
+    await expect(open).rejects.toBeInstanceOf(SshEntryStartupError);
+    await expect(open).rejects.toThrow(/hand-over directory .* its mode lets other users/);
+    await rm(join(dir, 'hand-over'), { recursive: true });
+    await expect(composeHostPorts(configWith(sshEntry(program)), ENV, WITH_INPUTS)).rejects.toThrow(
+      /hand-over directory .* it cannot be read/
+    );
+  });
 });
 
 describe('runCli: a configured ssh entry point that is not usable stops the run before any step', () => {
@@ -181,7 +235,7 @@ describe('runCli: a configured ssh entry point that is not usable stops the run 
 
   it('exits with the usage status, runs no step and writes no state, over an unpinned hop', async () => {
     const program = await fakeSsh(PINNED.filter((l) => l !== 'batchmode yes'));
-    const config = await work.deployment({ sshEntry: sshEntry(program) });
+    const config = await work.deployment({ sshEntry: sshEntry(program), dbEntry: dbEntry() });
     const outcome = await run(config, true);
     expect(outcome.code).toBe(EXIT.usage);
     expect(outcome.stdout).toEqual([]);
@@ -192,7 +246,7 @@ describe('runCli: a configured ssh entry point that is not usable stops the run 
 
   it('exits with the usage status over a configuration that names no key file', async () => {
     const { keyFile: _left, ...rest } = sshEntry('/usr/bin/ssh');
-    const outcome = await run(await work.deployment({ sshEntry: rest }));
+    const outcome = await run(await work.deployment({ sshEntry: rest, dbEntry: dbEntry() }));
     expect(outcome.code).toBe(EXIT.usage);
     expect(outcome.stderr.join('\n')).toContain('sshEntry.keyFile is required');
     expect(await work.calledIds()).toEqual([]);

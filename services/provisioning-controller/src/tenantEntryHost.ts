@@ -101,6 +101,11 @@ export interface TenantEntryInputs {
   }>;
   stack(request: StepRequest, claim: EntryClaim): Promise<StackParameters>;
   deployKey(request: StepRequest): Promise<string>;
+  /**
+   * Called once the host has the tenant's secrets file in place (just written, or found already
+   * there), so a deployment can drop any copy it held to get the values there.
+   */
+  delivered?(request: StepRequest): Promise<void>;
 }
 
 export interface TenantEntryHostOptions {
@@ -209,9 +214,13 @@ export class TenantEntryHost implements HostEntryPoint {
         `the host's claim for ${request.id} is not whole: its volumes are missing`
       );
     }
-    if (status.secrets) return;
+    if (status.secrets) {
+      await this.options.inputs.delivered?.(request);
+      return;
+    }
     const { template, values } = await this.options.inputs.secrets(request);
     await this.call('secrets', slug, { template, values }, Object.values(values));
+    await this.options.inputs.delivered?.(request);
   }
 
   private async renderComposeFile(request: StepRequest, slug: string): Promise<void> {

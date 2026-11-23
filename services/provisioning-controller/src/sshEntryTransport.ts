@@ -16,6 +16,9 @@ export const SSH_ENTRY_VERBS = [
 ] as const;
 export type SshEntryVerb = (typeof SSH_ENTRY_VERBS)[number];
 
+/** The one verb the tenant database host's program accepts (`create-tenant-db NAME`). */
+export const DB_ENTRY_VERBS = ['create-tenant-db'] as const;
+
 /** What one call returned: the host program's exit code and its two streams. */
 export interface SshEntryReply {
   readonly code: number;
@@ -43,7 +46,7 @@ export interface SshEntryConfig {
    */
   readonly sshConfigFile?: string;
   /**
-   * The hops in the order they are crossed (edge1 to edge-t, from the controller on ops1); empty for a direct host.
+   * The hops in the order they are crossed (edge1 to edge-t, from a controller on ops1); empty for a direct host.
    * Any hop needs `sshConfigFile`: ssh gives a hop's own settings from that file, not from the
    * command line.
    */
@@ -185,7 +188,9 @@ export class SshEntryTransport {
   /** Throws `SshTransportRefusedError('invalid-config')` for a setting that is not usable. */
   constructor(
     private readonly config: SshEntryConfig,
-    env: Env = process.env
+    env: Env = process.env,
+    /** The closed list a request's verb is checked against: the app host's by default. */
+    private readonly verbs: readonly string[] = SSH_ENTRY_VERBS
   ) {
     const bad = invalidSshSettings(config);
     if (bad.length > 0) {
@@ -204,7 +209,7 @@ export class SshEntryTransport {
    * The argument vector for one call, without the program. Exposed so the design is the tested
    * shape; it holds only configuration and the two checked words.
    */
-  argvFor(verb: SshEntryVerb, slug: string): string[] {
+  argvFor(verb: string, slug: string): string[] {
     const c = this.config;
     return [...this.baseArgv(c.keyFile, c.target.user), verb, slug];
   }
@@ -292,7 +297,7 @@ export class SshEntryTransport {
     let argv: string[];
     let input: Buffer | undefined;
     try {
-      if (!(SSH_ENTRY_VERBS as readonly string[]).includes(verb)) {
+      if (!this.verbs.includes(verb)) {
         throw new SshTransportRefusedError(
           'invalid-request',
           'The verb is not one the host accepts.'
@@ -302,7 +307,7 @@ export class SshEntryTransport {
         throw new SshTransportRefusedError('invalid-request', 'The slug is not a valid slot name.');
       }
       input = this.encode(payload);
-      argv = this.argvFor(verb as SshEntryVerb, slug);
+      argv = this.argvFor(verb, slug);
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error('invalid request'));
     }

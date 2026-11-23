@@ -28,14 +28,27 @@ export { composeHostPorts, SshEntryStartupError } from './composeHostPorts.js';
 export { FileTenantEntryInputs, MAX_INPUT_BYTES } from './fileTenantEntryInputs.js';
 export type { TenantEntryFiles } from './fileTenantEntryInputs.js';
 export type { HostComposition } from './composeHostPorts.js';
-export { SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
+export { DB_ENTRY_VERBS, SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
+export { DB_EXIT, DbEntryHost } from './dbEntryHost.js';
+export type { DbEntryHostOptions, DbEntryTransport } from './dbEntryHost.js';
+export { DB_PASSWORD_SHAPE, FileDatabaseHandOver } from './dbHandOver.js';
+export type { DatabaseHandOver } from './dbHandOver.js';
+export {
+  DATABASE_PASSWORD_KEY,
+  GeneratedTenantEntryInputs,
+  LITERAL_KEYS,
+  isPlaceholder,
+  PLACEHOLDER_KEYS,
+  PLACEHOLDER_PREFIX,
+  systemRandom,
+  templateKeys,
+} from './generatedSecrets.js';
 export type { SshEndpoint, SshEntryConfig } from './sshEntryTransport.js';
 export { FileSlotKeys, generateOpenSshPair } from './slotKeys.js';
 export type { OpenSshPair, SlotKeys } from './slotKeys.js';
 export { SlotDeployHost, TENANT_IMAGE, DEPLOY_ACCOUNT } from './slotDeployHost.js';
 export type { DeployTransport } from './slotDeployHost.js';
 export { ControllerHost } from './controllerHost.js';
-export { generatePlaceholderMediaValues, PLACEHOLDER_MARK, isPlaceholder } from './placeholders.js';
 export { parseRunConfig, RunConfigError } from './runConfig.js';
 export type { RunConfig } from './runConfig.js';
 export { FileApprovalLedger, FileRegisterReader } from './fileReaders.js';

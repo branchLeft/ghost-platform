@@ -106,7 +106,7 @@ describe('the plan: a step the register makes not apply', () => {
     const steps = await planFor(PRIVATE);
     const media = steps.find((s) => s.id === 'mint-media-credential');
     expect(media?.inputs['placeholders']).toEqual([...MEDIA_PLACEHOLDER_NAMES]);
-    expect(JSON.stringify(steps)).not.toContain('PLACEHOLDER-');
+    expect(JSON.stringify(steps)).not.toContain('placeholder-not-a-credential-');
   });
 
   it('carries the register image digest into the first deploy, and only that', async () => {

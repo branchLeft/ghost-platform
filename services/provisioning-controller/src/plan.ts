@@ -47,11 +47,12 @@ export type NotApplicableReason = (typeof NOT_APPLICABLE_REASONS)[number];
 
 /**
  * The names of the secrets the controller fills with marked placeholder values for an s3 media
- * tenant (the contract's bucket key pair). Names only: the values are made by `placeholders.ts`.
+ * tenant (the bucket key pair, as the secrets template names them). Names only: the values are
+ * made by `GeneratedTenantEntryInputs`, the one generator, when the secrets are rendered.
  */
 export const MEDIA_PLACEHOLDER_NAMES = [
-  'storage__files__accessKeyId',
-  'storage__files__secretAccessKey',
+  'GHOST_S3_ACCESS_KEY_ID',
+  'GHOST_S3_SECRET_ACCESS_KEY',
 ] as const;
 
 /** Every input is a register-derived value or a name of a secret; no secret value is ever carried. */
