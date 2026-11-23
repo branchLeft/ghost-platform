@@ -314,7 +314,7 @@ test('the workflow checker reports each way the publish workflow can go wrong', 
     [inPush('      packages: write\n', '      packages: read\n'), 'lacks packages: write'],
     [
       inPush(
-        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@0aa3335097d9b1bb7e5d53dcfddf405bc6c53905 # v1.2.4\n',
+        '      - name: Attest and verify the pushed image\n        uses: branchLeft/github-workflows/.github/actions/attest-and-verify-image@f559ca696956d3d58440f56666d85f36c829c08b # v1.2.7\n',
         '      - name: Attest and verify the pushed image\n        run: true\n'
       ),
       'shared attest and verify action',

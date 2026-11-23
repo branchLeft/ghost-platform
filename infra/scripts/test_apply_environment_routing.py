@@ -20,7 +20,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 
 # The reviewer App's integration id, as `app.id` on the live rule object.
 REVIEWER_APP_ID = 5090756
-SPEND_GATE_SHA = "0aa3335097d9b1bb7e5d53dcfddf405bc6c53905"
+SPEND_GATE_SHA = "f559ca696956d3d58440f56666d85f36c829c08b"
 SPEND_GATE_USES = re.compile(r"uses: branchLeft/github-workflows/\.github/actions/spend-gate@([0-9a-f]{40}) #")
 
 FREE = "production-free"
