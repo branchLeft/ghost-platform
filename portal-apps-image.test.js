@@ -9,9 +9,9 @@ import path from 'node:path';
 // store never reaches it.
 const DOCKERFILE = path.join(import.meta.dirname, 'portal', 'Dockerfile');
 
-// The base the scan of 2026-11-10 judged: node:26.13.0-alpine, linux/amd64 manifest.
+// The base measured by the image scan on the candidate change: node:26.13.1-alpine3.24, linux/amd64 manifest.
 const SCANNED_BASE =
-  'node:26.13.0-alpine@sha256:b2646ba6d774dc22c24d89fc37103fcf4c4467e870c78b9519aa403300b2835a';
+  'node:26.13.1-alpine3.24@sha256:a90bda2938f2b57112d94ee2e3722c5346efca76e4a034042b5223197567a16c';
 const PNPM = 'pnpm@11.28.11';
 
 // Whole-line comments and trailing ones (a `#` after whitespace) both go, so
@@ -65,5 +65,5 @@ test('the pnpm store is removed in the same RUN that installs into it', () => {
 });
 
 test('zlib is upgraded past CVE-2026-4738 before anything else runs', () => {
-  assert.match(dockerfile, /^RUN apk upgrade --no-cache zlib$/m);
+  assert.match(dockerfile, /^RUN apk upgrade --no-cache zlib libcrypto3 libssl3$/m);
 });
