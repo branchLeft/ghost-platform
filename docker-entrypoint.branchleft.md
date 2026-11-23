@@ -12,11 +12,23 @@ mapping) before handing off to the upstream image's entrypoint.
 
 The upstream entrypoint (`docker-entrypoint.sh`, shipped by the base
 `ghost:6.55.0-alpine` image) still needs to run first: it steps down from
-root to the `node` user via `gosu`, and seeds the (always-empty, since
-container has no durable volume) content directory from `content.orig` on
-every boot — that seeding is what puts the default Casper theme and
-fixture settings in place. This wrapper does not reimplement that; it
-only sets env vars and execs into it.
+root to the `node` user via `gosu`, and seeds the content directory from `content.orig`, theme by theme, only
+where that theme is absent — that seeding is what puts the default Casper
+theme and fixture settings in place on a fresh volume. This wrapper does not
+reimplement that; it only sets env vars and execs into it, after the
+bundled-theme refresh below.
+
+## Bundled-theme refresh
+
+The upstream seed skips a theme already present in the volume, so an
+existing site would keep a copy from before the platform footer credit
+(`themes/footer-credit/README.md`). `refresh_bundled_themes` runs on Ghost
+starts only, after the storage guard. For each bundled theme that is a real
+directory in the volume and lacks `partials/platform-footer-credit.hbs`, it
+moves that copy to `theme-backup-pre-footer-credit/` in the content directory
+and copies the image's own theme in, keeping the owner when run as root. A
+symlinked theme, a theme the image does not bundle, and a copy that already
+carries the credit are left alone. Tests: `themes/footer-credit/test_theme_refresh.py`.
 
 ## Storage-adapter fail-closed guard
 

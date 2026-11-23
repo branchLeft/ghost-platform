@@ -113,11 +113,55 @@ check_storage_feature() {
     fi
 }
 
+# --- Bundled-theme refresh --------------------------------------------------
+# The upstream entrypoint seeds a bundled theme into the content volume only
+# when that theme directory is absent, so a site whose volume already holds an
+# older copy keeps it and shows no platform footer credit
+# (themes/footer-credit/README.md). Replace such a copy with the image's own,
+# which is the copy a new site is seeded with. A copy that already carries the
+# credit partial is left alone, and a theme the image does not bundle is never
+# touched. The replaced copy is moved aside into the content directory, not
+# deleted. See docker-entrypoint.branchleft.md#bundled-theme-refresh.
+refresh_bundled_themes() {
+    content="${GHOST_CONTENT:-/var/lib/ghost/content}"
+    seed_themes="${GHOST_INSTALL:-/var/lib/ghost}/content.orig/themes"
+    site_themes="$content/themes"
+    backup="$content/theme-backup-pre-footer-credit"
+    partial="partials/platform-footer-credit.hbs"
+
+    [ -d "$seed_themes" ] || return 0
+    for src in "$seed_themes"/*; do
+        [ -d "$src" ] || continue
+        name=$(basename "$src")
+        target="$site_themes/$name"
+        # Only a real directory is refreshed: a symlink (the base image's own
+        # themes) is already the patched copy, and an absent theme is seeded
+        # by the upstream entrypoint itself.
+        [ -d "$target" ] && [ ! -L "$target" ] || continue
+        # Never replace a copy with one that lacks the credit.
+        [ -e "$src/$partial" ] || continue
+        [ -e "$target/$partial" ] && continue
+
+        owner=""
+        if [ "$(id -u)" = '0' ]; then
+            owner=$(stat -c '%u:%g' "$target")
+        fi
+        mkdir -p "$backup"
+        mv "$target" "$backup/$name.$(date -u +%Y%m%dT%H%M%SZ)"
+        cp -RL "$src" "$target"
+        if [ -n "$owner" ]; then
+            chown -R "$owner" "$target"
+        fi
+        echo "refreshed bundled theme $name (previous copy kept in $backup)" >&2
+    done
+}
+
 case "$*" in
     "node current/index.js"|"node "*"current/index.js"*)
         check_storage_feature images
         check_storage_feature media
         check_storage_feature files
+        refresh_bundled_themes
         ;;
 esac
 

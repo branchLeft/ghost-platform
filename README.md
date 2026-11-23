@@ -302,8 +302,11 @@ writes locally are genuinely ephemeral-safe:
   it; the file only needs to survive its own request.
 - **Content-directory reseeding** — the upstream entrypoint copies
   `content.orig` (default theme, fixtures) into `$GHOST_CONTENT` on every
-  boot if that path is empty, which on a fresh container it always is. That is how
-  the container gets a working theme every time, not a sign of data loss.
+  boot, theme by theme, only where that theme is absent. On a fresh container
+  every theme is absent, which is how the container gets a working theme every
+  time, not a sign of data loss. A bundled theme already in the volume is
+  refreshed by the wrapper entrypoint (`refresh_bundled_themes`) when it lacks
+  the platform footer credit.
 
 Nothing else Ghost writes locally is safe to lose, which is why the database
 and media adapters are both externalised via the variables above.
