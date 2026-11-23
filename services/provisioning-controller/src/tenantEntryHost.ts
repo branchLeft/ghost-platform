@@ -18,9 +18,10 @@ import type { StepId } from './plan.js';
  *   plan's `first-deploy` step.
  * - `create-app-host-slot`: `enable`, then `key`.
  * - `create-owner-account`: `owner`, once the unit is enabled. The host's own script makes the
- *   Ghost owner from the owner's address in the tenant's secrets file on the host. The address
- *   is never read, sent or logged here: the request carries the owner's display name, the
- *   site's title and address, and which colour to ask, and nothing else. A run again after the
+ *   Ghost owner from the owner's address in the tenant's secrets file on the host. This step
+ *   never sees the address (it is read once, at the secrets step, and sent on that verb's standard
+ *   input): the request carries the owner's display name, the site's title and address, and which
+ *   colour to ask, and nothing else. A run again after the
  *   host took effect sends it again and the script reports the owner already set up; a Ghost
  *   claimed by a different address is refused by the script and the step fails.
  *
@@ -129,6 +130,11 @@ export interface TenantEntryInputs {
   }>;
   stack(request: StepRequest, claim: EntryClaim): Promise<StackParameters>;
   deployKey(request: StepRequest): Promise<string>;
+  /**
+   * Called once the host has the tenant's secrets file in place (just written, or found already
+   * there), so a deployment can drop any copy it held to get the values there.
+   */
+  delivered?(request: StepRequest): Promise<void>;
 }
 
 export interface TenantEntryHostOptions {
@@ -255,9 +261,13 @@ export class TenantEntryHost implements HostEntryPoint {
         `the host's claim for ${request.id} is not whole: its volumes are missing`
       );
     }
-    if (status.secrets) return;
+    if (status.secrets) {
+      await this.options.inputs.delivered?.(request);
+      return;
+    }
     const { template, values } = await this.options.inputs.secrets(request);
     await this.call('secrets', slug, { template, values }, Object.values(values));
+    await this.options.inputs.delivered?.(request);
   }
 
   private async renderComposeFile(request: StepRequest, slug: string): Promise<void> {
@@ -299,7 +309,7 @@ export class TenantEntryHost implements HostEntryPoint {
     const problem = ownerProblem(owner);
     if (problem !== undefined) throw new PermanentStepError(`the owner's ${problem} is not usable`);
     // Exactly the four fields, picked here. The owner's address is the host script's to read from
-    // the tenant's secrets file; it is not an input, a field or a log line of the controller's.
+    // the tenant's secrets file; this step has no input, field or log line for it.
     await this.call('owner', slug, {
       colour: owner.colour,
       name: owner.name,

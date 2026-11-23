@@ -23,7 +23,20 @@ export { composeHostPorts, SshEntryStartupError } from './composeHostPorts.js';
 export { FileTenantEntryInputs, MAX_INPUT_BYTES } from './fileTenantEntryInputs.js';
 export type { TenantEntryFiles } from './fileTenantEntryInputs.js';
 export type { HostComposition } from './composeHostPorts.js';
-export { SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
+export { DB_ENTRY_VERBS, SshEntryTransport, hopConfigProblems } from './sshEntryTransport.js';
+export { DB_EXIT, DbEntryHost } from './dbEntryHost.js';
+export type { DbEntryHostOptions, DbEntryTransport } from './dbEntryHost.js';
+export { DB_PASSWORD_SHAPE, FileDatabaseHandOver } from './dbHandOver.js';
+export type { DatabaseHandOver } from './dbHandOver.js';
+export {
+  DATABASE_PASSWORD_KEY,
+  GeneratedTenantEntryInputs,
+  LITERAL_KEYS,
+  PLACEHOLDER_KEYS,
+  PLACEHOLDER_PREFIX,
+  systemRandom,
+  templateKeys,
+} from './generatedSecrets.js';
 export type { SshEndpoint, SshEntryConfig } from './sshEntryTransport.js';
 export { parseRunConfig, RunConfigError } from './runConfig.js';
 export type { RunConfig } from './runConfig.js';

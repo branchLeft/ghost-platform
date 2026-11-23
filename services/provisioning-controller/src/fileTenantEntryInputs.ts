@@ -12,7 +12,7 @@ import type {
 import { TrustedFileError } from './trustedFile.js';
 
 /**
- * The deployment adapter behind `TenantEntryInputs`: the secrets template and values, the stack
+ * The deployment adapter behind `TenantEntryInputs`: the secrets template and literals, the stack
  * parameters and the deploy key's public half, each read from a file the controller host is given.
  * The paths come from the `sshEntry.inputs` configuration and have no default.
  *
@@ -27,12 +27,15 @@ import { TrustedFileError } from './trustedFile.js';
  *
  * Each file is one JSON object keyed by the slot name:
  *
- * - `secretsFile`: `{ "template": TEXT, "values": { SLOT: { NAME: VALUE } } }`
+ * - `secretsFile`: `{ "template": TEXT, "literals": { SLOT: { NAME: VALUE } } }`. The template names
+ *   keys and holds no value. Literals are values that are not secrets (the owner's address); the
+ *   controller makes every secret itself (`GeneratedTenantEntryInputs`), and refuses a literal for one.
  * - `stackFile`: `{ SLOT: { "size", "mail", "environment", "owner"? } }`. `owner` is
  *   `{ "name", "siteTitle", "colour"? }`, read only by the owner step. The site's address is not
  *   repeated there: it is the stack's own `environment.url`, the address Ghost is configured
- *   with, so the two cannot drift. The owner's email address is in the secrets file and is not
- *   read by the controller at all.
+ *   with, so the two cannot drift. The owner step does not read the owner's email address: the
+ *   only place the controller reads it is the `secrets` step (`GeneratedTenantEntryInputs`), which
+ *   puts it on the standard input of the host's secrets verb.
  * - `deployKeyFile`: `{ SLOT: PUBLIC_KEY }`
  */
 
@@ -133,9 +136,20 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
     if (!isRecord(doc) || typeof doc['template'] !== 'string' || doc['template'] === '') {
       throw new TrustedFileError(path, 'it has no "template" text');
     }
-    const raw = entryFor(path, doc, slot, 'values');
+    if (doc['values'] !== undefined) {
+      throw new TrustedFileError(
+        path,
+        'it has a "values" section, which the controller no longer reads'
+      );
+    }
+    // Literals are optional: a template with no literal key needs none.
+    const container = doc['literals'];
+    if (container !== undefined && !isRecord(container)) {
+      throw new TrustedFileError(path, 'it has no "literals" object');
+    }
+    const raw = container !== undefined && Object.hasOwn(container, slot) ? container[slot] : {};
     if (!isRecord(raw))
-      throw new TrustedFileError(path, `the values for slot ${slot} are not an object`);
+      throw new TrustedFileError(path, `the literals for slot ${slot} are not an object`);
     const values: Record<string, string> = {};
     for (const [name, value] of Object.entries(raw)) {
       if (typeof value !== 'string') {
