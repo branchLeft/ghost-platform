@@ -112,7 +112,7 @@ next check.
 
 `TenantEntryHost` is a `HostEntryPoint` for the app host's forced command (the
 `tenant_entry` role in branchLeft/shared-infra holds its verbs, order and exit
-codes). It serves three steps and passes every other step to a fallback entry
+codes). It serves four steps and passes every other step to a fallback entry
 point, so the owner's single approval is the only hand step for a new tenant:
 
 | Step                   | Verbs sent                                                     |
@@ -120,6 +120,7 @@ point, so the owner's single approval is the only hand step for a new tenant:
 | `render-host-secrets`  | `claim`, then `secrets`                                        |
 | `render-compose-file`  | `stack`: three parameters (`size`, `mail`, `environment`) only |
 | `create-app-host-slot` | `enable`, then `key`                                           |
+| `create-owner-account` | `owner`: `colour`, `name`, `site_url`, `site_title` only       |
 
 - **Parameters, not text.** The host builds the compose file from its own
   template, the claim's uid and ports and these parameters, and judges it. The
@@ -136,6 +137,24 @@ point, so the owner's single approval is the only hand step for a new tenant:
 - **Plan order.** `render-compose-file` depends on `render-host-secrets` and
   `create-app-host-slot` depends on it, so a unit is never enabled before its
   compose file is in place. `status`'s `stack=yes` means the compose file alone.
+- **The owner.** `create-owner-account` runs after the first deploy, so a colour
+  is running, and before the edge publishes a hostname. The host's own script
+  makes the Ghost owner from the address in the tenant's secrets file on the
+  host. The controller reads that address in one place only, the secrets step
+  (`GeneratedTenantEntryInputs`, from the secrets file's `literals`), and sends it
+  once, on the standard input of the host's secrets verb; it is held in no field
+  and written to no log, state record or file, and a host message that quotes an
+  address is masked. The owner step never sees it: its request carries a display
+  name, the site's address and title, and a colour (the
+  owner is in the tenant's one database, so either colour does). The adapter
+  refuses, before sending, anything the host's own patterns would refuse. A
+  unit not yet enabled with its secrets and stack is a permanent stop; a colour
+  not yet running (`container-not-running`) and a failed script (a host with no
+  owner script says `failed: program-missing`) are retried, then the step is
+  recorded failed and the edge step never runs. A second request, after a lost
+  reply, is answered by the script as already set up; a Ghost claimed by a
+  different address fails the step. Any email-shaped text in a host's message is
+  replaced with `[address]`.
 - **Idempotent.** Each step first asks `status` and sends only what is left, so
   a resume or a retry after a lost reply sends nothing twice. The host also
   accepts the same `stack` parameters again.
@@ -187,8 +206,9 @@ the app host's secrets file by the controller alone.
 Known limits: the SSH transport and its file-based inputs are wired (see "Running it"), but
 something must still write those files on the controller host; `publish-hostnames` still takes
 its port from the register, not from the claim (`claimOf` is the way a
-deployment's edge step reads the host's number); the `owner` verb goes through the fallback, and so
-do `confirm-register-assignment` and `escrow-stack-passphrase`, which have no program of their own.
+deployment's edge step reads the host's number); `confirm-register-assignment` and `escrow-stack-passphrase` go through the fallback, having
+no program of their own. The host needs the owner script and node installed before the `owner` verb
+works; until a role does, the step is recorded failed as `program-missing`.
 
 ### The slot key and the first deploy
 
@@ -383,7 +403,9 @@ or to the step that stopped it. The approval id is the only per-run input.
 - **Tenant entry inputs** (`src/fileTenantEntryInputs.ts`): `sshEntry.inputs` names two
   absolute paths, with no default: `secretsFile` (`{ "template", "literals": { SLOT: { NAME:
   VALUE } } }`: key names and non-secret values only; no secret is ever written there) and
-  `stackFile` (`{ SLOT: { size, mail, environment } }`). The deploy key is not a file: the
+  `stackFile` (`{ SLOT: { size, mail, environment, owner? } }`, where `owner` is `{ name, siteTitle,
+  colour? }`, read only by the owner step, and the site address it sends is the stack's own
+  `environment.url`). The deploy key is not a file: the
   controller makes it (`slotKeys`). Each file is opened without following a link and refused unless it is a
   regular file under 1 MiB, owned by root or the controller's user, with no group or other
   write; the secrets file is also refused if others can read it (a group may). Each file is read

@@ -105,6 +105,7 @@ describe('placeholder media values (made by the one generator)', () => {
         values: {},
       }),
     stack: () => Promise.reject(new Error('not reached')),
+    owner: () => Promise.reject(new Error('not reached')),
     deployKey: () => Promise.reject(new Error('not reached')),
   };
   const request: StepRequest = {

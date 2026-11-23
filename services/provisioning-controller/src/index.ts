@@ -18,6 +18,7 @@ export type {
   EntryTransport,
   EntryVerb,
   EnvironmentValue,
+  OwnerParameters,
   StackParameters,
   StackSize,
   TenantEntryHostOptions,

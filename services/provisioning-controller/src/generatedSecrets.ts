@@ -3,7 +3,12 @@ import type { DatabaseHandOver } from './dbHandOver.js';
 import { PermanentStepError } from './errors.js';
 import type { StepRequest } from './executePorts.js';
 import { MEDIA_PLACEHOLDER_NAMES } from './plan.js';
-import type { EntryClaim, StackParameters, TenantEntryInputs } from './tenantEntryHost.js';
+import type {
+  EntryClaim,
+  OwnerParameters,
+  StackParameters,
+  TenantEntryInputs,
+} from './tenantEntryHost.js';
 
 /**
  * The tenant entry inputs with the secrets made by the controller and not by a person. The base
@@ -14,7 +19,11 @@ import type { EntryClaim, StackParameters, TenantEntryInputs } from './tenantEnt
  *   source for it, and a value for it in the base's literals is refused.
  * - the object-store keys: placeholder values the controller generates and marks as such, so the
  *   slot starts and uploads are refused until real keys arrive through the storage gateway.
- * - `GHOST_OWNER_EMAIL`: a literal, not a secret, from the base's literals. It is required.
+ * - `GHOST_OWNER_EMAIL`: a literal, not a secret, from the base's literals. It is required. This
+ *   is the one place the controller reads the owner's address: it goes into the values below, onto
+ *   the secrets verb's standard input, and into the host's secrets file, from which the host's own
+ *   owner script reads it. The owner step never sees it (`owner` below passes only the name, the
+ *   title, the colour and the site's address), and it is held in no field and written nowhere.
  * - every other key: a fresh value from the operating system's random source.
  *
  * Generated values go to the host on the verb's standard input and are not kept: this class holds
@@ -120,6 +129,10 @@ export class GeneratedTenantEntryInputs implements TenantEntryInputs {
 
   stack(request: StepRequest, claim: EntryClaim): Promise<StackParameters> {
     return this.base.stack(request, claim);
+  }
+
+  owner(request: StepRequest): Promise<OwnerParameters> {
+    return this.base.owner(request);
   }
 
   deployKey(request: StepRequest): Promise<string> {

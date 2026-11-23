@@ -12,6 +12,7 @@ import {
   type EntryVerb,
   type ExecutePorts,
   type HostEntryPoint,
+  type OwnerParameters,
   type RecordedApproval,
   type RegisterEntry,
   type StackParameters,
@@ -55,6 +56,15 @@ const PARAMETERS: StackParameters = {
 /** The numbers the fake host hands out, which are not the register's (uid 30001, port 8101). */
 const CLAIM: EntryClaim = { uid: 30000, portA: 40000, portB: 40001, portHealth: 40002 };
 const KEY = `ssh-ed25519 ${'A'.repeat(68)}`;
+/** The owner's address lives in the host's secrets file; the controller's owner step never holds it. */
+const OWNER_EMAIL = VALUES.GHOST_OWNER_EMAIL;
+/** What the owner step may carry: a display name, the site's address and title, a colour. */
+const OWNER: OwnerParameters = {
+  colour: 'a',
+  name: 'Demo Owner',
+  siteUrl: 'https://demo-tenant.sites.publicpress.co.uk',
+  siteTitle: 'Demo site',
+};
 
 interface Sent {
   readonly verb: EntryVerb;
@@ -82,6 +92,17 @@ class FakeEntryPoint implements EntryTransport {
   busyFirst = new Map<EntryVerb, number>();
   /** Per verb: a reply to give instead of acting. */
   forced = new Map<EntryVerb, EntryReply>();
+  /** Whether the host has the platform's owner script (and node) installed. */
+  ownerProgram = true;
+  /** The colours whose container is running. */
+  running = new Set<string>(['a', 'b']);
+  /** Leading `owner` requests that find no running container. */
+  notRunningFirst = 0;
+  /** The address a Ghost was already claimed by, if someone set it up first. */
+  ghostClaimedBy: string | undefined;
+  /** The owners the host's script made, by slug. */
+  readonly owners = new Map<string, string>();
+  private readonly emails = new Map<string, string>();
 
   verbs(): EntryVerb[] {
     return this.sent.map((s) => s.verb).filter((v) => v !== 'status');
@@ -140,6 +161,8 @@ class FakeEntryPoint implements EntryTransport {
     if (!this.claimed.has(slug)) return refuse('not-claimed-here');
     if (verb === 'secrets') {
       this.secrets.add(slug);
+      const values = (payload?.['values'] ?? {}) as Record<string, string>;
+      this.emails.set(slug, values['GHOST_OWNER_EMAIL'] ?? '');
       return reply(0, 'written\n');
     }
     if (!this.secrets.has(slug)) return refuse('secrets-first');
@@ -166,6 +189,34 @@ class FakeEntryPoint implements EntryTransport {
       return reply(0, 'enabled\n');
     }
     if (!this.enabled.has(slug)) return refuse('enable-first');
+    if (verb === 'owner') {
+      if (
+        Object.keys(payload ?? {})
+          .sort()
+          .join() !== 'colour,name,site_title,site_url'
+      ) {
+        return refuse('payload-keys');
+      }
+      if (this.sent.filter((s) => s.verb === 'owner').length <= this.notRunningFirst) {
+        return refuse('container-not-running');
+      }
+      if (!this.running.has(String(payload?.['colour']))) return refuse('container-not-running');
+      if (!this.ownerProgram) return reply(ENTRY_EXIT.failed, '', 'failed: program-missing\n');
+      // The script reads the address from the secrets file; a Ghost claimed by another address is refused.
+      const email = this.emails.get(slug) ?? '';
+      if (this.ghostClaimedBy !== undefined && this.ghostClaimedBy !== email) {
+        return reply(
+          ENTRY_EXIT.failed,
+          '',
+          `failed: owner\nGhost is already set up with ${this.ghostClaimedBy}, not ${email}\n`
+        );
+      }
+      if (this.owners.has(slug) || this.ghostClaimedBy !== undefined) {
+        return reply(0, '{"created":false,"alreadySetUp":true}\n');
+      }
+      this.owners.set(slug, email);
+      return reply(0, '{"created":true,"alreadySetUp":false,"linkRequested":true}\n');
+    }
     if (verb === 'key') {
       if (this.slots.has(slug)) return refuse('slot-exists');
       this.slots.add(slug);
@@ -177,6 +228,9 @@ class FakeEntryPoint implements EntryTransport {
 
 class FakeInputs implements TenantEntryInputs {
   parameters: StackParameters = PARAMETERS;
+  ownerParameters: OwnerParameters = OWNER;
+  /** Extra fields a careless provider might return beside the owner parameters. */
+  ownerExtra: Readonly<Record<string, unknown>> = {};
   /** Extra fields a careless provider might return beside the parameters. */
   extra: Readonly<Record<string, unknown>> = {};
   readonly reads: string[] = [];
@@ -196,6 +250,11 @@ class FakeInputs implements TenantEntryInputs {
   async deployKey(request: StepRequest): Promise<string> {
     this.reads.push(`key:${request.id}`);
     return KEY;
+  }
+
+  async owner(request: StepRequest): Promise<OwnerParameters> {
+    this.reads.push(`owner:${request.id}`);
+    return { ...this.ownerParameters, ...this.ownerExtra } as OwnerParameters;
   }
 }
 
@@ -261,7 +320,7 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
 
     expect(result.status).toBe('complete');
     expect(result.ran).toEqual(STEP_IDS.map((id) => `${DEMO.tenantId}/${id}`));
-    expect(entry.verbs()).toEqual(['claim', 'secrets', 'stack', 'enable', 'key']);
+    expect(entry.verbs()).toEqual(['claim', 'secrets', 'stack', 'enable', 'key', 'owner']);
     expect(new Set(entry.sent.map((s) => s.slug))).toEqual(new Set(['demo-tenant']));
     expect(entry.has('demo-tenant')).toEqual({
       claimed: true,
@@ -269,9 +328,9 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
       enabled: true,
       slot: true,
     });
-    // The two app-host steps the adapter does not serve went to the configured entry point.
+    // The app-host step the adapter does not serve went to the configured entry point.
     const fallen = world.calls.filter((c) => c.entryPoint === 'app-host').map((c) => c.request.id);
-    expect(fallen).toEqual(['first-deploy', 'create-owner-account']);
+    expect(fallen).toEqual(['first-deploy']);
   });
 
   it('sends the stack between the secrets and the enable, never before the secrets', async () => {
@@ -302,7 +361,7 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
     await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
     const again = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
     expect(again.ran).toEqual([]);
-    expect(entry.verbs()).toEqual(['claim', 'secrets', 'stack', 'enable', 'key']);
+    expect(entry.verbs()).toEqual(['claim', 'secrets', 'stack', 'enable', 'key', 'owner']);
 
     // A step whose reply was lost: the host took effect, the controller runs the step again.
     const host = ports.hosts['app-host'];
@@ -313,7 +372,7 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
     ] as const) {
       await host.run(request(id));
     }
-    expect(entry.verbs()).toEqual(['claim', 'secrets', 'stack', 'enable', 'key']);
+    expect(entry.verbs()).toEqual(['claim', 'secrets', 'stack', 'enable', 'key', 'owner']);
   });
 
   it('resumes from a host that got part of the way, doing only what is left', async () => {
@@ -324,7 +383,7 @@ describe('TenantEntryHost: the controller plan for demo-tenant against a fake en
     entry.sent.length = 0;
     const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
     expect(result.status).toBe('complete');
-    expect(entry.verbs()).toEqual(['enable', 'key']);
+    expect(entry.verbs()).toEqual(['enable', 'key', 'owner']);
   });
 });
 
@@ -450,10 +509,10 @@ describe('TenantEntryHost: what stops the run', () => {
     const seen: string[] = [];
     const fallback: HostEntryPoint = { run: async (r) => void seen.push(r.id) };
     const adapter = new TenantEntryHost({ transport: entry, inputs: new FakeInputs(), fallback });
-    for (const id of ['first-deploy', 'create-owner-account', 'push-first-commit'] as const) {
+    for (const id of ['first-deploy', 'push-first-commit', 'enrol-backups'] as const) {
       await adapter.run(request(id));
     }
-    expect(seen).toEqual(['first-deploy', 'create-owner-account', 'push-first-commit']);
+    expect(seen).toEqual(['first-deploy', 'push-first-commit', 'enrol-backups']);
     expect(entry.sent).toEqual([]);
   });
 });
@@ -509,5 +568,170 @@ describe('TenantEntryHost: no secret value in what it says', () => {
     const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
     expect(result.status).toBe('stopped');
     expect(entry.verbs()).toEqual([]);
+  });
+});
+
+describe('TenantEntryHost: create-owner-account through the host’s owner verb', () => {
+  const ownerCalls = (entry: FakeEntryPoint): Sent[] =>
+    entry.sent.filter((s) => s.verb === 'owner');
+
+  it('sends the owner verb last, with the four fields and nothing that could be an address', async () => {
+    const { world, entry, ports } = rig();
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+
+    expect(result.status).toBe('complete');
+    expect(result.ran).toContain(`${DEMO.tenantId}/create-owner-account`);
+    const sent = ownerCalls(entry);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.payload).toEqual({
+      colour: 'a',
+      name: OWNER.name,
+      site_url: OWNER.siteUrl,
+      site_title: OWNER.siteTitle,
+    });
+    // The host's script made the owner from the secrets file it holds.
+    expect(entry.owners.get('demo-tenant')).toBe(OWNER_EMAIL);
+    // The owner's address went to the host with the secrets and nowhere else: not in the owner
+    // request, the run record, or anything the console was told.
+    expect(JSON.stringify(sent)).not.toContain('@');
+    const recorded = JSON.stringify([world.state.records, world.events]);
+    expect(recorded).not.toContain(OWNER_EMAIL);
+    expect(recorded).not.toContain(CANARY);
+    expect(entry.verbs().at(-1)).toBe('owner');
+  });
+
+  it('is recorded failed, and the run stops before the hostname, when the host has no owner script', async () => {
+    const red = rig();
+    red.entry.ownerProgram = false;
+    const stopped = await executeOnboarding(DEMO_APPROVAL.approvalId, red.ports);
+    expect(stopped.status).toBe('stopped');
+    expect(stopped.stoppedAt).toEqual({
+      key: `${DEMO.tenantId}/create-owner-account`,
+      reason: 'step-failed',
+    });
+    const failed = red.world.state.records.find((r) => r.event === 'step-failed');
+    expect(failed?.reason).toContain('tenant entry owner failed (failed: program-missing)');
+    // A failed host program is retried, then given up on: three attempts.
+    expect(ownerCalls(red.entry)).toHaveLength(3);
+    const done = red.world.state.completeKeys();
+    expect(done).not.toContain(`${DEMO.tenantId}/create-owner-account`);
+    expect(done).not.toContain(`${DEMO.tenantId}/publish-hostnames`);
+    expect(red.entry.owners.size).toBe(0);
+
+    // With the script in place the same plan completes and the owner exists.
+    const green = rig();
+    const finished = await executeOnboarding(DEMO_APPROVAL.approvalId, green.ports);
+    expect(finished.status).toBe('complete');
+    expect(green.world.state.completeKeys()).toContain(`${DEMO.tenantId}/create-owner-account`);
+    expect(green.entry.owners.size).toBe(1);
+  });
+
+  it('is safe to run again: the host reports the owner already set up and nothing is made twice', async () => {
+    const { entry, ports } = rig();
+    await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    // A reply lost after the host took effect: the controller runs the step again.
+    await ports.hosts['app-host'].run(request('create-owner-account'));
+    expect(ownerCalls(entry)).toHaveLength(2);
+    expect(entry.owners.size).toBe(1);
+  });
+
+  it('stops, and never repeats an address, when the Ghost was claimed by someone else first', async () => {
+    const { world, entry, ports } = rig();
+    entry.ghostClaimedBy = 'someone-else@example.invalid';
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    expect(result.status).toBe('stopped');
+    expect(result.stoppedAt?.key).toBe(`${DEMO.tenantId}/create-owner-account`);
+    expect(entry.owners.size).toBe(0);
+    const recorded = JSON.stringify([world.state.records, world.events]);
+    expect(recorded).not.toContain('someone-else@example.invalid');
+    expect(recorded).not.toContain(OWNER_EMAIL);
+  });
+
+  it('masks an address in a refusal’s detail', async () => {
+    const { world, entry, ports } = rig();
+    entry.forced.set(
+      'owner',
+      reply(
+        ENTRY_EXIT.refused,
+        '',
+        'refused: field-name\nname rule failed for x.y@example.invalid\n'
+      )
+    );
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    expect(result.status).toBe('stopped');
+    const failed = world.state.records.find((r) => r.event === 'step-failed');
+    expect(failed?.reason).toContain('tenant entry refused owner with field-name');
+    expect(failed?.reason).toContain('[address]');
+    expect(JSON.stringify(world.state.records)).not.toContain('x.y@example.invalid');
+    expect(ownerCalls(entry)).toHaveLength(1);
+  });
+
+  it('waits for the container: not-running is retried, not a permanent stop', async () => {
+    const { entry, ports } = rig();
+    entry.notRunningFirst = 2;
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    expect(result.status).toBe('complete');
+    expect(ownerCalls(entry)).toHaveLength(3);
+    expect(entry.owners.size).toBe(1);
+  });
+
+  it('sends no owner for a unit that is not enabled with its secrets and stack', async () => {
+    const { entry, inputs, ports } = rig();
+    const host = ports.hosts['app-host'];
+    await host.run(request('render-host-secrets'));
+    await host.run(request('render-compose-file'));
+    await expect(host.run(request('create-owner-account'))).rejects.toBeInstanceOf(
+      PermanentStepError
+    );
+    expect(ownerCalls(entry)).toHaveLength(0);
+    expect(inputs.reads).not.toContain('owner:create-owner-account');
+
+    const never = rig();
+    await expect(
+      never.ports.hosts['app-host'].run(request('create-owner-account'))
+    ).rejects.toBeInstanceOf(PermanentStepError);
+    expect(never.entry.verbs()).toEqual([]);
+  });
+
+  it('refuses before sending an owner the host would not accept, naming the field and not its value', async () => {
+    const cases: readonly [Partial<OwnerParameters>, string][] = [
+      [{ name: '--email' }, 'name'],
+      [{ name: 'x'.repeat(65) }, 'name'],
+      [{ siteTitle: 'a\nb' }, 'site title'],
+      [{ siteTitle: 't'.repeat(121) }, 'site title'],
+      [{ siteUrl: 'http://demo.example.invalid' }, 'site address'],
+      [{ siteUrl: 'https://Demo.example.invalid/path' }, 'site address'],
+      [{ colour: 'c' as 'a' }, 'colour'],
+    ];
+    for (const [change, field] of cases) {
+      const { entry, inputs, ports } = rig();
+      const host = ports.hosts['app-host'];
+      for (const id of [
+        'render-host-secrets',
+        'render-compose-file',
+        'create-app-host-slot',
+      ] as const) {
+        await host.run(request(id));
+      }
+      inputs.ownerParameters = { ...OWNER, ...change };
+      await expect(host.run(request('create-owner-account'))).rejects.toThrow(
+        new RegExp(`the owner's ${field} is not usable`)
+      );
+      expect(ownerCalls(entry)).toHaveLength(0);
+    }
+  });
+
+  it('sends exactly colour, name, site_url and site_title, whatever a provider returns beside them', async () => {
+    const { entry, inputs, ports } = rig();
+    inputs.ownerExtra = { email: 'owner@example.invalid', extra: 'y' };
+    const result = await executeOnboarding(DEMO_APPROVAL.approvalId, ports);
+    expect(result.status).toBe('complete');
+    expect(Object.keys(ownerCalls(entry)[0]?.payload ?? {}).sort()).toEqual([
+      'colour',
+      'name',
+      'site_title',
+      'site_url',
+    ]);
+    expect(JSON.stringify(ownerCalls(entry))).not.toContain('owner@example.invalid');
   });
 });

@@ -92,6 +92,7 @@ const INPUTS: TenantEntryInputs = {
   secrets: () => Promise.reject(new Error('not reached')),
   stack: () => Promise.reject(new Error('not reached')),
   deployKey: () => Promise.reject(new Error('not reached')),
+  owner: () => Promise.reject(new Error('not reached')),
 };
 const KEYS: SlotKeys = {
   ensure: () => Promise.reject(new Error('not reached')),

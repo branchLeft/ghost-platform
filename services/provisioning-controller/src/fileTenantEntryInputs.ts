@@ -4,6 +4,7 @@ import { PermanentStepError } from './errors.js';
 import type { StepRequest } from './executePorts.js';
 import type {
   EntryClaim,
+  OwnerParameters,
   StackParameters,
   StackSize,
   TenantEntryInputs,
@@ -31,7 +32,9 @@ import { TrustedFileError } from './trustedFile.js';
  * - `secretsFile`: `{ "template": TEXT, "literals": { SLOT: { NAME: VALUE } } }`. The template names
  *   keys and holds no value. Literals are values that are not secrets (the owner's address); the
  *   controller makes every secret itself (`GeneratedTenantEntryInputs`), and refuses a literal for one.
- * - `stackFile`: `{ SLOT: { "size", "mail", "environment" } }`
+ * - `stackFile`: `{ SLOT: { "size", "mail", "environment", "owner"? } }`. `owner` is `{ "name",
+ *   "siteTitle", "colour"? }`, read by the owner step alone; its site address is `environment.url`.
+ *   No email address is held there (README, "The owner").
  */
 
 export interface TenantEntryFiles {
@@ -163,7 +166,9 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
     const problem = (field: string): TrustedFileError =>
       new TrustedFileError(path, `the stack for slot ${slot} has a bad ${field}`);
     if (!isRecord(raw)) throw problem('shape');
-    const extra = Object.keys(raw).filter((k) => !['size', 'mail', 'environment'].includes(k));
+    const extra = Object.keys(raw).filter(
+      (k) => !['size', 'mail', 'environment', 'owner'].includes(k)
+    );
     if (extra.length > 0) throw problem(`key (${extra.join(', ')})`);
     const { size, mail, environment } = raw;
     if (typeof size !== 'string' || !SIZES.includes(size)) throw problem('size');
@@ -176,6 +181,29 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
       if (!reference && !literal) throw problem('environment value');
     }
     return { size: size as StackSize, mail, environment } as StackParameters;
+  }
+
+  async owner(request: StepRequest): Promise<OwnerParameters> {
+    const slot = slotOf(request);
+    const path = this.files.stackFile;
+    const doc = await readInputJson(path, { forbidden: GROUP_OR_OTHER_WRITE, owners: this.owners });
+    const raw = entryFor(path, doc, slot, '');
+    const problem = (field: string): TrustedFileError =>
+      new TrustedFileError(path, `the owner for slot ${slot} has a bad ${field}`);
+    if (!isRecord(raw) || !isRecord(raw['owner'])) throw problem('shape');
+    const given = raw['owner'];
+    const extra = Object.keys(given).filter((k) => !['name', 'siteTitle', 'colour'].includes(k));
+    if (extra.length > 0) throw problem(`key (${extra.join(', ')})`);
+    const { name, siteTitle } = given;
+    const colour = given['colour'] ?? 'a';
+    if (typeof name !== 'string') throw problem('name');
+    if (typeof siteTitle !== 'string') throw problem('siteTitle');
+    if (colour !== 'a' && colour !== 'b') throw problem('colour');
+    // The address Ghost is configured with. A reference to a secret is not an address.
+    const environment = raw['environment'];
+    const siteUrl = isRecord(environment) ? environment['url'] : undefined;
+    if (typeof siteUrl !== 'string') throw problem('site address (environment.url)');
+    return { colour, name, siteUrl, siteTitle };
   }
 
   async deployKey(request: StepRequest): Promise<string> {

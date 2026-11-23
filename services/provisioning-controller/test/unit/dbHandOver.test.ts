@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DB_EXIT,
+  ENTRY_EXIT,
   DbEntryHost,
   FileDatabaseHandOver,
   FileStateStore,
@@ -19,6 +20,7 @@ import {
   type EntryTransport,
   type EntryVerb,
   type ExecutePorts,
+  type OwnerParameters,
   type RecordedApproval,
   type RegisterEntry,
   type StackParameters,
@@ -100,6 +102,9 @@ class FakeApp implements EntryTransport {
   private slot = false;
   /** Replies to the secrets verb with this code (and takes nothing) while it is above zero. */
   failSecrets = 0;
+  /** What the owner verb was sent, and what it answers while set (a host's message may quote an address). */
+  readonly owners: Array<Readonly<Record<string, unknown>>> = [];
+  ownerReply: EntryReply | undefined;
   async send(
     verb: EntryVerb,
     slug: string,
@@ -147,6 +152,9 @@ class FakeApp implements EntryTransport {
       case 'key':
         this.slot = true;
         return reply(0, 'granted\n');
+      case 'owner':
+        this.owners.push(payload ?? {});
+        return this.ownerReply ?? reply(0, 'created\n');
       default:
         return reply(1, '', 'refused: unknown-verb\n');
     }
@@ -161,6 +169,9 @@ class BaseInputs implements TenantEntryInputs {
   }
   async stack(): Promise<StackParameters> {
     return { size: 'small', mail: false, environment: { url: 'https://x.test' } };
+  }
+  async owner(): Promise<OwnerParameters> {
+    return { colour: 'a', name: 'Demo Owner', siteTitle: 'Demo site', siteUrl: 'https://x.test' };
   }
   async deployKey(): Promise<string> {
     return 'ssh-ed25519 AAAAPUBLIC deploy';
@@ -611,6 +622,72 @@ describe('the whole run: the password goes db-t1 to app-t1 and nowhere else', ()
     const admin = f.app.received?.['GHOST_ADMIN_KEY'] ?? '';
     await writeFile(work.path('stray.log'), `x ${admin}`);
     expect(await leaks(f, [admin])).toEqual(['/stray.log']);
+  });
+
+  describe('the owner’s address: read in one place, in no output, record or file', () => {
+    const quick = { retry: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 1 } } as const;
+    const everywhere = async (f: Flow, result: unknown): Promise<string[]> => [
+      ...(await leaks(f, [OWNER])),
+      ...(JSON.stringify(result).includes(OWNER) ? ['result'] : []),
+    ];
+
+    it('reaches the host once, on the secrets verb, and nowhere the controller keeps or prints', async () => {
+      const f = flow();
+      const result = await executeOnboarding(APPROVAL.approvalId, f.ports);
+      expect(result.status).toBe('complete');
+      expect(f.app.received?.['GHOST_OWNER_EMAIL']).toBe(OWNER);
+      // The owner verb carries the four fields and no address; the host's script reads it from the secrets file.
+      expect(f.app.owners).toHaveLength(1);
+      expect(Object.keys(f.app.owners[0] ?? {}).sort()).toEqual([
+        'colour',
+        'name',
+        'site_title',
+        'site_url',
+      ]);
+      expect(JSON.stringify(f.app.owners)).not.toContain(OWNER);
+      expect(await readFile(work.path('state.jsonl'), 'utf8')).not.toContain(OWNER);
+      expect(await everywhere(f, result)).toEqual([]);
+    });
+
+    it('is withheld from a host message that quotes it, whether the step is refused or fails', async () => {
+      const refused = flow();
+      refused.app.ownerReply = reply(
+        ENTRY_EXIT.refused,
+        '',
+        `refused: owner-differs\nthe Ghost is already claimed by ${OWNER}\n`
+      );
+      const first = await executeOnboarding(APPROVAL.approvalId, refused.ports, quick);
+      expect(first.status).toBe('stopped');
+      expect(first.stoppedAt?.key).toBe('demo-tenant/create-owner-account');
+      expect(await readFile(work.path('state.jsonl'), 'utf8')).toContain('[address]');
+      expect(await everywhere(refused, first)).toEqual([]);
+
+      const failed = flow();
+      failed.app.ownerReply = reply(ENTRY_EXIT.failed, '', `failed: ${OWNER} could not be set\n`);
+      const second = await executeOnboarding(APPROVAL.approvalId, failed.ports, quick);
+      expect(second.status).toBe('stopped');
+      expect(second.stoppedAt?.key).toBe('demo-tenant/create-owner-account');
+      expect(await everywhere(failed, second)).toEqual([]);
+    });
+
+    it('is found by the scan when it is printed or written on purpose (the scan is not blind)', async () => {
+      const f = flow();
+      const result = await executeOnboarding(APPROVAL.approvalId, f.ports);
+      f.output.written.push(`oops ${OWNER}`);
+      await writeFile(work.path('stray.log'), `x ${OWNER}`);
+      expect(await everywhere(f, result)).toEqual(['output', '/stray.log']);
+    });
+
+    it('is named in one source file only: the one that fills the secrets', async () => {
+      const dir = new URL('../../src/', import.meta.url);
+      const naming: string[] = [];
+      for (const entry of await readdir(dir, { withFileTypes: true, recursive: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.ts')) continue;
+        const text = await readFile(join(entry.parentPath, entry.name), 'utf8');
+        if (text.includes('GHOST_OWNER_EMAIL')) naming.push(entry.name);
+      }
+      expect(naming).toEqual(['generatedSecrets.ts']);
+    });
   });
 
   it('resumes after a crash between the create and the secrets, with no second create and no copy left', async () => {
