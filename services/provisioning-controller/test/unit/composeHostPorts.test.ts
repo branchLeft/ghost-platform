@@ -79,6 +79,7 @@ const INPUTS: TenantEntryInputs = {
   secrets: () => Promise.reject(new Error('not reached')),
   stack: () => Promise.reject(new Error('not reached')),
   deployKey: () => Promise.reject(new Error('not reached')),
+  owner: () => Promise.reject(new Error('not reached')),
 };
 const WITH_INPUTS: HostComposition = { tenantEntryInputs: INPUTS };
 const ENV = { PATH: '/usr/bin:/bin' };

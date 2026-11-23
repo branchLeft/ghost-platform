@@ -51,6 +51,7 @@ async function files(
           size: 'small',
           mail: false,
           environment: { database__password: { secret: 'DB_PASSWORD' }, url: 'https://x.test' },
+          owner: { name: 'Demo Owner', siteTitle: 'Demo site' },
         },
       },
       modes.stack ?? 0o600
@@ -100,6 +101,53 @@ describe('FileTenantEntryInputs: what it reads', () => {
     await expect(
       inputs.stack(request(), { uid: 1, portA: 1, portB: 2, portHealth: 3 })
     ).rejects.toThrow(/bad key \(image\)/);
+  });
+});
+
+describe('FileTenantEntryInputs: the owner step', () => {
+  it('reads the display name and title, the colour (a unless named) and the stack’s own address', async () => {
+    const inputs = new FileTenantEntryInputs(await files());
+    expect(await inputs.owner(request('create-owner-account'))).toEqual({
+      colour: 'a',
+      name: 'Demo Owner',
+      siteUrl: 'https://x.test',
+      siteTitle: 'Demo site',
+    });
+    await work.json('stack.json', {
+      [SLOT]: {
+        size: 'small',
+        mail: false,
+        environment: { url: 'https://y.test' },
+        owner: { name: 'N', siteTitle: 'T', colour: 'b' },
+      },
+    });
+    expect(await inputs.owner(request('create-owner-account'))).toEqual({
+      colour: 'b',
+      name: 'N',
+      siteUrl: 'https://y.test',
+      siteTitle: 'T',
+    });
+  });
+
+  it('does not accept an address for the owner, whatever it is called, nor a bad shape', async () => {
+    const inputs = new FileTenantEntryInputs(await files());
+    const bad = async (stack: Record<string, unknown>, pattern: RegExp): Promise<void> => {
+      await work.json('stack.json', { [SLOT]: { size: 'small', mail: false, ...stack } });
+      await expect(inputs.owner(request('create-owner-account'))).rejects.toThrow(pattern);
+    };
+    const environment = { url: 'https://x.test' };
+    await bad({ environment }, /bad shape/);
+    await bad(
+      { environment, owner: { name: 'N', siteTitle: 'T', email: 'someone@example.invalid' } },
+      /bad key \(email\)/
+    );
+    await bad({ environment, owner: { name: 'N', siteTitle: 'T', colour: 'c' } }, /bad colour/);
+    await bad({ environment, owner: { name: 7, siteTitle: 'T' } }, /bad name/);
+    await bad({ environment: {}, owner: { name: 'N', siteTitle: 'T' } }, /bad site address/);
+    await bad(
+      { environment: { url: { secret: 'X' } }, owner: { name: 'N', siteTitle: 'T' } },
+      /bad site address/
+    );
   });
 });
 
@@ -272,6 +320,7 @@ async function fakeSsh(dir: string): Promise<string> {
     '  stack) touch $D/stack ;;',
     '  enable) touch $D/enabled ;;',
     '  key) touch $D/slot ;;',
+    '  owner) touch $D/owner ;;',
     'esac',
     'exit 0',
   ];
@@ -336,6 +385,13 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
     expect(outcome.code).toBe(EXIT.complete);
     expect(await readFile(work.path('payload-secrets.json'), 'utf8')).toContain(CANARY);
     expect(await readFile(work.path('payload-key.json'), 'utf8')).toContain('AAAAPUBLIC');
+    // The owner step sends the four fields it is allowed and nothing that could be an address.
+    expect(JSON.parse(await readFile(work.path('payload-owner.json'), 'utf8'))).toEqual({
+      colour: 'a',
+      name: 'Demo Owner',
+      site_url: 'https://x.test',
+      site_title: 'Demo site',
+    });
     const stack = await readFile(work.path('payload-stack.json'), 'utf8');
     expect(stack).toContain('"secret":"DB_PASSWORD"');
     expect(stack).not.toContain(CANARY);
