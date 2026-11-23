@@ -86,6 +86,11 @@ export interface BrokerConfig {
   readonly trafficCounterDir?: string;
 }
 
+/** The host's slot allocation when no BROKER_*_BASE is set: slot N's uid is 30001+N, app ports 9300+2N (+1 for colour b), health 10100+N. */
+export const DEFAULT_UID_BASE = 30001;
+export const DEFAULT_APP_PORT_BASE = 9300;
+export const DEFAULT_HEALTH_PORT_BASE = 10100;
+
 export type BrokerEnv = Record<string, string | undefined>;
 
 function requireEnv(env: BrokerEnv, name: string): string {
@@ -218,9 +223,14 @@ export function loadConfig(
     drainPollTimeoutMs: positiveInteger(env, 'BROKER_DRAIN_POLL_TIMEOUT_MS', 30_000, 120_000),
     healthCheckTimeoutMs: positiveInteger(env, 'BROKER_HEALTH_TIMEOUT_MS', 2_000, 30_000),
     ghostReadyPollTimeoutMs: positiveInteger(env, 'BROKER_GHOST_READY_TIMEOUT_MS', 30_000, 300_000),
-    healthPortBase: positiveInteger(env, 'BROKER_HEALTH_PORT_BASE', 10100, 65000),
-    appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', 9300, 65000),
-    uidBase: positiveInteger(env, 'BROKER_UID_BASE', 30001, 65000),
+    healthPortBase: positiveInteger(
+      env,
+      'BROKER_HEALTH_PORT_BASE',
+      DEFAULT_HEALTH_PORT_BASE,
+      65000
+    ),
+    appPortBase: positiveInteger(env, 'BROKER_APP_PORT_BASE', DEFAULT_APP_PORT_BASE, 65000),
+    uidBase: positiveInteger(env, 'BROKER_UID_BASE', DEFAULT_UID_BASE, 65000),
     processStartSeconds: Math.floor(Date.now() / 1000),
     nowMs: () => Date.now(),
     trafficCounterDir: env.BROKER_TRAFFIC_COUNTER_DIR || undefined,
