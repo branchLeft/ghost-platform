@@ -128,7 +128,7 @@ SABOTAGES = [
      '    if len(lines) != 1 or matches[0] is None:\n',
      '    if not lines or matches[0] is None:\n'),
     ("load tags one shared name, so a later load takes it from the earlier image",
-     "    tag = f\"{SLOT_IMAGE_NAME}:{image_id.replace(':', '-')}\"\n",
+     "    tag = f\"{_name_for_loaded_image(image_id)}:{image_id.replace(':', '-')}\"\n",
      "    tag = f\"{SLOT_IMAGE_NAME}:carried\"\n"),
     ("load stops passing docker's output to the caller",
      '        sys.stdout.write(printed.decode("utf-8", errors="replace"))\n',
