@@ -155,15 +155,49 @@ The wrapper is given no digest: its argv is one literal. The id is the one
 the archive itself holds and the engine confirms, so what makes a tag harmless
 is content addressing. `name@sha256:<id>` resolves only to an image whose id
 is that digest, and a pin is chosen by the signed request, not by the broker.
-Named limit: every unnamed image loaded through this verb gets the slot image
-name, the drain sidecar's too, since the wrapper cannot tell them apart. Its
-reference, `drain-sidecar@<digest>`, still does not resolve; only a pin that
-names the slot image under the sidecar's digest would, and none does.
+The name is the slot image's, with one exception: the drain sidecar. See
+"A loaded image is tagged by the reference the host pins".
 
 The refusals come after the load, so a refused archive stays on the host
 unnamed, as every pushed image did before this step. On a classic image store
 the id is not the manifest digest, so the tag is made but `name@<manifest
 digest>` does not resolve; the spool role fails closed the same way.
+
+## A loaded image is tagged by the reference the host pins
+
+The drain sidecar loads unnamed too, and the colour unit starts it from
+`DEMO_SIDECAR_IMAGE=ghcr.io/branchleft/drain-sidecar@sha256:<digest>` with
+`--pull never`, so that reference must resolve locally. The wrapper is still
+given no digest, so it reads the one the host already pins: after the load and
+the engine's id check, `_name_for_loaded_image` reads
+`/etc/branchleft/demo-sidecar.image.env` (`SIDECAR_IMAGE_ENV_PATH`, the file the
+colour unit's `EnvironmentFile=` names, written by shared-infra's `demo1_build`
+role) and tags the image with `SIDECAR_IMAGE_NAME` when its id is the digest
+that file pins, and with `SLOT_IMAGE_NAME` otherwise. The tag is
+`<name>:sha256-<hex>`, one per digest, as before.
+
+The file is believed only when `_pinned_sidecar_id` finds it a regular file
+opened `O_NOFOLLOW | O_NONBLOCK`, owned by root (`SIDECAR_IMAGE_ENV_OWNER_UID`),
+writable by neither group nor others, whose whole content is one line
+`DEMO_SIDECAR_IMAGE=ghcr.io/branchleft/drain-sidecar@sha256:<64 lowercase hex>`
+(at most 4096 bytes are read). The repository name is the wrapper's own
+literal, so the file chooses a digest and never a name. A missing file or any
+other shape answers "no pin", and the image is tagged as a slot image as it
+was before: nothing new can be named, and the colour unit still refuses to
+start a sidecar that does not resolve.
+
+What a tag can do is unchanged: `name@sha256:<id>` resolves only to an image
+whose id is that digest. A broker that wrote an archive of the pinned sidecar
+gets the sidecar's name for it, which is what that digest is. Any other image
+it wrote gets the slot name, as before. The broker cannot write the pin file
+(root-owned, under a root-owned directory), so it cannot steer which digest is
+named after the sidecar. Order on a host: the pin file is delivered first (the
+role), then the signed sidecar push; a push made before the file exists tags
+the sidecar under the slot name and must be repeated.
+
+Proof: `test_branchleft_slot.py` (`RealSlotOpsLoadImageTests`,
+`SidecarImagePinDriftGuardTests`), nine rows of `sabotage_branchleft_slot.py`,
+and `test_branchleft_slot_real_docker.py` against a real engine.
 
 ## _data_directory
 
