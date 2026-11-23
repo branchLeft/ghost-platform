@@ -1,0 +1,41 @@
+name: Set up pnpm and Node
+description: >-
+  Installs the pnpm named by the package's packageManager field, then Node from
+  an .nvmrc, with the GitHub Packages scope and the pnpm cache. Run after checkout.
+  Paths are relative to the repository root.
+
+inputs:
+  node-version-file:
+    description: Path to the .nvmrc that pins Node.
+    required: true
+  cache-dependency-path:
+    description: Lockfile path(s) that key the pnpm cache. Empty leaves setup-node's default.
+    required: false
+    default: ''
+  registry-url:
+    description: npm registry for the scope. Empty configures no registry.
+    required: false
+    default: https://npm.pkg.github.com
+  scope:
+    description: npm scope served by registry-url.
+    required: false
+    default: '@branchleft'
+  cache:
+    description: setup-node package cache. Empty disables caching.
+    required: false
+    default: pnpm
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+    - name: Setup Node
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: ${{ inputs.node-version-file }}
+        registry-url: ${{ inputs.registry-url }}
+        scope: ${{ inputs.scope }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
