@@ -1,3 +1,4 @@
+import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { childEnvironment, type Env } from './commandHost.js';
 import {
@@ -11,6 +12,7 @@ import type { Clock, ConsoleReporter, ExecutePorts, RunOptions } from './execute
 import { FileApprovalLedger, FileRegisterReader } from './fileReaders.js';
 import type { TenantEntryFiles } from './fileTenantEntryInputs.js';
 import { FileStateStore } from './fileStateStore.js';
+import { FileSlotKeys, type SlotKeys } from './slotKeys.js';
 import { redactSecrets } from './redact.js';
 import { parseRunConfig, RunConfigError } from './runConfig.js';
 import type { RunConfig } from './runConfig.js';
@@ -30,7 +32,7 @@ export interface CliIo {
    * Builds the tenant entry inputs from the files the `sshEntry` section names. Absent, a
    * configured `sshEntry` refuses to start: nothing supplies the inputs.
    */
-  readonly tenantEntryInputs?: (files: TenantEntryFiles) => TenantEntryInputs;
+  readonly tenantEntryInputs?: (files: TenantEntryFiles, slotKeys: SlotKeys) => TenantEntryInputs;
 }
 
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -45,7 +47,9 @@ const systemClock: Clock = {
 function composition(config: RunConfig, io: CliIo): HostComposition {
   const build = io.tenantEntryInputs;
   if (config.tenantEntryFiles === undefined || build === undefined) return {};
-  return { tenantEntryInputs: build(config.tenantEntryFiles) };
+  // The controller's own state directory holds the slot keys it makes.
+  const slotKeys = new FileSlotKeys(join(dirname(config.stateFile), 'slot-keys'));
+  return { tenantEntryInputs: build(config.tenantEntryFiles, slotKeys), slotKeys };
 }
 
 const lineConsole = (write: (line: string) => void): ConsoleReporter => ({

@@ -203,11 +203,13 @@ describe('planOnboarding', () => {
     expect((err as RegisterEntryInvalidError).fields).toEqual(['stateFolder']);
   });
 
-  it('refuses an empty hostname list', async () => {
-    const err = await planOnboarding(
+  it('accepts an empty hostname list: a private slot, with its public-name steps not applicable', async () => {
+    const plan = await planOnboarding(
       APPROVAL.approvalId,
       doubles({ approval: APPROVAL, entry: { ...ENTRY, hostnames: [] } })
-    ).catch((e: unknown) => e);
-    expect((err as RegisterEntryInvalidError).fields).toEqual(['hostnames']);
+    );
+    expect(plan.steps.find((s) => s.id === 'publish-hostnames')?.notApplicable).toBe(
+      'no-hostnames'
+    );
   });
 });

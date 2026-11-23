@@ -136,6 +136,13 @@ export async function executeOnboarding(
     }
   };
 
+  /** Records a step the register makes not apply as done, without calling any host. */
+  const markNotApplicable = async (step: PlannedStep, reason: string): Promise<void> => {
+    await guard([step.scope]);
+    await record('not-applicable', { key: step.key, inputDigest: step.inputDigest, reason });
+    await emit('step-not-applicable', { key: step.key, reason });
+  };
+
   await guard(APPROVAL_SCOPES);
 
   let history: readonly StateRecord[];
@@ -151,12 +158,14 @@ export async function executeOnboarding(
   const ordered = orderSteps(plan.steps);
 
   const ran: string[] = [];
+  const notApplicable: string[] = [];
   const skipped: string[] = [];
   const result = (stoppedAt?: { key: string; reason: StopReason }): RunResult => ({
     status: stoppedAt === undefined ? 'complete' : 'stopped',
     approvalId,
     tenantId: plan.tenantId,
     ran,
+    notApplicable,
     skipped,
     ...(stoppedAt !== undefined && { stoppedAt }),
     reportFailures,
@@ -176,6 +185,11 @@ export async function executeOnboarding(
       await record('digest-mismatch', { key: step.key, inputDigest: step.inputDigest, reason });
       await emit('step-refused', { key: step.key, reason });
       return result({ key: step.key, reason: 'input-changed' });
+    }
+    if (step.notApplicable !== undefined) {
+      await markNotApplicable(step, step.notApplicable);
+      notApplicable.push(step.key);
+      continue;
     }
     if (!(await runStep(step))) return result({ key: step.key, reason: 'step-failed' });
     ran.push(step.key);

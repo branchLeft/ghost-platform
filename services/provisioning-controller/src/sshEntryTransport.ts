@@ -99,6 +99,8 @@ export class SshTransportRefusedError extends PermanentStepError {
 
 export const DEFAULT_SSH_TIMEOUT_MS = 120_000;
 export const DEFAULT_SSH_CONNECT_TIMEOUT_SECONDS = 10;
+/** A deploy waits for the unit's start (up to 600 s on the host), so it gets a little longer than that. */
+export const DEPLOY_TIMEOUT_MS = 660_000;
 export const DEFAULT_SSH_MAX_OUTPUT_BYTES = 65_536;
 export const DEFAULT_SSH_MAX_PAYLOAD_BYTES = 1_048_576;
 
@@ -108,6 +110,8 @@ const SSH_OWN_FAILURE = 255;
 /** The same shape the register holds for a slot; first character alphanumeric, so never an option. */
 const SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const USER = /^[a-z_][a-z0-9_-]{0,31}$/;
+/** One digest-pinned image reference: a registry name, then `@sha256:` and 64 hex digits. */
+const IMAGE_REFERENCE = /^[a-z0-9][a-z0-9./_-]{0,200}@sha256:[0-9a-f]{64}$/;
 const HOST = /^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/;
 /** Absolute, no space, no `%` (ssh expands it), no `=`, `,` or quote; made only of path-safe characters. */
 const SAFE_PATH = /^\/[A-Za-z0-9._@+/-]+$/;
@@ -207,6 +211,19 @@ export class SshEntryTransport {
    */
   argvFor(verb: string, slug: string): string[] {
     const c = this.config;
+    return [...this.baseArgv(c.keyFile, c.target.user), verb, slug];
+  }
+
+  /**
+   * The argument vector for a slot's deploy call: the slot's own key, the deploy account, and no
+   * command words at all, because the host's forced command for that key names the stack itself.
+   */
+  deployArgvFor(keyFile: string, user: string): string[] {
+    return this.baseArgv(keyFile, user);
+  }
+
+  private baseArgv(keyFile: string, user: string): string[] {
+    const c = this.config;
     const argv = [
       '-F',
       c.sshConfigFile ?? '/dev/null',
@@ -230,14 +247,42 @@ export class SshEntryTransport {
       `ConnectTimeout=${String(c.connectTimeoutSeconds ?? DEFAULT_SSH_CONNECT_TIMEOUT_SECONDS)}`,
       '-T',
       '-i',
-      c.keyFile,
+      keyFile,
     ];
     if (c.target.port !== undefined) argv.push('-p', String(c.target.port));
     if (c.jumpHops.length > 0) {
       argv.push('-J', c.jumpHops.map((hop) => endpointOf(hop, 'colon')).join(','));
     }
-    argv.push(endpointOf(c.target, 'none'), verb, slug);
+    argv.push(endpointOf({ ...c.target, user }, 'none'));
     return argv;
+  }
+
+  /**
+   * Runs the slot's forced deploy command once: the image reference on standard input and nothing
+   * else, through the same hops and pinned host keys as `send`. The key file and the account are
+   * checked as the transport checks every path and name; the image must be one digest-pinned
+   * reference of one line. Returns the program's exit code; its text is dropped unread, so nothing
+   * the host prints is kept.
+   */
+  deploy(keyFile: string, user: string, image: string): Promise<number> {
+    if (!SAFE_PATH.test(keyFile) || keyFile.split('/').includes('..') || !USER.test(user)) {
+      return Promise.reject(
+        new SshTransportRefusedError('invalid-request', 'The deploy key or account is unusable.')
+      );
+    }
+    if (!IMAGE_REFERENCE.test(image)) {
+      return Promise.reject(
+        new SshTransportRefusedError(
+          'invalid-request',
+          'The image is not one digest-pinned reference.'
+        )
+      );
+    }
+    return this.run(
+      this.deployArgvFor(keyFile, user),
+      Buffer.from(`${image}\n`, 'utf8'),
+      DEPLOY_TIMEOUT_MS
+    ).then((reply) => reply.code);
   }
 
   /**
@@ -292,7 +337,11 @@ export class SshEntryTransport {
     return bytes;
   }
 
-  private run(argv: string[], input: Buffer | undefined): Promise<SshEntryReply> {
+  private run(
+    argv: string[],
+    input: Buffer | undefined,
+    timeoutMs: number = this.timeoutMs
+  ): Promise<SshEntryReply> {
     const program = this.config.sshProgram ?? 'ssh';
     const limit = this.maxOutputBytes;
     return new Promise<SshEntryReply>((resolve, reject) => {
@@ -321,10 +370,10 @@ export class SshEntryTransport {
         stop(
           new SshTransportError(
             'timeout',
-            `The host entry point did not answer within ${String(this.timeoutMs)} ms.`
+            `The host entry point did not answer within ${String(timeoutMs)} ms.`
           )
         );
-      }, this.timeoutMs);
+      }, timeoutMs);
       const tooLarge = (): void => {
         stop(
           new SshTransportRefusedError(

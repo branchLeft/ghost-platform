@@ -9,12 +9,14 @@ import type {
   StackSize,
   TenantEntryInputs,
 } from './tenantEntryHost.js';
+import type { SlotKeys } from './slotKeys.js';
 import { TrustedFileError } from './trustedFile.js';
 
 /**
  * The deployment adapter behind `TenantEntryInputs`: the secrets template and literals, the stack
- * parameters and the deploy key's public half, each read from a file the controller host is given.
- * The paths come from the `sshEntry.inputs` configuration and have no default.
+ * parameters (each read from a file the controller host is given) and the deploy key's public half
+ * (made by the controller, read from its slot keys). The paths come from the `sshEntry.inputs`
+ * configuration and have no default.
  *
  * - **Trusted files.** Each is opened without following a link, and refused unless it is a regular
  *   file, owned by root or by the user the controller runs as, writable by that owner alone
@@ -33,13 +35,11 @@ import { TrustedFileError } from './trustedFile.js';
  * - `stackFile`: `{ SLOT: { "size", "mail", "environment", "owner"? } }`. `owner` is `{ "name",
  *   "siteTitle", "colour"? }`, read by the owner step alone; its site address is `environment.url`.
  *   No email address is held there (README, "The owner").
- * - `deployKeyFile`: `{ SLOT: PUBLIC_KEY }`
  */
 
 export interface TenantEntryFiles {
   readonly secretsFile: string;
   readonly stackFile: string;
-  readonly deployKeyFile: string;
 }
 
 export const MAX_INPUT_BYTES = 1_048_576;
@@ -118,6 +118,7 @@ function entryFor(path: string, doc: unknown, slot: string, where: string): unkn
 export class FileTenantEntryInputs implements TenantEntryInputs {
   constructor(
     private readonly files: TenantEntryFiles,
+    private readonly slotKeys: Pick<SlotKeys, 'publicKey'>,
     private readonly owners: readonly number[] = defaultOwners()
   ) {}
 
@@ -206,13 +207,6 @@ export class FileTenantEntryInputs implements TenantEntryInputs {
   }
 
   async deployKey(request: StepRequest): Promise<string> {
-    const slot = slotOf(request);
-    const path = this.files.deployKeyFile;
-    const doc = await readInputJson(path, { forbidden: GROUP_OR_OTHER_WRITE, owners: this.owners });
-    const key = entryFor(path, doc, slot, '');
-    if (typeof key !== 'string' || key === '') {
-      throw new TrustedFileError(path, `the deploy key for slot ${slot} is not text`);
-    }
-    return key;
+    return this.slotKeys.publicKey(slotOf(request));
   }
 }

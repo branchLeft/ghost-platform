@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  ControllerHost,
   EXIT,
   SshEntryStartupError,
   composeHostPorts,
@@ -10,6 +11,7 @@ import {
   runCli,
   type HostComposition,
   type RunConfig,
+  type SlotKeys,
   type TenantEntryInputs,
 } from '../../src/index.js';
 import { DbEntryHost } from '../../src/dbEntryHost.js';
@@ -63,7 +65,6 @@ const sshEntry = (program: string): Record<string, unknown> => ({
   inputs: {
     secretsFile: '/etc/controller/secrets.json',
     stackFile: '/etc/controller/stack.json',
-    deployKeyFile: '/etc/controller/deploy_key.json',
   },
   sshProgram: program,
 });
@@ -93,7 +94,12 @@ const INPUTS: TenantEntryInputs = {
   deployKey: () => Promise.reject(new Error('not reached')),
   owner: () => Promise.reject(new Error('not reached')),
 };
-const WITH_INPUTS: HostComposition = { tenantEntryInputs: INPUTS };
+const KEYS: SlotKeys = {
+  ensure: () => Promise.reject(new Error('not reached')),
+  publicKey: () => Promise.reject(new Error('not reached')),
+  privateKeyPath: () => Promise.reject(new Error('not reached')),
+};
+const WITH_INPUTS: HostComposition = { tenantEntryInputs: INPUTS, slotKeys: KEYS };
 const ENV = { PATH: '/usr/bin:/bin' };
 
 async function sshCalls(): Promise<string[]> {
@@ -138,6 +144,7 @@ describe('composeHostPorts: the hop check runs at startup', () => {
     const hosts = await composeHostPorts(configWith(sshEntry(program)), ENV, WITH_INPUTS);
     expect(hosts['app-host']).toBeInstanceOf(TenantEntryHost);
     expect(hosts['db-host']).toBeInstanceOf(DbEntryHost);
+    expect(hosts['controller']).toBeInstanceOf(ControllerHost);
     const calls = await sshCalls();
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatch(
@@ -166,6 +173,13 @@ describe('composeHostPorts: the hop check runs at startup', () => {
     await expect(composeHostPorts(configWith(sshEntry(program)), ENV)).rejects.toThrow(
       /no source of the tenant entry inputs/
     );
+  });
+
+  it('refuses to start when there is no place to make and keep the slot deploy keys', async () => {
+    const program = await fakeSsh(PINNED);
+    await expect(
+      composeHostPorts(configWith(sshEntry(program)), ENV, { tenantEntryInputs: INPUTS })
+    ).rejects.toThrow(/no place to make and keep the slot deploy keys/);
   });
 });
 

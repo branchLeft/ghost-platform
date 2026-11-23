@@ -2,6 +2,7 @@ import { TrustedFileError, readTrustedJson } from './trustedFile.js';
 import {
   APPROVAL_SCOPES,
   type ApprovalLedger,
+  type MediaMode,
   type RecordedApproval,
   type RegisterEntry,
   type TenantRegisterReader,
@@ -57,7 +58,11 @@ function asEntry(path: string, raw: unknown): RegisterEntry {
     typeof raw['appHostPort'] !== 'number' ||
     typeof raw['appHostUid'] !== 'number' ||
     !Array.isArray(raw['hostnames']) ||
-    !raw['hostnames'].every((h) => typeof h === 'string')
+    !raw['hostnames'].every((h) => typeof h === 'string') ||
+    (raw['mail'] !== undefined && typeof raw['mail'] !== 'boolean') ||
+    (raw['backups'] !== undefined && typeof raw['backups'] !== 'boolean') ||
+    (raw['mediaMode'] !== undefined && typeof raw['mediaMode'] !== 'string') ||
+    (raw['imageDigest'] !== undefined && typeof raw['imageDigest'] !== 'string')
   ) {
     throw new TrustedFileError(path, 'a register entry in it is malformed');
   }
@@ -70,6 +75,11 @@ function asEntry(path: string, raw: unknown): RegisterEntry {
     appHostPort: raw['appHostPort'],
     appHostUid: raw['appHostUid'],
     hostnames: raw['hostnames'] as readonly string[],
+    ...(raw['mail'] !== undefined && { mail: raw['mail'] }),
+    ...(raw['backups'] !== undefined && { backups: raw['backups'] }),
+    // The value is checked by `invalidFields`, which names the field rather than refusing the file.
+    ...(raw['mediaMode'] !== undefined && { mediaMode: raw['mediaMode'] as MediaMode }),
+    ...(raw['imageDigest'] !== undefined && { imageDigest: raw['imageDigest'] }),
   };
 }
 

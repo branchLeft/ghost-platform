@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   EXIT,
+  FileSlotKeys,
   FileTenantEntryInputs,
   MAX_INPUT_BYTES,
   parseRunConfig,
@@ -31,6 +32,9 @@ const TEMPLATE =
   'GHOST_DB_PASSWORD=\nGHOST_OWNER_EMAIL=\nGHOST_ADMIN_KEY=\nGHOST_S3_ACCESS_KEY_ID=\n';
 const KEY = '/etc/controller/entry_key';
 const KNOWN = '/etc/controller/known_hosts';
+const DIGEST = 'sha256:abababababababababababababababababababababababababababababababab';
+
+const keys = (): FileSlotKeys => new FileSlotKeys(work.path('slot-keys'));
 
 const request = (id: StepRequest['id'] = 'render-host-secrets', slot = SLOT): StepRequest => ({
   key: 'k',
@@ -39,9 +43,7 @@ const request = (id: StepRequest['id'] = 'render-host-secrets', slot = SLOT): St
   inputs: { slot },
 });
 
-async function files(
-  modes: { secrets?: number; stack?: number; key?: number } = {}
-): Promise<TenantEntryFiles> {
+async function files(modes: { secrets?: number; stack?: number } = {}): Promise<TenantEntryFiles> {
   return {
     secretsFile: await work.json(
       'secrets.json',
@@ -59,11 +61,6 @@ async function files(
         },
       },
       modes.stack ?? 0o600
-    ),
-    deployKeyFile: await work.json(
-      'deploy_key.json',
-      { [SLOT]: 'ssh-ed25519 AAAAPUBLIC deploy' },
-      modes.key ?? 0o600
     ),
   };
 }
@@ -85,7 +82,9 @@ async function filesHolding(
 
 describe('FileTenantEntryInputs: what it reads', () => {
   it('returns the template and literals, the three stack parameters and the key, for the slot asked', async () => {
-    const inputs = new FileTenantEntryInputs(await files());
+    const slotKeys = keys();
+    await slotKeys.ensure(SLOT);
+    const inputs = new FileTenantEntryInputs(await files(), slotKeys);
     expect(await inputs.secrets(request())).toEqual({
       template: TEMPLATE,
       values: { GHOST_OWNER_EMAIL: OWNER },
@@ -97,20 +96,13 @@ describe('FileTenantEntryInputs: what it reads', () => {
       environment: { database__password: { secret: 'DB_PASSWORD' }, url: 'https://x.test' },
     });
     expect(await inputs.deployKey(request('create-app-host-slot'))).toBe(
-      'ssh-ed25519 AAAAPUBLIC deploy'
+      await slotKeys.publicKey(SLOT)
     );
-  });
-
-  it('reads the file again each time: a change is seen at the next call', async () => {
-    const f = await files();
-    const inputs = new FileTenantEntryInputs(f);
-    await work.json('deploy_key.json', { [SLOT]: 'ssh-ed25519 AAAANEW deploy' });
-    expect(await inputs.deployKey(request())).toBe('ssh-ed25519 AAAANEW deploy');
   });
 
   it('refuses a slot with no entry, and a stack with a key it does not know', async () => {
     const f = await files();
-    const inputs = new FileTenantEntryInputs(f);
+    const inputs = new FileTenantEntryInputs(f, keys());
     // A slot with no literals needs none: the template may name no literal key.
     await expect(inputs.secrets(request('render-host-secrets', 'other-slot'))).resolves.toEqual({
       template: TEMPLATE,
@@ -131,7 +123,7 @@ describe('FileTenantEntryInputs: what it reads', () => {
 
 describe('FileTenantEntryInputs: the owner step', () => {
   it('reads the display name and title, the colour (a unless named) and the stack’s own address', async () => {
-    const inputs = new FileTenantEntryInputs(await files());
+    const inputs = new FileTenantEntryInputs(await files(), keys());
     expect(await inputs.owner(request('create-owner-account'))).toEqual({
       colour: 'a',
       name: 'Demo Owner',
@@ -155,7 +147,7 @@ describe('FileTenantEntryInputs: the owner step', () => {
   });
 
   it('does not accept an address for the owner, whatever it is called, nor a bad shape', async () => {
-    const inputs = new FileTenantEntryInputs(await files());
+    const inputs = new FileTenantEntryInputs(await files(), keys());
     const bad = async (stack: Record<string, unknown>, pattern: RegExp): Promise<void> => {
       await work.json('stack.json', { [SLOT]: { size: 'small', mail: false, ...stack } });
       await expect(inputs.owner(request('create-owner-account'))).rejects.toThrow(pattern);
@@ -179,31 +171,30 @@ describe('FileTenantEntryInputs: the owner step', () => {
 describe('FileTenantEntryInputs: the files must be trusted', () => {
   it('accepts a private file, and one its group can read', async () => {
     for (const mode of [0o600, 0o640]) {
-      const inputs = new FileTenantEntryInputs(await files({ secrets: mode }));
+      const inputs = new FileTenantEntryInputs(await files({ secrets: mode }), keys());
       await expect(inputs.secrets(request())).resolves.toBeDefined();
     }
   });
 
   it('refuses a secrets file that anyone other than the owner and its group can read or write', async () => {
     for (const mode of [0o604, 0o606, 0o620, 0o660, 0o666]) {
-      const inputs = new FileTenantEntryInputs(await files({ secrets: mode }));
+      const inputs = new FileTenantEntryInputs(await files({ secrets: mode }), keys());
       await expect(inputs.secrets(request())).rejects.toThrow(/its mode lets other users/);
     }
   });
 
-  it('refuses a stack or key file that the group or others can write', async () => {
+  it('refuses a stack file that the group or others can write', async () => {
     for (const mode of [0o620, 0o602, 0o666]) {
-      const inputs = new FileTenantEntryInputs(await files({ stack: mode, key: mode }));
+      const inputs = new FileTenantEntryInputs(await files({ stack: mode }), keys());
       const claim = { uid: 1, portA: 1, portB: 2, portHealth: 3 };
       await expect(inputs.stack(request(), claim)).rejects.toThrow(/its mode lets other users/);
-      await expect(inputs.deployKey(request())).rejects.toThrow(/its mode lets other users/);
     }
   });
 
   it('refuses a file owned by a user that may not own it', async () => {
     const f = await files();
     const stranger = (process.getuid?.() ?? 0) + 4242;
-    const inputs = new FileTenantEntryInputs(f, [stranger]);
+    const inputs = new FileTenantEntryInputs(f, keys(), [stranger]);
     await expect(inputs.secrets(request())).rejects.toThrow(/may not own it/);
   });
 
@@ -214,7 +205,7 @@ describe('FileTenantEntryInputs: the files must be trusted', () => {
     await writeFile(work.path('big.json'), ' '.repeat(MAX_INPUT_BYTES + 1));
     await chmod(work.path('big.json'), 0o600);
     const at = (secretsFile: string): FileTenantEntryInputs =>
-      new FileTenantEntryInputs({ ...f, secretsFile });
+      new FileTenantEntryInputs({ ...f, secretsFile }, keys());
     await expect(at(work.path('link.json')).secrets(request())).rejects.toThrow(/symbolic link/);
     await expect(at(work.path('dir.json')).secrets(request())).rejects.toThrow(
       /cannot be opened|not a regular file/
@@ -229,12 +220,14 @@ describe('FileTenantEntryInputs: the files must be trusted', () => {
     const f = await files();
     const pipe = work.path('pipe.json');
     await promisify(execFile)('mkfifo', [pipe]);
-    const inputs = new FileTenantEntryInputs({
-      ...f,
-      secretsFile: pipe,
-      stackFile: pipe,
-      deployKeyFile: pipe,
-    });
+    const inputs = new FileTenantEntryInputs(
+      {
+        ...f,
+        secretsFile: pipe,
+        stackFile: pipe,
+      },
+      keys()
+    );
     const outcome = async (run: Promise<unknown>): Promise<string> => {
       const timer = new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 1500));
       return Promise.race([
@@ -247,7 +240,6 @@ describe('FileTenantEntryInputs: the files must be trusted', () => {
     };
     try {
       expect(await outcome(inputs.secrets(request()))).toMatch(/not a regular file/);
-      expect(await outcome(inputs.deployKey(request()))).toMatch(/not a regular file/);
     } finally {
       // Let a blocked open, if the guard is missing, finish so the test run can end.
       await open(pipe, constants.O_WRONLY | constants.O_NONBLOCK).then(
@@ -261,7 +253,7 @@ describe('FileTenantEntryInputs: the files must be trusted', () => {
 describe('FileTenantEntryInputs: no value is ever in an error', () => {
   it('does not quote the file when it is not JSON, nor a value that is not text', async () => {
     const f = await files();
-    const inputs = new FileTenantEntryInputs(f);
+    const inputs = new FileTenantEntryInputs(f, keys());
     await writeFile(f.secretsFile, `{"template": "x", "literals": {"${SLOT}": {"A": "${CANARY}" `);
     const broken = await inputs.secrets(request()).then(
       () => '',
@@ -300,7 +292,7 @@ describe('the sshEntry.inputs configuration has no default', () => {
     target: { user: 'tenant-entry', host: 'app1.example.test' },
     ...(inputs !== undefined && { inputs }),
   });
-  const good = { secretsFile: '/a/s.json', stackFile: '/a/t.json', deployKeyFile: '/a/k.json' };
+  const good = { secretsFile: '/a/s.json', stackFile: '/a/t.json' };
 
   it('is parsed beside the transport settings', () => {
     const config = parseRunConfig({ ...base, sshEntry: ssh(good) });
@@ -340,6 +332,7 @@ async function fakeSsh(dir: string): Promise<string> {
     `D=${dir}`,
     'echo "$*" >> $D/ssh-args.log',
     'if [ "$1" = "-G" ]; then cat $D/g.out; exit 0; fi',
+    'case "$*" in *" deploy@"*) echo "$*" > $D/deploy-args.log; cat > $D/deploy-stdin.txt; exit 0 ;; esac',
     'for a in "$@"; do verb=$slug; slug=$a; done',
     'cat > $D/payload-$verb.json',
     'case $verb in',
@@ -373,7 +366,7 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
 
   async function deploy(modes?: { secrets?: number }): Promise<string> {
     const f = await files(modes);
-    const entry = { ...ENTRY, appHostSlot: SLOT };
+    const entry = { ...ENTRY, appHostSlot: SLOT, imageDigest: DIGEST };
     const handOver = work.path('hand-over');
     await mkdir(handOver, { mode: 0o700 });
     const config = await work.deployment({
@@ -399,7 +392,9 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
       stdout: (l) => stdout.push(l),
       stderr: (l) => stderr.push(l),
       env: { PATH: process.env['PATH'] },
-      ...(withAdapter && { tenantEntryInputs: (paths) => new FileTenantEntryInputs(paths) }),
+      ...(withAdapter && {
+        tenantEntryInputs: (paths, slotKeys) => new FileTenantEntryInputs(paths, slotKeys),
+      }),
     });
     return { code, stdout, stderr };
   }
@@ -431,7 +426,19 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
     expect(sent.values['GHOST_S3_ACCESS_KEY_ID']).toContain('placeholder-not-a-credential-');
     const generated = sent.values['GHOST_ADMIN_KEY'] ?? '';
     expect(generated).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(await readFile(work.path('payload-key.json'), 'utf8')).toContain('AAAAPUBLIC');
+    // The key sent to the host is the public half of the pair the controller made.
+    const made = await readFile(work.path(`slot-keys/${SLOT}.pub`), 'utf8');
+    expect(await readFile(work.path('payload-key.json'), 'utf8')).toContain(made.trim());
+    // The first deploy ran over the slot's own key, with the register's digest alone on stdin.
+    expect(await readFile(work.path('deploy-stdin.txt'), 'utf8')).toBe(
+      `ghcr.io/branchleft/ghost-tenant@${DIGEST}\n`
+    );
+    expect(await readFile(work.path('deploy-args.log'), 'utf8')).toContain(
+      `-i ${work.path(`slot-keys/${SLOT}.key`)}`
+    );
+    expect(await readFile(work.path('deploy-args.log'), 'utf8')).toContain(
+      'deploy@app1.example.test'
+    );
     // The owner step sends the four fields it is allowed and nothing that could be an address.
     expect(JSON.parse(await readFile(work.path('payload-owner.json'), 'utf8'))).toEqual({
       colour: 'a',
@@ -443,6 +450,7 @@ describe('runCli with the file adapter: the shipped wiring end to end', () => {
     expect(stack).not.toContain(CANARY);
     const logged = await everythingLogged(outcome);
     expect(logged).not.toContain(CANARY);
+    expect(logged).not.toContain('PRIVATE KEY');
     expect(logged).not.toContain(generated);
     // The hand-over copy is gone, and the password is in no file but the stand-in host's received payload.
     expect(await readdir(work.path('hand-over'))).toEqual([]);
