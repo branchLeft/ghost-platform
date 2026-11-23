@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sabotage proof for branchleft_slot: loosen one control at a time (the mount-point
-refusal, the reset's stopped-unit ruling, the volumes `start` creates, the tag `load` gives a loaded image) in a scratch copy and require the suite red, then the untouched copy green.
+refusal, the reset's stopped-unit ruling, the volumes `start` creates, the tag `load` gives a loaded image, the sidecar pin it reads) in a scratch copy and require the suite red, then the untouched copy green.
 
 Usage: sabotage_branchleft_slot.py
 
@@ -128,11 +128,38 @@ SABOTAGES = [
      '    if len(lines) != 1 or matches[0] is None:\n',
      '    if not lines or matches[0] is None:\n'),
     ("load tags one shared name, so a later load takes it from the earlier image",
-     "    tag = f\"{SLOT_IMAGE_NAME}:{image_id.replace(':', '-')}\"\n",
+     "    tag = f\"{_name_for_loaded_image(image_id)}:{image_id.replace(':', '-')}\"\n",
      "    tag = f\"{SLOT_IMAGE_NAME}:carried\"\n"),
     ("load stops passing docker's output to the caller",
      '        sys.stdout.write(printed.decode("utf-8", errors="replace"))\n',
      ''),
+    ("load ignores the sidecar pin (the sidecar reference stays unresolved)",
+     '    if _pinned_sidecar_id(SIDECAR_IMAGE_ENV_PATH) == image_id:\n',
+     '    if False:\n'),
+    ("load names every image after the sidecar once any pin exists",
+     '    if _pinned_sidecar_id(SIDECAR_IMAGE_ENV_PATH) == image_id:\n',
+     '    if _pinned_sidecar_id(SIDECAR_IMAGE_ENV_PATH) is not None:\n'),
+    ("load names every image after the sidecar",
+     '    return SLOT_IMAGE_NAME\n\n\ndef _tag_loaded_image',
+     '    return SIDECAR_IMAGE_NAME\n\n\ndef _tag_loaded_image'),
+    ("a pin file owned by anyone is believed",
+     '            or info.st_uid != SIDECAR_IMAGE_ENV_OWNER_UID\n',
+     ''),
+    ("a group or world writable pin file is believed",
+     '            or info.st_mode & 0o022\n',
+     ''),
+    ("a symlinked pin file is followed",
+     '        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)\n    except OSError:\n        return None',
+     '        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)\n    except OSError:\n        return None'),
+    ("a pin naming any repository is believed",
+     'rf"{SIDECAR_IMAGE_VARIABLE}={re.escape(SIDECAR_IMAGE_NAME)}@',
+     'rf"{SIDECAR_IMAGE_VARIABLE}=[a-z0-9./-]+@'),
+    ("a pin file of several lines is believed on its first",
+     'fullmatch(text.removesuffix("\\n"))',
+     'fullmatch(text.splitlines()[0] if text else "")'),
+    ("a pin line with trailing text is believed",
+     '_SIDECAR_PIN_LINE.fullmatch(',
+     '_SIDECAR_PIN_LINE.match('),
 ]
 
 

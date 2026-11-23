@@ -189,6 +189,40 @@ class SlotImageNameDriftGuardTests(unittest.TestCase):
         self.assertEqual(bs.SLOT_IMAGE_NAME, found.group(1))
 
 
+class SidecarImagePinDriftGuardTests(unittest.TestCase):
+    """The wrapper is installed alone, so the sidecar's name, the pin file's
+    path and its variable are copies; each is held to the file that owns it."""
+
+    def test_the_sidecar_image_name_is_the_broker_s_repository_path_without_its_registry(self):
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "services/broker/src/controlPlaneSidecarPush.ts"
+        ).read_text(encoding="utf-8")
+        found = re.search(r"export const SIDECAR_IMAGE_REF = '([^']+)';", source)
+        self.assertIsNotNone(found)
+        registry, _, path = found.group(1).partition("/")
+        self.assertIn(".", registry)
+        self.assertEqual(bs.SIDECAR_IMAGE_NAME, path)
+
+    def test_the_pin_file_path_is_the_one_the_colour_unit_reads(self):
+        import render_colour_units
+
+        self.assertEqual(bs.SIDECAR_IMAGE_ENV_PATH, render_colour_units.SIDECAR_IMAGE_ENV)
+
+    def test_the_pin_variable_is_the_one_the_sidecar_script_and_the_broker_name(self):
+        import demo_sidecar
+
+        self.assertEqual(bs.SIDECAR_IMAGE_VARIABLE, demo_sidecar.IMAGE_VARIABLE)
+        source = (
+            Path(__file__).resolve().parents[2]
+            / "services/broker/src/controlPlaneSidecarPush.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn(f"SIDECAR_IMAGE_VARIABLE = '{bs.SIDECAR_IMAGE_VARIABLE}'", source)
+
+    def test_the_pin_owner_is_root(self):
+        self.assertEqual(bs.SIDECAR_IMAGE_ENV_OWNER_UID, 0)
+
+
 class FakeSlotOps:
     def __init__(self, content_volume: str | None = None) -> None:
         self.calls: list[tuple[str, ...]] = []
@@ -2212,6 +2246,14 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
             "branchleft_slot.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=self._own_uid)
         )
         self._patch.start()
+        # The sidecar's pin file: a path of this test's own that holds nothing
+        # until a test writes it, owned by "root" = this process's uid.
+        self._pin_patch = mock.patch.multiple(
+            "branchleft_slot",
+            SIDECAR_IMAGE_ENV_PATH=self._path("demo-sidecar.image.env"),
+            SIDECAR_IMAGE_ENV_OWNER_UID=self._own_uid,
+        )
+        self._pin_patch.start()
         # `load_image` passes docker's own output through to stdout.
         self._stdout_patch = mock.patch("sys.stdout", io.StringIO())
         self._stdout_patch.start()
@@ -2227,6 +2269,7 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
         for pid_file in self._pid_files:
             self._kill_recorded_group(pid_file)
         self._path_patch.stop()
+        self._pin_patch.stop()
         self._patch.stop()
         self._stdout_patch.stop()
         self._tmp.cleanup()
@@ -2510,6 +2553,120 @@ class RealSlotOpsLoadImageTests(unittest.TestCase):
                 f"tag {self.LOADED_ID} {bs.SLOT_IMAGE_NAME}:{self.LOADED_ID.replace(':', '-')}",
             ],
         )
+
+    # The drain sidecar loads unnamed too. The host pins it by digest in a
+    # root-owned file, and `load` names an image after the sidecar only when
+    # its id is that digest. Reasons:
+    # branchleft_slot.md#a-loaded-image-is-tagged-by-the-reference-the-host-pins.
+    def _write_pin(self, text: str, mode: int = 0o644) -> None:
+        path = self._path("demo-sidecar.image.env")
+        with open(path, "w", encoding="ascii") as handle:
+            handle.write(text)
+        os.chmod(path, mode)
+
+    def _pin_line(self, image_id: str | None = None, name: str | None = None) -> str:
+        return (
+            f"{bs.SIDECAR_IMAGE_VARIABLE}="
+            f"{name or bs.SIDECAR_IMAGE_NAME}@{image_id or self.LOADED_ID}\n"
+        )
+
+    def _load_and_tag_calls(self) -> list[str]:
+        path = self._stage(b"x")
+        self._write_fake_docker("cat > /dev/null\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            bs.RealSlotOps().load_image(path)
+        return [c for c in self._docker_calls() if c.startswith("tag ")]
+
+    def _tag_call(self, name: str) -> str:
+        return f"tag {self.LOADED_ID} {name}:{self.LOADED_ID.replace(':', '-')}"
+
+    @_NEEDS_TIMEOUT
+    def test_the_image_the_host_pins_as_the_sidecar_is_tagged_with_the_sidecar_name(self):
+        self._write_pin(self._pin_line())
+
+        self.assertEqual(
+            self._load_and_tag_calls(), [self._tag_call(bs.SIDECAR_IMAGE_NAME)]
+        )
+
+    @_NEEDS_TIMEOUT
+    def test_the_pin_file_without_a_trailing_newline_is_read(self):
+        self._write_pin(self._pin_line().rstrip("\n"))
+
+        self.assertEqual(
+            self._load_and_tag_calls(), [self._tag_call(bs.SIDECAR_IMAGE_NAME)]
+        )
+
+    @_NEEDS_TIMEOUT
+    def test_an_image_that_is_not_the_pinned_sidecar_is_tagged_with_the_slot_name(self):
+        self._write_pin(self._pin_line("sha256:" + "cd" * 32))
+
+        self.assertEqual(self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)])
+
+    @_NEEDS_TIMEOUT
+    def test_no_pin_file_leaves_the_image_tagged_with_the_slot_name(self):
+        self.assertEqual(self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)])
+
+    @_NEEDS_TIMEOUT
+    def test_a_pin_that_names_another_repository_is_not_believed(self):
+        self._write_pin(self._pin_line(name="ghcr.io/other/thing"))
+
+        self.assertEqual(self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)])
+
+    @_NEEDS_TIMEOUT
+    def test_a_pin_that_is_not_one_exact_line_is_not_believed(self):
+        other = self._pin_line("sha256:" + "cd" * 32)
+        for bad in (
+            self._pin_line() + other,
+            self._pin_line() + "EXTRA=1\n",
+            self._pin_line().upper(),
+            self._pin_line().rstrip("\n") + " ; rm -rf /\n",
+            f"{bs.SIDECAR_IMAGE_VARIABLE}={bs.SIDECAR_IMAGE_NAME}:latest\n",
+            f"{bs.SIDECAR_IMAGE_VARIABLE}={bs.SIDECAR_IMAGE_NAME}@sha256:abc\n",
+            f" {self._pin_line()}",
+            "",
+        ):
+            with self.subTest(bad=bad):
+                self._write_pin(bad)
+                self.assertEqual(
+                    self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)]
+                )
+                os.remove(self._calls_file())
+
+    @_NEEDS_TIMEOUT
+    def test_a_pin_file_not_owned_by_root_is_not_believed(self):
+        self._write_pin(self._pin_line())
+
+        with mock.patch.object(bs, "SIDECAR_IMAGE_ENV_OWNER_UID", self._own_uid + 1):
+            self.assertEqual(self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)])
+
+    @_NEEDS_TIMEOUT
+    def test_a_group_or_world_writable_pin_file_is_not_believed(self):
+        for mode in (0o664, 0o646, 0o666):
+            with self.subTest(mode=oct(mode)):
+                self._write_pin(self._pin_line(), mode)
+                self.assertEqual(
+                    self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)]
+                )
+                os.remove(self._calls_file())
+
+    @_NEEDS_TIMEOUT
+    def test_a_symlinked_pin_file_is_not_followed(self):
+        target = self._path("real.env")
+        with open(target, "w", encoding="ascii") as handle:
+            handle.write(self._pin_line())
+        os.chmod(target, 0o644)
+        os.symlink(target, self._path("demo-sidecar.image.env"))
+
+        self.assertEqual(self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)])
+
+    @_NEEDS_TIMEOUT
+    def test_a_fifo_at_the_pin_path_neither_blocks_nor_is_believed(self):
+        os.mkfifo(self._path("demo-sidecar.image.env"))
+        signal.alarm(10)
+        try:
+            self.assertEqual(self._load_and_tag_calls(), [self._tag_call(bs.SLOT_IMAGE_NAME)])
+        finally:
+            signal.alarm(0)
 
     @_NEEDS_TIMEOUT
     def test_what_docker_load_printed_still_reaches_the_caller(self):

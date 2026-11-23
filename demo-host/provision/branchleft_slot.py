@@ -94,6 +94,28 @@ IMAGE_INSPECT_TIMEOUT_SECONDS = 60
 SLOT_IMAGE_NAME = "ghcr.io/branchleft/ghost-tenant"
 _LOADED_ID_LINE = re.compile(r"Loaded image ID: (sha256:[0-9a-f]{64})")
 
+# The drain sidecar's name, and the host file that pins its digest. The colour
+# unit reads `DEMO_SIDECAR_IMAGE=<name>@sha256:<digest>` from that file and
+# starts the sidecar with `--pull never`, so the reference must resolve
+# locally. The name is the host's own label for the image: demo1 reaches no
+# registry, and shared-infra's role names none (it is the repository path of
+# the broker's `SIDECAR_IMAGE_REF` without the registry host). `load` tags a loaded image under the sidecar's name when, and only
+# when, its id is the digest that root-owned file pins; every other image is
+# tagged under `SLOT_IMAGE_NAME` as before. Duplicated like every literal here
+# (`SidecarImageNameDriftGuardTests` pins the name to
+# `controlPlaneSidecarPush.ts`, and the file's path and variable to
+# `render_colour_units.py` and `demo_sidecar.py`). Reasons:
+# branchleft_slot.md#a-loaded-image-is-tagged-by-the-reference-the-host-pins.
+SIDECAR_IMAGE_NAME = "branchleft/drain-sidecar"
+SIDECAR_IMAGE_ENV_PATH = "/etc/branchleft/demo-sidecar.image.env"
+SIDECAR_IMAGE_VARIABLE = "DEMO_SIDECAR_IMAGE"
+# Owner of the pin file the wrapper trusts: root, the account this runs as.
+SIDECAR_IMAGE_ENV_OWNER_UID = 0
+_SIDECAR_IMAGE_ENV_READ_BYTES = 4096
+_SIDECAR_PIN_LINE = re.compile(
+    rf"{SIDECAR_IMAGE_VARIABLE}={re.escape(SIDECAR_IMAGE_NAME)}@(sha256:[0-9a-f]{{64}})"
+)
+
 # Where a slot's own management state lives, and the systemd unit name
 # shape LLD-2 §02 names directly ("systemctl start|stop the corresponding
 # unit"). The *contents* of that unit -- what it runs to bring one colour of
@@ -687,10 +709,57 @@ def _loaded_image_id(printed: bytes) -> str:
     return matches[0].group(1)
 
 
+def _pinned_sidecar_id(path: str) -> str | None:
+    """The digest the host pins for the drain sidecar, or None.
+
+    Reads `path` (always `SIDECAR_IMAGE_ENV_PATH`) the way `load_image` reads
+    the archive: `O_NOFOLLOW | O_NONBLOCK`, `fstat` on the open descriptor,
+    and only a regular file, owned by
+    `SIDECAR_IMAGE_ENV_OWNER_UID` and writable by no one else, is believed; at
+    most `_SIDECAR_IMAGE_ENV_READ_BYTES` of it are read. Its
+    one line must be exactly `DEMO_SIDECAR_IMAGE=SIDECAR_IMAGE_NAME@sha256:<64
+    lowercase hex>`. A missing file, or any other shape, answers None: the
+    image is then tagged as a slot image, as it was before this pin existed,
+    and the colour unit refuses to start without a resolvable sidecar.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != SIDECAR_IMAGE_ENV_OWNER_UID
+            or info.st_mode & 0o022
+        ):
+            return None
+        data = os.read(fd, _SIDECAR_IMAGE_ENV_READ_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    match = _SIDECAR_PIN_LINE.fullmatch(text.removesuffix("\n"))
+    return match.group(1) if match else None
+
+
+def _name_for_loaded_image(image_id: str) -> str:
+    """The name a loaded image is given: the sidecar's when its id is the
+    digest the host pins for the sidecar, the slot image's otherwise."""
+    if _pinned_sidecar_id(SIDECAR_IMAGE_ENV_PATH) == image_id:
+        return SIDECAR_IMAGE_NAME
+    return SLOT_IMAGE_NAME
+
+
 def _tag_loaded_image(image_id: str) -> str:
-    """Gives the image `image_id` the name `SLOT_IMAGE_NAME`, as a tag of its
-    own digest, so `SLOT_IMAGE_NAME@<image_id>` resolves, and returns that
-    tag. Only an image whose own id, as the engine reports it now, IS
+    """Gives the image `image_id` the name `_name_for_loaded_image` chooses
+    (`SIDECAR_IMAGE_NAME` for the pinned sidecar, `SLOT_IMAGE_NAME` otherwise),
+    as a tag of its own digest, so `<name>@<image_id>` resolves, and returns
+    that tag. Only an image whose own id, as the engine reports it now, IS
     `image_id` is tagged. A tag per digest, never a shared one, so a later
     load cannot take the name away from an image an earlier one left running.
     The tag is local: no registry is contacted.
@@ -709,7 +778,7 @@ def _tag_loaded_image(image_id: str) -> str:
     ).stdout.strip()
     if shown != image_id:
         raise RefusedImage(f"refused: the image loaded as {image_id} reports its own id as {shown[:80]!r}")
-    tag = f"{SLOT_IMAGE_NAME}:{image_id.replace(':', '-')}"
+    tag = f"{_name_for_loaded_image(image_id)}:{image_id.replace(':', '-')}"
     subprocess.run(
         ["docker", "tag", image_id, tag],
         check=True,
